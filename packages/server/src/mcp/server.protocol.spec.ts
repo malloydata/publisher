@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
 import { RELOAD_FAILURE_IS_SAFE } from "./tools/reload_package_tool";
 import type { EnvironmentStore } from "../service/environment_store";
+import packageJson from "../../package.json";
 
 /**
  * End-to-end coverage of the unified MCP server over the real MCP protocol,
@@ -155,6 +156,15 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          // executeQuery; the sentence that said so was once dropped while
          // the fields were being renamed, and nothing caught it.
          "execute_query",
+         // The LLM steps. An empty answer can now be the model's pruning, a
+         // failed step is named in the error, a rating carries the model's
+         // reason, and a long answer loses whole sources; an agent told none
+         // of this reads an empty or short answer as "the data is not there".
+         "llm-stage-failed",
+         "retrieval_stage",
+         "match_reason",
+         "35,000",
+         "pruned",
          "ranking",
          "total_available",
          "below_cutoff_count",
@@ -185,6 +195,11 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       const { prompts } = await client.listPrompts();
       expect(prompts.length).toBeGreaterThanOrEqual(24);
       expect(prompts.some((p) => p.name === "malloy-analysis")).toBe(true);
+   });
+
+   it("names the real release in the initialize handshake", () => {
+      // This was a hard-coded "0.0.1", so a trace could not name its build.
+      expect(client.getServerVersion()?.version).toBe(packageJson.version);
    });
 
    it("delivers orientation instructions to the connecting client", () => {

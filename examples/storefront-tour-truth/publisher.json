@@ -1,0 +1,5 @@
+{
+  "name": "storefront-tour-truth",
+  "version": "0.0.1",
+  "description": "Truth package for the storefront-tour eval set: the raw tables the storefront model reads, with no semantic modelling at all. Goldens are derived here so a model bug cannot certify its own golden. Never served on the answerer's Publisher. No `explores` on purpose: curated discovery would also gate the query surface, and every source here has to stay directly queryable for a golden to run."
+}

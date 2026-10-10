@@ -20,10 +20,11 @@ import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
 import skillsBundle from "./skills/skills_bundle.json";
+import { SERVER_VERSION } from "../version";
 
 export const testServerInfo = {
    name: "malloy-publisher-mcp-server",
-   version: "0.0.1",
+   version: SERVER_VERSION,
    displayName: "Malloy Publisher MCP Server",
    description: "Provides access to Malloy models and query execution via MCP.",
 };

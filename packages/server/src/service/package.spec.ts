@@ -83,6 +83,7 @@ describe("service/package", () => {
                   getPath: () => "model1.malloy",
                   setDiscoveryCuration: () => {},
                   setQueryBoundary: () => {},
+                  setSiblingModelDefResolver: () => {},
                } as unknown as Model,
             ],
             [
@@ -91,6 +92,7 @@ describe("service/package", () => {
                   getPath: () => "model2.malloynb",
                   setDiscoveryCuration: () => {},
                   setQueryBoundary: () => {},
+                  setSiblingModelDefResolver: () => {},
                } as unknown as Model,
             ],
          ]),
@@ -346,6 +348,7 @@ describe("service/package", () => {
                         getModel: () => "foo",
                         setDiscoveryCuration: () => {},
                         setQueryBoundary: () => {},
+                        setSiblingModelDefResolver: () => {},
                      } as unknown as Model,
                   ],
                   [
@@ -363,6 +366,7 @@ describe("service/package", () => {
                         // and lists as its path.
                         getNotebookListing: () => ({}),
                         setQueryBoundary: () => {},
+                        setSiblingModelDefResolver: () => {},
                      } as unknown as Model,
                   ],
                ]),
@@ -375,6 +379,8 @@ describe("service/package", () => {
                   environmentName: "testProject",
                   packageName: "testPackage",
                   path: "model1.malloy",
+                  // No surface in this package, so it hides no model.
+                  isHidden: false,
                   error: undefined,
                },
             ]);

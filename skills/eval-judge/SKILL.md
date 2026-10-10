@@ -5,7 +5,7 @@ description: 'Decide whether ONE answer matches its golden, and say whether you 
 
 # The judge
 
-JUDGE_VERSION: 4
+JUDGE_VERSION: 6
 
 This skill IS the judge. One fresh judge subagent is spawned per attempt, with
 this skill installed in its workspace and the case materials in its prompt. It
@@ -49,6 +49,13 @@ The first row is the one that catches people. A refusal is only exempt from
 containment when `golden.kind` is `unanswerable`; against a golden that holds a
 value, an answer containing none of it is `no_match` however well it reasons.
 `reference/refusal.md` is the whole rule.
+
+A third kind holds no value: `criteria`, where the case's rubric IS the key
+and there is no number to contain. Grade the clauses and nothing else. Do not
+manufacture a figure to check the answer against, and do not read the absence
+of a value as a missing golden: a `criteria` golden is complete. Report
+`gold_status` on it the same way, on the criteria rather than on a number, so
+a clause that contradicts the model still surfaces.
 
 ## Answer judge
 
@@ -111,18 +118,54 @@ Output, exactly this shape:
    reading that produced it, that is `no_match`. Use `near_match` only when you
    can name the rubric clause that makes the difference defensible.
 
+   **A rubric clause cannot make a wrong VALUE defensible, and a clause that
+   tries is a defect in the rubric rather than a licence to you.** `near_match`
+   turns on the answer being right under a reading the QUESTION allows -- a tie
+   broken the other way, a grain the question left open, a basis the question
+   never fixed. It does not turn on the answer being transparent about how it
+   got a figure the question did not ask for. Those two look alike in a rubric
+   and are opposites in a report: one is a number a reader can act on, the
+   other is a number a reader would act on wrongly. Naming the method makes a
+   wrong figure DIAGNOSABLE, which is worth having, and it is not partial
+   credit.
+
+   The test, before you write `near_match` on a case with a value: would a
+   reader who acted on this figure be wrong? If yes, it is `no_match` however
+   plainly the answer explained itself, and however the rubric is worded. Say
+   in `why` that you are overriding a rubric clause, so the clause gets fixed.
+   This rule exists because a set shipped one: a question asked for sales over
+   the company's season, the answer gave the meteorological window 25% lower
+   and said which window it used, and a clause granting `near_match` for a
+   stated window kept a materially wrong answer out of the pass rate
+   entirely -- the arm reported 100%.
+
    It is a third outcome because as a pass it was a large share of the measured
    noise: the same unchanged answer reads `match` in one run and `near_match`
    in the next, and the pass rate moves although nothing did. A verdict whose
    content is "this is arguable" cannot be allowed to decide anything. Its
    count is still reported, and a rising one means the rubrics are going vague.
-   (What that share was for a given set is in that set's calibration record.)
+   (What that share was for a given set is in that set's `CALIBRATION.md`.)
+
+   A `near_match` that lands the same way in two arms is a different animal
+   from one that flickers. Stable across a pair, it is not judge noise: the
+   model cannot distinguish two readings the question does, which is a coverage
+   finding, and softening the rubric will not close it. `flip_table.py` lists
+   the stable ones and `diagnose.py --verdicts near_match` takes them.
 8. On a large row set, compare it as a set rather than scanning pairwise: state
    how many gold rows you located in the prediction, name the ones you could
    not, and say what the mismatched values look like (uniformly scaled, off in
    one column, a different population). "I checked all 76" without that
    breakdown is not a comparison.
-9. **Score the data, not the insight.** A question that asks for a figure or
+9. **A `mustNotUse` field is not yours to weigh, unless it is prose.** A
+   script checks the final query for the field names `golden.mustNotUse`
+   lists and forces `no_match` on a hit before you are asked, so a case that
+   reaches you with a `MUST NOT USE` line is carrying only what a text check
+   could not decide: a reading described in words, an objection to a USE of a
+   field rather than to the field (`X as ...`, `X through ...`), or a bare field
+   name that may or may not be the forbidden one. Apply those as the rubric's own
+   clauses. Do not soften a verdict because a veto might have caught it, and do
+   not invent a veto the rubric did not ask for.
+10. **Score the data, not the insight.** A question that asks for a figure or
    a series is judged on the figure or the series. Where the question also asks
    for an interpretation -- "when did it flatten out", "what drove the change"
    -- that interpretation is not scored unless the rubric marks it `REQUIRED`
@@ -131,7 +174,7 @@ Output, exactly this shape:
    named is measuring taste, and a run that lost a case that way (13 of 13
    weekly values exact, plateau named one week outside a window) was measuring
    nothing. Exact data with a different reading of it is `match`.
-10. **Do not demand a grain the question did not fix.** When the question names
+11. **Do not demand a grain the question did not fix.** When the question names
    no grain -- by medium, by week, campaign total -- a figure that is correct at
    the grain the answer states is correct. The golden's grain is `PREFERRED`,
    not the only one: an answer at another grain is `match` when the grain is
@@ -141,6 +184,29 @@ Output, exactly this shape:
    every number right, was once scored down for not showing the campaign
    total; the question had never asked for one. A rubric that means "campaign
    total only" must say so as `REQUIRED`, and the question should say so too.
+
+### Rubric markers
+
+A case rubric marks its alternate readings and disclosures with the words
+below, and each word fixes the verdict. Apply them as written; do not re-weigh
+a reading the rubric has already classified. (`reference/writing-rubrics.md`
+is where authors are told to use them; this table is the judge's half.)
+
+| Marker | Verdict | Meaning |
+|---|---|---|
+| `PREFERRED` | `match` | The reading the golden encodes. |
+| `ACCEPT` | `match` | Equally right: a different but faithful route to the same claim. Check the figure against the golden the way the clause says to. |
+| `DIVERGENT` | `near_match` | Defensible and not what was asked for. Never `no_match`, however clearly the answer committed to it. |
+| `WRONG` | `no_match` | Plausible and incorrect; the clause usually names the trap. |
+| `REQUIRED` | omitted: `no_match` | A disclosure without which the number misleads. |
+| `CREDITED` | omitted: `match` | Context a good analyst adds; its absence costs nothing. |
+
+Measured on an unchanged answer, rubric and golden: an answer whose
+recommended figure the rubric marked `DIVERGENT` scored `near_match` under
+one judge and `no_match` under the next, because the judge had never been
+told what the word meant and weighed the commitment instead. An unmarked
+clause is `CREDITED` (the author's bug, not yours to repair by inventing a
+requirement).
 
 ### Anchors
 

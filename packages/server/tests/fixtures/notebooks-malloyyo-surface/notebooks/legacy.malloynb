@@ -1,0 +1,6 @@
+>>>malloy
+import "../models/orders.malloy"
+import "../models/hidden.malloy"
+run: orders -> { aggregate: order_count }
+>>>malloy
+run: hidden -> { aggregate: secret_total }

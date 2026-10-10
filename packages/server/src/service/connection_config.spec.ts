@@ -1,9 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { generateKeyPairSync } from "crypto";
 import { components } from "../api";
+import { logger } from "../logger";
 import {
    assembleEnvironmentConnections,
    normalizeSnowflakePrivateKey,
@@ -663,23 +664,187 @@ describe("SSH proxy validation", () => {
       }
    });
 
-   it("rejects sslmode set on a non-proxied connection (silent-ignore footgun)", () => {
-      const conn: ApiConnection = {
-         name: "pg-direct",
-         type: "postgres",
-         postgresConnection: {
-            host: "db.example.com",
-            port: 5432,
-            databaseName: "mydb",
-            userName: "user",
-            password: "pass",
-            sslmode: "verify-ca",
-         },
-      };
-      expect(() => assembleEnvironmentConnections([conn])).toThrow(
-         "only supported for proxied connections",
+   const directPg = (
+      extra: Partial<components["schemas"]["PostgresConnection"]>,
+   ): ApiConnection => ({
+      name: "pg-direct",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.example.com",
+         port: 5432,
+         databaseName: "mydb",
+         userName: "user",
+         password: "pass",
+         ...extra,
+      },
+   });
+
+   it("applies a direct connection's own sslmode to its connectionString", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         directPg({ sslmode: "no-verify" }),
+      ]);
+      expect(pojo.connections["pg-direct"].connectionString).toBe(
+         "postgresql://user:pass@db.example.com:5432/mydb?sslmode=no-verify",
       );
    });
+
+   it("prefers a direct connection's sslmode over the deployment PGSSLMODE", () => {
+      const prior = process.env.PGSSLMODE;
+      process.env.PGSSLMODE = "require";
+      try {
+         const { pojo } = assembleEnvironmentConnections([
+            directPg({ sslmode: "disable" }),
+         ]);
+         expect(pojo.connections["pg-direct"].connectionString).toBe(
+            "postgresql://user:pass@db.example.com:5432/mydb?sslmode=disable",
+         );
+      } finally {
+         if (prior === undefined) delete process.env.PGSSLMODE;
+         else process.env.PGSSLMODE = prior;
+      }
+   });
+
+   it("falls back to the deployment PGSSLMODE when a direct connection sets none", () => {
+      const prior = process.env.PGSSLMODE;
+      process.env.PGSSLMODE = "require";
+      try {
+         const { pojo } = assembleEnvironmentConnections([directPg({})]);
+         expect(pojo.connections["pg-direct"].connectionString).toBe(
+            "postgresql://user:pass@db.example.com:5432/mydb?sslmode=require",
+         );
+      } finally {
+         if (prior === undefined) delete process.env.PGSSLMODE;
+         else process.env.PGSSLMODE = prior;
+      }
+   });
+
+   it("leaves a direct connection on its individual fields when neither sslmode nor PGSSLMODE is set", () => {
+      const prior = process.env.PGSSLMODE;
+      delete process.env.PGSSLMODE;
+      try {
+         const { pojo } = assembleEnvironmentConnections([directPg({})]);
+         expect(pojo.connections["pg-direct"].connectionString).toBeUndefined();
+      } finally {
+         if (prior !== undefined) process.env.PGSSLMODE = prior;
+      }
+   });
+
+   it("pins verify-ca on a direct connection to the CA bundle with libpq-compatible parsing", () => {
+      const prior = process.env.NODE_EXTRA_CA_CERTS;
+      // Any readable file satisfies the config-load check; this one always exists.
+      process.env.NODE_EXTRA_CA_CERTS = __filename;
+      try {
+         const { pojo } = assembleEnvironmentConnections([
+            directPg({ sslmode: "verify-ca" }),
+         ]);
+         const url = new URL(
+            pojo.connections["pg-direct"].connectionString as string,
+         );
+         expect(url.searchParams.get("sslmode")).toBe("verify-ca");
+         expect(url.searchParams.get("uselibpqcompat")).toBe("true");
+         expect(url.searchParams.get("sslrootcert")).toBe(__filename);
+      } finally {
+         if (prior === undefined) delete process.env.NODE_EXTRA_CA_CERTS;
+         else process.env.NODE_EXTRA_CA_CERTS = prior;
+      }
+   });
+
+   it("rejects verify-ca on a direct connection when no CA bundle is readable", () => {
+      const prior = process.env.NODE_EXTRA_CA_CERTS;
+      delete process.env.NODE_EXTRA_CA_CERTS;
+      try {
+         expect(() =>
+            assembleEnvironmentConnections([
+               directPg({ sslmode: "verify-ca" }),
+            ]),
+         ).toThrow(
+            "Connection 'pg-direct' uses sslmode 'verify-ca' but no readable CA bundle is available",
+         );
+      } finally {
+         if (prior !== undefined) process.env.NODE_EXTRA_CA_CERTS = prior;
+      }
+   });
+
+   it("rejects an unsupported sslmode on a direct connection", () => {
+      expect(() =>
+         assembleEnvironmentConnections([
+            directPg({ sslmode: "require" as never }),
+         ]),
+      ).toThrow(
+         "Connection 'pg-direct' has unsupported sslmode 'require' (expected disable | no-verify | verify-ca | verify-full).",
+      );
+   });
+
+   it("ignores sslmode alongside a connectionString, and warns that it did", () => {
+      const warn = spyOn(logger, "warn");
+      try {
+         const conn: ApiConnection = {
+            name: "pg-direct",
+            type: "postgres",
+            postgresConnection: {
+               connectionString: "postgresql://u:p@db.example.com/mydb",
+               sslmode: "no-verify",
+            },
+         };
+         const { pojo } = assembleEnvironmentConnections([conn]);
+         expect(pojo.connections["pg-direct"].connectionString).toBe(
+            "postgresql://u:p@db.example.com/mydb",
+         );
+         expect(warn).toHaveBeenCalledWith(
+            "Connection 'pg-direct' sets both postgresConnection.sslmode and connectionString; " +
+               "sslmode is ignored and the connectionString's own sslmode applies.",
+         );
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
+   it("keeps a proxied connection's sslmode off the real-host connectionString", () => {
+      const prior = process.env.PGSSLMODE;
+      delete process.env.PGSSLMODE;
+      try {
+         const { pojo } = assembleEnvironmentConnections([
+            {
+               ...validSshProxy,
+               postgresConnection: {
+                  ...validSshProxy.postgresConnection!,
+                  sslmode: "no-verify",
+               },
+            },
+         ]);
+         expect(
+            pojo.connections[validSshProxy.name!].connectionString,
+         ).toBeUndefined();
+      } finally {
+         if (prior !== undefined) process.env.PGSSLMODE = prior;
+      }
+   });
+
+   // 2147483647 is Postgres's own ceiling for statement_timeout (an int, in
+   // ms); above it the session SET fails on every pool acquire.
+   it.each([0, -1, 1.5, "5000; DROP TABLE users", 2147483648, 1e21])(
+      "rejects statementTimeoutMilliseconds %p",
+      (value) => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               directPg({ statementTimeoutMilliseconds: value as never }),
+            ]),
+         ).toThrow(
+            `Connection 'pg-direct' has an invalid statementTimeoutMilliseconds ${JSON.stringify(value)} (expected an integer from 1 to 2147483647).`,
+         );
+      },
+   );
+
+   it.each([1, 30000, 2147483647])(
+      "accepts statementTimeoutMilliseconds %p",
+      (value) => {
+         expect(() =>
+            assembleEnvironmentConnections([
+               directPg({ statementTimeoutMilliseconds: value }),
+            ]),
+         ).not.toThrow();
+      },
+   );
 
    it("rejects a proxied database name with URI-reserved characters", () => {
       const conn: ApiConnection = {
@@ -800,6 +965,59 @@ describe("ducklake shape validation", () => {
             assembleEnvironmentConnections([withSchema(bad)], "/tmp/env"),
          ).toThrow(/metadataSchema must be a plain identifier/i);
       }
+   });
+});
+
+// Malloy qualifies every `dataset.table` path with the connection's projectId.
+// Left unset, the BigQuery SDK falls back to its own `{{projectId}}` token,
+// which the SDK rewrites in the requests it sends but which reaches the
+// warehouse verbatim from any path that sends compiled SQL another way, such
+// as DuckDB's bigquery_query() during a storage-destination build.
+describe("assembleEnvironmentConnections — bigquery projectId", () => {
+   const keyJson = JSON.stringify({
+      type: "service_account",
+      project_id: "key-project",
+      private_key: "key",
+      client_email: "sa@key-project.iam.gserviceaccount.com",
+   });
+
+   it("takes projectId from the service account key when no default is set", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "bq",
+            type: "bigquery",
+            bigqueryConnection: { serviceAccountKeyJson: keyJson },
+         },
+      ]);
+      expect(pojo.connections["bq"].projectId).toBe("key-project");
+   });
+
+   it("treats a blank defaultProjectId as unset", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "bq",
+            type: "bigquery",
+            bigqueryConnection: {
+               defaultProjectId: "",
+               serviceAccountKeyJson: keyJson,
+            },
+         },
+      ]);
+      expect(pojo.connections["bq"].projectId).toBe("key-project");
+   });
+
+   it("prefers an explicit defaultProjectId over the key's project", () => {
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "bq",
+            type: "bigquery",
+            bigqueryConnection: {
+               defaultProjectId: "data-project",
+               serviceAccountKeyJson: keyJson,
+            },
+         },
+      ]);
+      expect(pojo.connections["bq"].projectId).toBe("data-project");
    });
 });
 
@@ -1094,5 +1312,123 @@ describe("validateStorageDestinations — S3 credential, checked in full", () =>
       const { accepted, rejected } = validateStorageDestinations([good, bad]);
       expect(accepted.map((d) => d.name)).toEqual(["good"]);
       expect(rejected.map((r) => r.name)).toEqual(["bad"]);
+   });
+});
+
+describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
+   const originalPolicy = process.env.EXTENSION_FETCH_POLICY;
+   const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+
+   const restore = (name: string, value: string | undefined) => {
+      if (value === undefined) {
+         delete process.env[name];
+      } else {
+         process.env[name] = value;
+      }
+   };
+
+   afterEach(() => {
+      restore("EXTENSION_FETCH_POLICY", originalPolicy);
+      restore("PUBLISHER_ALLOW_DUCKDB_SETUP_SQL", originalAllow);
+   });
+
+   const withSetupSQL = (): ApiConnection => ({
+      name: "my_duckdb",
+      type: "duckdb",
+      duckdbConnection: {
+         setupSQL: "ATTACH 'ducklake:storage/orca.ducklake' AS orca;",
+      },
+   });
+
+   it("refuses setupSQL unless PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is set", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(
+         /setupSQL on DuckDB connection "my_duckdb" is disabled in this deployment\..*PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true/,
+      );
+   });
+
+   it("refuses setupSQL when PUBLISHER_ALLOW_DUCKDB_SETUP_SQL is false", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "false";
+
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(/is disabled in this deployment/);
+   });
+
+   it("rejects a misspelled PUBLISHER_ALLOW_DUCKDB_SETUP_SQL rather than reading it as off", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "ture";
+
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(/Invalid value for PUBLISHER_ALLOW_DUCKDB_SETUP_SQL/);
+   });
+
+   it("accepts a DuckDB connection with setupSQL, sets metadata, and passes setupSQL to POJO", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+      const conn: ApiConnection = {
+         name: "my_duckdb",
+         type: "duckdb",
+         duckdbConnection: {
+            setupSQL:
+               "ATTACH 'ducklake:storage/orca.ducklake' AS orca;\nUSE orca.marts;",
+         },
+      };
+
+      const { metadata, pojo } = assembleEnvironmentConnections(
+         [conn],
+         "/tmp/env",
+      );
+
+      expect(metadata.has("my_duckdb")).toBe(true);
+      expect(pojo.connections["my_duckdb"]).toBeDefined();
+      expect(pojo.connections["my_duckdb"].setupSQL).toBe(
+         "ATTACH 'ducklake:storage/orca.ducklake' AS orca;\nUSE orca.marts;",
+      );
+   });
+
+   it("refuses setupSQL when EXTENSION_FETCH_POLICY is local-only, even when allowed", () => {
+      process.env.EXTENSION_FETCH_POLICY = "local-only";
+      process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+
+      expect(() =>
+         assembleEnvironmentConnections([withSetupSQL()], "/tmp/env"),
+      ).toThrow(
+         /setupSQL is not allowed on DuckDB connection "my_duckdb" when EXTENSION_FETCH_POLICY is "local-only"/i,
+      );
+   });
+
+   it("rejects a DuckDB connection with whitespace-only setupSQL", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      const conn: ApiConnection = {
+         name: "empty_duckdb",
+         type: "duckdb",
+         duckdbConnection: {
+            setupSQL: "   \n  ",
+         },
+      };
+
+      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
+         /must provide either attachedDatabases or non-empty setupSQL/i,
+      );
+   });
+
+   it("rejects a DuckDB connection with neither attachedDatabases nor setupSQL", () => {
+      delete process.env.EXTENSION_FETCH_POLICY;
+      const conn: ApiConnection = {
+         name: "empty_duckdb",
+         type: "duckdb",
+         duckdbConnection: {},
+      };
+
+      expect(() => assembleEnvironmentConnections([conn], "/tmp/env")).toThrow(
+         /must provide either attachedDatabases or non-empty setupSQL/i,
+      );
    });
 });

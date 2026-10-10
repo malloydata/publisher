@@ -20,7 +20,7 @@
  * in the suite green.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import express from "express";
 import { readFileSync } from "fs";
 import { request as httpRequest } from "http";
@@ -28,7 +28,10 @@ import { resolve } from "path";
 import sinon from "sinon";
 import request from "supertest";
 
-import { readBypassAuthorize } from "./authorize_bypass_header";
+import {
+   BYPASS_AUTHORIZE_SECRET_ENV,
+   readBypassAuthorize,
+} from "./authorize_bypass_header";
 import type { QueryController } from "./controller/query.controller";
 import { queryConcurrency } from "./query_concurrency";
 
@@ -88,10 +91,26 @@ const post = (headers: Record<string, string>, body: object) => {
    }));
 };
 
+const SECRET = "s3cret-bypass-value";
+
 describe("authorize bypass wiring, over HTTP", () => {
-   it("passes the bypass through when the header is set", async () => {
+   const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+
+   beforeAll(() => {
+      process.env[BYPASS_AUTHORIZE_SECRET_ENV] = SECRET;
+   });
+
+   afterAll(() => {
+      if (saved === undefined) {
+         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+      } else {
+         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
+      }
+   });
+
+   it("passes the bypass through when the header presents the secret", async () => {
       const { response, bypass } = await post(
-         { "x-publisher-bypass-authorize": "true" },
+         { "x-publisher-bypass-authorize": SECRET },
          {},
       );
       expect(response.status).toBe(200);
@@ -116,26 +135,36 @@ describe("authorize bypass wiring, over HTTP", () => {
       expect(bypass).toBeUndefined();
    });
 
-   // Note "true " is absent: surrounding whitespace is trimmed and accepted by
-   // design (see readBypassAuthorize's unit spec). Only values that are not a
-   // lone `true` deny.
-   it.each([["false"], ["1"], [""], ["yes"], ["true,true"]])(
-      "leaves gates enforced for header value %p",
-      async (value) => {
-         const { bypass } = await post(
-            { "x-publisher-bypass-authorize": value },
-            {},
-         );
-         expect(bypass).toBeUndefined();
-      },
-   );
+   // `"true"` heads the list: it is the value that alone used to disable the
+   // gates, and over HTTP it must now read as just another wrong secret.
+   //
+   // A whitespace-PADDED secret is deliberately absent: RFC 9110 section 5.5
+   // requires a field parser to exclude leading and trailing whitespace before
+   // evaluating a field value, so Node hands the route the bare secret and the
+   // padded form is unrepresentable over HTTP. The reader's own spec covers the
+   // untrimmed comparison, which a direct caller can still exercise.
+   it.each([
+      ["true"],
+      ["false"],
+      ["1"],
+      [""],
+      ["yes"],
+      ["true,true"],
+      [`${SECRET}x`],
+   ])("leaves gates enforced for header value %p", async (value) => {
+      const { bypass } = await post(
+         { "x-publisher-bypass-authorize": value },
+         {},
+      );
+      expect(bypass).toBeUndefined();
+   });
 
    /**
     * A genuinely duplicated header, which supertest cannot express — calling
     * `.set()` twice replaces the value rather than appending a second line. Sent
     * through `node:http` with an array value, which emits two header lines, so
-    * Node's own server-side join is what the route sees: `"true, true"`. Not a
-    * lone `true`, so it denies.
+    * Node's own server-side join is what the route sees: the secret twice,
+    * comma-joined. Not the secret, so it denies.
     */
    it("leaves gates enforced for a duplicated header", async () => {
       const { app, getQuery } = buildApp();
@@ -153,7 +182,7 @@ describe("authorize bypass wiring, over HTTP", () => {
                   headers: {
                      "content-type": "application/json",
                      "content-length": Buffer.byteLength(body),
-                     "x-publisher-bypass-authorize": ["true", "true"],
+                     "x-publisher-bypass-authorize": [SECRET, SECRET],
                   },
                },
                (res) => {
@@ -171,13 +200,57 @@ describe("authorize bypass wiring, over HTTP", () => {
       }
    });
 
-   it("accepts the header case-insensitively, as HTTP requires", async () => {
+   // The header NAME is case-insensitive, as HTTP requires. The secret VALUE is
+   // not: it is compared exactly, so only the name is varied here.
+   it("accepts the header name case-insensitively, as HTTP requires", async () => {
       const { bypass } = await post(
-         { "X-Publisher-Bypass-Authorize": "TRUE" },
+         { "X-Publisher-Bypass-Authorize": SECRET },
          {},
       );
       expect(bypass).toBe(true);
    });
+
+   it("leaves gates enforced for an upper-cased secret value", async () => {
+      const { bypass } = await post(
+         { "x-publisher-bypass-authorize": SECRET.toUpperCase() },
+         {},
+      );
+      expect(bypass).toBeUndefined();
+   });
+});
+
+/**
+ * Fail-closed, proven over HTTP rather than only on the reader: with no secret
+ * configured there is no value a caller can present, so the bypass is
+ * unavailable regardless of what the header says. This is the state a naive
+ * deployment runs in, and the one the old presence-only reader left wide open.
+ */
+describe("authorize bypass with no secret configured, over HTTP", () => {
+   const saved = process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+
+   beforeAll(() => {
+      delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+   });
+
+   afterAll(() => {
+      if (saved === undefined) {
+         delete process.env[BYPASS_AUTHORIZE_SECRET_ENV];
+      } else {
+         process.env[BYPASS_AUTHORIZE_SECRET_ENV] = saved;
+      }
+   });
+
+   it.each([["true"], [SECRET]])(
+      "refuses the bypass for header value %p",
+      async (value) => {
+         const { response, bypass } = await post(
+            { "x-publisher-bypass-authorize": value },
+            {},
+         );
+         expect(response.status).toBe(200);
+         expect(bypass).toBeUndefined();
+      },
+   );
 });
 
 /**

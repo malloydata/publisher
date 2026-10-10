@@ -19,7 +19,7 @@ Once the package is in shape, self-hosters publish it through their own host: co
 
 ## Prerequisites
 
-- Malloy model (`.malloy`) and/or notebook (`.malloynb`) files ready
+- Malloy model (`.malloy`) and/or notebook (`notebooks/<slug>.malloy`) files ready
 - The Publisher MCP tools configured (used by the modeling and analysis skills, not by a publish step)
 
 ## Connections: a flat-file package needs none
@@ -55,28 +55,64 @@ If it doesn't exist, create one. Suggest a package name based on the model conte
 
 ### Curating discovery & the query boundary (optional)
 
-By default a package exposes **everything**: every model is listed and every source is directly queryable. That's the right behavior for most packages, and it's the safe default: **omit these fields and nothing changes.** Reach for them when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on (or querying) them directly.
+A package with no `index.malloy` and no `explores` exposes **everything**: every model is listed and every source is directly queryable.
 
-Two optional fields opt the package into curation:
+To curate, add an **`index.malloy`** at the package root. Publisher reads it as the package's published surface, so no manifest field is involved:
 
-```json
-{
-  "name": "ecommerce",
-  "version": "0.0.1",
-  "description": "Orders, customers, and revenue analysis",
-  "explores": ["order_analysis.malloy", "customer_health.malloy"],
-  "queryableSources": "declared"
-}
+```malloy
+// index.malloy
+import "order_analysis.malloy"
+import "staging.malloy"
+
+export { orders, customers }
 ```
 
-- **`explores`** (`string[]`) - an allowlist of **model file paths** (relative to the package root, not source or view names) whose models agents should discover and land on. Declaring it is the single opt-in for all discovery curation. With `explores` set, listings narrow to those files, and within each file to its `export { ... }` closure (below), so anything a listed file doesn't export is also dropped. Other files still compile, and can still be imported or joined, but are hidden from listings. Leaving `explores` **absent or empty** means every model is listed, unchanged from today, so existing packages don't break when this field is added. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`; publishing a package that has any is rejected, so fix the path before publishing.
-- **`queryableSources`** (`"declared"` | `"all"`, default `"declared"`) - the query boundary. Only takes effect once `explores` is set. `"declared"` makes queryable == discoverable: only the `explores` files and their `export {}` closure are valid top-level query targets; other sources still compile, import, and join, but a direct query against one is denied. `"all"` curates discovery only: every compiled source stays queryable even though `explores` narrows what's listed.
+What it exports is what agents discover **and** what may be queried. Everything else still compiles, and other models can import, join and extend it, but a direct query against it is refused with a 404. Where nothing in the model is gated, the 404 says the source is off the surface and how to publish it; where a gate is in play, it reads exactly like a source that does not exist. Reach for this when you have raw/staging/scaffolding sources that exist to build a curated entry point and you don't want agents landing on, or querying, them directly.
 
-**About `export { … }`:** `explores` filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, the two compose. You usually don't write it: a file with **no** `export` exposes all of its own top-level sources. Add `export { orders, customers }` to a file to expose only those and keep imported/scaffolding helpers out of discovery (it must appear after the definitions it names). See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
+**Address queries to the surface.** Once a package has an `index.malloy`, `.../models/staging.malloy/query` is no longer a query entry point, *even for a source that file declares itself*. Use `.../models/index.malloy/query`. If you are debugging a refusal rather than authoring, `skill:malloy-source-unreachable` covers the three ways a source can be out of reach and how to tell them apart.
 
-**Why curate here:** declaring `explores` routes agents to the well-documented curated sources instead of raw tables, and `queryableSources: "declared"` keeps them from reaching the hidden sources by name. The two axes compose: list a file in `explores` for its models to be discoverable, and `export` a source within that file for it to be a landing point.
+**A surface can be layered.** An `index.malloy` may front a file that fronts another. A source re-exported through a chain of files stays queryable through the surface at any depth, because admission follows the declaration rather than the path taken to it.
 
-> **Not access control.** `queryableSources` gates the query surface (the query endpoints, REST and MCP alike), not compile and not raw file retrieval by exact path: `/compile` and `compile_model` are deliberately exempt, because compile is the authoring loop and the boundary is discovery curation. It doesn't restrict *who* may query, only *what* is queryable by name. Queryable sources are the union of every `explores`-listed file's `export {}` closure, whichever listed model path a query addresses them through. To gate access by caller-supplied identity/role, use `#(authorize)` on the source, see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and `#(authorize)` are independent layers.
+**Curation hides a landing point, not a column.** A published source may `join` an unpublished one, and a query grouping by a joined field returns that field's values normally. If a column must not be readable, do not join it into something you publish; gate it with `#(authorize)` instead.
+
+**Leaving a source out does not put it out of reach, but there is a condition.** `export { ... }` also decides what an *importing* file may see, which is Malloy's rule rather than Publisher's. A file that declares no `export` hands an importer everything it declares, so an unpublished source stays importable and joinable from the file that declares it. A file that *does* declare one hands over exactly that list: importing a file whose `export` omits a source and then naming it fails to compile with `Reference to undefined object`. Put an `export` on a mid-layer file only when you mean to narrow what its importers can build on, not just what Publisher lists.
+
+**About `export { … }`:** the surface filters which *files* are listed; `export { … }` (a Malloy statement) filters which *sources within a file* are exposed, and the two compose. You usually don't write it in a leaf model: a file with **no** `export` exposes all of its own top-level sources. It must appear after the definitions it names. See [Malloy: Imports & Exports](https://docs.malloydata.dev/documentation/language/imports).
+
+**Givens reach callers through `index.malloy`'s imports, not its `export`.** A `given:` is a name like a source. A caller can set it only if `index.malloy` has it in scope, and you never list givens in `export { … }`. How you import decides it:
+
+- `import "orders.malloy"` (the whole file) brings every given `orders.malloy` declares. Use this form, then `export` only the curated sources.
+- `import { orders } from "orders.malloy"` brings only `orders`. Its givens stay behind. Name them too: `import { orders, REGION } from "orders.malloy"`.
+- Imports don't chain. If `orders.malloy` gets its givens from a `givens.malloy`, import `givens.malloy` into `index.malloy` as well, or list the givens in `orders.malloy`'s own `export { … }`.
+
+A given `index.malloy` leaves out fails in one of three ways, depending on how it is declared:
+
+| the given | what happens |
+| --- | --- |
+| has a default | the source runs on the default, and a caller who sets the given gets `400 unknown given 'REGION'. Model surfaces [...]`. Agents never learn it exists |
+| has no default | a query on the source answers `400 ... references given MIN_AMT ..., which is not surfaced in this model and has no default`, even when the caller sends a value. A query that joins the source in its own text gets `404 Query target is not queryable` instead, which reads like curation; `compile_model` on that query shows the real cause |
+| is read by an `#(authorize)` or `#(access_filter)` gate | the package does not load: `$GROUPS references a given named GROUPS, which is not declared in this model` |
+
+To check, fetch `index.malloy`'s model: its `givens` should list every given a published source reads.
+
+### The older manifest fields
+
+`publisher.json` has two older keys for this, `explores` and `queryableSources`. A new package uses neither: `index.malloy` does the job.
+
+- **`explores`** (`string[]`) is deprecated in every form. The files it lists are listed and queryable, and what they export is the surface, wherever they live. The one exception is a tagged dashboard it lists, which reads the surface and adds nothing to it. A package that sets it gets a load-time warning naming the edit that replaces it. A surface spanning several files needs no `explores`: import them all into one `index.malloy` and export what you publish.
+
+  ```malloy
+  // index.malloy
+  import "order_analysis.malloy"
+  import "customer_health.malloy"
+
+  export { orders, customers, customer_health }
+  ```
+
+  `"explores": []` is deprecated too. It used to mean "do not curate". To publish everything now, rename or remove `index.malloy`, and point any file that imports it at the new name first: a broken import fails the whole package. An entry that doesn't resolve to a real `.malloy` file surfaces in `exploresWarnings`, and publishing a package that has any is rejected. When `explores` is set and does not list `index.malloy`, the index file is ignored, and a warning says so.
+- **`queryableSources`** (`"declared"` | `"all"`) is deprecated too. `"declared"` is the default, so setting it does nothing and draws a warning. **`"all"` has one use:** hiding an `#(authorize)`-gated source from listings while authorized callers still query it by name. It keeps the listings `index.malloy` curates and leaves every source queryable by name. It needs no `explores` beside it and draws no warning. Leave it out unless you have that case.
+
+> **Not access control.** The surface gates the query surface (the query endpoints, REST and MCP alike), not compile and not raw file retrieval by exact path: `/compile` and `compile_model` are deliberately exempt, because compile is the authoring loop and the boundary is discovery curation. It doesn't restrict *who* may query, only *what* is queryable by name. Queryable sources are the union of every listed file's `export {}` closure, whichever listed model path a query addresses them through. To gate access by caller-supplied identity/role, use `#(authorize)` on the source (and `#(access_filter)` to scope rows), see `skill:malloy-model` § Access Control and `docs/authorize.md`. Discovery curation and these gates are independent layers.
 
 The manifest also carries a `scope` field (`"package"` | `"version"`, default `"package"`) controlling whether persisted/materialized artifacts are shared across published versions or owned by a single version, and a `materialization` field configuring that persistence policy (a cron `schedule` or a `freshness` window). Both are unrelated to discovery curation; there is no per-source `sharing` or `schedule` field, that was retired in favor of the single package-level `scope` and `materialization`.
 
@@ -86,7 +122,7 @@ With a valid `publisher.json` in place, confirm the package is in the flat, publ
 
 ## Package Structure
 
-All `.malloy` files must be in the package root (flat layout: the publisher does not support cross-directory imports yet).
+A flat layout at the package root is the simplest default. Subfolders work too: an `import` path resolves relative to the file that contains it, so `import "../storefront.malloy"` works from a file under `dashboards/`. Notebooks live under `notebooks/` and dashboards under `dashboards/`.
 
 ```
 <package-name>/
@@ -96,12 +132,13 @@ All `.malloy` files must be in the package root (flat layout: the publisher does
   user_order_facts.malloy       # Computed source
   order_analysis.malloy         # Source file (joins base sources)
   customer_health.malloy        # Source file
-  monthly_report.malloynb       # Notebook (optional)
+  notebooks/
+    monthly_report.malloy       # Notebook (optional)
 ```
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- `.malloynb` files - Notebooks for exploration/documentation (see `skill:malloy-notebooks`)
+- `notebooks/*.malloy` files with an `## artifact { kind=notebook … }` tag - Notebooks for exploration/documentation, written as a one-column layout of tiles or as older `run:` cells (see `skill:malloy-notebooks`). The tag's `kind=` decides whether a file is a notebook or a dashboard, not its folder. An existing `.malloynb` is still served; never write a new one.
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management
@@ -114,15 +151,15 @@ Publishable contents:
 ## Workflow
 
 1. Verify `publisher.json` exists; if not, create it (suggest name from model content, default `0.0.1`).
-2. Confirm the flat package layout: all `.malloy` files in the package root.
+2. Confirm the package layout: model files in the package root (or imported by relative path from wherever they sit), notebooks under `notebooks/`, dashboards under `dashboards/`.
 3. Hand the package to the host's publish path (commit to git, then run the deploy step for your Publisher instance). If a version-already-exists conflict occurs, bump the patch version in `publisher.json` and retry.
 4. Confirm with the user how their package is served so they can verify it is reachable.
 
 ## Common Issues
 
-- **Cross-directory imports fail**: Move all `.malloy` files into the package root; the publisher uses a flat layout.
+- **An import does not resolve** (`Can't find source X`, or the file is not found): the path is read relative to the importing file, not the package root. Fix the path; do not move files.
 - **Version already exists**: Bump the patch version in `publisher.json` before re-publishing.
 
 ## Done
 
-Step complete. Output: package is in publishable shape (valid `publisher.json`, flat layout), ready for the host's publish path.
+Step complete. Output: package is in publishable shape (valid `publisher.json`, imports that resolve), ready for the host's publish path.

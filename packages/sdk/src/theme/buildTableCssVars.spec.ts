@@ -23,12 +23,39 @@ describe("buildTableCssVars", () => {
       expect(vars["--malloy-render--table-header-color"]).toBe(t.tableHeader);
       expect(vars["--malloy-render--table-body-color"]).toBe(t.tableBody);
       expect(vars["--malloy-render--table-border"]).toBe(t.border);
+      // The card edge rides its own var, so darkening a card cannot darken
+      // every gridline in the table it holds.
+      expect(vars["--publisher-dashboard-card-border"]).toBe(t.cardBorder);
       // `tile-background` is our custom var for the dashboard tile
       // container. It's NOT the renderer's `table-pinned-background`
       // (which now carries `tableHeaderBackground` via the theme prop).
       expect(vars["--malloy-render--tile-background"]).toBe(t.tile);
       expect(vars["--malloy-render--label-color"]).toBe(t.tileTitle);
       expect(vars["--malloy-render--value-color"]).toBe(t.valueColor);
+   });
+
+   it("carries palette.border, cardBorder and value into their vars", () => {
+      const t = resolveTheme(
+         [
+            {
+               palette: {
+                  border: { light: "#aaaaaa" },
+                  cardBorder: { light: "#bbbbbb" },
+                  value: { light: "#cccccc" },
+               },
+            },
+         ],
+         "light",
+      );
+      const vars = buildTableCssVars(t);
+      expect(vars["--malloy-render--table-border"]).toBe("1px solid #aaaaaa");
+      expect(vars["--publisher-dashboard-card-border"]).toBe(
+         "1px solid #bbbbbb",
+      );
+      expect(vars["--malloy-render--table-pinned-border"]).toBe(
+         "1px solid #bbbbbb",
+      );
+      expect(vars["--malloy-render--value-color"]).toBe("#cccccc");
    });
 
    it("omits the dashboard-root background keys", () => {

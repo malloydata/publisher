@@ -1,6 +1,6 @@
 ---
 name: malloy-model-as-you-go
-description: After answering a data question, write down what the answer assumed so the next reader can trust the number. A field with a #(doc) in the model when you can edit it, an extend in the notebook when you can only author reports, or a stated assumption plus a Malloy snippet when you can only chat. Use after every answered question that rested on a judgment call, and whenever a question is asked against tables that have no model yet.
+description: 'After answering a data question, write down what the answer assumed so the next reader can trust the number. A field with a #(doc) in the model when you can edit it, an extend in the notebook when you can only author reports, or a stated assumption plus a Malloy snippet when you can only chat. Use after every answered question that rested on a judgment call, and whenever a question is asked against tables that have no model yet.'
 ---
 
 <!--
@@ -53,7 +53,7 @@ verify it, present it. Two of its rules matter most here:
 
 - **Every number you present comes out of a query.** Adding up the rows of a `limit: 15` table
   by hand drops everything below the cut, and nobody can re-run it.
-- **Your first result is a draft.** Work `skill:malloy-analysis-pitfalls` before presenting.
+- **Your first result is a draft.** Work step 5 of `skill:malloy-analysis` (verify before trusting) before presenting.
 
 ### Name the decisions the answer rests on
 
@@ -234,8 +234,8 @@ carry the *why* and the evidence. It is also what lets you resume after losing c
 
 A saved `view:` turns "we answered that once" into "re-run it". A trend wanted again next
 month belongs in the file as a `view:` with its chart tag (`skill:malloy-charts`); views wanted
-side by side belong in a notebook (`skill:malloy-notebooks`), or in a dashboard surface if your
-host has one. A genuine one-off does not.
+side by side belong in a dashboard (`malloy-dashboards`, where your host has it), or in a notebook
+(`skill:malloy-notebooks`) only when the user asks for one or one already exists. A genuine one-off does not.
 
 > **This departs from `skill:malloy-model` on purpose.** Its "no views in source files" rule
 > assumes a schema-first model, written before anyone asked a question, so its views would be
@@ -274,7 +274,7 @@ over:
 | Porting prior art (LookML, dbt, a metrics doc): the definitions exist and are agreed, the job is translation | `skill:malloy-lookml-review`, then `skill:malloy-model` |
 | The user names the sources they want built outright, before any question | `skill:malloy-model` |
 | A model already exists, the question rests on no judgment call, and nothing is worth keeping | `skill:malloy-analysis` alone |
-| Open-ended exploration with no intent to keep anything | `skill:malloy-analyze` |
+| Open-ended exploration with no intent to keep anything | `skill:malloy-analysis` (its "no specific question" branch) |
 
 ## Anti-patterns
 

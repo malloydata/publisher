@@ -45,7 +45,7 @@ import { MaterializationService } from "./materialization_service";
  * `describe.skipIf`, not an early `return` from a passing test.
  *
  * That distinction is the whole point. This file is under `src/`, so
- * `test:unit` (`bun test src`) globs it on every PR and on all three platforms,
+ * `test:unit` (`bun test ./src`) globs it on every PR and on all three platforms,
  * none of which carry a BigQuery secret. Returning early made those runs report
  * green tests that had asserted nothing, which is worse than no coverage: it
  * reads as coverage. A skip reports as a skip.

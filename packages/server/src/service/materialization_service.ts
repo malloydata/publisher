@@ -8,12 +8,15 @@ import type {
 import { Manifest } from "@malloydata/malloy";
 import {
    BadRequestError,
+   ChainedShapeNotCarriedError,
+   ChainedUpstreamMissingError,
    InvalidStateTransitionError,
    MaterializationConflictError,
    MaterializationEligibilityError,
    MaterializationNotFoundError,
 } from "../errors";
 import { logger } from "../logger";
+import { malloyGivenToApi, type MalloyGiven } from "./given";
 import {
    MaterializationMode,
    recordAutoLoadOutcome,
@@ -41,6 +44,7 @@ import {
    MaterializationUpdate,
    ManifestEntry,
    ManifestReference,
+   RefusedSource,
    ResourceRepository,
    SourceFailure,
 } from "../storage/DatabaseInterface";
@@ -56,6 +60,7 @@ import {
    projectToPublicColumns,
    iterGraphSources,
    resolveQueryMetadata,
+   compilerBuildId,
 } from "./build_plan";
 import {
    warehouseDeltaTarget,
@@ -82,6 +87,7 @@ import {
 import type { components } from "../api";
 import { getPersistCollisionEnforce, getPersistStorageMode } from "../config";
 import { EnvironmentStore } from "./environment_store";
+import { resolvePartitionColumns } from "./persist_partition";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
@@ -99,17 +105,368 @@ import {
 import { storageDeltaTarget } from "./incremental_storage";
 import { escapeSQL } from "./connection";
 import {
+   authorModelLiftContext,
    buildChainedStorageBuildModel,
    buildVirtualMap,
    deriveServeBindings,
+   groupAliasesByName,
+   liftDerivedSources,
+   missingPersistedTables,
+   reachedPersistedSources,
    type ServeBinding,
    type SourceLocation,
-   sliceSourceRange,
+   type ServeShapeGiven,
+   documentFlagsForLifts,
+   authorRefinementsFor,
+   buildOverTiers,
+   REFINEMENT_TIER_KINDS,
 } from "./materialization_serve_transform";
+
+/**
+ * What a build needs to know from the plan about stored tables, to tell which
+ * of the sources a downstream reaches are stored and whether their tables are
+ * at hand. Both are the PLAN's facts, not a definition's: `#@ persist` is
+ * inherited and `extend` never changes the SQL, so a plain extension or a rename
+ * of a persisted source is a persist source too and shares the base's table,
+ * and nothing on a definition says which name wrote the annotation (the
+ * compiler copies the base's notes onto an extension). A stored table is a
+ * content address, and every name whose SQL hashes to it is that table —
+ * which is what `aliasesBySourceName` records.
+ */
+export interface ChainedPlanFacts {
+   /**
+    * Every persist source's `sourceID`, inheritors and renames included. By id,
+    * not name: a name is not unique across a package's models (two files may
+    * each declare `daily`), and the walk has each definition's id.
+    */
+   persistSourceIds: ReadonlySet<string>;
+   /** The names sharing one table, keyed by each of them (groupAliasesByName). */
+   aliasesBySourceName: Record<string, string[]>;
+   /**
+    * Each source's content address by `sourceID` — the key the publisher files
+    * its manifest entry under. Absent for a source whose SQL could not be
+    * rendered.
+    */
+   addressBySourceId: Record<string, string | undefined>;
+   /**
+    * Each source's key as the compiler computes it (`compilerBuildId`): the
+    * address without the `partition=` layout the publisher folds in. Equal to
+    * the address for an unpartitioned source; different for a partitioned one,
+    * whose entry the compiler can then find only under this key.
+    */
+   compilerKeyBySourceId: Record<string, string | undefined>;
+}
+
+/** A build with no plan to consult: nothing is known to be stored. */
+const NO_PLAN_FACTS: ChainedPlanFacts = {
+   persistSourceIds: new Set(),
+   aliasesBySourceName: {},
+   addressBySourceId: {},
+   compilerKeyBySourceId: {},
+};
+
+/**
+ * The run's manifest as the compiler must see it: every entry under the
+ * publisher's address, and a partitioned source's entry under the compiler's
+ * own key as well, since `persistedTableFor` looks a table up by that key and
+ * would otherwise inline — or, strictly, miss — a stored partitioned upstream.
+ * Only for the compare and strict renders over the full manifest; the ledger
+ * and the manifest entries themselves stay keyed by address.
+ */
+export function manifestForCompiler(
+   full: Manifest["buildManifest"],
+   planFacts: Pick<
+      ChainedPlanFacts,
+      "addressBySourceId" | "compilerKeyBySourceId"
+   >,
+): Manifest["buildManifest"] {
+   let entries = full.entries;
+   for (const [sourceID, address] of Object.entries(
+      planFacts.addressBySourceId,
+   )) {
+      const key = planFacts.compilerKeyBySourceId[sourceID];
+      if (
+         address === undefined ||
+         key === undefined ||
+         key === address ||
+         !(address in entries) ||
+         key in entries
+      ) {
+         continue;
+      }
+      if (entries === full.entries) entries = { ...entries };
+      entries[key] = entries[address];
+   }
+   return entries === full.entries ? full : { ...full, entries };
+}
+
+/**
+ * How a build read the stored tables its source depends on, decided from the
+ * same lookup the compiler made: `getSQL` substitutes a manifest entry for a
+ * persist source when the manifest holds the source's content address, and
+ * inlines the source's definition otherwise. So an upstream was read from its
+ * table exactly when its address is in `substituted` — the manifest this
+ * build's SQL was rendered with — whatever the entry was called or where it
+ * came from (an entry handed over by reference carries no `sourceName`, and a
+ * lookup by name would call that a recompute).
+ *
+ * `inManifestOnly` are upstreams the full manifest holds but `substituted` does
+ * not: entries a `storage=` destination holds, which `manifestExcludingStorage`
+ * drops because a warehouse build cannot read them. For a `storage=` build they
+ * are the parents to stack on; for a colocated build they are recomputed.
+ * `missing` are upstreams the build SQL reads that no manifest holds — neither
+ * built in this run nor supplied by reference — which only a recompute can
+ * supply. They come from the compiler, not the walk (`compilerMissing`, see
+ * {@link compilerMissingUpstream}): the walk follows every declared join and
+ * stops at a persist source's own definition, so it both over-reaches (a join
+ * the query never reads) and under-reaches (a join declared on the stop
+ * itself). What the SQL reads is the compiler's to say, and a walk stop that
+ * no manifest holds and the compiler did not miss is one the SQL does not
+ * read — not a recompute, and not a reason. A stop whose address is the
+ * root's own (`rootAddress`) is the table being built, not an upstream: a
+ * persisted extension shares its base's address, and building it runs the
+ * defining query. An upstream with no address (its SQL could not be rendered)
+ * is reported as recomputed and never refused on that account — a build that
+ * truly cannot render it fails on its own.
+ *
+ * `sqlInlinesStored` is the compiler's own reach, as a floor under the walk.
+ * The walk stops at a persist source and follows only an extension's added
+ * joins, so a join declared on the stored stop itself — `daily` carrying
+ * `join_one: c is daily_counts`, with `daily_counts` in a `storage=` destination
+ * — is reached by the compiler (it inlines `daily_counts` into the build SQL)
+ * and not by the walk. Rendering the source's SQL with every stored entry
+ * available and comparing it with the SQL this build runs says whether some
+ * stored table was inlined, whatever the walk named; when it was, the answer
+ * is `recomputed` even if every upstream the walk names was read from its
+ * table. That is also what gates a `storage=` build's stack-on-parent attempt.
+ */
+export function upstreamReuseFromManifest(params: {
+   reached: readonly { name: string; sourceID: string }[];
+   addressBySourceId: Record<string, string | undefined>;
+   /** The manifest the compiler substituted from (storage entries excluded). */
+   substituted: Record<string, unknown>;
+   /** The run's whole manifest, storage entries included. */
+   full: Record<string, unknown>;
+   /** The run's entries so far, by id, for a storage entry's destination. */
+   builtEntries: Record<string, ManifestEntry>;
+   tier: "colocated" | "storage";
+   /** The build SQL differs from the SQL rendered with every stored entry available. */
+   sqlInlinesStored: boolean;
+   /** The persisted source the SQL reads that no manifest holds, per the compiler's strict render. */
+   compilerMissing: readonly { name: string; sourceID: string }[];
+   /** The content address of the source being built; a stop sharing it is its own table. */
+   rootAddress?: string;
+}): {
+   fields: Pick<ManifestEntry, "upstreamReuse" | "upstreamRecomputeReason">;
+   inManifestOnly: string[];
+   missing: string[];
+} {
+   const inManifestOnly: string[] = [];
+   const missing: string[] = [];
+   const reasons: string[] = [];
+   let upstreams = 0;
+   for (const { name, sourceID } of params.reached) {
+      const address = params.addressBySourceId[sourceID];
+      if (address !== undefined && address === params.rootAddress) continue;
+      // No address: its SQL could not be rendered, so if this build read it the
+      // build's own render would have failed first. Reached but unread; not an
+      // upstream to report on.
+      if (address === undefined) continue;
+      upstreams++;
+      if (address in params.substituted) continue;
+      if (address in params.full) {
+         // Held by a storage destination and excluded from the warehouse
+         // manifest. Read by this SQL only if the compare says a stored table
+         // was inlined; otherwise it is a declared join the query never uses,
+         // and neither a recompute nor a reason.
+         if (!params.sqlInlinesStored) continue;
+         inManifestOnly.push(name);
+         if (params.tier === "colocated") {
+            const destination =
+               params.builtEntries[address]?.storageDestinationName ??
+               "a storage destination";
+            reasons.push(
+               `persisted upstream '${name}' is materialized in storage ` +
+                  `destination '${destination}', which a warehouse build cannot read`,
+            );
+         }
+         continue;
+      }
+      // In no manifest and not missed by the compiler: a declared join the
+      // query never reads. Not in the SQL, so neither recomputed nor a reason.
+   }
+   for (const { name } of params.compilerMissing) {
+      missing.push(name);
+      reasons.push(
+         `persisted upstream '${name}' is not in this build's manifest ` +
+            `(neither built in this run nor supplied by reference)`,
+      );
+   }
+   // The compare says a stored table was inlined and no stop accounts for it:
+   // a stored-tier parent the walk did name is what a storage build stacks on,
+   // not a reason; one it did not name is a join on a stored stop's own
+   // definition, which only the compiler reached.
+   if (
+      params.sqlInlinesStored &&
+      reasons.length === 0 &&
+      inManifestOnly.length === 0
+   ) {
+      reasons.push(
+         `the build SQL inlines a stored table reached through a refinement ` +
+            `declared on a stored upstream (a join the walk does not follow)`,
+      );
+   }
+   const fields: Pick<
+      ManifestEntry,
+      "upstreamReuse" | "upstreamRecomputeReason"
+   > =
+      upstreams === 0 &&
+      !params.sqlInlinesStored &&
+      params.compilerMissing.length === 0
+         ? {}
+         : reasons.length === 0
+           ? { upstreamReuse: "reused" }
+           : {
+                upstreamReuse: "recomputed",
+                upstreamRecomputeReason:
+                   `${reasons.join("; ")}; recomputed from its definition in ` +
+                   `the warehouse`,
+             };
+   return { fields, inManifestOnly, missing };
+}
+
+/**
+ * A compiler strict manifest miss, recognized by its `code` — the contract —
+ * with the `sourceID` it names read from the message when the message has the
+ * shape core writes today. The code alone makes it a miss; a message core has
+ * reworded yields a miss of an unnamed source rather than no miss at all, so
+ * strict still refuses and non-strict still recomputes (with a generic
+ * reason) instead of the build failing on an error nobody classified. The
+ * real-compiler spec pins the current wording; the id belongs on the error
+ * object, which is asked of core in malloydata/malloy#3133.
+ */
+export function strictMissSourceId(
+   err: unknown,
+): { sourceID?: string } | undefined {
+   const e = err as { code?: unknown; message?: unknown } | null;
+   if (e?.code !== "runtime-manifest-strict-miss") return undefined;
+   const sourceID =
+      typeof e.message === "string"
+         ? /Persisted source '([^']+)' not found in manifest/.exec(
+              e.message,
+           )?.[1]
+         : undefined;
+   return { sourceID };
+}
+
+/**
+ * The persisted source this build's SQL reads that no manifest holds, as the
+ * compiler sees it: the source rendered once more with the run's whole
+ * manifest and `strict: true`, so the only miss possible is a persist source
+ * neither built in this run nor supplied by reference that the SQL actually
+ * reads. Declared joins the query never uses are not rendered and so not
+ * missed; a join declared on a stored stop's own definition is. The compiler
+ * stops at the first miss, so this names at most one source per build — the
+ * refusal or the reason names it, and the next build names the next.
+ */
+function compilerMissingUpstream(
+   persistSource: PersistSource,
+   fullManifest: Manifest["buildManifest"],
+   connectionDigests: Record<string, string>,
+   sourceNameById: ReadonlyMap<string, string>,
+): { name: string; sourceID: string }[] {
+   try {
+      persistSource.getSQL({
+         buildManifest: { ...fullManifest, strict: true },
+         connectionDigests,
+      });
+      return [];
+   } catch (err) {
+      const miss = strictMissSourceId(err);
+      if (miss === undefined) throw err;
+      const sourceID = miss.sourceID ?? "";
+      // A reason names a source, never the server's path to its model file.
+      const name =
+         sourceNameById.get(sourceID) ??
+         (sourceID
+            ? sourceID.split("@")[0]
+            : "a persisted source the SQL reads");
+      return [{ name, sourceID }];
+   }
+}
+
+/**
+ * Derive {@link ChainedPlanFacts} from the compiled plan.
+ *
+ * This is the table→names map `Runtime.getBuildTargets()` returns as
+ * `target.sources` (malloydata/malloy#3029), derived here from the deprecated
+ * per-source plan with the publisher's own address recipe —
+ * `computeSourceEntityId` is pinned equal to `target.buildId` by
+ * `build_targets_address_equality.spec.ts`, so the groups are the same ones.
+ * Not a call to `getBuildTargets` yet, for one reason: `mkBuildTargets` renders
+ * every target's SQL while it plans, with no guard, so one persist source that
+ * cannot render — a free parameter, a given, refused on its own path — fails the
+ * call for the whole model, where this skips just that source. (The same eager
+ * render is why the chained build's transient model stays on `getBuildPlan`:
+ * its rebound parents are virtual sources, which cannot render without the
+ * `virtualMap` that call cannot take. See `buildDownstreamIntoStorage`.)
+ *
+ * When the builder moves to `getBuildTargets`, this is the one place the
+ * chained build reads plan facts from: per model, `runtime.getBuildTargets`
+ * → every `target.sources` id into `persistSourceIds` and its `buildId` into
+ * `addressBySourceId`, each target's names as one alias group. That move
+ * likely wants a core change first — a planning mode that reports an
+ * unrenderable source instead of throwing, and takes a `virtualMap` — or a
+ * pre-filter of the sources the eligibility gate refused. It also retires
+ * `compilerKeyBySourceId` and `manifestForCompiler`: `computeSourceEntityId`
+ * folds a `partition=` layout into the address and the compiler's own table
+ * lookup (`mkBuildID` of digest and SQL) does not, so the renders that hand
+ * the compiler the full manifest carry a partitioned entry under both keys.
+ * With `target.buildId` as the address there is one key.
+ */
+function chainedPlanFacts(
+   sources: Record<string, PersistSource>,
+   connectionDigests: Record<string, string>,
+): ChainedPlanFacts {
+   const planSources: { name: string; sourceEntityId?: string }[] = [];
+   const addressBySourceId: Record<string, string | undefined> = {};
+   const compilerKeyBySourceId: Record<string, string | undefined> = {};
+   for (const [sourceID, source] of Object.entries(sources)) {
+      let sourceEntityId: string | undefined;
+      try {
+         sourceEntityId = computeSourceEntityId(source, connectionDigests);
+         compilerKeyBySourceId[sourceID] = compilerBuildId(
+            source,
+            connectionDigests,
+         );
+      } catch {
+         // A source whose SQL cannot be rendered (an unbound parameter, a
+         // given) has no address to group by; the eligibility gate refuses it
+         // on its own path, and here it is a name with no table-mates.
+      }
+      planSources.push({ name: source.name, sourceEntityId });
+      addressBySourceId[sourceID] = sourceEntityId;
+   }
+   return {
+      persistSourceIds: new Set(Object.keys(sources)),
+      aliasesBySourceName: groupAliasesByName(planSources),
+      addressBySourceId,
+      compilerKeyBySourceId,
+   };
+}
 import type { ApiConnection } from "./model";
 import { fetchManifestEntries, splitManifestEntries } from "./manifest_loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
+
+/** An author model file's text by `file:` URL, or undefined when unreadable. */
+function readAuthorFile(url: string): string | undefined {
+   try {
+      return readFileSync(fileURLToPath(url), "utf8");
+   } catch {
+      return undefined;
+   }
+}
 import {
    quoteRenameTarget,
    quoteManifestTablePath,
@@ -310,6 +667,58 @@ function declaredStorage(persistSource: PersistSource): string | undefined {
 }
 
 /**
+ * The columns this source's table is laid out by, for a build that is about to
+ * run.
+ *
+ * Re-resolved here rather than carried from the eligibility gate because the
+ * gate and the build are far apart in this flow, and a value threaded through
+ * that distance is one that can go stale. The resolution is pure over the source
+ * and its annotation, so the two cannot disagree — but that is a contract, not a
+ * coincidence, so a refusal reaching here THROWS. The gate has already refused
+ * every shape this can refuse; arriving at a build means it did not, and
+ * quietly building unpartitioned would turn a broken `partition=` into a table
+ * whose layout silently differs from what the author declared.
+ */
+/**
+ * The author model's given surface, for the chained build's transient model.
+ * `Model.givens` has collapsed inheritance through imports, so this is the
+ * surface the author's own files compile against. A given whose type cannot
+ * be rendered is dropped rather than guessed: text that reads it then fails
+ * to compile and the build reports a shape it could not carry, where a
+ * guessed type would compile a predicate that silently coerces.
+ */
+function chainedBuildGivens(persistSource: PersistSource): ServeShapeGiven[] {
+   const out: ServeShapeGiven[] = [];
+   for (const given of persistSource._model?.givens?.values() ?? []) {
+      const api = malloyGivenToApi(given as unknown as MalloyGiven);
+      if (!api.name || !api.type) continue;
+      out.push({
+         name: api.name,
+         type: api.type,
+         defaultText: typeof api.default === "string" ? api.default : undefined,
+      });
+   }
+   return out;
+}
+
+function partitionColumnsForBuild(persistSource: PersistSource): string[] {
+   const resolved = resolvePartitionColumns(
+      persistSource,
+      deriveAnnotationFields(persistSource),
+   );
+   if (!resolved.ok) {
+      throw new MaterializationEligibilityError({
+         reason: resolved.reason,
+         message:
+            `Source '${persistSource.name}' reached a build with an ` +
+            `unusable 'partition=': ${resolved.detail}. The eligibility gate ` +
+            `should have refused this before any warehouse work ran.`,
+      });
+   }
+   return resolved.columns;
+}
+
+/**
  * Resolve a persist source's `#@ persist storage=<ref>` to the EFFECTIVE
  * destination connection name for a build, or undefined for the default
  * colocated path (the source materializes into its own warehouse). Read
@@ -400,6 +809,46 @@ export function tallySources(
       sourcesFailed: Object.keys(failures).length,
       sourcesReused: Object.keys(carried).filter((id) => !failures[id]).length,
    };
+}
+
+/**
+ * The record a run keeps for a source the eligibility gate refused, in the
+ * build plan's `RefusedSource` shape so the plan and the run report one refusal
+ * identically.
+ */
+function refusalRecord(
+   persistSource: PersistSource,
+   err: MaterializationEligibilityError,
+   tier: RefusedSource["tier"],
+   modelPath: string | undefined,
+): RefusedSource {
+   return {
+      name: persistSource.name,
+      sourceID: persistSource.sourceID,
+      ...(modelPath ? { modelPath } : {}),
+      tier,
+      reason: err.reason || "authorize",
+      message: errMessage(err),
+   };
+}
+
+/**
+ * The run-level refusal for a run whose every targeted source was refused, so
+ * there is nothing to build. One refusal is rethrown as it was raised; several
+ * are joined so the run names every source it could not build, not only the
+ * first in plan order.
+ */
+export function allSourcesRefusedError(
+   errors: MaterializationEligibilityError[],
+): MaterializationEligibilityError {
+   if (errors.length === 1) return errors[0];
+   const reason = errors.every((e) => e.reason === errors[0].reason)
+      ? errors[0].reason
+      : undefined;
+   return new MaterializationEligibilityError({
+      message: errors.map((e) => e.message).join("; "),
+      reason,
+   });
 }
 
 export function redactConnectionSecrets(
@@ -679,22 +1128,6 @@ export class MaterializationService {
    }
 
    /**
-    * Every materialization across all packages in an environment, newest first.
-    * Each record carries its `packageName`, so an env-scoped view can group or
-    * label by package without a per-package fan-out.
-    */
-   async listEnvironmentMaterializations(
-      environmentName: string,
-      options?: { limit?: number; offset?: number },
-   ): Promise<Materialization[]> {
-      const environmentId = await this.resolveEnvironmentId(environmentName);
-      return this.repository.listMaterializationsByEnvironment(
-         environmentId,
-         options,
-      );
-   }
-
-   /**
     * `created_at` of the newest scheduler-fired materialization for a package,
     * or null if none. The standalone scheduler uses this on its first arm to
     * recover a fire missed during downtime (see MaterializationScheduler.arm).
@@ -964,6 +1397,7 @@ export class MaterializationService {
 
          let instructions: BuildInstruction[];
          let carried: Record<string, ManifestEntry>;
+         let derivedRefused: Record<string, RefusedSource> = {};
          if (orchestrated) {
             instructions = opts.buildInstructions!;
             // Seed the build Manifest with the caller-supplied upstream
@@ -1008,7 +1442,11 @@ export class MaterializationService {
                     packageName,
                     id,
                  );
-            ({ instructions, carried } = this.deriveSelfInstructions(
+            ({
+               instructions,
+               carried,
+               refused: derivedRefused,
+            } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
                priorEntries,
@@ -1016,7 +1454,11 @@ export class MaterializationService {
             ));
          }
 
-         const { entries, failures } = await this.executeInstructedBuild(
+         const {
+            entries,
+            failures,
+            sourcesRefused: instructedRefused,
+         } = await this.executeInstructedBuild(
             compiled,
             environment,
             instructions,
@@ -1046,6 +1488,7 @@ export class MaterializationService {
                },
             },
             incremental,
+            Object.values(derivedRefused),
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
@@ -1053,6 +1496,12 @@ export class MaterializationService {
             failures,
             carried,
          );
+         // What auto-run skipped rides the run's free-form metadata, not the
+         // manifest: a refused source binds no table, and the manifest is what a
+         // strict-schema caller parses. An orchestrated refusal is in `failures`
+         // instead, where that caller already looks.
+         const sourcesRefused =
+            Object.keys(derivedRefused).length + instructedRefused;
          const durationMs = Date.now() - startedAt;
          await this.commitManifest(id, entries, failures, {
             forceRefresh: opts.forceRefresh,
@@ -1061,6 +1510,10 @@ export class MaterializationService {
             trigger: opts.trigger,
             sourcesBuilt,
             sourcesReused,
+            ...(sourcesRefused > 0 ? { sourcesRefused } : {}),
+            ...(Object.keys(derivedRefused).length > 0
+               ? { refusedSources: derivedRefused }
+               : {}),
             durationMs,
          });
 
@@ -1071,22 +1524,28 @@ export class MaterializationService {
             await this.autoLoadManifest(environment, packageName, entries);
          }
 
-         recordSourcesOutcome("built", sourcesBuilt);
-         recordSourcesOutcome("reused", sourcesReused);
-         if (sourcesFailed > 0) {
-            recordSourcesOutcome("failed", sourcesFailed);
-         }
-         // A run that lost sources is a partial success, not a success: the
-         // manifest it committed is missing tables a consumer expected.
-         this.recordRun(
+         recordSourcesOutcome("built", sourcesBuilt, mode);
+         recordSourcesOutcome("reused", sourcesReused, mode);
+         // An instructed refusal is in `failures` but metered once, as refused.
+         recordSourcesOutcome(
+            "failed",
+            sourcesFailed - instructedRefused,
             mode,
-            sourcesFailed > 0 ? "partial" : "success",
-            startedAt,
          );
-         logger[sourcesFailed > 0 ? "warn" : "info"](
+         recordSourcesOutcome("refused", sourcesRefused, mode);
+         // A run that lost sources is a partial success, not a success: the
+         // manifest it committed is missing tables a consumer expected. A
+         // refusal auto-run skipped is not a loss: it is a property of the
+         // model, reported by the build plan before any run, and would make
+         // every run of that package partial until the model changed.
+         const partial = sourcesFailed > 0;
+         this.recordRun(mode, partial ? "partial" : "success", startedAt);
+         logger[partial || sourcesRefused > 0 ? "warn" : "info"](
             sourcesFailed > 0
                ? "Materialization build complete with failed sources"
-               : "Materialization build complete",
+               : sourcesRefused > 0
+                 ? "Materialization build complete with refused sources"
+                 : "Materialization build complete",
             {
                materializationId: id,
                packageName,
@@ -1094,6 +1553,7 @@ export class MaterializationService {
                sourcesBuilt,
                sourcesReused,
                sourcesFailed,
+               sourcesRefused,
                durationMs,
             },
          );
@@ -1118,6 +1578,11 @@ export class MaterializationService {
     * costs nothing when there is no work: the ledger, not the content address,
     * decides, and planIncrementalStep answers "nothing new" with a skip that is
     * cheaper than the rebuild the carry was avoiding.
+    *
+    * A source the eligibility gate refuses is returned in `refused` rather than
+    * instructed. It throws instead when `sourceNames` targets it, or when every
+    * authored source the run targets was refused, so nothing is left to build or
+    * reuse. A refused rollup never causes the throw.
     */
    private deriveSelfInstructions(
       compiled: CompiledBuildPlan,
@@ -1127,10 +1592,13 @@ export class MaterializationService {
    ): {
       instructions: BuildInstruction[];
       carried: Record<string, ManifestEntry>;
+      refused: Record<string, RefusedSource>;
    } {
       const include = sourceNames ? new Set(sourceNames) : null;
       const instructions: BuildInstruction[] = [];
       const carried: Record<string, ManifestEntry> = {};
+      const refused: Record<string, RefusedSource> = {};
+      const refusals: MaterializationEligibilityError[] = [];
       const seen = new Set<string>();
 
       for (const graph of compiled.graphs) {
@@ -1159,63 +1627,75 @@ export class MaterializationService {
             }
 
             const destination = resolveStorageDestination(persistSource);
-            if (destination) {
-               // Gate BEFORE computeSourceEntityId: an unbound parameter or a
-               // given makes getSQL() (called inside computeSourceEntityId)
-               // throw opaquely, so the eligibility refusal must fire first to
-               // give a clean, actionable 422.
-               //
-               // A ROLLUP is SKIPPED rather than thrown for, and only a rollup.
-               // The throw is right for an authored source: the author asked for
-               // this table and a 422 naming their annotation is the answer. A
-               // rollup asked for nothing an author can see, its refusal is already
-               // reported in the build plan's `refusedSources`, and throwing here
-               // aborts the auto-run — so one ineligible rollup would stop every
-               // other source in the package building, on every tick, forever.
-               //
-               // Reachable only since rollups gained destinations: before that
-               // `resolveStorageDestination` returned undefined for one and this
-               // branch was never entered.
-               if (compiled.preaggregatePlans?.[persistSource.sourceID]) {
-                  try {
-                     assertMaterializationEligible(persistSource);
-                  } catch (err) {
-                     if (!(err instanceof MaterializationEligibilityError))
-                        throw err;
-                     logger.warn(
-                        "Skipping a pre-aggregation rollup the storage tier refuses",
-                        {
-                           sourceName: persistSource.name,
-                           reason: errMessage(err),
-                        },
-                     );
-                     continue;
-                  }
+            const isRollup =
+               !!compiled.preaggregatePlans?.[persistSource.sourceID];
+            // Gate BEFORE computeSourceEntityId: an unbound parameter or a given
+            // makes getSQL() (called inside computeSourceEntityId) throw
+            // opaquely, so the eligibility refusal must fire first.
+            //
+            // A refused source is SKIPPED and recorded, not thrown for. A
+            // refusal is a compile-time fact the build plan already reports, and
+            // throwing here aborts the whole run, so one ineligible source would
+            // stop every other source in the package refreshing, on every tick,
+            // until the model changed. The run throws only when there is nothing
+            // else to build (below), or when the caller named this source in
+            // `sourceNames` and so asked for exactly the table that cannot be
+            // built.
+            try {
+               if (destination) {
+                  assertMaterializationEligible(
+                     persistSource,
+                     deriveAnnotationFields(persistSource),
+                  );
                } else {
-                  assertMaterializationEligible(persistSource);
+                  // No storage destination: this is the colocated `#@ persist`
+                  // path (a CTAS into the source's own warehouse). It is not
+                  // covered by assertMaterializationEligible above (that gate
+                  // only runs when a storage destination resolved), but it is
+                  // just as frozen as a storage build, so an authorize-gated
+                  // source materialized here would still be served to every
+                  // caller.
+                  //
+                  // The origin is passed so a REFUSED ROLLUP names
+                  // `#@ preaggregate` and not `#@ persist`: a rollup's name is
+                  // synthesized and appears nowhere in the author's model, so the
+                  // default message sends them hunting for a line they never
+                  // wrote. See the function's doc.
+                  assertColocatedPersistNotAuthorizeGated(
+                     persistSource,
+                     persistSource.name,
+                     isRollup ? "preaggregate" : "persist",
+                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                     deriveAnnotationFields(persistSource),
+                  );
                }
-            } else {
-               // No storage destination: this is the colocated `#@ persist`
-               // path (a CTAS into the source's own warehouse). It is not
-               // covered by assertMaterializationEligible above (that gate
-               // only runs when a storage destination resolved), but it is
-               // just as frozen as a storage build, so an authorize-gated
-               // source materialized here would still be served to every
-               // caller. Gate BEFORE computeSourceEntityId for the same
-               // reason as the storage case above.
-               //
-               // The origin is passed so a REFUSED ROLLUP names `#@ preaggregate`
-               // and not `#@ persist`: a rollup's name is synthesized and appears
-               // nowhere in the author's model, so the default message sends them
-               // hunting for a line they never wrote. See the function's doc.
-               assertColocatedPersistNotAuthorizeGated(
-                  persistSource,
-                  persistSource.name,
-                  compiled.preaggregatePlans?.[persistSource.sourceID]
-                     ? "preaggregate"
-                     : "persist",
-                  compiled.sourceGateOutcomes?.[persistSource.sourceID],
-               );
+            } catch (err) {
+               if (!(err instanceof MaterializationEligibilityError)) throw err;
+               if (include) throw err;
+               if (!refused[persistSource.sourceID]) {
+                  refused[persistSource.sourceID] = refusalRecord(
+                     persistSource,
+                     err,
+                     isRollup
+                        ? "preaggregate"
+                        : destination
+                          ? "storage"
+                          : "colocated",
+                     compiled.sourceModelPaths?.[persistSource.sourceID],
+                  );
+                  // A rollup is recorded but never makes the run fail: it asked
+                  // for nothing an author can see, so a package whose only
+                  // refused work is a rollup has nothing to answer for.
+                  if (!isRollup) refusals.push(err);
+                  logger.warn(
+                     "Skipping a persist source the eligibility gate refuses",
+                     {
+                        sourceName: persistSource.name,
+                        reason: errMessage(err),
+                     },
+                  );
+               }
+               continue;
             }
 
             const sourceEntityId = computeSourceEntityId(
@@ -1228,8 +1708,12 @@ export class MaterializationService {
             // Self-assign the physical name from `name=` (or the source name)
             // verbatim for BOTH the colocated and storage destinations — the only
             // difference between the two is which connection the table lands in. A
-            // storage build replaces the table atomically (`CREATE OR REPLACE`),
-            // so no generational decoration is needed to make a rebuild safe. An
+            // storage build replaces the table atomically — a single `CREATE OR
+            // REPLACE`, or, when the source declares `partition=`, the
+            // create/alter/insert trio inside ONE transaction for exactly this
+            // reason — so no generational decoration is needed to make a rebuild
+            // safe. Without that transaction a rebuild would empty the table it
+            // is serving. An
             // orchestrated build ignores this and trusts the host-supplied
             // `physicalTableName`; the host owns any generational,
             // ownership-scoped naming.
@@ -1286,7 +1770,15 @@ export class MaterializationService {
          }
       }
 
-      return { instructions, carried };
+      if (
+         refusals.length > 0 &&
+         instructions.length === 0 &&
+         Object.keys(carried).length === 0
+      ) {
+         throw allSourcesRefusedError(refusals);
+      }
+
+      return { instructions, carried, refused };
    }
 
    /**
@@ -1486,8 +1978,18 @@ export class MaterializationService {
       // stamps freshness (dataAsOf/window/fallback) on the wire manifest it
       // distributes, not on this in-memory post-build load, so these sources are
       // bound un-gated (always serve the freshly-built table).
+      // A failed source is mirrored into `entries` for the `ManifestEntry.error`
+      // deprecation window, under the physical name it was HEADED for. With
+      // auto-run's stable names that is the previous generation's real table,
+      // so binding it would serve stale rows as fresh; like every other read
+      // boundary, this one skips it.
+      const builtEntries = Object.fromEntries(
+         Object.entries(entries).filter(
+            ([, entry]) => !isLegacyFailedEntry(entry),
+         ),
+      );
       const manifestEntries: FreshnessManifest = {};
-      for (const [sourceEntityId, entry] of Object.entries(entries)) {
+      for (const [sourceEntityId, entry] of Object.entries(builtEntries)) {
          // Storage entries serve cross-connection via the virtual-source
          // bindings (below), NOT the same-connection manifest substitution —
          // putting one here would make the original model try to substitute the
@@ -1516,7 +2018,7 @@ export class MaterializationService {
          // for a package with no storage= sources (deriveServeBindings → []).
          await environment.bindPackageStorageServeBindings(
             packageName,
-            entries,
+            builtEntries,
          );
          recordAutoLoadOutcome("success");
          logger.info("Auto-run: loaded manifest into package models", {
@@ -1793,11 +2295,23 @@ export class MaterializationService {
       // The run's incremental context, when any source declared incremental
       // refresh. Undefined leaves every source on the full-rebuild path.
       incremental?: IncrementalRunContext,
+      // Sources auto-run refused before instructing anything. Named only in the
+      // error of a run whose every instructed source failed, so that error
+      // accounts for every source the run did not build.
+      priorRefusals: RefusedSource[] = [],
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
+      /**
+       * Instructed sources the eligibility gate refused. Each is also in
+       * `failures`; the count is kept apart so a refusal is metered as one.
+       */
+      sourcesRefused: number;
    }> {
       const { graphs, sources, connectionDigests, connections } = compiled;
+      // Computed once for the run: a chained build asks it for every source it
+      // reaches, and the answer is the plan's, not the run's.
+      const planFacts = chainedPlanFacts(sources, connectionDigests);
 
       // Index instructions by sourceID (the stable per-source handle) so the
       // build no longer recomputes the sourceEntityId to find an instruction.
@@ -1895,6 +2409,7 @@ export class MaterializationService {
       const retainedThisRun: ManifestEntry[] = [];
       const failures: Record<string, SourceFailure> = {};
       const failedReasons: string[] = [];
+      const refusals: MaterializationEligibilityError[] = [];
       const builtSources: string[] = [];
       // What this run has already written, keyed by the physical table rather than
       // by the content address: the address says what a table CONTAINS, the
@@ -2039,39 +2554,100 @@ export class MaterializationService {
                }
                if (!instruction) continue;
 
-               // Enforce the eligibility gate for any storage-targeted build,
-               // including orchestrated (host-supplied) instructions — the publisher
-               // refuses an ineligible source into the tier itself, not on trust.
-               // Skipped when the mode is off: the refusal below owns that case.
-               if (
-                  orchestratedInstruction?.destination &&
-                  getPersistStorageMode() !== "off"
-               ) {
-                  assertMaterializationEligible(persistSource);
-               } else {
-                  // The gate refusal above only fires for a STORAGE-targeted
-                  // build, so on its own it leaves every other instruction —
-                  // the colocated one with no destination, and any build while
-                  // the mode is off — unexamined. An orchestrated host chooses
-                  // the destination, so this path reaches that case with no
-                  // `#@ persist`-vs-`storage=` distinction to lean on; refuse
-                  // a gated source however it was instructed, unless its
-                  // compile-time gate outcome proves the colocated relaxation
-                  // applies (see `assertColocatedPersistNotAuthorizeGated`'s
-                  // doc). `else` rather than an unconditional call:
-                  // `assertMaterializationEligible` already runs the identical
-                  // `referencesAuthorize` IR walk, so calling both on the
-                  // storage path would walk every persist source's whole
-                  // `SourceDef` twice per build for an answer the first call
-                  // has already acted on.
-                  assertColocatedPersistNotAuthorizeGated(
-                     persistSource,
-                     persistSource.name,
-                     compiled.preaggregatePlans?.[persistSource.sourceID]
-                        ? "preaggregate"
-                        : "persist",
-                     compiled.sourceGateOutcomes?.[persistSource.sourceID],
-                  );
+               // A refusal here fails THIS source, not the run, for the same
+               // reason auto-run skips one (deriveSelfInstructions): the run
+               // throws only when every instructed source was refused. It is
+               // reported in `failures`, not skipped silently, because the caller
+               // asked for this table and an absent entry reads as "built". A
+               // host that builds from the build plan never instructs a source the
+               // plan refused, so reaching the catch means the plan and this gate
+               // disagreed; the warning and the orchestrated `refused` source
+               // count are how that shows up.
+               try {
+                  // Enforce the eligibility gate for any storage-targeted build,
+                  // including orchestrated (host-supplied) instructions — the publisher
+                  // refuses an ineligible source into the tier itself, not on trust.
+                  // Skipped when the mode is off: the refusal below owns that case.
+                  if (
+                     orchestratedInstruction?.destination &&
+                     getPersistStorageMode() !== "off"
+                  ) {
+                     assertMaterializationEligible(
+                        persistSource,
+                        deriveAnnotationFields(persistSource),
+                     );
+                  } else {
+                     // The gate refusal above only fires for a STORAGE-targeted
+                     // build, so on its own it leaves every other instruction —
+                     // the colocated one with no destination, and any build while
+                     // the mode is off — unexamined. An orchestrated host chooses
+                     // the destination, so this path reaches that case with no
+                     // `#@ persist`-vs-`storage=` distinction to lean on; refuse
+                     // a gated source however it was instructed, unless its
+                     // compile-time gate outcome proves the colocated relaxation
+                     // applies (see `assertColocatedPersistNotAuthorizeGated`'s
+                     // doc). `else` rather than an unconditional call:
+                     // `assertMaterializationEligible` already runs the identical
+                     // `referencesAuthorize` IR walk, so calling both on the
+                     // storage path would walk every persist source's whole
+                     // `SourceDef` twice per build for an answer the first call
+                     // has already acted on.
+                     assertColocatedPersistNotAuthorizeGated(
+                        persistSource,
+                        persistSource.name,
+                        compiled.preaggregatePlans?.[persistSource.sourceID]
+                           ? "preaggregate"
+                           : "persist",
+                        compiled.sourceGateOutcomes?.[persistSource.sourceID],
+                        deriveAnnotationFields(persistSource),
+                     );
+                  }
+               } catch (err) {
+                  if (!(err instanceof MaterializationEligibilityError))
+                     throw err;
+                  // Keyed by the address the caller dispatched: a refused source
+                  // may have no content address of its own (getSQL throws for a
+                  // given or a free parameter), and the instruction's is the one
+                  // the caller staked a claim for and resolves failures by.
+                  const failedKey =
+                     sourceEntityId ?? instruction.sourceEntityId;
+                  if (!failures[failedKey]) {
+                     const reason = errMessage(err);
+                     refusals.push(err);
+                     logger.warn(
+                        "Instructed source refused by the eligibility gate",
+                        {
+                           packageName: owner?.packageName,
+                           sourceName: persistSource.name,
+                           physicalTableName: instruction.physicalTableName,
+                           reason,
+                        },
+                     );
+                     failures[failedKey] = {
+                        sourceEntityId: failedKey,
+                        sourceName: persistSource.name,
+                        materializedTableId: instruction.materializedTableId,
+                        physicalTableName: instruction.physicalTableName,
+                        reason,
+                        // Marks the failure permanent, so a caller that retries
+                        // failures can tell it from one that may clear.
+                        refused: true,
+                        connectionName: persistSource.connectionName,
+                        ...(instruction.destination
+                           ? { storageDestinationName: instruction.destination }
+                           : {}),
+                     };
+                     // Mirrored into `entries` for the `ManifestEntry.error`
+                     // deprecation window, as the build-failure path below does.
+                     entries[failedKey] = {
+                        sourceEntityId: failedKey,
+                        sourceName: persistSource.name,
+                        physicalTableName: instruction.physicalTableName,
+                        materializedTableId: instruction.materializedTableId,
+                        error: reason,
+                     } as ManifestEntry;
+                  }
+                  continue;
                }
 
                // The manifest is keyed by the content sourceEntityId — what Malloy
@@ -2110,7 +2686,10 @@ export class MaterializationService {
                   instruction.destination &&
                   getPersistStorageMode() !== "off"
                ) {
-                  assertMaterializationEligible(persistSource);
+                  assertMaterializationEligible(
+                     persistSource,
+                     deriveAnnotationFields(persistSource),
+                  );
                }
 
                // One physical table, written once. Several sources routinely map
@@ -2247,6 +2826,7 @@ export class MaterializationService {
                      // caller-assigned identity: the ledger is keyed by it so a
                      // boundary can never be read against different SQL.
                      sourceEntityId,
+                     planFacts,
                   );
                   // Stamp what this table was built FOR, here rather than inside
                   // buildOneSource, because this is the scope that holds the
@@ -2369,7 +2949,18 @@ export class MaterializationService {
          // nothing reclaimable still takes the same cleanup path as any other
          // total failure.
          if (builtSources.length === 0 && failedReasons.length > 0) {
-            throw new Error(failedReasons.join("; "));
+            throw new Error(
+               [
+                  ...failedReasons,
+                  ...refusals.map((e) => e.message),
+                  ...priorRefusals.map((r) => r.message),
+               ].join("; "),
+            );
+         }
+         // Every instructed source was refused, so there was nothing to build:
+         // the refusal is the run's answer, as it is for auto-run.
+         if (builtSources.length === 0 && refusals.length > 0) {
+            throw allSourcesRefusedError(refusals);
          }
       } catch (err) {
          // A part-way failure returns a manifest that records the sources which
@@ -2391,7 +2982,7 @@ export class MaterializationService {
          throw err;
       }
 
-      return { entries, failures };
+      return { entries, failures, sourcesRefused: refusals.length };
    }
 
    /**
@@ -2624,6 +3215,9 @@ export class MaterializationService {
       // (It used to be part of the ledger's key, which gave the same guarantee for
       // free but made a boundary un-findable across a package's versions.)
       contentSourceEntityId?: string,
+      // Which names the plan holds as stored tables, and which share one. The
+      // default knows nothing, which only the test seams rely on.
+      planFacts: ChainedPlanFacts = NO_PLAN_FACTS,
    ): Promise<ManifestEntry> {
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -2662,6 +3256,98 @@ export class MaterializationService {
          connectionDigests,
       });
 
+      // Which stored tables this source reads, and whether the manifest the
+      // compiler substituted from holds each — decided once here, for both
+      // tiers, from the walk over the author model and the content addresses
+      // the compiler looks tables up by. Everything below that turns on a
+      // stored upstream reads this: the `storage=` branch's choice to stack on
+      // the parents, strict's refusal of an upstream nothing supplied, and the
+      // `upstreamReuse` the entry reports.
+      //
+      // `_model._modelDef` is the compiler's internal shape of the compiled
+      // model. Should a compiler bump take it away, the walk finds nothing, the
+      // build proceeds as a source with no stored upstream, and the entry
+      // carries no `upstreamReuse` — a visible gap, not a wrong answer.
+      const lift = authorModelLiftContext(
+         persistSource._model?._modelDef,
+         readAuthorFile,
+      );
+      const reached = reachedPersistedSources(
+         lift,
+         persistSource.name,
+         (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
+      );
+      // The compiler's reach, twice. Permissively, with every stored entry
+      // available, compared with the SQL this build runs: a difference means a
+      // stored table the full manifest holds was inlined, whether or not the
+      // walk named it. Strictly, with the same manifest: the one miss possible
+      // is a persist source the SQL reads that nothing supplied — the recompute
+      // strict refuses — named by the compiler rather than inferred from
+      // declared joins.
+      //
+      // Both renders are the classification's, not the build's: a colocated
+      // build's SQL is already in hand and runs regardless. So on that path a
+      // render that fails leaves the entry without `upstreamReuse` (logged)
+      // rather than failing a warehouse build that was never in question; a
+      // storage build keeps failing on it, as its compare always has, because
+      // the stack-on-parent decision needs the answer. Neither render runs
+      // when nothing was excluded from the build manifest — no stored table
+      // the compiler could inline differently — and the strict render is
+      // skipped for a strict colocated build, whose build SQL was itself
+      // rendered strictly a moment ago.
+      const fullForCompiler = manifestForCompiler(
+         manifest.buildManifest,
+         planFacts,
+      );
+      const excludedSomething =
+         Object.keys(reducedManifest.entries).length !==
+         Object.keys(manifest.buildManifest.entries).length;
+      let sqlInlinesStored = false;
+      let compilerMissing: { name: string; sourceID: string }[] = [];
+      let classified = true;
+      try {
+         if (excludedSomething) {
+            sqlInlinesStored =
+               persistSource.getSQL({
+                  buildManifest: { ...fullForCompiler, strict: false },
+                  connectionDigests,
+               }) !== buildSQL;
+         }
+         if (isStorageBuild || !manifest.strict) {
+            compilerMissing = compilerMissingUpstream(
+               persistSource,
+               fullForCompiler,
+               connectionDigests,
+               lift.sourceNameById,
+            );
+         }
+      } catch (err) {
+         if (isStorageBuild) throw err;
+         classified = false;
+         logger.warn(
+            "Could not classify a colocated build's stored upstreams; the entry carries no upstreamReuse",
+            {
+               sourceName: persistSource.name,
+               error: err instanceof Error ? err.message : String(err),
+            },
+         );
+      }
+      const reuse = classified
+         ? upstreamReuseFromManifest({
+              reached: reached.persisted,
+              addressBySourceId: planFacts.addressBySourceId,
+              substituted: buildManifest.entries,
+              full: manifest.buildManifest.entries,
+              builtEntries,
+              tier: isStorageBuild ? "storage" : "colocated",
+              sqlInlinesStored,
+              compilerMissing,
+              // The content address, not the instruction's id: an orchestrator
+              // may assign its own ids, and the walk's addresses are content.
+              rootAddress: contentSourceEntityId ?? instruction.sourceEntityId,
+           })
+         : { fields: {}, inManifestOnly: [], missing: [] };
+
       // Every statement of this source's build carries the same metadata, so the
       // warehouse's query history shows the staging CTAS, the drop and the rename
       // as one attributable unit of work.
@@ -2684,18 +3370,38 @@ export class MaterializationService {
       // federation, and a captured authoritative schema for the serve transform.
       // Gated by the kill switch: when off, ignore a destination and do a colocated build.
       if (isStorageBuild) {
-         // Stack-on-the-parent detection: does the source's SQL change when storage upstreams
-         // are PRESENT in the manifest (mapped to their lake tables) vs EXCLUDED
-         // (inlined, the buildSQL above)? If so it reads a storage-materialized
-         // upstream, so it can be built by reading the parent's lake table
-         // ("stack on the parent") instead of recomputing from raw. The compare
-         // is graph-free and self-contained; a single-source build's two SQLs are
-         // identical, so it skips straight to the passthrough below.
-         const dependsOnStorageUpstream =
-            persistSource.getSQL({
-               buildManifest: manifest.buildManifest,
-               connectionDigests,
-            }) !== buildSQL;
+         // A stored upstream nothing supplied — neither built in this run nor
+         // handed over by reference — is one only a recompute can stand in for,
+         // and under strict that recompute is exactly what the orchestrator
+         // forbade. The warehouse build SQL above was rendered permissively
+         // (`strict: false`), so the refusal is made here, from the compiler's
+         // own strict render over the full manifest (`compilerMissing`), which
+         // names what the SQL reads. Non-strict, the build recomputes and the
+         // entry says so.
+         if (manifest.strict && reuse.missing.length > 0) {
+            recordChainedStorageBuild("strict_refused");
+            recordStorageBuildFailure(instruction.destination!);
+            throw new Error(
+               `Failed to materialize source '${persistSource.name}' into ` +
+                  `storage destination '${instruction.destination}': persisted ` +
+                  `upstream ${reuse.missing.map((n) => `'${n}'`).join(", ")} is ` +
+                  `not in this build's manifest (neither built in this run nor ` +
+                  `supplied by reference), and strict upstreams forbid ` +
+                  `recomputing it from raw`,
+            );
+         }
+         // Stack on the parent when the source reads a stored upstream whose
+         // table a storage destination holds — one the walk named, or one the
+         // compiler reached through a join on a stored stop: either way the
+         // build SQL above inlined it, and reading the parent's lake table
+         // instead is the chained build.
+         //
+         // The compare alone decides: a stored table the SQL reads is one the
+         // permissive render substitutes and the build render inlines, so the
+         // two differ exactly when there is a parent to stack on. A walk stop
+         // the SQL never reads (a declared join the query does not use) must
+         // not start a chained attempt the passthrough build did not need.
+         const dependsOnStorageUpstream = sqlInlinesStored;
          // Materialize ONLY the source's PUBLIC columns. `getSQL` projects every
          // underlying column, including ones the source hides (`except:`, non-public
          // access modifiers). Query reachability is bounded by the declared
@@ -2719,9 +3425,14 @@ export class MaterializationService {
             buildSQL,
             builtEntries,
             dependsOnStorageUpstream,
+            // What the entry reports when the build does not stack on a parent:
+            // the manifest's answer for the upstreams the passthrough SQL read.
+            baseReuse: reuse.fields,
             queryMetadata: runOptions.queryMetadata,
             incremental,
             contentSourceEntityId,
+            planFacts,
+            lift,
          });
       }
 
@@ -2771,6 +3482,7 @@ export class MaterializationService {
                sourceSQL: buildSQL,
             }),
             manifest,
+            upstreamReuse: reuse.fields,
          });
          if (applied) return applied;
       }
@@ -2888,6 +3600,7 @@ export class MaterializationService {
          // The recurring warehouse cost of keeping this source materialized —
          // the debit against whatever the materialization saves on the read side.
          queryCostBytes: buildCostBytes ?? null,
+         ...reuse.fields,
       };
    }
 
@@ -2912,6 +3625,16 @@ export class MaterializationService {
       instruction: BuildInstruction;
       target: DeltaTarget;
       manifest: Manifest;
+      /**
+       * How the source read its stored upstreams, from the classification the
+       * full build made (see {@link upstreamReuseFromManifest}). A delta or a
+       * skip reads the same upstreams the rebuild would, and an absent field
+       * reads as "no persisted upstream", so the entry carries it either way.
+       */
+      upstreamReuse: Pick<
+         ManifestEntry,
+         "upstreamReuse" | "upstreamRecomputeReason"
+      >;
    }): Promise<ManifestEntry | undefined> {
       const { context, lineage, persistSource, instruction, target } = params;
       const sourceEntityId = instruction.sourceEntityId;
@@ -2949,6 +3672,7 @@ export class MaterializationService {
          physicalTableName: lineage.physicalTableName,
          connectionName: persistSource.connectionName,
          realization: instruction.realization,
+         ...params.upstreamReuse,
          rowCount: null,
          buildDurationMs: outcome.durationMs ?? null,
          // The delta script runs through applyDeltaScript rather than a single
@@ -2996,6 +3720,19 @@ export class MaterializationService {
       incremental?: IncrementalRunContext;
       /** The source's CONTENT address — see buildOneSource's parameter of the same name. */
       contentSourceEntityId?: string;
+      /** The plan's stored-table facts — see buildOneSource's parameter of the same name. */
+      planFacts?: ChainedPlanFacts;
+      /** The author-model lift context `buildOneSource` built for this source. */
+      lift?: ReturnType<typeof authorModelLiftContext>;
+      /**
+       * The `upstreamReuse` fields for a build that does NOT stack on a parent,
+       * decided by the caller from the manifest the passthrough SQL was rendered
+       * with ({@link upstreamReuseFromManifest}).
+       */
+      baseReuse?: Pick<
+         ManifestEntry,
+         "upstreamReuse" | "upstreamRecomputeReason"
+      >;
    }): Promise<ManifestEntry> {
       const {
          persistSource,
@@ -3006,6 +3743,12 @@ export class MaterializationService {
          dependsOnStorageUpstream,
          queryMetadata,
          incremental,
+         planFacts = NO_PLAN_FACTS,
+         baseReuse = {},
+         lift = authorModelLiftContext(
+            params.persistSource._model?._modelDef,
+            readAuthorFile,
+         ),
       } = params;
       const sourceEntityId = instruction.sourceEntityId;
       const physicalTableName = instruction.physicalTableName;
@@ -3079,6 +3822,9 @@ export class MaterializationService {
 
       const startTime = performance.now();
       let result;
+      // Set when stacking on the parents was declined and the recompute below
+      // ran instead, so the entry can say so and why.
+      let upstreamRecomputeReason: string | undefined;
 
       // Stack on the parent: a source that reads a storage-materialized
       // upstream is built by reading the parent's STORED lake table instead of
@@ -3099,6 +3845,9 @@ export class MaterializationService {
                builtEntries,
                environment,
                physicalTableName,
+               planFacts,
+               params.contentSourceEntityId ?? instruction.sourceEntityId,
+               lift,
             );
             recordChainedStorageBuild("parent_reuse");
          } catch (err) {
@@ -3118,7 +3867,22 @@ export class MaterializationService {
             // recompute-from-raw writes to the SAME destination and fails the same
             // way, and metering it as `inline_fallback` files an outage in the same
             // bucket as a legitimate shape miss.
-            if (!(err instanceof MaterializationEligibilityError)) {
+            // Strict's line runs between what the build was HANDED and what it
+            // can EXPRESS. A persisted upstream it cannot see, or a shape over
+            // stored upstreams it could not carry, would both be built by
+            // recomputing tables the orchestrator pinned — refused. A downstream
+            // that reaches the source warehouse has no build over the parents at
+            // all, so the recompute is the only build there is, and strict
+            // permits it — reported, on the entry and the counter, because the
+            // rows then come from the warehouse at this build's time rather than
+            // from the parents' snapshots.
+            const pinnedRecompute =
+               err instanceof ChainedUpstreamMissingError ||
+               err instanceof ChainedShapeNotCarriedError;
+            if (
+               !pinnedRecompute &&
+               !(err instanceof MaterializationEligibilityError)
+            ) {
                recordChainedStorageBuild("infra_failure");
                recordStorageBuildFailure(destinationName);
                throw new Error(
@@ -3126,7 +3890,7 @@ export class MaterializationService {
                      `into storage destination '${destinationName}': ${safeDetail}`,
                );
             }
-            if (manifest.strict) {
+            if (manifest.strict && pinnedRecompute) {
                recordChainedStorageBuild("strict_refused");
                recordStorageBuildFailure(destinationName);
                throw new Error(
@@ -3136,13 +3900,17 @@ export class MaterializationService {
                      `recomputing it from raw: ${safeDetail}`,
                );
             }
-            recordChainedStorageBuild("inline_fallback");
+            recordChainedStorageBuild(
+               manifest.strict ? "strict_shape_fallback" : "inline_fallback",
+            );
+            upstreamRecomputeReason = safeDetail;
             logger.warn(
                "Chained storage build could not reuse the parent table; " +
                   "recomputing the upstream from raw",
                {
                   sourceName: persistSource.name,
                   destinationName,
+                  strict: manifest.strict,
                   reason: safeDetail,
                },
             );
@@ -3161,6 +3929,7 @@ export class MaterializationService {
                sourceConnection,
                buildSQL: params.publicBuildSQL,
                physicalTableName,
+               partitionColumns: partitionColumnsForBuild(persistSource),
                environmentPath: environment.getEnvironmentPath(),
                queryMetadata,
                incremental: refresh,
@@ -3332,6 +4101,19 @@ export class MaterializationService {
          ...refreshFields(
             result.refresh?.refresh ?? (lineage ? "full" : undefined),
          ),
+         // How this source's stored upstreams were read. A build that stacked
+         // on its parents, or declined to, answers for itself; one with no
+         // parent to stack on reports what the manifest said about the
+         // upstreams its passthrough SQL read. A source with no persisted
+         // upstream has only one way to build and says nothing here.
+         ...(dependsOnStorageUpstream
+            ? {
+                 upstreamReuse: result.upstreamReuse ?? "recomputed",
+                 ...(upstreamRecomputeReason
+                    ? { upstreamRecomputeReason }
+                    : {}),
+              }
+            : baseReuse),
          // SCANNED, matching the colocated path above, which fills this from the
          // connector's runStats -- and that is totalBytesProcessed, i.e. scanned.
          // Reporting billed here would put two different quantities in one field,
@@ -3447,19 +4229,31 @@ export class MaterializationService {
       builtEntries: Record<string, ManifestEntry>,
       environment: BuildEnvironment,
       physicalTableName: string,
+      planFacts: ChainedPlanFacts,
+      /** The content address being built; a walk stop sharing it is this source's own table. */
+      rootAddress: string,
+      lift: ReturnType<typeof authorModelLiftContext>,
    ): Promise<StorageBuildResult> {
-      // Rebind every upstream materialized into THIS destination. A parent in a
-      // DIFFERENT destination is absent here, so the downstream def fails to
-      // compile against the rebind model and the caller falls back — cross-catalog
-      // parent reuse is out of scope for the spike.
-      // No aliases, and the consequence is a scope boundary rather than a
-      // compile problem: two aliases are two DISTINCT names on one handle, which
-      // is what the serve path emits and compiles. What passing none means is
-      // that a chained downstream reading the EXTENSION's name finds it absent
-      // from the rebind model and falls back to recomputing its upstream from
-      // raw. Correct-but-slower, and out of scope here; the serve path is where
-      // an alias has to resolve.
-      const upstreams: ServeBinding[] = deriveServeBindings(builtEntries, {})
+      // Rebind every upstream materialized into THIS destination, under every
+      // name that is that table: an entry names only the source that built it,
+      // and a rename of it (`source: x is daily`) is the same table under another
+      // name, so it is bound to the same handle, as the serve path binds it. An
+      // EXTENSION of a parent is the same table too, but with refinements the
+      // table does not hold, so it is not bound here — it is carried below as a
+      // lift over its base, which re-declares what it adds. A parent in a
+      // DIFFERENT destination is absent here, and reported as missing below.
+      const aliasesForBinding: Record<string, string[]> = {};
+      for (const [name, aliases] of Object.entries(
+         planFacts.aliasesBySourceName,
+      )) {
+         aliasesForBinding[name] = aliases.filter(
+            (alias) => typeof lift.contents[alias]?.extends !== "string",
+         );
+      }
+      const upstreams: ServeBinding[] = deriveServeBindings(
+         builtEntries,
+         aliasesForBinding,
+      )
          .filter((b) => b.destinationName === destinationName)
          // A rollup is never an upstream: nothing can reference one, because its
          // name is synthesized and appears in no model file. Inert if left in —
@@ -3472,34 +4266,195 @@ export class MaterializationService {
          // rollups now reports "no materialized upstream is available" instead of
          // proceeding and failing later on a compile against an absent parent.
          .filter((b) => b.origin !== "preaggregate");
+      // Each parent re-declares what its source adds to the table — its
+      // extend-block `where:`, dimensions, measures, joins and views — as the
+      // serve shape does. A persist source's build SQL is the persisted
+      // relation alone, so a binding without them reads the table unfiltered.
+      const present = new Set(upstreams.map((b) => b.sourceName));
+      for (let i = 0; i < upstreams.length; i++) {
+         upstreams[i] = {
+            ...upstreams[i],
+            refinements: authorRefinementsFor(
+               upstreams[i].sourceName,
+               lift,
+               present,
+            ),
+         };
+      }
+      // Which stored tables the downstream reads, directly or through the
+      // sources between them, by the names it reaches them under. One whose
+      // table is absent from this destination's parents is a table this build
+      // cannot see — neither built here nor referenced, or built into another
+      // destination. That is the dispatch miss strict refuses, and it is named
+      // here, by source, before any compile: the compiler would report only
+      // "undefined object", which reads the same for a missing parent and for a
+      // warehouse table.
+      const reached = reachedPersistedSources(
+         lift,
+         persistSource.name,
+         (_name, sourceID) => planFacts.persistSourceIds.has(sourceID),
+      );
+      // The stops that are upstreams: one sharing the root's address is the
+      // table being built (a persisted extension and its base), not a parent.
+      const stops = reached.persisted.filter(
+         (p) => planFacts.addressBySourceId[p.sourceID] !== rootAddress,
+      );
+      const missing = missingPersistedTables(
+         stops.map((p) => p.name),
+         planFacts.aliasesBySourceName,
+         present,
+      );
+      if (missing.length > 0) {
+         // Say where the table is, not only where it is not: a parent in the
+         // source warehouse or in another destination is fine where it lives
+         // and is simply out of this build's reach, and the tables strict is
+         // protecting are the stored ones a recompute of this source would
+         // rebuild.
+         const where = (name: string): string => {
+            const sourceID = reached.persisted.find(
+               (p) => p.name === name,
+            )?.sourceID;
+            const address =
+               sourceID === undefined
+                  ? undefined
+                  : planFacts.addressBySourceId[sourceID];
+            const entry =
+               address === undefined ? undefined : builtEntries[address];
+            if (entry?.storageDestinationName !== undefined) {
+               return (
+                  `'${name}' is materialized in destination ` +
+                  `'${entry.storageDestinationName}', not '${destinationName}'`
+               );
+            }
+            if (entry !== undefined) {
+               return (
+                  `'${name}' is materialized outside destination ` +
+                  `'${destinationName}' (a warehouse table, or a reference ` +
+                  `that does not say where it lives), which this build cannot read`
+               );
+            }
+            return (
+               `'${name}' is not materialized in destination ` +
+               `'${destinationName}' for this build`
+            );
+         };
+         throw new ChainedUpstreamMissingError(
+            missing,
+            `persisted upstream of '${persistSource.name}': ` +
+               `${missing.map(where).join("; ")} — the build cannot stack on ` +
+               `it, and the recompute that remains would rebuild the stored ` +
+               `tables its SQL inlines`,
+         );
+      }
+      // A path to the source warehouse — a table joined beside a stored parent,
+      // a SQL source — is one no stored table stands in for, so no build over
+      // the parents exists and the recompute is the only build there is. Decided
+      // here, from the model, rather than left to the compile: the compiler
+      // would say only "undefined object", and the caller needs to know this
+      // was a shape the destination cannot express rather than one the build
+      // could not carry, because strict treats the two differently.
+      if (reached.raw) {
+         throw new MaterializationEligibilityError({
+            message:
+               `'${persistSource.name}' reads the source warehouse ` +
+               `(${reached.rawLeaves.join(", ")}) through ` +
+               `${reached.rawVia.map((n) => `'${n}'`).join(", ")}, which no ` +
+               `stored table can stand in for`,
+         });
+      }
       if (upstreams.length === 0) {
-         throw new MaterializationEligibilityError({
-            message:
-               "no materialized upstream is available in this destination to build on",
-         });
+         throw new ChainedShapeNotCarriedError(
+            "no materialized upstream is available in this destination to build on",
+         );
       }
-      const downstreamDefText = this.liftDownstreamDefText(persistSource);
+      const downstreamDefText = this.liftDownstreamDefText(
+         persistSource,
+         lift.liftText,
+      );
       if (!downstreamDefText) {
-         throw new MaterializationEligibilityError({
-            message:
-               "could not recover the downstream source definition text from the model",
-         });
+         throw new ChainedShapeNotCarriedError(
+            "could not recover the downstream source definition text from the model",
+         );
       }
-      const transientModel = buildChainedStorageBuildModel({
-         upstreams,
-         downstreamName: persistSource.name,
-         downstreamDefText,
-         destinationName,
-      });
-      return buildDownstreamIntoStorage({
-         destinationName,
-         destinationConnection,
-         transientModel,
-         downstreamName: persistSource.name,
-         virtualMap: buildVirtualMap(upstreams),
-         physicalTableName,
-         environmentPath: environment.getEnvironmentPath(),
-      });
+      // The sources between the downstream and its parents, each carried only
+      // when everything it names is already in the model: a parent, or an
+      // intermediate carried before it. An extension of a parent is one of
+      // them: by design it inherits `#@ persist` and reads the parent's table,
+      // so here it is the parent's rebound virtual source plus the refinements
+      // the extension adds.
+      // Only the sources on this downstream's path. The lift offers every
+      // derivable source in the model; one off the path is another chain's
+      // business, and a lift of it that does not compile would fail this
+      // build over a source it never reads.
+      const onPath = new Set(reached.visited);
+      const derived = liftDerivedSources({
+         contents: lift.contents,
+         sourceNameById: lift.sourceNameById,
+         shapeSourceNames: present,
+         liftText: lift.liftText,
+         carryPersistExtensions: true,
+      }).filter((d) => onPath.has(d.sourceName));
+      // The `##!` flags of every file whose declarations this model carries.
+      const documentFlags = documentFlagsForLifts(
+         [{ sourceName: persistSource.name }, ...derived],
+         lift,
+      );
+      const givens = chainedBuildGivens(persistSource);
+      const buildOver = (
+         parents: ServeBinding[],
+      ): Promise<StorageBuildResult> =>
+         buildDownstreamIntoStorage({
+            destinationName,
+            destinationConnection,
+            transientModel: buildChainedStorageBuildModel({
+               upstreams: parents,
+               downstreamName: persistSource.name,
+               downstreamDefText,
+               destinationName,
+               derived,
+               documentFlags,
+               givens,
+            }),
+            downstreamName: persistSource.name,
+            virtualMap: buildVirtualMap(parents),
+            physicalTableName,
+            partitionColumns: partitionColumnsForBuild(persistSource),
+            environmentPath: environment.getEnvironmentPath(),
+         });
+      // The parents' refinements, in the serve shape's tiers
+      // (`REFINEMENT_TIER_KINDS`): everything the source declares first, then
+      // without views, then without joins, then only the kinds that change
+      // rows (the extend-block `where:`). The optional kinds are emitted
+      // optimistically — a dimension or view on the parent that reads a join
+      // to a source this destination cannot bind names an alias the model
+      // does not declare — and a tier is retried only on a compile-time
+      // eligibility error, before anything is written. A downstream that
+      // reads a thinned kind fails on every lower tier too, and strict refuses
+      // it as not carried. The filter is never thinned, so no tier reads a
+      // parent unfiltered.
+      try {
+         return await buildOverTiers(
+            upstreams,
+            REFINEMENT_TIER_KINDS,
+            buildOver,
+            (err) => err instanceof MaterializationEligibilityError,
+         );
+      } catch (err) {
+         // The model reached only stored parents (checked above), so a shape
+         // failure here is one the build could not carry, not one the
+         // destination cannot express. Infrastructure failures pass through.
+         if (err instanceof MaterializationEligibilityError) {
+            throw new ChainedShapeNotCarriedError(
+               `'${persistSource.name}' reaches only stored upstreams ` +
+                  `(${stops.map((p) => `'${p.name}'`).join(", ")}), but ` +
+                  `the build could not express it over them — a refinement ` +
+                  `declared on a stored upstream that the build does not ` +
+                  `re-declare, or a construct the destination's dialect lacks: ` +
+                  `${err.message}`,
+            );
+         }
+         throw err;
+      }
    }
 
    /**
@@ -3513,18 +4468,12 @@ export class MaterializationService {
     */
    private liftDownstreamDefText(
       persistSource: PersistSource,
+      liftText: (location: SourceLocation) => string | undefined,
    ): string | undefined {
       const location = (
          persistSource._explore as unknown as { location?: SourceLocation }
       ).location;
-      if (!location?.url?.startsWith("file:")) return undefined;
-      let text: string;
-      try {
-         text = readFileSync(fileURLToPath(location.url), "utf8");
-      } catch {
-         return undefined;
-      }
-      return sliceSourceRange(text, location.range);
+      return location ? liftText(location) : undefined;
    }
 
    // ==================== CANCELLATION ====================

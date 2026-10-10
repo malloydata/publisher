@@ -54,23 +54,44 @@ describe("materialization_metrics", () => {
       ).toBe(1);
    });
 
-   it("adds the source count labeled by outcome, ignoring non-positive counts", async () => {
-      recordSourcesOutcome("built", 3);
-      recordSourcesOutcome("reused", 2);
-      recordSourcesOutcome("built", 0); // guarded: no emission
+   it("adds the source count labeled by outcome and mode, ignoring non-positive counts", async () => {
+      recordSourcesOutcome("built", 3, "auto");
+      recordSourcesOutcome("reused", 2, "auto");
+      recordSourcesOutcome("built", 0, "auto"); // guarded: no emission
 
       expect(
          await harness.collectCounter(
             "publisher_materialization_sources_total",
-            { outcome: "built" },
+            { outcome: "built", mode: "auto" },
          ),
       ).toBe(3);
       expect(
          await harness.collectCounter(
             "publisher_materialization_sources_total",
-            { outcome: "reused" },
+            { outcome: "reused", mode: "auto" },
          ),
       ).toBe(2);
+   });
+
+   it("keeps an orchestrated refusal apart from auto-run's routine ones", async () => {
+      // Auto-run refuses an ineligible source on every run; an orchestrated
+      // refusal means the plan and the gate disagreed. Only the mode label lets
+      // the second be alerted on without the first.
+      recordSourcesOutcome("refused", 4, "auto");
+      recordSourcesOutcome("refused", 1, "orchestrated");
+
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_sources_total",
+            { outcome: "refused", mode: "orchestrated" },
+         ),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter(
+            "publisher_materialization_sources_total",
+            { outcome: "refused", mode: "auto" },
+         ),
+      ).toBe(4);
    });
 
    it("counts drop-table outcomes (labeled by engine) and connection-digest skips", async () => {
@@ -118,6 +139,7 @@ describe("materialization_metrics", () => {
       recordChainedStorageBuild("parent_reuse");
       recordChainedStorageBuild("parent_reuse");
       recordChainedStorageBuild("inline_fallback");
+      recordChainedStorageBuild("strict_shape_fallback");
       recordChainedStorageBuild("strict_refused");
 
       expect(
@@ -128,6 +150,11 @@ describe("materialization_metrics", () => {
       expect(
          await harness.collectCounter("publisher_storage_chained_build_total", {
             outcome: "inline_fallback",
+         }),
+      ).toBe(1);
+      expect(
+         await harness.collectCounter("publisher_storage_chained_build_total", {
+            outcome: "strict_shape_fallback",
          }),
       ).toBe(1);
       expect(

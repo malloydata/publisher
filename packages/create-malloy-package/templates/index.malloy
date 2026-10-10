@@ -1,0 +1,24 @@
+// index.malloy: this package's published surface.
+//
+// Publisher reads a package's index.malloy as the list of what it publishes,
+// so publisher.json needs no "explores" key: the surface is whatever this
+// file exports.
+//
+// `export { ... }` is the curation, and it is a real boundary rather than
+// just a listing filter. A source named here is discoverable AND queryable.
+// A source left out still compiles, and other models can import, join and
+// extend it, but a direct query against it is refused with a 404 that says
+// it is not on this surface. (Once a model carries an authorize or
+// access_filter gate, that 404 reads the same as for a source that does not
+// exist, so it cannot be used to find hidden names.) Add a name here to
+// publish it; leave one out to keep it as an internal building block.
+//
+// To curate listings WITHOUT refusing queries, add "queryableSources": "all"
+// to publisher.json: this file still decides what is listed, and every source
+// stays queryable by name. Its one use is an authorize-gated source kept out
+// of listings that authorized callers still query. See
+// docs/discovery-and-access.md.
+
+import "{{modelFile}}"
+
+export { {{sourceName}} }

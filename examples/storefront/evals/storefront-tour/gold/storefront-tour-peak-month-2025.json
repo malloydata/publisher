@@ -1,0 +1,22 @@
+{
+ "qid": "storefront-tour-peak-month-2025",
+ "truthQuery": "run: t_order_items -> { where: created_at.year = @2025; group_by: order_month is created_at.month; aggregate: revenue is sale_price.sum(); order_by: revenue desc; limit: 1 }",
+ "verifyQuery": "run: t_order_items -> { where: created_at ? @2025-12; aggregate: revenue is sale_price.sum() }",
+ "truthRows": [
+  {
+   "order_month": "2025-12-01T00:00:00.000Z",
+   "revenue": 125923.83999999988
+  }
+ ],
+ "verifyRows": [
+  {
+   "revenue": 125923.83999999988
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "125923.83999999988 vs 125923.83999999988"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

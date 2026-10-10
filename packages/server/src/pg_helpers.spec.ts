@@ -2,9 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { redactPgSecrets } from "./pg_helpers";
+import { redactConnectionSecretShapes, redactPgSecrets } from "./pg_helpers";
 
 describe("redactPgSecrets", () => {
+   it("redacts a quoted password carrying a space and an escaped quote", () => {
+      expect(
+         redactPgSecrets("host=h password='p w\\'x\\\\y' sslmode=require"),
+      ).toBe("host=h password=*** sslmode=require");
+   });
    it("redacts bare password values", () => {
       expect(redactPgSecrets("host=h password=hunter2 dbname=d")).toBe(
          "host=h password=*** dbname=d",
@@ -56,6 +61,16 @@ describe("redactPgSecrets", () => {
    it("redacts a raw slash in a pg password via the mop-up pass", () => {
       expect(redactPgSecrets("postgres://u:pa/ss@h/d")).toBe(
          "postgres://u:***@h/d",
+      );
+   });
+
+   // Documents the accepted residual: with BOTH a raw `@` and a later raw `/`
+   // in one password (doubly invalid per RFC 3986), pass 1 redacts through
+   // the first `@` and its inserted `***@` satisfies the mop-up's first-`@`
+   // before the raw `/`, so the password tail after the raw `@` survives.
+   it("keeps the post-@ tail of a password with both a raw @ and a raw /", () => {
+      expect(redactPgSecrets("postgres://u:p@a/b@h/d")).toBe(
+         "postgres://u:***@a/b@h/d",
       );
    });
 
@@ -222,5 +237,261 @@ describe("redactPgSecrets", () => {
       const redacted = redactPgSecrets(msg);
       expect(redacted).toContain("postgres://alice:***@127.0.0.1:5432/mydb");
       expect(redacted).not.toContain("supersecretpw");
+   });
+
+   it.each([
+      // The scheme starts at the first letter of the scheme-character run.
+      ["1+a://u:p@h", "1+a://u:***@h"],
+      // A run with no letter is no scheme.
+      ["1+.://u:p@h", "1+.://u:p@h"],
+      // A password holds at least one character before its `@`.
+      ["postgres://u:@h/d", "postgres://u:@h/d"],
+      ["postgres://u:@@h/d", "postgres://u:***@h/d"],
+      // A match ends at its `@`, and the next URI starts after it.
+      ["a://u:p@b://v:q@h", "a://u:***@b://v:***@h"],
+      // The pg pass runs to the first `@`, across `/` and into a later URI.
+      ["postgres://u:a/postgres://v:b@h", "postgres://u:***@h"],
+      // ...but never across whitespace.
+      [
+         "postgres://u:a/b postgres://v:c/d@h",
+         "postgres://u:a/b postgres://v:***@h",
+      ],
+      ["Postgresql://u:x/y@h", "Postgresql://u:***@h"],
+      ["xpostgresql://u:x/y@h", "xpostgresql://u:***@h"],
+   ])("redacts %p as %p", (input, expected) => {
+      expect(redactPgSecrets(input)).toBe(expected);
+   });
+
+   // Each input made the regex form of a URI pass quadratic. The sizes are
+   // chosen so the quadratic form takes seconds even on a fast machine, while a
+   // linear scan takes a few milliseconds: the 500ms bound then sits orders of
+   // magnitude from both, so a slow machine stays green and a quadratic
+   // implementation fails on any machine.
+   it.each([
+      ["a run of letters", "a".repeat(200_000)],
+      [
+         "a run of letters after an empty password",
+         "a://:" + "a".repeat(200_000),
+      ],
+      ["many pg URIs with no @", "postgres://:".repeat(40_000)],
+   ])("redacts %s in linear time", (_name, input) => {
+      const started = performance.now();
+      const out = redactPgSecrets(input);
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(out).toBe(input);
+   });
+
+   it("matches the regular-expression form of each URI pass", () => {
+      // The regex form is the specification the scanners implement. It is
+      // quadratic on long input, so it is exercised here on short strings
+      // drawn from the characters each pass branches on.
+      const regexForm = (s: string) =>
+         s
+            .replace(
+               /([a-z][a-z0-9+.-]*:\/\/[^:/?#\s]*):([^/\s]+)@/gi,
+               "$1:***@",
+            )
+            .replace(
+               /((?:postgres|postgresql):\/\/[^:/?#\s]*):([^@\s]+)@/gi,
+               "$1:***@",
+            )
+            .replace(
+               /password=('(?:\\.|[^'\\])*'|"[^"]*"|\S+)/gi,
+               "password=***",
+            );
+      const pieces = [
+         "postgres",
+         "postgresql",
+         "POSTGRES",
+         "postgres://",
+         "a://",
+         "u:p@",
+         "://",
+         ":",
+         "/",
+         "@",
+         "?",
+         "#",
+         " ",
+         "\n",
+         "\u00a0",
+         "a",
+         "Z",
+         "1",
+         "+",
+         ".",
+         "-",
+         "_",
+         "password=",
+         "'",
+         "\u212a",
+      ];
+      // A fixed-seed generator, so a failure reproduces.
+      let seed = 1;
+      const next = () => {
+         seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+         return seed / 0x80000000;
+      };
+      const mismatches: string[] = [];
+      let redacted = 0;
+      for (let i = 0; i < 20_000; i++) {
+         let s = "";
+         const length = 1 + Math.floor(next() * 16);
+         for (let j = 0; j < length; j++) {
+            s += pieces[Math.floor(next() * pieces.length)];
+         }
+         const expected = regexForm(s);
+         if (redactPgSecrets(s) !== expected) mismatches.push(s);
+         if (expected.includes(":***@")) redacted++;
+      }
+      expect(mismatches).toEqual([]);
+      // The comparison means something only if the URI passes fire often.
+      expect(redacted).toBeGreaterThan(1_000);
+   });
+});
+
+describe("redactConnectionSecretShapes", () => {
+   // A connection test is handed the caller's own configuration, and drivers
+   // build their failure text by quoting that configuration back. Every case
+   // below is a credential the API accepts for some connection type, in the
+   // shape a driver or a serializer reports it.
+   const SECRET = "s3cret-value-not-a-real-credential";
+
+   it("redacts an SSH private key reported as a PEM block", () => {
+      const msg = `tunnel setup failed for -----BEGIN RSA PRIVATE KEY-----\n${SECRET}\n-----END RSA PRIVATE KEY----- while dialing bastion`;
+      const redacted = redactConnectionSecretShapes(msg);
+      expect(redacted).not.toContain(SECRET);
+      // The surrounding prose is what makes the failure diagnosable.
+      expect(redacted).toContain("tunnel setup failed");
+      expect(redacted).toContain("while dialing bastion");
+   });
+
+   it("redacts an OPENSSH private key block", () => {
+      const msg = `-----BEGIN OPENSSH PRIVATE KEY-----\n${SECRET}\n-----END OPENSSH PRIVATE KEY-----`;
+      expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
+   });
+
+   it.each([
+      ["privateKey", `privateKey=${SECRET}`],
+      ["privateKeyPass", `privateKeyPass=${SECRET}`],
+      ["serviceAccountKeyJson", `serviceAccountKeyJson=${SECRET}`],
+      ["accessToken", `accessToken=${SECRET}`],
+      ["oauthClientSecret", `oauthClientSecret=${SECRET}`],
+      ["clientSecret", `clientSecret=${SECRET}`],
+      ["secretAccessKey", `secretAccessKey=${SECRET}`],
+      ["sessionToken", `sessionToken=${SECRET}`],
+      ["peakaKey", `peakaKey=${SECRET}`],
+      ["sasUrl", `sasUrl=${SECRET}`],
+      ["connectionString", `connectionString=${SECRET}`],
+      ["token", `token=${SECRET}`],
+   ])("redacts %s in keyword form", (_name, fragment) => {
+      const redacted = redactConnectionSecretShapes(
+         `auth failed: ${fragment} rc=7`,
+      );
+      expect(redacted).not.toContain(SECRET);
+      // The match must stop at the field it started in.
+      expect(redacted).toContain("rc=7");
+   });
+
+   it("redacts a secret quoted as JSON, keeping the rest of the object", () => {
+      const msg = `invalid config: {"account":"acme","privateKey":"${SECRET}","role":"reader"}`;
+      const redacted = redactConnectionSecretShapes(msg);
+      expect(redacted).not.toContain(SECRET);
+      expect(redacted).toContain('"account":"acme"');
+      expect(redacted).toContain('"role":"reader"');
+   });
+
+   it("redacts a snake_cased spelling of the same field", () => {
+      // The API schema says privateKey; a driver that snake-cases its config
+      // before reporting it says private_key for the same value.
+      expect(
+         redactConnectionSecretShapes(`bad key: private_key=${SECRET}`),
+      ).not.toContain(SECRET);
+   });
+
+   it("still redacts the Postgres shapes it delegates", () => {
+      expect(
+         redactConnectionSecretShapes(`postgres://u:${SECRET}@h:5432/db`),
+      ).not.toContain(SECRET);
+      expect(
+         redactConnectionSecretShapes(`host=h password=${SECRET} dbname=d`),
+      ).not.toContain(SECRET);
+   });
+
+   it("redacts a password quoted as JSON, which the libpq pass does not reach", () => {
+      // redactPgSecrets' keyword pass matches `password=`; a serialized config
+      // reports `"password":"..."`, which goes straight through it.
+      const redacted = redactConnectionSecretShapes(
+         `connect refused; config={"password":"${SECRET}","host":"h"}`,
+      );
+      expect(redacted).not.toContain(SECRET);
+      expect(redacted).toContain('"host":"h"');
+   });
+
+   it("keeps a driver's prose when a field name is followed by an explanation", () => {
+      // Observed from the SSH layer: `Cannot parse privateKey: Unsupported key
+      // format`. The text after the colon is the diagnosis, not the key, and
+      // redacting it would leave the caller with no reason for the failure.
+      const msg = "Cannot parse privateKey: Unsupported key format";
+      expect(redactConnectionSecretShapes(msg)).toBe(msg);
+   });
+
+   it("redacts a quoted secret whose value contains an escaped quote", () => {
+      // A naive "[^"]*" ends the match at the escaped quote INSIDE the value, so
+      // the tail after it stayed in the message. redactPgSecrets already carries
+      // the escape-aware form for single quotes.
+      const msg = `config={"password":"ab\\"${SECRET}","host":"h"}`;
+      const out = redactConnectionSecretShapes(msg);
+      expect(out).not.toContain(SECRET);
+      expect(out).toContain('"host":"h"');
+   });
+
+   it("redacts a SAS URL's signature, which follows an ampersand", () => {
+      // The credential in an Azure SAS URL IS the `sig=` parameter, and it comes
+      // after a `&`. A value class that stopped there redacted the harmless
+      // prefix and left the signature in place.
+      const msg =
+         "auth failed: sasUrl=https://acct.blob.core.windows.net/c?sv=2021-08-06&ss=b&sig=" +
+         SECRET +
+         "&se=2030";
+      expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
+   });
+
+   it("redacts two PEM blocks in one message as two blocks", () => {
+      // The terminated pattern forbids a further BEGIN inside its body, so a
+      // message carrying a complete key and then a truncated one redacts both
+      // rather than collapsing into a single span (or leaving the second).
+      const msg =
+         "first -----BEGIN A PRIVATE KEY-----" +
+         SECRET +
+         "-----END A PRIVATE KEY----- second -----BEGIN B PRIVATE KEY-----" +
+         SECRET;
+      const out = redactConnectionSecretShapes(msg);
+      expect(out).not.toContain(SECRET);
+      expect(out).toContain("first");
+      expect(out).toContain("second");
+   });
+
+   it("redacts a PEM block that was truncated before its terminator", () => {
+      // Drivers truncate long values, and requiring -----END ...----- meant a
+      // truncated key -- still most of the key -- passed through untouched.
+      const msg =
+         "could not parse key: -----BEGIN RSA PRIVATE KEY-----\n" +
+         SECRET +
+         "\n... (truncated)";
+      expect(redactConnectionSecretShapes(msg)).not.toContain(SECRET);
+   });
+
+   it("leaves non-secret content alone", () => {
+      const msg =
+         'Connection test failed: no such host "warehouse.internal" (port 5432), user analytics_ro';
+      expect(redactConnectionSecretShapes(msg)).toBe(msg);
+   });
+
+   it("is idempotent", () => {
+      const input = `privateKey=${SECRET} and password=${SECRET}`;
+      const once = redactConnectionSecretShapes(input);
+      expect(redactConnectionSecretShapes(once)).toBe(once);
+      expect(once).not.toContain(SECRET);
    });
 });

@@ -1,25 +1,19 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { AddCircleRounded } from "@mui/icons-material";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
-import Snackbar from "@mui/material/Snackbar";
 import TextField from "@mui/material/TextField";
-import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { generateEnvironmentReadme } from "../../utils/parsing";
 import { useServer } from "../ServerProvider";
+import { AddButton } from "../buttons";
+import Stack from "@mui/material/Stack";
+import { AppDialog } from "../AppDialog";
 
 export default function AddEnvironmentDialog() {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const [notificationMessage, setNotificationMessage] = useState("");
    const handleClickOpen = () => {
       setOpen(true);
    };
@@ -27,9 +21,8 @@ export default function AddEnvironmentDialog() {
    const handleClose = () => {
       setOpen(false);
    };
-   const queryClient = useQueryClient();
-   const addEnvironment = useMutationWithApiError({
-      async mutationFn(variables: { name: string; description: string }) {
+   const addEnvironment = useCrudMutation({
+      mutationFn(variables: { name: string; description: string }) {
          return apiClients.environments.createEnvironment({
             name: variables.name,
             readme: generateEnvironmentReadme(
@@ -41,18 +34,11 @@ export default function AddEnvironmentDialog() {
             ),
          });
       },
-      onSuccess() {
-         handleClose();
-         queryClient.invalidateQueries({ queryKey: ["environments"] });
-         setNotificationMessage("Environment created successfully");
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Environment created",
+      invalidates: [["environments"]],
+      closeDialog: handleClose,
+      resource: "environment",
+      action: "create",
    });
 
    const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -69,67 +55,58 @@ export default function AddEnvironmentDialog() {
 
    return (
       <React.Fragment>
-         <Button
-            variant="contained"
-            onClick={handleClickOpen}
-            startIcon={<AddCircleRounded />}
-            sx={{ mt: 2 }}
+         <AddButton label="Environment" onClick={handleClickOpen} />
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="New environment"
+            description="An environment holds packages and the connections they query through."
+            actions={
+               <>
+                  <Button
+                     disabled={addEnvironment.isPending}
+                     onClick={handleClose}
+                  >
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="environment-form"
+                     variant="contained"
+                     loading={addEnvironment.isPending}
+                  >
+                     Create environment
+                  </Button>
+               </>
+            }
          >
-            Create New Environment
-         </Button>
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Create New Environment</DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Add a new environment to start exploring semantic models and
-                  analyzing data.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="environment-form">
+            <form onSubmit={handleSubmit} id="environment-form">
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Environment Name"
+                     label="Name"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
+                     InputLabelProps={{ shrink: true }}
                   />
                   <TextField
-                     margin="dense"
                      id="description"
                      name="description"
-                     label="Environment Description"
+                     label="Description"
                      placeholder="Explore semantic models, run queries, and build dashboards"
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
+                     InputLabelProps={{ shrink: true }}
                   />
-               </form>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  disabled={addEnvironment.isPending}
-                  onClick={handleClose}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="environment-form"
-                  loading={addEnvironment.isPending}
-               >
-                  Create Environment
-               </Button>
-            </DialogActions>
-         </Dialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+               </Stack>
+            </form>
+         </AppDialog>
+         {addEnvironment.notice}
       </React.Fragment>
    );
 }

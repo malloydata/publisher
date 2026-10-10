@@ -1,0 +1,21 @@
+{
+ "qid": "storefront-tour-avg-discount",
+ "truthQuery": "run: t_order_items extend { join_one: t_products on product_id = t_products.product_id } extend { dimension: line_margin is sale_price - t_products.cost, line_markdown is t_products.retail_price - sale_price } -> { aggregate: discount_off_list is line_markdown.sum() / (line_markdown.sum() + sale_price.sum()) }",
+ "verifyQuery": "run: t_order_items extend { join_one: t_products on product_id = t_products.product_id } extend { dimension: line_margin is sale_price - t_products.cost, line_markdown is t_products.retail_price - sale_price } extend { dimension: line_discount is 1 - sale_price / t_products.retail_price } -> { aggregate: avg_line_discount is line_discount.avg() }",
+ "truthRows": [
+  {
+   "discount_off_list": 0.05432780211750605
+  }
+ ],
+ "verifyRows": [
+  {
+   "avg_line_discount": 0.054143999357479315
+  }
+ ],
+ "agreement": {
+  "agree": true,
+  "note": "0.05432780211750605 vs 0.054143999357479315"
+ },
+ "derivedAt": "2026-09-21",
+ "truthPackage": "storefront-tour-truth"
+}

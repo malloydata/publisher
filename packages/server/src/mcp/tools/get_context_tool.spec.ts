@@ -24,7 +24,7 @@ import {
 import { embeddingText } from "./embedding_index";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { PackageNotFoundError } from "../../errors";
+import { EnvironmentNotFoundError, PackageNotFoundError } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import {
@@ -88,7 +88,7 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
       expect(docOnlyText(["# bar_chart"])).toBe("");
       expect(
          docOnlyText([
-            "#(authorize) \"$ROLE = 'admin'\"",
+            "#(access_filter) \"$ROLE = 'admin'\"",
             "#(malloy) drillable",
          ]),
       ).toBe("");
@@ -97,18 +97,18 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
    it("keeps only the #(doc) line when mixed with predicate annotations", () => {
       expect(
          docOnlyText([
-            "#(authorize) \"$TENANT = 'acme'\"",
+            "#(access_filter) \"$TENANT = 'acme'\"",
             "#(doc) Secured orders.",
          ]),
       ).toBe("Secured orders.");
    });
 
-   it("an #(authorize)-only entity produces no embedding text beyond its name", () => {
+   it("an #(access_filter)-only entity produces no embedding text beyond its name", () => {
       // End-to-end: what embeddingText actually sends for a governed,
       // undocumented entity is the humanized name only, never the predicate.
       const embedDoc = docOnlyText([
-         "#(authorize) \"$ROLE = 'admin'\"",
-         "#(authorize) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
+         "#(access_filter) \"$ROLE = 'admin'\"",
+         "#(access_filter) \"$TENANT = 'acme' or $TENANT = 'globex'\"",
       ]);
       const text = embeddingText({
          kind: "source",
@@ -118,7 +118,7 @@ describe("get_context docOnlyText (embedding-input safety)", () => {
          embedDoc,
       });
       expect(text).toBe("orders secured");
-      expect(text).not.toContain("authorize");
+      expect(text).not.toContain("accessFilter");
       expect(text).not.toContain("ROLE");
       expect(text).not.toContain("acme");
    });
@@ -537,6 +537,28 @@ describe("get_context discovery tiers", () => {
       expect(parsed.error).toContain("Resource not found");
       expect(parsed.error).toContain("nope");
       expect(textBlock(result)).toContain("Resource not found");
+   });
+
+   it("names an unknown environment and the ones that exist", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
+         },
+      });
+      const result = await handler({
+         search_targets: anyKind("state"),
+         scopes: [{ environment: "analytics", package: "p" }],
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
    });
 
    it("tier 3: package without a query lists only its sources", async () => {
@@ -1671,10 +1693,23 @@ describe("get_context semantic retrieval", () => {
       return stubProviderFor(VECTORS, options);
    }
 
-   /** A store over the given package, backed by the temp DB. */
+   /**
+    * A store over the given package, backed by the temp DB. The package is
+    * served with the `facets` representation: the stub vectors above name the
+    * name row and the doc row of each entity separately, and these tests are
+    * about that faceted index. (The default is now `single`; its rows are
+    * covered in embedding_representation.spec.ts and the payload pin.)
+    */
    function semanticStoreFor(pkg: unknown): Partial<EnvironmentStore> {
+      const facetsPkg = Object.assign(pkg as object, {
+         getRetrievalSettings: () => ({
+            representation: "facets",
+            keyphrases: "never",
+            prompts: {},
+         }),
+      });
       return {
-         getEnvironment: async () => envWith(async () => pkg),
+         getEnvironment: async () => envWith(async () => facetsPkg),
          storageManager: {
             getDuckDbConnection: () => db,
          } as never,
@@ -1745,6 +1780,260 @@ describe("get_context semantic retrieval", () => {
             getModel: () => siblingSourcesModel(securedMeasureDoc),
          }),
       );
+
+   it("orders equal semantic scores by source, whatever order the model declares them in", async () => {
+      // Two sources each declare `total_amount`, with identical text and so an
+      // identical vector: an exact score tie. The order of a tie was left to
+      // DuckDB (which broke it by name alone, and the names are equal here), so
+      // it followed insertion order and could differ between servers and
+      // between runs. It is now score, then source, then name.
+      const provider = stubProviderFor({
+         "zebra sales": [0, 1],
+         "alpha sales": [0, 1],
+         "total amount": [1, 0],
+         "total order amount": [1, 0],
+      });
+      const sourceWith = (name: string) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [
+               { kind: "measure", name: "total_amount", annotations: [] },
+            ],
+         },
+      });
+      const run = async (declared: string[], packageName: string) => {
+         _setEmbeddingProviderForTests(provider);
+         const handler = captureHandler(
+            semanticStoreFor({
+               listModels: async () => [{ path: "t.malloy" }],
+               getModel: () => ({
+                  getSourceInfos: () => declared.map(sourceWith),
+                  getQueries: () => [],
+               }),
+            }),
+         );
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total order amount"),
+            scopes: [{ environment: "specs", package: packageName }],
+         });
+         return sourceNames(payload);
+      };
+      const zebraFirst = await run(["zebra_sales", "alpha_sales"], "tie-a");
+      const alphaFirst = await run(["alpha_sales", "zebra_sales"], "tie-b");
+      expect(zebraFirst).toEqual(["alpha_sales", "zebra_sales"]);
+      expect(alphaFirst).toEqual(["alpha_sales", "zebra_sales"]);
+   });
+
+   it("treats only exactly equal scores as tied, not scores that round to the same four places", async () => {
+      // `zebra` has the slightly better match (cosine 0.9999875), `alpha` the
+      // slightly worse (0.9999595). Both publish as 1 at four decimals, so a
+      // tie-break on the published score would list alpha first by name. Their
+      // real scores differ, so zebra comes first.
+      const provider = stubProviderFor({
+         "zebra sales": [0, 1],
+         "alpha sales": [0, 1],
+         "m one": [1, 0.005],
+         "m two": [1, 0.009],
+         "find it": [1, 0],
+      });
+      const sourceWith = (name: string, field: string) => ({
+         name,
+         annotations: [],
+         schema: {
+            fields: [{ kind: "measure", name: field, annotations: [] }],
+         },
+      });
+      _setEmbeddingProviderForTests(provider);
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "t.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  sourceWith("alpha_sales", "m_two"),
+                  sourceWith("zebra_sales", "m_one"),
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: anyKind("find it"),
+         scopes: [{ environment: "specs", package: "near-tie" }],
+      });
+      expect(sourceNames(payload)).toEqual(["zebra_sales", "alpha_sales"]);
+   });
+
+   it("returns every resolving model path, like the lexical path does", async () => {
+      // The vector cache holds ONE row per (kind, source, name) -- the text is
+      // identical whichever file resolves the source -- and the scan fans that
+      // hit back out to every live entity sharing the key. The merge that
+      // follows has to keep those apart: keyed on the bare name it collapsed
+      // them straight back to one and kept whichever landed last, so the same
+      // question answered with one model_path on semantic and all of them on
+      // lexical. lunr never had the bug because its ref is the per-path id.
+      const provider = stubProviderFor({
+         shared: [1, 0],
+         "shared: A source two files resolve.": [1, 0],
+         amount: [1, 0],
+         "the shared source": [1, 0],
+      });
+      _setEmbeddingProviderForTests(provider);
+
+      const sharedSource = {
+         name: "shared",
+         annotations: ["#(doc) A source two files resolve."],
+         schema: {
+            fields: [{ kind: "dimension", name: "amount", annotations: [] }],
+         },
+      };
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [
+               { path: "defs.malloy" },
+               { path: "uses.malloy" },
+            ],
+            // Both files resolve `shared`, so it is queryable under both.
+            getModel: () => ({
+               getSourceInfos: () => [sharedSource],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const params = {
+         search_targets: [
+            { target_type: "source", search_text: "the shared source" },
+         ],
+         scopes: [{ environment: "specs", package: "multipath" }],
+      };
+      const payload = await callUntilSemantic(handler, params);
+
+      const paths = payload.sources.map(
+         (c: { source_info: { resource_id: { model_path: string } } }) =>
+            c.source_info.resource_id.model_path,
+      );
+      expect([...paths].sort()).toEqual(["defs.malloy", "uses.malloy"]);
+      expect(payload.returned).toBe(2);
+      expect(payload.total_available).toBe(2);
+   });
+
+   it("lists the model paths of one tied source in path order, not in the order the package lists them", async () => {
+      // One embedded row fans out to a card per model path that resolves the
+      // source, all with the same score. Their order was the package's own
+      // listing order.
+      _setEmbeddingProviderForTests(
+         stubProviderFor({
+            shared: [1, 0],
+            "shared: A source two files resolve.": [1, 0],
+            "the shared source": [1, 0],
+         }),
+      );
+      const handler = captureConverged(
+         semanticStoreFor({
+            listModels: async () => [
+               { path: "uses.malloy" },
+               { path: "defs.malloy" },
+            ],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "shared",
+                     annotations: ["#(doc) A source two files resolve."],
+                     schema: { fields: [] },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         }),
+      );
+      const payload = await callUntilSemantic(handler, {
+         search_targets: [
+            { target_type: "source", search_text: "the shared source" },
+         ],
+         scopes: [{ environment: "specs", package: "multipath-order" }],
+      });
+      expect(
+         payload.sources.map(
+            (c: { source_info: { resource_id: { model_path: string } } }) =>
+               c.source_info.resource_id.model_path,
+         ),
+      ).toEqual(["defs.malloy", "uses.malloy"]);
+   });
+
+   it("a source-scoped call does not delete the rest of the package's vectors", async () => {
+      // The destructive shape this must never regress into. syncPackageEmbeddings
+      // reads EVERY row for the package and deletes the ones absent from the
+      // desired set it is handed, so handing it a scope-filtered entity list
+      // means "make the cache match this subset" -- and it obliges, deleting
+      // every other source's vectors. Reported against an older build as one
+      // scoped question dropping 2448 of 2603 rows and taking the package
+      // lexical for the life of the Package instance.
+      //
+      // What keeps it correct is that the scope is applied INSIDE the scan
+      // (trySemanticSearch's `sourceName`), while the sync is handed the whole
+      // package: getContext passes pkgIndex.retrievalEntities, and the filtered
+      // list is a separate `inScope` used only for the enumeration tiers. This
+      // pins that separation from the outside, where a future refactor that
+      // collapsed the two would be caught.
+      _setEmbeddingProviderForTests(stubProviderFor(SIBLING_VECTORS));
+      const handler = captureHandler(
+         semanticStoreFor({
+            listModels: async () => [{ path: "s.malloy" }],
+            getModel: () => siblingSourcesModel(GATED_DOC),
+         }),
+      );
+      const target = [
+         { target_type: "measure", search_text: "total order amount" },
+      ];
+      const scope = { environment: "specs", package: "scope-safety" };
+
+      // Warm the whole package, so there are other sources' rows to lose.
+      await callUntilSemantic(handler, {
+         search_targets: target,
+         scopes: [scope],
+      });
+      const rowsFor = async () =>
+         (
+            await db.all<{ n: number }>(
+               "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE package_name = 'scope-safety'",
+            )
+         )[0].n;
+      const warmRows = await rowsFor();
+      // Both sources and both measures are cached, or there is nothing for a
+      // scoped call to delete and this test would pass vacuously.
+      expect(warmRows).toBeGreaterThan(2);
+      const sourcesCached = await db.all<{ entity_source: string }>(
+         "SELECT DISTINCT entity_source FROM entity_embeddings WHERE package_name = 'scope-safety'",
+      );
+      expect(sourcesCached.map((r) => r.entity_source).sort()).toEqual([
+         "sales",
+         "sales_secured",
+      ]);
+
+      // Now the scoped question, repeated: a fire-and-forget sync started by
+      // any one of these would have landed by the last. Retrieval modes are
+      // collected rather than asserted here, so the row check below is what
+      // fails first -- losing the siblings' vectors is the harm, and going
+      // lexical is only how it shows up on the next call.
+      const modes: unknown[] = [];
+      for (let i = 0; i < 5; i++) {
+         modes.push(
+            parse(
+               await handler({
+                  search_targets: target,
+                  scopes: [{ ...scope, source: "sales" }],
+               }),
+            ).retrieval,
+         );
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      // Nothing was deleted: the scope narrowed the SCAN, not the cache.
+      expect(await rowsFor()).toBe(warmRows);
+      // And the scoped calls stayed semantic throughout, which they cannot be
+      // if the cache was rewritten underneath them.
+      expect(modes).toEqual(Array(5).fill("semantic"));
+   });
 
    it("embeds every target in ONE provider request and scans once", async () => {
       // The claim the multi-target design rests on: N targets cost one round
@@ -2035,10 +2324,11 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "semantic-pkg" }],
       };
 
-      // Cold start: the sync kicks off in the background and this call
-      // answers lexically, marked as such.
+      // Cold start: the sync is still building, so this call says so and
+      // returns nothing, rather than answering lexically.
       const first = parse(await handler(params));
-      expect(first.retrieval).toBe("lexical");
+      expect(first.retrieval).toBe("indexing");
+      expect(first.sources).toEqual([]);
 
       const payload = await callUntilSemantic(handler, params);
       const results = rankedEntities(payload);
@@ -2076,8 +2366,12 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "join-pkg" }],
       };
 
+      // The lexical answer is the no-provider mode now, so ask for it with
+      // no provider configured: it carries no `retrieval` marker at all.
+      _setEmbeddingProviderForTests(null);
       const lexical = parse(await handler(params));
-      expect(lexical.retrieval).toBe("lexical");
+      expect(lexical).not.toHaveProperty("retrieval");
+      _setEmbeddingProviderForTests(stubProvider());
       const semantic = await callUntilSemantic(handler, params);
 
       type Ranked = ReturnType<typeof rankedEntities>[number];
@@ -2219,28 +2513,38 @@ describe("get_context semantic retrieval", () => {
       ]);
    });
 
-   it("says WHY a configured server answered lexically, and stops once semantic", async () => {
-      // "lexical" alone is a dead end: an agent cannot tell a cold index,
-      // which clears in seconds and is worth one retry, from a down provider,
-      // which is not. Only the first is actionable, so only naming it helps.
+   it("says the index is still building while it builds, with progress, and stops once semantic", async () => {
+      // A cold index is not an error and not a lexical answer: it is an empty
+      // result that says how far the build has got and that asking again will
+      // work.
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
          search_targets: anyKind("where do customers live"),
          scopes: [{ environment: "specs", package: "reason-pkg" }],
       };
-      const first = parse(await handler(params));
-      expect(first.retrieval).toBe("lexical");
-      expect(first.retrieval_reason).toBe("indexing");
+      const result = await handler(params);
+      expect(result.isError).toBe(false);
+      const first = parse(result);
+      expect(first.retrieval).toBe("indexing");
+      expect(first.sources).toEqual([]);
+      expect(first.returned).toBe(0);
+      expect(first.retrieval_progress.total).toBeGreaterThan(0);
+      expect(first.retrieval_progress.embedded).toBeLessThanOrEqual(
+         first.retrieval_progress.total,
+      );
+      expect(first.warnings.join(" ")).toContain("still being built");
+      expect(first).not.toHaveProperty("retrieval_reason");
 
       const warm = await callUntilSemantic(handler, params);
       expect(warm).not.toHaveProperty("retrieval_reason");
+      expect(warm).not.toHaveProperty("retrieval_progress");
    });
 
-   it("reports a dead provider as provider-error, then as cooldown", async () => {
-      // Two different remedies behind one "lexical": the first call learns the
-      // endpoint is down, and every call in the window after it is being
-      // short-circuited deliberately rather than re-probing.
+   it("reports a dead provider as provider-error, then as cooldown, each as an error", async () => {
+      // Two different remedies: the first call learns the endpoint is down,
+      // and every call in the window after it is short-circuited deliberately
+      // rather than re-probing. Both are errors that name the reason.
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
@@ -2250,12 +2554,53 @@ describe("get_context semantic retrieval", () => {
       await callUntilSemantic(handler, params);
 
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const failed = parse(await handler(params));
-      expect(failed.retrieval).toBe("lexical");
+      const failedResult = await handler(params);
+      expect(failedResult.isError).toBe(true);
+      const failed = parse(failedResult);
+      expect(failed.retrieval).toBe("error");
       expect(failed.retrieval_reason).toBe("provider-error");
+      expect(failed.sources).toEqual([]);
+      expect(failed.error).toContain("failed to embed the search text");
 
-      const cooled = parse(await handler(params));
+      const cooledResult = await handler(params);
+      expect(cooledResult.isError).toBe(true);
+      const cooled = parse(cooledResult);
       expect(cooled.retrieval_reason).toBe("cooldown");
+      expect(cooled.error).toContain("paused");
+   });
+
+   it("keeps a listing working while the index builds and while it is in error", async () => {
+      // A listing has no search text, so it needs no embeddings: it must not
+      // be refused just because the index cannot rank.
+      _setEmbeddingProviderForTests(stubProvider({ fail: true }));
+      const handler = captureHandler(semanticStore());
+      const search = {
+         search_targets: anyKind("where do customers live"),
+         scopes: [{ environment: "specs", package: "listing-state-pkg" }],
+      };
+      const listing = {
+         search_targets: [{ target_type: "source" }],
+         scopes: [{ environment: "specs", package: "listing-state-pkg" }],
+      };
+
+      // Building: the search says so, the listing answers.
+      expect(parse(await handler(search)).retrieval).toBe("indexing");
+      const whileIndexing = await handler(listing);
+      expect(whileIndexing.isError).toBe(false);
+      expect(parse(whileIndexing).sources.length).toBeGreaterThan(0);
+      expect(parse(whileIndexing)).not.toHaveProperty("retrieval");
+
+      // The sync fails (the provider answers 500), so the search is now an
+      // error. Wait for the cooldown to be reached, then check the listing.
+      let result = await handler(search);
+      for (let i = 0; i < 400 && !result.isError; i++) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+         result = await handler(search);
+      }
+      expect(result.isError).toBe(true);
+      const inError = await handler(listing);
+      expect(inError.isError).toBe(false);
+      expect(parse(inError).sources.length).toBeGreaterThan(0);
    });
 
    // A source that matches on its own terms becomes the CARD, not a row under
@@ -2343,15 +2688,17 @@ describe("get_context semantic retrieval", () => {
          scopes: [{ environment: "specs", package: "cutoff-pkg" }],
       };
 
-      // Cold start answers lexically: there is no floor on that path, so
+      // Cold start ranks nothing: there is no floor on that path, so
       // reporting a count would be meaningless.
       const first = parse(await handler(params));
-      expect(first.retrieval).toBe("lexical");
+      expect(first.retrieval).toBe("indexing");
       expect(first).not.toHaveProperty("below_cutoff_count");
 
-      // order_items, its join, and the field reached through that join are
-      // all orthogonal to this query, so they are dropped by the floor and
-      // counted rather than silently missing.
+      // order_items, its join and the field reached through the join are
+      // orthogonal to this query, so they are dropped by the floor and counted
+      // rather than silently missing. The joined field is weighed because this
+      // stand-in has no compiled model: nothing can rebuild it from a source
+      // of its own, so it stays in the semantic index (see directEntitiesOf).
       const payload = await callUntilSemantic(handler, params);
       expect(rankedEntities(payload).map((r) => r.name)).toEqual(["state"]);
       expect(payload.below_cutoff_count).toBe(3);
@@ -2429,6 +2776,104 @@ describe("get_context semantic retrieval", () => {
       // a measure target, so it is in neither number.
       expect(payload.total_entities).toBe(1);
       expect(payload.below_cutoff_count).toBe(0);
+   });
+
+   describe("a scope narrows the counts as well as the rows", () => {
+      // The counts come from the scan, the rows from the scan filtered by the
+      // caller's scope -- so a scope the scan does not know about leaves the
+      // two describing different sets. `model_path` is not a column in the
+      // vector cache and an `entity_name` scope exempts source rows, so
+      // neither can be a predicate; both go in as the rows the scan may
+      // consider.
+      const scopedPackage = () =>
+         semanticStoreFor({
+            listModels: async () => [{ path: "w.malloy" }],
+            getModel: () => ({
+               getSourceInfos: () => [
+                  {
+                     name: "orders",
+                     annotations: ["#(doc) Every order."],
+                     schema: {
+                        fields: [
+                           {
+                              kind: "dimension",
+                              name: "dim_a",
+                              annotations: [],
+                           },
+                           {
+                              kind: "dimension",
+                              name: "dim_b",
+                              annotations: [],
+                           },
+                           {
+                              kind: "measure",
+                              name: "revenue",
+                              annotations: [],
+                           },
+                        ],
+                     },
+                  },
+               ],
+               getQueries: () => [],
+            }),
+         });
+      const scopedVectors = {
+         orders: [0, 1],
+         "orders: Every order.": [0, 1],
+         "dim a": [1, 0],
+         "dim b": [1, 0],
+         revenue: [0, 1],
+         "total revenue": [0, 1],
+      };
+
+      it("counts the scoped set when the pinned entity matches nothing", async () => {
+         // A pin nothing answers returns the source cards and no entities
+         // under them. The counts have to describe THAT set: read against an
+         // unpinned total_entities of 4, a below_cutoff_count of 0 beside no
+         // entities says every entity cleared the floor and none came back,
+         // which is not a state the contract allows and not what happened.
+         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
+         const handler = captureHandler(scopedPackage());
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total revenue"),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "scope-counts-miss",
+                  entity_name: "no_such_field",
+               },
+            ],
+         });
+         expect(rankedEntities(payload)).toEqual([]);
+         // Only the source row is in scope: an entity_name scope exempts it,
+         // because it is the card a named entity nests in. The package's
+         // three fields are not weighed and so are in neither count.
+         expect(payload.total_entities).toBe(1);
+         expect(payload.below_cutoff_count).toBe(0);
+      });
+
+      it("counts only what the pin admits when it does match", async () => {
+         _setEmbeddingProviderForTests(stubProviderFor(scopedVectors));
+         const handler = captureHandler(scopedPackage());
+         const payload = await callUntilSemantic(handler, {
+            search_targets: anyKind("total revenue"),
+            scopes: [
+               {
+                  environment: "specs",
+                  package: "scope-counts-hit",
+                  entity_name: "revenue",
+               },
+            ],
+         });
+         expect(rankedEntities(payload).map((e) => e.name)).toEqual([
+            "revenue",
+         ]);
+         // The source row survives an entity_name scope -- it is the card the
+         // entity nests in -- so the scoped set is `orders` and `revenue`,
+         // not the package's four entities.
+         expect(payload.total_entities).toBe(2);
+         expect(payload.below_cutoff_count).toBe(0);
+      });
    });
 
    it("reports the true negative as below_cutoff_count === total_entities, not 0", async () => {
@@ -2520,9 +2965,9 @@ describe("get_context semantic retrieval", () => {
       expect(drilled[0].source).toBe("fclt_building");
    });
 
-   it("falls back to lexical, marked, when the provider goes down after indexing", async () => {
+   it("returns an error, not a lexical answer, when the provider goes down after indexing", async () => {
       // Index healthily first, so this pins the query-embed failure
-      // path, not just the cold start (which answers lexically anyway).
+      // path, not just the cold start.
       _setEmbeddingProviderForTests(stubProvider());
       const handler = captureHandler(semanticStore());
       const params = {
@@ -2532,43 +2977,40 @@ describe("get_context semantic retrieval", () => {
       await callUntilSemantic(handler, params);
 
       // Same model and config, but the endpoint now returns 500s: the
-      // per-call query embed fails and the call degrades to marked
-      // lexical with no scores.
+      // per-call query embed fails and the call is an error naming the
+      // provider failure, with no ranking of any kind.
       _setEmbeddingProviderForTests(stubProvider({ fail: true }));
-      const payload = parse(
-         await handler({ ...params, search_targets: anyKind("state") }),
-      );
-      expect(payload.retrieval).toBe("lexical");
-      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
-         true,
-      );
-      for (const r of rankedEntities(payload)) {
-         expect(r.relevance).toBeUndefined();
-      }
+      const result = await handler({
+         ...params,
+         search_targets: anyKind("state"),
+      });
+      expect(result.isError).toBe(true);
+      const payload = parse(result);
+      expect(payload.retrieval).toBe("error");
+      expect(payload.retrieval_reason).toBe("provider-error");
+      expect(payload.sources).toEqual([]);
    });
 
-   it("degrades to lexical when the storage handle is unavailable", async () => {
+   it("returns an error (never lexical) when the storage handle is unavailable", async () => {
       _setEmbeddingProviderForTests(stubProvider());
       const store = semanticStore();
       delete (store as { storageManager?: unknown }).storageManager;
       const handler = captureHandler(store);
-      const payload = parse(
-         await handler({
-            search_targets: anyKind("state"),
-            scopes: [{ environment: "specs", package: "no-storage-pkg" }],
-         }),
-      );
-      expect(payload.retrieval).toBe("lexical");
-      expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
-         true,
-      );
+      const result = await handler({
+         search_targets: anyKind("state"),
+         scopes: [{ environment: "specs", package: "no-storage-pkg" }],
+      });
+      expect(result.isError).toBe(true);
+      const payload = parse(result);
+      expect(payload.retrieval_reason).toBe("unavailable");
+      expect(payload.sources).toEqual([]);
    });
 
-   it("degrades to lexical (never throws) when the real config is malformed", async () => {
+   it("returns an error naming the variable (never throws) when the real config is malformed", async () => {
       // Exercises the tool-path catch with REAL env parsing, not the
       // _setEmbeddingProviderForTests override: a malformed base makes
-      // getEmbeddingProvider() throw, and tier 4 must swallow it and
-      // answer marked lexical (embeddingConfigured() is still true).
+      // getEmbeddingProvider() throw, and tier 4 must report it as an error
+      // that names the variable (embeddingConfigured() is still true).
       const saved = {
          key: process.env.EMBEDDING_API_KEY,
          base: process.env.EMBEDDING_API_BASE,
@@ -2578,16 +3020,15 @@ describe("get_context semantic retrieval", () => {
       _clearEmbeddingProviderForTests();
       try {
          const handler = captureHandler(semanticStore());
-         const payload = parse(
-            await handler({
-               search_targets: anyKind("state"),
-               scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
-            }),
-         );
-         expect(payload.retrieval).toBe("lexical");
-         expect(rankedEntities(payload).some((r) => r.name === "state")).toBe(
-            true,
-         );
+         const result = await handler({
+            search_targets: anyKind("state"),
+            scopes: [{ environment: "specs", package: "malformed-cfg-pkg" }],
+         });
+         expect(result.isError).toBe(true);
+         const payload = parse(result);
+         expect(payload.retrieval_reason).toBe("unavailable");
+         expect(payload.error).toContain("EMBEDDING_API_BASE");
+         expect(payload.sources).toEqual([]);
       } finally {
          if (saved.key === undefined) delete process.env.EMBEDDING_API_KEY;
          else process.env.EMBEDDING_API_KEY = saved.key;
@@ -2637,7 +3078,7 @@ describe("get_context source governance and field types", () => {
                { name: "ROLE", type: "string", default: "'analyst'" },
                { name: "TENANT", type: "string" },
             ],
-            authorize: ["$ROLE = 'admin' or $TENANT = 'acme'"],
+            accessFilter: ["$ROLE = 'admin' or $TENANT = 'acme'"],
          },
          {
             name: "sales",
@@ -2650,7 +3091,7 @@ describe("get_context source governance and field types", () => {
       getModel: () => gatedModel,
    };
 
-   it("reports a source's authorize gates and the givens they read", async () => {
+   it("reports a source's accessFilter gates and the givens they read", async () => {
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => gatedPackage),
       });
@@ -2664,7 +3105,7 @@ describe("get_context source governance and field types", () => {
          (c: SourceCardShape) =>
             c.source_info.resource_id.source === "orders_secured",
       );
-      expect(gated.source_info.authorize).toEqual([
+      expect(gated.source_info.accessFilter).toEqual([
          {
             expression: "$ROLE = 'admin' or $TENANT = 'acme'",
             given_names: ["ROLE", "TENANT"],
@@ -2676,7 +3117,7 @@ describe("get_context source governance and field types", () => {
       ]);
    });
 
-   it("omits authorize on an ungated source rather than sending it empty", async () => {
+   it("omits accessFilter on an ungated source rather than sending it empty", async () => {
       // Absence is the contract on both sides, and an empty array would read
       // as "a gate with no expressions" to anything checking length.
       const handler = captureHandler({
@@ -2691,7 +3132,7 @@ describe("get_context source governance and field types", () => {
       const open = payload.sources.find(
          (c: SourceCardShape) => c.source_info.resource_id.source === "sales",
       );
-      expect("authorize" in open.source_info).toBe(false);
+      expect("accessFilter" in open.source_info).toBe(false);
       expect(open.source_info.givens).toEqual([
          { name: "REGION", type: "filter<string>" },
       ]);
@@ -2710,7 +3151,7 @@ describe("get_context source governance and field types", () => {
          }),
       );
       expect("givens" in payload.sources[0].source_info).toBe(false);
-      expect("authorize" in payload.sources[0].source_info).toBe(false);
+      expect("accessFilter" in payload.sources[0].source_info).toBe(false);
    });
 
    it("carries a field's Malloy type, and only where a type exists", async () => {
@@ -2813,6 +3254,278 @@ describe("get_context source governance and field types", () => {
             c.source_info.resource_id.source === "customers",
       );
       expect("one_line_summary" in customers.source_info).toBe(false);
+   });
+
+   it("reports a source's filters and its locks, each under its own field", async () => {
+      const model = {
+         getSourceInfos: () => [
+            {
+               name: "finance_only",
+               annotations: [],
+               schema: { fields: [] },
+            },
+         ],
+         getQueries: () => [],
+         getSources: () => [
+            {
+               name: "finance_only",
+               givens: [{ name: "ROLE", type: "string[]" }],
+               accessFilter: ["region = $REGION"],
+               authorize: ["'finance' in $ROLE"],
+            },
+         ],
+      };
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               listModels: async () => [{ path: "finance.malloy" }],
+               getModel: () => model,
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "finance" }],
+         }),
+      );
+      const card = payload.sources[0];
+      expect(card.source_info.accessFilter).toEqual([
+         { expression: "region = $REGION", given_names: ["REGION"] },
+      ]);
+      expect(card.source_info.authorize).toEqual([
+         { expression: "'finance' in $ROLE", given_names: ["ROLE"] },
+      ]);
+   });
+});
+
+/**
+ * A source carrying an unconditional `false` on either route needs no
+ * caller-supplied given to know nobody is admitted — that is
+ * decidable without trusting anything the caller sent, unlike a real rule
+ * (execute_query_tool.ts's `givens` are untrusted MCP-path input). So this
+ * source is dropped from the results entirely rather than listed with a gate
+ * an agent can only learn is unsatisfiable from a 403.
+ */
+describe("get_context accessFilter deny-all drop", () => {
+   function packageWithSource(apiSource: {
+      name: string;
+      accessFilter?: string[];
+      authorize?: string[];
+   }) {
+      const model = {
+         getSourceInfos: () => [
+            { name: apiSource.name, annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [apiSource],
+      };
+      return {
+         listModels: async () => [{ path: "m.malloy" }],
+         getModel: () => model,
+      };
+   }
+
+   async function sourcesFor(apiSource: {
+      name: string;
+      accessFilter?: string[];
+      authorize?: string[];
+   }) {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => packageWithSource(apiSource)),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      return payload.sources as SourceCardShape[];
+   }
+
+   it("drops a source gated by an unconditional `#(access_filter) false`", async () => {
+      const sources = await sourcesFor({
+         name: "locked",
+         accessFilter: ["false"],
+      });
+      expect(sources).toEqual([]);
+   });
+
+   it("drops a source gated by an unconditional `#(authorize) false`", async () => {
+      const sources = await sourcesFor({
+         name: "locked",
+         authorize: ["false"],
+      });
+      expect(sources).toEqual([]);
+   });
+
+   it("drops the case variant `#(authorize) FALSE` too — the wire can carry it uppercase", async () => {
+      // The grammar parser lowercases only for its OWN comparison
+      // (authorize_grammar.ts); the effective text it reports back can still
+      // be the author's original casing/whitespace.
+      const sources = await sourcesFor({
+         name: "locked",
+         authorize: [" FALSE "],
+      });
+      expect(sources).toEqual([]);
+   });
+
+   it("does NOT drop a source gated by a real (non-deny) rule", async () => {
+      const sources = await sourcesFor({
+         name: "gated",
+         accessFilter: ["org_id in $GROUPS"],
+      });
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("gated");
+      expect(sources[0].source_info.accessFilter).toEqual([
+         { expression: "org_id in $GROUPS", given_names: ["GROUPS"] },
+      ]);
+   });
+
+   it("does not drop an ungated source", async () => {
+      const sources = await sourcesFor({ name: "open" });
+      expect(sources).toHaveLength(1);
+      expect("accessFilter" in sources[0].source_info).toBe(false);
+   });
+
+   // `isUnconditionalDenyAuthorize` compares against `"false"` only — `true`
+   // is a real (if unconditional) gate, not a deny, so it is reported like
+   // any other rule rather than dropped.
+   it("does NOT drop a source gated by `#(authorize) true` — reports it like an ordinary gate", async () => {
+      const sources = await sourcesFor({
+         name: "reopened",
+         authorize: ["true"],
+      });
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("reopened");
+      expect(sources[0].source_info.authorize).toEqual([
+         { expression: "true", given_names: [] },
+      ]);
+   });
+
+   // Two models can expose a same-named source with different gates —
+   // `droppedSources` must be keyed by (modelPath, sourceName), not the bare
+   // name, or a deny-all in one model blacks out the open model's card too
+   // (cardFor/governance/bySource collapse same-named sources into one card,
+   // first-model-wins, but that is a SEPARATE, pre-existing identity rule —
+   // the drop itself must not leak across models).
+   it("a deny-all source in one model does not black out a same-named open source in another model", async () => {
+      const lockedModel = {
+         getSourceInfos: () => [
+            { name: "shared", annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [{ name: "shared", accessFilter: ["false"] }],
+      };
+      const openModel = {
+         getSourceInfos: () => [
+            { name: "shared", annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [],
+         getSources: () => [{ name: "shared" }],
+      };
+      const pkg = {
+         // Sorted by path in collectEntities, so "a_locked" is processed
+         // before "b_open" — the deny-all model comes first on purpose, to
+         // pin that a later open occurrence is not blacked out by an
+         // earlier drop.
+         listModels: async () => [
+            { path: "a_locked.malloy" },
+            { path: "b_open.malloy" },
+         ],
+         getModel: (path: string) =>
+            path === "a_locked.malloy" ? lockedModel : openModel,
+      };
+      const handler = captureHandler({
+         getEnvironment: async () => envWith(async () => pkg),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      const sources = payload.sources as SourceCardShape[];
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("shared");
+      expect(
+         (sources[0].source_info.resource_id as { model_path?: string })
+            .model_path,
+      ).toBe("b_open.malloy");
+      expect("accessFilter" in sources[0].source_info).toBe(false);
+   });
+
+   // A named query over a dropped source (`query: q is locked -> {...}`) is a
+   // second route to the same name and shape: KINDS_BY_TARGET.view includes
+   // "query", so a bare {target_type: "view"} enumeration would otherwise
+   // resurrect a bare card via cardFor even though the source card itself was
+   // dropped from the sourceInfos loop above.
+   function packageWithQueriedSource(
+      apiSource: {
+         name: string;
+         accessFilter?: string[];
+         authorize?: string[];
+      },
+      query: { name: string; sourceName: string },
+   ) {
+      const model = {
+         getSourceInfos: () => [
+            { name: apiSource.name, annotations: [], schema: { fields: [] } },
+         ],
+         getQueries: () => [{ ...query, annotations: [] }],
+         getSources: () => [apiSource],
+      };
+      return {
+         listModels: async () => [{ path: "m.malloy" }],
+         getModel: () => model,
+      };
+   }
+
+   async function viewSourcesFor(
+      apiSource: {
+         name: string;
+         accessFilter?: string[];
+         authorize?: string[];
+      },
+      query: { name: string; sourceName: string },
+   ) {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => packageWithQueriedSource(apiSource, query)),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "view" }],
+            scopes: [{ environment: "specs", package: "deny-drop" }],
+         }),
+      );
+      return payload.sources as SourceCardShape[];
+   }
+
+   it("drops neither a query entity nor a source card for a query over an `#(access_filter) false` source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "locked", accessFilter: ["false"] },
+         { name: "q", sourceName: "locked" },
+      );
+      expect(sources).toEqual([]);
+   });
+
+   it("drops neither a query entity nor a source card for a query over an `#(authorize) false` source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "locked", authorize: ["false"] },
+         { name: "q", sourceName: "locked" },
+      );
+      expect(sources).toEqual([]);
+   });
+
+   it("still surfaces a query entity and its source card for a query over a non-deny gated source", async () => {
+      const sources = await viewSourcesFor(
+         { name: "gated", accessFilter: ["org_id in $GROUPS"] },
+         { name: "q", sourceName: "gated" },
+      );
+      expect(sources).toHaveLength(1);
+      expect(sources[0].source_info.resource_id.source).toBe("gated");
+      expect(sources[0].entities?.map((e) => e.entity_type)).toContain("query");
    });
 });
 
@@ -2924,11 +3637,19 @@ describe("get_context duplicate and visibility handling", () => {
       },
    };
 
-   it("indexes a re-exported source once, from the same model every time", async () => {
-      // A package can expose one source from several models (an import, or a
-      // model that extends another). Only the first is kept, so which model
-      // that is has to be a property of the package rather than of the order
-      // the filesystem happened to list it in.
+   it("reports a source under every model that resolves it", async () => {
+      // A source is queryable at every model path that resolves it -- its own
+      // file and every file importing it -- so each pairing is its own card
+      // with its own resource_id, and a caller can query the one it prefers.
+      //
+      // This deliberately reverses an earlier decision to keep only the first
+      // model. That rule made the OTHER valid paths unreachable, and picked
+      // its survivor before `collectSourceInfos` existed, when a model also
+      // claimed sources it could not resolve -- so "first sorted model" could
+      // name a file the source did not compile in. With the namespace fixed,
+      // every path here is a path that compiles, and returning them all
+      // matches the comparable retrieval service, which keys its result set
+      // the same way.
       const pathsFor = async (models: string[]) => {
          const handler = captureHandler({
             getEnvironment: async () =>
@@ -2946,12 +3667,22 @@ describe("get_context duplicate and visibility handling", () => {
                scopes: [{ environment: "specs", package: "dup" }],
             }),
          );
-         expect(payload.sources).toHaveLength(1);
-         return payload.sources[0].source_info.resource_id.model_path;
+         return payload.sources.map(
+            (s: { source_info: { resource_id: { model_path: string } } }) =>
+               s.source_info.resource_id.model_path,
+         );
       };
-      expect(await pathsFor(["a.malloy", "b.malloy"])).toBe("a.malloy");
-      // Reversed listing, same answer: the choice does not follow the order.
-      expect(await pathsFor(["b.malloy", "a.malloy"])).toBe("a.malloy");
+      expect(await pathsFor(["a.malloy", "b.malloy"])).toEqual([
+         "a.malloy",
+         "b.malloy",
+      ]);
+      // Reversed listing, same answer IN THE SAME ORDER. Sorting this side
+      // too would have asserted only that the same set comes back, which is
+      // true with no sort at all.
+      expect(await pathsFor(["b.malloy", "a.malloy"])).toEqual([
+         "a.malloy",
+         "b.malloy",
+      ]);
    });
 
    it("never returns a join declared inside another join's target", async () => {

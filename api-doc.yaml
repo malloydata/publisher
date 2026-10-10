@@ -7,7 +7,7 @@ info:
   description: |
     The Malloy Publisher - Semantic Model Serving API provides access to Malloy packages and everything they contain.
     A Malloy package is a directory with a `publisher.json` manifest at its root, holding Malloy models (`.malloy` files),
-    notebooks (`.malloynb` files), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
+    notebooks (`.malloynb` files and tagged `.malloy` files that are notebooks), embedded data (`.parquet`, `.csv`, and `.xlsx` files), and optionally an HTML data app
     under `public/`.
 
     ## Key Features
@@ -93,6 +93,20 @@ paths:
         Returns the current status of the Malloy Publisher server, including initialization state,
         available environments, and server timestamp. This endpoint is useful for health checks and
         monitoring server availability.
+      parameters:
+        - name: includeLoading
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: >-
+            Also list, in each environment's `packages`, a package that is
+            loading here for the first time and so cannot serve yet, as its
+            `name` and `status` only. Off by default: a listed package has
+            always meant one that can serve here, and only a caller that reads
+            `Package.status` can tell the two apart. A package being reloaded
+            while it serves is listed either way.
       responses:
         "200":
           description: Returns server status
@@ -511,6 +525,17 @@ paths:
             schema:
               type: object
               properties:
+                configEtag:
+                  type: string
+                  description: >
+                    The writer's opaque tag for the configuration this update
+                    produces. Declared here because the rest of this body is a
+                    hand-picked subset of `Connection` rather than a partial of
+                    it, and a writer that could not send the tag on the endpoint
+                    it rotates credentials through could only ever clear it —
+                    an update that omits the tag drops the stored one, since the
+                    configuration that tag described has been replaced. See the
+                    field on `Connection` for what it is and how it is compared.
                 proxy:
                   $ref: "#/components/schemas/ConnectionProxy"
                 postgresConnection:
@@ -628,6 +653,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -685,6 +714,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -731,12 +764,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -779,12 +818,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -855,12 +900,18 @@ paths:
                 $ref: "#/components/schemas/QueryData"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -909,8 +960,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -977,6 +1032,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1039,6 +1098,10 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1089,12 +1152,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1143,12 +1212,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SqlSource"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1221,12 +1296,18 @@ paths:
                 $ref: "#/components/schemas/QueryData"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -1281,8 +1362,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
         "500":
           $ref: "#/components/responses/InternalServerError"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1363,6 +1448,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
@@ -1425,6 +1512,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "501":
@@ -1540,9 +1629,17 @@ paths:
       operationId: list-models
       summary: List package models
       description: |
-        Retrieves a list of all Malloy models within the specified package. Each model entry
-        includes the relative path, package name, and any compilation errors. This endpoint
-        is useful for discovering available models and checking their status.
+        Retrieves the Malloy models within the specified package. Each model entry includes
+        the relative path, package name, whether the package hides the file, and any
+        compilation errors.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
+        files on that surface are listed, unless `includeHiddenFilesAndSources` is true. With it, every
+        model file is listed, and `isHidden` marks the ones the package hides. Dashboard files
+        are listed by the dashboards route either way. Served notebooks (a `.malloy` at the top of
+        `notebooks/` or `dashboards/` whose model-level `## artifact` tag says `kind=notebook`, or
+        names no `kind` and sits under `notebooks/`) are not models here, with or without a
+        surface; they are listed by list-notebooks.
       parameters:
         - name: environmentName
           in: path
@@ -1562,6 +1659,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: A list of models in the package
@@ -1592,6 +1690,19 @@ paths:
         Retrieves a compiled Malloy model with its source information, queries, and metadata.
         The model is compiled using the specified version of the Malloy compiler. This endpoint
         provides access to the model's structure, sources, and named queries for use in applications.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
+        that surface answers 404 with the same message a query to it gets, unless
+        `includeHiddenFilesAndSources` is true. With it, the file is returned with its `sourceText`, whatever
+        sources the text names. Dashboard files and served notebooks (a `.malloy` at the top of
+        `notebooks/` or `dashboards/` whose model-level `## artifact` tag says `kind=notebook`, or
+        names no `kind` and sits under `notebooks/`) are always returned. A package with no surface, or with
+        `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
+        `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
+        the surface file does not carry the hidden sources it imports. A join to a hidden source
+        keeps only its name and the names and types of its fields. `sourceText` is left out
+        when the text names a source the file does not publish, unless
+        `includeHiddenFilesAndSources` is true; the text of a dashboard is always returned.
       parameters:
         - name: environmentName
           in: path
@@ -1617,6 +1728,7 @@ paths:
           required: false
           schema:
             $ref: "#/components/schemas/VersionIdPattern"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       responses:
         "200":
           description: Compiled Malloy model
@@ -1634,6 +1746,125 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+    put:
+      tags:
+        - models
+      operationId: update-model-source
+      summary: Write a dashboard or notebook file into the package
+      description: |
+        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy` —
+        or a notebook file — `notebooks/<slug>.malloy`, which must carry an
+        `## artifact` tag (an untagged file there is a shared include and is
+        refused with 400, and so is a write over an existing file that is
+        not a notebook) — the only paths this endpoint accepts,
+        into the package, and reloads the package in place so it is served from
+        the new text. This is the dashboard and notebook builder's save.
+
+        The text is compiled first, as the file, and refused with its problems
+        when it does not compile; nothing is written. The write is atomic (a
+        sibling temporary file renamed over the target). If the reload that
+        follows fails to compile the package, the previous text is restored (or
+        a new file removed) and the package reloaded again, so a save never
+        leaves the package serving less than it did.
+
+        `expectedHash` is the SHA-256 (hex) of the file's text as the caller
+        opened it, as `GET …/models/{path}` returned it in `sourceText`. On a
+        package with a surface, that GET withholds `sourceText` only when the
+        text names a source the file does not publish, and returns it anyway
+        with `includeHiddenFilesAndSources=true`. When the file on disk no
+        longer hashes to it, the write is refused with 409 and nothing is
+        merged: the caller re-opens and reapplies its change. Omit it to CREATE
+        the file: a file that already exists is then refused with 409 too, so
+        an unconditional overwrite is not something a caller can ask for by
+        leaving a field out. A notebook path over an existing file the package
+        does not serve as a notebook answers 400 instead, with or without a
+        hash, because that check comes before the hash. The check, the write,
+        the reload and the restore all happen under one hold of the package
+        lock, so two saves racing on one file cannot both pass the check, and a
+        rollback cannot revert the other writer's text instead of its own.
+
+        A dashboard whose name (the file's basename) another file already holds
+        is refused with 409 before anything is written, since the name is its
+        URL and its `# drill` target. A `dashboards/` file whose text has no
+        `# artifact` or `## artifact` tag (an `artifact` property anywhere on a
+        tag line, outside a string) is refused with 400 before anything is
+        written; a tag only inside a block comment passes that check but the
+        compiled model carries none, so it is rolled back and answers 500. A
+        tagged dashboard with no tiles saves but is not served until it has one.
+
+        A create answers 201 and an update 200; `created` in the body says the
+        same thing.
+
+        Refused with 403 when `publisher.config.json` has `frozenConfig: true`.
+        Like every write on this server, it is unauthenticated and meant to sit
+        behind an authenticating gateway; see docs/security-posture.md.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            type: string
+        - name: path
+          in: path
+          description: The file, `dashboards/<slug>.malloy` or `notebooks/<slug>.malloy`
+          required: true
+          schema:
+            $ref: "#/components/schemas/PathPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModelSourceWriteRequest"
+      responses:
+        "200":
+          description: The file was replaced and the package reloaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelSourceWriteResult"
+        "201":
+          description: The file did not exist and was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelSourceWriteResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description:
+            The file changed since the caller opened it, already exists and
+            no `expectedHash` was sent, or is a dashboard whose name another
+            file already holds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /environments/{environmentName}/packages/{packageName}/models/{path}/query:
     post:
@@ -1646,6 +1877,14 @@ paths:
         as a raw Malloy query string or by referencing a named query within the model. This endpoint
         supports both ad-hoc queries and predefined model queries, making it flexible for various
         use cases including data exploration, reporting, and application integration.
+
+        Ad-hoc query text that does not compile is a 400 whose `problems` locate each error in the
+        submitted text. On a package with a discovery surface this holds when every `run:` in the
+        text targets a source on the surface, or one the text derives only from such sources; text
+        reaching any other source is answered with the 404 a hidden or missing source gets. Text that
+        fails only at the grammar and names no source to run (for example `run` with no colon) is also
+        a 400, because a grammar error says nothing about the model, unless the model carries any
+        `#(authorize)` or `#(access_filter)`, or the text joins a source off the surface.
       parameters:
         - name: environmentName
           in: path
@@ -1665,6 +1904,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
+        - $ref: "#/components/parameters/includeHiddenFilesAndSources"
       requestBody:
         required: true
         content:
@@ -1682,6 +1922,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "413":
@@ -1690,6 +1932,10 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -1707,6 +1953,33 @@ paths:
         access to all sources, imports, and queries defined in the model.
         Relative imports resolve correctly against sibling model files.
         Returns compilation status and any problems (errors or warnings) found.
+
+        When the submitted source (scope `append`) carries a model-level
+        `## artifact` tag, it is read as a document and the response gains a
+        `document`: the cells and manifest the same text would serve once saved,
+        read from the submitted text alone so the model's own `run:` statements
+        and `##` notes never mix in. The compile runs nothing, including a
+        control's `suggest` query. A cell or tile whose source the caller may
+        not read is not compiled at all and comes back `restricted` with no
+        diagnostic; the rest of the document compiles. A tile expression that
+        uses a construct `append` refuses (a data root of its own, such as
+        `duckdb.table(...)`) is refused with 400, and a tile that does not parse
+        is reported as a `tile-does-not-compile` problem. Submitted text that is a document (it carries the tag, at scope `append`) and writes a render tag turning a value
+        into a URL (`# image`, `# link`), or HTML in a `# label`, is refused with 400
+        before anything compiles, for a field, view or query alike, because other
+        viewers run it; plain `append` text without the tag, and a model file,
+        keep the tags they define themselves. The same refusal covers an annotation that
+        reads `@env.` (in a `##` note too), one the tag parser rejects or that exceeds 8,192 characters,
+        text that frees a column (`except:`, `rename:`) and declares one of the same name
+        in the same extend chain, and one with over 1,000 annotations or 64 KB of them.
+        This removes the author-written paths only: the renderer's other
+        value-to-HTML sinks are not covered by it. A cell that names a source
+        that is both gated and hidden from the caller answers 404 for the whole
+        request, as it does without a document. In a document, problem positions
+        are lines of the submitted text, problems carry no `model` tag, and
+        `includeSql` returns no `sql`. A tag that names no `kind` is a dashboard
+        when it lists `tiles` or carries a `dashboard { … }` grid tag, and a
+        notebook otherwise, since submitted text has no folder to take a kind from.
       parameters:
         - name: environmentName
           in: path
@@ -1743,8 +2016,12 @@ paths:
                 $ref: "#/components/schemas/CompileResult"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "424":
+          $ref: "#/components/responses/PackageManifestError"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -1863,10 +2140,12 @@ paths:
       operationId: list-dashboards
       summary: List package dashboards
       description: |
-        Lists the dashboards in the specified package — every `.malloy` file in
-        the package's `dashboards/` directory that carries an `# artifact` (or
-        model-level `## artifact`) annotation. A file in that directory with no
-        artifact tag is a shared include and is not listed, whether or not it
+        Lists the dashboards in the specified package — every tagged `.malloy`
+        file at the top of `dashboards/` or `notebooks/` carrying an
+        `# artifact` (or model-level `## artifact`) annotation whose `kind` is
+        `dashboard`, or names none under `dashboards/`. A `kind=notebook` file is
+        listed as a notebook instead, whichever folder it sits in. A file with
+        no artifact tag is a shared include and is not listed, whether or not it
         compiles.
 
         A tagged dashboard that failed to compile is listed carrying its
@@ -1876,26 +2155,20 @@ paths:
         would break one is refused and leaves the previously loaded package
         serving, so `error` is only reachable on the paths that keep per-model
         placeholders. Treat it as present-but-uncommon rather than the normal
-        way a broken dashboard surfaces. When the package curates its query surface
-        (`queryableSources: "declared"`), a dashboard whose entry file is not in
-        `explores` is omitted, because its query and given names would not be
-        runnable; the omission is reported in the package's `warnings` as of the
-        last load. A metadata `PATCH` that TIGHTENS curation takes effect on
-        this listing immediately; one that relaxes it takes effect on the next
-        package reload, because the withheld dashboards were never built into
-        the cached set. Either way the matching warning is computed at load, so
-        after a `PATCH` it appears only once the package reloads.
+        way a broken dashboard surfaces.
 
-        Where the boundary is active at all, which needs `explores` declared
-        AND `queryableSources` left at `"declared"`, being listed does not by
-        itself guarantee the dashboard runs: the queryable sources are the
-        union of every listed file's `export {}` closure, so a dashboard whose
-        tiles read a source that only an UNLISTED file exports is still served
-        while those queries are refused. The fix is to list that file too, or
-        to re-export the source from one already listed. It is served rather
-        than withheld because withholding on a guess would hide dashboards that
-        do work. Under `"all"` nothing is refused, so the situation does not
-        arise.
+        Every tagged dashboard is listed, whatever the package's surface. To
+        hide one, remove its `# artifact` tag. On a package with a surface (a
+        root `index.malloy`, or a legacy `explores`) with `queryableSources`
+        left at `"declared"`, a dashboard's tiles, its single query and its
+        filter `suggest` queries may read only sources the surface exports. A
+        source the dashboard declares on top of a surface source may be read;
+        one over a hidden source may not. The dashboard file's own
+        `export {}` and named queries add nothing to the surface. A tile over a
+        hidden source answers 404 when it runs, and the package's `warnings`
+        report each such tile, single query and suggest, with severity
+        `error`, as of the last load, naming the source and the fix. Under
+        `"all"` nothing is refused, so the situation does not arise.
       parameters:
         - name: environmentName
           in: path
@@ -1965,10 +2238,8 @@ paths:
           in: path
           description: >-
             The dashboard's name: its filename basename. Conventionally letters,
-            digits, "-" and "_", and a package is warned when one of its SERVED
-            dashboards falls outside that. A dashboard withheld by curation gets
-            no naming finding, because the naming check runs after the curation
-            gate and a withheld dashboard is already reported as withheld. It is NOT constrained to it, because
+            digits, "-" and "_", and a package is warned when one of its
+            dashboards falls outside that. It is NOT constrained to it, because
             the name comes from a filename rather than being chosen: a file such
             as `dashboards/v1.2.malloy` is served, and its published `resource`
             carries the name percent-encoded. Send it percent-encoded.
@@ -2007,8 +2278,11 @@ paths:
       operationId: list-notebooks
       summary: List package notebooks
       description: |
-        Retrieves a list of all Malloy notebooks within the specified package. Each notebook entry
-        includes the relative path, package name, and any compilation errors. This endpoint
+        Retrieves a list of all Malloy notebooks within the specified package: every
+        `.malloynb` file, and every `.malloy` file at the top of `notebooks/` or `dashboards/`
+        whose model-level `## artifact` tag says `kind=notebook` (or names no `kind` and sits
+        under `notebooks/`). Each notebook entry includes the relative path,
+        package name, title, description, and any compilation or reading error. This endpoint
         is useful for discovering available notebooks and checking their status.
       parameters:
         - name: environmentName
@@ -2031,7 +2305,7 @@ paths:
             $ref: "#/components/schemas/VersionIdPattern"
       responses:
         "200":
-          description: A list of models in the package
+          description: A list of notebooks in the package
           content:
             application/json:
               schema:
@@ -2058,6 +2332,10 @@ paths:
       description: |
         Retrieves a Malloy notebook with its raw cell contents (markdown and code).
         Cell execution should be done separately via the execute-notebook-cell endpoint.
+        A served notebook (a `.malloy` at the top of `notebooks/` or `dashboards/` whose
+        model-level `## artifact` tag says `kind=notebook`, or names no `kind` and sits under
+        `notebooks/`) answers here as well as a `.malloynb`.
+        On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
         - name: environmentName
           in: path
@@ -2108,7 +2386,17 @@ paths:
       description: |
         Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
         and runs the Malloy code, returning query results and any new sources defined.
-        For markdown cells, this simply returns the cell content.
+        For markdown cells, this simply returns the cell content. A served notebook
+        (tagged `kind=notebook`, or untagged-kind under `notebooks/`) answers here as well as a
+        `.malloynb`.
+
+        On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
+        `queryableSources` left at `"declared"`, a code cell may read only sources the surface
+        exports. A cell over a hidden source answers 404, and 404 rather than 403 even when the
+        source is also `#(authorize)`-gated. A source an earlier cell declares on top of a
+        published source still works. A cell's own source over a raw table (`duckdb.table(...)`
+        or `.sql(...)`) has no published source under it, so it is refused. The response shows
+        only the sources the notebook may read.
       parameters:
         - name: environmentName
           in: path
@@ -2188,6 +2476,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "413":
@@ -2196,6 +2486,10 @@ paths:
           $ref: "#/components/responses/InternalServerError"
         "501":
           $ref: "#/components/responses/NotImplemented"
+        "424":
+          $ref: "#/components/responses/ConnectionUnavailable"
+        "502":
+          $ref: "#/components/responses/DatabaseUnreachable"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
@@ -2460,48 +2754,6 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/materializations:
-    get:
-      tags:
-        - materializations
-      operationId: list-environment-materializations
-      summary: List all materializations in an environment
-      description:
-        Returns every materialization across all packages in the environment,
-        ordered by most recent first. Each item carries its `packageName`, so an
-        environment-scoped view can group or label by package. This is the
-        collection-level sibling of the per-package
-        `/packages/{packageName}/materializations` list; the literal
-        `materializations` segment is matched ahead of `{packageName}`, so
-        `materializations` cannot be used as a package name.
-      parameters:
-        - $ref: "#/components/parameters/environmentName"
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-          description: Maximum number of materializations to return
-        - name: offset
-          in: query
-          required: false
-          schema:
-            type: integer
-            minimum: 0
-          description: Number of materializations to skip
-      responses:
-        "200":
-          description: List of materializations across the environment
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Materialization"
-        "404":
-          $ref: "#/components/responses/NotFound"
-
   /environments/{environmentName}/packages/{packageName}/materializations:
     post:
       tags:
@@ -2722,6 +2974,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    PackageManifestError:
+      description: |
+        The package's publisher.json cannot be used as written: it is not
+        valid JSON or not a JSON object, it has a malformed "explores" or an
+        unknown "scope", or its two "scope" settings disagree. The message
+        names the problem and the fix. The package is not served until the
+        file is corrected.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     ServiceUnavailable:
       description: |
         The service is temporarily unable to accept the request. Possible
@@ -2764,6 +3027,31 @@ components:
         two only. The rejection counter is exported as
         publisher_query_cap_exceeded_total{cap_type, source}, where cap_type is
         rows, bytes, or unserializable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ConnectionUnavailable:
+      description: |
+        The connection is misconfigured, so the query never ran. `reason`
+        says how: CONNECTION_AUTH_FAILED (the database rejected the
+        connection's credentials) or CONNECTION_NOT_FOUND (the model names a
+        connection the environment does not have). The query is fine, and a
+        retry fails the same way until the connection is fixed. For
+        CONNECTION_AUTH_FAILED the body carries a fixed message, because the
+        driver's text can name a user; it is logged.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    DatabaseUnreachable:
+      description: |
+        The database connection failed. With `reason: CONNECTION_FAILED` the
+        connection is down: the database could not be reached (refused, reset, timed out,
+        or closed by the server), so the query never ran and a retry can
+        succeed. That reason is what marks the customer's database being down
+        rather than this server failing. The body carries a fixed message,
+        because the driver's text can name an internal host; it is logged.
       content:
         application/json:
           schema:
@@ -2824,11 +3112,47 @@ components:
             governor). Already-loaded packages remain serviceable while throttled;
             callers can treat a throttled server as unhealthy for new load.
             Only reported when the memory governor is enabled.
+        version:
+          type: string
+          readOnly: true
+          description:
+            This server's release version, for example "0.8.2". Use it to tell
+            which build answered, for instance to rule out an old copy served
+            from the npx cache.
+        emptyReason:
+          type: string
+          readOnly: true
+          description:
+            Present only when the server has no environments because no
+            publisher.config.json was found at startup, or because the --config
+            path it was given does not exist. It names the path that was checked
+            and how to fix it. It describes startup, so a config written while
+            the server runs is not read until a restart. A server in this state
+            still reports serving, so check this before treating an empty
+            environments list as intended. Absent once any environment exists, including one created
+            at runtime through the API, and absent when a config was found but
+            lists no environments.
+        initError:
+          type: string
+          readOnly: true
+          description:
+            Present only when initialization failed, and says why. Such a
+            server stays up but never becomes ready, so operationalState stays
+            initializing; without this field that reads as a server still
+            starting. Typical causes are a config file the server cannot read
+            or parse, and a server root it cannot write (where it creates
+            publisher.db), such as a read-only root filesystem. A package or
+            environment that fails to load is reported under loadErrors
+            instead. Fix the cause and restart.
         loadErrors:
           type: array
           readOnly: true
           description:
-            Configured packages and environments that did not load, and why. A
+            Configured packages and environments that did not load, and why,
+            including a package add through the API that failed on the
+            server's side, carrying the same message the add was answered
+            with (an entry cleared by a later successful add of that package,
+            or by deleting it). A
             load failure is not fatal to the server, so operationalState stays
             serving and the affected packages are absent from environments,
             unless the entry carries stale = true, in which case the package is
@@ -2980,6 +3304,60 @@ components:
                   type: string
                 dark:
                   type: string
+            border:
+              type: object
+              description: Hairline color for table gridlines and row rules,
+                per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            cardBorder:
+              type: object
+              description: Edge color of a dashboard card and of a pinned table
+                header row, per mode. A step stronger than `border`, so a
+                card reads as a card on a page whose ground and tile share
+                one colour.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            axis:
+              type: object
+              description: Color of chart axis domain and tick lines, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            gridline:
+              type: object
+              description: Color of chart gridlines, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            chartText:
+              type: object
+              description: Color of chart text (axis labels and titles, legend,
+                chart and header titles), per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
+            value:
+              type: object
+              description: Color of the big-value (KPI) number in a dashboard
+                tile, per mode.
+              properties:
+                light:
+                  type: string
+                dark:
+                  type: string
         font:
           type: object
           description:
@@ -3085,7 +3463,15 @@ components:
             and live-reloads them instead. The mount is chosen when the
             environment is first loaded from config, so adding `--watch-env`
             to a later boot needs `--init` to re-mount a package already
-            copied.
+            copied. On an update, a `location` equal to the one the package
+            was installed from is a metadata update and nothing is fetched; a
+            different one reinstalls the package from it, and an update that
+            arrives while an install is in progress waits for it and is decided
+            against the copy that install leaves resident. To fetch the same
+            location again, reload the package (`GET …?reload=true`). The
+            location a package was installed from is recorded by the server
+            when it installs it and read back from that record; a `location`
+            written into a package's own `publisher.json` is not.
         scope:
           type: string
           enum:
@@ -3106,17 +3492,33 @@ components:
             loaded; defaults to `package` when the manifest omits it.
         explores:
           type: array
+          deprecated: true
           items:
             type: string
           description: >-
-            Optional opt-in for curated discovery. When present, only these
-            model file paths (relative to the package root) are listed via
-            `listModels()`, and within-file discovery is filtered to each
-            model's `export {}` closure. When absent or empty, every model is
-            listed with its full source set (backward-compatible). Every other
-            .malloy file still compiles for import/join resolution but is
-            hidden from listings once `explores` is declared. Notebooks are
-            always listed regardless of this field.
+            The package's discovery surface and query boundary: model file
+            paths relative to the package root. Only these models are listed
+            via `listModels()`, and the surface is the union of their
+            `export {}` closures. Every other .malloy file still compiles for
+            import/join resolution but is hidden. Notebooks and dashboards are
+            always listed regardless of this field, and a dashboard entry
+            needs no listing: a tagged dashboard listed here reads the surface
+            and adds nothing to it. An untagged file under `dashboards/` that
+            is listed is an ordinary surface file.
+            DEPRECATED, still honored. Every non-empty value gets a load
+            warning naming the replacement: a root `index.malloy` that imports
+            the listed files and exports what they publish. `[]` is deprecated
+            too: beside an `index.malloy` it stops that file from limiting
+            what the package publishes (the fix is to rename `index.malloy`
+            and delete this key), and without one it does nothing.
+            A value that is not a list of strings refuses the package load
+            (424).
+            This value MAY have been derived by the server from a root
+            `index.malloy` rather than written by the package author, and the
+            response does not distinguish the two — deliberately, because
+            nothing downstream treats them differently. An explicit key always
+            wins over `index.malloy`. A package is uncurated only when it has
+            neither this key nor a root `index.malloy`.
         exploresWarnings:
           type: array
           readOnly: true
@@ -3143,20 +3545,55 @@ components:
             inline error at query time, or inert where it sits and silently
             ignored. Materialization
             findings: a `storage=` source not served from storage, a `#@ persist`
-            source that was not recognized as materializable, a persist-target
-            collision, and materialization-config problems that degrade
-            attribution. Discovery findings: a model listed in `explores` whose
-            export closure surfaces no sources or named queries, so it lists as
-            empty and renders a blank page. Dashboard findings: a
+            source that was not recognized as materializable, a `#@ persist`
+            REFUSED by the compile-time eligibility gate (one entry per
+            `BuildPlan.refusedSources` member, carrying that gate's own message),
+            a persist-target collision, and materialization-config problems that
+            degrade attribution. A refusal is the one materialization finding the
+            build plan cannot also be read for: a refused `storage`/`colocated`
+            source is ABSENT from `BuildPlan.sources`, so nothing there records
+            that the annotation was written at all. Discovery findings: a model
+            on the package's surface whose export closure surfaces no sources or
+            named queries, so it lists as empty and renders a blank page; a
+            surface whose every model failed to compile, so every model in the
+            package answers 404 by name; and, on the reload that caused it, a
+            package that had a surface and now has none, so every source that
+            surface hid is listed and queryable by name again. Manifest
+            findings: each deprecated use of `explores` or of
+            `queryableSources: "declared"`, and a root file such as
+            `Index.malloy` that differs from `index.malloy` only in case and
+            so is ignored. A root `index.malloy` with no manifest keys gets no
+            warning. Dashboard findings: a
             `dashboards/` file whose `# artifact` tag does not parse or does not
             describe a dashboard, a tile or suggest query that does not resolve,
             a `# drill` naming a destination that is not a dashboard, and a
-            dashboard held back from the listing because its entry file is not
-            in `explores`. Two dashboard findings are about Publisher rather
+            tile, single query or filter suggest that reads a source the
+            surface does not export, so it won't load. Two dashboard findings are about Publisher rather
             than about the package: one when a file carrying an artifact tag
             could not be read and so is not served at all, and one when the lint
             stops early, in which case the list must be read as incomplete
-            rather than as a clean package. Server-computed and read-only:
+            rather than as a clean package. Notebook findings: a `notebooks/`
+            file with an `## artifact` note whose cells could not be read, which
+            names the line and the fix and is reported with severity `error`,
+            because the notebook is served with that error instead of opening.
+            The same family carries findings on files under `notebooks/` and
+            `dashboards/`, each naming its line and the fix; they are computed
+            at discovery and are also returned by `/compile` at file and
+            package scope. Eight codes are `error` and fail `/compile`:
+            `notebook-statement-above-artifact` and `notebook-tag-above-artifact`
+            (a statement or a tag above a served notebook's `## artifact`),
+            `notebook-markdown-above-artifact` (a `(markdown)` annotation above
+            it), `notebook-columns-conflict` (a tiled dashboard's
+            `dashboard_columns` disagrees with `dashboard { columns }`),
+            `notebook-markdown-opener-text` (more than a
+            name after `(markdown)` on a block's opener),
+            `notebook-markdown-attached-nowhere` (a `#(markdown)` annotation
+            with no statement to take it), `notebook-artifact-unparsed` (an
+            `## artifact` tag does not parse), and `notebook-cells-unreadable`
+            (the reader could not read a served notebook's cells). The rest are
+            `warn` (a mistyped `(markdown)` opener, a missing `kind=notebook`, a
+            block that never closes, and similar).
+            Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
             when there are such findings.
@@ -3180,7 +3617,7 @@ components:
             FAN-OUT join (`join_many` or `join_cross`), which can multiply rows,
             while a `join_one` is permitted and a measure aggregating through one
             is served normally; a base source that already fails persist eligibility (unbound
-            parameters, `given` references, `#(authorize)` gates); `sharing=` or
+            parameters, `given` references, authorize gates); `sharing=` or
             `schedule=` at the resource level; and a synthesized rollup name that
             collides with an existing model object.
 
@@ -3273,8 +3710,8 @@ components:
                   findings use both: `error` for something that cannot work as
                   written, such as a tile naming a view the source does not
                   have, and `warn` for something that works but not as the
-                  author probably intended, such as a dashboard held back by
-                  curation. The two findings about Publisher rather than about
+                  author probably intended, such as a dashboard name outside
+                  the conventional shape. The two findings about Publisher rather than about
                   the package split across both: a file that carries an artifact
                   tag and could not be read is `error`, because the dashboard it
                   should have produced does not exist, and a lint that stopped
@@ -3284,15 +3721,17 @@ components:
                   never reached are exactly what it cannot report.
         queryableSources:
           type: string
+          deprecated: true
           enum:
             - declared
             - all
           description: >-
             Controls whether the discovery surface is also a query boundary.
-            `"declared"` (the default) makes queryable == discoverable: when
-            `explores` is declared, only `explores` model files are valid query
-            entry points, and the queryable sources are the union of those
-            files' `export {}` closures — so a source exported by any listed
+            `"declared"` (the default) makes queryable == discoverable: when the
+            package has a surface (a root `index.malloy`, or `explores`), only
+            the surface's model files are valid query entry points, and the
+            queryable sources are the union of those files' `export {}`
+            closures — so a source exported by any listed
             file stays queryable whichever listed model path the request
             addresses it through. Admission is by declaration, not by name: a
             request clears only when the model it names resolves the name to the
@@ -3302,16 +3741,25 @@ components:
             directly queryable (denied with 404).
             The `/compile` endpoint is exempt (compile is the authoring loop;
             the boundary is discovery curation, not access control — for
-            confidentiality use `#(authorize)`, which gates compile too). A
-            source that is both hidden and `#(authorize)`-gated still answers
+            confidentiality use `#(authorize)`, which gates compile too).
+            A source that is both hidden and authorize-gated still answers
             `/compile` with the generic 404, so the exemption cannot be used to
             enumerate gated names.
-            `"all"` decouples the axes: `explores`/`export {}` gate discovery
-            only and every compiled source stays directly queryable. When
-            `explores` is absent there is no curated surface, so both modes are
-            equivalent (everything queryable). Invalid values fall back to
-            `"declared"`. Identity-based access is a separate concern — see
-            `#(authorize)`.
+            `"all"` decouples the axes: the surface gates discovery only, every
+            compiled source stays directly queryable, and model files off the
+            surface are returned by path. The two modes are equivalent
+            (everything queryable) only where there is no curated surface at
+            all, which means no `explores` AND no root
+            `index.malloy` — a package with that file has a surface whether or
+            not the key is present. Invalid values fall back to `"declared"`.
+            Identity-based access is a separate concern — see `#(authorize)`
+            and `#(access_filter)`.
+            `"declared"` is DEPRECATED: it is already the default, so the key
+            changes nothing, and writing it gets a load warning saying to
+            delete it. `"all"` is supported, with no warning, and works beside
+            a root `index.malloy`. It is the one way to hide an
+            `#(authorize)`-gated source from listings while authorized callers
+            can still query it by name.
         manifestLocation:
           type: ["string", "null"]
           description: |
@@ -3443,6 +3891,41 @@ components:
             is a live reference regardless of `manifestBindingStatus` — see that
             field for the invariant a caller reclaiming superseded physical
             tables has to hold.
+        status:
+          type: object
+          readOnly: true
+          description: >-
+            Server-computed, read-only: how this server holds the package right
+            now. `serving` is whether a compiled copy answers queries here;
+            `loading` is whether a load, reinstall or recompile of the package
+            is in progress here. The two are independent. A first load reports
+            `loading` without `serving`. A reload of a package that is already
+            served reports both, because the previous copy keeps answering until
+            the new one is swapped in. Steady state reports `serving` alone.
+            `loadingSince` is when the in-progress load began, so a caller can
+            bound one that never completes. Which tables a serving copy answers
+            from is a separate question, answered by `manifestBindingStatus`.
+
+            A package that is loading for the first time, so is not yet
+            serving, is listed only where a caller asks for it:
+            `GET /status?includeLoading=true` includes it as its name and
+            `status`. Every other listing, the environment resources included,
+            shows packages that can be queried.
+          required: [serving, loading]
+          properties:
+            serving:
+              type: boolean
+              description: A compiled copy of the package answers queries here now.
+            loading:
+              type: boolean
+              description: >-
+                A load, reinstall or recompile of the package is in progress
+                here. While true, `manifestBindingStatus` describes the copy
+                being replaced, not the one being built.
+            loadingSince:
+              type: string
+              format: date-time
+              description: When the in-progress load began. Present only while `loading` is true.
         storageServeBindings:
           type: array
           readOnly: true
@@ -3525,8 +4008,8 @@ components:
           description: >-
             Server-computed, read-only: the state of this package's semantic
             discovery index, which is what `get_context` ranks against
-            when an embedding provider is configured. Absent when the server
-            has no provider, because there is no index to describe.
+            when an embedding provider is configured. `status: lexical` when
+            the server has no provider, because there is no index to describe.
         servedRevision:
           type: string
           readOnly: true
@@ -3613,54 +4096,180 @@ components:
       type: object
       readOnly: true
       description: >-
-        State of a package's semantic discovery index. Poll `status` until
-        `ready` to know retrieval is warm - before this, that state existed
-        only as a server log line, so anything waiting on a warm index had to
-        scrape logs. Every count is scoped to the embedding model currently
-        configured, matching what the search path reads, so a server pointed
-        at a new model reports the index as not yet ready rather than
-        reporting rows retrieval would reject. Reading it takes no locks, so
-        polling cannot perturb an indexing run; note that the first read after
-        a package loads or reloads builds the package's entity index, which is
-        work a metadata read would not otherwise do.
+        State of a package's semantic discovery index. The server builds the
+        index in the background when the package loads (and reloads), one
+        package at a time across the whole server, saving each batch of vectors
+        as it goes. Poll `status` until `ready` to know retrieval is warm.
+        While `indexing`, `embeddedRows` rises toward `totalRows`. A restart
+        starts every package's index again, but vectors already stored for
+        unchanged content are reused, so a restart over an unchanged package
+        embeds nothing new.
+        Every count is scoped to the embedding model currently configured, so
+        rows left behind by an earlier model are never counted. Read `status`
+        for readiness and the counts for progress: they answer different
+        questions, and only `status` tracks what the search path will do. The
+        first read after a package loads builds the package's entity index and
+        its content fingerprint, which is work a metadata read would not
+        otherwise do. After that a read is two row counts and never waits on a
+        sync, so polling is cheap.
       properties:
         status:
           type: string
           enum:
+            - lexical
             - indexing
             - ready
+            - error
             - cooldown
             - too-many-entities
           description: >-
-            `indexing` = at least one current entity has no usable vector yet.
-            Retrieval answers lexically meanwhile. This clears once a
-            `get_context` question triggers a sync, which is what builds
-            the index; it does not clear on its own for a package nothing has
-            queried. `ready` = every entity the package exposes has a vector
-            under the current model and the cache is serving semantic ranking.
-            `cooldown` = the provider failed recently, so the semantic path is
-            short-circuited for a window. `too-many-entities` = the package has
-            more entities than the embedding cap, so it stays lexical
-            permanently rather than transiently. The same vocabulary as
-            `get_context`'s `retrieval_reason`, deliberately.
+            `lexical` = no embedding provider is configured, so `get_context`
+            ranks by words only. That is a mode of the server, not a failure.
+            `indexing` = vectors for this package are being built or are
+            queued behind another package's; while this lasts and a provider is
+            configured, `get_context` answers a search with an "indexing"
+            message and no results, not a lexical ranking. `ready` = the index
+            is warm, so the next `get_context` question about this package is
+            ranked semantically. (It is a statement about the index, not a
+            promise about the next response: a question whose own query
+            embedding fails returns an error naming the provider failure.) It
+            is decided by the same completed sync the search path gates on, not
+            by whether cached rows happen to cover the current entity names.
+            `error` = the index cannot serve now; `reason` and `lastError`
+            say why. A changed `EMBEDDING_MODEL` or a changed package moves a
+            `ready` package back to `indexing`.
+            `cooldown` and `too-many-entities` are deprecated. Earlier versions
+            reported them as the `status` itself; they are now the `reason` of
+            an `error`. They stay in this list so a client generated from an
+            earlier spec still understands every value, and they are never sent.
+        reason:
+          type: string
+          enum:
+            - cooldown
+            - too-many-entities
+          description: >-
+            Present when `status` is `error` for one of two reasons that earlier
+            versions reported as the `status` itself. `cooldown` = the provider
+            failed (after retries) and the package is waiting out a window
+            before the next try; `lastError.retryAt` says when. `too-many-entities`
+            = the package has more entities than the embedding cap, which no
+            retry fixes. Absent for other errors, such as an invalid embedding
+            configuration, which `lastError.message` describes.
+        stage:
+          type: string
+          enum:
+            - keyphrase
+            - source_summary
+          description: >-
+            The sync stage that failed, when `status` is `error` because of one.
+            `keyphrase` = the LLM could not write the package's keyphrases
+            (after retries), so nothing was embedded; `source_summary` = the
+            LLM could not write the package's source summaries (after retries),
+            so nothing was embedded. `lastError.message` has the reason.
+            Absent when the embedding call itself failed.
+        keyphraseProgress:
+          type: object
+          description: >-
+            Present only when keyphrases are on: the package asks for them
+            (`retrieval.keyphrases` is `auto` or `always`, the default being
+            `auto`) and `retrieval.llm` is configured. Counts the entities whose
+            keyphrase comes from the LLM; an entity with a short description
+            uses it as its keyphrase and is not counted.
+          properties:
+            done:
+              type: integer
+              description: Entities that need an LLM keyphrase and have one stored.
+            total:
+              type: integer
+              description: Entities that need an LLM keyphrase.
+            capped:
+              type: boolean
+              description: >-
+                True when `retrieval.llm.maxCallsPerSync` stopped the step before
+                every entity had one. The status can be `ready` with `done` below
+                `total`; the next sync (a restart) continues from there.
+        sourceSummaryProgress:
+          type: object
+          description: >-
+            Present only when source summaries are on: the package does not turn
+            them off (`retrieval.sourceSummary.enabled` is `auto` or `true`, the
+            default being `auto`) and `retrieval.llm` is configured. Counts the
+            sources that get an LLM-written summary. A source with no fields is
+            not counted.
+          properties:
+            done:
+              type: integer
+              description: Sources that get a summary and have a current one stored.
+            total:
+              type: integer
+              description: Sources that get a summary.
+            capped:
+              type: boolean
+              description: >-
+                True when `retrieval.llm.maxCallsPerSync` stopped the step before
+                every source had one. The status can be `ready` with `done` below
+                `total`; the next sync (a restart) continues from there.
+        lastError:
+          type: object
+          description: Present when `status` is `error`.
+          properties:
+            message:
+              type: string
+              description: >-
+                What went wrong, with the fix where there is one. Never
+                contains the provider's URL or the API key; the full error
+                is in the server log.
+            retryAt:
+              type: string
+              format: date-time
+              description: >-
+                The earliest time a retry can start. Nothing retries on a
+                timer: the first `get_context` question about this package
+                after this time starts the retry, so a package nobody asks
+                about stays in `error` and a status poll alone never sees it
+                recover. Absent when no retry can start (for example
+                `too-many-entities`).
+        startedAt:
+          type: string
+          format: date-time
+          description: >-
+            When the sync now running began. Absent when none is running,
+            including while this package waits its turn in the queue.
         embeddedRows:
           type: integer
           description: >-
             Cached vectors for this package under the current embedding model.
-            An entity contributes one row for its name plus one per chunk of
-            its documentation, so this exceeds `totalEntities` on a documented
-            model and is not a count of entities.
+            With the default `retrieval.representation` of `single` an entity
+            contributes one row, so this equals `totalEntities` once indexed.
+            With `facets` an entity contributes one row for its name plus one
+            per chunk of its documentation, so this exceeds `totalEntities` on
+            a documented model and is not a count of entities. A keyphrase row
+            is an extra on top of those and is not counted here or in
+            `totalRows`. Scoped by model only, not by
+            vector length, so it counts what is cached rather than what a
+            search could read today: after a change to `EMBEDDING_DIMENSIONS`
+            that no question has probed yet, rows of the old length are still
+            counted here until the next search discards them. `status` is
+            already `indexing` in that window.
+        totalRows:
+          type: integer
+          description: >-
+            Rows the package wants cached: the denominator for `embeddedRows`.
+            `embeddedRows` of `totalRows` is the progress of a first index.
         totalEntities:
           type: integer
           description: Entities the package currently exposes to retrieval.
         embeddedEntities:
           type: integer
           description: >-
-            Of `totalEntities`, how many have at least one usable vector. The
-            two are equal exactly when `status` is `ready`. Reported because a
-            row count cannot show a model edit that removes two entities and
-            adds two others: the row total is unchanged while the new entities
-            have no vector at all.
+            Of `totalEntities`, how many have at least one usable vector.
+            Reported because a row count cannot show a model edit that removes
+            two entities and adds two others: the row total is unchanged while
+            the new entities have no vector at all. Coverage by identity, so
+            equality does NOT imply `ready`: an edit that rewrote every doc
+            without renaming anything leaves each entity holding its stale
+            name vector. Read `status` for readiness and this pair for how
+            much of the package is covered.
         lastSyncedAt:
           type: string
           format: date-time
@@ -3756,6 +4365,15 @@ components:
         path:
           type: string
           description: Relative path to the model file within its package directory
+        isHidden:
+          type: boolean
+          description: |
+            True for a file this route lists only because the request set
+            `includeHiddenFilesAndSources`: a file the package's `index.malloy` (or a
+            legacy `explores`) does not expose. False for every other file, so every
+            entry is false without that option. It says whether the file is hidden, not
+            whether a query can reach it: under `queryableSources: "all"` a hidden file
+            can still be queried.
         error:
           type: string
           description: Error message if the model failed to compile or load
@@ -3776,12 +4394,18 @@ components:
         title:
           type: string
           description:
-            Human title, resolved from the notebook's own `## title="…"`, then
-            its `#"` doc comment, then its first markdown heading. Absent when
-            none of those resolve, leaving the caller to show the path.
+            Human title. For a `.malloynb`, resolved from its own `## title="…"`,
+            then its `#"` doc comment, then its first markdown heading. For a
+            `.malloy` notebook, from the `title` in its `## artifact` tag, then
+            the first line of the `"` notes above that tag, then its first
+            markdown heading when no prose precedes it. Absent when none of
+            those resolve, leaving the caller to show the path.
         description:
           type: string
-          description: The notebook's `#"` doc comment, when it has one
+          description:
+            The notebook's doc comment, when it has one. For a `.malloy`
+            notebook that is the `"` notes above the `## artifact` line; prose
+            below it is a `##(markdown)` or `##|(markdown)` cell.
         error:
           type: string
           description: Error message if the notebook failed to compile or load
@@ -3789,8 +4413,8 @@ components:
     Dashboard:
       type: object
       description: |
-        A dashboard within a Malloy package: a self-contained `.malloy` file in
-        the package's `dashboards/` directory carrying an `# artifact` (or
+        A dashboard within a Malloy package: a self-contained `.malloy` file at
+        the top of the package's `dashboards/` or `notebooks/` directory carrying an `# artifact` (or
         model-level `## artifact`) annotation. The list entry; see
         DashboardManifest for the detail a viewer needs to render one.
       properties:
@@ -3817,7 +4441,10 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's `#"` doc comment, when it has one
+          description: >-
+            The file's unnamed `"` notes above the `## artifact` tag; when it
+            has none there, the ones below it (a legacy spot the lint flags). For
+            a dashboard whose tag sits on one query, that query's `#"` notes.
         error:
           type: string
           description: Error message if the dashboard file failed to compile
@@ -3858,10 +4485,23 @@ components:
             doc comment and then to the slug
         description:
           type: string
-          description: The file's `#"` doc comment, when it has one
+          description: >-
+            The file's unnamed `"` notes above the `## artifact` tag; when it
+            has none there, the ones below it (a legacy spot the lint flags). For
+            a dashboard whose tag sits on one query, that query's `#"` notes.
         error:
           type: string
           description: Error message if the dashboard file failed to compile
+        kind:
+          type: string
+          enum: [dashboard, notebook]
+          description: >-
+            What the document is, from the `kind` property of its artifact tag
+            (the folder only decides the default when the tag says nothing). A
+            `notebook` is laid out as one column: `dashboardColumns` is 1
+            whatever the file says. Always `dashboard` on
+            `GET …/dashboards/{dashboardName}`; a notebook's manifest is the
+            `dashboard` field of `GET …/notebooks/{path}`.
         query:
           type: string
           description: >-
@@ -3903,7 +4543,8 @@ components:
           type: array
           description: |
             The control row. Normally one entry per given the dashboard runs
-            with: the union over `tiles`, or what `query` references when the tag
+            with: the union over `tiles` (less a given only a source's gate
+            reads, which a host injects rather than a viewer sets), or what `query` references when the tag
             sits on a query, and which the entry file
             can bind. The row widens to
             every given the entry file surfaces when any tile is one discovery
@@ -3933,28 +4574,58 @@ components:
 
     DashboardTile:
       type: object
-      description: One tile of a dashboard
+      description: >-
+        One tile of a dashboard. A `query` tile (the default) runs a query; a
+        `text` tile shows markdown and runs nothing, so a caller that runs a
+        dashboard's tiles skips the ones with `kind` `text`.
       properties:
+        kind:
+          type: string
+          enum: [query, text]
+          description: >-
+            `query` runs `query` through the model query endpoint; `text` shows
+            `markdown`. Absent means `query`.
+        name:
+          type: string
+          description: >-
+            A text tile's name: the bare word in `tiles=[…]` and on its
+            `##|(markdown) name` block. Absent on a query tile.
+        markdown:
+          type: string
+          description: >-
+            A text tile's body, the text of its `##|(markdown) name` block
+            without the opener. Empty when the file has no such block. Absent on
+            a query tile.
         query:
           type: string
           description: >-
-            The run expression exactly as written in `tiles=[…]`, for example
+            Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example
             "orders -> by_month". An EXPRESSION rather than a name, so it goes in
             the `query` field of a `POST …/models/{path}/query` body, prefixed
             with `run:`. Sending it in `queryName`, the field
             `DashboardManifest.query` takes, is rejected.
+        restricted:
+          type: boolean
+          description: >-
+            Set on a tile of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. The tile carries its `query` and
+            nothing derived from the source: no `givenNames`, no layout tags.
         givenNames:
           type: array
           items:
             type: string
           description: |
-            Names of the givens this tile references. This is a scoping hint,
-            not a binding constraint: it tells a caller which tiles a changed
-            control actually needs to re-run. Running a tile with the
-            dashboard's whole control row also works, because an unreferenced
-            given is ignored. Absent when the tile expression is not one
-            discovery can resolve, a refinement or a multi-stage pipeline for
-            instance, in which case send the whole control row. One such tile
+            Names of the givens this tile's compiled query reads: through its
+            view, its source's `where:`, a joined source's `where:`, a
+            dimension or measure it uses, and its source's `#(authorize)` and
+            `#(access_filter)` gates. A control not listed does not change the
+            tile, which is what a viewer's "Doesn't respond to" chip says. It
+            also tells a caller which tiles a changed control needs to re-run;
+            running a tile with the dashboard's whole control row also works,
+            because an unreferenced given is ignored. Absent when discovery
+            could not resolve the tile (its expression neither compiles nor is
+            a plain `source -> view` or named query the static walk reads), in
+            which case send the whole control row. One such tile
             widens `DashboardManifest.givens` to every given the entry file
             surfaces, rather than the union over the resolvable tiles, so that
             the row actually contains the givens that tile filters by.
@@ -3973,13 +4644,15 @@ components:
           type: integer
           description: >-
             Grid columns this tile spans, from a `# colspan=N` on the view or
-            query it names. Clamped to `dashboardColumns` at render time. Absent
+            query it names, or from `colspan=N` on a text tile's entry in
+            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
             means one column.
         break:
           type: boolean
           description: >-
             Start a new grid row at this tile, from a `# break` on the view or
-            query it names. Named for the tag, so every per-tile field on this
+            query it names, or from `break` on a text tile's entry in
+            `tiles=[…]`. Named for the tag, so every per-tile field on this
             schema is spelled the way an author writes it. A generated client
             escapes the attribute where the word is reserved (the Python client
             exposes `break_`) while the wire key stays `break`.
@@ -4040,6 +4713,15 @@ components:
         modelPath:
           type: string
           description: Relative path to the notebook file within its package directory
+        format:
+          type: string
+          enum: ["malloynb", "malloy"]
+          description:
+            The file format the notebook is written in. `malloynb` is the
+            cell-separated format; `malloy` is a `.malloy` at the top of `notebooks/` or
+            `dashboards/` whose model-level `## artifact` tag says `kind=notebook` (or names no
+            `kind` and sits under `notebooks/`), whose cells are
+            its statements and its floating `(markdown)` notes in file order.
         malloyVersion:
           type: string
           description: Version of the Malloy compiler used to generate the notebook data
@@ -4051,26 +4733,43 @@ components:
           description: Array of notebook cells containing raw markdown and code content
           items:
             $ref: "#/components/schemas/NotebookCell"
+        dashboard:
+          allOf:
+            - $ref: "#/components/schemas/DashboardManifest"
+          description: >-
+            The tile layout of a notebook written as one (`## artifact {
+            kind=notebook tiles=[…] }`), in the shape a dashboard has, with
+            `kind` `notebook` and one column. Absent on a notebook written as
+            cells. Its tiles run through the model query endpoint at
+            `modelPath`; `notebookCells` carries the same content as cells for
+            readers that do not draw a layout.
         annotations:
           type: array
-          description: Array of file-level (##) annotations attached to the notebook
+          description:
+            Array of file-level (##) annotations attached to the notebook. For
+            a `.malloy` notebook, every own note that is not a floating
+            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
+            note below the `## artifact` tag is dropped and not listed.
           items:
             type: string
         startingGivens:
           allOf:
             - $ref: "#/components/schemas/EncodedGivenValues"
           description:
-            Starting values for the notebook's controls, declared at its file
-            level. URL parameters override these, which is why the two share a
-            shape. Omitted when the notebook declares none.
+            Starting values for the notebook's controls. A `.malloy` notebook
+            declares them in its artifact tag (`## artifact { givens { … } }`),
+            a `.malloynb` in its file-level tags (`## givens { … }`). URL
+            parameters override these, which is why the two share a shape.
+            Omitted when the notebook declares none.
         autorun:
           type: boolean
           description:
             False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true. The same flag, with
-            the same default, that `DashboardManifest.autorun` carries, so a
-            notebook's `## autorun=false` and a dashboard's
-            `# artifact { autorun=false }` arrive identically.
+            re-running on every change. Defaults to true. A `.malloy` notebook
+            reads it from its artifact tag (`## artifact { autorun=false }`), a
+            `.malloynb` from its file-level tags (`## autorun=false`). The same
+            flag, with the same default, that `DashboardManifest.autorun`
+            carries.
         sources:
           type: array
           description: Sources defined in the notebook's model
@@ -4132,9 +4831,12 @@ components:
             code beside the compiled view of the same file without a second,
             differently-shaped fetch. Named `sourceText`, not `source`, because
             `sources` on this same object are the model's Malloy sources.
-            Optional twice over: absent from servers that predate it, and
-            omitted (with a server-side warning) when the file cannot be read,
-            so a compiled model is never withheld for want of its text.
+            Optional: absent from servers that predate it; omitted (with a
+            server-side warning) when the file cannot be read, so a compiled
+            model is never withheld for want of its text; and omitted when the
+            file text names a source it does not publish, on a package with a
+            surface, unless `includeHiddenFilesAndSources` is true. A
+            dashboard's text is always returned.
 
     View:
       type: object
@@ -4236,6 +4938,13 @@ components:
           description: Annotations attached to the given declaration
           items:
             type: string
+        secure:
+          type: boolean
+          description: >-
+            True when the declaration carries `#(secure)`: its value is the
+            host's to set. The builder withholds its control only when it edits
+            a document held as text; a saved dashboard or notebook renders it
+            as before. Absent otherwise.
         default:
           type: string
           description: The given's default value as a Malloy source literal
@@ -4298,6 +5007,18 @@ components:
           type: string
         dimension:
           type: string
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            The givens the suggest query needs in its request to run: the ones
+            the source it reads is scoped by (a source-level `where: … ~ $X`)
+            or gated by (an authorize gate reading `$X`), plus, for the `query`
+            form, the named query's own. A client sends the current values of
+            exactly these, so a gated source's options load while the option
+            list still does not depend on the page's other filters. Absent
+            when the query needs none.
 
     GivenValues:
       type: object
@@ -4368,39 +5089,64 @@ components:
         authorize:
           type: array
           description: >-
-            Effective authorize expression gating this source: normally the
-            author's `#(authorize)` expression as written, whether declared on
-            this source itself or carried in from elsewhere (the source it
-            extends, a query-source base, a composite member). Enforced at
-            query time as a row filter grafted onto the source the query
-            enters through. An empty or absent list means unrestricted. Where
-            the gate registry cannot attribute an expression to a declaring
-            source it reports `"false"` instead — a fail-closed placeholder,
-            not something the author wrote, and one more reason to read this
-            list only as "gated" rather than as a predicate.
+            Effective `#(authorize)` expressions locking this source: a rule
+            about the CALLER (`'literal' <op> $GIVEN`), or a whole-body
+            `"true"`/`"false"` sentinel. It answers whether the caller may
+            reach the source at all, so **a caller it does not admit is
+            refused with HTTP 403** — not served zero rows. An empty or absent
+            list means no lock.
 
-            Every gate is enforced as a row filter, whether or not its
-            expression reads a row field. A caller the gate admits nowhere
-            therefore gets HTTP 200 with zero rows, not a 403. Do not treat a
-            200 with zero rows as "no gate applied". A 403 means the gate
-            could not be applied at all: the entry point renamed or dropped a
-            field the gate reads, or a given the gate names was not supplied.
-            Both are denials, but only one is visible as a status code.
+            Reported whether the gate is declared on this source itself or
+            carried in from elsewhere (the source it extends, a query-source
+            base, a composite member). Where the gate registry cannot
+            attribute an expression to a declaring source it reports `"false"`
+            instead — a fail-closed placeholder, not something the author
+            wrote, and one more reason to read this list only as "locked"
+            rather than as a predicate.
 
             IMPORTANT for anything re-implementing the decision: this flat
             list is not a predicate you can evaluate, and it is not a count of
-            one. A source may declare at most one gate of its OWN, but the
-            list flattens every gate carried in, so several elements are
-            normal — a query source over a composite reports the same
-            authored gate twice, once from its base and once from the resolved
-            member. Expressions that came from different declaring sources are
-            AND-ed rather than OR-ed. Treat the list as "at least these
-            constraints apply": use it to decide THAT a source is gated, not
-            to recompute WHETHER a given caller passes. Reading it as a pure
-            disjunction grants where Publisher denies.
+            one. A source may declare more than one gate of its OWN — repeats
+            AND together — and the list also flattens every gate carried in,
+            so several elements are normal; a query source over a composite
+            reports the same authored gate twice, once from its base and once
+            from the resolved member. Expressions from different declaring
+            sources are likewise AND-ed rather than OR-ed. Treat the list as
+            "at least these constraints apply": use it to decide THAT a source
+            is locked, not to recompute WHETHER a given caller passes. Reading
+            it as a pure disjunction grants where Publisher denies.
+
+            Read the sentinels ELEMENT-WISE, never as a verdict on the list: a
+            list is unlocked only when `"true"` is its SOLE element, because
+            gates from different declaring sources are flattened in here and
+            AND together, so `["true", "'finance' in $GROUPS"]` is a real shape
+            and is locked. `"false"` needs no such care — anywhere in the list
+            it denies.
 
             Givens are caller-asserted, so this is a boundary only behind a
             trusted tier — see docs/authorize.md.
+          items:
+            type: string
+        accessFilter:
+          type: array
+          description: >-
+            Effective `#(access_filter)` expressions filtering this source's
+            rows: `field_path <op> $GIVEN`, grafted onto the source the query
+            enters through. It answers which rows the caller may see, so **a
+            caller it admits nowhere gets HTTP 200 with zero rows**, not a 403.
+            An empty or absent list means no row filter.
+
+            Do not read a 200 with zero rows as "no filter applied", and do not
+            read a non-empty result as proof rows got through: an ungrouped
+            aggregate is row-count-preserving over empty input, so `count()`
+            returns one row reading 0 even when the filter admitted nothing.
+
+            Same flattening, AND-not-OR and attribution caveats as `authorize`
+            apply — this is a signal that the source is filtered, not a
+            predicate to re-evaluate. There are no sentinels on this route:
+            `true` and `false` belong to `authorize`. Givens are
+            caller-asserted, so this is a boundary only behind a trusted tier —
+            see docs/authorize.md.
           items:
             type: string
 
@@ -4412,7 +5158,9 @@ components:
           type: string
           description:
             Query string to execute on the model. If the query parameter is
-            set, the queryName parameter must be empty.
+            set, the queryName parameter must be empty. It may hold one run
+            statement, after any source or query definitions; text with more
+            than one run statement is a 400, since only the last would run.
         sourceName:
           type: string
           description: |
@@ -4503,9 +5251,62 @@ components:
           type: string
           enum: ["markdown", "code"]
           description: Type of notebook cell
+        kind:
+          type: string
+          enum: ["markdown", "query", "definition"]
+          description:
+            What a cell is, on a `.malloy` notebook. A definition cell
+            (`source:`, `import`, `query:`, `given:`, `type:`, `export`) has type `code`
+            and produces no result. Absent on a `.malloynb`.
         text:
           type: string
           description: Text contents of the notebook cell (either markdown or Malloy code)
+        markdown:
+          type: string
+          description:
+            On a `.malloy` notebook's code cell, the prose written on the
+            `(markdown)` route in its own tag lines (`#(markdown) text` lines,
+            `#|(markdown)` … `|#` blocks), which `text` still contains. Blocks
+            join with a blank line, adjacent lines with a newline. Author
+            prose, so it is served even when `queryInfo` is withheld. Absent
+            when the cell has none.
+        proseLines:
+          type: array
+          description:
+            Present on every code cell of a `.malloy` notebook, and absent on
+            a `.malloynb` or from a server that predates it. The lines of
+            `text` that hold `markdown`, as `[start, end]` pairs in file order;
+            `[]` when the cell has none. Lines are 0-based and inclusive,
+            counted on `text` split at `\n`. Strip exactly these lines to get
+            the cell's code without its prose; do not re-derive them from
+            `text`, whose first line has lost its indentation.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: integer
+        restricted:
+          type: boolean
+          description: >-
+            Set on a cell of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. It was not compiled, so nothing else
+            is known about what it reads.
+        codeLine:
+          type: integer
+          description:
+            Present on every code cell of a `.malloy` notebook, as `proseLines`
+            is. The 0-based line of `text` (split at `\n`) where the
+            statement's code starts, its first token that is neither a note nor
+            a comment, so the `source`, `run`, `given` or `import` keyword sits
+            on it.
+        caption:
+          type: string
+          description:
+            On a `.malloy` notebook's code cell, the joined text of its leading
+            `#"` lines (space-joined, trimmed). Author prose, so it is served
+            even when `queryInfo` is withheld. Absent when the cell has none,
+            which is authoritative wherever `proseLines` is present.
         newSources:
           type: array
           description:
@@ -4517,7 +5318,8 @@ components:
           type: string
           description:
             JSON string containing QueryInfo object for the query in this cell
-            (if the cell contains a query)
+            (if the cell contains a query). On a package with a surface, left out
+            for a cell whose query reads a source the notebook may not read.
 
     NotebookCellResult:
       type: object
@@ -4527,9 +5329,33 @@ components:
           type: string
           enum: ["markdown", "code"]
           description: Type of notebook cell
+        kind:
+          type: string
+          enum: ["markdown", "query", "definition"]
+          description: The cell's kind, on a `.malloy` notebook. Absent on a `.malloynb`.
         text:
           type: string
           description: Text contents of the notebook cell
+        markdown:
+          type: string
+          description:
+            A `.malloy` notebook code cell's own `(markdown)` prose, as on
+            `NotebookCell`. Absent when the cell has none.
+        proseLines:
+          type: array
+          description: The lines of `text` that hold `markdown`, as on `NotebookCell`; `[]` when none.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: integer
+        codeLine:
+          type: integer
+          description: The line of `text` where the statement's code starts, as on `NotebookCell`.
+        caption:
+          type: string
+          description: The cell's leading `#"` caption, as on `NotebookCell`. Absent when the cell has none.
         result:
           type: string
           description: JSON string containing the execution result for this cell
@@ -4838,7 +5664,17 @@ components:
 
     Connection:
       type: object
-      description: Database connection configuration and metadata
+      description: >
+        Database connection configuration and metadata.
+
+        Credential fields are WRITE-ONLY. They are accepted on create and
+        update and no read returns them, so this one schema describes a
+        request body in full and a response body with its credentials
+        omitted. Omitted rather than masked, so a client cannot round-trip a
+        placeholder back into stored config as a real credential. An update
+        does not have to resend a credential it could not read; a field left
+        out keeps its stored value, a field sent replaces it, and a field sent
+        empty clears it.
       properties:
         resource:
           type: string
@@ -4869,6 +5705,22 @@ components:
               ducklake,
               publisher,
             ]
+        withheldFields:
+          type: array
+          items:
+            type: string
+          description: >
+            Read-only. Dotted paths of the fields this connection has stored
+            that this response does not return. In practice that is its
+            credentials, but it is any stored field the response withholds, so
+            a field the server does not publish appears here too. Names only,
+            never a value.
+
+            It exists because a client otherwise cannot tell a credential that
+            is set from one that is absent, and so cannot tell whether leaving a
+            box empty keeps something or leaves the connection without a
+            credential. An editor should read it to label the boxes that are
+            already filled. Ignored on write.
         fingerprint:
           type: string
           description: >
@@ -4889,6 +5741,48 @@ components:
             environments on the same project with different
             impersonateServiceAccount values but the same fingerprint would
             share persisted-table ids.
+        configEtag:
+          type: string
+          description: >
+            Optional, opaque entity tag for this connection's configuration,
+            owned by whoever wrote the connection. The server stores it
+            verbatim, returns it verbatim, and never derives, validates or
+            interprets it; it has no meaning to Publisher itself.
+
+            It exists so that a writer distributing this connection to several
+            Publishers can tell which of them are still holding the
+            configuration it last sent. The writer computes a tag over the
+            configuration it is about to send, sends the two together, and
+            compares the tag each server reports against the one it would send
+            now — the same equality-only comparison an HTTP ETag supports, and
+            no other operation is defined on it. A server that reports a
+            different tag, or none, has not been given that configuration.
+
+            Distinct from `fingerprint`, which identifies the DATA a connection
+            reaches and deliberately excludes credentials so it survives
+            rotation. This identifies the CONFIGURATION, credentials included,
+            which is what makes it able to distinguish a server holding a
+            rotated-away password from one holding the current one — a
+            distinction no read can otherwise make, since credentials are never
+            returned. The two change independently and neither substitutes for
+            the other.
+
+            It is returned on reads, because a writer that cannot read it back
+            cannot compare it. Choose the value with that in mind: a digest over
+            configuration that includes credentials does not reveal them, but it
+            COMMITS to them, and a reader who can see the other inputs has a
+            preimage with only the secret missing. If the connection is readable
+            by anyone you would not hand the credential to, use a keyed digest,
+            or keep this tag out of the reach of that reader.
+
+            A write that does not carry a tag CLEARS it, rather than inheriting
+            the stored one. The tag describes the configuration the writer that
+            set it sent; an update that replaces that configuration without
+            supplying a tag has invalidated it. This is also what keeps a writer
+            convergent when it stops sending tags — it pushes its own config, the
+            stale tag is dropped, and its next comparison agrees, where an
+            inherited tag would differ from a config that writer itself just sent
+            and make it re-push on every poll.
         queryMetadata:
           $ref: "#/components/schemas/QueryMetadata"
           description: >-
@@ -5052,8 +5946,9 @@ components:
           type: string
           enum: [disable, no-verify, verify-ca, verify-full]
           description:
-            TLS mode for a connection reached through a `proxy` (SSH bastion).
-            Because the driver connects to a local tunnel endpoint, the cert
+            TLS mode for the connection. On a connection reached through a
+            `proxy` (SSH bastion), the driver connects to a local tunnel
+            endpoint, so the cert
             hostname can't be checked from the tunnel address alone; use
             `verify-full` to check it against the real host. `verify-ca`
             validates the server cert chain against the trusted CA bundle (e.g.
@@ -5061,16 +5956,29 @@ components:
             validates the chain AND the hostname against the real host (verified
             via SNI through the tunnel; requires the target's CA to be trusted by
             Node's bundled CA roots or NODE_EXTRA_CA_CERTS), `no-verify` encrypts without
-            verifying, and `disable` uses no TLS. Note `verify-full` trusts a
+            verifying, and `disable` uses no TLS. A `storage=` build of a proxied
+            source applies the same mode through its own tunnel, `verify-full`
+            included. Note `verify-full` trusts a
             broader CA set than `verify-ca` here — ambient roots plus
             NODE_EXTRA_CA_CERTS, rather than the pinned NODE_EXTRA_CA_CERTS
             bundle that `verify-ca` uses — so it is intentionally not a strict
             superset; it adds the hostname check without narrowing CA trust.
             The server defaults it to
             `no-verify` when a proxy is set (so a force-SSL target isn't rejected
-            for plaintext) — a server-applied default, not a schema default. Only
-            valid on a proxied connection — a direct connection uses the
-            deployment PGSSLMODE and rejects this field.
+            for plaintext) — a server-applied default, not a schema default. On
+            a direct connection the same modes apply against the configured
+            host; when omitted, the deployment PGSSLMODE applies. Ignored when
+            connectionString is set, which carries its own sslmode. Not applied
+            to a DuckLake catalog connection.
+        statementTimeoutMilliseconds:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description:
+            Maximum run time of each statement on the database, in
+            milliseconds. The database cancels a statement that exceeds it.
+            When omitted, the database's own statement_timeout applies. Not
+            applied to a DuckLake catalog connection.
 
     MysqlConnection:
       type: object
@@ -5439,13 +6347,25 @@ components:
     DuckdbConnection:
       type: object
       description: >
-        DuckDB database connection configuration. Publisher intentionally
-        exposes only data-source intent here. Database files, working
-        directories, filesystem/network policy, extension loading, setup SQL,
-        temp directories, and resource knobs are owned by Publisher so
-        environment configs cannot widen deployment policy through low-level
-        DuckDB settings.
+        DuckDB database connection configuration: attached foreign databases,
+        and optional setup SQL for anything they do not cover (e.g. ATTACH
+        commands for external lakehouses). Setup SQL must be enabled with
+        PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true and is refused under
+        EXTENSION_FETCH_POLICY=local-only. Database files, working directories,
+        filesystem/network policy, extension loading, temp directories, and
+        resource knobs remain owned by Publisher.
       properties:
+        setupSQL:
+          type: string
+          description: >
+            Optional initialization SQL script executed against the DuckDB
+            session upon connection (e.g. ATTACH commands for external lakehouses).
+            Multiple statements must be separated by a semicolon and newline (;\n).
+            Use absolute paths: a relative path resolves against the server's
+            working directory. Withheld from responses like a credential; an
+            update that omits it keeps the stored script, and an empty string
+            removes it. Refused unless the deployment sets
+            PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true.
         attachedDatabases:
           type: array
           items:
@@ -5533,12 +6453,62 @@ components:
       type: object
       description: Standard error response format
       properties:
+        code:
+          type: integer
+          description: HTTP status code, repeated in the body for convenience
         message:
           type: string
           description: Human-readable error message describing what went wrong
         details:
           type: string
           description: Additional error details or context
+        reason:
+          type: string
+          description: |
+            Machine-readable discriminator, for callers that must branch on
+            which error they got rather than on prose. Absent unless a caller is
+            expected to act on it, so treat absence as "no special handling".
+
+            TABLE_NOT_FOUND distinguishes a table that is not in the database
+            from the other conditions that also answer 404 on these routes --
+            an environment or connection this server does not host. The former
+            says nothing about whether the caller reached the right server; the
+            latter is a routing problem worth retrying elsewhere.
+
+            CONNECTION_FAILED, on a 502, means the database could not be
+            reached (the connection was refused, reset or timed out, or the
+            server closed it), so the query never ran. The query and the model
+            are fine; retrying elsewhere will not help, and neither will
+            rewriting the query.
+
+            CONNECTION_AUTH_FAILED, on a 424, means the database rejected the
+            connection's credentials (a wrong password, an invalid key, an
+            expired token), so the query never ran. Whoever configures the
+            connection has to fix it; retrying fails the same way.
+
+            CONNECTION_NOT_FOUND, on a 424, means the model names a connection
+            the environment does not have, usually one deleted after the
+            package was loaded.
+
+            Deliberately an open string rather than an enum. Generators render
+            an enum closed, so adding a second value here would break every
+            client generated before it -- on the one field whose purpose is to
+            grow. Callers must treat an unrecognized value as absent.
+
+            Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
+            CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND.
+        problems:
+          type: array
+          description: |
+            Present on the 400 answering ad-hoc query text that does not
+            compile: the compiler's problems, in the shape `/compile` returns.
+            Each `at.range` is located in the submitted `query` text, with
+            0-based lines and characters; `at.url` is omitted, since the text
+            has no document of its own. A problem produced by something the
+            server added to the text (an injected source filter) carries no
+            location.
+          items:
+            $ref: "#/components/schemas/CompileProblem"
       required:
         - message
 
@@ -5625,22 +6595,55 @@ components:
           type: string
           enum: ["append", "file", "package"]
           default: append
-          description:
+          description: >
             What the source means, and how far the check reaches. "append"
-            (default, the historical behavior) appends the source to the model
-            in the URL and compiles it in that namespace — right for NEW
-            definitions; an edit to an existing definition collides ("Cannot
-            redefine"), and diagnostic positions land in the concatenated
-            virtual file. "file" compiles the source AS that model, replacing
-            its on-disk content for the check — validates an edit before
-            saving, at true file coordinates. "package" runs the same worker
-            compiler and file selection as reload over every .malloy and
-            .malloynb file, without swapping the result into the served
-            package; with a source, importers compile against the replacement.
-            Package diagnostics can name files hidden from discovery. No rows
-            or SQL are returned, and caller-provided source remains subject to
-            authorize gates. includeSql is not available at "package". An
-            invalid value is rejected with a 400 naming the valid set.
+            (default) appends the source to the model in the URL and compiles
+            it in that namespace — right for NEW definitions; an edit to an
+            existing definition collides ("Cannot redefine"), and diagnostic
+            positions land in the concatenated virtual file. "file" compiles
+            the source AS that model, replacing its on-disk content for the
+            check — validates an edit before saving, at true file coordinates.
+            "package" runs the same worker compiler and file selection as
+            reload over every .malloy and .malloynb file, without swapping the
+            result into the served package; with a source, importers compile
+            against the replacement. It also reports the render-tag findings
+            (code "render-tag") and the dashboard, given and drill findings
+            (code "dashboard-lint") a reload would put on the package's
+            warnings, at their own severity and with no position. The
+            package's other warnings (storage, persist, materialization,
+            explores, surface and discovery warnings, among others) are not
+            reported. Package diagnostics can name
+            files hidden from discovery. No rows or SQL are returned, and
+            caller-provided source remains subject to authorize gates.
+            includeSql is not available at "package".
+
+            "append" text is checked against the model's PUBLISHED surface, so
+            it may not declare its own data roots: import, connection.table(…),
+            connection.sql(…), given:, ##! compiler flags and the raw-SQL
+            function forms (name!type(…), sql_number, sql_string and the rest
+            of that family) are refused with a 400. Those belong in a model
+            file, so validate text declaring them at "file" or "package", which
+            are not restricted. "append" text must also stand alone as
+            top-level Malloy: a bare view:, dimension: or measure:, and anything
+            that only parses as a continuation of the model's last statement,
+            is refused with a 400, because the check reads the submitted text by
+            itself. Wrap a view body in a top-level query:, or a field in a
+            throwaway source: check is <source> extend { … }. Compiling at
+            "append" also requires the model named in the URL to load: a model
+            that does not compile is a 400 carrying that model's own problems,
+            and a model that does not exist is a 400 that deliberately says only
+            that it could not be loaded. An invalid scope value is rejected with
+            a 400 naming the valid set.
+
+            "append" text that carries a model-level `## artifact` tag is a
+            document, which other viewers run, and is also refused with a 400
+            for `# image`, `# link`, markup in a `# label`, `@env.` in an
+            annotation, an annotation the tag parser rejects or that exceeds
+            8,192 characters, `except:` or `rename:` followed by a declaration
+            of the same name in the same extend chain, and more than 1,000
+            annotations or 64 KB of them. Plain "append" text without that tag
+            keeps those tags; a model file defines them itself, and its edit is
+            checked at "file".
         includeSql:
           type: boolean
           default: false
@@ -5650,6 +6653,42 @@ components:
             and the source contains a runnable query).
         givens:
           $ref: "#/components/schemas/GivenValues"
+
+    ModelSourceWriteRequest:
+      type: object
+      description: The text to write into a dashboard or notebook file
+      required:
+        - source
+      properties:
+        source:
+          type: string
+          description: The whole file's Malloy text
+        expectedHash:
+          type: string
+          description:
+            SHA-256 (hex) of the text the caller opened. Refused with 409 when
+            the file on disk no longer hashes to it. Omit to create the file,
+            which is then refused with 409 if it already exists.
+
+    ModelSourceWriteResult:
+      type: object
+      description: What a dashboard or notebook write left in the package
+      required:
+        - path
+        - contentHash
+      properties:
+        resource:
+          type: string
+          description: Resource path to the model file that was written
+        path:
+          type: string
+          description: The file written, relative to the package
+        contentHash:
+          type: string
+          description: SHA-256 (hex) of the text as written; the next write's `expectedHash`
+        created:
+          type: boolean
+          description: True when the file did not exist before
 
     CompileResult:
       type: object
@@ -5671,6 +6710,40 @@ components:
           description:
             Generated SQL for the compiled query. Only present when includeSql
             is true and compilation succeeds with a runnable query.
+        document:
+          $ref: "#/components/schemas/CompiledDocument"
+
+    CompiledDocument:
+      type: object
+      description: >-
+        The document a compiled source describes, in the shape the same text
+        serves once saved. Present only when the source carries a model-level
+        `## artifact` tag and compiled far enough to read.
+      properties:
+        kind:
+          type: string
+          enum: [dashboard, notebook]
+          description: >-
+            From the tag's `kind`. When it names none, a document that lists
+            `tiles` or carries a `dashboard { … }` grid tag is a dashboard and
+            any other is a notebook: submitted text has no folder to decide.
+        manifest:
+          allOf:
+            - $ref: "#/components/schemas/DashboardManifest"
+          description: >-
+            Shaped like a served dashboard's manifest, with two differences:
+            `path` is absent (the text runs on the model it was compiled on top
+            of, which is the model in the request URL) and `name` is that
+            model's file slug rather than a document name, which the host owns;
+            `title` is the heading.
+        cells:
+          type: array
+          description: >-
+            The file's own cells. A document laid out as tiles lists only its
+            definition cells, as a saved one does; its prose and queries are
+            `manifest.tiles`.
+          items:
+            $ref: "#/components/schemas/NotebookCell"
 
     CompileProblem:
       type: object
@@ -5895,7 +6968,7 @@ components:
         One `#@ persist` source refused at compile time, and why. Computed
         from the SAME tier-appropriate eligibility assert the build path
         itself enforces (the colocated tier's post-relaxation admission for a
-        proven row-level, fully-attributed `#(authorize)` gate applies here
+        proven row-level, fully-attributed authorize gate applies here
         too), so a source this reports as refused is refused for the tier it
         would actually build under — never the unconditional
         `storage=`-destination check applied to a source that declares no
@@ -5924,12 +6997,12 @@ components:
             Which build path this source was evaluated against: `storage` for
             a source declaring `#@ persist storage=<ref>` (evaluated against
             the full storage-destination eligibility gate, which never
-            admits an `#(authorize)`-gated source); `colocated` for a plain
+            admits an authorize-gated source); `colocated` for a plain
             `#@ persist` (evaluated against the colocated gate, which admits
             a proven row-level, fully-attributed gate); `preaggregate` for a
             `#@ preaggregate` rollup (evaluated against the pre-aggregation
             gate, which refuses unconditionally when the rollup's base is
-            `#(authorize)`-gated — rollups group away the gate column, so
+            authorize-gated — rollups group away the gate column, so
             there is no row-level admission the way colocated has).
         reason:
           type: string
@@ -5937,19 +7010,54 @@ components:
             [
               free_parameter,
               given,
+              given_in_persisted_query,
+              dynamic_projection,
+              dynamic_join,
+              dynamic_joined_where,
+              partition_without_storage,
+              partition_column_unknown,
+              partition_column_not_public,
+              merge_key_scope_unresolved,
+              preaggregate_over_dynamic_source,
               authorize,
               not_duckdb_portable,
               public_surface_unknown,
             ]
           description: >-
-            The bounded refusal reason. Only `free_parameter`, `given` and
-            `authorize` can appear here — those are the only reasons the two
-            compile-time eligibility asserts this collection is computed from
-            produce. `not_duckdb_portable` is decided against the post-build
-            captured schema, which does not exist at compile time, and
-            `public_surface_unknown` is raised by the build-time narrowing of a
-            stored table to the source's public columns; both are listed only
-            because they share the enum the runtime eligibility metric uses.
+            The bounded refusal reason. Only the compile-time reasons can
+            appear here — `free_parameter`, `authorize`, the four
+            that name where a given the build could not strip sits
+            (`given_in_persisted_query`, `dynamic_projection`, `dynamic_join`,
+            `dynamic_joined_where`), the three that name an unusable
+            `partition=` (`partition_without_storage`,
+            `partition_column_unknown`, `partition_column_not_public`),
+            `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
+            cannot be expressed over the stored table's own columns), and
+            `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
+            a given, which has no read-time re-application to put the term back)
+            — those being the only reasons the two compile-time eligibility
+            asserts this collection is computed from produce.
+
+
+            `given_in_persisted_query` is raised by BOTH gates, for one
+            condition: the BUILD would substitute a given's value, so the
+            artifact holds one caller's slice. On colocated that is a build that
+            runs and lies; on a storage destination the same placement also
+            leaves nothing for the read to re-apply. A given in the source's
+            extend block is neither — it is left out of the build and applied
+            per caller at read — and is admitted on both tiers.
+
+
+            `given` is retained for records that already carry it and is no
+            longer produced. It was the storage tier's blanket refusal of any
+            given reference, and the positional reasons above replaced it: where
+            a given sits decides the outcome, so a single reason covering every
+            placement can no longer be raised. `not_duckdb_portable` is decided against the
+            post-build captured schema, which does not exist at compile time,
+            and `public_surface_unknown` is raised by the build-time narrowing
+            of a stored table to the source's public columns; both are listed
+            only because they share the enum the runtime eligibility metric
+            uses.
         message:
           type: string
           description: >-
@@ -5986,6 +7094,48 @@ components:
           items:
             type: string
 
+    StrippedTerm:
+      type: object
+      required: [code, givens]
+      description: >-
+        One `where:` conjunct a storage build leaves out of the artifact and the
+        read puts back. Its `code` is the author's verbatim expression, which is
+        what a serve shape re-emits; `givens` are the names that expression reads,
+        which is what the shape must declare for it to compile.
+      properties:
+        code:
+          type: string
+          description: The author's verbatim filter expression, e.g. `org_id = $ORG_ID`.
+        givens:
+          type: array
+          items:
+            type: string
+          description: >-
+            The given names this term reads, in first-seen order. A reader must
+            bind these for the term to apply; binding none applies each given's
+            declared default, as a live query would.
+    JoinedTerms:
+      type: object
+      required: [alias, source, terms]
+      description: >-
+        A join to a given-scoped source, declared on a persisted source and read
+        per caller through the joined source's own artifact.
+      properties:
+        alias:
+          type: string
+          description: >-
+            The join's alias as the author wrote it. Dotted for a join reached
+            through another such join (`grant.team`).
+        source:
+          type: string
+          description: The joined source's name — itself a persisted source.
+        terms:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrippedTerm"
+          description: >-
+            The joined source's own stripped terms, which its binding re-applies
+            with the caller's values.
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]
@@ -6051,6 +7201,64 @@ components:
           description:
             The source's build SQL (with the build manifest applied for upstream
             rewrites).
+        partition:
+          type: array
+          items:
+            type: string
+          description: >-
+            The source's declared `#@ persist partition=` columns, resolved
+            against its public projection and reported in the author's order,
+            which is the order the stored table's directories nest in. Absent or
+            empty means the table is written unpartitioned, which is the default
+            and what every source built before this field existed means.
+
+
+            A layout, not an access control. Every term the build strips from a
+            source is re-applied when the artifact is read whether or not its
+            column is partitioned, so a list omitting the column a caller is
+            scoped by costs a full scan and never widens what that caller sees.
+            Consumers should not infer isolation from it.
+
+
+            `partition=` requires `storage=`; declared without one it is a
+            publish refusal rather than an ignored key, so this is empty for
+            every colocated source.
+        strippedTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/StrippedTerm"
+          description: >-
+            The source's extend-block `where:` conjuncts that reference a given —
+            the terms Malloy leaves OUT of the build and that must be re-applied,
+            with the caller's own values, whenever the artifact is read. Absent
+            or empty means the artifact is the whole relation and needs no
+            re-application.
+
+
+            Reported so a consumer that supplies its own serve bindings can tell
+            that this artifact is under-filtered on its own, and which givens a
+            reader has to bind for it to be served correctly. The publisher's own
+            serve path re-derives these from the compiled model rather than from
+            here.
+        joinedTerms:
+          type: array
+          items:
+            $ref: "#/components/schemas/JoinedTerms"
+          description: >-
+            The joins declared on this source whose TARGET is scoped by a given —
+            one entry per such join, naming the joined source and the terms its
+            own artifact re-applies. Absent or empty means no field of this source
+            reads a caller-scoped join.
+
+
+            These terms are not stripped from THIS artifact: a join is not part of
+            a persist source's build, so this table holds the same rows with or
+            without it. They are what makes a field reading through the join
+            answer per caller (a visibility dimension that null-checks a grant
+            table, say), and they are applied only by the joined source's own
+            binding. So a reader serving this artifact must bind the joined source
+            too; without it, the join cannot be re-emitted and any query reading
+            through the alias must be served live.
         refresh:
           type: ["string", "null"]
           description: >-
@@ -6615,6 +7823,15 @@ components:
             failure. A consumer computes the same destination key a successful
             build would (`storageDestinationName ?? connectionName`) whether the
             source built or failed.
+        refused:
+          type: boolean
+          description: >-
+            True when the materialization-eligibility gate refused this source,
+            so the build was never attempted and `reason` is the gate's message.
+            A refusal is a property of the model, not of the run: retrying
+            returns the same answer until the model changes, unlike a warehouse
+            or compile failure, which may clear on its own. Absent for every
+            other failure.
 
     ManifestEntry:
       type: object
@@ -6764,6 +7981,36 @@ components:
             has no per-statement tag to carry one. And a bag whose every
             property is unusable as a BigQuery label key renders no label, so
             such a read is issued the untagged way and reports null too.
+        upstreamReuse:
+          type: string
+          enum: [reused, recomputed]
+          description: >-
+            For a source that reads another persisted source, how this table's
+            rows were computed from it. `reused`: every persisted upstream was
+            read from its already-materialized table, so the rows are a
+            function of those snapshots and consistent with them. `recomputed`:
+            at least one persisted upstream was recomputed from its definition
+            and inlined into this build, because its table could not be read --
+            on either tier, an upstream this build neither materialized nor was
+            handed by reference; for a colocated build, an upstream that
+            landed in a `storage=` destination; for a `storage=` build, a
+            source that reaches the warehouse through a non-persisted source,
+            or whose shape does not compile in the destination.
+            `upstreamRecomputeReason` says which. Such a table reflects the
+            warehouse at THIS build's time rather than the upstream's
+            snapshot, so the two can disagree when their refresh cadences
+            differ.
+
+            Not a location: it does not name the table the rows came from.
+            Absent for a source that reads no persisted upstream, which has one
+            way to build and no choice to report.
+        upstreamRecomputeReason:
+          type: string
+          description: >-
+            Why a persisted upstream was not read from its table, present only
+            when `upstreamReuse` is `recomputed`: which upstream, and the
+            compiler's or engine's own words for what could not be expressed
+            over it, redacted against the connections involved.
         dataAsOf:
           type: string
           format: date-time
@@ -6816,6 +8063,46 @@ components:
             gate rejects anyway.
 
   parameters:
+    includeHiddenFilesAndSources:
+      name: includeHiddenFilesAndSources
+      in: query
+      required: false
+      description: |
+        When true, a package with a surface (a root `index.malloy`, or a legacy
+        `explores`) is served to this request as if it had none: the models
+        list includes the files off the surface, the model GET returns them, and
+        the query route runs any model path the request names, including a
+        dashboard or notebook file, against every source, as
+        `queryableSources: "all"` does for every request. `#(authorize)` and
+        `#(access_filter)` still apply: it lifts curation, never the lock.
+
+        The model GET goes one step further than `queryableSources: "all"`: it
+        returns the file's `sourceText` even when that text names a source the
+        file does not publish. That text can include `#(authorize)`
+        expressions, `given:` defaults, connection names and raw SQL.
+
+        Only the models list, the model GET and the query route read it, plus
+        the MCP `execute_query` tool's argument of the same name, which runs a
+        query the way this route does. MCP offers that argument only when
+        `publisher.config.json` sets `"mcp": { "includeHiddenFilesAndSources":
+        true }`, which is for authoring servers. Without it the argument is not
+        in the tool's schema and is ignored if sent, so an agent answering
+        questions stays on the curated surface.
+        This route is not affected by that setting. The notebook-cell route, the dashboards
+        route, the other MCP tools, and the legacy `/projects/...` aliases of
+        these routes ignore it.
+
+        Like every route on this server, it is unauthenticated. A deployment
+        that authenticates in front of Publisher decides who may send it, and
+        should pass it only for callers allowed to work with a package's hidden
+        files, such as its authors. A deployment that exposes the MCP port has
+        to make the same decision for the `execute_query` argument.
+
+        Only `true` and `false` are accepted. Any other value is refused with
+        400.
+      schema:
+        type: boolean
+        default: false
     environmentName:
       name: environmentName
       in: path

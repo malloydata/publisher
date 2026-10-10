@@ -1,0 +1,5 @@
+{
+   "name": "dashboards-convention",
+   "version": "1.0.0",
+   "description": "Fixture: index.malloy is the surface. Every dashboard is listed, and each reads only what index.malloy exports."
+}

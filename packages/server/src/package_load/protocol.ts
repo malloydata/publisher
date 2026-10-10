@@ -79,6 +79,7 @@ import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
+import type { PackageRetrievalSettings } from "../service/package_retrieval";
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -162,6 +163,21 @@ export interface SerializedModel {
    givens?: unknown[];
    /** Notebook (.malloynb) only — per-cell pre-extracted info. */
    notebookCells?: SerializedNotebookCell[];
+   /**
+    * The model file's text EXACTLY as this compile read it, captured from the
+    * URL reader the compiler used.
+    *
+    * Shipped so a consumer that needs source text can read it from the same
+    * snapshot the IR's `DocumentLocation` coordinates were computed against.
+    * `get_context` slices a view's definition out of it (a view's code is not
+    * in the IR), and reading the file again later is not equivalent: a package
+    * whose most recent reload failed to compile keeps serving the model
+    * compiled BEFORE that save, so post-edit bytes cut at pre-edit coordinates
+    * yield text that is not the view -- mid-token, or another field entirely.
+    *
+    * `.malloy` models only; notebooks do not carry it.
+    */
+   modelSourceText?: string;
    /** Accumulated dataStyles from sibling `.styles.json` files. */
    dataStyles?: unknown;
    /** Wall-clock ms spent compiling this single model in the worker. */
@@ -220,6 +236,7 @@ export interface LoadPackageResult {
    packageMetadata: {
       name?: string;
       description?: string;
+      location?: string;
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
@@ -231,6 +248,8 @@ export interface LoadPackageResult {
        * still-parsing-but-outdated manifest is visible without failing a load.
        */
       manifestWarnings?: string[];
+      /** The manifest's `retrieval` block, validated, with prompt files read. */
+      retrieval?: PackageRetrievalSettings;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
@@ -275,6 +294,20 @@ export interface SerializedError {
    malloyProblems?: unknown[];
    /** Set when the error originated as `ModelCompilationError`. */
    isCompilationError?: boolean;
+   /** Set when the error originated as `PackageManifestError`. */
+   isManifestError?: boolean;
+   /**
+    * A Node errno error's `code`, `syscall` and `path`, which `name` and
+    * `message` do not carry. Lets the receiving side recognize a refused
+    * filesystem access (see `filesystemAccessFailure`) by its fields.
+    */
+   errno?: SerializedErrno;
+}
+
+export interface SerializedErrno {
+   code: string;
+   syscall?: string;
+   path?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────

@@ -24,9 +24,15 @@ to the judge as the re-executed evidence for a verdict, so a nested result was
 judged against a golden it could not match.
 
 The recursive uncelling is therefore the one kept here, and both callers get it.
-It does not recover the field names INSIDE a nest -- the envelope only names the
-top level -- so nested records come back keyed `c0`, `c1`. That was true of the
-recursive version before this move too; it is a limit, not a regression.
+
+The request also asks for `compactJson`, and that is what recovers the field
+names INSIDE a nest. The typed envelope names only the top level, so a nested
+record came back keyed `c0`, `c1` -- and a golden written the way its author
+ran the query, with the real column names, then read as DRIFT, which blocks an
+arm. That was called a limit here; it was not. Publisher has answered plain
+rows all along, and the request simply never asked. `rows_from_result` handles
+both shapes (compact answers with `result` as a JSON string), so the envelope
+walk stays as the fallback for a server that ignores the flag.
 
 TWO ERROR CONVENTIONS, ON PURPOSE
 
@@ -99,18 +105,28 @@ def rows_from_result(body: Any) -> list[dict[str, Any]]:
 
 
 def query(base: str, environment: str, package: str, model: str, malloy: str,
-          timeout: int = 180) -> list[dict[str, Any]]:
-    """Run a Malloy query. Raises on transport, HTTP or parse failure."""
+          timeout: int = 180, givens: dict[str, Any] | None = None
+          ) -> list[dict[str, Any]]:
+    """Run a Malloy query. Raises on transport, HTTP or parse failure.
+
+    `givens` are the model's runtime parameters, sent as the request's own
+    `givens` field. A query written against a given and run without it returns
+    unfiltered rows, so a caller re-running someone else's query passes theirs.
+    """
+    body: dict[str, Any] = {"query": malloy, "compactJson": True}
+    if givens:
+        body["givens"] = givens
     req = urllib.request.Request(
         _query_url(base, environment, package, model),
-        data=json.dumps({"query": malloy}).encode(),
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return rows_from_result(json.loads(r.read().decode()))
 
 
 def try_query(base: str, environment: str, package: str, model: str,
-              malloy: str, timeout: int = 120
+              malloy: str, timeout: int = 120,
+              givens: dict[str, Any] | None = None
               ) -> tuple[list[dict[str, Any]], str | None]:
     """Run a Malloy query. Returns (rows, error); never raises.
 
@@ -119,7 +135,7 @@ def try_query(base: str, environment: str, package: str, model: str,
     """
     try:
         return query(base, environment, package, model, malloy,
-                     timeout=timeout), None
+                     timeout=timeout, givens=givens), None
     except urllib.error.HTTPError as exc:
         return [], f"HTTP {exc.code}: {exc.read().decode()[:300]}"
     except Exception as exc:                        # noqa: BLE001

@@ -8,6 +8,18 @@ Bad and ambiguous goldens show up immediately. That is not improve. A
 checkpoint that mixes model edits and silent golden rewrites is useless for
 rollback. Keep hold and repair here, outside the five steps.
 
+## A key nobody has derived yet is not a bad golden
+
+Keep the two apart. `provisional` means nobody has re-derived the value; it is
+the state every imported key starts in and the fix is mechanical --
+`verify_goldens.py --promote`, once a truth package exists and a second
+derivation agrees. That is not this door.
+
+`invalid` and `ambiguous` ARE this door. No re-derivation can settle them,
+because the problem is the key or the question rather than the arithmetic, and
+promotion deliberately refuses both. So does a `suspect` or `verified_wrong`
+status the judge assigns. Those wait here for a person.
+
 ## Repair a bad golden
 
 This is **your** job as conductor, after `eval-diagnose` writes
@@ -25,6 +37,14 @@ is the most expensive wrong turn this loop can take.
 The judge scored against the golden as written even where it said `suspect`, so
 its verdict is still the verdict. Do not re-open a case merely because the flag
 is set; open it because you looked and agreed.
+
+Looking is a procedure, and doing it from the rubric's text is how an audit
+records the wrong cause for a change that was otherwise right: read the judge's
+full reason, the answer, every query in order, and then re-run the data against
+the pinned version and the source the attempt used.
+`reference/auditing-an-answer-key.md` has it, with the bar a relaxation has to
+clear. Read it before repairing more than one key, and before touching a set
+you did not author.
 
 1. **Replay, yourself.** Take the stored `final_query` (or a query you can
    justify from the model) and run it with `execute_query`. Write the
@@ -71,6 +91,25 @@ entity you touched.** `verify_goldens.py` audits the mechanical part -- it parse
 `X is <expr>` out of the model and flags any rubric asserting a different
 definition -- but only for definitions it can parse. Prose claims about grain,
 population, or convention are still yours to check.
+
+It audits the set's NAMES against the same model, which is the half that goes
+wrong silently. A `required` entity id naming a field the package under test
+does not have can never be delivered, so it scores as a retrieval miss on every
+run and reads as a model failure: five such ids, copied from a sibling package,
+cost a real set two days and five false misses before anyone checked whether the
+names existed. That is now a hard finding.
+
+Where it fires matters, because the lint reads the model text and needs
+`--model`. Step 2a passes it, and `improve.py` passes it when it can locate the
+package, so those two refuse. `run_baseline.py` does not pass one, so during an
+arm the lint is silent rather than refusing -- run step 2a before the arm, which
+is what it is for.
+A set scored against two package versions writes a `requiredAnyOf` group naming
+both ids, which passes as long as one of them resolves. An unknown `acceptable`
+id and a `mustNotUse` veto on a field the model lacks are reported for review
+rather than failed: neither moves a number.
+
+This needs `--model` pointing at the model tree, so pass it on every run.
 
 When one turns up it is `BAD-REFERENCE`, and it goes through this side door.
 Never let it reach improve: the model is right, and an edit would be damage.

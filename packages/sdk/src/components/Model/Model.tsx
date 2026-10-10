@@ -15,6 +15,7 @@ import {
 import React, { useState } from "react";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { FloatingIconButton } from "../FloatingIconButton";
 import { Loading } from "../Loading";
 import { ModelCell } from "./ModelCell";
 import { ModelExplorer } from "./ModelExplorer";
@@ -22,11 +23,22 @@ import { ModelExplorerDialog } from "./ModelExplorerDialog";
 import { QueryExplorerResult } from "./SourcesExplorer";
 import { useModelData } from "./useModelData";
 
-interface ModelProps {
+export interface ModelProps {
    onChange?: (query: QueryExplorerResult) => void;
    resourceUri: string;
    runOnDemand?: boolean;
    maxResultSize?: number;
+   /**
+    * Control values from the host, typically its URL query parameters. When
+    * omitted, `Model` holds them itself, so the embedded explorer and the
+    * maximized dialog still agree with each other.
+    */
+   givens?: Record<string, string>;
+   /** Applied control values, for a host that wants them in its URL. */
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
 }
 
 // Note: For this to properly render outside of publisher,
@@ -38,6 +50,8 @@ export default function Model({
    resourceUri,
    runOnDemand = false,
    maxResultSize = 0,
+   givens,
+   onGivensChange,
 }: ModelProps) {
    const { modelPath } = parseResourceUri(resourceUri);
    const { data, isError, isLoading, error } = useModelData(resourceUri);
@@ -47,6 +61,16 @@ export default function Model({
    >();
    const [sharedSourceIndex, setSharedSourceIndex] = React.useState(0);
    const [copyMessage, setCopyMessage] = useState("");
+   // Held here only when the host passes neither prop, so the embedded
+   // explorer and the maximized dialog still agree on one set of values
+   // rather than each defaulting independently.
+   const [localGivens, setLocalGivens] = React.useState<Record<string, string>>(
+      {},
+   );
+   const effectiveGivens = givens ?? localGivens;
+   const effectiveOnGivensChange =
+      onGivensChange ??
+      ((applied: Record<string, string>) => setLocalGivens(applied));
 
    // Whether the model imports other files — drives the empty-state hint for
    // import-only models, whose discovery surface is legitimately empty (no
@@ -129,15 +153,15 @@ export default function Model({
                         >
                            Sources
                         </Typography>
-                        <Tooltip title="Click to copy link">
-                           <LinkOutlinedIcon
-                              sx={{
-                                 fontSize: "24px",
-                                 color: "text.secondary",
-                                 cursor: "pointer",
-                              }}
+                        <Tooltip title="Copy link">
+                           <IconButton
+                              size="small"
+                              aria-label="Copy link"
                               onClick={copyToClipboard}
-                           />
+                              sx={{ color: "text.secondary" }}
+                           >
+                              <LinkOutlinedIcon fontSize="small" />
+                           </IconButton>
                         </Tooltip>
                      </Box>
 
@@ -148,32 +172,23 @@ export default function Model({
                         existingQuery={sharedQuery}
                         initialSelectedSourceIndex={sharedSourceIndex}
                         resourceUri={resourceUri}
+                        givens={effectiveGivens}
+                        onGivensChange={effectiveOnGivensChange}
                      />
 
                      {/* Magnifying glass icon */}
-                     <IconButton
+                     <FloatingIconButton
+                        aria-label="Expand results"
                         sx={{
                            position: "absolute",
                            top: "90px",
                            right: "4px",
-                           backgroundColor: "rgba(255, 255, 255, 0.9)",
-                           "&:hover": {
-                              backgroundColor: "rgba(255, 255, 255, 1)",
-                           },
-                           width: "32px",
-                           height: "32px",
                            zIndex: 2,
                         }}
                         onClick={() => setDialogOpen(true)}
                      >
-                        <SearchIcon
-                           sx={{
-                              fontSize: "18px",
-                              color: "text.secondary",
-                              marginBottom: "5px",
-                           }}
-                        />
-                     </IconButton>
+                        <SearchIcon />
+                     </FloatingIconButton>
                   </Stack>
                )}
 
@@ -249,6 +264,8 @@ export default function Model({
                initialSelectedSourceIndex={sharedSourceIndex}
                onChange={handleQueryChange}
                onSourceChange={handleSourceChange}
+               givens={effectiveGivens}
+               onGivensChange={effectiveOnGivensChange}
             />
          </Box>
          <Snackbar

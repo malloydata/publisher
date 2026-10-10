@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   BrowserDocumentStorage,
+   DocumentStorage,
+   DocumentStorageProvider,
    Loading,
-   WorkbookStorage,
-   WorkbookStorageProvider,
+   setConsoleEventHandler,
 } from "@malloy-publisher/sdk";
 import { ServerProvider } from "@malloy-publisher/sdk/client";
 import "@malloy-publisher/sdk/styles.css";
@@ -17,6 +19,7 @@ import {
    RouterProvider,
 } from "react-router-dom";
 import { HeaderProps } from "./components/layout/Header/Header";
+import { logConsoleEvent } from "./utils/consoleTelemetry";
 import { PublisherMuiThemeProvider } from "./theme/PublisherMuiThemeProvider";
 
 /**
@@ -36,39 +39,42 @@ const ModelPage = React.lazy(
 const PackagePage = React.lazy(
    () => import("./components/pages/PackagePage/PackagePage"),
 );
-const MaterializationsPage = React.lazy(
-   () => import("./components/pages/MaterializationsPage/MaterializationsPage"),
-);
 const EnvironmentPage = React.lazy(
    () => import("./components/pages/EnvironmentPage/EnvironmentPage"),
 );
 const RouteError = React.lazy(
    () => import("./components/common/RouteError/RouteError"),
 );
-const WorkbookPage = React.lazy(
-   () => import("./components/pages/WorkbookPage/WorkbookPage"),
-);
 const ThemeEditorPage = React.lazy(
    () => import("./components/pages/ThemeEditorPage/ThemeEditorPage"),
 );
 
+/**
+ * @param documentStorage Where documents authored in the Console are kept. A
+ *    host with a store of its own passes an implementation; left out, the
+ *    Console keeps them in this browser's localStorage.
+ */
 export const createMalloyRouter = (
    basePath: string = "/",
-   workbookStorage: WorkbookStorage,
+   documentStorage: DocumentStorage = new BrowserDocumentStorage(),
    headerProps?: HeaderProps,
 ) => {
+   // Here rather than in `main.tsx`, which is only the local dev entry: this
+   // is the one function every host calls, embedders included, so the writes
+   // are reported wherever the Console is mounted.
+   setConsoleEventHandler(logConsoleEvent);
    return createBrowserRouter([
       {
          path: basePath,
          element: (
             <ServerProvider>
-               <WorkbookStorageProvider workbookStorage={workbookStorage}>
+               <DocumentStorageProvider documentStorage={documentStorage}>
                   <PublisherMuiThemeProvider>
                      <Suspense fallback={<Loading />}>
                         <MainPage headerProps={headerProps} />
                      </Suspense>
                   </PublisherMuiThemeProvider>
-               </WorkbookStorageProvider>
+               </DocumentStorageProvider>
             </ServerProvider>
          ),
          errorElement: <RouteError />,
@@ -100,16 +106,8 @@ export const createMalloyRouter = (
                element: <PackagePage />,
             },
             {
-               path: ":environmentName/:packageName/materializations",
-               element: <MaterializationsPage />,
-            },
-            {
                path: ":environmentName/:packageName/*",
                element: <ModelPage />,
-            },
-            {
-               path: ":environmentName/:packageName/workbook/:workspace/:workbookPath",
-               element: <WorkbookPage />,
             },
          ],
       },
@@ -119,17 +117,18 @@ export const createMalloyRouter = (
 export interface MalloyPublisherAppProps {
    basePath?: string;
    headerProps: HeaderProps;
-   workbookStorage: WorkbookStorage;
+   /** See {@link createMalloyRouter}. Defaults to this browser's localStorage. */
+   documentStorage?: DocumentStorage;
 }
 
 export const MalloyPublisherApp = ({
    basePath = "/",
-   workbookStorage,
+   documentStorage,
    headerProps,
 }: MalloyPublisherAppProps) => {
    const router = useMemo(
-      () => createMalloyRouter(basePath, workbookStorage, headerProps),
-      [basePath, workbookStorage, headerProps],
+      () => createMalloyRouter(basePath, documentStorage, headerProps),
+      [basePath, documentStorage, headerProps],
    );
 
    return <RouterProvider router={router} />;

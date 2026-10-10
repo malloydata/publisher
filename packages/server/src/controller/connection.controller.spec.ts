@@ -7,10 +7,25 @@ import type {
    RunSQLOptions,
    StreamingConnection,
 } from "@malloydata/malloy";
+import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterEach, describe, expect, it } from "bun:test";
+import * as net from "net";
 import sinon from "sinon";
 
-import { BadRequestError, PayloadTooLargeError } from "../errors";
+import {
+   BadRequestError,
+   ConnectionError,
+   ConnectionFailedError,
+   ConnectionNotFoundError,
+   ConnectionPoolExhaustedError,
+   internalErrorToHttpError,
+   InvalidArgumentError,
+   PackageNotFoundError,
+   PayloadTooLargeError,
+   TableNotFoundError,
+   UnconfiguredConnectionError,
+} from "../errors";
+import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
 import { ConnectionController } from "./connection.controller";
 
@@ -403,6 +418,60 @@ describe("ConnectionController.getConnectionQueryData row cap", () => {
  * the way in, plus an overflow check on the way out (same sentinel
  * pattern as the non-streaming path).
  */
+describe("ConnectionController.getConnectionQueryData pool exhaustion", () => {
+   afterEach(() => sinon.restore());
+
+   const exhausted = () =>
+      new ConnectionPoolExhaustedError(
+         "Connection 'conn' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+      );
+
+   it("passes a ConnectionPoolExhaustedError from runSQL through unwrapped", async () => {
+      const error = exhausted();
+      const runSQL = sinon.stub().rejects(error);
+      const { controller } = buildController(runSQL);
+
+      const thrown = await controller
+         .getConnectionQueryData("env", "conn", "SELECT 1", "")
+         .catch((e: unknown) => e);
+
+      expect(thrown).toBe(error);
+   });
+
+   it("passes a ConnectionPoolExhaustedError from runSQLStream through unwrapped", async () => {
+      const error = exhausted();
+      const fakeConnection = {
+         canStream(): true {
+            return true;
+         },
+         // eslint-disable-next-line require-yield -- the stream fails before its first row
+         async *runSQLStream(): AsyncIterableIterator<QueryRecord> {
+            throw error;
+         },
+      } as unknown as Connection;
+      const fakeStore = {
+         getEnvironment: sinon
+            .stub()
+            .resolves({ assertCanAdmitQuery: sinon.stub().returns(undefined) }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+
+      const thrown = await controller
+         .getConnectionQueryData("env", "conn", "SELECT 1", "")
+         .catch((e: unknown) => e);
+
+      expect(thrown).toBe(error);
+   });
+});
+
 describe("ConnectionController.getConnectionQueryData streaming", () => {
    const originalRowsEnv = process.env.PUBLISHER_MAX_QUERY_ROWS;
    const originalBytesEnv = process.env.PUBLISHER_MAX_RESPONSE_BYTES;
@@ -848,5 +917,510 @@ describe("ConnectionController.getConnectionTemporaryTable guards", () => {
       await expect(
          controller.getConnectionTemporaryTable("env", "conn", "SELECT 1"),
       ).rejects.toBeInstanceOf(QueryTimeoutError);
+   });
+});
+
+describe("ConnectionController.testConnectionConfiguration name validation", () => {
+   afterEach(() => sinon.restore());
+
+   const controller = () =>
+      new ConnectionController({} as unknown as EnvironmentStore);
+
+   it.each([
+      ["duckdb", "../evil"],
+      ["ducklake", "foo/../bar"],
+      ["duckdb", ".hidden"],
+   ])(
+      "rejects a path-traversal %s connection name (%p) with BadRequestError",
+      async (type, name) => {
+         // duckdb/ducklake derive a <name>.duckdb filename, so an unsafe name
+         // is a 400 rather than a test that runs and "fails". This throws
+         // before the service (and any filesystem access) is reached.
+         await expect(
+            controller().testConnectionConfiguration({ name, type } as never),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      },
+   );
+});
+
+/**
+ * A table that is not in the database must answer 404, not 502.
+ *
+ * The router counts 5xx against its server-error budget and pages on-call, so
+ * mapping a caller's bad reference to 502 turns a typo in someone's model into
+ * a production page -- which is what happened on 2026-09-08, when a Malloy
+ * compiler refetched one unresolved table on every recompile and drove the
+ * router to a 21.6% error rate.
+ */
+describe("ConnectionController getTable not-found mapping", () => {
+   afterEach(() => sinon.restore());
+
+   function buildTableController(fetchTableSchema: sinon.SinonStub): {
+      controller: ConnectionController;
+   } {
+      const fakeConnection = { fetchTableSchema } as unknown as Connection;
+      const fakeEnv = {
+         getApiConnection: sinon
+            .stub()
+            .returns({ name: "warehouse", type: "postgres" }),
+      };
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves(fakeEnv),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+      return { controller };
+   }
+
+   const getTable = (controller: ConnectionController) =>
+      controller.getTable("env", "warehouse", "ds", "ds.missing");
+
+   it("classifies BigQuery's returned not-found string as TableNotFoundError", async () => {
+      // BigQuery's driver RETURNS the message instead of throwing, discarding
+      // the structured 404 it was handed.
+      const { controller } = buildTableController(
+         sinon.stub().resolves("Not found: Table proj:ds.missing"),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("leaves a BigQuery auth failure as a 502-class ConnectionError", async () => {
+      // The guard against over-reading the string: only absence is a 404.
+      const { controller } = buildTableController(
+         sinon.stub().resolves("Permission denied while getting table proj:ds"),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         ConnectionError,
+      );
+   });
+
+   it("classifies a path BigQuery cannot parse as a bad argument, not a fault", async () => {
+      // Every prefix typed before the first dot has one segment, so this arrives
+      // constantly while a path is being written. Verbatim from prod 2026-09-08.
+      const { controller } = buildTableController(
+         sinon
+            .stub()
+            .resolves(
+               "Improper table path: sal. A table path requires 2 or 3 segments",
+            ),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         InvalidArgumentError,
+      );
+   });
+
+   it("treats an empty schema result as not found", async () => {
+      const { controller } = buildTableController(
+         sinon.stub().resolves(undefined),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("classifies a driver that THREW its not-found instead of returning it", async () => {
+      // BigQuery returns the message; every other dialect throws. Both have to
+      // reach the same classification, or the fix covers one dialect only.
+      const { controller } = buildTableController(
+         sinon.stub().rejects(new Error("Not found: Table proj:ds.missing")),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("classifies DuckDB's rejected catalog errors, which never resolve falsy", async () => {
+      // DuckDBCommon.fetchTableSchema returns a structDef or throws -- it never
+      // resolves empty -- so the falsy check above cannot see a DuckDB miss and
+      // the sandbox, Azure and DuckLake connections all arrive here instead.
+      // Strings verbatim from the installed driver.
+      for (const message of [
+         "Catalog Error: Table with name no_such_table does not exist!",
+         'Catalog Error: Table with name "s.t" does not exist because schema "s" does not exist.',
+         'Binder Error: Catalog "a" does not exist!',
+      ]) {
+         const { controller } = buildTableController(
+            sinon.stub().rejects(new Error(message)),
+         );
+         await expect(getTable(controller)).rejects.toBeInstanceOf(
+            TableNotFoundError,
+         );
+      }
+   });
+
+   it("leaves an absent file-backed table a fault, not a missing table", async () => {
+      // A file-backed table is DuckLake or an Azure blob: an absent parquet is
+      // corruption or a bad mount, not a mistyped name, so it stays 502. The
+      // second string is a bad hostname, which shares the `IO Error:` prefix --
+      // both verbatim from the installed driver.
+      for (const message of [
+         'IO Error: No files found that match the pattern "/tmp/gone.parquet"',
+         "IO Error: Could not resolve hostname error for HTTP HEAD to 'https://nope.example.com/a.parquet'",
+      ]) {
+         const { controller } = buildTableController(
+            sinon.stub().rejects(new Error(message)),
+         );
+         await expect(getTable(controller)).rejects.toBeInstanceOf(
+            ConnectionError,
+         );
+      }
+   });
+
+   it("leaves a missing DuckDB extension a fault, not a missing table", async () => {
+      // DuckDB words a missing EXTENSION exactly like a missing table, and
+      // httpfs/azure/iceberg are what the DuckLake and Azure connections run on.
+      // A 404 here would report a broken deployment as a mistyped table. Strings
+      // verbatim from the installed driver.
+      for (const message of [
+         "Catalog Error: Table Function with name no_such_fn does not exist!",
+         "Catalog Error: Scalar Function with name no_such_scalar does not exist!",
+      ]) {
+         const { controller } = buildTableController(
+            sinon.stub().rejects(new Error(message)),
+         );
+         await expect(getTable(controller)).rejects.toBeInstanceOf(
+            ConnectionError,
+         );
+      }
+   });
+
+   it("still reports an unrecognized driver failure as a 502-class fault", async () => {
+      // The floor: anything the classifier does not recognize stays a server
+      // error. Guessing wider would hide real outages behind a 404.
+      const { controller } = buildTableController(
+         sinon.stub().rejects(new Error("ECONNREFUSED 10.0.0.1:443")),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         ConnectionError,
+      );
+   });
+
+   it("preserves a TableNotFoundError thrown by the connection wrapper", async () => {
+      // Regression guard for the trap this fix exists to close: fetchTable's
+      // catch used to rewrap EVERYTHING as ConnectionError, so the Azure and
+      // DuckLake wrappers -- which throw not-found directly rather than
+      // returning a string -- would still have surfaced as 502. Asserting the
+      // CLASS rather than a status is deliberate: only the class proves the
+      // rethrow branch ran instead of the rewrap.
+      const { controller } = buildTableController(
+         sinon
+            .stub()
+            .rejects(new TableNotFoundError("Table ds.missing not found")),
+      );
+      await expect(getTable(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+});
+
+/**
+ * getConnectionSqlSource runs the same classification as getTable. It had no
+ * tests before, so the behavior below was unverified in either direction.
+ */
+describe("ConnectionController getConnectionSqlSource error mapping", () => {
+   afterEach(() => sinon.restore());
+
+   function buildSqlController(fetchSelectSchema: sinon.SinonStub): {
+      controller: ConnectionController;
+   } {
+      const fakeConnection = { fetchSelectSchema } as unknown as Connection;
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            getApiConnection: sinon
+               .stub()
+               .returns({ name: "warehouse", type: "postgres" }),
+         }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection);
+      return { controller };
+   }
+
+   const getSqlSource = (controller: ConnectionController) =>
+      controller.getConnectionSqlSource("env", "warehouse", "SELECT 1");
+
+   it("classifies a returned not-found string as TableNotFoundError", async () => {
+      const { controller } = buildSqlController(
+         sinon.stub().resolves("Not found: Table proj:ds.missing"),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("classifies a THROWN not-found the same way", async () => {
+      // The gap this round closed: the catch rethrew only already-typed errors,
+      // so every driver that rejects kept answering 502 here.
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(new Error("Not found: Table proj:ds.missing")),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
+   it("keeps an unrecognized failure a 502-class fault", async () => {
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(new Error("ECONNREFUSED 10.0.0.1:443")),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         ConnectionError,
+      );
+   });
+
+   it("preserves the message of a thrown string", async () => {
+      // `(error as Error).message` on a thrown string is undefined, which lost
+      // the only diagnostic the caller had.
+      // Not sinon's .rejects("..."), which sets the Error NAME and leaves the
+      // message empty -- this has to be a genuinely thrown string.
+      const { controller } = buildSqlController(
+         sinon.stub().callsFake(() => Promise.reject("plain string failure")),
+      );
+      await expect(getSqlSource(controller)).rejects.toThrow(
+         "plain string failure",
+      );
+   });
+});
+
+describe("ConnectionController on a database that cannot be reached", () => {
+   // A real Malloy Postgres driver aimed at a port nothing listens on, so the
+   // error is the one node-pg actually raises, carried through db_utils.
+   let pg: PostgresConnection | undefined;
+
+   afterEach(async () => {
+      sinon.restore();
+      await pg?.close();
+      pg = undefined;
+   });
+
+   async function deadPostgres(): Promise<PostgresConnection> {
+      const server = net.createServer();
+      await new Promise<void>((resolve) =>
+         server.listen(0, "127.0.0.1", () => resolve()),
+      );
+      const { port } = server.address() as net.AddressInfo;
+      await new Promise((resolve) => server.close(resolve));
+      pg = new PostgresConnection({
+         name: "warehouse",
+         host: "127.0.0.1",
+         port,
+         username: "nobody",
+         databaseName: "nothing",
+      });
+      return pg;
+   }
+
+   function controllerOn(malloyConnection: Connection): ConnectionController {
+      const fakeStore = {
+         getEnvironment: sinon
+            .stub()
+            .resolves({ assertCanAdmitQuery: sinon.stub() }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      const internals = controller as unknown as {
+         getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+         getApiConnectionForLookup: (...args: unknown[]) => unknown;
+      };
+      sinon.stub(internals, "getMalloyConnection").resolves(malloyConnection);
+      sinon.stub(internals, "getApiConnectionForLookup").returns({
+         name: "warehouse",
+         type: "postgres",
+         postgresConnection: {},
+      });
+      return controller;
+   }
+
+   it("answers sqlQuery with a connection failure", async () => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(
+         controller.getConnectionQueryData("env", "warehouse", "SELECT 1", ""),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+   });
+
+   it("answers a schema listing with a connection failure, not a 500", async () => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(
+         controller.listSchemas("env", "warehouse"),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+   });
+
+   it.each([
+      [
+         "a table listing",
+         (c: ConnectionController) =>
+            c.listTables("env", "warehouse", "public"),
+      ],
+      [
+         "the table lookup",
+         (c: ConnectionController) =>
+            c.getTable("env", "warehouse", "public", "public.orders"),
+      ],
+      [
+         "sqlSource",
+         (c: ConnectionController) =>
+            c.getConnectionSqlSource("env", "warehouse", "SELECT 1"),
+      ],
+      [
+         "sqlTemporaryTable",
+         (c: ConnectionController) =>
+            c.getConnectionTemporaryTable("env", "warehouse", "SELECT 1"),
+      ],
+   ])("answers %s with a connection failure", async (_route, call) => {
+      const controller = controllerOn(await deadPostgres());
+      await expect(call(controller)).rejects.toBeInstanceOf(
+         ConnectionFailedError,
+      );
+   });
+
+   it("logs a table lookup on a dead database once, at warn, not again as an error", async () => {
+      // Malloy's Postgres driver returns this failure as text rather than
+      // throwing, so it also pins that the text is still recognized.
+      const controller = controllerOn(await deadPostgres());
+      const logError = sinon.stub(logger, "error");
+      await expect(
+         controller.getTable("env", "warehouse", "public", "public.orders"),
+      ).rejects.toBeInstanceOf(ConnectionFailedError);
+      expect(logError.called).toBe(false);
+   });
+
+   it("leaves a schema listing that failed for another reason as it was", async () => {
+      // Only an unreachable database is reclassified. A failure the listing
+      // wrapped for any other reason keeps its old status.
+      const rejected = Object.assign(new Error("permission denied"), {
+         code: "42501",
+      });
+      const controller = controllerOn({
+         runSQL: sinon.stub().rejects(rejected),
+      } as unknown as Connection);
+      const error = await controller.listSchemas("env", "warehouse").then(
+         () => undefined,
+         (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(ConnectionError);
+   });
+});
+
+/**
+ * The per-package "duckdb" lookup. A router that cached which worker serves a
+ * package version re-resolves on a 404 and retries; a 400 sends it back to the
+ * same worker. So a package this server does not hold must be a 404, while a
+ * lookup that names no package in a multi-package environment stays a 400.
+ */
+describe("ConnectionController per-package duckdb lookup", () => {
+   afterEach(() => sinon.restore());
+
+   function buildDuckdbController(packageNames: string[]): {
+      controller: ConnectionController;
+      envLookup: sinon.SinonStub;
+   } {
+      const envLookup = sinon.stub().rejects(new Error("env lookup reached"));
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            listPackages: sinon
+               .stub()
+               .resolves(packageNames.map((name) => ({ name }))),
+            getMalloyConnection: envLookup,
+         }),
+      } as unknown as EnvironmentStore;
+      return { controller: new ConnectionController(fakeStore), envLookup };
+   }
+
+   const sqlSource = (controller: ConnectionController, packageName?: string) =>
+      controller.getConnectionSqlSource(
+         "env",
+         "duckdb",
+         "SELECT 1",
+         packageName,
+      );
+
+   it("answers 404 for a package the environment does not hold", async () => {
+      const { controller } = buildDuckdbController(["pkg@1.0.13"]);
+      const error = await sqlSource(controller, "pkg@1.0.12").catch((e) => e);
+      expect(error).toBeInstanceOf(PackageNotFoundError);
+      expect(error.message).toBe(
+         'Package "pkg@1.0.12" not found in environment "env"',
+      );
+      expect(internalErrorToHttpError(error, { log: false }).status).toBe(404);
+   });
+
+   it("answers 404 when the environment holds no packages at all", async () => {
+      // The worker unloaded its only package. This used to fall through to the
+      // environment-level lookup, which has no "duckdb" connection.
+      const { controller, envLookup } = buildDuckdbController([]);
+      const error = await sqlSource(controller, "pkg@1.0.12").catch((e) => e);
+      expect(error).toBeInstanceOf(PackageNotFoundError);
+      expect(error.message).toBe(
+         'Package "pkg@1.0.12" not found in environment "env"',
+      );
+      expect(envLookup.called).toBe(false);
+   });
+
+   it("keeps an unnamed lookup across several packages a 400", async () => {
+      const { controller } = buildDuckdbController(["a", "b"]);
+      const error = await sqlSource(controller).catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toMatch(/^Ambiguous "duckdb" connection lookup/);
+   });
+});
+
+describe("ConnectionController connection lookup failures", () => {
+   afterEach(() => sinon.restore());
+
+   function controllerWhoseLookupRejects(error: unknown): ConnectionController {
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub(),
+            getMalloyConnection: sinon.stub().rejects(error),
+         }),
+      } as unknown as EnvironmentStore;
+      return new ConnectionController(fakeStore);
+   }
+
+   it("answers a lookup that could not reach the database as a connection failure", async () => {
+      // A Postgres connection behind an SSH tunnel opens the tunnel on first
+      // lookup, before any route's own catch.
+      const refused = Object.assign(new Error("connect ECONNREFUSED"), {
+         code: "ECONNREFUSED",
+      });
+      const controller = controllerWhoseLookupRejects(refused);
+      const error = await controller
+         .getConnectionSqlSource("env", "warehouse", "SELECT 1")
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(ConnectionFailedError);
+      expect(internalErrorToHttpError(error, { log: false })).toMatchObject({
+         status: 502,
+         json: { reason: "CONNECTION_FAILED" },
+      });
+   });
+
+   it("answers a connection name the environment does not have as 404, as the listing routes do", async () => {
+      const controller = controllerWhoseLookupRejects(
+         new UnconfiguredConnectionError("warehuose"),
+      );
+      const error = await controller
+         .getConnectionQueryData("env", "warehuose", "SELECT 1", "")
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(ConnectionNotFoundError);
+      expect(internalErrorToHttpError(error, { log: false })).toEqual({
+         status: 404,
+         json: { code: 404, message: "Connection warehuose not found" },
+      });
    });
 });

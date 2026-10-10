@@ -13,10 +13,17 @@ One data model, served over MCP and REST to AI agents, applications, and BI tool
 <p align="center">Created and maintained by <a href="https://www.credibledata.com">Credible</a>, the company behind the AI Analytics Engine.</p>
 
 <p align="center"><sub><strong>AI agents:</strong> read <a href="AGENTS.md">AGENTS.md</a> first (raw: <code>https://raw.githubusercontent.com/malloydata/publisher/main/AGENTS.md</code>).<br>
-It covers starting the server, connecting over MCP, the bundled skills, and the package format. Fetch the raw file, not a summary of this page.</sub></p>
+It covers starting the server, connecting over MCP, the bundled skills, and the package format. Fetch the raw file, not a summary of this page.<br>
+To learn the skills with nothing installed, read <code>https://unpkg.com/@malloy-publisher/skills@latest/skills/malloy-getting-started/SKILL.md</code>. With a shell, <code>npx -y @malloy-publisher/skills@latest install</code> copies them all into this project.</sub></p>
 
 <p align="center">
   <a href="https://github.com/malloydata/publisher/actions/workflows/build.yml"><img src="https://github.com/malloydata/publisher/actions/workflows/build.yml/badge.svg" alt="build"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node.js >=20"></a>
+  <a href="https://www.npmjs.com/package/@malloy-publisher/server"><img src="https://img.shields.io/npm/v/@malloy-publisher/server" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@malloy-publisher/server"><img src="https://img.shields.io/npm/dm/@malloy-publisher/server" alt="npm downloads"></a>
+  <a href="https://hub.docker.com/r/ms2data/malloy-publisher"><img src="https://img.shields.io/docker/pulls/ms2data/malloy-publisher" alt="Docker pulls"></a>
+  <a href="https://github.com/malloydata/publisher/stargazers"><img src="https://img.shields.io/github/stars/malloydata/publisher?style=social" alt="GitHub Stars"></a>
 </p>
 
 <p align="center">
@@ -42,9 +49,9 @@ but looks plausible — and the same question returns the same numbers tomorrow.
 - **Analyze** — Claude, Cursor, Codex, or an agent you build asks over MCP; unattended agents and
   applications use REST. Queries are Malloy, legible enough to review at a glance, and run against
   the model, never your raw tables.
-- **Surface** — dashboards declared in Malloy, notebooks, and no-build HTML data apps, all shipped
-  inside the package, plus the Console for browsing it all.
-- **Govern** — givens, row-level access, and `#(authorize)` decide who sees what; discovery curation
+- **Surface** — dashboards declared in Malloy and built by dragging tiles if you like, notebooks,
+  and no-build HTML data apps, all shipped inside the package, plus the Console for browsing it all.
+- **Govern** — givens, `#(authorize)` and `#(access_filter)` decide who may query and who sees what; discovery curation
   decides what is even visible.
 - **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
   `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.
@@ -144,7 +151,8 @@ stale, and how to turn it off:
 
 ### Other clients, and unattended agents
 
-Cursor, VS Code, Codex, and Claude Desktop take the same endpoint through their own config; see
+Cursor, VS Code, Codex, and Claude Desktop take the same endpoint — `http://localhost:4040/mcp`,
+or whatever `--mcp_port` / `MCP_PORT` you set — through their own config; see
 [docs/ai-agents.md](docs/ai-agents.md). An agent working unattended that started the server itself uses
 the same loop over REST:
 
@@ -179,7 +187,8 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Ask in plain English.** An agent grounds itself with `get_context`, runs
   `execute_query`, and answers from the model, never from raw tables. Analysis skills teach it the
   pitfalls and how to write up a finding — [docs/ai-agents.md](docs/ai-agents.md).
-- **Work in notebooks.** `.malloynb` notebooks live inside a package, mix prose and queries, and run on
+- **Work in notebooks.** Notebooks are `notebooks/*.malloy` files (a legacy `.malloynb` is read, not
+  authored); they live inside a package, mix prose and queries, and run on
   the same governed endpoints — [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
 - **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
   every action generates valid Malloy, so metrics stay correct across joins.
@@ -187,18 +196,22 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 ### Surface
 
 - **Dashboards declared in Malloy.** A `dashboards/*.malloy` file _is_ the dashboard: filterable,
-  clickable, grid-laid-out, no code and no build step — [docs/dashboards.md](docs/dashboards.md).
+  clickable, grid-laid-out, no code and no build step. Build it by dragging tiles around a grid in
+  the Console if you want the classic feel, or write the tags by hand — same file either way, and it
+  reviews like any other source file — [docs/dashboards.md](docs/dashboards.md).
 - **No-build HTML data apps.** Ship HTML, CSS, and JavaScript inside a package and Publisher hosts it
   against the model — [docs/html-data-apps.md](docs/html-data-apps.md).
 - **The Publisher Console.** Browse packages, models, and every artifact in the built-in web UI, with
   your own [colors, fonts, and dark mode](docs/theming.md) — [docs/console.md](docs/console.md).
-- **Your own applications.** The REST API serves any language; a Python client ships in
-  [`packages/python-client`](packages/python-client), and the running server publishes its OpenAPI spec.
+- **Your own applications.** The REST API serves any language, and the running server publishes its
+  OpenAPI spec. From Python, the standard library is enough: [AGENTS.md section 7](AGENTS.md#7-working-unattended-the-rest-api)
+  has a copyable example. A generated client lives in [`packages/python-client`](packages/python-client),
+  but it is not published to PyPI.
 
 ### Govern
 
 - **Decide who sees what.** [Givens](docs/givens.md) declare runtime parameters and drive filter
-  widgets; [row-level access](docs/row-level-access.md) and [`#(authorize)`](docs/authorize.md) gate
+  widgets; [row-level access](docs/row-level-access.md) and [`#(access_filter)`](docs/authorize.md) gate
   which rows a caller gets and whether they may query a source at all.
 - **Decide what is visible.** Curate what is [discoverable and queryable](docs/discovery-and-access.md)
   separately, so an agent sees only the sources you meant it to.
@@ -235,7 +248,7 @@ Publisher serves out of the box, and a fourth shows the SDK:
   notebook, and givens-driven filters. It is the package Quick start serves, and the one the SDK
   example reads from.
 - **[governed-analytics](examples/governed-analytics)** — the whole governance story in one small
-  package: givens, row-level access, and `#(authorize)` source gates.
+  package: givens, row-level access, and `#(access_filter)` source gates.
 - **[html-data-app](examples/html-data-app)** — a no-build SaaS subscriptions dashboard served from
   a package's `public/` directory, driven by `Publisher.query()`.
 - **[data-app](examples/data-app)** — a standalone Vite + React app on

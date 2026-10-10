@@ -90,14 +90,13 @@ per-cell objects unwrapped in the skill is the most efficient way for the agent 
 the shape. Chart selection still defers to `malloy-charts`; the walk-throughs here are reusable
 report templates, not a chart-type catalog.
 
-### A topic index for docs search: malloy-patterns (resolved)
+### A topic index for docs search: malloy-patterns (retired)
 
 Tension: Principle 1's under-20% rule for reference content suggests docs lookups should be
 on-demand via a tool, not pre-loaded as a skill.
 
-Resolution: now that the docs-search tool has shipped (`search_malloy_docs`), a single small
-topic-index skill, `malloy-patterns`, holds the table of valid topic strings. It loads only when
-the agent already knows it needs to search docs, giving it a vocabulary of topics so it does not
-waste calls on poorly phrased queries; it carries no doc content itself. The earlier
-`malloy-docs-index` skill was a near-duplicate of `malloy-patterns` and has been removed, so there
-is one topic index rather than two.
+Resolution: the `malloy-patterns` skill, a table of valid topic strings for `search_malloy_docs`,
+is retired. No agent opened it in our saved analysis and modeling runs, and the
+workflow skills already name example topics where they send the agent to search. A short list of
+example topics belongs in the `search_malloy_docs` tool description, where every caller reads it;
+that change is outside this repository's skills and is tracked as a follow-up.

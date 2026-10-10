@@ -23,5 +23,10 @@
     "load-test-crud-packages": "k6 run load-test/load-test-crud-packages.ts",
     "generate-clients": "openapi-to-k6 ../../../api-doc.yaml ./clients --mode tags --disable-analytics --verbose",
     "clean": "rm -rf ./clients && rm -rf ./packages && rm -rf ./results"
+  },
+  "resolutions": {
+    "orval": "^7.21.0",
+    "handlebars": "^4.7.10",
+    "js-yaml": "^4.3.2"
   }
 }

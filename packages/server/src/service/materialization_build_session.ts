@@ -14,6 +14,7 @@ import path from "node:path";
 import type { components } from "../api";
 import { BadRequestError, MaterializationEligibilityError } from "../errors";
 import { logger } from "../logger";
+import { getPartitionedWriteFlushThreshold } from "../config";
 import { errMessage } from "../utils";
 import { quoteIdentifier, quoteManifestTablePath } from "./quoting";
 import { projectToPublicColumns } from "./build_plan";
@@ -116,6 +117,44 @@ export function wrapPassthrough(
          );
       }
    }
+}
+
+/**
+ * The SELECT a partitioned insert reads, ordered by the partition columns.
+ *
+ * DuckDB's partitioned COPY -- which is what a DuckLake insert into a laid-out
+ * table plans -- charges each appender one vector per column for every
+ * partition it has met, at first sight, before any row of it is flushed. Rows
+ * that arrive in partition order keep that set at one or two partitions; rows
+ * that arrive interleaved bring every partition into it within the first few
+ * chunks, and a 308-partition, 120-column insert then fails against the
+ * session's `memory_limit` before it has flushed anything, at any threshold.
+ *
+ * Applied at the top level of a passthrough-sourced partitioned INSERT and
+ * nowhere else: the SELECT it wraps is exactly the passthrough the CTAS would
+ * have read, so what the warehouse runs, what is attributed to it and what the
+ * source is addressed by are all unchanged. Sorted here rather than by the
+ * warehouse because a warehouse that reads its result over several streams
+ * (BigQuery) re-interleaves a sorted result on the way in. The sort is
+ * DuckDB's, out of core against the session's spill directory. Wrapped as a
+ * subselect so the SELECT is not parsed.
+ */
+export function orderByPartitionColumns(
+   selectSQL: string,
+   partitionColumns: readonly string[],
+   dialect: string,
+): string {
+   if (partitionColumns.length === 0) {
+      return selectSQL;
+   }
+   const order = partitionColumns
+      .map((name) => quoteIdentifier(name, dialect))
+      .join(", ");
+   // A compiled SELECT carries no terminator, but one would end the subselect
+   // early, so it is not left to chance. The closing paren goes on its own
+   // line: a SELECT that ends in a `--` comment would otherwise swallow it.
+   const inner = selectSQL.replace(/[\s;]+$/, "");
+   return `SELECT * FROM (\n${inner}\n) AS partitioned_build ORDER BY ${order}`;
 }
 
 /**
@@ -690,6 +729,16 @@ export interface StorageBuildResult {
     * into a delta, so it has to reach the manifest entry.
     */
    seededThrough?: WatermarkBound;
+   /**
+    * For a source that reads a persisted upstream: whether its rows were
+    * computed from the upstream's STORED table in the destination (`reused`),
+    * or by recomputing the upstream from the source warehouse with it inlined
+    * (`recomputed`). Absent for a source with no persisted upstream, whose only
+    * build reads the warehouse.
+    */
+   upstreamReuse?: "reused" | "recomputed";
+   /** Why the stored upstream was not read, when `upstreamReuse` is `recomputed`. */
+   upstreamRecomputeReason?: string;
 }
 
 /** What an in-place refresh did, for the manifest entry to report. */
@@ -762,6 +811,12 @@ export interface StorageIncrementalRefresh {
  * @returns the destination connection name and the captured authoritative
  *   schema, both recorded on the manifest entry for the serve transform.
  */
+/** See `buildSourceIntoStorage`'s `deps`. */
+export interface BuildSessionDeps {
+   federate?: typeof federateSourceForPassthrough;
+   read?: typeof issuePassthroughRead;
+}
+
 export async function buildSourceIntoStorage(params: {
    destinationName: string;
    destinationConnection: ApiConnection;
@@ -770,6 +825,12 @@ export async function buildSourceIntoStorage(params: {
    buildSQL: string;
    /** Logical, unquoted physical table path (may carry a container path). */
    physicalTableName: string;
+   /**
+    * Columns to lay the destination table out by (`#@ persist partition=`),
+    * already resolved against the source's public projection. Empty keeps the
+    * single-statement CTAS this function has always issued.
+    */
+   partitionColumns?: string[];
    environmentPath: string;
    /**
     * Per-query metadata for the warehouse read, already resolved through the
@@ -788,6 +849,14 @@ export async function buildSourceIntoStorage(params: {
     * leaves this function exactly the full build it was.
     */
    incremental?: StorageIncrementalRefresh;
+   /**
+    * Injection seam for tests: how the source is federated onto the session and
+    * how the passthrough read is issued. Production callers pass nothing. It
+    * exists so the one line that closes a proxied source's tunnel — in this
+    * function's `finally` — can be proven to run, on a clean build and on a
+    * failed one, without a live warehouse.
+    */
+   deps?: BuildSessionDeps;
 }): Promise<StorageBuildResult> {
    const {
       destinationName,
@@ -798,6 +867,8 @@ export async function buildSourceIntoStorage(params: {
       environmentPath,
       queryMetadata,
    } = params;
+   const federate = params.deps?.federate ?? federateSourceForPassthrough;
+   const read = params.deps?.read ?? issuePassthroughRead;
 
    assertSupportedDestination(destinationName, destinationConnection);
    const sourceType = passthroughSourceType(sourceConnection);
@@ -811,6 +882,10 @@ export async function buildSourceIntoStorage(params: {
    );
    // Visible to the finally, which clears the session tag before release.
    let federatedHandle: string | undefined;
+   // The tunnel a proxied source was federated through, if any: closed in the
+   // finally, because disposing the DuckDB session does not close a listener
+   // this process opened outside it.
+   let federatedClose: (() => Promise<void>) | undefined;
    try {
       // FIRST, before the destination attach: the attach is what carries a
       // DuckLake session into the shared funnel, which applies the limits without
@@ -842,11 +917,12 @@ export async function buildSourceIntoStorage(params: {
       // session it protects is this one — see pinSessionToUTC.
       await pinSessionToUTC(session);
 
-      const federated = await federateSourceForPassthrough(
+      const federated = await federate(
          session,
          sourceType,
          sourceFederationConfig(sourceConnection),
       );
+      federatedClose = federated.close;
 
       await tagSnowflakeSession(
          session,
@@ -879,12 +955,40 @@ export async function buildSourceIntoStorage(params: {
       // CTAS — because the plan has to probe this destination to decide, and a
       // seed then continues below on the same session.
       if (params.incremental) {
-         const refreshed = await params.incremental.plan({
-            session,
-            sourceType,
-            handle: federated.handle,
-            quotedTablePath: target,
-         });
+         // A delta into a laid-out table is the same partitioned COPY as the
+         // seed, and its width x partitions is what decides its memory, not its
+         // row count. The threshold and the single appender reach it through
+         // the session; its statements are composed elsewhere, so the ordered
+         // read is the seed's alone (see createTableAndDescribe).
+         const partitioned = (params.partitionColumns?.length ?? 0) > 0;
+         const flushThreshold = getPartitionedWriteFlushThreshold();
+         const boundDelta = partitioned && flushThreshold !== undefined;
+         if (boundDelta) {
+            await session.runSQL(
+               `SET partitioned_write_flush_threshold = ${flushThreshold}`,
+            );
+            await session.runSQL("SET threads = 1");
+         }
+         let refreshed;
+         try {
+            refreshed = await params.incremental.plan({
+               session,
+               sourceType,
+               handle: federated.handle,
+               quotedTablePath: target,
+            });
+         } finally {
+            if (boundDelta) {
+               try {
+                  await session.runSQL("RESET threads");
+                  await session.runSQL(
+                     "RESET partitioned_write_flush_threshold",
+                  );
+               } catch {
+                  // best-effort, as in createTableAndDescribe
+               }
+            }
+         }
          if (refreshed) {
             return {
                storageDestinationName: destinationName,
@@ -901,7 +1005,7 @@ export async function buildSourceIntoStorage(params: {
          }
       }
 
-      const read = await issuePassthroughRead(
+      const passthrough = await read(
          session,
          sourceType,
          federated.handle,
@@ -915,7 +1019,9 @@ export async function buildSourceIntoStorage(params: {
       const schema = await createTableAndDescribe(
          session,
          target,
-         read.selectSQL,
+         passthrough.selectSQL,
+         params.partitionColumns ?? [],
+         { sourceType },
       );
       // The table now holds a full snapshot, so record where that snapshot
       // reaches: this is what turns the NEXT refresh into a delta. On this
@@ -935,7 +1041,7 @@ export async function buildSourceIntoStorage(params: {
          // unchanged, so it can only be asked once the read has run — which is
          // here, while the session still holds the credentials.
          readCost:
-            read.cost ??
+            passthrough.cost ??
             (await snowflakeReadCostAfterBuild(
                session,
                sourceType,
@@ -951,6 +1057,16 @@ export async function buildSourceIntoStorage(params: {
       // nothing federated or read-write survives the build) and removes its
       // throwaway working directory.
       await dispose();
+      // Then the tunnel, after the attach that used it is gone. Best-effort: a
+      // listener that fails to close is logged, never raised over the build's
+      // own outcome.
+      if (federatedClose) {
+         await federatedClose().catch((e) =>
+            logger.warn(
+               `Failed to close the SSH proxy a storage build federated through: ${String(e)}`,
+            ),
+         );
+      }
    }
 }
 
@@ -989,6 +1105,12 @@ export async function buildDownstreamIntoStorage(params: {
    virtualMap: Map<string, Map<string, string>>;
    /** Logical, unquoted physical table path for the downstream's own table. */
    physicalTableName: string;
+   /**
+    * Columns to lay the destination table out by (`#@ persist partition=`),
+    * already resolved against the source's public projection. Empty keeps the
+    * single-statement CTAS this function has always issued.
+    */
+   partitionColumns?: string[];
    environmentPath: string;
 }): Promise<StorageBuildResult> {
    const {
@@ -1064,6 +1186,13 @@ export async function buildDownstreamIntoStorage(params: {
             message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
          });
       }
+      // `getBuildPlan`, not `getBuildTargets`, and not by oversight: a target
+      // carries its SQL, so `getBuildTargets` renders every persist source's SQL
+      // as it plans, and the rebound parents are virtual sources that cannot
+      // render without the `virtualMap` — which that call has no way to take.
+      // The plan lists the sources and leaves `getSQL` to the caller, which hands
+      // the map in below. Moving this call is the port's to do once targets can
+      // take one.
       const plan = model.getBuildPlan();
       let downstream: PersistSource | undefined;
       for (const ps of Object.values(plan.sources)) {
@@ -1098,7 +1227,12 @@ export async function buildDownstreamIntoStorage(params: {
          `${destinationName}.${physicalTableName}`,
          STORAGE_TARGET_DIALECT,
       );
-      const schema = await createTableAndDescribe(session, target, sql);
+      const schema = await createTableAndDescribe(
+         session,
+         target,
+         sql,
+         params.partitionColumns ?? [],
+      );
 
       return {
          storageDestinationName: destinationName,
@@ -1108,6 +1242,7 @@ export async function buildDownstreamIntoStorage(params: {
          // nothing to account for. Null here means "did not spend", which is the
          // one place in this file where it does.
          readCost: null,
+         upstreamReuse: "reused",
       };
    } finally {
       await dispose();
@@ -1315,12 +1450,16 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
    bigqueryConnection?: components["schemas"]["BigqueryConnection"];
    snowflakeConnection?: components["schemas"]["SnowflakeConnection"];
    postgresConnection?: components["schemas"]["PostgresConnection"];
+   proxy?: components["schemas"]["ConnectionProxy"];
 } {
    return {
       name: sourceConnection.name ?? "src",
       bigqueryConnection: sourceConnection.bigqueryConnection,
       snowflakeConnection: sourceConnection.snowflakeConnection,
       postgresConnection: sourceConnection.postgresConnection,
+      // A proxied source is reached through its tunnel, on the build path as on
+      // the query path; federatePostgres opens and the build session closes it.
+      proxy: sourceConnection.proxy,
    };
 }
 
@@ -1330,8 +1469,12 @@ function sourceFederationConfig(sourceConnection: ApiConnection): {
  * shape the manifest carries. This is the schema the serve transform declares.
  */
 /**
- * CTAS the table, then read back its authoritative schema — dropping the table
- * again if that read-back fails.
+ * Build the table and read back its authoritative schema — dropping the table
+ * again if anything after it is created fails.
+ *
+ * With no partition columns this is the CTAS it has always been. With them it
+ * becomes create-empty / lay out / insert, because DuckLake applies a layout
+ * only to files written after it is set.
  *
  * The window this closes: the CTAS has committed by the time DESCRIBE runs, and
  * the caller records nothing until this function RETURNS. So a DESCRIBE failure
@@ -1349,26 +1492,185 @@ export async function createTableAndDescribe(
    session: DuckDBConnection,
    quotedTablePath: string,
    selectSQL: string,
+   partitionColumns: readonly string[] = [],
+   options: {
+      /**
+       * Set by the single-source build, naming the passthrough engine its
+       * SELECT reads from; absent from a chained build. Its presence is what
+       * the memory bounds on the partitioned path below -- the ordered insert,
+       * the single thread and the flush threshold -- key on: they apply to a
+       * passthrough source and to nothing else, and a chained build issues
+       * exactly the statements it did before. The engine itself does not
+       * change the treatment. The failure is the writer's, not the source's:
+       * measured on Postgres and on BigQuery, whose multi-stream read
+       * interleaves partitions even from a sorted result, the same interleaved
+       * insert dies and the same ordered, single-threaded insert completes.
+       * Snowflake is covered by the same reasoning, unmeasured.
+       */
+      sourceType?: FederatedSourceType;
+   } = {},
 ): Promise<WireColumn[]> {
-   await session.runSQL(
-      `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
-   );
+   if (partitionColumns.length === 0) {
+      await session.runSQL(
+         `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL})`,
+      );
+      return await describeOrDrop(session, quotedTablePath);
+   }
+
+   // DuckLake applies a partition layout to files written AFTER it is set, so
+   // the layout has to precede the rows — which is why this is three statements
+   // rather than a CTAS.
+   //
+   // IN ONE TRANSACTION, because the unpartitioned path's single `CREATE OR
+   // REPLACE` is not merely convenient: the physical name is self-assigned and
+   // stable across generations (`selfAssignTableName`), so a rebuild targets the
+   // table currently being SERVED. Run bare, `WITH NO DATA` replaces the served
+   // generation with an empty one and every routed query answers zero rows —
+   // with `servedFrom: storage`, so not even a visible fallback — until the
+   // INSERT lands. A failed INSERT is worse: the drop below would remove the
+   // table the manifest still names.
+   //
+   // Verified against a real DuckLake: bare, the served table reads 0 rows
+   // mid-rebuild and is gone after the failure; wrapped, a ROLLBACK leaves the
+   // previous generation's rows intact and a committed rebuild still writes one
+   // directory per partition value.
+   //
+   // The session's `SET ducklake_default_data_inlining_row_limit=0` (set on
+   // attach) is what makes the layout mean anything: with inlining on, a small
+   // table lands in the catalog's own rows rather than in files, and there is
+   // nothing to lay out.
+   const columns = partitionColumns
+      .map((name) => quoteIdentifier(name, STORAGE_TARGET_DIALECT))
+      .join(", ");
+   // `off` on the threshold turns the whole treatment off -- one switch, because
+   // the three parts only work together and a source that built fine before is
+   // better served by none of them than by the sort alone.
+   const flushThreshold = getPartitionedWriteFlushThreshold();
+   const bounded =
+      options.sourceType !== undefined && flushThreshold !== undefined;
+   if (bounded) {
+      // Before the transaction, and only on this path: it bounds the rows each
+      // appender thread holds before flushing them to the partition files,
+      // which is the term an ordered stream leaves. See
+      // getPartitionedWriteFlushThreshold for the measurement; the session is
+      // this build's own instance, so the setting reaches nothing else.
+      await session.runSQL(
+         `SET partitioned_write_flush_threshold = ${flushThreshold}`,
+      );
+      // One appender. The ORDER BY below is DuckDB's, and a sorted result is
+      // read in parallel, so with several threads each one meets every
+      // partition again and the same insert fails at 768MB that completes on
+      // one thread (measured: 616k rows x 122 columns into 308 partitions, 4
+      // threads fails at 7 s, 1 thread completes in 9.5 s against 8.4 s for the
+      // same rows pre-sorted by the warehouse). What this gives up depends on
+      // the read: `postgres_query`, `snowflake_query` and `bigquery_query` are
+      // one stream, but the labelled BigQuery split reads its result table
+      // with `bigquery_scan`, which is multi-stream, and there the single
+      // thread costs real scan parallelism. This session is the build's own
+      // instance; `SET threads` is NOT transactional, so the RESET in the
+      // finally is what gives the count back after a rollback, not tidiness.
+      await session.runSQL("SET threads = 1");
+   }
+   let schema: WireColumn[];
+   await session.runSQL("BEGIN TRANSACTION");
    try {
-      return await describeTable(session, quotedTablePath);
-   } catch (describeErr) {
+      await session.runSQL(
+         `CREATE OR REPLACE TABLE ${quotedTablePath} AS (${selectSQL}) WITH NO DATA`,
+      );
+      await session.runSQL(
+         `ALTER TABLE ${quotedTablePath} SET PARTITIONED BY (${columns})`,
+      );
+      // Ordered by the partition columns here, and only here: see
+      // orderByPartitionColumns for why the rows must arrive partition by
+      // partition, and why that is done at the top of this statement rather
+      // than in the SELECT the build was handed.
+      const inserted = bounded
+         ? orderByPartitionColumns(
+              selectSQL,
+              partitionColumns,
+              STORAGE_TARGET_DIALECT,
+           )
+         : selectSQL;
+      await session.runSQL(`INSERT INTO ${quotedTablePath} (${inserted})`);
+      // Read back INSIDE the transaction, and this is the reason rather than
+      // tidiness. `describeOrDrop` DROPS the table when the read-back fails, and
+      // the physical name is stable across generations — so after a COMMIT that
+      // drop deletes the generation the previous manifest still names, which is
+      // the same defect the transaction above exists to prevent, one statement
+      // later. Inside, a failed read-back rolls back like any other statement
+      // and the previous generation survives. A DESCRIBE resolves against the
+      // uncommitted table, so nothing is given up by asking here.
+      schema = await describeTable(session, quotedTablePath);
+      await session.runSQL("COMMIT");
+   } catch (buildErr) {
+      // Restores the previous generation rather than deleting it. Best-effort:
+      // a rollback that itself fails must not replace the error that caused it.
       try {
-         await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
-      } catch (dropErr) {
+         await session.runSQL("ROLLBACK");
+      } catch (rollbackErr) {
          logger.warn(
-            "Failed to drop a storage table stranded by a schema read-back " +
-               "failure (physical leak)",
+            "Failed to roll back a partitioned storage build; the served " +
+               "generation may have been replaced",
             {
                table: quotedTablePath,
-               error: errMessage(dropErr),
+               error: errMessage(rollbackErr),
+               cause: errMessage(buildErr),
             },
          );
       }
+      throw buildErr;
+   } finally {
+      // Best-effort, on both outcomes: the thread count is this session's, and
+      // neither a committed generation nor the build's own error is worth
+      // reporting differently because giving it back failed. The session is
+      // disposed with the build; a stuck setting dies with it.
+      if (bounded) {
+         try {
+            await session.runSQL("RESET threads");
+         } catch {
+            // see above
+         }
+      }
+   }
+   return schema;
+}
+
+/** Read the built table's schema back, dropping the table if that fails. */
+async function describeOrDrop(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+): Promise<WireColumn[]> {
+   try {
+      return await describeTable(session, quotedTablePath);
+   } catch (describeErr) {
+      await dropStranded(session, quotedTablePath, describeErr);
       throw describeErr;
+   }
+}
+
+/**
+ * Drop a table a failed build left committed. Best-effort: a failed drop is
+ * logged, never raised, and never replaces the error that is the actual failure.
+ * The drop runs on the session that created the table, whose read-write attach
+ * is still open.
+ */
+async function dropStranded(
+   session: DuckDBConnection,
+   quotedTablePath: string,
+   cause: unknown,
+): Promise<void> {
+   try {
+      await session.runSQL(`DROP TABLE IF EXISTS ${quotedTablePath}`);
+   } catch (dropErr) {
+      logger.warn(
+         "Failed to drop a storage table stranded by a failed build " +
+            "(physical leak)",
+         {
+            table: quotedTablePath,
+            error: errMessage(dropErr),
+            cause: errMessage(cause),
+         },
+      );
    }
 }
 

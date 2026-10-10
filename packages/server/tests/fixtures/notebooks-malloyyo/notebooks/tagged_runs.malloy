@@ -1,0 +1,12 @@
+##! experimental.givens
+## artifact { kind=notebook title="Tagged runs" }
+import "../models/orders.malloy"
+
+#" Revenue for each month.
+# bar_chart
+# label="Revenue by month"
+run: orders -> by_month
+
+run: orders -> kpis
+
+##(markdown) Trailing prose is a model note, so it may end the file.

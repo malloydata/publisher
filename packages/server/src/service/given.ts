@@ -16,8 +16,23 @@
  * deps, so it's safe to bundle into the worker entry).
  */
 
+import {
+   type GivenValue,
+   isSourceDef,
+   type ModelDef,
+   type NamedQueryDef,
+} from "@malloydata/malloy";
 import type { Annotations } from "@malloydata/malloy";
+import {
+   BooleanFilterExpression,
+   NumberFilterExpression,
+   StringFilterExpression,
+   TemporalFilterExpression,
+} from "@malloydata/malloy-filter";
+import { BadRequestError } from "../errors";
 import { isReservedRoute } from "./annotations";
+import { referencedGivenNames } from "./authorize";
+import { MARKDOWN_ROUTE } from "./notebook";
 import type { Tag } from "@malloydata/malloy-tag";
 import { motlyTag, tagNumeric, tagText } from "./motly";
 
@@ -28,7 +43,12 @@ import { motlyTag, tagNumeric, tagText } from "./motly";
  */
 export interface MalloyGiven {
    readonly name: string;
-   readonly type: { type: string; filterType?: string };
+   readonly type: {
+      type: string;
+      filterType?: string;
+      /** Present when `type` is `array`; carries the element's own type def. */
+      elementTypeDef?: { type: string };
+   };
    readonly annotations: Annotations;
 }
 
@@ -49,6 +69,16 @@ export interface GivenSuggestSpec {
    query?: string;
    source?: string;
    dimension?: string;
+   /**
+    * The givens the suggest query needs in its request to RUN: those the
+    * source it reads is scoped by (a source-level `where: … ~ $X`) or gated by
+    * (an `#(authorize)` expression reading `$X`), plus, for the `query=` form,
+    * the ones the named query itself references. A client sends the current
+    * values of exactly these and nothing else, so a gated source's options load
+    * while the option list still does not depend on the page's other filters.
+    * Absent when the query needs none, or from a server too old to say.
+    */
+   givenNames?: string[];
 }
 
 /**
@@ -94,6 +124,8 @@ export interface MalloyGivenApi extends GivenControlSpec {
    name: string;
    type: string;
    annotations?: string[];
+   /** True when the declaration carries `#(secure)`: the host's to set; the builder hides its control only on a document held as text. */
+   secure?: boolean;
    /**
     * The given's default as a Malloy source literal — one literal per declared
     * `type`. Examples across the type range: `'WN'` or `"WN"` (string), `2003`
@@ -220,31 +252,44 @@ export function readGivenControlSpec(
  * (plain `#` tags, `#"` doc strings, `##!` pragmas), which aren't part
  * of the given's surface contract.
  *
- * Type rendering: `GivenTypeDef` is typed as `AtomicTypeDef |
- * FilterExpressionParamTypeDef`, but Malloy's grammar only emits
- * the scalar parameter types (`string` | `number` | `boolean` |
- * `date` | `timestamp` | `timestamptz` | `filter expression` |
- * `error`) for given declarations today. If the grammar expands
- * to allow array or record givens, the bare `type.type`
- * discriminator (`'array'`, `'record'`) will land in the wire
- * response with no element info — revisit when that happens.
+ * Type rendering: a scalar renders as its own name (`string`,
+ * `number`, `boolean`, `date`, `timestamp`, `timestamptz`,
+ * `error`), a filter as `filter<…>`, and an ARRAY as
+ * `<element>[]` — `number[]`, `string[]`.
+ *
+ * The array case is not decoration. A set-valued given is how a
+ * `#(secure)` attribute is declared (a scalar cannot be one: it
+ * has no value that fails closed), so it is the shape every
+ * row-level access boundary uses. Rendering the bare `array`
+ * discriminator loses the element type and yields text that is
+ * not valid Malloy, which breaks any consumer that re-declares a
+ * given from this field rather than merely displaying it — the
+ * storage tier's serve shape does exactly that. A `record`
+ * given, if the grammar gains one, still renders bare.
  */
 export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
    const type = given.type;
    const renderedType =
       type.type === "filter expression"
          ? `filter<${type.filterType}>`
-         : type.type;
+         : type.type === "array" && type.elementTypeDef?.type
+           ? `${type.elementTypeDef.type}[]`
+           : type.type;
    const allNotes = given.annotations.forRoute(undefined);
    return {
       name: given.name,
       type: renderedType,
       annotations: allNotes
-         .filter((note) => !isReservedRoute(note.route))
+         // `(markdown)` is a notebook cell's own prose, not part of the given.
+         .filter(
+            (note) =>
+               !isReservedRoute(note.route) && note.route !== MARKDOWN_ROUTE,
+         )
          .map((note) => note.text),
       // Reads the reserved plain-`#` notes the line above drops, which is where
       // the control tags live.
       ...readGivenControlSpec(allNotes.map((note) => note.text)),
+      ...(allNotes.some((note) => note.route === "secure") && { secure: true }),
       // `_internal.defaultText` is the already-rendered source literal of the
       // given's default. It lives on Malloy's private `_internal` (the public
       // surface exposes only the parsed `.default` AST node, not a stringified
@@ -254,4 +299,197 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
       default: (given as { _internal?: { defaultText?: string } })._internal
          ?.defaultText,
    };
+}
+
+/**
+ * Collect the given names referenced anywhere in a slice of Malloy IR.
+ *
+ * A view's `TurtleDef` carries no `givenUsage` summary the way a `Query` does,
+ * but its pipeline holds the `{ node: 'given', refName }` reference nodes
+ * themselves, so a structural walk answers the same question exactly.
+ */
+export function collectGivenRefs(value: unknown, into: Set<string>): void {
+   if (Array.isArray(value)) {
+      for (const item of value) collectGivenRefs(item, into);
+      return;
+   }
+   if (value === null || typeof value !== "object") return;
+   const node = value as Record<string, unknown>;
+   if (node.node === "given" && typeof node.refName === "string") {
+      into.add(node.refName);
+   }
+   for (const child of Object.values(node)) collectGivenRefs(child, into);
+}
+
+/**
+ * Which givens a query over a source, or a named query, needs in its request.
+ * Both answer with names in first-seen order, or undefined for an unknown name.
+ */
+export interface SuggestGivenLookup {
+   forSource(name: string): string[] | undefined;
+   forQuery(name: string): string[] | undefined;
+}
+
+/**
+ * The gate expressions a `suggest` over `name` must supply givens for: BOTH
+ * routes, unioned.
+ *
+ * A dropdown's own query is an ordinary query against the source, so it meets
+ * the same two gates. A lock given it omits is an unsupplied gate given and
+ * denies (403); a filter given it omits cannot be grafted. Reading one route
+ * here is what left a migrated source's controls showing "Options
+ * unavailable".
+ */
+export function gateGivenSource(
+   sources: readonly {
+      name?: string | undefined;
+      authorize?: string[] | undefined;
+      accessFilter?: string[] | undefined;
+   }[],
+   name: string,
+): readonly string[] | undefined {
+   const source = sources.find((candidate) => candidate.name === name);
+   if (!source) return undefined;
+   return [...(source.authorize ?? []), ...(source.accessFilter ?? [])];
+}
+
+/**
+ * Build the lookup a `suggest` is resolved against, from a compiled model.
+ *
+ * A source's names are the givens its own `where:` reads plus the ones its
+ * EFFECTIVE gates read on BOTH routes; the caller supplies the gate expressions
+ * per source (see {@link gateGivenSource}) because inheritance (`extend` of a
+ * gated base) is resolved by `extractSourcesFromModelDef`, not here. A named query's names are its own
+ * `givenUsage` plus its source's. `surfaced`, when given, narrows every answer
+ * to names the entry can actually bind, since sending any other guarantees an
+ * "unknown given" error.
+ */
+export function suggestGivenLookup(
+   modelDef: ModelDef,
+   gatesBySource: (source: string) => readonly string[] | undefined,
+   surfaced?: ReadonlySet<string>,
+): SuggestGivenLookup {
+   const registry = modelDef.givens ?? {};
+   const bySource = new Map<string, string[]>();
+   const byQuery = new Map<string, { own: string[]; source?: string }>();
+   for (const obj of Object.values(modelDef.contents)) {
+      if (isSourceDef(obj)) {
+         const name = obj.as || obj.name;
+         const refs = new Set<string>();
+         collectGivenRefs(obj.filterList, refs);
+         for (const expr of gatesBySource(name) ?? []) {
+            for (const given of referencedGivenNames(expr)) refs.add(given);
+         }
+         bySource.set(name, Array.from(refs));
+      } else if (obj.type === "query") {
+         const query = obj as NamedQueryDef;
+         byQuery.set(query.as || query.name, {
+            own: (query.givenUsage ?? [])
+               .map((usage) => registry[usage.id]?.name)
+               .filter((n): n is string => n !== undefined),
+            source:
+               typeof query.structRef === "string"
+                  ? query.structRef
+                  : undefined,
+         });
+      }
+   }
+   const narrow = (names: string[]) =>
+      Array.from(new Set(names)).filter(
+         (name) => surfaced === undefined || surfaced.has(name),
+      );
+   return {
+      forSource: (name) => {
+         const found = bySource.get(name);
+         return found && narrow(found);
+      },
+      forQuery: (name) => {
+         const found = byQuery.get(name);
+         if (!found) return undefined;
+         return narrow([
+            ...found.own,
+            ...(found.source ? (bySource.get(found.source) ?? []) : []),
+         ]);
+      },
+   };
+}
+
+/**
+ * The `givenNames` for one suggest block, or undefined when it needs none or
+ * names something the lookup does not know (a target the lint reports).
+ */
+export function suggestGivenNames(
+   suggest: GivenSuggestSpec,
+   lookup: SuggestGivenLookup,
+): string[] | undefined {
+   const names =
+      suggest.query !== undefined
+         ? lookup.forQuery(suggest.query)
+         : suggest.source !== undefined
+           ? lookup.forSource(suggest.source)
+           : undefined;
+   return names && names.length > 0 ? names : undefined;
+}
+
+/**
+ * Fill in `suggest.givenNames` on every given that has a suggest block, in
+ * place, so the same objects the sources carry see it too.
+ */
+export function attachSuggestGivenNames(
+   givens: readonly MalloyGivenApi[] | undefined,
+   lookup: SuggestGivenLookup,
+): void {
+   for (const given of givens ?? []) {
+      if (!given.suggest) continue;
+      const names = suggestGivenNames(given.suggest, lookup);
+      if (names) given.suggest.givenNames = names;
+      else delete given.suggest.givenNames;
+   }
+}
+
+/** The parser for each `filter<T>` a given can declare, keyed by `T`. */
+const FILTER_PARSERS: Record<
+   string,
+   { parse(text: string): { log: { message: string; severity: string }[] } }
+> = {
+   string: StringFilterExpression,
+   number: NumberFilterExpression,
+   boolean: BooleanFilterExpression,
+   date: TemporalFilterExpression,
+   timestamp: TemporalFilterExpression,
+   timestamptz: TemporalFilterExpression,
+};
+
+/**
+ * Refuse a request whose value for a `filter<T>` given does not parse as a
+ * `T` filter, with the parser's own reason. Malloy refuses it too, but only
+ * once the query compiles, and its message loses the reason
+ * (`Filter expression parse error: [object Object].`).
+ *
+ * Checks only givens the model declares, with the same parser Malloy uses, so
+ * a value this accepts is one the compiler reads. An unknown name is left to
+ * Malloy's own "unknown given" error.
+ */
+export function assertFilterGivensParse(
+   declared: readonly { name?: string; type?: string }[] | undefined,
+   givens: Record<string, GivenValue> | undefined,
+): void {
+   if (!declared || !givens) return;
+   for (const given of declared) {
+      const inner = /^filter<(.+)>$/.exec(given.type ?? "")?.[1];
+      if (!given.name || !inner) continue;
+      const value = givens[given.name];
+      if (typeof value !== "string") continue;
+      // Malloy refuses a filter on any log entry, whatever its severity, and
+      // reports the first; match it, so every value this passes compiles.
+      const problem = FILTER_PARSERS[inner]?.parse(value).log[0];
+      if (problem) {
+         throw new BadRequestError(
+            `Invalid value for given ${given.name} (${given.type}): ` +
+               `${problem.message.replace(/\.$/, "")}. Fix: send a ` +
+               `${given.type} expression, or leave ${given.name} unset to use ` +
+               `its default.`,
+         );
+      }
+   }
 }

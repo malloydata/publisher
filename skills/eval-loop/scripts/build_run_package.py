@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Turn one or more runs into a Malloy package you can serve. Stdlib only.
 
-  python build_run_package.py --run results/sonnet --run results/opus \
-      --set evals/ecommerce --out /tmp/evalpkg
+  python build_run_package.py --run <workdir>/runs/sonnet --run <workdir>/runs/opus \
+      --set <set-dir>      # --out defaults to <workdir>/packages/eval-<run>
 
 Writes CSVs, a Malloy model over them, a notebook for the analytical tables and
 an in-package HTML app for the case matrix.
@@ -10,7 +10,7 @@ an in-package HTML app for the case matrix.
 WHY BOTH A NOTEBOOK AND AN APP
 
 They are not redundant, and the split is not stylistic. Publisher renders a
-`.malloynb` natively, so the aggregate tables -- pass rate, effort, most-missed
+`.malloy` notebook natively, so the aggregate tables -- pass rate, effort, most-missed
 entities, the backlog -- are best expressed as Malloy and left alone: no
 JavaScript to drift out of step with the model. What a notebook cannot do is
 open a drawer, and reading an eval is mostly drilling into one case. So the
@@ -29,15 +29,20 @@ import csv
 import json
 import re
 import pathlib
+import shlex
 import shutil
 import sys
+import urllib.error
+import urllib.request
 from typing import Any
 
 TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-run-package"
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
+import config  # noqa: E402
+import golden_rows  # noqa: E402
 from score_retrieval import delivery, groups, score_case  # noqa: E402
-from flip_table import outcome  # noqa: E402  (same directory)
+from flip_table import counts_toward_score, outcome  # noqa: E402  (same directory)
 
 
 def read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -97,13 +102,19 @@ def split_entity(eid: str) -> tuple[str, str, str]:
     return "", "", eid or ""
 
 
-def golden_display(g: dict[str, Any]) -> str:
-    """One short human-readable line for the golden, whatever its shape."""
+def golden_display(g: dict[str, Any], rows: list[dict[str, Any]] | None = None
+                   ) -> str:
+    """One short human-readable line for the golden, whatever its shape.
+
+    `rows` are a rows golden's rows when they live in a file, not in `value`.
+    """
     if not g:
         return ""
     if g.get("kind") == "unanswerable":
         return "(unanswerable -- the model cannot answer this)"
     v = g.get("value")
+    if v is None and rows is not None:
+        v = rows
     if v is None:
         return "(unanswerable -- the model cannot answer this)"
     if isinstance(v, dict):
@@ -122,13 +133,12 @@ def golden_display(g: dict[str, Any]) -> str:
 _IDENT = re.compile(r"(?<![A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_])")
 
 
-def _result_text(block: dict[str, Any]) -> str:
-    c = block.get("content")
-    if isinstance(c, str):
-        return c
-    if isinstance(c, list):
-        return "\n".join(x.get("text", "") for x in c if isinstance(x, dict))
-    return ""
+# The run viewer used to keep its own copy of the raw reader, so a get_context
+# result the CLI had spilled to a file showed the "<persisted-output>" note as
+# its detail and no result count. run_baseline.result_text reads the file back
+# when it is still there; when it is gone the note stays, and the summary the
+# ledger recorded (none, for an unmeasured call) is what the viewer shows.
+from run_baseline import result_text as _result_text  # noqa: E402  (same directory)
 
 
 def _payload(text: str) -> Any:
@@ -252,15 +262,23 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for c in cases:
         g = c.get("golden") or {}
         exp = c.get("expectedEntities") or {}
+        # A rows golden may keep its rows in a file; an unreadable one is shown
+        # as it was before (no value) and reported by the run itself.
+        try:
+            file_rows = (golden_rows.load_rows(g, set_dir, c["qid"])
+                         if g.get("kind") == "rows" else None)
+        except golden_rows.GoldenRowsError:
+            file_rows = None
+        shown = g.get("value") if g.get("value") is not None else file_rows
         case_rows.append({
             "qid": c["qid"], "question": c.get("question"),
             "split": c.get("split"), "coverage": c.get("coverage"),
             "coverage_note": c.get("coverageNote"),
             "golden_kind": g.get("kind"), "golden_status": g.get("status"),
             "golden_revision": c.get("goldenRevision"),
-            "golden_display": golden_display(g),
-            "golden_value": json.dumps(g.get("value"))[:40000]
-            if g.get("value") is not None else "",
+            "golden_display": golden_display(g, file_rows),
+            "golden_value": json.dumps(shown)[:40000]
+            if shown is not None else "",
             "rubric": (g.get("rubric") or "")[:2000],
             "must_state": g.get("mustState"),
             "n_required": len(exp.get("required") or []),
@@ -281,12 +299,30 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for rd in run_dirs:
         cfg = read_json(rd / "run.json")
         run_id = cfg.get("runId") or rd.name
+        # WHICH BUILD AND WHICH RETRIEVER ANSWERED, carried through to the
+        # browsable package and not just to run.json and flip_table's console.
+        # `judge_version` and `set_version` above are pins of exactly the same
+        # kind, so leaving these four in the ledger meant the data app could
+        # show two arms side by side with no way to see they measured different
+        # models. Null on runs written before each field existed.
+        reexec = cfg.get("reExecution") or {}
         runs.append({
             "run_id": run_id, "label": cfg.get("label") or rd.name,
             "target": cfg.get("target"), "model": cfg.get("answererModel"),
             "effort": cfg.get("effort"), "started": cfg.get("started"),
             "judge_version": cfg.get("judgeVersion"),
             "set_version": cfg.get("datasetVersion"),
+            "retrieval_mode": cfg.get("retrievalMode"),
+            "target_version": cfg.get("targetVersion"),
+            "model_git_sha": cfg.get("modelGitSha"),
+            "model_repo": cfg.get("modelRepo"),
+            "reexec_attempted": reexec.get("attempted"),
+            "reexec_ok": reexec.get("ok"),
+            "reexec_failed": reexec.get("failed"),
+            "reexec_no_query": reexec.get("noQuery"),
+            "reexec_not_re_executed": reexec.get("notReExecuted"),
+            "reexec_not_judged": reexec.get("notJudged"),
+            "reexec_missing": reexec.get("missing"),
         })
         events = read_jsonl(rd / "events.jsonl")
         verdicts = {key(e): e for e in events if e.get("kind") == "score"}
@@ -346,20 +382,36 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
                            # uses, so the package cannot disagree with the
                            # flip table about what a flip is.
                            "outcome": outcome(s.get("verdict")),
+                           # Whether this score belongs in the aggregates, by
+                           # the same function run_baseline.py uses before it
+                           # prints one. Written as a column so the measures
+                           # read the rule rather than restating it.
+                           "counts": counts_toward_score(s.get("gold_status")),
                            **s})
 
             mine = tool_calls.get(kk, [])
             for i, t in enumerate(mine, 1):
-                rs = t.get("rankedSummary") or {}
-                eids = rs.get("entityIds") or []
+                # A get_context call with no rankedSummary was never measured:
+                # the CLI's saved result file was gone by the time of a rebuild,
+                # or the call errored. It used to show as n_returned 0, the same
+                # row a search that found nothing writes, and empty_calls
+                # counted it. n_returned stays empty and `unmeasured` says why.
+                rs = t.get("rankedSummary")
+                unmeasured = t.get("tool") == "get_context" and rs is None
+                eids = (rs or {}).get("entityIds") or []
                 calls.append({
                     "attempt_key": ak,
                     "run_id": run_id, "qid": qid, "sample": e.get("sample"),
                     "call_index": i, "tool": t.get("tool"),
                     "targets": t.get("targets"),
-                    "n_returned": len(eids),
+                    "n_returned": None if unmeasured else len(eids),
+                    "unmeasured": unmeasured,
                     "entity_ids": eids[:40],
                     "error": t.get("error"),
+                    # Which retriever answered this call. Absent on a server
+                    # with no embedding provider, and on any run written before
+                    # the harness recorded it.
+                    "retrieval_mode": t.get("retrieval_mode"),
                 })
 
             # The one scoring implementation, shared with eval-answer.
@@ -369,7 +421,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             retr.append({"attempt_key": ak, "run_id": run_id, **r})
 
             exp = case.get("expectedEntities") or {}
-            required = {e for g in groups(exp) for e in g}
+            required_groups = groups(exp)
+            required = {e for g in required_groups for e in g}
             acceptable = set(exp.get("acceptable") or []) | required
             got: dict[str, None] = {}
             mine_tokens: list[str] = []
@@ -385,11 +438,23 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             # named in returned source docs (from the ledger when the run
             # recorded them, else from the transcript walked above).
             tokens = {t for t in mine_tokens} | set(_IDENT.findall(docs))
-            for eid in sorted(required):
+            # ONE ROW PER GROUP, not per entity. `groups()` is the unit recall
+            # is scored in -- a `requiredAnyOf` group is satisfied by any one
+            # member -- and flattening it here made the app's badge disagree
+            # with the recall metric printed beside it: a case with one
+            # `required` plus a three-way alternative rendered four dots and
+            # read `2/4` in red on a case whose recall was 2 of 2. Nine of the
+            # storefront set's twelve cases carry such a group.
+            RANK = {"exact": 0, "alias": 1, "in_docs": 2, "missing": 3}
+            for g in sorted(required_groups, key=lambda g: sorted(g)[0]):
+                best = min(((delivery(e, set(got), tokens), e) for e in g),
+                           key=lambda p: RANK.get(p[0], 3))
+                status, eid = best
                 required_rows.append({
                     "attempt_key": ak, "run_id": run_id, "qid": qid,
-                    "entity_id": eid,
-                    "status": delivery(eid, set(got), tokens)})
+                    "entity_id": eid if len(g) == 1 else
+                                 f"{eid} (any of {len(g)})",
+                    "status": status})
 
             roles: list[tuple[str, str]] = []
             roles += [(eid, "required") for eid in sorted(required)]
@@ -438,17 +503,25 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             for qid in c.get("qids") or []:
                 member_rows.append({"cluster_id": c.get("clusterId"), "qid": qid})
     if not cluster_rows:
-        print("  ! no clusters.jsonl in any run: the data app's cluster views "
-              "will be empty (run diagnose first)")
+        if all((rd / "clusters.jsonl").exists() for rd in run_dirs):
+            print("  no failure clusters: diagnose found nothing to diagnose")
+        else:
+            print("  ! no clusters.jsonl in any run: the data app's cluster "
+                  "views will be empty (run diagnose first)")
 
     write_csv(data / "runs.csv", runs, [
         "run_id", "label", "target", "model", "effort", "started",
-        "judge_version", "set_version"])
+        "judge_version", "set_version",
+        "retrieval_mode", "target_version", "model_git_sha", "model_repo",
+        "reexec_attempted", "reexec_ok", "reexec_failed", "reexec_no_query",
+        "reexec_not_re_executed", "reexec_not_judged", "reexec_missing"])
     write_csv(data / "attempts.csv", attempts, [
         "attempt_key", "run_id", "qid", "sample", "phase", "submitted", "final_query",
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",
-        "host_tool_uses", "reported_calls", "contaminated", "servedRevision",
-        "input_tokens", "output_tokens", "cache_read_tokens", "cost_usd",
+        "host_tool_uses", "mcp_tool_uses", "reported_calls", "contaminated",
+        "final_query_source", "final_givens", "servedRevision",
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "cost_usd",
         "num_turns", "wall_seconds", "run_error", "transcriptPath",
         "n_steps", "prediction"])
     write_csv(data / "steps.csv", steps_rows, [
@@ -458,16 +531,16 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "attempt_key", "run_id", "qid", "entity_id", "status"])
     write_csv(data / "scores.csv", scores, [
         "attempt_key", "run_id", "qid", "sample", "phase", "verdict", "outcome",
-        "reason", "confidence",
+        "counts", "reason", "confidence",
         "judge_version", "rubric_sha", "golden_revision", "gold_status",
-        "contaminated", "artifactPath"])
+        "contaminated", "judge_verdict", "must_not_use_hits", "artifactPath"])
     write_csv(data / "retrieval.csv", retr, [
         "attempt_key", "run_id", "qid", "sample", "phase", "coverage", "verdict", "failed",
         "recall", "precision", "n_required", "n_returned", "n_get_context",
         "missing", "noise", "component", "owner", "where_to_fix", "why"])
     write_csv(data / "calls.csv", calls, [
         "attempt_key", "run_id", "qid", "sample", "call_index", "tool", "targets",
-        "n_returned", "entity_ids", "error"])
+        "n_returned", "unmeasured", "entity_ids", "error", "retrieval_mode"])
     write_csv(data / "entities.csv", ents, [
         "run_id", "qid", "sample", "entity_id", "entity_kind", "entity_source",
         "entity_name", "role"])
@@ -479,9 +552,11 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "n_cases", "proposed_edit", "evidence", "confidence"])
     write_csv(data / "cluster_members.csv", member_rows, ["cluster_id", "qid"])
 
-    for name in ("publisher.json", "eval_run.malloy", "eval_run.malloynb"):
+    for name in ("publisher.json", "eval_run.malloy"):
         if (TEMPLATE / name).exists():
             shutil.copy(TEMPLATE / name, out / name)
+    if (TEMPLATE / "notebooks").exists():
+        shutil.copytree(TEMPLATE / "notebooks", out / "notebooks", dirs_exist_ok=True)
     if (TEMPLATE / "public").exists():
         shutil.copytree(TEMPLATE / "public", out / "public", dirs_exist_ok=True)
 
@@ -491,17 +566,117 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
             "steps": len(steps_rows)}
 
 
+def serving_lines(cfg: config.Config, run_dirs: list[pathlib.Path],
+                  out: pathlib.Path, on_model_server: bool = False) -> list[str]:
+    """The registration command and both URLs, which are in different path spaces.
+
+    Registered on the truth server when the set has one. The package holds the
+    answer key, and the truth server is the one the answerer has no route to.
+    With no truth server the only Publisher is the answerer's, so the command
+    is printed only when asked for, and with the DELETE that must follow it.
+    """
+    run = read_json(run_dirs[0] / "run.json")
+    name = out.name
+    base = cfg.truth_publisher()
+    env = cfg.get("truth", "environment")
+    if not base and not on_model_server:
+        return [f"# not registered: {cfg.file_hint} has no [truth] section, so the",
+                "# only Publisher is the model server, and this package holds the",
+                "# answer key. Registered there, the next run's answerer can read it.",
+                "# Fix: add [truth] and start it with `eval.py serve truth`, then",
+                "# package again. Or pass --on-model-server for the command, and",
+                "# DELETE the package before the next run."]
+    note, tail = [], []
+    if not base:
+        base = run.get("publisher") or cfg.model_publisher()
+        env = run.get("environment") or cfg.get("model", "environment") or "<env>"
+        note = ["# this is the MODEL server: the package holds the answer key,",
+                "# so delete it before the next run answers from this server"]
+        tail = [f"curl -sS -X DELETE {base}/api/v0/environments/{env}/packages/{name}"]
+    body = json.dumps({"name": name, "location": str(out.resolve())})
+    return [*note,
+            f"curl -sS -X POST {base}/api/v0/environments/{env}/packages \\",
+            f"    -H 'content-type: application/json' -d {shlex.quote(body)}",
+            f"# case matrix: {base}/environments/{env}/packages/{name}/",
+            f"# notebook:    {base}/{env}/{name}/notebooks/eval_run",
+            *tail]
+
+
+def register(base: str, env: str, out: pathlib.Path) -> str | None:
+    """Register the built package on `base`, or return why it could not be.
+
+    A POST for a name the server already has re-copies the package, so a
+    rebuilt report replaces the one it served; no delete is needed first.
+    """
+    body = json.dumps({"name": out.name, "location": str(out.resolve())}).encode()
+    req = urllib.request.Request(
+        f"{base.rstrip('/')}/api/v0/environments/{env}/packages", data=body,
+        method="POST", headers={"content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120):
+            return None
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}"
+    except (urllib.error.URLError, OSError) as e:
+        return str(getattr(e, "reason", e))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", action="append", required=True, type=pathlib.Path,
                     help="run directory with events.jsonl; repeat for an A/B")
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--out", required=True, type=pathlib.Path)
+    ap.add_argument("--out", type=pathlib.Path, default=None,
+                    help="default: <workdir>/packages/eval-<run>, outside the "
+                         "repository")
+    ap.add_argument("--without-diagnosis", action="store_true",
+                    help="build from runs with no clusters.jsonl. The cluster "
+                         "views are then empty, or show the mechanical "
+                         "candidates, which are not a diagnosis")
+    ap.add_argument("--on-model-server", action="store_true",
+                    help="with no truth server, print the command that registers "
+                         "the report on the model server anyway, and the DELETE "
+                         "that removes it before the next run")
+    ap.add_argument("--no-register", action="store_true",
+                    help="build and print the registration command, but do not "
+                         "register the report on the truth server")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    out = a.out or cfg.workdir() / "packages" / f"eval-{a.run[0].name}"
 
-    counts = build(a.run, a.set_dir, a.out)
-    print(f"{a.out}")
+    outer = config.enclosing_package(out)
+    if outer:
+        raise SystemExit(
+            f"{out} is inside the Malloy package {outer}. Built there, it puts "
+            f"that package into loadErrors. Fix: pass an --out outside any "
+            f"package, or omit it for {cfg.workdir() / 'packages'}")
+    undiagnosed = [r for r in a.run if not (r / "clusters.jsonl").exists()]
+    if undiagnosed and not a.without_diagnosis:
+        raise SystemExit(
+            "no clusters.jsonl in " + ", ".join(str(r) for r in undiagnosed)
+            + ": the report's cluster views would be empty. Fix: run "
+              "`eval.py diagnose` on each run first, or pass "
+              "--without-diagnosis")
+
+    counts = build(a.run, a.set_dir, out)
+    lines = serving_lines(cfg, a.run, out, a.on_model_server)
+    (out / "README.md").write_text(
+        "# Serving this report\n\n```bash\n" + "\n".join(lines) + "\n```\n")
+    print(f"{out}")
     print("  " + ", ".join(f"{v} {k}" for k, v in counts.items()))
+    base = cfg.truth_publisher()
+    if base and not a.no_register:
+        env = cfg.get("truth", "environment")
+        failed = register(base, env, out)
+        if failed is None:
+            print(f"registered on the truth server, {base}")
+            print("\n".join(l for l in lines if l.startswith("# ")))
+            return 0
+        print(f"  ! could not register on {base}: {failed}. Is `eval.py serve "
+              f"truth` running? Start it, then run:", file=sys.stderr)
+        print("\n".join(lines))
+        return 1
+    print("\n".join(lines))
     return 0
 
 

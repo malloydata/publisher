@@ -56,6 +56,10 @@ export class QueryController {
        * Orthogonal to {@link bypassFilters} — see {@link Model.getQueryResults}.
        */
       bypassAuthorize?: boolean,
+      /** Lift the package's surface for this request (see {@link Model.getQueryResults}). */
+      includeHiddenFilesAndSources?: boolean,
+      /** Aborted when the HTTP client disconnects: cancels the query with it. */
+      clientSignal?: AbortSignal,
    ): Promise<ApiQuery> {
       let requestMetadata: QueryMetadata | undefined;
       let queryClass: QueryClass | undefined;
@@ -80,7 +84,12 @@ export class QueryController {
       const model = p.getModel(modelPath);
 
       if (!model) {
-         throw new ModelNotFoundError(`${modelPath} does not exist`);
+         // Worded exactly as the generic refusal for a model that exists but is
+         // off the package's surface (Model.assertQueryBoundaryEarly). Where
+         // the hidden model is gated that refusal is generic, so a 404 cannot
+         // tell a hidden file from a missing one; where it is not, the hidden
+         // file's 404 says why and this one stays plain.
+         throw new ModelNotFoundError(`No queryable model "${modelPath}".`);
       } else {
          const {
             result,
@@ -146,8 +155,10 @@ export class QueryController {
                   // request came to be refused on bytes it would never receive.
                   compactJson ? "compact" : "full",
                   bypassAuthorize,
+                  includeHiddenFilesAndSources,
                ),
             getQueryTimeoutMs(),
+            clientSignal,
          );
          const renderLogs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),

@@ -7,9 +7,25 @@ FROM amazoncorretto:21.0.8 AS java-base
 
 FROM oven/bun:1.3.13-slim AS base-deps
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `apt-get upgrade` because the Debian packages in oven/bun's layer are frozen at
+# the date that tag was published. Without it every image built from the same tag
+# ships the same package versions, including ones Debian has since patched.
+#
+# No dnsutils: nothing in the server calls dig or nslookup, and its bind9-libs
+# dependency brings liblmdb0 and libxml2, which carry CRITICAL CVEs Debian has
+# not fixed.
+#
+# APT_REFRESH exists to invalidate this layer. BuildKit caches a RUN by its
+# parent layer and its command text, so while the base tag keeps its digest the
+# upgrade would run once and its package versions would freeze in the build
+# cache. CI passes the UTC date (for example 2026-10-01), so the layer, and every
+# layer after it, rebuilds at least daily. A local build that passes nothing
+# caches as before.
+ARG APT_REFRESH=
+RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
+    apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     curl ca-certificates unzip git \
-    openssl libcurl4 libssl3 dnsutils iputils-ping file && \
+    openssl libcurl4 libssl3 iputils-ping file && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
@@ -19,14 +35,87 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # lockfile (the source of truth); the default below is a fallback for plain
 # `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
 # by the CI consistency check.
+#
+# The CLI and its extensions go under the home of `bun` (uid 1000, shipped by
+# the oven/bun base), the user the server runs as, because DuckDB resolves
+# ~/.duckdb from HOME. Installed as root with HOME pointed there, then handed to
+# that user in the same layer, so the chown adds no copy of the files.
 ARG DUCKDB_VERSION=1.5.5
-RUN DUCKDB_VERSION=${DUCKDB_VERSION} bash -c "curl -L https://install.duckdb.org | bash" && \
-    ln -s /root/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
-    duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
+RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://install.duckdb.org | bash" && \
+    ln -s /home/bun/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
+    HOME=/home/bun duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
     echo "Snowflake verification skipped (offline build)" && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
+    chown -R bun:bun /home/bun/.duckdb
+
+# No Node runtime. The server runs under Bun (CMD below) and nothing in it spawns
+# `node`; where a `node` command is needed, the oven/bun base provides one that
+# resolves to Bun. The NodeSource apt package is deliberately not installed: it
+# hard-depends on python3, which brings the Debian python3.13 packages and their
+# unfixed CVEs into the runtime image for a runtime nothing here uses.
+
+# ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
+# compiler never reaches the runtime image and so a broken driver/shim pair
+# fails the BUILD. Removal: see packages/server/adbc-shim/README.md.
+#
+# Downloaded directly rather than through the upstream installer's `curl … | sh`,
+# and checked against the digest GitHub publishes: this is a 16MB native library
+# dlopen'd into the server process, and a version tag is mutable — an asset can
+# be re-uploaded under it. Pin the bytes, not the name.
+#
+# No `|| echo` fallback, unlike the extension install in base-deps: a failed
+# fetch FAILS THE BUILD. That tolerance is exactly what let this ship broken
+# once. An image without the driver cannot answer a single Snowflake query and
+# must not leave the builder reporting success.
+#
+# The shim (packages/server/adbc-shim/) is compiled here and installed under the
+# driver's own file name, with the real driver renamed beside it; selftest.c
+# dlopens the pair the way the driver manager will and fails the build if the
+# chain does not come up. No network, no credentials.
+#
+# When bumping DUCKDB_VERSION, re-check this: the community extension moves with
+# DuckDB and the driver ABI may move with it, and a mismatch surfaces only at
+# query time.
+# Same base as `final` ON PURPOSE: `-ldl` binds the shim's dlopen to this
+# glibc (dlopen@GLIBC_2.34), and the selftest below runs against THIS libc. A
+# final stage on a different base would pass the selftest here and fail to load
+# the shim at runtime, where only smoke-test 4b would notice. Change both or
+# neither -- including the `apt-get upgrade`, which is why this stage reads
+# APT_REFRESH too.
+FROM oven/bun:1.3.13-slim AS adbc-driver
+ARG ADBC_SNOWFLAKE_VERSION=1.12.0
+ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
+ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
+ARG APT_REFRESH=
+RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
+    apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends curl ca-certificates gcc libc6-dev && \
+    update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /out && ADBC_ARCH="$(dpkg --print-architecture)" && \
+    if [ "${ADBC_ARCH}" = "amd64" ]; then ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_AMD64}"; \
+    else ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_ARM64}"; fi && \
+    curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
+      -o /tmp/adbc-snowflake.tar.gz \
+      "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_${ADBC_ARCH}_v${ADBC_SNOWFLAKE_VERSION}.tar.gz" && \
+    echo "${ADBC_SHA}  /tmp/adbc-snowflake.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/adbc-snowflake.tar.gz -C /tmp libadbc_driver_snowflake.so && \
+    mv /tmp/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so && \
+    rm -f /tmp/adbc-snowflake.tar.gz
+# ADBC-SHIM: compile + self-test. Without the shim this stage ends at the mv
+# above, with the driver kept under its real name.
+#
+# adbc.h is the ABI the shim wraps, vendored byte-for-byte from
+# apache/arrow-adbc@7f35429e (c/include/arrow-adbc/adbc.h). The digest makes a
+# re-vendor deliberate: update it and the provenance line in the shim's README
+# together, and re-read the AdbcDriver struct layout when you do.
+ARG ADBC_HEADER_SHA256=b6ce3eb8394d4877af1693654d34bc11648a2dfb1f0eacc0c47d062ca69feb71
+COPY packages/server/adbc-shim/ /src/adbc-shim/
+RUN echo "${ADBC_HEADER_SHA256}  /src/adbc-shim/adbc.h" | sha256sum -c - && \
+    gcc -O2 -Wall -Wextra -shared -fPIC -o /out/libadbc_driver_snowflake.so /src/adbc-shim/shim.c -ldl && \
+    gcc -O2 -Wall -Wextra -o /tmp/selftest /src/adbc-shim/selftest.c -ldl && \
+    /tmp/selftest /out/libadbc_driver_snowflake.so && \
+    mkdir -p /tmp/stub && \
+    gcc -O2 -Wall -Wextra -I/src/adbc-shim -shared -fPIC -o /tmp/stub/libadbc_driver_snowflake.real.so /src/adbc-shim/stub_driver.c && \
+    ADBC_REAL_DRIVER=/tmp/stub/libadbc_driver_snowflake.real.so /tmp/selftest /out/libadbc_driver_snowflake.so
 
 # Builder stage
 FROM oven/bun:1.3.13-slim AS builder
@@ -77,6 +166,29 @@ RUN --mount=type=cache,target=/root/.bun \
 FROM base-deps AS final
 WORKDIR /publisher
 
+# The server runs as `bun` (uid 1000), not root; USER is set just before CMD so
+# the build steps below still run as root. Every application file stays
+# root-owned, so the server cannot modify one in place. The server root
+# directory itself is owned by uid 1000, because publisher.db is created
+# directly in it, and that lets the server rename aside and replace any of its
+# top-level entries: package.json, bun.lock, and the packages/ and
+# node_modules/ directories. Such a change lasts as long as the container. Some
+# storage drivers, Docker's default overlayfs among them, refuse to rename a
+# directory that comes from an image layer; that limit belongs to the driver,
+# not this image.
+#
+# publisher_data/ and ducklake_data/ are created here, owned by that user,
+# because Docker seeds a new named volume from the image's directory, ownership
+# included: a volume mounted on either on first run is writable without a
+# chown. ducklake_data/ is the mount point for a DuckLake storage destination
+# whose bucketUrl is a local path; the server writes there only when one is
+# configured. These are the only mount points the image prepares; a new volume
+# at any path the image lacks starts root-owned. A volume an older, root-run
+# image already populated is not writable either. packages/server/README.docker.md
+# covers both.
+RUN mkdir -p /publisher/publisher_data /publisher/ducklake_data && \
+    chown bun:bun /publisher /publisher/publisher_data /publisher/ducklake_data
+
 # OCI image metadata — surfaces in `docker inspect`, registry UIs
 # (Docker Hub / GHCR), and Docker Desktop. The description is kept short
 # (some tools truncate at 80–120 chars); the `documentation` URL points
@@ -107,7 +219,10 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 # fetch. Copying the baked cache from the builder keeps a single bake mechanism
 # (the server build) instead of re-running it here. The CLI (base-deps) and
 # runtime engine are pinned to the same DuckDB version, so all agree on one dir.
-COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
+# The bake ran as root in the builder, so its cache is under /root there; here
+# it lands in the runtime user's home, owned by that user so an INSTALL at run
+# time of an extension the bake did not cover can still write beside it.
+COPY --from=builder --chown=bun:bun /root/.duckdb/extensions /home/bun/.duckdb/extensions
 
 # The Snowflake extension is a wrapper over the ADBC Snowflake driver, and
 # `INSTALL snowflake FROM community` does NOT bring it — the extension ships
@@ -116,42 +231,56 @@ COPY --from=builder /root/.duckdb/extensions /root/.duckdb/extensions
 # snowflake_query() fails at run time with "ADBC Snowflake driver
 # (libadbc_driver_snowflake.so) not found".
 #
-# Placed HERE, after the COPY above, rather than earlier: the extension resolves
-# the driver by calling dladdr on ITSELF and looking beside the loaded object, so
-# the driver has to sit next to whichever snowflake.duckdb_extension the runtime
-# actually loads. That directory is discovered rather than reconstructed from a
-# platform string — the CLI (base-deps) and the bake (@duckdb/node-api, in the
-# builder) each write their own, and this is the layer that ships.
+# The driver is downloaded, verified and wrapped in the `adbc-driver` stage
+# above; what arrives here is two files (ADBC-SHIM — without the shim it is the
+# one upstream file under its own name):
 #
-# Downloaded directly rather than through the upstream installer's `curl … | sh`,
-# and checked against the digest GitHub publishes: this is a 16MB native library
-# dlopen'd into the server process, and a version tag is mutable — an asset can
-# be re-uploaded under it. Pin the bytes, not the name.
+#   libadbc_driver_snowflake.so       the shim (packages/server/adbc-shim/), which
+#                                     forwards every call to the real driver and
+#                                     sets the two statement options that bound
+#                                     the driver's read-ahead — see its README
+#   libadbc_driver_snowflake.real.so  the upstream driver, unmodified
 #
-# No `|| echo` fallback, unlike the extension install above: a failed fetch FAILS
-# THE BUILD. That tolerance is exactly what let this ship broken. An image without
-# the driver cannot answer a single Snowflake query and must not leave the builder
-# reporting success. The closing `test` is the verification — snowflake_version()
-# cannot serve as one, being a scalar that never touches the driver.
+# The shim finds the real driver beside itself, so both go wherever the
+# extension is. Placed HERE, after the extensions COPY above, rather than
+# earlier: the extension resolves the driver by calling dladdr on ITSELF and
+# looking beside the loaded object, so the driver has to sit next to whichever
+# snowflake.duckdb_extension the runtime actually loads. That directory is
+# discovered rather than reconstructed from a platform string — the CLI
+# (base-deps) and the bake (@duckdb/node-api, in the builder) each write their
+# own, and this is the layer that ships.
 #
-# When bumping DUCKDB_VERSION, re-check this: the community extension moves with
-# DuckDB and the driver ABI may move with it, and a mismatch surfaces only at
-# query time.
-ARG ADBC_SNOWFLAKE_VERSION=1.12.0
-ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
-ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
-RUN ADBC_ARCH="$(dpkg --print-architecture)" && \
-    if [ "${ADBC_ARCH}" = "amd64" ]; then ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_AMD64}"; \
-    else ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_ARM64}"; fi && \
-    curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
-      -o /tmp/adbc-snowflake.tar.gz \
-      "https://github.com/adbc-drivers/snowflake/releases/download/go/v${ADBC_SNOWFLAKE_VERSION}/snowflake_linux_${ADBC_ARCH}_v${ADBC_SNOWFLAKE_VERSION}.tar.gz" && \
-    echo "${ADBC_SHA}  /tmp/adbc-snowflake.tar.gz" | sha256sum -c - && \
-    tar -xzf /tmp/adbc-snowflake.tar.gz -C /tmp libadbc_driver_snowflake.so && \
-    find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
-      | while read -r d; do cp /tmp/libadbc_driver_snowflake.so "$d/"; done && \
-    rm -f /tmp/adbc-snowflake.tar.gz /tmp/libadbc_driver_snowflake.so && \
-    test -n "$(find /root/.duckdb/extensions -name libadbc_driver_snowflake.so -print -quit)"
+# The closing count-match is the verification — one shim and one real driver
+# for EVERY extension directory, not "at least one somewhere": a pipeline's
+# status is its last command's, so a copy that failed in a non-final loop
+# iteration would otherwise pass. snowflake_version() cannot serve as a check,
+# being a scalar that never touches the driver.
+COPY --from=adbc-driver /out/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so /tmp/adbc/
+RUN find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
+      | while read -r d; do cp /tmp/adbc/libadbc_driver_snowflake.so /tmp/adbc/libadbc_driver_snowflake.real.so "$d/"; done && \
+    rm -rf /tmp/adbc && \
+    ext=$(find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
+    shim=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
+    real=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \
+    test "$ext" -gt 0 && test "$shim" -eq "$ext" && test "$real" -eq "$ext"
+
+# ADBC-SHIM operator note. The shim is opt-in: with neither variable set it is a pure pass-through and
+# the driver behaves exactly as upstream ships it. To bound how far the driver
+# reads ahead of the consumer, set at deploy time:
+#
+#   ADBC_RESULT_QUEUE_SIZE=1        Arrow record batches buffered per result
+#                                   stream (driver default 100). 1 keeps a slow
+#                                   consumer — a CTAS into DuckLake on object
+#                                   storage — from having the whole remaining
+#                                   result resident: measured 3325 MiB → 286 MiB
+#                                   on a 20M-row read, no measured cost to a
+#                                   fast one.
+#   ADBC_PREFETCH_CONCURRENCY       streams downloaded in parallel (driver
+#                                   default 5). The throughput knob, not the
+#                                   memory one — lowering it costs wall time.
+#
+# Deliberately not defaulted here, like PUBLISHER_DUCKLAKE_*: an image upgrade
+# must not change what the driver does until an operator asks it to.
 
 # Runtime config
 ARG DUCKDB_VERSION=1.5.5
@@ -160,13 +289,17 @@ ENV NODE_ENV=production
 # server writes into its working directory could never be read. The git-working-
 # tree guard that would normally cover /publisher cannot fire here, because
 # .dockerignore excludes .git from the image. Left on, every boot would write a
-# root-owned file, which matters to anyone bind-mounting a project at /publisher.
+# file into it, which matters to anyone bind-mounting a project at /publisher.
 # Pass -e PUBLISHER_NO_MCP_CONFIG= to opt back in. Note the same emptiness is
 # reachable by accident: `docker run -e PUBLISHER_NO_MCP_CONFIG` with no value,
 # or a Compose `environment:` entry with none, deletes this ENV when the host
 # does not have the variable, which re-enables the write.
 ENV PUBLISHER_NO_MCP_CONFIG=1
-ENV PATH="/root/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
+ENV PATH="/home/bun/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
+# Set rather than left to USER, which derives HOME from /etc/passwd: run as
+# `--user 0`, the server would otherwise resolve ~/.duckdb under /root and find
+# none of the baked extensions.
+ENV HOME=/home/bun
 RUN mkdir -p /etc/publisher
 
 # Trust the Amazon RDS root CAs so Postgres->RDS connections verify the server
@@ -191,4 +324,9 @@ EXPOSE 4000 4040
 # from GitHub at startup, blowing past the docker_smoke_test 90s timeout.
 # Operators that want a config provide it at /publisher/publisher.config.json
 # (mount as volume) or override CMD with --config <path>.
+#
+# Numeric, not `bun`: Kubernetes' runAsNonRoot can only verify a numeric USER,
+# and refuses to start an image whose USER is a name unless the pod also sets
+# runAsUser.
+USER 1000:1000
 CMD ["bun", "run", "./packages/server/dist/server.mjs", "--server_root", "/publisher"]

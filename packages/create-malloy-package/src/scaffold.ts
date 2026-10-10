@@ -27,11 +27,8 @@ import {
    validateEnvironmentName,
    validatePackageName,
 } from "./names";
-import {
-   assertSkillsAvailable,
-   installSkills,
-   isWithinDirectory,
-} from "./skills";
+import { installSkills, isWithinDirectory } from "@malloy-publisher/skills";
+import { assertSkillsAvailable } from "./skills";
 import { renderTemplate, templatesDir } from "./templates";
 
 export type Host = "claude-code" | "cursor";
@@ -88,6 +85,14 @@ export interface DeclinedScript {
  * that holds someone else's project notes sends the next agent session to a file
  * with no start command, no ports, no MCP reconnect, and no skills index in it.
  */
+/**
+ * Publisher reads a package's root index.malloy as the list of what it
+ * publishes, so a scaffolded package is curated from its first boot with no
+ * manifest key. Duplicated from the server's INDEX_MODEL_NAME rather than
+ * imported: this package ships standalone and must not depend on the server.
+ */
+const INDEX_MODEL_NAME = "index.malloy";
+
 const MALLOY_AGENTS_FILE = "AGENTS.malloy.md";
 
 /**
@@ -130,6 +135,11 @@ export interface ScaffoldResult {
    packageName?: string;
    sourceName?: string;
    modelFile?: string;
+   /**
+    * The package's published surface. Equal to `modelFile` when the package is
+    * named "index", because the two files would collide.
+    */
+   indexFile?: string;
    dataPath?: string;
    /** The --data file's own name, set only when copying it in had to rename it. */
    dataFileRenamedFrom?: string;
@@ -538,7 +548,13 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
    }
 
    const sourceName = toMalloyIdentifier(name);
-   const modelFile = `${sourceName}.malloy`;
+   // A package named "index" would otherwise get a model file and a surface
+   // file with the same name -- and on a case-insensitive filesystem so would
+   // "Index", where the two would silently destroy each other. When they
+   // collide the model file IS the surface: it declares the source and exports
+   // it, and no separate file is written.
+   const modelIsIndex = sourceName.toLowerCase() === "index";
+   const modelFile = modelIsIndex ? INDEX_MODEL_NAME : `${sourceName}.malloy`;
    const packageDir = path.join(options.cwd, name);
 
    const packageDirExists = fs.existsSync(packageDir);
@@ -659,10 +675,21 @@ function createPackage(options: ScaffoldOptions, result: ScaffoldResult): void {
       );
    }
 
+   // The published surface. Written after the model so its import resolves to a
+   // file that already exists on disk.
+   if (!modelIsIndex) {
+      writeFile(
+         path.join(packageDir, INDEX_MODEL_NAME),
+         renderTemplate(INDEX_MODEL_NAME, { sourceName, modelFile }),
+         options.cwd,
+      );
+   }
+
    result.packageCreated = true;
    result.packageName = name;
    result.sourceName = sourceName;
    result.modelFile = modelFile;
+   result.indexFile = modelIsIndex ? modelFile : INDEX_MODEL_NAME;
    result.dataPath = dataPath;
    result.written.push(`${name}/`);
    if (packageDirExists) {
@@ -682,7 +709,9 @@ function forceDescription(name: string, modelFile: string, host: Host): string {
    const mcpPath = mcpConfigPathFor(host);
    return (
       `--force does not empty the directory. It rewrites ${name}/publisher.json, ` +
-      `${name}/malloy-config.json, ${name}/${modelFile} and the data file it ` +
+      `${name}/malloy-config.json, ${name}/${modelFile}, ` +
+      (modelFile === INDEX_MODEL_NAME ? `` : `${name}/${INDEX_MODEL_NAME} `) +
+      `and the data file it ` +
       `copies into ${name}/data/, and leaves anything else in there alone. ` +
       `It also refreshes .claude/skills/ ` +
       `from the bundled copies, as every run does. Outside the package it ` +
@@ -1544,7 +1573,9 @@ function isSingleServerInvocation(script: string): boolean {
  * `} else if (arg === "--host" && args[i + 1]) {`, a strict equality against a
  * separate argv entry. `--host=127.0.0.1` matches no branch in that chain, and
  * the chain has no unknown-flag error, so the flag is dropped in silence and
- * PUBLISHER_HOST falls back to "0.0.0.0" for both the REST and the MCP listener.
+ * PUBLISHER_HOST falls back to "0.0.0.0" for the REST listener. The MCP listener
+ * reads MCP_HOST first and defaults to loopback on its own, so a dropped --host
+ * exposes REST and leaves MCP where it was.
  *
  * Accepting the `=` form here was worse than useless: it made the one shape that
  * looks private and is not the one shape this tool called safest, suppressing the
@@ -1561,6 +1592,7 @@ export const SERVER_VALUE_FLAGS = new Set([
    "--server_root",
    "--config",
    "--mcp_port",
+   "--mcp_host",
    "--shutdown_drain_duration_seconds",
    "--shutdown_graceful_close_timeout_seconds",
    "--watch-env",
@@ -2020,7 +2052,13 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
    if (result.packageCreated) {
       const base = restBase(result.packageName as string);
       lines.push(
-         `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them. The package's REST base is:`,
+         `\`${result.packageName}/${result.modelFile}\` defines a Malloy source named \`${result.sourceName}\` over local data. Read it for the real source, field, and view names and use them verbatim; never guess them.`,
+         "",
+         result.indexFile === result.modelFile
+            ? `That file is also \`${result.indexFile}\`, this package's published surface: what it \`export\`s is what Publisher lists and what may be queried. Query through it.`
+            : `\`${result.packageName}/${result.indexFile}\` is the package's published surface: it imports that model and \`export\`s \`${result.sourceName}\`. Publisher lists and accepts queries against the surface, so address queries to \`${result.indexFile}\`, not to \`${result.modelFile}\` -- a model off the surface is refused with a 404. Add a source to the \`export\` list to publish it.`,
+         "",
+         `The package's REST base is:`,
          "",
          "```",
          base,
@@ -2029,7 +2067,10 @@ function packageSection(result: ScaffoldResult, envPackages: string[]): string {
          "Run one of its views from a script:",
          "",
          "```bash",
-         `curl -s -X POST ${base}/models/${result.modelFile}/query \\`,
+         // The SURFACE, not the model file. Once a package has an index.malloy
+         // the model file is off the surface and this path answers 404, so a
+         // briefing that named it would hand every new user a broken example.
+         `curl -s -X POST ${base}/models/${result.indexFile}/query \\`,
          "  -H 'content-type: application/json' \\",
          `  -d '{"query":"run: ${result.sourceName} -> overview"}'`,
          "```",

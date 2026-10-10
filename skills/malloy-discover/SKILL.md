@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
-> **PREREQUISITE:** Make sure the Malloy MCP tools (`get_context`, `execute_query`, `search_malloy_docs`) are configured and reachable. If they are not, stop and resolve the MCP connection before continuing.
+> **PREREQUISITE:** Make sure the Malloy tools (`get_context`, `execute_query`, `search_malloy_docs`) are reachable. If they are missing and a user is present, stop and have them fix the connection (section 0 of `malloy-getting-started`, where your host has it). If you are running unattended against a local Publisher, with nobody to reconnect you, use its REST API instead: discovery, query, compile and reload all have REST equivalents, listed in the same section.
 
 **This step is silent.** The agent does not present findings to the user yet. That happens in the next step (PROPOSE SCOPE). Silent does not mean unrecorded: append findings to your modeling workflow's `modeling-notes.md` as you go (grain proofs, key collisions, coverage cliffs, metadata drift, problems) so the scope proposal argues from a durable record rather than a reconstruction.
 
@@ -41,7 +41,15 @@ SPDX-License-Identifier: MIT
 9. Proceed to Step 2 (PROPOSE SCOPE)
 ```
 
-**If the model has no sources defined** and no LookML files are present, do NOT silently retry or proceed without data. Tell the user: "No model sources were found. Please check that the package points at a connected data source, then try again."
+**If the model has no sources defined** and no LookML files are present, start from the database instead. If you have `search_database_schema`:
+
+1. Call it with no arguments to list environments and their connections, then with a `connectionName` to list its schemas.
+2. Pass a schema name exactly as it was returned, plus a `searchQuery` describing the data you need, to rank that schema's tables. DuckDB schema names are qualified (`memory.main`), so a bare `main` is rejected.
+3. Each table comes back with a `source:` line. Paste it into the model verbatim as your minimal source (step 6). Validate the whole file, not just the new line: a check that appends text to the existing model rejects a `connection.table(...)` line. Then save it and make it queryable the way your modeling workflow does before previewing it.
+
+If the environment lists no connection, do NOT silently retry or proceed without data. Tell the user: "No model sources were found, and no database connection is configured to start one from. Add a connection to the package, then try again."
+
+If you do not have `search_database_schema`, a connection may still exist; you just cannot list its tables. Do NOT tell the user to add one. Ask which connection and table to start from, then define a minimal source from them (step 6).
 
 **If the model has no sources defined** but LookML files ARE present (LookML-only mode), skip steps 3-7. Use connection name and table paths from the LookML review. Flag all proposals as unvalidated.
 
@@ -58,7 +66,7 @@ SPDX-License-Identifier: MIT
 source: explore is my_conn.table('schema.table') extend {}
 ```
 
-**In analysis-first mode:** There is no temp file. The analysis `.malloy` file IS your working file. It grows throughout the session and becomes the input for formalizing into a model. See `skill:malloy-analyze` for that workflow.
+**In analysis-first mode:** There is no temp file. The analysis `.malloy` file IS your working file. It grows throughout the session and becomes the input for formalizing into a model. See `skill:malloy-model-as-you-go` for that workflow.
 
 ## What to Capture
 
@@ -91,7 +99,7 @@ When reviewing tables and columns, capture:
 |-----------------|-------------|
 | **Denormalized vs joined values** | Compare pre-computed columns (e.g., `customers.order_count`) against the actual joined aggregate (`count()` from `orders`). Report discrepancy rate. If >0%, flag for user decision. |
 | **Candidate date fields** | When multiple date/timestamp columns exist, query both. What % of rows differ? By how much? This informs which is canonical. |
-| **Numeric column distributions** | Query min, max, avg, percentiles (p25, p50, p75, p95). These inform tier boundaries and detect outliers. |
+| **Numeric column distributions** | Query min, max, avg and percentiles (p25, p50, p75, p95; Malloy has no percentile function, so use the two-stage query under Example Queries). These inform tier boundaries and detect outliers. |
 | **Categorical column cardinality** | Query distinct values. A `status` column with 5 values behaves differently from one with 500. |
 | **Column usefulness** | Query NULL rates. Columns that are >95% NULL are candidates for `internal`. |
 | **Join cardinality** | Query FK uniqueness: `group_by: fk_col, aggregate: row_count is count(), having: row_count > 1`. Determines `join_one` vs `join_many`. |
@@ -103,23 +111,35 @@ When reviewing tables and columns, capture:
 
 ### Example Queries
 
-**Tier boundaries**: query distribution, propose breaks from percentiles:
+**Tier boundaries**: query the distribution, propose breaks from percentiles. Malloy has no `percentile` function and no scalar median, so this is a two-stage query: count the rows at each distinct value, keep a running count, and take the smallest value whose running count reaches the share you want (the nearest-rank percentile). The `order_by` in the first stage is required, and a null group would shift every percentile, so filter nulls out. On a column with very many distinct values, round it first (`round(x, 0)`) so the first stage stays small. For a measure you will keep, see `skill:malloy-gotchas-modeling` § No Scalar Median.
 ```malloy
 run: orders -> {
+  where: sale_price is not null
+  group_by: sale_price
+  aggregate: c is count()
+  calculate: cum is sum_cumulative(c), tot is sum_window(c)
+  order_by: sale_price
+} -> {
   aggregate:
-    min_val is min(sale_price), p25 is sale_price.percentile(25)
-    median_val is sale_price.percentile(50), p75 is sale_price.percentile(75)
-    p95 is sale_price.percentile(95), max_val is max(sale_price)
+    min_val is min(sale_price)
+    p25 is min(sale_price) { where: cum >= 0.25 * tot }
+    median_val is min(sale_price) { where: cum >= 0.5 * tot }
+    p75 is min(sale_price) { where: cum >= 0.75 * tot }
+    p95 is min(sale_price) { where: cum >= 0.95 * tot }
+    max_val is max(sale_price)
 }
 ```
 
-**Denormalized vs joined**: compare pre-computed column against real aggregate, report match rate:
+**Denormalized vs joined**: compare a pre-computed column against the real aggregate and report the match rate. Aggregates cannot go inside `where:`, so count the joined rows per key in a first stage and compare in a second:
 ```malloy
 run: customers -> {
   join_many: orders on customer_id = orders.customer_id
+  group_by: customer_id, order_count
+  aggregate: actual is count(orders.order_id)
+} -> {
   aggregate:
     total is count()
-    match is count() { where: order_count = count(orders.order_id) }
+    match is count() { where: order_count = actual }
 }
 ```
 
@@ -161,6 +181,7 @@ Check for prior art signals at the start of discovery. If a signal is found and 
 | Signal | Source Type | Reference to Read |
 |--------|------------|-------------------|
 | `.lkml` files in project or subdirectories | lookml | `skill:malloy-lookml-review` |
+| `.pbix`, `.pbip`, or a `definition/` folder of `.tmdl` files | power bi | `malloy-powerbi-review` (read it where your host has it) |
 | `dbt_project.yml` in project or parent dirs | dbt | dbt review (future) |
 | Dataset metadata (`metadata.json` and friends), metrics/KPI docs, catalog exports, data READMEs, existing SQL or report files, dashboard screenshots | direct | none: read it yourself (see below) |
 

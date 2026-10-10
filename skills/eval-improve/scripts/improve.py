@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Spawn one modeling agent per diagnosed cluster to edit the model. Stdlib only.
 
-  python improve.py --run results/2026-08-30-sonnet --set evals/ecommerce \
-      --model-dir ../malloy-samples/ecommerce --watch-mode
+  python improve.py --run <workdir>/runs/<label> --set <set-dir> --watch-mode
+  # the model directory comes from [model] repo in the set's eval.toml
 
 One agent per fixable cluster (`owner: model` or `owner: package-skill`), each
 holding `skill:eval-improve`, each producing at most one smallest edit with
@@ -62,8 +62,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 from agent_harness import default_manifest, manifest_skills, skills_roots, spawn_agent  # noqa: E402
+import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
+import golden_rows  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 IMPROVE_TOOLS = ("mcp__publisher__get_context",
@@ -118,6 +120,17 @@ under skills/ as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
 
+READ THE CLUSTER'S `sufficiency` BEFORE YOU EDIT
+
+It reports whether the diagnosis was PROBED, worst case across the cluster's
+cases. `sufficient` means someone checked. `insufficient` and `unknown` mean
+the diagnosis is a lead and not a finding: `unknown` in particular is what a
+diagnosis carries when it was recovered from a malformed reply and holds no
+probe records at all. On either of those, probe the claim yourself before you
+change anything, and if your probe does not reproduce what the diagnosis
+asserts, say so and make no edit. An edit resting on a claim nobody verified is
+the failure this field exists to prevent.
+
 WHEN YOU ARE DONE
 
 Give the report block, then emit the JSON object as the LAST thing in your
@@ -145,8 +158,14 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
     if not script.exists():
         script = (pathlib.Path(__file__).resolve().parent.parent.parent
                   / "eval-answer" / "scripts" / "verify_goldens.py")
+    # `ran: False` covers two opposite situations, so `couldNotRun` separates
+    # them: a legitimate skip (no edit, so there is nothing to invalidate) may
+    # proceed, while a check that SHOULD have happened and did not must block.
+    # Without the split, a missing verifier or a dead truth Publisher read as
+    # "not applicable" and the cluster sailed through the acceptance gate.
     if not script.exists():
-        return {"ran": False, "why": f"no verify_goldens.py at {script}"}
+        return {"ran": False, "couldNotRun": True,
+                "why": f"no verify_goldens.py at {script}"}
     if not diff.strip():
         return {"ran": False, "why": "no edit to invalidate anything"}
 
@@ -156,24 +175,84 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
         if cand and (cand / f"{a.package}.malloy").exists():
             model = cand / f"{a.package}.malloy"
             break
-    # --set is REQUIRED by verify_goldens.py and was never passed. Running with
-    # cwd=set_dir looks like it should stand in for it, and does not: argparse
-    # exits 2 with a usage error, which this function then reports as "golden
-    # verification FAILED against the edited model". Every acceptance check was
-    # therefore blocked by a harness bug that reads exactly like a real golden
-    # invalidation, on every set.
-    cmd = [sys.executable, str(script.resolve()), "--set", str(a.set_dir)]
+    # `--set` is required by the verifier and was never passed, so argparse
+    # exited 2 on every call: `clean` was false whenever there was a diff, and
+    # the acceptance check below reported BLOCKED for every cluster that made an
+    # edit. The gate this step is built around had therefore never once passed,
+    # and its failure was indistinguishable from a golden the edit really did
+    # invalidate. `--environment` too: the verifier's own default is `samples`,
+    # which silently verified against the wrong environment on any other set.
+    # The TRUTH server's environment, which is not the model server's. It is a
+    # separate server and names its environments however it likes, so passing
+    # `--environment` here 404'd every case ("Environment 'local' could not be
+    # resolved to a path"), the audit exited non-zero, and the acceptance
+    # check read that as "this edit may have invalidated a golden" and BLOCKED
+    # every cluster. No edit could ever be accepted. `run_baseline.py` grew
+    # `--truth-environment` for exactly this; this caller had not.
+    cmd = [sys.executable, str(script.resolve()),
+           "--set", str(a.set_dir.resolve()),
+           "--environment",
+           getattr(a, "truth_environment", None) or a.environment]
+    # Appended only when set: passing None here is a TypeError inside
+    # subprocess.run, and the two excepts below catch OSError and a timeout,
+    # not that -- so it would have crashed improve.py AFTER the model edit,
+    # losing the receipts. Omitted, the verifier skips the value check and
+    # exits 3, which `couldNotRun` already reads correctly.
+    if a.truth_publisher:
+        cmd += ["--publisher", a.truth_publisher]
+    # getattr: older callers and the tests build this Namespace by hand.
+    if getattr(a, "definitions", None):
+        cmd += ["--definitions", str(a.definitions)]
     if model:
         cmd += ["--model", str(model)]
+    # The isolation guard needs to know what is under test; without it the
+    # guard reads `set.json`'s `targetPackage`, which nothing writes.
+    if a.package:
+        cmd += ["--target-package", a.package]
     try:
-        p = subprocess.run(cmd, cwd=a.set_dir, capture_output=True, text=True,
-                           timeout=600)
+        # No cwd: `--set` is absolute and the verifier resolves `--cases` and
+        # the gold artifacts under it, so nothing here is relative any more.
+        # Running in the set dir also crashed outright when the path did not
+        # exist, and it crashed AFTER the model edit, losing the receipts.
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
-        return {"ran": False, "why": "verify_goldens timed out"}
+        return {"ran": False, "couldNotRun": True,
+                "why": "verify_goldens timed out"}
+    except OSError as exc:
+        return {"ran": False, "couldNotRun": True,
+                "why": f"could not run verify_goldens: {exc}"}
     (d / "verify_goldens.txt").write_text(p.stdout + p.stderr)
+    # 0 clean, 1 a golden the edit may have invalidated, anything else the
+    # verifier failing to run at all (3 is its own "could not run"; see its
+    # EXIT CODES block). The third is not evidence about the goldens, and
+    # reporting it as one sends someone to settle a golden that is fine. It is a
+    # harness failure, says so, and still blocks: a check that did not happen is
+    # not a check that passed.
+    if p.returncode not in (0, 1):
+        return {"ran": False, "couldNotRun": True,
+                "why": f"verify_goldens could not run (exit {p.returncode}); "
+                       f"see artifacts/clusters/*/verify_goldens.txt",
+                "model": str(model) if model else None,
+                "tail": (p.stderr or p.stdout or "").strip().splitlines()[-25:]}
     return {"ran": True, "clean": p.returncode == 0,
             "model": str(model) if model else None,
             "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
+
+
+def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
+                    set_dir: pathlib.Path | None) -> list[dict[str, Any]]:
+    """Each case in the cluster with its question, key and rubric.
+
+    The key comes through `golden_rows`, so a rows golden kept in
+    `golden.path` reaches the improver as its rows rather than as no key.
+    """
+    out = []
+    for q in issue.get("qids", []):
+        g = (cases.get(q) or {}).get("golden") or {}
+        out.append({"qid": q, "question": (cases.get(q) or {}).get("question"),
+                    "golden": golden_rows.key_value_or_note(g, set_dir, q),
+                    "rubric": g.get("rubric")})
+    return out
 
 
 def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
@@ -199,19 +278,23 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
     helper.write_text(SYNC_SCRIPT.format(sync=sync, reload=reload_cmd))
     helper.chmod(0o755)
 
-    members = [{"qid": q, "question": (cases.get(q) or {}).get("question"),
-                "golden": ((cases.get(q) or {}).get("golden") or {}).get("value"),
-                "rubric": ((cases.get(q) or {}).get("golden") or {}).get("rubric")}
-               for q in issue.get("qids", [])]
+    members = cluster_members(issue, cases, a.set_dir)
 
     r = spawn_agent(
         IMPROVE_PROMPT.format(
             environment=a.environment, package=a.package,
             model_dir=a.model_dir.resolve(),
+            # `sufficiency` travels with the cluster because it says whether
+            # the diagnosis was PROBED. It used to stop at the diagnose step,
+            # so an unprobed diagnosis arrived here indistinguishable from one
+            # backed by evidence. This skill already requires a probe receipt
+            # for every factual claim, so the honest fix is to tell the agent
+            # what it is holding rather than to silently drop the cluster.
             cluster=json.dumps({k: issue.get(k) for k in
                                 ("issue_id", "component", "primary_code",
                                  "contributing_codes", "owner", "severity",
-                                 "diagnosis", "evidence")}, indent=2),
+                                 "sufficiency", "diagnosis", "evidence")},
+                               indent=2),
             cases=json.dumps(members, indent=2)[:8000],
             cases_file=(a.set_dir / "cases.jsonl").resolve()),
         skills=["eval-improve", *a.role_skills], skills_root=a.roots,
@@ -255,24 +338,55 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, type=pathlib.Path)
     ap.add_argument("--set", dest="set_dir", required=True, type=pathlib.Path)
-    ap.add_argument("--model-dir", required=True, type=pathlib.Path)
+    ap.add_argument("--model-dir", type=pathlib.Path, default=None,
+                    help="the model's git checkout. Default: [model] repo in "
+                         "eval.toml")
     ap.add_argument("--server-root", type=pathlib.Path, default=None,
-                    help="Publisher SERVER_ROOT; only needed without watch mode")
+                    help="Publisher SERVER_ROOT; only needed without watch "
+                         "mode. Each accepted edit is rsynced onto the copy "
+                         "this root serves and reloaded. Default: the one "
+                         "`serve.py --role model` uses, when it exists")
     ap.add_argument("--watch-mode", action="store_true",
                     help="Publisher was started with --watch-env, so edits are "
                          "live and the helper only reloads")
     ap.add_argument("--model", default="opus", help="the modeling agent")
-    ap.add_argument("--environment", default="samples")
-    ap.add_argument("--package", default="ecommerce")
-    ap.add_argument("--mcp-url", default="http://localhost:4040/mcp")
+    ap.add_argument("--environment", default=None)
+    ap.add_argument("--package", default=None)
+    ap.add_argument("--mcp-url", default=None)
     ap.add_argument("--rest-url", default="http://localhost:4000",
                     help="REST base; the reload receipt is read from here, "
                          "because the MCP reply double-encodes its JSON")
+    # No built-in port: a fixed default once named the server holding the
+    # model under test, which cannot verify its own goldens. The fallback is
+    # the [truth] section of the set's eval.toml. With neither, the value
+    # check does not happen, the verifier exits 3, and the acceptance gate
+    # blocks with "did not run".
+    ap.add_argument("--truth-publisher", default=None,
+                    help="the Publisher serving the TRUTH package, for the "
+                         "golden re-derivation after an edit. The model under "
+                         "test cannot verify its own goldens, which is the "
+                         "whole point of the second server. Default: the "
+                         "[truth] server in the set's eval.toml. With neither, "
+                         "the value check does not run and the acceptance "
+                         "check blocks")
+    ap.add_argument("--truth-environment", default=None,
+                    help="the environment name on the TRUTH server, when it "
+                         "differs from --environment. That server is separate "
+                         "and names its environments independently; the wrong "
+                         "name 404s every case and the acceptance check blocks "
+                         "every cluster. Default: [truth] environment in the "
+                         "set's eval.toml. Same flag as run_baseline.py")
+    ap.add_argument("--definitions", type=pathlib.Path, default=None,
+                    help="a definition ledger (verify_definitions.py). Passed to "
+                         "the golden audit so a set with no truth package can "
+                         "pass the acceptance check when every tested definition "
+                         "is validated")
     ap.add_argument("--max-turns", type=int, default=60)
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--retries", type=int, default=1)
     ap.add_argument("--only", default=None, help="comma-separated issue_ids")
-    ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--limit", type=int, default=None,
+                    help="how many to process; each one spawns a real agent. Omit for no limit. 0 means zero, not unlimited.")
     ap.add_argument("--force", action="store_true",
                     help="redo clusters that already have a result")
     ap.add_argument("--no-isolate", dest="isolate", action="store_false",
@@ -295,6 +409,17 @@ def main(argv: list[str] | None = None) -> int:
                          "the edit ladder assumes -- malloy-gotchas-modeling "
                          "above all -- is NOT loaded")
     a = ap.parse_args(argv)
+    cfg = config.load(a.set_dir)
+    a.model_dir = cfg.need(a.model_dir, "model", "repo", "--model-dir")
+    a.environment = cfg.need(a.environment, "model", "environment",
+                             "--environment")
+    a.package = cfg.need(a.package, "model", "package", "--package")
+    a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+    a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
+    a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
+    a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
+    if not a.server_root and not a.watch_mode and cfg.server_root("model").exists():
+        a.server_root = cfg.server_root("model")
     a.roots = skills_roots(a.skills_root)
     repo = a.roots[0].parent if a.skills_root else SKILLS_ROOT.parent
     if not a.manifest:
@@ -329,7 +454,9 @@ def main(argv: list[str] | None = None) -> int:
         want = {x.strip() for x in a.only.split(",")}
         issues = [i for i in issues if i["issue_id"] in want]
     issues.sort(key=lambda i: -len(i.get("qids", [])))
-    if a.limit:
+    # `is not None`: see diagnose.py's select_cases. 0 means zero issues,
+    # not every issue -- each one spawns a real agent that edits the model.
+    if a.limit is not None:
         issues = issues[:a.limit]
     if not issues:
         print("no open model-owned issues; run diagnose.py first, or every "
@@ -363,6 +490,14 @@ def main(argv: list[str] | None = None) -> int:
             aud = r.get("goldenAudit") or {}
             if aud.get("ran") and not aud.get("clean"):
                 print("  ! golden verification FAILED against the edited model:")
+                for line in (aud.get("tail") or [])[-6:]:
+                    print(f"      {line}")
+            elif aud.get("couldNotRun"):
+                # Said out loud rather than left in the ledger. This used to
+                # print nothing at all, so a verifier that never ran looked
+                # exactly like one that passed.
+                print(f"  ! golden verification DID NOT RUN, so nothing checked "
+                      f"this edit: {aud.get('why')}")
                 for line in (aud.get("tail") or [])[-6:]:
                     print(f"      {line}")
             for g in (r.get("goldenSuspect") or []):
@@ -403,20 +538,30 @@ def main(argv: list[str] | None = None) -> int:
     # acceptance check does not get to start until a human settles each one. Reported, not
     # repaired: an improver editing its own answer key removes the only
     # independent check on the edit.
+    # `couldNotRun` blocks alongside a real finding. The two are different facts
+    # -- one is evidence about a golden, the other is the absence of evidence --
+    # and the report below keeps them apart, but neither is a pass. Letting an
+    # unrun check through was the same false-green the exit-code split fixed one
+    # layer down.
     blocked = [(r, r.get("goldenSuspect") or [],
                 (r.get("goldenAudit") or {}))
                for r in results]
     blocked = [(r, g, aud) for r, g, aud in blocked
-               if g or (aud.get("ran") and not aud.get("clean"))]
+               if g or (aud.get("ran") and not aud.get("clean"))
+               or aud.get("couldNotRun")]
     if blocked:
-        print(f"\nACCEPTANCE CHECK BLOCKED: {len(blocked)} cluster(s) may have invalidated a "
-              f"golden. Settle each through the golden side door in "
-              f"skill:eval-loop before re-answering.")
+        print(f"\nACCEPTANCE CHECK BLOCKED: {len(blocked)} cluster(s) either may "
+              f"have invalidated a golden or were never checked. Settle each "
+              f"through the golden side door in skill:eval-loop, and re-run any "
+              f"verification that failed to start, before re-answering.")
         for r, g, aud in blocked:
             print(f"  {r['issue_id']}")
             if aud.get("ran") and not aud.get("clean"):
                 print(f"    verify_goldens failed; see "
                       f"artifacts/clusters/*/verify_goldens.txt")
+            elif aud.get("couldNotRun"):
+                print(f"    verify_goldens DID NOT RUN ({aud.get('why')}); this "
+                      f"cluster is unverified, not clean")
             for x in g:
                 print(f"    {x.get('qid')}: {x.get('entity')} "
                       f"{x.get('stored')} -> {x.get('rederived')}")

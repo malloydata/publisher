@@ -40,7 +40,7 @@ describe("examples/governed-analytics ships a working gate", () => {
    /** Distinct tenants visible to a caller, via the example's own `by_tenant`. */
    async function tenantsVisibleTo(
       model: Model,
-      givens: Record<string, string>,
+      givens: Record<string, string[]>,
    ): Promise<number> {
       const result = await model.getQueryResults(
          undefined,
@@ -70,21 +70,20 @@ describe("examples/governed-analytics ships a working gate", () => {
          );
          expect(compilationErrorOf(model)).toBeUndefined();
 
-         // Neither given carries a default (G4 forbids it for a gate-referenced
-         // given), so every request sends both keys and the one off the caller's
-         // path is sent blank -- exactly what the example's README documents.
+         // TENANTS carries no default (G4 forbids one for a gate-referenced
+         // given), so every request must supply it explicitly -- exactly what
+         // the example's README documents. An "admin" caller is simply one
+         // whose identity resolved to every tenant on the list.
          expect(
-            await tenantsVisibleTo(model, { ROLE: "admin", TENANT: "" }),
+            await tenantsVisibleTo(model, {
+               TENANTS: ["acme", "globex", "initech"],
+            }),
          ).toBe(3);
-         expect(
-            await tenantsVisibleTo(model, { ROLE: "", TENANT: "acme" }),
-         ).toBe(1);
+         expect(await tenantsVisibleTo(model, { TENANTS: ["acme"] })).toBe(1);
          // A tenant that is off the allow-list is admitted nowhere: zero rows,
          // not a 403. This is the denial shape the example's header comment
          // promises, and the one a 403-keyed alert would never see.
-         expect(
-            await tenantsVisibleTo(model, { ROLE: "", TENANT: "nope" }),
-         ).toBe(0);
+         expect(await tenantsVisibleTo(model, { TENANTS: ["nope"] })).toBe(0);
       } finally {
          await duckdb.close();
       }
@@ -101,7 +100,7 @@ const PLAYWRIGHT_FIXTURE = `##! experimental.givens
 
 given: role :: string
 
-#(authorize) $role = 'analyst'
+#(authorize) 'analyst' = $role
 source: gated_products is duckdb.table('products.parquet') extend {
   view: spotlight is {
     where: category = 'Jeans'

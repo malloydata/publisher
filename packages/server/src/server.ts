@@ -50,15 +50,21 @@ import {
    assertDuckDBResourceConfig,
    getDuckDBMemoryLimit,
    getDuckDBTempDirectory,
-   getEmbeddingConfig,
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES,
+   getEmbeddingSettings,
    getExtensionFetchPolicy,
+   getLlmSettings,
    getMaterializationSchedulerConfig,
+   getMcpCorsOrigins,
    getMemoryGovernorConfig,
    isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
    getPersistStorageMode,
    getQueryMetadataMode,
+   embeddingStartupNotices,
+   getRetrievalConfig,
 } from "./config";
+import { setRetrievalConfig } from "./retrieval_config";
 import { readBypassAuthorize } from "./authorize_bypass_header";
 import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
@@ -66,6 +72,8 @@ import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
+import { setMaxEmbeddedEntities } from "./mcp/tools/embedding_index";
+import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
 import {
    addCommand,
    ensureMcpConfig,
@@ -99,6 +107,10 @@ import {
    parseRateLimit,
    rateLimitMiddleware,
 } from "./rate_limit";
+import {
+   FRAME_ANCESTORS_ENV,
+   frameAncestorsMiddleware,
+} from "./frame_ancestors";
 
 // The first statement this module runs. On an unsupported Node this exits
 // non-zero here, before any argument parsing, any storage init, and any
@@ -133,6 +145,9 @@ function parseArgs() {
       } else if (arg === "--mcp_port" && args[i + 1]) {
          process.env.MCP_PORT = args[i + 1];
          i++;
+      } else if (arg === "--mcp_host" && args[i + 1]) {
+         process.env.MCP_HOST = args[i + 1];
+         i++;
       } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
          process.env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
          i++;
@@ -164,7 +179,10 @@ function parseArgs() {
             "  --port <number>        Port to run the server on (default: 4000)",
          );
          console.log(
-            "  --host <string>        Host to bind the REST and MCP servers to (default: 0.0.0.0)",
+            "  --host <string>        Host to bind the REST server to, and the MCP server unless --mcp_host is given (default: 0.0.0.0)",
+         );
+         console.log(
+            "  --mcp_host <string>    Host to bind the MCP server to (default: 127.0.0.1, or --host when that is set)",
          );
          console.log(
             "  --server_root <path>   Root directory to serve files from (default: .)",
@@ -240,6 +258,14 @@ getQueryMetadataMode();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
+// The MCP endpoint is unauthenticated and exposes every MCP tool, so it binds
+// LOOPBACK by default while the REST port keeps its own PUBLISHER_HOST default.
+// Precedence: MCP_HOST, then an explicit PUBLISHER_HOST (so `--host` still moves
+// both listeners together for an operator who asked for a wider bind), then
+// loopback. Widening this is opt-in and belongs behind an authenticating
+// gateway.
+const MCP_HOST =
+   process.env.MCP_HOST || process.env.PUBLISHER_HOST || "127.0.0.1";
 // Resolved here rather than in the listen callback: parseBoolEnv throws on a
 // typo, which is the convention for flags in this server, but a throw inside a
 // listen callback is an uncaughtException that kills a server which has already
@@ -266,6 +292,12 @@ app.use(httpMetricsMiddleware);
 // Opt-in per-client rate limiting (PUBLISHER_RATE_LIMIT). Mounted before any
 // route so the static-file, query, and SPA-fallback handlers are all behind
 // it; probes and /metrics are exempt inside the middleware.
+// Ahead of the rate limiter, so a 429 carries the policy too. That response is
+// JSON and nobody is tricked into clicking one, so this is not a live
+// clickjacking path -- but "every document" should be literally true rather than
+// true of everything except the responses one middleware happens to answer
+// early, and the next early-answering middleware may not be JSON.
+app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
 app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
@@ -320,10 +352,59 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
 // matching the sibling getters above, rather than surfacing as a warn on the
 // first getContext call that reaches tier 4 — or never. Logs the posture the
 // server booted with; the host only, never the key.
-const embeddingConfig = getEmbeddingConfig();
+//
+// The `retrieval` block of publisher.config.json is read here, once, so an
+// invalid value is reported with its fix rather than surfacing on the first
+// question. The provider getters read it back from module state.
+//
+// A config the server cannot read or parse must not kill the process: the
+// environment store reads the same file when it initializes, records the cause
+// as `initError`, prints PUBLISHER_INIT_FAILED and keeps the server up so
+// /status can name it. This read therefore logs and carries on with no
+// retrieval settings; the store reports the same failure right after.
+let retrievalConfig: ReturnType<typeof getRetrievalConfig>;
+try {
+   retrievalConfig = getRetrievalConfig(SERVER_ROOT);
+} catch (error) {
+   retrievalConfig = undefined;
+   logger.error(
+      `Could not read the retrieval settings from publisher.config.json; retrieval runs with its defaults until this is fixed and the server restarted. ${
+         error instanceof Error ? error.message : String(error)
+      }`,
+   );
+}
+setRetrievalConfig(retrievalConfig);
+const embeddingConfig = getEmbeddingSettings(retrievalConfig?.embedding);
 if (embeddingConfig) {
    logger.info(
-      `Semantic get_context enabled: model ${embeddingConfig.model} at ${new URL(embeddingConfig.baseUrl).host}`,
+      `Semantic get_context enabled: ${embeddingConfig.provider} model ${embeddingConfig.model}` +
+         (embeddingConfig.baseUrl
+            ? ` at ${new URL(embeddingConfig.baseUrl).host}`
+            : ""),
+   );
+}
+for (const notice of embeddingStartupNotices(retrievalConfig?.embedding)) {
+   logger[notice.level](notice.message);
+}
+const llmSettings = getLlmSettings(retrievalConfig?.llm);
+if (llmSettings) {
+   logger.info(
+      `Retrieval LLM enabled: ${llmSettings.provider} model ${llmSettings.model}`,
+   );
+} else if (retrievalConfig?.llm) {
+   logger.warn(
+      `retrieval.llm names provider "${retrievalConfig.llm.provider}" but LLM_API_KEY is not set, so every LLM feature is off. ` +
+         `Fix: set LLM_API_KEY in the server's environment.`,
+   );
+}
+// The entity cap for the semantic index.
+const semanticIndexMaxEntities =
+   retrievalConfig?.indexing?.maxEntities ??
+   DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
+setMaxEmbeddedEntities(semanticIndexMaxEntities);
+if (embeddingConfig) {
+   logger.info(
+      `Semantic index entity cap: ${semanticIndexMaxEntities} (retrieval.indexing.maxEntities)`,
    );
 }
 const memoryGovernorConfig = getMemoryGovernorConfig();
@@ -332,6 +413,12 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
+// Start the semantic index building as each package loads, rather than on the
+// first question. This only queues work (see startPackageEmbeddingSync); with
+// no embedding provider the queued job returns at once.
+environmentStore.setPackageLoadedHook((environmentName, pkg) =>
+   startPackageEmbeddingSync(environmentStore, environmentName, pkg),
+);
 const packageController = new PackageController(environmentStore);
 const dashboardController = new DashboardController(environmentStore);
 const skillController = new SkillController(environmentStore);
@@ -377,7 +464,18 @@ export const mcpApp = express();
 registerHealthEndpoints(mcpApp);
 
 mcpApp.use(MCP_ENDPOINT, express.json());
-mcpApp.use(MCP_ENDPOINT, cors());
+// Cross-origin access is OPT-IN via MCP_CORS_ORIGINS (comma-separated origins,
+// or `*` to allow any). Default is no allowlist, which reflects no
+// `Access-Control-Allow-Origin` back, so a browser page on another origin cannot
+// read a response from this unauthenticated endpoint. A non-browser client (an
+// MCP agent over HTTP) sends no Origin and is unaffected either way: CORS
+// governs what a browser hands to script, not who may connect.
+// codeql[js/cors-permissive-configuration]: the permissive value this rule
+// looks for is reachable only when an operator sets MCP_CORS_ORIGINS=* on
+// purpose, which is the documented escape hatch; every other input, including
+// the default, resolves to an allowlist or to false. The line this replaced was
+// a bare `cors()` -- permissive unconditionally, and unflagged.
+mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));
 
 mcpApp.all(MCP_ENDPOINT, async (req, res) => {
    logger.info(`[MCP Debug] Handling ${req.method} (Stateless)`);
@@ -584,19 +682,10 @@ async function serveFromPackage(
          return;
       }
 
-      // Framing policy only applies to HTML documents — setting it on CSS/JS/
-      // image assets is meaningless and needlessly strips their default
-      // SAMEORIGIN protection. Embeddability defaults to "*" so same-tenant
-      // embeds work out of the box, and is overridable via PUBLISHER_FRAME_ANCESTORS.
-      const ext = path.extname(realFullPath).toLowerCase();
-      if (ext === ".html" || ext === ".htm") {
-         const frameAncestors = process.env.PUBLISHER_FRAME_ANCESTORS || "*";
-         res.setHeader(
-            "Content-Security-Policy",
-            `frame-ancestors ${frameAncestors}`,
-         );
-         res.removeHeader("X-Frame-Options");
-      }
+      // The framing policy is set once for every document by
+      // `frameAncestorsMiddleware`, mounted ahead of all routes. It used to be
+      // set here, on this route alone, which is what left the Console catch-all
+      // with no framing header at all -- see the note in `frame_ancestors.ts`.
       // Never let a served asset be MIME-sniffed into a different content type.
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.sendFile(realFullPath, (err) => {
@@ -924,9 +1013,14 @@ app.get(
    },
 );
 
-app.get(`${API_PREFIX}/status`, async (_req, res) => {
+app.get(`${API_PREFIX}/status`, async (req, res) => {
    try {
-      const status = await environmentStore.getStatus();
+      // Packages still loading for the first time are listed only on request:
+      // a listed package has always meant one that can serve here, and only a
+      // caller that reads `Package.status` can tell the two apart.
+      const status = await environmentStore.getStatus({
+         includeLoading: req.query.includeLoading === "true",
+      });
       // Compose theme onto the status response so the SDK can read both
       // in one round trip on app boot. ThemeStore is the source of truth;
       // publisher.config.json is only a boot seed (see ThemeStore). The
@@ -1380,6 +1474,9 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
+   // sqlSource runs a live DB introspection (a DESCRIBE against the connection),
+   // so it is admission-controlled like a query rather than left unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1400,6 +1497,7 @@ app.post(
 // Per-package versions
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
+   queryConcurrency(),
    async (req, res) => {
       try {
          res.status(200).json(
@@ -1564,31 +1662,6 @@ app.post(
    },
 );
 
-// Environment-scoped aggregate: every materialization across all packages in
-// the env, newest first. Nested under `/packages` as the collection-level
-// sibling of the per-package `/packages/:packageName/materializations` list.
-// MUST stay registered ahead of `/packages/:packageName` below so the literal
-// `materializations` segment wins the match; consequently `materializations` is
-// a reserved package name at this position (a package can never be named that).
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/materializations`,
-   async (req, res) => {
-      try {
-         const limit = parseNonNegativeIntParam(req.query.limit);
-         const offset = parseNonNegativeIntParam(req.query.offset);
-         const builds =
-            await materializationController.listEnvironmentMaterializations(
-               req.params.environmentName,
-               { limit, offset },
-            );
-         res.status(200).json(builds);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
    async (req, res) => {
@@ -1600,7 +1673,6 @@ app.get(
       if (reload === undefined) {
          return;
       }
-
       try {
          res.status(200).json(
             await packageController.getPackage(
@@ -1662,11 +1734,19 @@ app.get(
          return;
       }
 
+      const includeHiddenFilesAndSources = booleanParamOr400(
+         req,
+         res,
+         "includeHiddenFilesAndSources",
+      );
+      if (includeHiddenFilesAndSources === undefined) return;
+
       try {
          res.status(200).json(
             await modelController.listModels(
                req.params.environmentName,
                req.params.packageName,
+               { includeHiddenFilesAndSources },
             ),
          );
       } catch (error) {
@@ -1685,6 +1765,13 @@ app.get(
          return;
       }
 
+      const includeHiddenFilesAndSources = booleanParamOr400(
+         req,
+         res,
+         "includeHiddenFilesAndSources",
+      );
+      if (includeHiddenFilesAndSources === undefined) return;
+
       try {
          // Express stores wildcard matches in params['0']
          const modelPath = (req.params as Record<string, string>)["0"];
@@ -1693,6 +1780,7 @@ app.get(
                req.params.environmentName,
                req.params.packageName,
                modelPath,
+               { includeHiddenFilesAndSources },
             ),
          );
       } catch (error) {
@@ -1740,6 +1828,52 @@ app.get(
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.put(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
+   // A dashboard save compiles the submitted text and then writes it under the
+   // package lock, across a full package reload and the rollback reload on
+   // failure -- strictly more of the work this cap exists to bound than one
+   // /compile does. Ungated it also convoys: the save holds the package mutex
+   // while holding no slot, so slot-holding compiles on that package pile up
+   // behind it.
+   queryConcurrency(),
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+      try {
+         // Express stores wildcard matches in params['0'].
+         const result = await dashboardController.putDashboardSource(
+            req.params.environmentName,
+            req.params.packageName,
+            (req.params as Record<string, string>)["0"],
+            req.body,
+         );
+         // 201 for a file that did not exist, the way a created materialization
+         // answers; 200 for one that was replaced.
+         res.status(result.created ? 201 : 200).json(result);
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         // A refused write is the endpoint working: a stale hash, a dashboard
+         // that does not compile, a path that is not a dashboard. Logging all
+         // of those at `error` made the level meaningless on this route and
+         // buried the one case that is genuinely wrong — a write that compiled,
+         // landed, and could not be reloaded.
+         const detail = {
+            environmentName: req.params.environmentName,
+            packageName: req.params.packageName,
+            modelPath: (req.params as Record<string, string>)["0"],
+            status,
+            error,
+         };
+         if (status >= 500) logger.error("Dashboard write failed", detail);
+         else logger.warn("Dashboard write refused", detail);
          res.status(status).json(json);
       }
    },
@@ -1926,6 +2060,21 @@ app.post(
          setVersionIdError(res);
          return;
       }
+      const includeHiddenFilesAndSources = booleanParamOr400(
+         req,
+         res,
+         "includeHiddenFilesAndSources",
+      );
+      if (includeHiddenFilesAndSources === undefined) return;
+
+      // A client that goes away (a superseded dashboard tile, a closed tab)
+      // cancels its query: the concurrency slot is released on `close`, so the
+      // query must not keep running past it.
+      const disconnected = new AbortController();
+      res.on("close", () => {
+         if (!res.writableFinished)
+            disconnected.abort(new Error("client disconnected"));
+      });
 
       try {
          // Express stores wildcard matches in params['0']
@@ -1953,6 +2102,8 @@ app.post(
             // deployment must strip it at its edge. See
             // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
             readBypassAuthorize(req),
+            includeHiddenFilesAndSources,
+            disconnected.signal,
          );
          setFilterDeprecationHeaders(res, {
             filterParams: req.body.filterParams ?? req.body.sourceFilters,
@@ -1960,6 +2111,8 @@ app.post(
          });
          res.status(200).json(result);
       } catch (error) {
+         // Nobody is waiting for the answer: not an error worth a log line.
+         if (disconnected.signal.aborted) return;
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
@@ -1992,6 +2145,10 @@ app.get(
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
+   // Compile runs real Malloy compilation (and resolves source schemas against
+   // the connection), so it is admission-controlled like a query rather than
+   // left to pin the shared event loop unbounded.
+   queryConcurrency(),
    async (req, res) => {
       try {
          // Express stores wildcard matches in params['0'], so nested model
@@ -2018,10 +2175,8 @@ app.post(
 );
 
 // ==================== MATERIALIZATION ROUTES ====================
-// The environment-scoped aggregate list (every materialization across all
-// packages) is registered up in the package routes as
-// `/packages/materializations`, ahead of `/packages/:packageName`, so the
-// literal wins the match — see that route for the ordering contract.
+// Every one of them is package-scoped, because a materialization is a run of
+// one package's persist sources and cannot exist without a package.
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
@@ -2383,7 +2538,7 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
 });
 const mcpServer = mcpApp.listen(
    MCP_PORT,
-   PUBLISHER_HOST,
+   MCP_HOST,
    function (this: import("net").Server) {
       // Read back rather than reusing MCP_PORT, which is only what was requested.
       // `--mcp_port 0` asks for any free port, and under bun a non-numeric value
@@ -2400,7 +2555,7 @@ const mcpServer = mcpApp.listen(
       // dialable form belongs in .mcp.json and in the advice, not here.
       const bound = this.address();
       const boundHost =
-         typeof bound === "object" && bound ? bound.address : PUBLISHER_HOST;
+         typeof bound === "object" && bound ? bound.address : MCP_HOST;
       logger.info(
          `MCP server listening at http://${boundHost.includes(":") ? `[${boundHost}]` : boundHost}:${boundPort}`,
       );
@@ -2427,7 +2582,7 @@ const mcpServer = mcpApp.listen(
                // so another local process can hold the same port on the other family
                // and receive the agent's traffic instead.
                const endpoint = mcpEndpoint(
-                  resolveClientHost(boundAddress, PUBLISHER_HOST),
+                  resolveClientHost(boundAddress, MCP_HOST),
                   boundPort,
                );
                // cwd, not server_root: the file is for whoever opens an agent here.
@@ -2441,7 +2596,7 @@ const mcpServer = mcpApp.listen(
                );
             } catch (error) {
                logger.info(
-                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, PUBLISHER_HOST), boundPort))}`,
+                  `Could not set up ${MCP_CONFIG_FILENAME} (${error instanceof Error ? error.message : String(error)}). To connect an agent, run: ${addCommand(mcpEndpoint(resolveClientHost(boundAddress, MCP_HOST), boundPort))}`,
                );
             }
          });

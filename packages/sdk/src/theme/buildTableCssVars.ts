@@ -80,8 +80,7 @@ export function buildTableCssVars(
       // Drives the dashboard tile title (e.g. "by_month" above a chart)
       // and the dimension-name text via injectRendererOverrides.
       "--malloy-render--label-color": theme.tileTitle,
-      // The numeric value rendered under each tile title. Not editable
-      // in v1; computed from the active mode for readable contrast.
+      // The numeric value rendered under each tile title (`palette.value`).
       "--malloy-render--value-color": theme.valueColor,
       // Custom var. Drives the hover colour of a `# drill` cell via the
       // .publisher-drill rule in injectRendererOverrides: the renderer
@@ -94,5 +93,11 @@ export function buildTableCssVars(
       // that route needs no !important.
       "--publisher-dashboard-card-radius": card.radius,
       "--publisher-dashboard-card-padding": card.padding,
+      // The card's EDGE, separate from --malloy-render--table-border, which
+      // is the gridline inside the table a card may hold. Same reason
+      // TileCard reads theme.cardBorder: the two weights are answering
+      // different questions, and a card outlined at gridline weight on a
+      // white page did not read as a card at all.
+      "--publisher-dashboard-card-border": theme.cardBorder,
    };
 }

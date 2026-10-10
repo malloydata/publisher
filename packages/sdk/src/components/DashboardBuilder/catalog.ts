@@ -1,0 +1,283 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { parseTag } from "@malloydata/malloy-tag";
+import type { CompiledModel } from "../../client";
+import { exportedSources } from "../DocumentCreate/exportedSources";
+import { CHART_TAGS } from "./chartLine";
+
+export { CHART_TAGS };
+
+/**
+ * What a package offers a dashboard: the sources, the views on them, and the
+ * fields a drill can be declared on.
+ *
+ * This is what makes a tile expression correct BY CONSTRUCTION. The builder only
+ * ever offers `source -> view` pairs that came from here, so it cannot emit a
+ * tile that does not resolve — which is the reason validation needs nothing more
+ * than the existing compile endpoint.
+ *
+ * Shaped from the models endpoint as it is, rather than from a new one. The cost
+ * is that annotations arrive RAW — `'# bar_chart\n'`, `'#(doc) Revenue by
+ * category\n'` — so the small amount of reading below happens here instead of on
+ * the server.
+ */
+
+export interface CatalogField {
+   name: string;
+   kind: "dimension" | "measure";
+   type?: string;
+}
+
+export interface CatalogView {
+   name: string;
+   /** From a `#(doc)` annotation, which is what a picker should show. */
+   description?: string;
+   /** `bar_chart`, `line_chart`, `shape_map`, … if the view declares one. */
+   chart?: string;
+   /** Every output column is an aggregate, which is the only shape `big_value` renders. Absent when the model did not say. */
+   aggregateOnly?: boolean;
+}
+
+export interface CatalogSource {
+   name: string;
+   /** The model that exports it, which its import names. */
+   modelPath: string;
+   /** Every model that exports it: a whole-file import of any of them carries the source. Absent from a hand-built catalog, where `modelPath` is the only one. */
+   exporters?: string[];
+   /** Every model that lists it, imported or exported: what a document extending that model can name without an import. */
+   visibleIn?: string[];
+   description?: string;
+   views: CatalogView[];
+   /**
+    * The givens this source is scoped by, which is also the control row a tile
+    * reading it will show — measured equal to the manifest's per-tile
+    * `givenNames` for the `source -> view` form.
+    */
+   givens: string[];
+   /** For declaring a `# drill` dimension. */
+   fields: CatalogField[];
+}
+
+export interface PackageCatalog {
+   sources: CatalogSource[];
+}
+
+/** `#(doc) Revenue by product category\n` -> `Revenue by product category`. */
+export function docOf(annotations: string[] | undefined): string | undefined {
+   for (const raw of annotations ?? []) {
+      const m = /^#\(doc\)\s*(.*)$/s.exec(raw.trim());
+      if (m) return m[1].trim();
+   }
+   return undefined;
+}
+
+/** `# bar_chart\n` -> `bar_chart`. Only the renderer's own chart tags count. */
+export function chartOf(annotations: string[] | undefined): string | undefined {
+   for (const raw of annotations ?? []) {
+      // A `-name` removes a tag, so it is never the chart the view declares.
+      const name = /^#\s*(?:-[A-Za-z_]+\s+)*([a-z_]+)/.exec(raw.trim())?.[1];
+      if (name && CHART_TAGS.includes(name)) return name;
+   }
+   return undefined;
+}
+
+/**
+ * How far into a source's joins the field list reaches. One level:
+ * `products.category` is a field people filter on; `products.supplier.region`
+ * is where a list stops being a list.
+ */
+const JOIN_DEPTH = 1;
+
+/**
+ * The fields of one schema, with a JOIN's fields under it as `join.field`
+ * paths — the spelling a `where:` uses for them, and the fields a filter most
+ * often wants. A view is not a field and is left out.
+ */
+function schemaFields(
+   fields: Array<Record<string, unknown>> | undefined,
+   prefix: string,
+   depth: number,
+): CatalogField[] {
+   const out: CatalogField[] = [];
+   for (const field of fields ?? []) {
+      const name = field["name"];
+      const kind = field["kind"];
+      if (typeof name !== "string") continue;
+      if (kind === "dimension" || kind === "measure") {
+         const type = (field["type"] as { kind?: string } | undefined)?.kind;
+         out.push({ name: prefix + name, kind, ...(type ? { type } : {}) });
+      } else if (kind === "join" && depth > 0) {
+         const nested = (field["schema"] as { fields?: unknown } | undefined)
+            ?.fields as Array<Record<string, unknown>> | undefined;
+         out.push(...schemaFields(nested, `${prefix}${name}.`, depth - 1));
+      }
+   }
+   return out;
+}
+
+/**
+ * Per-source fields, from `sourceInfos`, which the endpoint returns as an array
+ * of JSON STRINGS rather than objects. A malformed entry is skipped rather than
+ * failing the catalog: a picker missing one source's fields is a smaller problem
+ * than a builder that will not open.
+ */
+function fieldsOf(model: CompiledModel): Map<string, CatalogField[]> {
+   const byName = new Map<string, CatalogField[]>();
+   for (const info of parsedSourceInfos(model))
+      byName.set(info.name, schemaFields(info.schema?.fields, "", JOIN_DEPTH));
+   return byName;
+}
+
+interface ParsedSourceInfo {
+   name: string;
+   schema?: { fields?: Array<Record<string, unknown>> };
+}
+
+/** The well-formed `sourceInfos` entries; a malformed one is skipped. */
+function parsedSourceInfos(model: CompiledModel): ParsedSourceInfo[] {
+   const infos: ParsedSourceInfo[] = [];
+   for (const entry of model.sourceInfos ?? []) {
+      try {
+         const parsed = (
+            typeof entry === "string" ? JSON.parse(entry) : entry
+         ) as ParsedSourceInfo | null;
+         if (parsed?.name) infos.push(parsed);
+      } catch {
+         continue;
+      }
+   }
+   return infos;
+}
+
+/** An aggregate output column has `calculation` as a top-level property of its `#(malloy)` note; a group-by or nested one does not. */
+const isAggregateColumn = (field: Record<string, unknown>) =>
+   ((field["annotations"] as Array<{ value?: string }> | undefined) ?? []).some(
+      (note) => {
+         const text = note.value ?? "";
+         return (
+            text.startsWith("#(malloy)") &&
+            parseTag(text.slice("#(malloy)".length)).tag?.has("calculation") ===
+               true
+         );
+      },
+   );
+
+/** Per source, the views whose every output column is an aggregate. */
+function aggregateViewsOf(model: CompiledModel): Map<string, Set<string>> {
+   const bySource = new Map<string, Set<string>>();
+   for (const info of parsedSourceInfos(model)) {
+      const names = new Set<string>();
+      for (const field of info.schema?.fields ?? []) {
+         if (field["kind"] !== "view" || typeof field["name"] !== "string")
+            continue;
+         const columns = (field["schema"] as { fields?: unknown } | undefined)
+            ?.fields as Array<Record<string, unknown>> | undefined;
+         if (columns && columns.length > 0 && columns.every(isAggregateColumn))
+            names.add(field["name"]);
+      }
+      bySource.set(info.name, names);
+   }
+   return bySource;
+}
+
+/**
+ * The fields a filter on `source` may name: its dimensions, joins included as
+ * paths. Measures are not filterable with `where:` and are left out. Undefined
+ * when the catalog has no such source, which a picker reads as "no list".
+ */
+export function filterableFields(
+   catalog: PackageCatalog | undefined,
+   source: string | undefined,
+): CatalogField[] | undefined {
+   if (!catalog || source === undefined) return undefined;
+   const found = catalog.sources.find((s) => s.name === source);
+   return found?.fields.filter((field) => field.kind === "dimension");
+}
+
+/**
+ * A dashboard file is itself a model, so the endpoint lists it alongside the
+ * real ones. Offering a dashboard's own tile views as things to put on a
+ * dashboard would be circular, so they are left out.
+ */
+export const isDashboardModel = (path: string | undefined) =>
+   (path ?? "").startsWith("dashboards/");
+
+/**
+ * The model's own path.
+ *
+ * Two spellings, and the generated client only knows one: the models LIST
+ * returns `path`, while a single model returns `modelPath`. Reading `path`
+ * alone yields an empty string against the real server, which silently disables
+ * the dashboard exclusion below and leaves a preview with nothing to run
+ * against. Measured, not deduced from the type.
+ */
+const pathOf = (model: CompiledModel): string =>
+   (model as { modelPath?: string }).modelPath ?? model.path ?? "";
+
+export function buildCatalog(models: CompiledModel[]): PackageCatalog {
+   const sources: CatalogSource[] = [];
+   const seen = new Set<string>();
+   const exporters = new Map<string, string[]>();
+   const exported = new Map<CompiledModel, Set<string>>();
+   const listed = new Map<string, string[]>();
+   for (const model of models) {
+      const modelPath = pathOf(model);
+      if (isDashboardModel(modelPath)) continue;
+      const names = exportedSources(model.modelInfo);
+      exported.set(model, names);
+      for (const { name } of model.sources ?? [])
+         if (name) listed.set(name, [...(listed.get(name) ?? []), modelPath]);
+      for (const name of names)
+         exporters.set(name, [...(exporters.get(name) ?? []), modelPath]);
+   }
+
+   for (const model of models) {
+      const modelPath = pathOf(model);
+      if (isDashboardModel(modelPath)) continue;
+      const fields = fieldsOf(model);
+      const aggregates = aggregateViewsOf(model);
+
+      for (const source of model.sources ?? []) {
+         const name = source.name;
+         if (!name) continue;
+         // `sources` also lists imported names, which an import cannot reach unless the model re-exports them.
+         if (!exported.get(model)?.has(name) || seen.has(name)) continue;
+         seen.add(name);
+
+         const givens = (
+            (source as { givens?: Array<{ name?: string }> }).givens ?? []
+         )
+            .map((g) => g.name)
+            .filter((n): n is string => typeof n === "string");
+
+         sources.push({
+            name,
+            modelPath,
+            exporters: exporters.get(name) ?? [modelPath],
+            visibleIn: listed.get(name) ?? [modelPath],
+            ...(docOf(source.annotations)
+               ? { description: docOf(source.annotations) as string }
+               : {}),
+            views: (source.views ?? [])
+               .filter((view) => typeof view.name === "string")
+               .map((view) => ({
+                  name: view.name as string,
+                  ...(docOf(view.annotations)
+                     ? { description: docOf(view.annotations) as string }
+                     : {}),
+                  ...(chartOf(view.annotations)
+                     ? { chart: chartOf(view.annotations) as string }
+                     : {}),
+                  ...(aggregates.get(name)?.has(view.name as string)
+                     ? { aggregateOnly: true }
+                     : {}),
+               })),
+            givens,
+            fields: fields.get(name) ?? [],
+         });
+      }
+   }
+
+   return { sources };
+}

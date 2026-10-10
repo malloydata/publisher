@@ -5,11 +5,12 @@ import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { Given } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
 import { GivenInput } from "./GivenInput";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 
 /**
  * How the control row is laid out.
  *
- * - `panel`: the vertical "Parameters" block a notebook shows above its cells.
+ * - `panel`: the vertical "Filters" block a notebook shows above its cells.
  * - `bar`: a horizontal filter bar above a dashboard grid.
  *
  * Two presentations of one control implementation, rather than two
@@ -38,7 +39,7 @@ export interface GivensPanelProps {
       /** Whether anything has changed since the last apply. */
       pending: boolean;
    };
-   /** Overrides the `panel` layout's "Parameters" heading. */
+   /** Overrides the `panel` layout's "Filters" heading. */
    title?: string;
 }
 
@@ -64,6 +65,10 @@ export function GivensPanel({
    apply,
    title,
 }: GivensPanelProps) {
+   // Above the early return below, not down at its use site: the bar layout is
+   // the only branch that paints a border, but a hook called conditionally is
+   // a hook called on some renders and not others.
+   const { theme } = usePublisherTheme();
    if (givens.length === 0) return null;
    // Some value actually SET, not merely some entry present. `paramsToGivens`
    // records `?X=` as a null entry, so counting entries offered Reset for a
@@ -102,18 +107,12 @@ export function GivensPanel({
                disableElevation
                onClick={apply.onApply}
                disabled={!apply.pending}
-               sx={{ textTransform: "none" }}
             >
                Apply
             </Button>
          )}
          {hasValues && (
-            <Button
-               variant="text"
-               size="small"
-               onClick={onReset}
-               sx={{ textTransform: "none" }}
-            >
+            <Button variant="text" size="small" onClick={onReset}>
                Reset
             </Button>
          )}
@@ -126,10 +125,17 @@ export function GivensPanel({
             elevation={0}
             sx={{
                p: 2,
-               border: 1,
-               borderColor: "divider",
+               // The card edge, not MUI's `divider`: this row IS one of the
+               // page's cards as far as a reader is concerned, and on
+               // `divider` it stayed at the old hairline weight while the
+               // cards under it darkened — the one box on the page outlined
+               // differently from everything it sits above.
+               border: theme.cardBorder,
                borderRadius: 1,
-               backgroundColor: "background.paper",
+               // Border only, no raised fill — the same construction the
+               // dashboard's cards use, so the control row reads as part of
+               // the page rather than as a panel floating above it.
+               backgroundColor: "transparent",
             }}
          >
             <Stack
@@ -166,9 +172,9 @@ export function GivensPanel({
          >
             <Typography
                variant="subtitle2"
-               sx={{ fontWeight: 600, color: "#333" }}
+               sx={{ fontWeight: "fontWeightMedium", color: "text.primary" }}
             >
-               {title ?? "Parameters"}
+               {title ?? "Filters"}
             </Typography>
             {actions}
          </Stack>

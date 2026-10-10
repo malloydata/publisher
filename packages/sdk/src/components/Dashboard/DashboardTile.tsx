@@ -1,18 +1,33 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, Paper, Typography } from "@mui/material";
-import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
+import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
+import { Box, IconButton, Tooltip, Typography } from "@mui/material";
+import {
+   MOTION_FAST,
+   reducedMotionSx,
+   visibleWithoutHoverSx,
+} from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import type { GivenValue } from "../../hooks/givenValue";
-import { CHART_RESULT_QUERY_OPTIONS } from "../../utils/queryClient";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { useNearViewport } from "../../hooks/useNearViewport";
+import { useQueryResult } from "../../hooks/useQueryResult";
+import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
-import { givensToRequest } from "../given/paramCodec";
-import { Loading } from "../Loading";
-import ResultContainer from "../RenderedResult/ResultContainer";
-import { useServer } from "../ServerProvider";
+import { givensToRequest, withHostGivens } from "../given/paramCodec";
+import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { dropValueUrlTags } from "./dropValueUrlTags";
+import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
+import { TileFilterTag } from "./TileFilterTag";
+import { isForbidden, RESTRICTED_NOTICE, withPreamble } from "./textSource";
+import {
+   TileCard,
+   TileHeading,
+   type TileChrome,
+   type TileHeadingSlots,
+} from "./TileCard";
+
+const textSourceTile = (result: string) =>
+   dropValueUrlTags(promoteMeasureRowToKpis(result));
 
 export interface DashboardTileProps {
    environmentName: string;
@@ -24,10 +39,14 @@ export interface DashboardTileProps {
    queryName?: string;
    /** A run expression (a composite tile). */
    tile?: string;
+   /** Annotation lines placed above the tile's `run:`, which stack on the view's own. */
+   annotation?: string;
    /** `# label` on the view the tile names, when it has one. */
    label?: string;
    /** `# subtitle` on it: a second line under the heading. */
    subtitle?: string;
+   /** The heading's text as nodes, which replace `label` and `subtitle` where a surface edits them in place. */
+   heading?: TileHeadingSlots;
    /** `# borderless` on it: no card around the result. */
    borderless?: boolean;
    /**
@@ -37,6 +56,8 @@ export interface DashboardTileProps {
     * does.
     */
    givens: Map<string, GivenValue>;
+   /** Givens the host sets with no control, which may be lists; narrowed by `givenNames` like `givens`. */
+   hostGivens?: Readonly<Record<string, HostGivenValue>>;
    /** Declared type per given name, which decides how a value is encoded. */
    declaredTypes: ReadonlyMap<string, string | undefined>;
    /**
@@ -49,6 +70,23 @@ export interface DashboardTileProps {
    maxResultSize?: number;
    /** Cell clicks and their affordance, for the dashboard's `# drill`. */
    drill?: DrillBinding;
+   /**
+    * Open this tile's query somewhere it can be changed. Shown as a button in
+    * the heading, on hover; absent, the heading has no button.
+    */
+   onExplore?: () => void;
+   /** `none` draws the result bare, its label a quiet caption above it. */
+   chrome?: TileChrome;
+   /** Labels of the page's filters this tile ignores, shown as a warning chip. */
+   ignoredFilters?: readonly string[];
+   /**
+    * Text-source mode: the document's definitions, sent ahead of the tile's
+    * `run:` so the tile runs as the viewer's own text. Absent, the tile runs
+    * the model's view by expression as it always has.
+    */
+   preamble?: string;
+   /** The server marked this tile unreadable for the viewer: nothing is run. */
+   restricted?: boolean;
 }
 
 /**
@@ -82,118 +120,137 @@ export function DashboardTile({
    modelPath,
    queryName,
    tile,
+   annotation,
    label,
    subtitle,
+   heading,
    borderless,
    givens,
+   hostGivens,
    declaredTypes,
    givenNames,
    height,
    maxResultSize,
    drill,
+   onExplore,
+   chrome = "card",
+   ignoredFilters,
+   preamble,
+   restricted,
 }: DashboardTileProps) {
-   const { apiClients } = useServer();
    const { theme } = usePublisherTheme();
-   const requestGivens = givensToRequest(givens, declaredTypes, givenNames);
-
-   const { data, isSuccess, isError, error } = useQueryWithApiError({
-      queryKey: [
-         "dashboardTile",
+   // A tile far below the fold waits to be scrolled near before it runs: its
+   // query is billed by the warehouse whether or not anyone ever sees it. The
+   // card holds its minimum height meanwhile, so the grid barely moves when it
+   // fills.
+   const [cardRef, nearViewport] = useNearViewport<HTMLDivElement>();
+   const state = useQueryResult(
+      {
          environmentName,
          packageName,
-         versionId,
          modelPath,
+         versionId,
          queryName,
-         tile,
-         // Re-runs when the applied values change, which is the whole point of
-         // the control row.
-         JSON.stringify(requestGivens),
-      ],
-      queryFn: () =>
-         apiClients.models.executeQueryModel(
-            environmentName,
-            packageName,
-            modelPath,
-            {
-               queryName,
-               query: tile !== undefined ? `run: ${tile}` : undefined,
-               givens: requestGivens,
-               versionId,
-            },
+         query:
+            tile !== undefined
+               ? withPreamble(
+                    preamble ?? "",
+                    `${annotation ? `${annotation}\n` : ""}run: ${tile}`,
+                 )
+               : undefined,
+         // Narrowed to the givens this tile references: see `givenNames`.
+         givens: withHostGivens(
+            givensToRequest(givens, declaredTypes, givenNames),
+            hostGivens,
+            givenNames,
          ),
-      ...CHART_RESULT_QUERY_OPTIONS,
-   });
+      },
+      // Restricted tiles never run; the rest wait to come near the viewport.
+      { enabled: nearViewport && restricted !== true },
+   );
+   // A 403 is the viewer's access, which only text-source mode runs as them.
+   const noAccess =
+      restricted === true ||
+      (preamble !== undefined && state.isError && isForbidden(state.error));
 
    return (
-      <Paper
-         elevation={0}
+      <TileCard
+         cardRef={cardRef}
+         borderless={borderless}
+         chrome={chrome}
          sx={{
-            // The instance theme's border, not MUI's `divider`: the renderer
-            // card's edge is this same value, and a card that agrees with the
-            // theme everywhere except its outline still reads as a different
-            // card. Radius stays on the host's `shape.borderRadius`, which the
-            // renderer card is now pointed at too.
-            //
-            // `# borderless` asks for the result with no card, which the renderer
-            // honours by dropping background, border, radius and most padding on
-            // its own `.dashboard-item`. Same here, so the tag reads the same on
-            // both forms.
-            border: borderless ? "none" : theme.border,
-            borderRadius: borderless ? 0 : 1,
-            background: borderless ? "none" : undefined,
-            overflow: "hidden",
-            minHeight: 120,
-            p: borderless ? "12px 0" : `${DASHBOARD_CARD_PADDING_PX}px`,
+            // A table is as wide as its tile body, whatever its columns need.
+            "& .malloy-render, & .malloy-table": { width: "100%" },
+            // The heading's button shows on hover and keyboard focus, the way
+            // a tile's chrome does everywhere else; always-on it competes with
+            // the title on every card at once.
+            "& .publisher-tile-explore": {
+               opacity: 0,
+               transition: `opacity ${MOTION_FAST}`,
+               ...reducedMotionSx,
+               ...visibleWithoutHoverSx,
+            },
+            "&:hover .publisher-tile-explore, & .publisher-tile-explore:focus-visible":
+               { opacity: 1 },
          }}
       >
          {tile !== undefined && (
-            <Box sx={{ pb: 1.5 }}>
-               <Typography
-                  variant="subtitle2"
-                  sx={{
-                     fontWeight: 500,
-                     color: theme.tileTitle,
-                     fontFamily: theme.font.family,
-                  }}
-                  // The expression is what actually ran, so it stays reachable
-                  // as a tooltip rather than as the heading.
-                  title={tile}
-               >
-                  {label ?? tileTitle(tile)}
-               </Typography>
-               {subtitle !== undefined && (
-                  <Typography
-                     variant="caption"
-                     sx={{
-                        display: "block",
-                        color: theme.tileTitle,
-                        fontFamily: theme.font.family,
-                        opacity: 0.8,
-                     }}
-                  >
-                     {subtitle}
-                  </Typography>
-               )}
-            </Box>
-         )}
-         {!isSuccess && !isError && <Loading text="Running…" />}
-         {isSuccess && (
-            <ResultContainer
-               result={data.data.result}
-               maxHeight={height}
-               maxResultSize={maxResultSize}
-               renderLogs={data.data.renderLogs}
-               drill={drill}
+            <TileHeading
+               title={heading?.title ?? label ?? tileTitle(tile)}
+               subtitle={heading ? heading.subtitle : subtitle}
+               quiet={chrome === "none"}
+               // The expression is what actually ran, so it stays reachable as
+               // a tooltip rather than as the heading.
+               tooltip={tile}
+               action={
+                  onExplore && (
+                     <Tooltip title="Explore from here">
+                        <IconButton
+                           className="publisher-tile-explore"
+                           size="small"
+                           aria-label={`Explore ${label ?? tileTitle(tile)}`}
+                           onClick={onExplore}
+                           sx={{ mt: -0.5, mr: -0.5, color: theme.tileTitle }}
+                        >
+                           <ExploreOutlinedIcon fontSize="small" />
+                        </IconButton>
+                     </Tooltip>
+                  )
+               }
             />
          )}
-         {isError && (
+         {ignoredFilters && <TileFilterTag ignored={ignoredFilters} />}
+         {noAccess ? (
             <Box sx={{ p: 2 }}>
-               <ApiErrorDisplay
-                  context={tile ?? queryName ?? modelPath}
-                  error={error}
-               />
+               <Typography variant="body2" role="status" color="text.secondary">
+                  {RESTRICTED_NOTICE}
+               </Typography>
             </Box>
+         ) : (
+            <ResultPanel
+               fill
+               state={state}
+               context={tile ?? queryName ?? modelPath}
+               maxHeight={height}
+               maxResultSize={maxResultSize}
+               drill={drill}
+               // A composite tile that is one row of measures draws as KPI cards,
+               // the way Malloyyo splices the same tile into its grid, rather than
+               // as a one-row table. Composite only: the single-query form is one
+               // result the renderer lays out from the query's own tags, and its
+               // aggregates are already tiles.
+               transform={
+                  // A document held as text draws no value-to-URL or markup tags.
+                  preamble !== undefined
+                     ? tile !== undefined
+                        ? textSourceTile
+                        : dropValueUrlTags
+                     : tile !== undefined
+                       ? promoteMeasureRowToKpis
+                       : undefined
+               }
+            />
          )}
-      </Paper>
+      </TileCard>
    );
 }

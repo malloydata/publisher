@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import fs from "fs/promises";
 import path from "path";
 import { components } from "../../../src/api";
@@ -15,6 +23,10 @@ import {
    getSchemasForConnection,
    listTablesForSchema,
 } from "../../../src/service/db_utils";
+import {
+   startClosingListener,
+   type ClosingListener,
+} from "../../../src/test_helpers/closing_listener";
 
 type ApiConnection = components["schemas"]["Connection"];
 
@@ -64,8 +76,9 @@ describe("DuckLake Connection Tests", () => {
          // Ignore cleanup errors
       }
 
-      // Clean up DuckLake database files from process.cwd() (created by testConnectionConfig)
-      // testConnectionConfig creates files in process.cwd() instead of testProjectPath
+      // Legacy safety net: testConnectionConfig now isolates its throwaway
+      // files in a temp directory, so it no longer leaves *_ducklake.duckdb in
+      // process.cwd(); this sweep only guards against an older/regressed path.
       try {
          const cwdFiles = await fs.readdir(process.cwd());
          for (const file of cwdFiles) {
@@ -820,6 +833,15 @@ describe("DuckLake Connection Tests", () => {
    });
 
    describe("Connection Testing", () => {
+      // Accepts and drops each connection, so a catalog behind it fails at once.
+      let unreachableCatalog: ClosingListener;
+      beforeAll(async () => {
+         unreachableCatalog = await startClosingListener();
+      });
+      afterAll(async () => {
+         await unreachableCatalog.close();
+      });
+
       it(
          "should test DuckLake connection configuration",
          async () => {
@@ -872,8 +894,8 @@ describe("DuckLake Connection Tests", () => {
                ducklakeConnection: {
                   catalog: {
                      postgresConnection: {
-                        host: "invalid-host",
-                        port: 5432,
+                        host: "127.0.0.1",
+                        port: unreachableCatalog.port,
                         userName: "invalid",
                         password: "invalid",
                         databaseName: "invalid",

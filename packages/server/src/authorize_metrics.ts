@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Telemetry for caller-submitted `#(authorize)` rejections (HTTP 400).
+ * Telemetry for caller-submitted `#(authorize)` rejections (HTTP 400), plus
+ * the load-time gate counters below.
  *
- * `assertNoCallerAuthorizeAnnotation` refuses an authorize annotation in any
- * caller-supplied Malloy text, because a source's own gate replaces the gate it
+ * `assertNoCallerAuthorizeAnnotation` refuses an authorize annotation outside
+ * prose in any caller-supplied Malloy text, because a source's own gate replaces the gate it
  * would otherwise inherit and that override is the model author's to make. A
  * rejection is therefore either an author using the wrong door or somebody
  * probing for a forged-gate bypass, and both are worth seeing.
@@ -31,9 +32,11 @@
 import { type Counter } from "@opentelemetry/api";
 import { publisherMeter } from "./telemetry";
 import {
+   lastCallerGuardRefusalKind,
    ROW_LEVEL_GATE_REJECTION_CAUSES,
    type RowLevelGateRejectionCause,
 } from "./service/authorize";
+import { CANONICAL_AUTHORIZE_ROUTES } from "./service/authorize_routes";
 
 /** The caller-supplied request field a rejected annotation arrived in. */
 export type AuthorizeGuardField =
@@ -46,6 +49,8 @@ let guardRejectionCounter: Counter | null = null;
 let bypassCounter: Counter | null = null;
 let rowLevelDecisionCounter: Counter | null = null;
 let rowLevelRejectionCounter: Counter | null = null;
+let admitAllCounter: Counter | null = null;
+let lockDecisionCounter: Counter | null = null;
 
 /**
  * Record one caller-declared-authorize rejection. Call BEFORE throwing, for the
@@ -59,10 +64,13 @@ export function recordAuthorizeGuardRejection(
       "publisher_authorize_guard_rejected_total",
       {
          description:
-            "Requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text. Label: field ('query'|'source_name'|'query_name'|'compile_source').",
+            "Requests rejected with 400 for declaring an `#(authorize)` annotation in caller-submitted Malloy text. Labels: field ('query'|'source_name'|'query_name'|'compile_source'), match ('lexed' when Malloy's lexer placed a tag outside prose, 'whole_text' when the text could not be lexed cleanly or is a name, 'no_lexer' when Malloy's parser failed to load so every prose-bearing text refuses).",
       },
    );
-   guardRejectionCounter.add(1, { field });
+   guardRejectionCounter.add(1, {
+      field,
+      match: lastCallerGuardRefusalKind(),
+   });
 }
 
 /**
@@ -102,7 +110,7 @@ export function recordAuthorizeBypass(
 }
 
 /**
- * How a row-level `#(authorize)` gate resolved a request.
+ * How a row-level `#(access_filter)` gate resolved a request.
  *
  * `denied_by_gate` is the fail-closed path: a row-level gate is a filter, not
  * a boolean, so there is no whole-source admission decision left to fall back
@@ -128,23 +136,30 @@ export function recordAuthorizeBypass(
 export type RowLevelGateDecision = "denied_by_gate" | "empty_after_filter";
 
 /**
- * Record how one row-level `#(authorize)` gate resolved a request.
+ * Where a gate was reached: the query's own run target (`entry_point`), or a
+ * join the caller's text wrote into a gated source (`caller_join`).
+ */
+export type AuthorizeGateSite = "entry_point" | "caller_join";
+
+/**
+ * Record how one row-level `#(access_filter)` gate resolved a request.
  */
 export function recordRowLevelGateDecision(
    decision: RowLevelGateDecision,
+   site: AuthorizeGateSite = "entry_point",
 ): void {
    rowLevelDecisionCounter ??= publisherMeter().createCounter(
       "publisher_authorize_row_level_total",
       {
          description:
-            "How a row-level `#(authorize)` gate resolved a request. Label: decision ('denied_by_gate'|'empty_after_filter'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error.",
+            "How a row-level `#(access_filter)` gate resolved a request. Labels: decision ('denied_by_gate'|'empty_after_filter'), site ('entry_point'|'caller_join'). 'denied_by_gate' is the fail-closed refusal when the gate could not be applied; 'empty_after_filter' is a successful response with zero rows after the filter matched none, which is NOT an error. site says whether the gate was the query's own run target or a source the caller's text joined.",
       },
    );
-   rowLevelDecisionCounter.add(1, { decision });
+   rowLevelDecisionCounter.add(1, { decision, site });
 }
 
 /**
- * Record one row-level `#(authorize)` gate refused because its compiled
+ * Record one row-level `#(access_filter)` gate refused because its compiled
  * condition is not one of the allowed shapes (see
  * {@link RowLevelGateRejectionCause} and the walk in `./service/authorize`).
  *
@@ -153,7 +168,7 @@ export function recordRowLevelGateDecision(
  * swallows the error must not also lose the metric.
  *
  * Fires at package LOAD for a refused gate — `validateAuthorizeProbes`
- * classifies every row-level `#(authorize)` gate's compiled shape at each
+ * classifies every row-level `#(access_filter)` gate's compiled shape at each
  * entry point before the package is servable, so a rejection blocks the whole
  * load and this is a step function on deploy, not a request-rate signal.
  * That is the expected, and by far the more common, call site: the right
@@ -202,7 +217,7 @@ export function recordRowLevelGateRejected(
       "publisher_authorize_row_level_rejected_total",
       {
          description:
-            "Row-level `#(authorize)` gates that were refused, warned about, or could not be resolved. Label: cause (" +
+            "Row-level `#(access_filter)` gates that were refused, warned about, or could not be resolved. Label: cause (" +
             // Derived from the union, not retyped beside it — the retyped
             // version had already drifted a cause behind.
             ROW_LEVEL_GATE_REJECTION_CAUSES.map((c) => `'${c}'`).join("|") +
@@ -213,6 +228,86 @@ export function recordRowLevelGateRejected(
 }
 
 /**
+ * Record one source that declares its OWN unconditional admit-all gate
+ * (`#(authorize) true` / `#(authorize) true`).
+ *
+ * `true` is the only body in the gate grammar that turns a gate OFF, and
+ * because a source with no gate of its own inherits its ancestor's, one such
+ * line on an extension re-opens a locked base. That is a deliberate
+ * capability, not a fault — nothing here rejects or warns — but it is the
+ * one declaration whose blast radius is invisible from the outside, so it is
+ * counted: "how many sources across this deployment are gated open" should
+ * be answerable without reading every model.
+ *
+ * Fires at package LOAD, once per own admit-all declaration, from
+ * `gate_classification.ts`'s `assertAuthorizeGrammarValid`. An INHERITED
+ * `true` is not counted — the declaring source already was, and counting
+ * every entry point that inherits it would make the number a function of
+ * model shape rather than of authoring decisions. So this is a step function
+ * on publish, not a request-rate signal: the useful alert is a jump since the
+ * last publish, not a slope.
+ *
+ * Labelled by `route` only. Org / package / model / source are
+ * unbounded-cardinality and belong in the model text an investigation reads
+ * once the number moves, not on the counter.
+ *
+ * The label is constant today: the sentinels are legal only on
+ * the lock route, so nothing can emit the filter route here. It stays
+ * because it is already on the wire, and because a series that silently merged
+ * two routes would be the harder thing to unpick later than a series with one
+ * value in it.
+ */
+export function recordAuthorizeAdmitAllGate(route: string): void {
+   admitAllCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_admit_all_total",
+      {
+         description:
+            "Sources declaring their OWN unconditional admit-all gate (`#(authorize) true`), counted once each at package load. Label: route (" +
+            // Derived from the canonical routes, not retyped beside them —
+            // this file already shipped one description that drifted from the
+            // values it documented.
+            CANONICAL_AUTHORIZE_ROUTES.map((r) => `'${r}'`).join("|") +
+            "). Not an error — `true` is the only spelling for an extension that deliberately re-opens a gated base — but it is the one declaration that turns a gate off, so a jump since the last publish is worth a look.",
+      },
+   );
+   admitAllCounter.add(1, { route });
+}
+
+/**
+ * How a `#(authorize)` LOCK resolved a request.
+ *
+ * On its own counter rather than as a third `decision` value on
+ * `publisher_authorize_row_level_total`: that counter's `denied_by_gate` is
+ * documented as the fail-closed "could not apply the gate" case operators
+ * alert on, and folding an ordinary "this caller is not admitted" 403 into it
+ * would make an existing alert fire on routine traffic.
+ *
+ * `denied_by_lock` is the caller failing the gate's own rule — a 403 that is
+ * the feature working. `denied_unresolvable` is the fail-closed side: the
+ * gate's shape or its givens could not be resolved, so it could not be
+ * decided. Split because only the second is a signal something is wrong.
+ */
+export type LockDecision =
+   | "admitted"
+   | "denied_by_lock"
+   | "denied_unresolvable";
+
+/** Record how one `#(authorize)` lock resolved a request. */
+export function recordLockDecision(
+   decision: LockDecision,
+   site: AuthorizeGateSite = "entry_point",
+): void {
+   lockDecisionCounter ??= publisherMeter().createCounter(
+      "publisher_authorize_lock_total",
+      {
+         description:
+            "How a `#(authorize)` lock resolved a request. Labels: decision ('admitted'|'denied_by_lock'|'denied_unresolvable'), site ('entry_point'|'caller_join'). Both denials are a 403; 'denied_by_lock' is the gate refusing a caller it does not admit (routine), 'denied_unresolvable' is the fail-closed refusal when the gate could not be decided at all. site says whether the lock was on the query's own run target or on a source the caller's text joined.",
+      },
+   );
+   lockDecisionCounter.add(1, { decision, site });
+}
+
+/**
  * Visible for tests. Drops the cached instrument so a fresh `MeterProvider` can
  * capture future emissions. Do NOT call from production code.
  */
@@ -220,5 +315,7 @@ export function resetAuthorizeGuardTelemetryForTesting(): void {
    guardRejectionCounter = null;
    bypassCounter = null;
    rowLevelDecisionCounter = null;
+   lockDecisionCounter = null;
    rowLevelRejectionCounter = null;
+   admitAllCounter = null;
 }

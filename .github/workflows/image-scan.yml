@@ -1,0 +1,195 @@
+# Copyright (c) Credible Data Inc.
+# SPDX-License-Identifier: MIT
+
+name: Image Scan
+
+# Trivy vulnerability scans of the Publisher container image.
+#
+# security-scan.yml reads lockfiles in the source tree; this workflow reads the
+# built image, which is what a user actually runs. The two disagree in both
+# directions: the image carries the Debian base layer, the Bun runtime, and the
+# binaries the Dockerfile downloads (DuckDB CLI and extensions), none of which is in
+# a lockfile, and it omits whatever `bun install --production` drops.
+#
+# - `image` job: builds the image from this checkout with the same Dockerfile and
+#   build args as the release build and scans it. Runs on PR, on push to main, and
+#   weekly.
+# - `published-image` job: scans `ms2data/malloy-publisher:latest` as pulled from
+#   Docker Hub. Runs weekly and on dispatch only, since a PR cannot change it. New
+#   advisories against the base layer land here first, without anyone touching the
+#   repo.
+#
+# Enforcement matches security-scan.yml: the full SARIF (all severities) uploads to
+# Code Scanning, then a second CRITICAL-scoped scan with `exit-code: 1` fails the
+# job, and Code Scanning's own check is held to CRITICAL as described there.
+# Acceptances live in the same .trivyignore.yaml as the source-tree scans.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 12:00 UTC, alongside security-scan.yml.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  PUBLISHED_IMAGE: ms2data/malloy-publisher:latest
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+# Keyed on the event as well as the ref: a push to main shares the scheduled run's
+# ref, and without the event in the key it would cancel the weekly run, which is the
+# only run that executes `published-image`.
+concurrency:
+  group: image-scan-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Trivy image scan (built from source, ${{ matrix.platform }})
+    # Both platforms the release publishes, each on a native runner (the same
+    # ones docker-image.yml uses). The per-architecture base images and prebuilt
+    # binaries differ, so a finding can exist on one platform only.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: "true"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Same derivation as build.yml's docker_smoke_test and docker-image.yml, so
+      # the scanned image bakes the same DuckDB CLI and extensions as a release.
+      - name: Resolve DuckDB version from Malloy
+        id: duckdb
+        run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds daily instead of being served from the build cache forever.
+      # Daily rather than weekly so a Debian fix published mid-week is picked up by
+      # the next build instead of waiting for the week to roll over.
+      - name: Date for the apt refresh
+        id: day
+        run: echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          build-args: |
+            DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
+            APT_REFRESH=${{ steps.day.outputs.value }}
+          tags: malloy-publisher:scan
+          # Read-only: build.yml's docker_smoke_test builds the same amd64 image with the
+          # same arguments and writes this cache. Writing it again here would store a
+          # second copy per PR without making either build faster. Nothing writes an
+          # arm64 cache, so the arm64 build runs uncached rather than adding one.
+          cache-from: ${{ matrix.arch == 'amd64' && 'type=gha' || '' }}
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: malloy-publisher:scan
+          scanners: vuln
+          format: sarif
+          output: trivy-image-${{ matrix.arch }}.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          trivyignores: .trivyignore.yaml
+
+      # Pull requests from forks get a read-only GITHUB_TOKEN regardless of the
+      # `permissions:` block, so a SARIF upload from one is refused. The gate step
+      # below still runs on those PRs; only the Code Scanning upload is skipped.
+      - name: Upload SARIF to Code Scanning
+        if: ${{ !cancelled() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          sarif_file: trivy-image-${{ matrix.arch }}.sarif
+          category: trivy-image-${{ matrix.arch }}
+
+      - name: Fail on CRITICAL vulnerabilities
+        if: ${{ !cancelled() }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: malloy-publisher:scan
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml
+
+  published-image:
+    name: Trivy image scan (published latest, ${{ matrix.platform }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+          - platform: linux/arm64
+            arch: arm64
+    # `latest` is a multi-platform index; without a platform Trivy scans the
+    # runner's own architecture only. TRIVY_PLATFORM is Trivy's `--platform`.
+    env:
+      TRIVY_PLATFORM: ${{ matrix.platform }}
+    timeout-minutes: 30
+    steps:
+      # Checked out only for .trivyignore.yaml; nothing is built.
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.PUBLISHED_IMAGE }}
+          scanners: vuln
+          format: sarif
+          output: trivy-image-published-${{ matrix.arch }}.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          trivyignores: .trivyignore.yaml
+
+      - name: Upload SARIF to Code Scanning
+        if: ${{ !cancelled() }}
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          sarif_file: trivy-image-published-${{ matrix.arch }}.sarif
+          category: trivy-image-published-${{ matrix.arch }}
+
+      - name: Fail on CRITICAL vulnerabilities
+        if: ${{ !cancelled() }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.PUBLISHED_IMAGE }}
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore.yaml

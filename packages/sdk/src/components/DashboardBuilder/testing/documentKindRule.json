@@ -1,0 +1,40 @@
+{
+   "about": "The kind of a document submitted as text, which has no folder to take one from: the tag's `kind` when it names one, else a dashboard when it lists tiles or sets a grid width, else a notebook. The server (submittedTextKind) and the SDK reader (readDashboardDocument with textHeld) each hold the rule, so each side's spec reads this file.",
+   "cases": [
+      {
+         "name": "no kind and no layout is a notebook",
+         "source": "## artifact { }\nrun: q -> { aggregate: c }\n",
+         "kind": "notebook"
+      },
+      {
+         "name": "a tag with only a title is a notebook",
+         "source": "## artifact { title=\"x\" }\nrun: q -> { aggregate: c }\n",
+         "kind": "notebook"
+      },
+      {
+         "name": "a tiles list makes a dashboard",
+         "source": "## artifact { tiles=[\"a -> v\"] }\n",
+         "kind": "dashboard"
+      },
+      {
+         "name": "a tiles list of only a text tile makes a dashboard",
+         "source": "## artifact { tiles=[ intro { kind=text } ] }\n",
+         "kind": "dashboard"
+      },
+      {
+         "name": "a grid width makes a dashboard",
+         "source": "## artifact { } dashboard { columns=12 }\n",
+         "kind": "dashboard"
+      },
+      {
+         "name": "an explicit dashboard wins over the absence of a layout",
+         "source": "## artifact { kind=dashboard }\nrun: q -> { aggregate: c }\n",
+         "kind": "dashboard"
+      },
+      {
+         "name": "an explicit notebook wins over a tiles list",
+         "source": "## artifact { kind=notebook tiles=[\"a -> v\"] }\n",
+         "kind": "notebook"
+      }
+   ]
+}

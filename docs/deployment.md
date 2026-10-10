@@ -97,6 +97,33 @@ Two ways to run Publisher in Docker: build the image from source, or pull the pr
 Docker Hub. Either way, the container's `WORKDIR` is `/publisher` (mount your `publisher.config.json`
 there), REST is on `:4000`, and MCP is on `:4040`.
 
+Without that mount the server still starts and reports `operationalState: serving`, with no
+environments and an empty catalog. That is a supported way to run, since environments can be created
+over the API afterwards, so it is not treated as an error. Three places say so: a line
+naming the path that was checked,
+
+```
+Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json
+when the server started. Create one there (in Docker, mount it at that path) and restart, or pass
+--config <path>. Environments can also be created at runtime through the API.
+```
+
+and the machine-readable readiness line on stderr, whose counts carry what `serving` alone does not:
+
+```
+PUBLISHER_READY url=http://localhost:4000 mcp=http://localhost:4040 environments=0 packages=0 load_errors=0
+```
+
+The third is `GET /api/v0/status` (and the `get_status` MCP tool), which carries the first line's
+text as `emptyReason` for as long as no environment exists.
+
+If you expected packages and see `environments=0`, the config did not reach `/publisher`.
+
+The server runs as uid 1000, not root, so a volume or bind mount it writes to must be writable by
+that uid. A new named volume is. One that an earlier image, which ran as root, wrote to needs a
+one-time chown; [`packages/server/README.docker.md`](../packages/server/README.docker.md#the-server-runs-as-a-non-root-user)
+has the command.
+
 ### Build from source
 
 ```bash
@@ -127,13 +154,12 @@ docker run -d \
 
 **Tags:**
 
-- `:latest` — most recent stable release.
-- `:X.Y.Z` — pinned to a specific release; recommended for production.
-- `:next` — pre-release builds; not recommended for production.
+- `:latest`: most recent stable release.
+- `:X.Y.Z`: pinned to a specific release; recommended for production.
 
-`*-dev` tags (e.g. `:0.0.198-dev`) are frozen — no new ones are being published, and `:next` is the
-current pre-release channel. Existing `*-dev` tags still resolve in the registry; don't use them for
-new deployments.
+There is no pre-release channel today. The `*-dev` tags (e.g. `:0.0.198-dev`) are frozen at
+0.0.198-dev6 (May 2026) and the `:next` tag has been retired. Old `*-dev` tags still resolve in the
+registry, so an existing deployment pinned to one keeps working; don't use them for new deployments.
 
 ### Docker Compose
 

@@ -7,11 +7,201 @@ import {
    parsePackageMaterialization,
    parsePackageScope,
    queryMetadataParseWarnings,
+   resolveExplores,
    resolvePackageQueryMetadata,
    resolvePackageScope,
 } from "./package_manifest";
 
 describe("service/package_manifest", () => {
+   describe("resolveExplores", () => {
+      const resolve = (
+         declaredExplores: unknown,
+         modelPaths: readonly string[],
+         declaredQueryableSources?: unknown,
+      ) =>
+         resolveExplores({
+            declaredExplores,
+            declaredQueryableSources,
+            modelPaths,
+         });
+
+      it("defaults the surface to a root index.malloy when no explores is declared", () => {
+         expect(
+            resolve(undefined, ["index.malloy", "orders.malloy"]).explores,
+         ).toEqual(["index.malloy"]);
+      });
+
+      it("says nothing about the recommended shape: a root index.malloy and no keys", () => {
+         for (const paths of [
+            ["index.malloy", "orders.malloy"],
+            ["index.malloy", "report.malloynb"],
+            ["index.malloy"],
+         ]) {
+            expect(resolve(undefined, paths).warnings).toEqual([]);
+         }
+      });
+
+      it("leaves a package with no index.malloy uncurated", () => {
+         expect(
+            resolve(undefined, ["orders.malloy", "internal.malloy"]).explores,
+         ).toBeUndefined();
+      });
+
+      it("prefers an explicit explores, deprecates it, and says the index file is ignored", () => {
+         const { explores, warnings } = resolve(
+            ["orders.malloy"],
+            ["index.malloy", "orders.malloy"],
+         );
+         expect(explores).toEqual(["orders.malloy"]);
+         expect(warnings).toEqual([
+            `"explores" in publisher.json is deprecated. Fix: import ` +
+               `orders.malloy into index.malloy, export the sources you publish ` +
+               `from it, then delete "explores".`,
+            `index.malloy is ignored because "explores" in publisher.json ` +
+               `doesn't list it. Fix: delete "explores" to publish what ` +
+               `index.malloy exports, or rename index.malloy (and any import of ` +
+               `it) if it isn't meant to decide what is published.`,
+         ]);
+      });
+
+      it("deprecates every explores, naming the files index.malloy must import", () => {
+         // No index.malloy yet: add one that imports them all.
+         expect(
+            resolve(
+               ["orders.malloy", "customers.malloy"],
+               ["orders.malloy", "customers.malloy"],
+            ).warnings,
+         ).toEqual([
+            `"explores" in publisher.json is deprecated. Fix: add an ` +
+               `index.malloy at the package root that imports orders.malloy and ` +
+               `customers.malloy and exports the sources you want to publish, ` +
+               `then delete "explores".`,
+         ]);
+         // index.malloy and dashboards need no replacement: the file is the
+         // surface and every dashboard is served.
+         const alreadyPublished =
+            `"explores" in publisher.json is deprecated. index.malloy already ` +
+            `publishes the same thing. Fix: delete "explores".`;
+         expect(
+            resolve(
+               ["index.malloy", "dashboards/overview.malloy"],
+               ["index.malloy", "dashboards/overview.malloy"],
+            ).warnings,
+         ).toEqual([alreadyPublished]);
+         expect(
+            resolve(["index.malloy"], ["index.malloy", "orders.malloy"])
+               .warnings,
+         ).toEqual([alreadyPublished]);
+         // Only dashboards listed, index.malloy on disk but left out.
+         expect(
+            resolve(
+               ["dashboards/overview.malloy"],
+               ["index.malloy", "dashboards/overview.malloy"],
+            ).warnings[0],
+         ).toBe(
+            `"explores" in publisher.json is deprecated. Fix: delete ` +
+               `"explores", so index.malloy decides what is published.`,
+         );
+         // Only dashboards listed, and no index.malloy at all.
+         expect(
+            resolve(
+               ["dashboards/overview.malloy"],
+               ["dashboards/overview.malloy"],
+            ).warnings,
+         ).toEqual([
+            `"explores" in publisher.json is deprecated. Fix: add an ` +
+               `index.malloy at the package root that exports the sources you ` +
+               `want to publish, then delete "explores".`,
+         ]);
+      });
+
+      it("deprecates the empty-array opt-out, which the file itself now replaces", () => {
+         const { explores, warnings } = resolve([], ["index.malloy"]);
+         expect(explores).toEqual([]);
+         expect(warnings).toEqual([
+            `"explores" in publisher.json is deprecated. Here it stops ` +
+               `index.malloy from limiting what this package publishes. Fix: to ` +
+               `publish everything, rename index.malloy, point any import of it at ` +
+               `the new name, then delete "explores".`,
+         ]);
+         // With no index.malloy there is nothing to suppress.
+         expect(resolve([], ["orders.malloy"]).warnings).toEqual([
+            `"explores": [] in publisher.json does nothing. Fix: delete it.`,
+         ]);
+      });
+
+      it("only counts a root index.malloy, not a nested one", () => {
+         expect(
+            resolve(undefined, ["reports/index.malloy", "orders.malloy"])
+               .explores,
+         ).toBeUndefined();
+      });
+
+      it("says a root file named index.malloy in another case is ignored", () => {
+         // Almost certainly meant as the surface, and silently uncurated. The
+         // exact-match rule stays: a case-insensitive filesystem would
+         // otherwise curate the same package on one machine and not another.
+         const { explores, warnings } = resolve(undefined, [
+            "Index.malloy",
+            "orders.malloy",
+         ]);
+         expect(explores).toBeUndefined();
+         expect(warnings).toEqual([
+            `Index.malloy is ignored: only a root file named exactly ` +
+               `index.malloy decides what is published. Fix: rename it to ` +
+               `index.malloy.`,
+         ]);
+         // Not beside an exact index.malloy, not nested, and not under an
+         // explores key, which decides the surface itself.
+         expect(
+            resolve(undefined, ["index.malloy", "INDEX.malloy"]).warnings,
+         ).toEqual([]);
+         expect(
+            resolve(undefined, ["reports/Index.malloy", "orders.malloy"])
+               .warnings,
+         ).toEqual([]);
+         expect(
+            resolve(["Index.malloy"], ["Index.malloy"]).warnings.some((w) =>
+               w.includes("is ignored"),
+            ),
+         ).toBe(false);
+      });
+
+      it("refuses to load a package whose explores is malformed, naming the value and the fix", () => {
+         // `explores` decides what is REACHABLE, so a half-understood value is
+         // not half-applied: ignoring it would publish every source the author
+         // curated away.
+         expect(() => resolve(["orders.malloy", 7], ["orders.malloy"])).toThrow(
+            `Invalid "explores" in publisher.json: it must be a list of file ` +
+               `names, but is ["orders.malloy",7]. The package was not loaded. ` +
+               `Fix: delete "explores" and add an index.malloy.`,
+         );
+         expect(() => resolve("orders.malloy", ["orders.malloy"])).toThrow(
+            /Invalid "explores"/,
+         );
+         expect(() => resolve([null], ["orders.malloy"])).toThrow(
+            /Invalid "explores"/,
+         );
+      });
+
+      it("keeps a well-formed empty array out of the refusal", () => {
+         expect(() => resolve([], ["orders.malloy"])).not.toThrow();
+      });
+
+      it('tells a queryableSources "declared" author to delete it, and says nothing about "all"', () => {
+         expect(
+            resolve(undefined, ["index.malloy"], "declared").warnings,
+         ).toEqual([
+            `"queryableSources" in publisher.json does nothing. Fix: delete it.`,
+         ]);
+         // "all" is the one way to hide a source from listings while it stays
+         // queryable by name, and nothing replaces it.
+         expect(resolve(undefined, ["index.malloy"], "all").warnings).toEqual(
+            [],
+         );
+      });
+   });
+
    describe("resolvePackageScope", () => {
       it("reads the canonical materialization.scope with no warning", () => {
          expect(resolvePackageScope(undefined, { scope: "version" })).toEqual({

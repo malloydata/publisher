@@ -54,6 +54,15 @@ export type StorageBuildEngine =
 export type EligibilityRefusalReason =
    | "free_parameter"
    | "given"
+   | "given_in_persisted_query"
+   | "dynamic_projection"
+   | "dynamic_join"
+   | "dynamic_joined_where"
+   | "partition_without_storage"
+   | "partition_column_unknown"
+   | "partition_column_not_public"
+   | "merge_key_scope_unresolved"
+   | "preaggregate_over_dynamic_source"
    | "authorize"
    | "not_duckdb_portable"
    | "public_surface_unknown";
@@ -63,13 +72,20 @@ export type EligibilityRefusalReason =
  * lake table ("stack on the parent" — reuses the parent's work and is
  * consistent-by-construction); `inline_fallback` = stacking was ineligible/failed
  * so the upstream was recomputed from raw against the warehouse (non-strict);
- * `strict_refused` = stacking was ineligible under `strictUpstreams`, so
- * the build failed loudly rather than silently recomputing. This is the headline
- * signal for how far the parent-reuse path gets us in practice.
+ * `strict_shape_fallback` = under `strictUpstreams`, the downstream reaches the
+ * source warehouse (a table joined beside a stored parent, through a
+ * non-persisted source), so no build over the parents exists and it was
+ * recomputed from raw — the one recompute strict permits; `strict_refused` =
+ * under `strictUpstreams`, a persisted upstream was neither built in the run
+ * nor referenced, or the downstream reads only stored upstreams yet could not be
+ * built over them, so the build failed loudly rather than recomputing a table
+ * the orchestrator meant to pin. This is the headline signal for how far the
+ * parent-reuse path gets us in practice.
  */
 export type ChainedStorageBuildOutcome =
    | "parent_reuse"
    | "inline_fallback"
+   | "strict_shape_fallback"
    | "strict_refused"
    // The parent-reuse attempt failed on infrastructure (attach, CTAS, the
    // destination being unreachable) rather than on shape. Distinct from
@@ -116,7 +132,7 @@ const runDuration = lazyHistogram(
 );
 const sourcesCounter = lazyCounter(
    "publisher_materialization_sources_total",
-   "Persist sources processed by a materialization run. Label: outcome ('built'|'reused'|'failed').",
+   "Persist sources processed by a materialization run. Labels: outcome ('built'|'reused'|'failed'|'refused'), mode ('auto'|'orchestrated').",
 );
 const incrementalStepCounter = lazyCounter(
    "publisher_materialization_incremental_step_total",
@@ -240,15 +256,22 @@ const attributionSkippedCounter = lazyCounter(
 );
 const eligibilityRefusedCounter = lazyCounter(
    "publisher_materialization_eligibility_refused_total",
-   "storage= materialization-eligibility refusals. Label: reason " +
-      "('free_parameter'|'given'|'authorize'|'not_duckdb_portable'|" +
-      "'public_surface_unknown').",
+   "materialization-eligibility refusals, both tiers. Label: reason " +
+      "('free_parameter'|'given_in_persisted_query'|'dynamic_projection'|" +
+      "'dynamic_join'|'dynamic_joined_where'|'partition_without_storage'|" +
+      "'partition_column_unknown'|'partition_column_not_public'|" +
+      "'merge_key_scope_unresolved'|'preaggregate_over_dynamic_source'|" +
+      "'authorize'|'partition'|'not_duckdb_portable'|" +
+      "'public_surface_unknown'). 'given' is retained on the enum for records " +
+      "that carry it and is no longer produced: where a given sits decides the " +
+      "outcome, so one reason covering every placement cannot be raised.",
 );
 const serveShapeTierDropCounter = lazyCounter(
    "publisher_storage_serve_shape_tier_drop_total",
    "storage serve-shape compile escalations: a refinement tier failed to " +
-      "compile and the riskiest category was dropped. Label: tier (the failed " +
-      "tier index, 0=full).",
+      "compile and the riskiest category was dropped, or one or more lifted " +
+      "entry points failed to compile and were dropped alone. Label: tier (the " +
+      "failed tier index, 0=full; 'lifts' for dropped lifts).",
 );
 const serveShapeTypeFallbackCounter = lazyCounter(
    "publisher_storage_serve_shape_type_fallback_total",
@@ -259,8 +282,9 @@ const chainedStorageBuildCounter = lazyCounter(
    "publisher_storage_chained_build_total",
    "Chained storage= source builds (a source reading a storage-materialized " +
       "upstream). Label: outcome ('parent_reuse'|'inline_fallback'|" +
-      "'strict_refused'). The parent_reuse share is the headline signal for how " +
-      "far the stack-on-the-parent path gets us vs recompute-from-raw.",
+      "'strict_shape_fallback'|'strict_refused'|'infra_failure'). The " +
+      "parent_reuse share is the headline signal for how far the " +
+      "stack-on-the-parent path gets us vs recompute-from-raw.",
 );
 const colocatedBindDroppedCounter = lazyCounter(
    "publisher_materialization_colocated_bind_dropped_total",
@@ -298,13 +322,19 @@ export function recordMaterializationRun(
  * Record how many persist sources a run built vs. reused (carried forward
  * unchanged via skip-if-unchanged). Lets a dashboard show the reuse ratio,
  * the main lever on materialization cost.
+ *
+ * `refused` counts sources the eligibility gate refused. With
+ * `mode="orchestrated"` it should stay at zero, because a host that builds from
+ * the build plan never instructs a source the plan refused; a nonzero count
+ * there means the plan and the build's own gate disagreed about a source.
  */
 export function recordSourcesOutcome(
-   outcome: "built" | "reused" | "failed",
+   outcome: "built" | "reused" | "failed" | "refused",
    count: number,
+   mode: MaterializationMode,
 ): void {
    if (count <= 0) return;
-   sourcesCounter().add(count, { outcome });
+   sourcesCounter().add(count, { outcome, mode });
 }
 
 /**
@@ -478,8 +508,13 @@ export function recordEligibilityRefused(
  * did not compile, so the riskiest category was dropped and the shape retried.
  * A systematically-dropping source tells authors which refinements aren't
  * servable from storage.
+ *
+ * `"lifts"` records that one or more lifted entry points (derived sources
+ * carried onto the richest rung) did not compile and were dropped alone; it is
+ * recorded only when a lift was actually dropped, not when the probe with every
+ * lift failed and each was then kept.
  */
-export function recordServeShapeTierDrop(failedTier: number): void {
+export function recordServeShapeTierDrop(failedTier: number | "lifts"): void {
    serveShapeTierDropCounter().add(1, { tier: String(failedTier) });
 }
 

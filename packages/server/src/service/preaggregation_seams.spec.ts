@@ -20,6 +20,7 @@ import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
+import { AccessDeniedError } from "../errors";
 import { Environment } from "./environment";
 import type { Package } from "./package";
 
@@ -549,7 +550,7 @@ source: regions is duckdb.sql("""
 });
 
 // ---------------------------------------------------------------------------
-// Pre-aggregation x row-level `#(authorize)`. Nothing covered the combination,
+// Pre-aggregation x row-level `#(access_filter)`. Nothing covered the combination,
 // and the two tiers guard differently: `routingBlockedByRowLevelGate` was
 // `&&`-ed with `storageRoutingPossible` and guarded only the storage branch,
 // while the pre-aggregation branch had no gate check and `preaggRouted` is never
@@ -562,7 +563,7 @@ describe("pre-aggregation and a row-level gate", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),
@@ -689,6 +690,93 @@ source: orders is duckdb.sql("""
 });
 
 // ---------------------------------------------------------------------------
+// A `#(authorize)`-only source must block routing exactly like an
+// `#(access_filter)` one — `hasAnyAuthorizeNote`'s sweep recognizes either
+// route (see `authorize.ts`'s `authorizeNoteContent`). This is the invariant
+// that keeps the lock enforceable at all: the storage/pre-aggregation
+// companion carries no annotation bytes, so a routed query is a query the
+// lock can never run against, and there is no post-hoc undo. Narrowing the
+// block to the filter route would route a lock-only source to frozen rows
+// and silently serve them.
+// ---------------------------------------------------------------------------
+
+describe("pre-aggregation and a authorize gate", () => {
+   const SOURCE_AUTHORIZE_GATED = `##! experimental { persistence composite_sources givens }
+
+given:
+  ROLE :: string[]
+
+#(authorize) 'finance' in $ROLE
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+
+   it(
+      "denies routing to the rollup, so the lock still decides — a refused caller gets 403, never frozen rows",
+      async () => {
+         const pkg = await loadPackage(SOURCE_AUTHORIZE_GATED);
+         // Admitted: the caller's ROLE includes 'finance', so the source-level
+         // term is satisfied and every row is served.
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { ROLE: ["finance"] },
+            ),
+         ).toEqual([
+            { category: "A", total: 30 },
+            { category: "B", total: 30 },
+         ]);
+         // Not admitted: a 403, and specifically NOT the rollup's frozen rows
+         // — routing was blocked, so the lock still had a query to run
+         // against.
+         await expect(
+            runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { ROLE: ["sales"] },
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "meters blocked_by_row_level_gate for a authorize-only entry point",
+      async () => {
+         const harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+         try {
+            const pkg = await loadPackage(SOURCE_AUTHORIZE_GATED);
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: category; aggregate: total; order_by: category }",
+               { ROLE: ["finance"] },
+            );
+            expect(
+               await harness.collectCounter(
+                  "publisher_storage_serve_routing_total",
+                  { outcome: "blocked_by_row_level_gate" },
+               ),
+            ).toBe(1);
+         } finally {
+            resetMaterializationTelemetryForTesting();
+            await harness.shutdown();
+         }
+      },
+      { timeout: 60000 },
+   );
+});
+
+// ---------------------------------------------------------------------------
 // The routing pre-check's own reachability. Blocking a gated entry point from
 // the storage / pre-aggregation tiers is guarded by a model-wide "is there an
 // authorize note ANYWHERE" sweep, so a deployment with rollups and no gates
@@ -709,7 +797,7 @@ describe("a gate reached only through a derivation hop", () => {
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: gated is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),
@@ -770,6 +858,103 @@ source: ungated is duckdb.sql("""
                { GROUPS: [1] },
             ),
          ).toEqual([{ org_id: 1, t: 40 }]);
+      },
+      { timeout: 60000 },
+   );
+});
+
+// A caller-written join is an entry into the joined source, so a row gate on
+// it blocks routing exactly like one on the run target.
+describe("pre-aggregation and a caller join to a row-gated source", () => {
+   const CALLER_JOIN_MODEL = `##! experimental { persistence composite_sources givens }
+
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: orgs is duckdb.sql("""
+  SELECT * FROM (VALUES (1, 'one'), (2, 'two')) AS t(org_id, org_name)
+""")
+
+source: orders is duckdb.sql("""
+  SELECT * FROM (VALUES
+    (10, 'A', 1),
+    (20, 'A', 2),
+    (30, 'B', 1)
+  ) AS t(amount, category, org_id)
+""") extend {
+  join_one: author_org is orgs on org_id = author_org.org_id
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`;
+   let harness: MetricsHarness;
+
+   beforeEach(async () => {
+      harness = await startMetricsHarness();
+      resetMaterializationTelemetryForTesting();
+   });
+
+   afterEach(async () => {
+      resetMaterializationTelemetryForTesting();
+      await harness.shutdown();
+   });
+
+   it(
+      "does not block routing for an author join into the row-gated source",
+      async () => {
+         const pkg = await loadPackage(CALLER_JOIN_MODEL);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders -> { group_by: author_org.org_name; aggregate: total; order_by: org_name }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([
+            { org_name: "one", total: 40 },
+            { org_name: "two", total: 20 },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(0);
+      },
+      { timeout: 60000 },
+   );
+
+   it(
+      "blocks routing and filters the joined rows",
+      async () => {
+         const pkg = await loadPackage(CALLER_JOIN_MODEL);
+         await runGatedQuery(
+            pkg,
+            "run: orders -> { group_by: category; aggregate: total }",
+            { GROUPS: [1] },
+         );
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(0);
+         expect(
+            await runGatedQuery(
+               pkg,
+               "run: orders extend { join_one: o is orgs on org_id = o.org_id } -> { group_by: o.org_name; aggregate: total; order_by: org_name }",
+               { GROUPS: [1] },
+            ),
+         ).toEqual([
+            { org_name: "one", total: 40 },
+            { org_name: null, total: 20 },
+         ]);
+         expect(
+            await harness.collectCounter(
+               "publisher_storage_serve_routing_total",
+               { outcome: "blocked_by_row_level_gate" },
+            ),
+         ).toBe(1);
       },
       { timeout: 60000 },
    );

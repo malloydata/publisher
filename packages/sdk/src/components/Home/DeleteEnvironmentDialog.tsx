@@ -3,20 +3,13 @@
 
 import React, { useState } from "react";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogTitle from "@mui/material/DialogTitle";
-import DialogContent from "@mui/material/DialogContent";
-import DialogActions from "@mui/material/DialogActions";
-import IconButton from "@mui/material/IconButton";
-import CloseIcon from "@mui/icons-material/Close";
 import Typography from "@mui/material/Typography";
-import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
+import { ListItemIcon, ListItemText, MenuItem } from "@mui/material";
 import { Delete } from "@mui/icons-material";
 import { Environment } from "../../client";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { useServer } from "../ServerProvider";
-import { useQueryClient } from "@tanstack/react-query";
-import { MALLOY_BRAND } from "../styles";
+import { AppDialog } from "../AppDialog";
 
 export default function DeleteEnvironmentDialog({
    environment,
@@ -27,8 +20,6 @@ export default function DeleteEnvironmentDialog({
 }) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
    const handleClickOpen = () => {
       setOpen(true);
    };
@@ -37,21 +28,14 @@ export default function DeleteEnvironmentDialog({
       onCloseDialog();
    };
 
-   const deleteEnvironment = useMutationWithApiError({
+   const deleteEnvironment = useCrudMutation({
       mutationFn: () =>
          apiClients.environments.deleteEnvironment(environment.name),
-      onSuccess() {
-         handleClose();
-         queryClient.invalidateQueries({ queryKey: ["environments"] });
-         setNotificationMessage("Environment deleted successfully");
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Environment deleted",
+      invalidates: [["environments"]],
+      closeDialog: handleClose,
+      resource: "environment",
+      action: "delete",
    });
 
    return (
@@ -62,60 +46,31 @@ export default function DeleteEnvironmentDialog({
             </ListItemIcon>
             <ListItemText>Delete</ListItemText>
          </MenuItem>
-         <Dialog
-            onClose={handleClose}
-            aria-labelledby="customized-dialog-title"
+         <AppDialog
             open={open}
+            onClose={handleClose}
+            title="Delete environment"
+            actions={
+               <>
+                  <Button onClick={handleClose}>Cancel</Button>
+                  <Button
+                     variant="contained"
+                     color="error"
+                     autoFocus
+                     onClick={() => deleteEnvironment.mutate()}
+                     loading={deleteEnvironment.isPending}
+                  >
+                     Delete environment
+                  </Button>
+               </>
+            }
          >
-            <DialogTitle sx={{ m: 0, p: 2 }} id="customized-dialog-title">
-               Delete Environment
-            </DialogTitle>
-            <IconButton
-               aria-label="close"
-               onClick={handleClose}
-               sx={(theme) => ({
-                  position: "absolute",
-                  right: 8,
-                  top: 8,
-                  color: theme.palette.grey[500],
-               })}
-            >
-               <CloseIcon />
-            </IconButton>
-            <DialogContent dividers>
-               <Typography gutterBottom>
-                  Are you sure you want to delete &quot;{environment.name}
-                  &quot;? This action cannot be undone.
-               </Typography>
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  variant="outlined"
-                  onClick={handleClose}
-                  style={{
-                     borderColor: MALLOY_BRAND.teal,
-                     color: MALLOY_BRAND.teal,
-                  }}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  loading={deleteEnvironment.isPending}
-                  variant="contained"
-                  autoFocus
-                  onClick={() => deleteEnvironment.mutate()}
-                  color="error"
-               >
-                  Delete
-               </Button>
-            </DialogActions>
-            <Snackbar
-               open={notificationMessage !== ""}
-               autoHideDuration={6000}
-               onClose={() => setNotificationMessage("")}
-               message={notificationMessage}
-            />
-         </Dialog>
+            <Typography variant="body2">
+               Delete <strong>{environment.name}</strong>? Its packages stop
+               being served and this cannot be undone.
+            </Typography>
+         </AppDialog>
+         {deleteEnvironment.notice}
       </React.Fragment>
    );
 }

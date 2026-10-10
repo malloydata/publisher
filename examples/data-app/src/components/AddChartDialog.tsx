@@ -24,7 +24,7 @@ import {
   encodeResourceUri,
   parseResourceUri,
 } from "@malloy-publisher/sdk";
-import { QueryExplorerResult } from "@malloy-publisher/sdk/dist/components/Model/SourcesExplorer";
+import type { QueryExplorerResult } from "@malloy-publisher/sdk";
 import "@malloydata/malloy-explorer/styles.css";
 
 export interface AddChartDialogProps {
@@ -41,10 +41,10 @@ export default function AddChartDialog({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [showModelExplorer, setShowModelExplorer] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState<string>(
-    defaultValues.packageName || ""
+    defaultValues.packageName || "",
   );
   const [selectedModel, setSelectedModel] = useState<string>(
-    defaultValues.modelPath || ""
+    defaultValues.modelPath || "",
   );
   const [modelQuery, setModelQuery] = useState<string>("");
   const [newTitle, setNewTitle] = useState("");
@@ -98,7 +98,7 @@ export default function AddChartDialog({
   const handleModelQueryChange = (queryResult: QueryExplorerResult) => {
     if (!selectedModel || !selectedPackage) {
       console.log(
-        `no model or package selected. model: ${selectedModel} package: ${selectedPackage}`
+        `no model or package selected. model: ${selectedModel} package: ${selectedPackage}`,
       );
       return;
     }

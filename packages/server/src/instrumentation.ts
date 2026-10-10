@@ -20,7 +20,7 @@ import {
 } from "@opentelemetry/semantic-conventions";
 import type { NextFunction, Request, Response } from "express";
 import { logger } from "./logger";
-import { publisherMeter } from "./telemetry";
+import { publisherMeter, REQUEST_DURATION_BUCKETS_MS } from "./telemetry";
 
 let prometheusExporter: PrometheusExporter | null = null;
 let sdk: NodeSDK | null = null;
@@ -77,11 +77,11 @@ function instrument() {
             ),
          ],
          logRecordProcessors: [
-            new BatchLogRecordProcessor(
-               new OTLPLogExporter({
+            new BatchLogRecordProcessor({
+               exporter: new OTLPLogExporter({
                   url: `${otelCollectorUrl}/v1/logs`,
                }),
-            ),
+            }),
          ],
       }),
    });
@@ -109,9 +109,7 @@ const httpRequestDuration = meter.createHistogram(
       description: "Duration of HTTP requests in milliseconds",
       unit: "ms",
       advice: {
-         explicitBucketBoundaries: [
-            5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 60000,
-         ],
+         explicitBucketBoundaries: REQUEST_DURATION_BUCKETS_MS,
       },
    },
 );

@@ -24,6 +24,11 @@ export default ({ mode }) => {
             __dirname,
             "../sdk/dist/markdown-editor.css",
          ),
+         // The builder's own entry, so the Malloy parser it pulls in stays
+         // out of the main chunk and loads only when someone opens the builder.
+         "@malloy-publisher/sdk/builder": isDev
+            ? path.resolve(__dirname, "../sdk/src/builder-entry.ts")
+            : path.resolve(__dirname, "../sdk/dist/builder/index.es.js"),
          // Client subpath must come BEFORE the general SDK alias
          "@malloy-publisher/sdk/client": isDev
             ? path.resolve(__dirname, "../sdk/src/client-entry.ts")
@@ -44,7 +49,8 @@ export default ({ mode }) => {
          ? {
               proxy: {
                  "/api/v0": {
-                    target: "http://localhost:4000",
+                    target:
+                       process.env.PUBLISHER_URL ?? "http://localhost:4000",
                     changeOrigin: true,
                  },
               },

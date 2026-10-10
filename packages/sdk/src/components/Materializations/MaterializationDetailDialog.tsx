@@ -21,12 +21,14 @@ import { BuildPlan, Materialization } from "../../client";
 import { MONO_FONT_FAMILY } from "../styles";
 import ManifestView from "./ManifestView";
 import SectionLabel from "./SectionLabel";
-import TriggerChip from "./TriggerChip";
+import TriggerLabel from "./TriggerLabel";
 import {
    formatDuration,
    formatTimestamp,
    isActiveStatus,
    parseMetadata,
+   refusedSourcesOf,
+   sourcesSummary,
    statusColor,
    statusLabel,
 } from "./utils";
@@ -34,26 +36,20 @@ import {
 type MaterializationDetailDialogProps = {
    materialization: Materialization | null;
    // The compiled package's current build plan (Package.buildPlan), shown for
-   // context. It is a property of the package version, not the historical run.
-   // Note it is null both in the environment-scoped view and for a package with
-   // no persist sources, so it cannot itself gate the section — see
-   // `showBuildPlan`.
+   // context. It is a property of the package version, not the historical run,
+   // and it is null for a package with no persist sources — which is why the
+   // section renders an empty state rather than disappearing.
    buildPlan: BuildPlan | null;
-   // Whether to render the Build plan section. The package view shows it (with a
-   // "no persist sources" empty state when the plan is empty); the
-   // environment-scoped view, which spans packages and has no single plan, omits
-   // it entirely.
-   showBuildPlan?: boolean;
    onClose: () => void;
 };
 
 export default function MaterializationDetailDialog({
    materialization,
    buildPlan,
-   showBuildPlan = true,
    onClose,
 }: MaterializationDetailDialogProps) {
    const meta = materialization ? parseMetadata(materialization) : {};
+   const refused = materialization ? refusedSourcesOf(materialization) : [];
    const planSources = Object.values(buildPlan?.sources ?? {});
 
    return (
@@ -86,7 +82,7 @@ export default function MaterializationDetailDialog({
                               : "outlined"
                         }
                      />
-                     <TriggerChip meta={meta} />
+                     <TriggerLabel meta={meta} />
                   </Stack>
                   <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
                      {materialization.packageName ?? "Materialization"}
@@ -142,7 +138,7 @@ export default function MaterializationDetailDialog({
                      />
                      <DetailField
                         label="Sources"
-                        value={`${meta.sourcesBuilt ?? 0} built · ${meta.sourcesReused ?? 0} reused`}
+                        value={sourcesSummary(meta, " · ")}
                      />
                      <DetailField
                         label="Force refresh"
@@ -177,64 +173,105 @@ export default function MaterializationDetailDialog({
                      </Box>
                   )}
 
-                  {showBuildPlan && (
-                     <Box sx={{ mb: 3 }}>
-                        <SectionLabel>Build plan</SectionLabel>
-                        {planSources.length === 0 ? (
-                           <Typography
-                              variant="body2"
-                              color="text.secondary"
-                              sx={{ fontStyle: "italic" }}
-                           >
-                              This package has no persist sources.
-                           </Typography>
-                        ) : (
-                           <Table size="small">
-                              <TableHead>
-                                 <TableRow>
-                                    <TableCell>Source</TableCell>
-                                    <TableCell>Connection</TableCell>
-                                    <TableCell>Dialect</TableCell>
-                                    <TableCell align="right">Columns</TableCell>
-                                    <TableCell>Source Entity ID</TableCell>
-                                 </TableRow>
-                              </TableHead>
-                              <TableBody>
-                                 {planSources.map((source) => (
-                                    <TableRow key={source.sourceID}>
-                                       <TableCell
-                                          sx={{ fontFamily: MONO_FONT_FAMILY }}
-                                       >
-                                          {source.name}
-                                       </TableCell>
-                                       <TableCell
-                                          sx={{ fontFamily: MONO_FONT_FAMILY }}
-                                       >
-                                          {source.connectionName}
-                                       </TableCell>
-                                       <TableCell>
-                                          {source.dialect ?? "-"}
-                                       </TableCell>
-                                       <TableCell align="right">
-                                          {source.columns?.length ?? 0}
-                                       </TableCell>
-                                       <TableCell
-                                          sx={{
-                                             fontFamily: MONO_FONT_FAMILY,
-                                             fontSize: "0.75rem",
-                                             wordBreak: "break-all",
-                                             maxWidth: 220,
-                                          }}
-                                       >
-                                          {source.sourceEntityId}
-                                       </TableCell>
-                                    </TableRow>
-                                 ))}
-                              </TableBody>
-                           </Table>
-                        )}
+                  {refused.length > 0 && (
+                     <Box
+                        sx={{
+                           borderRadius: 2,
+                           p: 2,
+                           mb: 3,
+                           border: "1px solid",
+                           borderColor: "warning.main",
+                        }}
+                     >
+                        <SectionLabel>
+                           <Box component="span" sx={{ color: "warning.main" }}>
+                              Refused sources
+                           </Box>
+                        </SectionLabel>
+                        <Typography
+                           variant="body2"
+                           color="text.secondary"
+                           sx={{ mb: 1 }}
+                        >
+                           Not built, because materializing them would be
+                           unsafe. They serve live until the model changes.
+                        </Typography>
+                        {refused.map((r) => (
+                           <Box key={r.name} sx={{ mt: 1 }}>
+                              <Typography
+                                 variant="body2"
+                                 sx={{ fontFamily: MONO_FONT_FAMILY }}
+                              >
+                                 {r.name}
+                              </Typography>
+                              <Typography
+                                 variant="body2"
+                                 color="text.secondary"
+                                 sx={{ whiteSpace: "pre-wrap" }}
+                              >
+                                 {r.message}
+                              </Typography>
+                           </Box>
+                        ))}
                      </Box>
                   )}
+
+                  <Box sx={{ mb: 3 }}>
+                     <SectionLabel>Build plan</SectionLabel>
+                     {planSources.length === 0 ? (
+                        <Typography
+                           variant="body2"
+                           color="text.secondary"
+                           sx={{ fontStyle: "italic" }}
+                        >
+                           This package has no persist sources.
+                        </Typography>
+                     ) : (
+                        <Table size="small">
+                           <TableHead>
+                              <TableRow>
+                                 <TableCell>Source</TableCell>
+                                 <TableCell>Connection</TableCell>
+                                 <TableCell>Dialect</TableCell>
+                                 <TableCell align="right">Columns</TableCell>
+                                 <TableCell>Source Entity ID</TableCell>
+                              </TableRow>
+                           </TableHead>
+                           <TableBody>
+                              {planSources.map((source) => (
+                                 <TableRow key={source.sourceID}>
+                                    <TableCell
+                                       sx={{ fontFamily: MONO_FONT_FAMILY }}
+                                    >
+                                       {source.name}
+                                    </TableCell>
+                                    <TableCell
+                                       sx={{ fontFamily: MONO_FONT_FAMILY }}
+                                    >
+                                       {source.connectionName}
+                                    </TableCell>
+                                    <TableCell>
+                                       {source.dialect ?? "-"}
+                                    </TableCell>
+                                    <TableCell align="right">
+                                       {source.columns?.length ?? 0}
+                                    </TableCell>
+                                    <TableCell
+                                       sx={{
+                                          fontFamily: MONO_FONT_FAMILY,
+                                          fontSize: "0.75rem",
+                                          wordBreak: "break-all",
+                                          maxWidth: 220,
+                                       }}
+                                    >
+                                       {source.sourceEntityId}
+                                    </TableCell>
+                                 </TableRow>
+                              ))}
+                           </TableBody>
+                        </Table>
+                     )}
+                  </Box>
 
                   <ManifestView
                      entries={materialization.manifest?.entries}

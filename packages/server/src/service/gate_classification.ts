@@ -17,26 +17,59 @@
  * half of this walk) already live in `./gate_registry_walk`, shared with
  * `source_extraction.ts` — this module builds on those rather than
  * duplicating them.
+ *
+ * Also home to the `#(authorize)` body GRAMMAR's load-time plumbing —
+ * {@link assertAuthorizeGrammarValid} (the `./authorize_grammar` parser, plus
+ * the fan-out join check that needs the compiled struct the parser never
+ * sees) and {@link assertNoRetiredRouteMarkers} (a leftover marker from a
+ * retired annotation route, e.g. `#(partition)`, which Malloy still parses
+ * happily and which must fail load rather than fail open).
  */
 
 import {
+   isJoined,
    isSourceDef,
    type FilterCondition,
    type ModelDef,
    type ModelMaterializer,
    type SourceDef,
 } from "@malloydata/malloy";
+import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
-import { ownLevelNotes, type AnnotationNote } from "./annotations";
+import {
+   annotationTexts,
+   modelAnnotations,
+   ownLevelNotes,
+   ownLevelNoteTexts,
+   type AnnotationNote,
+   type AnnotationsDef,
+} from "./annotations";
 import {
    buildRowLevelProbe,
-   collectAuthorizeExprs,
+   collectAuthorizeExprsForRoute,
    gateFilterText,
+   isLegacyQuotedPayload,
    liftProbeFilterCondition,
    referencedGivenNames,
+   type AuthorizeMap,
+   type AuthorizeOwnNotesMap,
    type RowLevelGateClassification,
    type RowLevelGateRejectionCause,
 } from "./authorize";
+import {
+   assertAuthorizeGrammarTermsCoherent,
+   AuthorizeGrammarError,
+   containsRetiredRouteTag,
+   parseAuthorizeGrammarBody,
+   reachesRetiredRouteTagBelow,
+   RETIRED_ROUTES,
+   type AuthorizeGrammarRoutedTerm,
+} from "./authorize_grammar";
+import {
+   AUTHORIZE_ROUTE,
+   CANONICAL_AUTHORIZE_ROUTES,
+} from "./authorize_routes";
+import type { CallerJoinPath } from "./caller_joins";
 import { expandRefSummaryGivenIds } from "./gate_dimension";
 import {
    ANCESTOR_WALK_MAX_DEPTH,
@@ -58,6 +91,18 @@ export type GateEntry = {
     * keeps two same-text gates of different provenance from collapsing.
     */
    selfContained: boolean;
+   /**
+    * The annotation route this gate was collected under
+    * (`CANONICAL_AUTHORIZE_ROUTES`) — `"access_filter"` (which rows) or
+    * `"authorize"` (may this caller reach the source at all). Enforcement
+    * turns on it: {@link resolveGateShape} classifies an `authorize` entry as
+    * a `lock`, which is DECIDED and answers 403, and an `access_filter` entry
+    * as `row_level`, which is grafted as a filter. It also keeps the
+    * collection walk's own-wins-over-ancestor rule scoped PER ROUTE — see
+    * {@link collectEntryPointGates}'s doc — and keeps a dedup key that folds
+    * two entries together from conflating one route's gate with the other's.
+    */
+   route: string;
    /**
     * The ENTRY POINT this gate applies to — the run target itself, or its
     * resolved composite branch — NOT necessarily the struct the gate's own
@@ -120,10 +165,18 @@ export interface GraftScope {
  */
 export interface GateClassificationDeps {
    /**
-    * Row-level shape memo, keyed `${cacheScope}\u0000${graftTarget}\u0000${filterText}`
+    * Shape memo, keyed
+    * `${cacheScope}\u0000${route}\u0000${graftTarget}\u0000${filterText}`
     * — see `Model.gateShapeCache`'s doc for why the key must include
     * `cacheScope` and why this is safe to cache for the life of whatever
     * scope the caller keys it to.
+    *
+    * `route` is in the key because the two routes synthesize the SAME
+    * fail-closed `["false"]` sentinel for the same struct, and the walk visits
+    * them in a fixed order: without it the row walk's entry is what a lock
+    * lookup finds, and the lock is grafted as `where: false` — 200 with zero
+    * rows on a base nobody can read — instead of being refused. Reversing
+    * `CANONICAL_AUTHORIZE_ROUTES` must leave every lock test green.
     */
    gateShapeCache: Map<
       string,
@@ -182,16 +235,37 @@ export function createGateClassificationDeps(
  * Malloy's composite resolver copies a `query_source` base's own annotation
  * note OBJECTS onto its resolved member struct's own `blockNotes`, alongside
  * the member's own notes. Reading them unfiltered folds the base's gate into
- * the member's own OR group — a different declaring source's condition
- * landing in THIS source's disjunction, which is the AND-becomes-OR leak this
- * parameter exists to close. Empty for every caller except the
+ * the member's own group — a different declaring source's condition landing
+ * in THIS source's conjunction, so the base's term is enforced twice under
+ * one attribution instead of as the two separate (AND'd) `GateEntry` results
+ * `collectEntryPointGates` already produces for base vs. composite member;
+ * that misattribution is the leak this parameter exists to close. Empty for
+ * every caller except the
  * composite-member recursion in {@link collectEntryPointGates}.
  *
  * `fromAncestor` reports that the gate came from the derivation base rather
  * than from `struct`'s own notes — see {@link GateEntry}'s `selfContained`.
+ *
+ * `route` scopes both the own-notes read and the ancestor walk to ONE
+ * annotation route (`CANONICAL_AUTHORIZE_ROUTES`) — this is what makes
+ * own-wins-over-ancestor PER ROUTE rather than shared: an own
+ * `#(authorize)` note does not satisfy (and does not shed) an
+ * ancestor's `#(authorize)` gate, because the caller invokes this function
+ * once per route and each call only ever sees that route's own notes. The
+ * `["false"]` fail-closed sentinel in the `catch` below is synthesized on
+ * EITHER route, not only `ACCESS_FILTER_ROUTE`: because own-wins-over-ancestor is
+ * decided per route, the two routes' calls over the same struct can diverge
+ * before either reaches the unreadable branch (e.g. `struct` owns a real
+ * `#(authorize)` note and returns early, while its `#(authorize)` call
+ * falls through to an ancestor whose IR is unreadable) — one route's success
+ * is never a guarantee the other took the same path, so a route cannot rely
+ * on its sibling to have already denied. See `gate_registry_walk.ts`'s
+ * `ancestorGateExprs` doc for the identical reasoning applied to its own
+ * three fail-closed returns.
  */
 function gateExprsForOwnAnnotations(
    struct: SourceDef,
+   route: string,
    modelDef?: ModelDef,
    excludeNotes: readonly AnnotationNote[] = [],
 ): {
@@ -209,21 +283,27 @@ function gateExprsForOwnAnnotations(
       // `Model.create` / package-load-worker preflight — but a caller with
       // no such preflight (`build_plan.ts`'s materialization-eligibility
       // compile pass) can still reach this classifier with one intact.
-      // There is no special case here for that: `collectAuthorizeExprs`
+      // There is no special case here for that: `collectAuthorizeExprsForRoute`
       // (via `parseAuthorizeAnnotation`) now returns the legacy payload
       // completely verbatim, quotes included, so it is handed to
       // `resolveGateShape` below as an ordinary Malloy expression — see the
       // comment at its lift `catch` for why that alone is enough to make
       // this classifier and the load-time refusal agree structurally,
       // without either one special-casing the other.
-      const own = collectAuthorizeExprs(ownNotes.map((note) => note.text));
+      const own = collectAuthorizeExprsForRoute(
+         ownNotes.map((note) => note.text),
+         route,
+      );
       if (own.length > 0) {
          return { exprs: own, fromAncestor: false };
       }
-      const ancestor = ancestorGateExprs(struct, modelDef);
+      const ancestor = ancestorGateExprs(struct, modelDef, route);
       return { exprs: ancestor, fromAncestor: ancestor.length > 0 };
    } catch {
-      return { exprs: ["false"], fromAncestor: false };
+      return {
+         exprs: ["false"],
+         fromAncestor: false,
+      };
    }
 }
 
@@ -245,12 +325,13 @@ function gateExprsForOwnAnnotations(
  * Derivation recurses through this same function, so a chained derivation is
  * covered at any depth.
  *
- * What this deliberately does NOT collect (Q16 — joins are not traced):
- * joined sources (`struct.fields`), members of a joined composite,
- * query-local joins inside a `-> { join_one: ... }` refinement, and a
- * derivation's own inner-pipeline joins. A gate is a statement about who may
- * query the source it is declared on, not about everything reachable beneath
- * it.
+ * What this deliberately does NOT collect: joined sources (`struct.fields`),
+ * members of a joined composite, query-local joins inside a `-> { join_one:
+ * ... }` refinement, and a derivation's own inner-pipeline joins. For a join
+ * the model AUTHOR wrote that is the rule — a gate is a statement about who
+ * may query the source it is declared on, not about everything the author
+ * joined beneath it. A join the CALLER wrote is gated too, but by a separate
+ * pass (`./caller_joins`, `Model.probeCallerJoinGates`), not by this walk.
  *
  * `seen` (struct-identity keyed) guards cycles and repeat structs.
  *
@@ -260,8 +341,9 @@ function gateExprsForOwnAnnotations(
  * OBJECTS onto its resolved composite member's own `blockNotes`, alongside
  * the member's own notes, so reading the member's own gate without excluding
  * the base's copy would fold two different declaring sources' gates into one
- * OR group instead of the two separate (AND'd) `GateEntry` results this
- * function already produces for the plain base-vs-composite split. Every
+ * group — enforcing the base's term twice under the member's attribution —
+ * instead of the two separate (AND'd) `GateEntry` results this function
+ * already produces for the plain base-vs-composite split. Every
  * OTHER recursive call passes none: a query-source's own base (as opposed to
  * that base's composite-resolved member) carries no such copy to subtract.
  *
@@ -275,12 +357,57 @@ function gateExprsForOwnAnnotations(
  * struct and its own resolved composite branch, the two call sites that
  * represent the entry point ITSELF, and is what makes those entries' own
  * annotations NOT self-contained.
+ *
+ * Returns entries for BOTH annotation routes (`CANONICAL_AUTHORIZE_ROUTES`) — no caller
+ * change required, and none should be made: seven consumers call this walk
+ * directly (the query path, `/compile`'s early gate and its backstop,
+ * notebook cells, `Model`'s `entryPointGatesBySource`,
+ * `queryEntryPointHasRowLevelGate`, `build_plan.ts`'s
+ * `classifyPersistSourceGate`, `probeEntryPointGates`), and a sibling
+ * collector any ONE of them forgot to also call would fail open for
+ * `authorize` alone. The route enters by running the ENTIRE walk once
+ * per route ({@link collectEntryPointGatesForRoute}), each with its own fresh
+ * `seen` set (struct-identity cycle guards must not be shared across routes —
+ * a struct legitimately visited under `authorize` must still be visited under
+ * `authorize`) and its own independent own-wins-over-ancestor decision
+ * (`gateExprsForOwnAnnotations`) — an own `#(authorize)` note on
+ * `struct` never sheds an ancestor's `#(authorize)` gate, or vice versa,
+ * because the two routes' walks never share state.
  */
 export function collectEntryPointGates(
    struct: SourceDef | undefined,
    modelDef: ModelDef | undefined,
    seen: Set<SourceDef> = new Set(),
    treatAsOwnGate = false,
+   entryPointStruct: SourceDef | undefined = struct,
+   excludeNotes: readonly AnnotationNote[] = [],
+): GateEntry[] {
+   const results: GateEntry[] = [];
+   for (const route of CANONICAL_AUTHORIZE_ROUTES) {
+      results.push(
+         ...collectEntryPointGatesForRoute(
+            struct,
+            modelDef,
+            route,
+            new Set(seen),
+            treatAsOwnGate,
+            entryPointStruct,
+            excludeNotes,
+         ),
+      );
+   }
+   return results;
+}
+
+/**
+ * The single-route walk {@link collectEntryPointGates} runs once per
+ * {@link CANONICAL_AUTHORIZE_ROUTES} entry — see that function's doc for why routing
+ * enters here rather than by threading a route through every caller.
+ */
+function collectEntryPointGatesForRoute(
+   struct: SourceDef | undefined,
+   modelDef: ModelDef | undefined,
+   route: string,
    // The struct that STARTED this walk — the run target itself, or its
    // resolved composite branch. Held fixed across the query-source recursion
    // below (never reassigned to `base`/`resolved`), because it, not whichever
@@ -289,12 +416,14 @@ export function collectEntryPointGates(
    // derivation base applies to THIS entry point as an entry point, and
    // grafting the base instead cannot reach a model-declared derivation
    // (`Z is X -> {...}`), which snapshotted its base at declaration time.
-   entryPointStruct: SourceDef | undefined = struct,
+   seen: Set<SourceDef>,
+   treatAsOwnGate: boolean,
+   entryPointStruct: SourceDef | undefined,
    // See this function's doc. Non-empty only for the composite-member
    // recursion below, which passes the query-source base's own notes so
    // Malloy's by-reference copy of them onto the member's own `blockNotes`
-   // doesn't fold the base's gate into the member's own OR group.
-   excludeNotes: readonly AnnotationNote[] = [],
+   // doesn't fold the base's gate into the member's own group.
+   excludeNotes: readonly AnnotationNote[],
 ): GateEntry[] {
    if (!struct || !modelDef || seen.has(struct)) return [];
    seen.add(struct);
@@ -303,6 +432,7 @@ export function collectEntryPointGates(
    const label = (struct as { as?: string }).as ?? struct.name;
    const { exprs: ownExprs, fromAncestor } = gateExprsForOwnAnnotations(
       struct,
+      route,
       modelDef,
       excludeNotes,
    );
@@ -310,6 +440,7 @@ export function collectEntryPointGates(
       results.push({
          label,
          exprs: ownExprs,
+         route,
          // A gate CARRIED IN from a derivation base counts as authored
          // elsewhere even when `struct` IS the entry point.
          selfContained: fromAncestor || !treatAsOwnGate,
@@ -320,9 +451,9 @@ export function collectEntryPointGates(
       });
    }
 
-   // Joined sources are deliberately NOT walked — see this function's doc. A
-   // gate is evaluated on the ENTRY POINT only; reaching a gated source
-   // through `join_*` does not bring its gate along.
+   // Joined sources are deliberately NOT walked — see this function's doc: an
+   // author join does not bring its source's gate along, and a caller join is
+   // gated by its own pass.
 
    const duck = struct as unknown as {
       type: string;
@@ -339,12 +470,14 @@ export function collectEntryPointGates(
       const base = resolveQuerySourceBase(struct, modelDef);
       if (base) {
          results.push(
-            ...collectEntryPointGates(
+            ...collectEntryPointGatesForRoute(
                base,
                modelDef,
+               route,
                seen,
                false,
                entryPointStruct,
+               [],
             ),
          );
       } else {
@@ -355,9 +488,15 @@ export function collectEntryPointGates(
          // deny instead. An already-visited base is not this case: it still
          // resolves and takes the branch above, where the `seen` check makes
          // the recursion a no-op.
+         //
+         // Synthesized on BOTH routes — see `gate_registry_walk.ts`'s
+         // `ancestorGateExprs` doc for why own-wins-over-ancestor is decided
+         // per route, so one route's call cannot rely on the other having
+         // already reached (and denied at) this same branch.
          results.push({
             label,
             exprs: ["false"],
+            route,
             selfContained: true,
          });
       }
@@ -375,9 +514,10 @@ export function collectEntryPointGates(
       const resolved = duck.query?.compositeResolvedSourceDef;
       if (resolved) {
          results.push(
-            ...collectEntryPointGates(
+            ...collectEntryPointGatesForRoute(
                resolved,
                modelDef,
+               route,
                seen,
                false,
                entryPointStruct,
@@ -388,7 +528,7 @@ export function collectEntryPointGates(
          );
       }
       // The derivation's own inner-pipeline `join_one`s are NOT walked — same
-      // rule as every other join.
+      // rule as every other join here.
    }
 
    return results;
@@ -405,19 +545,21 @@ export function collectEntryPointGates(
  * the literal `"false"` — there is no real struct here to graft anything
  * onto, so this rejects outright rather than attempting a classification.
  *
- * `filterText` folds the entry's whole OR disjunction into ONE expression:
- * `exprs.map(e => "(" + e + ")").join(" or ")`. This is deliberate, not
- * incidental — it is what keeps the admin-override idiom working under
- * row-level enforcement. `#(authorize) "$ROLE = 'admin'"` OR'd with
- * `#(authorize) "org_id in $GROUPS"` becomes
- * `($ROLE = 'admin') or (org_id in $GROUPS)`, ONE filter that preserves OR
- * semantics exactly: an admin's `$ROLE` check makes the whole disjunction
- * (and therefore the row filter) constant-true, not a second gate an admin
- * must ALSO satisfy. A given-only predicate inside a `where:` is legal Malloy
- * and constant for the life of one request, so folding a given-only disjunct
- * into the same filter text changes nothing about what rows it admits.
+ * `filterText` folds the entry's whole conjunction into ONE expression:
+ * `exprs.map(e => "(" + e + ")").join(" and ")`. This is deliberate, not
+ * incidental — it is what keeps a repeated `#(authorize)` enforced as ONE row
+ * filter. `#(access_filter) org_id = $ORG` followed by `#(authorize) team_id in
+ * $TEAMS` becomes `(org_id = $ORG) and (team_id in $TEAMS)`, ONE filter that
+ * preserves AND semantics exactly: every term must admit a row for it to
+ * survive. An admin override is instead two extension sources over the same
+ * locked (`#(authorize) false`) base, each with its own conjunctive gate —
+ * `or` is refused everywhere in a gate body, so a disjunction is always two
+ * entry points, never a second arm of one expression. A given-only
+ * predicate inside a `where:` is legal Malloy and constant for the life of one
+ * request, so folding a given-only conjunct into the same filter text changes
+ * nothing about what rows it admits.
  *
- * Classification is memoized per `(cacheScope, graftTarget, filterText)` in
+ * Classification is memoized per `(cacheScope, route, graftTarget, filterText)` in
  * `deps.gateShapeCache` — see {@link GateClassificationDeps}'s doc for why
  * the cache is an explicit input, and `Model.gateShapeCache`'s doc for why
  * caching on the MODEL INSTANCE is what makes this correct across a package
@@ -447,8 +589,8 @@ export function collectEntryPointGates(
  * `graftScope` is `undefined` only when the caller has nothing to graft
  * against at all (no compiled model, or — for a notebook cell — no earlier
  * cell to graft onto); that always rejects here, same as an unresolvable
- * graft target — every gate is a row filter now, and a filter with nowhere to
- * attach cannot be enforced.
+ * graft target: an `#(access_filter)` is a filter, and a filter with nowhere
+ * to attach cannot be enforced.
  */
 export async function resolveGateShape(
    entry: GateEntry,
@@ -463,6 +605,15 @@ export async function resolveGateShape(
         condition: FilterCondition;
         /** The givens the gate compares. */
         givenNames: readonly string[];
+     }
+   | {
+        shape: "lock";
+        /** The compiled condition {@link decideLock} evaluates. */
+        condition: FilterCondition;
+        /** The givens the gate compares. */
+        givenNames: readonly string[];
+        /** Given id → name, resolved against the model the lift ran through. */
+        givenNamesById: ReadonlyMap<string, string>;
      }
    | { shape: "rejected"; cause?: RowLevelGateRejectionCause }
 > {
@@ -491,15 +642,25 @@ export async function resolveGateShape(
    );
    // No key to graft anything onto — an ad-hoc/ephemeral run target (an
    // independently recompiled `/compile` model, a notebook cell's `source:
-   // mine is base_locked extend {…}`) can fail this resolution. Every gate is
-   // a row filter now, and a filter with nowhere to attach cannot be
-   // enforced, so this rejects rather than attempting a fallback
-   // classification.
+   // mine is base_locked extend {…}`) can fail this resolution. Both routes
+   // need the lifted condition this target supplies, so this rejects rather
+   // than attempting a fallback classification.
    if (!graftTarget) {
       return { shape: "rejected" };
    }
    const filterText = gateFilterText(entry.exprs);
-   const cacheKey = `${graftScope.cacheScope}\u0000${graftTarget}\u0000${filterText}`;
+   // `entry.route` is in the key although the classification below never reads
+   // it: the route is applied AFTER the memo, at the return, so a shared entry
+   // cannot currently produce the wrong shape (pinned by
+   // `row_level_authorize.integration.spec.ts`'s "the two ROUTES do not
+   // collide"). It is here because the fail-closed `["false"]` sentinel is
+   // synthesized on BOTH routes for the same struct, so the two routes really
+   // do present identical (scope, target, text) — and the day any part of the
+   // classification starts reading the route, a shared entry would hand the
+   // lock the filter's answer, which is 200 with zero rows on a source nothing
+   // confirmed the caller may read. One key segment is cheaper than that
+   // depending on nobody noticing.
+   const cacheKey = `${graftScope.cacheScope}\u0000${entry.route}\u0000${graftTarget}\u0000${filterText}`;
 
    let cached = deps.gateShapeCache.get(cacheKey);
    if (!cached) {
@@ -573,7 +734,11 @@ export async function resolveGateShape(
       } else if (
          isBareFalseLiteral(condition.e as { node: string; e?: unknown })
       ) {
-         classification = { shape: "row_level", givenNames: [] };
+         classification = {
+            shape: "row_level",
+            givenNames: [],
+            givenNamesById: new Map(),
+         };
       } else {
          // The source-line form: `condition` is a genuine compiled predicate
          // tree (a comparison, `in`, `and`/`or`, …), not a bare field
@@ -626,9 +791,12 @@ export async function resolveGateShape(
                   detail: `this gate references \`${expansion.unresolvedPath}\`, which could not be resolved on the graft target`,
                };
             } else {
-               const givenNames = Array.from(expansion.givenIds)
-                  .map((id) => graftScope.modelDef.givens?.[id]?.name)
-                  .filter((name): name is string => !!name);
+               const givenNamesById = new Map<string, string>();
+               for (const id of expansion.givenIds) {
+                  const name = graftScope.modelDef.givens?.[id]?.name;
+                  if (name) givenNamesById.set(id, name);
+               }
+               const givenNames = Array.from(givenNamesById.values());
                // Belt-and-braces: every `$NAME` literally present in the
                // filter text the IR walk started from must appear among the
                // resolved names — a mismatch means the walk missed something
@@ -651,7 +819,11 @@ export async function resolveGateShape(
                         "this gate references a given id that does not resolve to a name on this model",
                   };
                } else {
-                  classification = { shape: "row_level", givenNames };
+                  classification = {
+                     shape: "row_level",
+                     givenNames,
+                     givenNamesById,
+                  };
                }
             }
          }
@@ -687,6 +859,17 @@ export async function resolveGateShape(
    if (cached.classification.shape === "rejected") {
       return { shape: "rejected", cause: cached.classification.cause };
    }
+   // Everything above — the lift, the given-id expansion, the model-surface
+   // re-check — is the same work for both routes; only the ANSWER differs, so
+   // the split is here rather than a second pass through any of it.
+   if (entry.route === AUTHORIZE_ROUTE) {
+      return {
+         shape: "lock",
+         condition: cached.condition,
+         givenNames: cached.classification.givenNames,
+         givenNamesById: cached.classification.givenNamesById,
+      };
+   }
    return {
       shape: "row_level",
       graftTarget,
@@ -700,17 +883,22 @@ export async function resolveGateShape(
  * The `modelDef.contents` KEY to graft a gate entry's condition onto, or
  * `undefined` if none resolves (⇒ the caller denies).
  *
- * `struct` here is always the RUN TARGET's own entry-point struct (see
- * {@link collectEntryPointGates}'s `entryPointStruct`) — never the struct a
- * chained gate's OWN annotations happened to be read off. That is what makes
- * this call site P0-safe BY CONSTRUCTION, not just by scoping which gates get
- * collected: the run target is the entry point by definition and is never a
- * source reached through a join, so grafting it can never make a joined
- * source's gate fire. Do not widen this to graft anything other than the run
- * target (or its resolved composite branch) — that reintroduces the exact
- * join-propagation leak this scoping closes: grafting a condition onto a
- * SourceDef propagates it into every joined copy of that source, firing a
- * gate P0 says must not fire.
+ * `struct` here is the entry-point struct of a gate that applies to THIS
+ * request: the run target (or its resolved composite branch — see
+ * {@link collectEntryPointGates}'s `entryPointStruct`, never the struct a
+ * chained gate's own annotations were read off), or a model source a
+ * CALLER-written join reaches (`Model.probeCallerJoinGates`). Grafting a
+ * condition onto a source propagates it into every copy compiled from the
+ * grafted model afterward, and that is why this is P0-safe: the grafted
+ * materializer is built per request gate set and only this request's text is
+ * recompiled against it, while an author join embedded in another model
+ * source kept its own copy from model load (spread-assign in
+ * `Model.buildGraftedMaterializer`). Do not widen it to a source that no gate
+ * of this request reaches — grafting every gated source up front would fire
+ * gates on author joins that must not fire. One author path IS filtered, the
+ * safe direction: a join through a named query over an IMPORTED source reads
+ * the object snapshot `Model.graftIntoNamedQuerySnapshots` grafts (over a
+ * same-file source the query holds a name, and stays unfiltered).
  *
  * If `struct` IS itself a `contents` entry, the entry point is graftED
  * DIRECTLY — this covers `Y is X extend {}` inheriting `X`'s gate (`Y` is the
@@ -820,7 +1008,7 @@ function findContentsKey(
  * `exclude` keeps this from re-matching a struct already visited in the
  * ancestor walk.
  */
-function findSourceByOwnAnnotationIdentity(
+export function findSourceByOwnAnnotationIdentity(
    struct: SourceDef,
    modelDef: ModelDef,
    exclude: Set<SourceDef>,
@@ -953,4 +1141,330 @@ export function computeGivenDeclaredTypes(
          )
          .map((g) => [g.name, g.type] as [string, string]),
    );
+}
+
+/** One resolved row-level filter, in the shape {@link GateEntry}'s row-level
+ *  classification produces. Named generically (not `AuthorizeGraftEntry`)
+ *  because `Model.probeEntryPointGates` once also pushed `#(partition)`
+ *  entries into this same list — see that method's doc for why the two
+ *  composed as one graft rather than two. */
+export type RowLevelGraftEntry = {
+   label: string;
+   graftTarget: string;
+   filterText: string;
+   condition: FilterCondition;
+   givenNames: readonly string[];
+   /** Set for a caller join's gate: where the graft must be proven to land. */
+   callerJoinPath?: CallerJoinPath;
+};
+
+/**
+ * Validate every entry point's EFFECTIVE `#(authorize)` body against the
+ * grammar ({@link ../service/authorize_grammar}'s `parseAuthorizeGrammarBody`),
+ * then — for each row-level term — that its field path does not reach
+ * through a fan-out join ({@link assertNoFanoutFieldPath}).
+ *
+ * Walks `authorizeMap` (own-or-inherited, from `extractSourcesFromModelDef`),
+ * not just `authorizeOwnNotes`: a source that inherits its gate by reference
+ * (Malloy copies the base's annotation onto a derivation with no annotation
+ * of its own) carries no note at ITS OWN level, so validating only own-level
+ * notes lets an inheriting entry point skip this check entirely while
+ * `ancestorGateExprs` still grafts the inherited text unvalidated — a
+ * grammar-banned gate then loads and enforces fail-open at that entry point.
+ *
+ * `onAdmitAllGate` reports each unconditional `true` a source actually
+ * DECLARES — the one body in the grammar that turns a gate off. Reported,
+ * never refused, and passed as a callback for the same reason as
+ * `validateAuthorizeProbes`'s `onRowLevelGateRejected`: this module stays out
+ * of the telemetry layer.
+ *
+ * "Declares" is decided by `attributedAuthorizeOwnNotes`, NOT by the
+ * presence-based `authorizeOwnNotes` the rest of this function runs on. The
+ * two differ exactly where it matters here: Malloy copies a base's annotation
+ * note objects onto a plain `extend {}`/`except:`/`accept:` derivation BY
+ * REFERENCE, so the presence map calls every such derivation an owner and one
+ * declared `true` would tick once per entry point that inherits it — the
+ * "function of model shape rather than of authoring decisions" this counter
+ * exists to avoid. It is a separate parameter rather than a swap because
+ * `source_extraction.ts`'s own doc warns that narrowing the presence map at
+ * the `"false"`-filter call site below turns a load refusal into a fail-open.
+ *
+ * Fired AFTER the coherence checks pass, so a model refused for
+ * `admit_all_with_sibling` (or any other cause) does not tick a counter for a
+ * gate that never becomes servable.
+ *
+ * `authorizeOwnNotes` still decides, per source, whether `authorizeMap`'s
+ * group is the source's OWN declaration (validate every expr, `"false"`
+ * included) or a purely inherited one (skip the literal sentinel `"false"`
+ * — see `gate_registry_walk.ts`'s `effectiveAncestorGateExprs` — which is a
+ * synthetic fail-closed marker for an unresolvable base, never authored
+ * text, and would otherwise misreport as a grammar violation). Also skips
+ * a retired quoted-string-form payload ({@link isLegacyQuotedPayload}):
+ * that refusal is deliberately atomic per DECLARING source only
+ * ({@link findLegacyStringGates}'s doc), so a base's own quoted form is
+ * refused when the base itself loads, not re-litigated here for every
+ * entry point that merely inherits it.
+ *
+ * Cross-term coherence ({@link assertAuthorizeGrammarTermsCoherent}) runs PER
+ * GROUP — never over every group at a source flattened together — EXCEPT for
+ * the groups this source itself OWNS, which are combined into ONE coherence
+ * call across BOTH routes before the per-group loop below. Each `groups`
+ * element still carries its own DECLARING source's notes (`AuthorizeMap`'s
+ * doc); a query-source base and its separately-resolved composite member are
+ * two different groups whose gates AND by design, so flattening THOSE before
+ * the coherence check would refuse a legal model the instant the two sources
+ * happened to share a given name or mix row/source scope. But when `struct`
+ * itself owns groups on BOTH routes (its own `#(authorize)` and its own
+ * `#(authorize)`), they are the SAME declaring source and must be
+ * checked together — that is the only way `deny_all_with_sibling` can catch
+ * `#(authorize) false` alongside this source's own
+ * `#(access_filter) org_id in $GROUPS`, since each is otherwise a single-route
+ * group with nothing else in it to conflict with.
+ */
+export function assertAuthorizeGrammarValid(
+   modelDef: ModelDef | undefined,
+   authorizeMap: AuthorizeMap,
+   authorizeOwnNotes: AuthorizeOwnNotesMap,
+   givenDeclaredTypes: ReadonlyMap<string, string>,
+   onAdmitAllGate?: (sourceName: string, route: string) => void,
+   attributedAuthorizeOwnNotes?: AuthorizeOwnNotesMap,
+): void {
+   if (!modelDef) return;
+   for (const [sourceName, groups] of authorizeMap) {
+      const struct = modelDef.contents[sourceName];
+      const ownGroupTerms: AuthorizeGrammarRoutedTerm[] = [];
+      const declaredAdmitAllRoutes: string[] = [];
+      for (const { route, exprs } of groups) {
+         const isOwn =
+            (authorizeOwnNotes.get(sourceName)?.get(route)?.length ?? 0) > 0;
+         const filteredExprs = exprs.filter(
+            (expr) =>
+               (isOwn || expr !== "false") && !isLegacyQuotedPayload(expr),
+         );
+         const groupTerms: AuthorizeGrammarRoutedTerm[] = [];
+         for (const expr of filteredExprs) {
+            const terms = parseAuthorizeGrammarBody(
+               sourceName,
+               expr,
+               givenDeclaredTypes,
+               route,
+            );
+            for (const term of terms) {
+               groupTerms.push({ term, route });
+               if (
+                  term.scope === "admit_all" &&
+                  (attributedAuthorizeOwnNotes?.get(sourceName)?.get(route)
+                     ?.length ?? 0) > 0
+               ) {
+                  declaredAdmitAllRoutes.push(route);
+               }
+               if (term.scope === "row_level" && isSourceDef(struct)) {
+                  assertNoFanoutFieldPath(
+                     sourceName,
+                     struct,
+                     term.fieldPath,
+                     term.fieldPathSegments,
+                  );
+               }
+            }
+         }
+         if (isOwn) {
+            ownGroupTerms.push(...groupTerms);
+         } else {
+            assertAuthorizeGrammarTermsCoherent(sourceName, groupTerms);
+         }
+      }
+      if (ownGroupTerms.length > 0) {
+         assertAuthorizeGrammarTermsCoherent(sourceName, ownGroupTerms);
+      }
+      for (const route of declaredAdmitAllRoutes) {
+         onAdmitAllGate?.(sourceName, route);
+      }
+   }
+}
+
+/** What stopped {@link fanoutSegment} from proving a path clean: it genuinely
+ *  hit a fan-out join, or it could not resolve the segment against the
+ *  struct at all — a distinct outcome deliberately given the same treatment
+ *  below, since an unresolvable segment is unknown, not safe. */
+type FanoutFinding = { segment: string; reason: "fanout" | "unresolved" };
+
+/**
+ * The first segment of `path` (all but its last, which is the compared field
+ * itself and never checked) that is either a fan-out join — `join_many`,
+ * `join_cross`, or a repeated record, which the IR also spells `join:
+ * "many"` — or does not resolve against the struct at all. `undefined` means
+ * the path resolves cleanly through only `join_one` hops all the way to its
+ * last segment.
+ *
+ * A segment that fails to resolve is NOT treated as "no fan-out here": this
+ * function cannot tell a genuine typo (which a later probe compile would
+ * catch on its own) from a resolution bug in its own caller — e.g. a
+ * segment carrying quote characters a real field's name never has — so both
+ * read as unknown, and unknown fails closed here rather than being assumed
+ * safe by a walk with no opinion on it.
+ */
+function fanoutSegment(
+   struct: SourceDef,
+   path: readonly string[],
+): FanoutFinding | undefined {
+   let current = struct;
+   for (let i = 0; i < path.length - 1; i++) {
+      const seg = path[i];
+      const field = (current.fields ?? []).find(
+         (f) => ((f as { as?: string }).as ?? f.name) === seg,
+      );
+      if (!field) return { segment: seg, reason: "unresolved" };
+      if (isJoined(field) && (field as { join?: string }).join !== "one") {
+         return { segment: seg, reason: "fanout" };
+      }
+      if (
+         !isSourceDef(field) &&
+         (field as { type?: string }).type !== "record" &&
+         (field as { type?: string }).type !== "array"
+      ) {
+         return { segment: seg, reason: "unresolved" };
+      }
+      current = field as unknown as SourceDef;
+   }
+   return undefined;
+}
+
+/**
+ * Refuse a row-level `#(access_filter)` term whose field path reaches through a
+ * fan-out join before its final segment — the entry row has many values for
+ * what follows, so there is no single key to compare against a given — or
+ * whose path this walk could not resolve against the struct at all, which
+ * fails the same way rather than being assumed safe. This is IR-level
+ * (needs the compiled struct's joins), which is why it lives here rather
+ * than in `./authorize_grammar`, which never sees one.
+ *
+ * `fieldPathSegments` (from the parsed `AuthorizeGrammarTerm`, already split
+ * on top-level dots with backticks stripped) is what this walks — never a
+ * fresh `fieldPath.split(".")`, which would both break on a literal dot
+ * inside a backtick-quoted segment and leave the backticks in place, so a
+ * quoted segment (`` `cost center` ``) could never match the field it
+ * actually names and this check would silently no-op. `fieldPath` (the
+ * original, backtick-and-all text) is kept only for the error message.
+ */
+export function assertNoFanoutFieldPath(
+   sourceName: string,
+   struct: SourceDef,
+   fieldPath: string,
+   fieldPathSegments: readonly string[],
+): void {
+   const finding = fanoutSegment(struct, fieldPathSegments);
+   if (finding === undefined) return;
+   const detail =
+      finding.reason === "fanout"
+         ? `which reaches through \`${finding.segment}\`, a fan-out join ` +
+           `(\`join_many\`/\`join_cross\`, or a repeated record) — the ` +
+           `entry row has many values for what follows, so there is no ` +
+           `single key to compare against a given. Gate on a field reached ` +
+           `only through \`join_one\` joins.`
+         : `whose segment \`${finding.segment}\` does not resolve against ` +
+           `this source — refused rather than assumed safe.`;
+   throw new AuthorizeGrammarError(
+      "fanout_path",
+      `Source "${sourceName}" declares an authorize gate on \`${fieldPath}\`, ${detail}`,
+   );
+}
+
+/**
+ * A source, top-level query, or the model itself whose IR carries a marker
+ * from a RETIRED annotation route (see `./authorize_grammar`'s
+ * `RETIRED_ROUTES`), described for {@link assertNoRetiredRouteMarkers}'s
+ * message. Checked on each own notes (the position the route's own resolver
+ * used to read) and, via {@link reachesRetiredRouteTagBelow}, everywhere
+ * else in a source's IR — `#(partition)`'s own removal is exactly the case
+ * this exists for: nothing inspects the route any more, but Malloy still
+ * parses it happily (its bracket routing is generic, there is no registry),
+ * so a leftover marker would otherwise load clean and serve every row.
+ *
+ * Sweeps three positions, not just `modelDef.contents`'s sources: a
+ * top-level `query:` statement (`NamedQueryDef`, which `modelDef.contents`
+ * also holds, keyed alongside sources but excluded by {@link isSourceDef})
+ * and the model's own file-level annotations ({@link modelAnnotations}) —
+ * `#(authorize)`'s equivalent misplaced-annotation check
+ * (`assertNoMisplacedAuthorizeAnnotations`) already covers both positions
+ * for its own route, and a marker in either position previously loaded
+ * clean here too, exactly as invisibly as one below a source's own line.
+ */
+export function collectRetiredRouteMarkers(
+   modelDef: ModelDef | undefined,
+): string[] {
+   const found: string[] = [];
+   if (!modelDef) return found;
+
+   const fileMatch = containsRetiredRouteTag(
+      ownLevelNoteTexts(modelAnnotations(modelDef)),
+   );
+   if (fileMatch) {
+      found.push(
+         `the model itself declares a retired \`##(${fileMatch})\` annotation`,
+      );
+   }
+
+   for (const [key, obj] of Object.entries(modelDef.contents)) {
+      const isQuery = (obj as { type?: string }).type === "query";
+      if (!isSourceDef(obj) && !isQuery) continue;
+      const label = (obj as { as?: string }).as ?? obj.name ?? key;
+      const noun = isQuery ? "query" : "source";
+      // Reads the full `inherits` chain, not just this level's own notes: a
+      // retired marker can live only on a base struct that is itself absent
+      // from `modelDef.contents` (reached solely via a transitive import),
+      // and `reachesRetiredRouteTagBelow` deliberately skips the root
+      // annotation chain (it is "below the struct level" by construction).
+      const ownMatch = containsRetiredRouteTag(
+         annotationTexts(
+            (obj as { annotations?: AnnotationsDef }).annotations,
+         ) ?? [],
+      );
+      if (ownMatch) {
+         found.push(
+            `${noun} "${label}" declares a retired \`#(${ownMatch})\` annotation`,
+         );
+         continue;
+      }
+      if (isQuery) {
+         // A named query's IR has no joins/fields of its own to walk below
+         // the struct level — its own annotations are the only place a
+         // marker could sit.
+         continue;
+      }
+      let belowMatch: string | undefined;
+      try {
+         belowMatch = reachesRetiredRouteTagBelow(obj);
+      } catch {
+         // An unread chain is "unknown", not "absent" — same posture as
+         // every other IR walk here. Name the route this list is built for,
+         // since the walk cannot say which one it was still looking for.
+         belowMatch = RETIRED_ROUTES[0];
+      }
+      if (belowMatch) {
+         found.push(
+            `source "${label}" carries a retired \`#(${belowMatch})\` ` +
+               `annotation somewhere in its IR (not on the source line itself)`,
+         );
+      }
+   }
+   return found;
+}
+
+/**
+ * Refuse a model load carrying any {@link collectRetiredRouteMarkers}
+ * finding. Modeled on `./authorize`'s `assertNoAuthorizeNearMisses`, but
+ * that function is authorize-specific by construction (all three of its
+ * branches key on the literal word "authorize") and cannot be reused here.
+ */
+export function assertNoRetiredRouteMarkers(found: readonly string[]): void {
+   if (found.length === 0) return;
+   throw new ModelCompilationError({
+      message:
+         `These sources carry a marker from a retired annotation route:\n` +
+         `${found.map((f) => `  - ${f}`).join("\n")}\n` +
+         `The route is no longer enforced by anything, so Malloy would ` +
+         `otherwise parse it, load the model clean, and serve every row as ` +
+         `if the marker were never written. Remove the annotation.`,
+   });
 }

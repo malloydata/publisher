@@ -1,0 +1,23 @@
+// Truth sources for the storefront-tour eval set.
+//
+// One source per RAW table the storefront model reads, and nothing else: no
+// measures, no joins, no renames, no labels, no doc tags. A golden must not be
+// able to inherit the bug it is meant to catch, so nothing here is imported
+// from storefront.malloy.
+//
+// A golden query that needs a join declares it inline, at the query, where a
+// reader can see it -- rather than the source carrying a relationship the
+// model also carries.
+//
+// `data/` is a COPY of the model's own `data/`, not a symlink: a relative link
+// does not survive Publisher installing the package, which copies the directory
+// into publisher_data/<env>/<pkg>/. So these bytes CAN drift from
+// examples/storefront/data if the example data is regenerated. That is caught
+// rather than silent -- verify_goldens.py re-derives every golden here before
+// every arm and refuses the run when a value has moved -- but regenerate both
+// together.
+
+source: t_order_items is duckdb.table('data/order_items.parquet')
+source: t_customers is duckdb.table('data/customers.parquet')
+source: t_products is duckdb.table('data/products.parquet')
+source: t_regions is duckdb.table('data/regions.csv')

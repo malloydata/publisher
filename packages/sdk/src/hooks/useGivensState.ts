@@ -107,6 +107,22 @@ function stableEntries(source: Record<string, string> | undefined) {
    return Object.entries(source ?? {}).sort(([a], [b]) => (a < b ? -1 : 1));
 }
 
+/**
+ * Same values for every DECLARED given, ignoring any other parameter a host
+ * carries in its URL (a tab, a view option). This is the echo test: whether the
+ * incoming URL says nothing about the controls that the last report did not.
+ */
+function sameDeclaredParams(
+   incoming: Record<string, string>,
+   reported: Record<string, string>,
+   declaredTypes: ReadonlyMap<string, string | undefined>,
+): boolean {
+   for (const name of declaredTypes.keys()) {
+      if (incoming[name] !== reported[name]) return false;
+   }
+   return true;
+}
+
 /** Same entries, same values: enough for state whose values are primitives. */
 function sameParams(
    a: Record<string, string>,
@@ -134,15 +150,84 @@ export function useGivensState({
       [declaredTypes, JSON.stringify(startingValues)],
    );
 
+   // The applied values as last reported to the host, so an incoming `params`
+   // can be recognised as this hook's own report coming back. Seeded on the
+   // first render below, once `applied` exists; null until then, so nothing on
+   // mount reads as an echo.
+   const lastReported = useRef<Record<string, string> | null>(null);
+
+   // The report BEFORE `lastReported`, kept only until the newer one is seen
+   // coming back.
+   //
+   // A report does not reach `params` in the same tick: the host navigates, the
+   // router commits, and `params` arrives a render or two later. Anything that
+   // re-renders this hook in between — a cell finishing, the host's callback
+   // changing identity with its location — sees the URL the report has not
+   // replaced yet. That URL is STALE, not new, and the echo test below matched
+   // only the newest report, so it read as an external push: the anchor moved,
+   // the edits were discarded, and `initial` put the value the reader had just
+   // cleared straight back into the control, and into the URL after it.
+   //
+   // Narrow by construction: it holds one report, only while that report is in
+   // flight, and is dropped the moment the newer one is observed. The cost is
+   // that an external push landing in that window whose values happen to equal
+   // the report being replaced is taken for the echo — the same values we were
+   // just showing, arriving in the few milliseconds before our own URL lands.
+   const priorReported = useRef<Record<string, string> | null>(null);
+
+   // The URL that defines the current starting point. This is `params` EXCEPT
+   // when `params` is our own report arriving back through the host, which is
+   // not a new starting point and must not be treated as one.
+   //
+   // The distinction is what lets a given with a starting value be cleared. A
+   // clear drops the name from the report, the host removes it from the URL and
+   // feeds that URL back in; read naively, that is a changed `params`, the
+   // edits are re-keyed away, `initial` recomputes from `startingValues` and
+   // still carries the value, and the control snaps back to what the reader
+   // just cleared. An echo is recognised by comparing the DECLARED names in
+   // `params` against the last report (a host may keep unrelated parameters of
+   // its own beside ours), and leaves the anchor where it was. Anything else, a
+   // drill landing on this document with new values, a Back button, a pasted
+   // link, moves it, and the edits are re-keyed exactly as before.
+   //
+   // A ref written during render, deliberately: the anchor is memory across
+   // renders, the update is idempotent, and putting it in state would cost a
+   // second render on every URL change for no observable difference.
+   //
+   // An echo is only an echo for the SAME document: a navigation to another
+   // document arrives with that document's URL, whatever the last report said,
+   // so the anchor follows `documentKey` unconditionally.
+   const anchor = useRef<{
+      documentKey: string | undefined;
+      params: Record<string, string> | undefined;
+   }>({ documentKey, params });
+   const echoes = (reported: Record<string, string> | null) =>
+      reported !== null &&
+      sameDeclaredParams(params ?? {}, reported, declaredTypes);
+   // The newest report has arrived, so the one it replaced is no longer in
+   // flight and stops counting as an echo.
+   if (echoes(lastReported.current)) priorReported.current = null;
+   if (
+      anchor.current.documentKey !== documentKey ||
+      (!sameParams(params ?? {}, anchor.current.params ?? {}) &&
+         !echoes(lastReported.current) &&
+         !echoes(priorReported.current))
+   ) {
+      anchor.current = { documentKey, params };
+   }
+   const anchorParams = anchor.current.params;
+   const startingValuesKey = JSON.stringify(startingValues);
+   const anchorParamsKey = JSON.stringify(anchorParams);
+
    // The URL beats the file's starting values, per the precedence above.
    const initial = useMemo(
       () =>
          paramsToGivens(
-            { ...(startingValues ?? {}), ...(params ?? {}) },
+            { ...(startingValues ?? {}), ...(anchorParams ?? {}) },
             declaredTypes,
          ),
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [declaredTypes, JSON.stringify(startingValues), JSON.stringify(params)],
+      [declaredTypes, startingValuesKey, anchorParamsKey],
    );
 
    // Which starting point the edits below belong to. A change means a different
@@ -167,29 +252,17 @@ export function useGivensState({
          JSON.stringify([
             documentKey ?? null,
             stableEntries(startingValues),
-            stableEntries(params),
+            stableEntries(anchorParams),
          ]),
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [documentKey, JSON.stringify(startingValues), JSON.stringify(params)],
+      [documentKey, startingValuesKey, anchorParamsKey],
    );
 
-   // KNOWN LIMITATION, latent today. A given that has a starting value cannot be
-   // cleared: `setGiven(name, null)` drops the key, the report omits it, the host
-   // removes it from the URL, `initial` recomputes from `startingValues` and
-   // still carries it, `initialKey` therefore changes, the edits are discarded as
-   // stale, and the control snaps back to the value the reader just cleared.
-   //
-   // Not reachable yet: no server populates `startingGivens`, and deliberately
-   // not fixed here, because the fix has to tell our OWN echo of the URL (which
-   // must not discard edits) from an externally pushed URL such as a drill
-   // arriving (which must), and that is the one piece of this hook the drill path
-   // depends on and is covered by live tests. Getting it wrong breaks something
-   // that works to fix something nothing can reach.
-   //
-   // The intended shape, for whoever makes it reachable: compare the incoming
-   // `params` against `lastReported` below, treat a match as our own echo, and
-   // keep the edits (and their key) across it. An explicit `cleared` set on
-   // `Edits` is the alternative and needs the same echo test to survive.
+   // Keyed on the anchored URL rather than on `params` directly: see `anchor`
+   // above. That is what makes a given with a starting value clearable, since
+   // the host echoing the cleared URL back no longer reads as a new starting
+   // point. It was a documented limitation while no server populated
+   // `startingGivens`; dashboards and notebooks both do now.
    //
    // Only the user's edits are state; `initial` is read through, not copied in.
    //
@@ -279,10 +352,28 @@ export function useGivensState({
       () => givensToParams(applied, declaredTypes),
       [applied, declaredTypes],
    );
-   const lastReported = useRef<Record<string, string>>(appliedParams);
+   if (lastReported.current === null) lastReported.current = appliedParams;
+   // Recorded only when the report is actually DELIVERED. A surface withholds
+   // the callback while it is still loading — `Notebook` passes undefined until
+   // the document has arrived, so that a report made in the window where it
+   // does not yet know which givens exist cannot tell the host to clear
+   // parameters belonging to the notebook then arriving — and a value recorded
+   // in that window is remembered as reported without the host ever hearing it.
+   //
+   // That is not merely a missed report, because the echo test above reads this
+   // same record: the host's URL still holds the old value, the record says the
+   // new one, so the next `params` fails the echo test, the anchor moves, and
+   // the edits are discarded as stale. Clearing a control while the cells were
+   // re-running put the cleared value straight back in the box.
+   //
+   // The cost is the case this guard was briefly dropped for: a host that
+   // writes the URL from `applied` directly without registering the callback
+   // never echoes, so a given with a starting value is not clearable there.
+   // Both Console pages register it, as does any host using `useGivenUrlParams`.
    useEffect(() => {
       if (!onParamsChange) return;
-      if (sameParams(lastReported.current, appliedParams)) return;
+      if (sameParams(lastReported.current ?? {}, appliedParams)) return;
+      priorReported.current = lastReported.current;
       lastReported.current = appliedParams;
       onParamsChange(appliedParams);
    }, [appliedParams, onParamsChange]);

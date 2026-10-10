@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import fs from "fs/promises";
+import path from "path";
+import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 
 /**
- * The notebook's Parameters panel, now that its values live in the URL.
+ * The notebook's Filters panel, now that its values live in the URL.
  *
  * Runs against `governed-analytics`, which is the only shipped package whose
  * model declares `given:`, `REGION :: filter<string>` and
@@ -15,7 +18,33 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  * unit tests rather than here. Do not read a green run here as evidence that
  * the multiselect works end to end.
  */
-const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/orders.malloynb`;
+const FIXTURE_NOTEBOOK = "test_givens_url_notebook.malloynb";
+const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/${FIXTURE_NOTEBOOK}`;
+const PKG_DIR = path.resolve(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "../../../server/publisher_data/examples/governed-analytics",
+);
+// `.malloynb` is deprecated and the examples no longer ship one, so this suite
+// writes the notebook it drives and removes it afterwards.
+const NOTEBOOK_SOURCE = `>>>markdown
+# Governed analytics — interactive controls
+
+>>>malloy
+import "orders.malloy"
+
+>>>malloy
+run: sales -> overview
+
+>>>malloy
+run: sales -> by_region
+`;
+
+async function reloadPackage(baseURL: string): Promise<void> {
+   const res = await fetch(
+      `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.governed}?reload=true`,
+   );
+   if (!res.ok) throw new Error(`Package reload failed: ${res.status}`);
+}
 
 /**
  * A count that has stopped moving, rather than the first count seen.
@@ -57,12 +86,24 @@ async function resultsText(page: Page): Promise<string> {
 /** The panel is only rendered once the notebook's sources have loaded. */
 async function openNotebook(page: Page, search = "") {
    await page.goto(`${NOTEBOOK}${search}`);
-   await expect(page.getByText("Parameters", { exact: true })).toBeVisible({
+   await expect(page.getByText("Filters", { exact: true })).toBeVisible({
       timeout: 60_000,
    });
 }
 
 test.describe("notebook givens are URL-addressable", () => {
+   test.beforeAll(async ({ baseURL }) => {
+      await fs.writeFile(path.join(PKG_DIR, FIXTURE_NOTEBOOK), NOTEBOOK_SOURCE);
+      await reloadPackage(baseURL!);
+   });
+
+   test.afterAll(async ({ baseURL }) => {
+      await fs
+         .unlink(path.join(PKG_DIR, FIXTURE_NOTEBOOK))
+         .catch(() => undefined);
+      await reloadPackage(baseURL!).catch(() => undefined);
+   });
+
    test("renders a control per declared given, with its description", async ({
       page,
    }) => {
@@ -196,7 +237,7 @@ test.describe("notebook givens are URL-addressable", () => {
       // the reader had arrived on. Browser-level, so it is pinned here rather
       // than in a unit test.
       await page.goto(`${NOTEBOOK}#cell-2`);
-      await expect(page.getByText("Parameters", { exact: true })).toBeVisible({
+      await expect(page.getByText("Filters", { exact: true })).toBeVisible({
          timeout: 60_000,
       });
 

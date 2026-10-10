@@ -11,10 +11,12 @@ test.describe("environments — read", () => {
       await gotoHome(page);
    });
 
-   test(`lists the ${DEFAULT_ENV} environment card`, async ({ page }) => {
+   test(`lists the ${DEFAULT_ENV} environment`, async ({ page }) => {
       await gotoHome(page);
       await expect(
-         page.getByRole("heading", { name: DEFAULT_ENV, level: 6 }),
+         page
+            .getByRole("region", { name: "Environments" })
+            .getByRole("button", { name: DEFAULT_ENV, exact: true }),
       ).toBeVisible();
    });
 
@@ -37,7 +39,7 @@ test.describe("environments — mutable CRUD", () => {
    test("Create New Environment button is present", async ({ page }) => {
       await gotoHome(page);
       await expect(
-         page.getByRole("button", { name: "Create New Environment" }),
+         page.getByRole("button", { name: "Add environment" }),
       ).toBeVisible();
    });
 
@@ -69,25 +71,23 @@ test.describe("environments — mutable CRUD", () => {
       await gotoHome(page);
 
       // --- Create ---
-      await page
-         .getByRole("button", { name: "Create New Environment" })
-         .click();
+      await page.getByRole("button", { name: "Add environment" }).click();
       const createDialog = page.getByRole("dialog", {
-         name: "Create New Environment",
+         name: "New environment",
       });
       await expect(createDialog).toBeVisible();
-      await createDialog.getByLabel("Environment Name").fill(name);
+      await createDialog.getByLabel("Name").fill(name);
+      await createDialog.getByLabel("Description").fill(description);
       await createDialog
-         .getByLabel("Environment Description")
-         .fill(description);
-      await createDialog
-         .getByRole("button", { name: "Create Environment" })
+         .getByRole("button", { name: "Create environment" })
          .click();
       await expect(createDialog).toBeHidden();
 
-      // Verify the new card (and its description) rendered on Home.
-      const newCardHeading = page.getByRole("heading", { name, level: 6 });
-      await expect(newCardHeading).toBeVisible();
+      // Verify the new row (and its description) rendered on Home.
+      const newRow = page
+         .getByRole("region", { name: "Environments" })
+         .getByRole("button", { name, exact: true });
+      await expect(newRow).toBeVisible();
       await expect(page.getByText(description)).toBeVisible();
 
       // --- Edit ---
@@ -95,11 +95,11 @@ test.describe("environments — mutable CRUD", () => {
          .getByRole("button", { name: `Environment actions for ${name}` })
          .dispatchEvent("click");
       await page.getByRole("menuitem", { name: "Edit" }).click();
-      const editDialog = page.getByRole("dialog", { name: "Edit Environment" });
+      const editDialog = page.getByRole("dialog", { name: "Edit environment" });
       await expect(editDialog).toBeVisible();
-      const descField = editDialog.getByLabel("Environment Description");
+      const descField = editDialog.getByLabel("Description");
       await descField.fill(editedDescription);
-      await editDialog.getByRole("button", { name: "Save Changes" }).click();
+      await editDialog.getByRole("button", { name: "Save changes" }).click();
       await expect(editDialog).toBeHidden();
       await expect(page.getByText(editedDescription)).toBeVisible();
 
@@ -109,13 +109,15 @@ test.describe("environments — mutable CRUD", () => {
          .dispatchEvent("click");
       await page.getByRole("menuitem", { name: "Delete" }).click();
       const deleteDialog = page.getByRole("dialog", {
-         name: "Delete Environment",
+         name: "Delete environment",
       });
       await expect(deleteDialog).toBeVisible();
       await expect(deleteDialog).toContainText(name);
-      await deleteDialog.getByRole("button", { name: "Delete" }).click();
+      await deleteDialog
+         .getByRole("button", { name: "Delete environment" })
+         .click();
       await expect(deleteDialog).toBeHidden();
-      await expect(newCardHeading).toHaveCount(0);
+      await expect(newRow).toHaveCount(0);
    });
 });
 
@@ -129,7 +131,7 @@ test.describe("environments — mutability parity with /api/v0/status", () => {
 
       await gotoHome(page);
       await expect(
-         page.getByRole("button", { name: "Create New Environment" }),
+         page.getByRole("button", { name: "Add environment" }),
       ).toHaveCount(expected);
       await expect(
          page.getByRole("button", {

@@ -18,7 +18,7 @@ import {
    pending,
    serverWrapper,
 } from "../../../test/serverProvider";
-import type { DashboardManifest } from "../../client";
+import type { CompiledModel, DashboardManifest } from "../../client";
 
 const getDashboard = mock(
    (
@@ -36,10 +36,18 @@ const executeQueryModel = mock(
       _request: { versionId?: string; givens?: Record<string, string> },
    ) => pending(),
 );
+const getModel = mock(
+   (
+      _environmentName: string,
+      _packageName: string,
+      _modelPath: string,
+      _versionId?: string,
+   ) => pending<{ data: CompiledModel }>(),
+);
 
 mockServerProvider({
    dashboards: { getDashboard },
-   models: { executeQueryModel },
+   models: { executeQueryModel, getModel },
 });
 
 // Imported after the stub is registered: a static import would hoist above it.
@@ -70,6 +78,8 @@ beforeEach(() => {
    getDashboard.mockImplementation(() => pending());
    executeQueryModel.mockReset();
    executeQueryModel.mockImplementation(() => pending());
+   getModel.mockReset();
+   getModel.mockImplementation(() => pending());
 });
 
 describe("the manifest fetch", () => {
@@ -151,9 +161,9 @@ describe("the version reaches what the manifest drives", () => {
    it("runs the tile's query against the same version", async () => {
       render(dashboardAt("v2"), { wrapper: serverWrapper });
 
-      await waitFor(() => expect(cacheKeys("dashboardTile").length).toBe(1));
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(1));
       expect(tileRequest()?.versionId).toBe("v2");
-      expect(cacheKeys("dashboardTile")[0]).toContain('"v2"');
+      expect(cacheKeys("queryResult")[0]).toContain('"v2"');
    });
 
    it("runs every composite tile against the same version", async () => {
@@ -171,9 +181,8 @@ describe("the version reaches what the manifest drives", () => {
 
       render(dashboardAt("v2"), { wrapper: serverWrapper });
 
-      await waitFor(() => expect(cacheKeys("dashboardTile").length).toBe(2));
-      for (const key of cacheKeys("dashboardTile"))
-         expect(key).toContain('"v2"');
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(2));
+      for (const key of cacheKeys("queryResult")) expect(key).toContain('"v2"');
    });
 
    it("runs the control's suggest query against the same version", async () => {
@@ -195,7 +204,7 @@ describe("the version reaches what the manifest drives", () => {
       const { rerender } = render(dashboardAt("v1"), {
          wrapper: serverWrapper,
       });
-      await waitFor(() => expect(cacheKeys("dashboardTile").length).toBe(1));
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(1));
 
       fireEvent.change(await screen.findByLabelText("REGION"), {
          target: { value: "CA" },
@@ -206,11 +215,26 @@ describe("the version reaches what the manifest drives", () => {
 
       rerender(dashboardAt("v2"));
 
-      await waitFor(() => expect(cacheKeys("dashboardTile").length).toBe(3));
-      const v2 = cacheKeys("dashboardTile").filter((key) =>
-         key.includes('"v2"'),
-      );
+      await waitFor(() => expect(cacheKeys("queryResult").length).toBe(3));
+      const v2 = cacheKeys("queryResult").filter((key) => key.includes('"v2"'));
       expect(v2).toHaveLength(1);
       expect(v2[0]).not.toContain("CA");
+   });
+
+   it("offers no Explore button on a tile", async () => {
+      getDashboard.mockImplementation(() =>
+         Promise.resolve({
+            data: {
+               ...manifest,
+               query: undefined,
+               tiles: [{ query: "by_month" }],
+            },
+         }),
+      );
+
+      render(dashboardAt(), { wrapper: serverWrapper });
+
+      await screen.findByLabelText("REGION");
+      expect(screen.queryByRole("button", { name: /^Explore / })).toBeNull();
    });
 });

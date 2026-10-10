@@ -2,12 +2,47 @@
 // SPDX-License-Identifier: MIT
 
 import os from "os";
+import path from "path";
 export const API_PREFIX = "/api/v0";
 export const README_NAME = "README.md";
 export const PUBLISHER_CONFIG_NAME = "publisher.config.json";
 export const PACKAGE_MANIFEST_NAME = "publisher.json";
+/**
+ * Where an environment keeps the server's own records of where it installed
+ * each package from: `<environment>/.install-records/<package>.json`. Outside
+ * every package directory, so nothing a package's content carries, downloaded
+ * or added from a directory, can plant one; a reload trusts the record as the
+ * source to re-fetch, and a `location` an author writes into `publisher.json`
+ * is never read as one.
+ */
+export const PACKAGE_INSTALL_RECORDS_DIR = ".install-records";
+
+export function installRecordPath(
+   environmentPath: string,
+   packageName: string,
+): string {
+   return path.join(
+      environmentPath,
+      PACKAGE_INSTALL_RECORDS_DIR,
+      `${packageName}.json`,
+   );
+}
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
+
+/**
+ * Conventional name for the model file that declares a package's published
+ * surface. When a package root holds one and its publisher.json declares no
+ * `explores`, the discovery surface is defaulted to this file, so what it
+ * `export { ... }`s is what the package lists and what callers may query.
+ *
+ * A fixed name rather than a configurable one, matching Malloyyo, whose project
+ * entry point is the same hardcoded filename. The point of a convention is that
+ * a reader can predict a package's entry point without opening its manifest,
+ * which only holds if there is exactly one place to look. See
+ * {@link resolveExplores}.
+ */
+export const INDEX_MODEL_NAME = "index.malloy";
 
 /**
  * Normalize a package-relative model path so author-written `explores`
@@ -104,5 +139,12 @@ export const DEFAULT_QUERY_TIMEOUT_MS = 300_000;
  * memory budgets should lower it.
  */
 export const DEFAULT_MAX_CONCURRENT_QUERIES = 32;
+/**
+ * Default cap on open database sessions for one plain (non-proxied) Postgres
+ * connection in one publisher process. Override at startup via
+ * `PUBLISHER_POSTGRES_POOL_MAX`. Kept small because a role's CONNECTION LIMIT
+ * is shared by every pod serving the environment.
+ */
+export const DEFAULT_POSTGRES_POOL_MAX = 5;
 export const TEMP_DIR_PATH = os.tmpdir();
 export const PUBLISHER_DATA_DIR = "publisher_data";

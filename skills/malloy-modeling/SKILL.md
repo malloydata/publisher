@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # STOP - READ BEFORE WRITING ANY MALLOY CODE
 
-> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering`.
+> **AI AGENTS: You MUST review this file before writing Malloy code.** Cross-skill references below use logical `skill:` names; load the referenced skill before acting. Before writing code, also read the gotcha skills: `skill:malloy-gotchas-modeling`, `skill:malloy-queries`, and `skill:malloy-charts`.
 
 ## Pre-Flight Checklist
 
@@ -18,9 +18,9 @@ SPDX-License-Identifier: MIT
    - Modelling **a database with no package yet**: `get_context` has nothing to return, so use `search_database_schema` instead. It walks the connection's schemas and tables, ranks them against a plain-English description, and gives you each table's columns plus the `source:` line to start from. Take those names verbatim into step 5.
    Never guess field names either way.
 2. **Search docs proactively**: call `search_malloy_docs` BEFORE writing unfamiliar patterns (window functions, query-based sources, pipelines). Don't guess. Malloy syntax is specific and SQL intuition is often wrong.
-3. **Use `skill:malloy-patterns`** to discover available doc topics (YoY, cohorts, rendering, window functions).
+3. **Search by topic name.** `search_malloy_docs` takes plain topics such as "window functions", "comparing timeframes", "cohort analysis", "percent of total", "histogram", "nesting", "rendering".
 4. **Check diagnostics** after writing: fix the FIRST error first, errors cascade.
-5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-gotchas-queries`, and `skill:malloy-gotchas-rendering` prevent the most common mistakes.
+5. **Read the gotcha skills**: `skill:malloy-gotchas-modeling`, `skill:malloy-queries`, and `skill:malloy-charts` prevent the most common mistakes.
 
 **Quick syntax reminders:**
 1. **Backtick reserved words:** `` `Date` ``, `` `Hour` ``, `` `Timestamp` ``, `` `Type` ``, `` `number` ``, `` `source` ``
@@ -54,7 +54,7 @@ Keep it compact, with these sections:
 
 ## 8-Step Modeling Workflow
 
-The agent orchestrates all steps. Steps marked **(user)** pause for input. Each step has a dedicated skill with full instructions. Read each step's skill **before starting that step**, including the decision skills for steps 1–4 (`skill:malloy-discover`, `skill:malloy-scope`, `skill:malloy-define`). They govern what the model says; skipping them to reach the build skills is how unreviewed business logic ships.
+The agent orchestrates all steps. Steps marked **(user)** pause for input. Each step has a dedicated skill with full instructions. Read each step's skill **before starting that step**, including the decision skills for steps 1–4 (`skill:malloy-discover`, `skill:malloy-define`). They govern what the model says; skipping them to reach the build skills is how unreviewed business logic ships.
 
 **A field is not complete until it has its definition, `#(doc)` tag, and rendering tags, and any threshold or business convention in it is user-confirmed, distribution-derived, or explicitly flagged in its `#(doc)`** (see `skill:malloy-document` § Mark conventions as conventions). Documentation is part of defining a field, not a separate activity. Read `skill:malloy-document` for full documentation standards (doc string writing, tag ordering).
 
@@ -66,13 +66,13 @@ DISCOVER → SCOPE → SOURCES → DEFINITIONS → BUILD BASE → BUILD JOINED �
 | Step | Skill | What Happens |
 |------|-------|-------------|
 | 1. Discover | `skill:malloy-discover` | Read the model and data; scan sources, fields, distributions; detect prior art. With no package yet, start from `search_database_schema` to find the tables in the connection |
-| 2. Propose Scope | `skill:malloy-scope` | Present findings, user selects focus |
+| 2. Propose Scope | `skill:malloy-define` (Propose the analytical scope) | Present findings, user selects focus |
 | 3. Propose Sources | `skill:malloy-define` | Propose source plan, user confirms architecture |
 | 4. Propose Definitions | `skill:malloy-define` | Propose fields per base source, user confirms logic |
 | 5. Build Base Sources | `skill:malloy-model` | Write fully documented base source files (one per table), check diagnostics. Read `skill:malloy-document` for doc standards. |
 | 6. Build Joined Sources | `skill:malloy-model` | Write fully documented joined source files, validate. Read `skill:malloy-document` for doc standards. |
 | 7. Review | (none) | Present the review checklist below; user confirms or corrects |
-| 8. Curate | `skill:malloy-model` | Propose access controls (`explores`, `queryableSources`, access modifiers); always propose, the user decides whether to apply |
+| 8. Curate | `skill:malloy-model` | Propose the published surface (an `index.malloy` with `export { ... }`) and access controls (access modifiers, gates); always propose, the user decides whether to apply |
 
 ### The pauses are the point
 
@@ -96,7 +96,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 **Two paths to a model: both produce the same fully documented result:**
 - **Schema-first:** "Model my data" → 8-step workflow above using the relevant skills
 - **Analysis-first:** a data question arrives before any model exists → `skill:malloy-model-as-you-go`. It answers the question with `skill:malloy-analysis`, then codifies what the answer assumed into the model, one question at a time, confirming binding decisions first. The model exists by the end; there is no separate formalize step.
-- **Open-ended exploration** with no intent to keep anything: `skill:malloy-analyze`. If it turns into something worth keeping, formalize via `skill:malloy-model` (`reference/analysis-to-model.md`).
+- **Open-ended exploration** with no intent to keep anything: `skill:malloy-analysis` (its "no specific question" branch). If it turns into something worth keeping, formalize via `skill:malloy-model` (`reference/analysis-to-model.md`).
 
 ## Agent Behavior
 
@@ -108,7 +108,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 
 **Present choices as A/B/C.** When asking the user to choose, use lettered options with one-line descriptions. Mark your recommendation.
 
-**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. Suggest notebooks at the end.
+**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. **Every source you write gets a source-level `#(doc)` description and a stated grain (`primary_key:` or "one row per ..."), including intermediate steps such as a de-duplication or clean-up source. Or fold the clean-up into the one source it feeds, so there is nothing undescribed left in the package.** Build a dashboard or notebook only when the user asks for one.
 
 ## Route by Intent
 
@@ -116,8 +116,8 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 |-------------|----------|
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
 | "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
-| "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analyze` (EDA) |
-| "Build a dashboard", "create views" on existing model | `skill:malloy-analyze` (views), plus `skill:malloy-charts` or `skill:malloy-notebooks` as needed |
+| "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analysis` (no specific question) |
+| "Build a dashboard", "create views" on existing model | `skill:malloy-dashboards` for a saved dashboard; `skill:malloy-charts` for views in the model. A notebook (`skill:malloy-notebooks`) only when the user asks for one or the package already has them |
 | "Build a model but not sure what metrics" | `skill:malloy-model-as-you-go`: answer their first real question, codify what it assumed, repeat |
 
 **If the user's first message is a data question** (not "build me a model"), route to `skill:malloy-model-as-you-go`. It answers with `skill:malloy-analysis` and grows the model from what each answer assumed, so there is nothing to formalize afterwards.
@@ -126,12 +126,12 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 
 These supplemental skills may also be loaded as needed:
 
-- **`skill:malloy`**: Index of Malloy skills and routing guide
-- **`skill:malloy-debug`**: Fix compile errors and interpret diagnostics
+- **`skill:malloy-getting-started`**: routing guide to the other Malloy skills
+- **`skill:malloy-gotchas-modeling`**: also the place to fix compile errors and read diagnostics
 
 ## Publisher MCP Tools
 
-Ensure the Publisher MCP tools are configured before modeling. No server yet? `skill:malloy-getting-started` covers setup, including the one-command scaffolder (`npm create @malloy-publisher/malloy-package@latest <name>`) and why local authoring needs `--watch-env <env>`: start the server without it and your saved edits are never read.
+Modeling needs these tools, or their REST equivalents when you run unattended; `skill:malloy-getting-started` section 0 covers both cases. No server yet? `skill:malloy-getting-started` covers setup, including the one-command scaffolder (`npm create @malloy-publisher/malloy-package@latest <name>`) and why local authoring needs `--watch-env <env>`: start the server without it and your saved edits are never read.
 
 | Tool | Purpose |
 |------|---------|
@@ -149,7 +149,7 @@ Never guess field names. Ground yourself with `get_context` to see the sources a
 Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until you reload the package. The loop is:
 
 1. **Validate** the change with `compile_model`, picking the scope that matches what you are doing:
-   - Adding a new definition or query: the default (`scope: "append"`) compiles your text in the model's namespace. Note its diagnostic positions land in the model-plus-your-text concatenation.
+   - Adding a new definition or query: the default (`scope: "append"`) compiles your text in the model's namespace. Note its diagnostic positions land in the model-plus-your-text concatenation. Append checks your text against what the model already publishes, so it refuses text that declares its own data root -- `import`, `connection.table(...)` and `connection.sql(...)` are rejected. A `source:` line handed to you by `search_database_schema` is exactly that shape, so validate it at `file` or `package` scope instead.
    - **Editing an existing definition: `scope: "file"`**, with the whole edited file as `source`. It compiles your text AS the file (append would collide with "Cannot redefine"), and diagnostics land at the true line numbers of your text.
    - Before saving a change other files import: `scope: "package"` with the edited file as `source` runs reload's worker compiler over every `.malloy` and `.malloynb` file against your edit, so a rename that breaks an importer surfaces now instead of at reload. Each diagnostic carries `model`, the file it points at; files hidden from discovery can appear. If `modelPath` does not exactly match an existing file, a warning says the source was treated as new.
 2. **Save** it to the package's model file.
@@ -213,5 +213,5 @@ top, bottom, desc, asc, row, range, current, window, rank
 The following skills contain detailed WRONG/RIGHT patterns that prevent the most common Malloy errors. **Read them before writing code:**
 
 - **`skill:malloy-gotchas-modeling`**: Reserved words, NULL checks, date functions, type casts, rename pitfalls, query-based source gotchas, `conn.sql()` anti-pattern
-- **`skill:malloy-gotchas-queries`**: Chart constraints, aggregate filters, joined field aliasing, time truncation vs extraction
-- **`skill:malloy-gotchas-rendering`**: Tag syntax, scale rules, sparkline setup, big_value patterns
+- **`skill:malloy-queries`**: Syntax and the common compile errors: chart constraints, aggregate filters, joined field aliasing, method syntax, time truncation vs extraction
+- **`skill:malloy-charts`**: Chart selection, tag syntax, scale rules, sparkline setup, big_value patterns

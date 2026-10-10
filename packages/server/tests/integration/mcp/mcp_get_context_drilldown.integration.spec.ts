@@ -51,7 +51,7 @@ interface Entity {
 
 interface SourceCard {
    source_info: {
-      resource_id: { source: string };
+      resource_id: { source: string; model_path: string };
       docs?: string;
       joins: unknown[];
    };
@@ -107,24 +107,38 @@ describe.serial("get_context drill-down (E2E, real model)", () => {
          source: "products",
       });
 
-      // One card, for the source that was asked for.
-      expect(sources).toHaveLength(1);
-      expect(sources[0].source_info.resource_id.source).toBe("products");
-      expect(sources[0].source_info.docs).toContain("Catalog of products");
+      // A drill-down names a source, not a file, and `products` resolves in
+      // storefront.malloy and in the two files importing it — so it comes back
+      // once per resolving path, each card carrying a model_path that actually
+      // compiles it. Pinned as "every card is products, paths are distinct"
+      // rather than as a count, so adding a file that imports the model does
+      // not break the test.
+      expect(sources.length).toBeGreaterThan(0);
+      const paths = sources.map((c) => c.source_info.resource_id.model_path);
+      expect(new Set(paths).size).toBe(paths.length);
+      expect(
+         sources.every((c) => c.source_info.resource_id.source === "products"),
+      ).toBe(true);
 
-      // The regression this pins: an empty card meant an agent following the
-      // documented drill-down could never learn a source's fields.
-      const entities = sources[0].entities ?? [];
-      expect(entities.length).toBeGreaterThan(0);
+      // Every card is the same source, so every card carries its docs and its
+      // entities: a caller that picks any one of them is equally served.
+      for (const card of sources) {
+         expect(card.source_info.docs).toContain("Catalog of products");
 
-      // The declared measure comes back, carrying the #(doc) from the model —
-      // proof this reached real annotations and not a fixture's.
-      const measure = entities.find((e) => e.name === "product_count");
-      expect(measure?.entity_type).toBe("measure");
-      expect(measure?.description).toBe("Distinct products");
+         // The regression this pins: an empty card meant an agent following
+         // the documented drill-down could never learn a source's fields.
+         const entities = card.entities ?? [];
+         expect(entities.length).toBeGreaterThan(0);
 
-      // A neighbouring source's entities stay out.
-      expect(entities.some((e) => e.name === "customer_count")).toBe(false);
+         // The declared measure comes back, carrying the #(doc) from the model
+         // — proof this reached real annotations and not a fixture's.
+         const measure = entities.find((e) => e.name === "product_count");
+         expect(measure?.entity_type).toBe("measure");
+         expect(measure?.description).toBe("Distinct products");
+
+         // A neighbouring source's entities stay out.
+         expect(entities.some((e) => e.name === "customer_count")).toBe(false);
+      }
    });
 
    it("surfaces a source's views", async () => {

@@ -72,9 +72,33 @@ package format, see [packages.md](packages.md).
 
 ## Environment-level DuckDB connections
 
-You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
+You can also declare a top-level DuckDB connection at the environment level. Publisher owns the low-level DuckDB settings: the database file, working directory, filesystem and network policy, extension loading, temp directories, and resource limits. A connection declares only what the DuckDB instance should read, in one or both of two ways:
 
-An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+- **`attachedDatabases`** declares foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) for the DuckDB instance to `ATTACH`, so queries can reference them. Publisher writes the `ATTACH` and the secrets for you.
+- **`setupSQL`** is a script of DuckDB statements that runs when the connection is set up, for anything `attachedDatabases` does not cover, such as a DuckLake catalog kept in a local file. It is off by default; see below.
+
+An env-level DuckDB connection must declare at least one of the two. If you need neither, you don't need an env-level DuckDB connection at all: each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+
+### `setupSQL`
+
+`setupSQL` runs arbitrary DuckDB statements on the server, which can write files on the host and install and load extensions, so a deployment has to turn it on. Set `PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true` ([configuration.md](configuration.md)) to accept it. Unset, a connection carrying `setupSQL` is refused at config load, on create and update, and by the connection test. Under `EXTENSION_FETCH_POLICY=local-only` it is refused either way.
+
+```json
+{
+  "name": "orca",
+  "type": "duckdb",
+  "duckdbConnection": {
+    "setupSQL": "ATTACH 'ducklake:/srv/lake/orca.ducklake' AS lake (READ_ONLY);\nUSE lake.marts;"
+  }
+}
+```
+
+The script runs whenever the connection is opened, and again after it has been idle, so keep every statement safe to run more than once. A few things trip people up:
+
+- **Put each statement on its own line.** The script is split into statements at a `;` followed by a newline.
+- **Use absolute paths.** A relative path resolves against the directory the server was started from, not the environment directory. A read-write `ATTACH` of a path that does not exist there does not fail: DuckDB creates a new, empty database, and queries then run against no tables. Attach with `READ_ONLY` where you can, so a wrong path fails instead.
+- **Don't name an attachment after the connection.** The connection's own database already has its name, so `ATTACH … AS orca` on a connection named `orca` fails with `database with name "orca" already exists`.
+- **The script is withheld from API responses**, as credentials are, since it may hold them. Reads list it in `withheldFields` as `duckdbConnection.setupSQL`. An update that leaves it out keeps the stored script; to remove it, send `"setupSQL": ""`. See [Credentials in API responses](#credentials-in-api-responses).
 
 ## DuckLake connections (`type: "ducklake"`)
 
@@ -247,8 +271,9 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 > tenant-configured bastion, so it is authorized by whoever configures the connection. It
 > is **not** behind an env-flag gate, and is deliberately kept separate from the
 > `publisher` type's `PUBLISHER_ALLOW_PROXY_CONNECTIONS` (that flag is about
-> publisher-to-publisher HTTP proxying, a different decision). Optional **host-key
-> pinning** (below) adds a fail-closed trust control on the tunnel.
+> publisher-to-publisher HTTP proxying, a different decision). **Host-key
+> pinning** (below) is required on an SSH tunnel: without it the tunnel is refused
+> unless the deployment opts out.
 
 ```json
 {
@@ -281,36 +306,177 @@ VPC; it is not an IP-restriction mechanism (restrict the database directly for t
 - `proxy.ssh.privateKey` (+ optional `privateKeyPass`) — the customer generates the
   keypair, authorizes their own public key on the bastion, and provides the private key
   here. Public-key auth only.
-- `proxy.ssh.hostKey` — **optional** pinned bastion host public key(s), verified on every
+- `proxy.ssh.hostKey` — **required** pinned bastion host public key(s), verified on every
   connect (fail-closed on mismatch). Provide one or more OpenSSH `known_hosts` lines (or
   bare base64 blobs), one per line; a load-balanced/HA bastion presents a different key per
   backend, so list every backend's key and any listed key is accepted. Both plain and
   hashed (`|1|…`, from `ssh-keyscan -H`) lines work — only the key blob is compared, never
-  the hostname. **When omitted, the tunnel connects without host-key verification** (the
-  self-service default, matching mainstream BI tools); the SSH transport is still
-  encrypted, but an unpinned publisher→bastion hop is exposed to MITM — mitigated by the
-  customer allowlisting our egress on the bastion's inbound SSH.
+  the hostname. **When omitted, the tunnel is refused**: an unverified host key means a
+  MITM on the publisher→bastion hop cannot be detected, so the connection fails closed
+  rather than connecting to whatever key the far end presents. A deployment that accepts
+  that risk — typically because the bastion's inbound SSH is allowlisted to our egress —
+  opts in with `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true`, which restores the unpinned
+  connect and logs a warning each time. The SSH transport is encrypted either way.
 
 A proxy makes the server open an outbound SSH tunnel to a tenant-configured host, so
-connection configuration is the authorization boundary; host-key pinning is an optional,
-additional trust control on the tunnel itself.
+connection configuration is the authorization boundary; host-key pinning is the trust
+control on the tunnel itself, and is required unless the deployment opts out.
 
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
-(the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
+(a direct connection can set it too - see below). The driver connects to the
 local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
-**hostname** can't be checked. The supported modes:
+**hostname** can't be checked from the tunnel address alone. The supported modes:
 
 - `no-verify` (**default** when a proxy is set) — encrypt without verifying. Chosen as the
   default so a force-SSL target (the common RDS case) isn't rejected for plaintext.
 - `verify-ca` — validate the server cert **chain** against the trusted CA bundle
   (`NODE_EXTRA_CA_CERTS`, e.g. the baked Amazon RDS roots) while skipping the hostname
   check. Fails if no CA bundle is available.
+- `verify-full` — validate the chain **and** the hostname against the real database host
+  (sent as the TLS server name through the tunnel), trusting the runtime's bundled roots
+  plus `NODE_EXTRA_CA_CERTS`. No bundle is required when the target's CA is publicly trusted.
 - `disable` — no TLS.
 
-Full verification (`verify-full`) can't work through the tunnel until per-connection
-`servername` override lands (see malloydata/malloy#2960).
+A `storage=` build of a proxied source reaches it through its own tunnel with libpq rather
+than the query driver, and every mode above keeps its meaning there: libpq dials the tunnel
+endpoint as `hostaddr` while `host` stays the database's own name, so `verify-full` checks the
+certificate against the real host through the tunnel, with the same trust set the query path
+uses.
+
+### TLS and statement timeout per connection
+
+A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a
+federated Postgres source accept the same two per-connection settings. A proxied connection also
+applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described above.
+
+- `sslmode` - the same four modes as above, applied against the configured host. When unset,
+  the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
+  the string's own `sslmode` applies and the field is ignored, with a warning logged.
+- `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. An
+  integer from 1 to 2147483647, Postgres's own limit. When unset, the database's own
+  `statement_timeout` applies. The query driver sets it on each session with
+  `SET statement_timeout`; a DuckDB attach passes it to libpq as a server option
+  (`options='-c statement_timeout=N'`). When a `connectionString` already carries `options`, the
+  timeout is merged into them, so its other server settings are kept; a `statement_timeout`
+  already in them is replaced by this field, with a warning logged. A connection pooler in
+  transaction mode may not carry a session setting from one statement to the next. The timeout
+  bounds every statement on the connection, including persisted-source builds: a colocated
+  `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
+  for the longest build, not only for interactive queries.
+
+Neither setting is applied to a DuckLake catalog connection.
+
+#### Effect on persisted sources
+
+A persisted source's identity includes its connection's identity. A connection that carries a
+`fingerprint` uses it as that identity, so neither setting affects it. A connection without one
+derives its identity from its configuration, and both settings are part of it: setting or
+changing `statementTimeoutMilliseconds`, or an `sslmode` that changes the connection string,
+gives that connection's persisted sources new identities, and they are built again on the next
+build. A connection that sets neither keeps the identity it had before. Together with the build
+bound above, this means raising a timeout that cancelled a build also rebuilds every persisted
+source on a connection without a `fingerprint`.
+
+## Credentials in API responses
+
+A connection's credentials are write-only. `password`, `connectionString`, `serviceAccountKeyJson`,
+`privateKey`, `privateKeyPass`, `token`, `oauthClientSecret`, `accessToken`, `peakaKey`,
+`secretAccessKey`, `sessionToken`, `secret`, `clientSecret`, `sasUrl` and a DuckDB connection's `setupSQL` are accepted when you create
+or update a connection, and no read returns them. The connection, environment and status endpoints
+return the non-secret fields only: host, port, database, user, region, an object store's key ID, a
+bastion's public host key.
+
+They are omitted rather than masked, so no client can round-trip a placeholder back into stored
+config as if it were the real credential.
+
+Each response lists what it withheld. `withheldFields` carries the dotted paths of the credentials
+this connection has stored, names only and never a value, for example
+`["postgresConnection.connectionString"]`. Without it a client cannot tell a credential that is set
+from one that was never configured, which is the difference between an empty box that keeps
+something and an empty box that leaves the connection with no credential at all. It is read-only and
+ignored on write.
+
+An update therefore does not have to resend a credential it cannot read. A `PATCH` that leaves one
+out keeps the stored value, sending the field replaces it, and sending it empty clears it. The same
+holds for credentials nested inside a DuckLake catalog or a DuckDB attached database, where entries
+are matched by name rather than by position.
+
+In the connection editor the credential boxes are always blank for an existing connection. Leave one
+blank to keep the stored value.
+
+Three things follow from this that are worth knowing before you rely on it:
+
+Supplying a credential for one method drops the stored credential of the other, rather than keeping
+both. Send a Postgres `password` and a stored `connectionString` is dropped; send a Snowflake
+`password` and a stored `privateKey` is dropped, or a `privateKey` and a stored `password` is dropped;
+send a Trino `password` and a stored `peakaKey` is dropped; point a DuckLake `storage` at GCS and a
+stored S3 secret is dropped; send a Databricks `token` and a stored `oauthClientSecret` is dropped.
+Each of those pairs is resolved by which one is present when the connection is opened (`peakaKey`
+short-circuits before `password` is read, and the Databricks driver prefers OAuth over a token), so
+keeping the old one would silently override the credential you just set.
+
+Only a credential you actually send does this, and only a non-empty one. Editing a host, or saving a
+form whose credential boxes you left alone, changes nothing about which method the connection uses.
+
+Renaming a DuckDB attached database needs its credential re-entered. Entries are matched by name, so a
+renamed entry has nothing to carry forward and the old secret is not recoverable through the API.
+
+Write access to a connection is as good as read access to its credential. Anyone who can `PATCH` a
+connection can point it at a host they control and have the stored credential sent there. Publisher
+does not authenticate either operation, so this is not a new boundary on a bare Publisher, but a
+deployment that gates reads and writes separately should gate connection writes as tightly as it
+gates credential reads.
+
+## Telling whether a Publisher still holds the config you sent (`configEtag`)
+
+Because credentials are never returned, a system that distributes the same connection to several
+Publishers cannot confirm from a read that one of them is still holding the credential it was last
+sent. A read distinguishes a Publisher holding *some* password from one holding *none*; it cannot
+distinguish one holding *last month's* password from one holding the current one.
+
+`configEtag` closes that. It is an opaque string the writer owns: Publisher stores it with the
+connection, returns it on reads, and never derives, validates or interprets it. Compute a tag over
+the configuration you are about to send, send the two together, and compare the tag each Publisher
+reports against the one you would send now — the same equality-only comparison an HTTP `ETag`
+supports. A Publisher reporting a different tag, or none, has not been given that configuration.
+
+```jsonc
+{
+  "name": "warehouse",
+  "type": "postgres",
+  "configEtag": "sha256:9f2b…",   // yours; Publisher echoes it back unchanged
+  "postgresConnection": { "host": "db.internal", "password": "…" }
+}
+```
+
+A write that does not carry a `configEtag` **clears** it. The tag describes the configuration the
+writer that set it sent, so an update replacing that configuration without supplying a tag has
+invalidated it. That also means an edit made outside your distribution system — someone changing the
+connection through this API directly — drops the tag and shows up as a difference on your next
+comparison, rather than hiding behind a tag that no longer describes what is stored.
+
+Nothing in Publisher reads the value, so its format is entirely yours — a hash, a version string,
+anything you can compare for equality.
+
+**Choose it with the read path in mind.** The tag comes back on every read, so a plain digest over a
+configuration that includes credentials does not reveal them but does *commit* to them: a reader who
+can see the connection's other fields holds a preimage whose only unknown is the secret, and can test
+guesses offline. That is fine when only your own control plane can read the connection, and not fine
+when a tenant can. Use a keyed digest (HMAC under a secret only the writer holds) if it is readable
+more widely, or keep the tag off the surface those readers reach.
+
+Do not reach for `fingerprint` instead. That field identifies the *data* a connection reaches and
+deliberately excludes credentials so that rotating one does not re-address the artifacts built
+through it; two configurations differing only by password share a fingerprint, which is exactly the
+case this field exists to catch. The two answer different questions and neither substitutes for the
+other.
+
+What a tag cannot tell you is whether a Publisher is still *behaving* the way the configuration it
+echoes describes — an upgrade that changes how a stored config is parsed or defaulted moves the
+effective configuration without moving the tag. It reports what was delivered, not what is in
+effect.
 
 ## Example: mixed connections
 

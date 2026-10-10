@@ -101,6 +101,14 @@ interface ManifestEntrySpec {
    fresh?: number;
 }
 
+/**
+ * How a source that reads a persisted upstream computed its rows, as a scenario
+ * states it and as the entry's `upstreamReuse` reports it: `reused` = read from
+ * the upstream's stored table, `recomputed` = the upstream was recomputed from
+ * its definition and inlined into this build.
+ */
+type UpstreamReuse = "reused" | "recomputed";
+
 // Server-facing steps carry an optional `env` (from `(env=…)`), selecting which
 // environment the step runs against; it defaults to PRIMARY_ENV. A publisher
 // process serves every configured environment, so env is orthogonal to `pub`.
@@ -113,6 +121,8 @@ type Step =
         pkg: string;
         mode: PersistStorageMode;
         bindings: { source: string; conn: string }[];
+        /** `expect upstreams: src -> reused|recomputed`, against the build's manifest. */
+        upstreams: { source: string; mode: UpstreamReuse }[];
         forceRefresh: boolean;
         reseed: boolean;
         sourceNames?: string[];
@@ -133,6 +143,12 @@ type Step =
            name: string;
            dest: string;
            failed: boolean;
+           /**
+            * `(reused)` / `(recomputed)`: how a source that reads a persisted
+            * upstream computed its rows, asserted against its entry's
+            * `upstreamReuse`.
+            */
+           upstreams?: UpstreamReuse;
         }[];
         references: { src: string; from?: string }[];
         cites?: string;
@@ -175,6 +191,8 @@ type Step =
         expect?: Table;
         givens?: Record<string, string>;
         exactColumns: boolean;
+        /** `servedFrom: storage` — assert which tier produced the answer. */
+        servedFrom?: string;
      }
    | {
         kind: "buildRefusals";
@@ -325,7 +343,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    query: {
       attrs: ["again", "refused", "pkg"],
-      keys: ["cites", "givens", "columns"],
+      keys: ["cites", "givens", "columns", "servedfrom"],
    },
    sql: {},
    operator: {},
@@ -586,6 +604,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
          case "publish": {
             const pkg = arg.trim() || defaultPackage;
             const bindings = parseBindings(sec.body);
+            const upstreams = parseUpstreams(sec.body);
             // `(sources=a)` builds ONLY the named persist source(s) — the
             // `sourceNames` build filter. Multiple names are `+`-separated
             // (comma is the attribute delimiter). Omitted = build them all.
@@ -606,6 +625,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg,
                mode,
                bindings,
+               upstreams,
                forceRefresh: !!attrs.forcerefresh,
                reseed: !!attrs.reseed,
                sourceNames,
@@ -737,6 +757,18 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
             const exactColumns = /^exact$/i.test(
                firstKey(sec.body, "columns") ?? "",
             );
+            // `servedFrom: storage` — the only direct evidence a materialized
+            // table was read. Rows cannot supply it: a correct tier and a live
+            // fallback return the same answer by design, so a scenario that
+            // asserts only rows passes whether or not the tier was used.
+            const servedFrom = firstKey(sec.body, "servedfrom")?.trim();
+            if (servedFrom && refused) {
+               throw new Error(
+                  `## Query ${arg.trim()}: "servedFrom:" with "refused" — a ` +
+                     `query that fails produced no answer, so there is no tier ` +
+                     `for it to have come from.`,
+               );
+            }
             if (refused) {
                steps.push({
                   kind: "query",
@@ -751,6 +783,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   cites: firstKey(sec.body, "cites"),
                   givens,
                   exactColumns,
+                  servedFrom,
                });
             } else {
                steps.push({
@@ -766,6 +799,7 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                   expect: requireExpectTable(sec.body, sec.header),
                   givens,
                   exactColumns,
+                  servedFrom,
                });
             }
             break;
@@ -1167,9 +1201,21 @@ function requireExpectTable(body: string[], header: string): Table {
  * BUILT and absent from `failures`, because a failed source is mirrored into
  * `entries` carrying the physical name it was headed for, and a check reading only
  * that name cannot tell the two apart.
+ *
+ * Per-source `reused` / `recomputed` — how a source that reads a persisted
+ * upstream computed its rows, asserted against its entry's `upstreamReuse`.
+ * Opt-in, because most sources read no persisted upstream and carry no such
+ * field; a chained scenario states which path it expects, since both paths leave
+ * a correct table and the rows alone cannot tell them apart.
  */
 function parseOrchestratedBody(body: string[]): {
-   sources: { src: string; name: string; dest: string; failed: boolean }[];
+   sources: {
+      src: string;
+      name: string;
+      dest: string;
+      failed: boolean;
+      upstreams?: UpstreamReuse;
+   }[];
    references: { src: string; from?: string }[];
 } {
    const sources: {
@@ -1177,6 +1223,7 @@ function parseOrchestratedBody(body: string[]): {
       name: string;
       dest?: string;
       failed: boolean;
+      upstreams?: UpstreamReuse;
    }[] = [];
    const references: { src: string; from?: string }[] = [];
    for (const raw of body) {
@@ -1198,14 +1245,26 @@ function parseOrchestratedBody(body: string[]): {
                  .filter(Boolean)
             : [];
          let failed = false;
+         let upstreams: UpstreamReuse | undefined;
          for (const a of attrs) {
             if (a === "failed") failed = true;
-            else
+            else if (a === "reused" || a === "recomputed") {
+               if (upstreams)
+                  throw new Error(
+                     `## Build (orchestrated): "${a}" and "${upstreams}" on one source on "${line}"`,
+                  );
+               upstreams = a;
+            } else
                throw new Error(
                   `## Build (orchestrated): unknown attribute "${a}" on "${line}"`,
                );
          }
-         sources.push({ src: s[1], name: s[2], dest: s[3], failed });
+         // A failed source built nothing, so it has no build path to assert.
+         if (failed && upstreams)
+            throw new Error(
+               `## Build (orchestrated): "(${upstreams})" on a (failed) source on "${line}"`,
+            );
+         sources.push({ src: s[1], name: s[2], dest: s[3], failed, upstreams });
          continue;
       }
       const r = line.match(
@@ -1277,6 +1336,28 @@ function parseBindings(body: string[]): { source: string; conn: string }[] {
    for (const raw of body) {
       const m = raw.match(/expect\s+binding\s*:\s*(\S+)\s*->\s*(\S+)/i);
       if (m) out.push({ source: m[1], conn: m[2] });
+   }
+   return out;
+}
+
+/**
+ * `expect upstreams: <source> -> reused|recomputed` lines: how a source that
+ * reads a persisted upstream computed its rows, asserted against the build's
+ * manifest entry for it.
+ */
+function parseUpstreams(
+   body: string[],
+): { source: string; mode: UpstreamReuse }[] {
+   const out: { source: string; mode: UpstreamReuse }[] = [];
+   for (const raw of body) {
+      const m = raw.match(/expect\s+upstreams\s*:\s*(\S+)\s*->\s*(\S+)\s*$/i);
+      if (!m) continue;
+      const mode = m[2].toLowerCase();
+      if (mode !== "reused" && mode !== "recomputed")
+         throw new Error(
+            `expect upstreams: unknown mode "${m[2]}" (reused | recomputed) on "${raw.trim()}"`,
+         );
+      out.push({ source: m[1], mode });
    }
    return out;
 }
@@ -1547,12 +1628,24 @@ async function buildOrchestratedBody(
    step: {
       pkg: string;
       strict: boolean;
-      sources: { src: string; name: string; dest?: string; failed: boolean }[];
+      sources: {
+         src: string;
+         name: string;
+         dest?: string;
+         failed: boolean;
+         upstreams?: UpstreamReuse;
+      }[];
       references: { src: string; from?: string }[];
    },
-): Promise<{ body: OrchestratedBody; failedEids: Set<string> }> {
+): Promise<{
+   body: OrchestratedBody;
+   failedEids: Set<string>;
+   /** sourceEntityId -> the `upstreamReuse` the scenario expects on its entry. */
+   reuseEids: Map<string, UpstreamReuse>;
+}> {
    const eids = await rest.sourceEntityIds(step.pkg);
    const failedEids = new Set<string>();
+   const reuseEids = new Map<string, UpstreamReuse>();
    const sources = step.sources.map((s) => {
       const eid = eids[s.src];
       if (!eid) {
@@ -1561,6 +1654,7 @@ async function buildOrchestratedBody(
          );
       }
       if (s.failed) failedEids.add(eid);
+      if (s.upstreams) reuseEids.set(eid, s.upstreams);
       return {
          sourceEntityId: eid,
          materializedTableId: `mt-${s.name}`,
@@ -1600,6 +1694,7 @@ async function buildOrchestratedBody(
          },
       },
       failedEids,
+      reuseEids,
    };
 }
 
@@ -1819,7 +1914,29 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   pendingBuilds.set(key, { rest, pkg: step.pkg, id });
                   break;
                }
-               await rest.build(step.pkg, buildBody);
+               const built = await rest.build(step.pkg, buildBody);
+               if (step.upstreams.length) {
+                  const entries = Object.values(
+                     (
+                        built.manifest as {
+                           entries?: Record<
+                              string,
+                              { sourceName?: string; upstreamReuse?: string }
+                           >;
+                        } | null
+                     )?.entries ?? {},
+                  );
+                  for (const u of step.upstreams) {
+                     const entry = entries.find(
+                        (e) => e.sourceName === u.source,
+                     );
+                     assert.eq(
+                        `built ${u.source}: upstreams ${u.mode}`,
+                        entry?.upstreamReuse ?? "(absent)",
+                        u.mode,
+                     );
+                  }
+               }
                if (step.bindings.length) {
                   // The build returns at MANIFEST_FILE_READY, but the serve
                   // binding is re-established by an async package reload that
@@ -1908,11 +2025,8 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
             }
             case "orchestratedBuild": {
                const rest = await serverFor(step.pub, step.env);
-               const { body, failedEids } = await buildOrchestratedBody(
-                  ctx,
-                  rest,
-                  step,
-               );
+               const { body, failedEids, reuseEids } =
+                  await buildOrchestratedBody(ctx, rest, step);
                const wire = body as unknown as Record<string, unknown>;
                if (step.refused) {
                   const outcome = await refusedOutcome(rest, step.pkg, wire);
@@ -1938,10 +2052,40 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                } else {
                   const rec = await rest.build(step.pkg, wire);
                   const manifest = rec.manifest as {
-                     entries?: Record<string, { physicalTableName?: string }>;
+                     entries?: Record<
+                        string,
+                        {
+                           physicalTableName?: string;
+                           upstreamReuse?: string;
+                           upstreamRecomputeReason?: string;
+                        }
+                     >;
                      failures?: Record<string, { reason?: string }>;
                   } | null;
                   const entries = manifest?.entries ?? {};
+                  // On a build that succeeded, `cites:` reads the reasons the
+                  // build recorded for recomputing a persisted upstream rather
+                  // than reading its table — the one prose a successful run
+                  // carries.
+                  if (step.cites) {
+                     // The sources the scenario marked `(recomputed)`, when it
+                     // marked any; otherwise every entry.
+                     const marked = [...reuseEids.entries()]
+                        .filter(([, mode]) => mode === "recomputed")
+                        .map(([eid]) => eid);
+                     const reasons = (
+                        marked.length
+                           ? marked.map((eid) => entries[eid])
+                           : Object.values(entries)
+                     )
+                        .map((e) => e?.upstreamRecomputeReason ?? "")
+                        .join("\n");
+                     assert.includes(
+                        `recompute reason cites "${step.cites}"`,
+                        reasons.toLowerCase(),
+                        step.cites.toLowerCase(),
+                     );
+                  }
                   // A part-way failure still commits a manifest, and a failed
                   // source is MIRRORED into `entries` carrying the physical name
                   // it was headed for — a table that does not exist. The
@@ -1967,6 +2111,19 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                         !failures[s.sourceEntityId],
                         failures[s.sourceEntityId]?.reason,
                      );
+                     const reuse = reuseEids.get(s.sourceEntityId);
+                     if (reuse) {
+                        // Asserted positively against the declared value, never
+                        // by absence: an entry with no `upstreamReuse` is a
+                        // source that read no persisted upstream, and "nothing"
+                        // must not read as "recomputed".
+                        assert.eq(
+                           `built ${s.physicalTableName}: upstreams ${reuse}`,
+                           entries[s.sourceEntityId]?.upstreamReuse ??
+                              "(absent)",
+                           reuse,
+                        );
+                     }
                   }
                }
                break;
@@ -2007,6 +2164,18 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      { query: malloy, givens: step.givens },
                   );
                   compareRows(assert, step.label, step.expect!, out.rows);
+                  if (step.servedFrom) {
+                     // Asserted positively against the declared value, never by
+                     // absence: an answer that never reached the routing
+                     // decision reports nothing, and "nothing" must not read as
+                     // "not the storage tier" — it is the same shape a
+                     // serialization that drops the field would leave behind.
+                     assert.eq(
+                        `${step.label}: servedFrom`,
+                        out.servedFrom ?? "(absent)",
+                        step.servedFrom,
+                     );
+                  }
                   if (step.exactColumns)
                      assertExactColumns(
                         assert,

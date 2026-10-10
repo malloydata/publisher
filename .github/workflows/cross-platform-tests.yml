@@ -11,6 +11,15 @@ permissions: {}
 # Bun bug in Windows: https://github.com/oven-sh/bun/issues/17011#issuecomment-2769196629
 # We need to use a custom userprofile and cache directory for Windows. And also need to disable the Defender real-time monitoring.
 # There is no solution for this yet (but a couple of active issues), so we need to use this workaround for faster CI runs.
+#
+# The same D: profile is set on the steps that bake and load DuckDB extensions.
+# DuckDB keeps them under %USERPROFILE%\.duckdb\extensions on Windows, and the
+# runner's C: drive is slow remote storage: the bake writes them quickly and they
+# stay in memory, but the tests' first LOAD, minutes later, reads the whole file
+# back from C:. That cost 82s for bigquery, 35s for snowflake and 39s for azure,
+# against under a second on Linux and macOS. Build and both server test steps
+# must share the profile, or the tests look for the extensions somewhere the
+# bake did not put them and fetch them again.
 
 env:
   BUN_VERSION: 1.3.13
@@ -74,8 +83,25 @@ jobs:
         shell: bash
 
       - name: Build
+        env:
+          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         run: bun run build
         shell: bash
+
+      # Prints what the D: profile above relies on, so a slow extension LOAD
+      # can be told apart from extensions that landed on C: or a Defender that
+      # is still scanning. Reports only; it never fails the job.
+      - name: Report DuckDB extension location and Defender state (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled, IsTamperProtected, AMRunningMode | Format-List
+          foreach ($root in @("$env:WINDOWS_USERPROFILE.duckdb\extensions", "$env:USERPROFILE\.duckdb\extensions")) {
+            "== $root"
+            Get-ChildItem -Recurse -File -Path $root -ErrorAction SilentlyContinue |
+              Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } } |
+              Format-Table -AutoSize
+          }
 
       # Component and hook specs render against a DOM registered in a bun
       # preload (packages/sdk/test/setup.ts). Run on every OS because a preload
@@ -97,30 +123,80 @@ jobs:
       # these two are representatives rather than special: do not add more for
       # symmetry, and do not swap one for a zone picked for being unusual.
       #
-      # Extra runs rather than a matrix entry: the suite is ~0.3s, a matrix would
-      # double the whole job, and setting TZ on the existing run would trade away
-      # UTC coverage instead of adding to it.
+      # Extra runs rather than a matrix entry: a matrix would double the whole
+      # job, and setting TZ on the existing run would trade away UTC coverage
+      # instead of adding to it.
+      #
+      # The whole suite runs once above, under UTC. These two run only the specs
+      # that handle a date (the sdk's `test:tz` script, 7 of its spec files),
+      # since no other spec can fail differently in another zone. They keep the
+      # measurement above intact: the same revert fails the same 0, 3 and 1 of
+      # them. src/timezone_runs.spec.ts fails when a spec that handles a date
+      # is missing from `test:tz`, so a new one cannot quietly skip these runs.
+      #
       # Each run checks the zone the runtime actually resolved before testing in
-      # it. Without that, a TZ that failed to take effect would leave a run that
-      # is green, fast and detecting nothing, the same silhouette as a suite
+      # it, and fails if the zone did not take effect. Without that, a run would
+      # be green, fast and detecting nothing, the same silhouette as a suite
       # collecting no tests at all.
       #
-      # Fatal off Windows, printed everywhere. TZ propagation through `bun run`
-      # to the test child is confirmed on Linux and macOS, so a mismatch there
-      # is a real fault and should stop the job. Whether Bun honours an IANA TZ
-      # on Windows is still unconfirmed, so that leg logs the resolved zone
-      # without failing on it; when a run settles the question, drop the
-      # platform exemption.
+      # Linux and macOS take the zone from TZ. Bun on Windows ignores an IANA
+      # TZ and resolves UTC, so there the step switches the machine's own zone
+      # with tzutil, which a newly started bun reads, and sets the
+      # original zone back on exit, pass or fail, so the server suites that
+      # follow still run in the zone they always have.
       - name: Run SDK tests east of UTC
+        env:
+          WANT_ZONE: Australia/Sydney
+          WINDOWS_ZONE: AUS Eastern Standard Time
         run: |
-          TZ=Australia/Sydney bun -e 'const want="Australia/Sydney", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
-          TZ=Australia/Sydney bun run --cwd packages/sdk test
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            original=$(MSYS_NO_PATHCONV=1 tzutil /g | tr -d '\r')
+            restore_zone() {
+              echo "restoring the Windows time zone to $original"
+              MSYS_NO_PATHCONV=1 tzutil /s "$original"
+            }
+            trap restore_zone EXIT
+            echo "switching the Windows time zone from $original to $WINDOWS_ZONE"
+            MSYS_NO_PATHCONV=1 tzutil /s "$WINDOWS_ZONE"
+          else
+            export TZ="$WANT_ZONE"
+          fi
+          bun -e 'const want=process.env.WANT_ZONE, got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want) { console.error(`Zone did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
+          bun run --cwd packages/sdk test:tz
         shell: bash
 
       - name: Run SDK tests west of UTC
+        env:
+          WANT_ZONE: America/Los_Angeles
+          WINDOWS_ZONE: Pacific Standard Time
         run: |
-          TZ=America/Los_Angeles bun -e 'const want="America/Los_Angeles", got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want && process.platform !== "win32") { console.error(`TZ did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
-          TZ=America/Los_Angeles bun run --cwd packages/sdk test
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            original=$(MSYS_NO_PATHCONV=1 tzutil /g | tr -d '\r')
+            restore_zone() {
+              echo "restoring the Windows time zone to $original"
+              MSYS_NO_PATHCONV=1 tzutil /s "$original"
+            }
+            trap restore_zone EXIT
+            echo "switching the Windows time zone from $original to $WINDOWS_ZONE"
+            MSYS_NO_PATHCONV=1 tzutil /s "$WINDOWS_ZONE"
+          else
+            export TZ="$WANT_ZONE"
+          fi
+          bun -e 'const want=process.env.WANT_ZONE, got=Intl.DateTimeFormat().resolvedOptions().timeZone; console.log("resolved timezone:", got); if (got !== want) { console.error(`Zone did not take effect: wanted ${want}, got ${got}. This run would be a duplicate UTC run detecting nothing.`); process.exit(1); }'
+          bun run --cwd packages/sdk test:tz
+        shell: bash
+
+      # Every `bun test` in this repo passes a path filter, and a filter is a
+      # substring unless it is anchored with "./". The guard runs here, not only
+      # under lint_format in build.yml, because it shells out to bun to check
+      # that the anchor actually holds: a platform that did not honour it would
+      # fall back to a substring and match anyway, so the anchoring would
+      # quietly stop applying while every other suite stayed green. Windows is
+      # the platform that matters, because the integration step below retries
+      # and its first attempt creates the `publisher_data/` copies the anchor
+      # exists to exclude.
+      - name: Run test-path-filter guard
+        run: bun run test:scripts
         shell: bash
 
       # The skills package copies a directory tree and resolves it back by
@@ -181,32 +257,61 @@ jobs:
 
       # Split into two bun-test invocations (two processes). The unit specs
       # under src/ use `mock.module(...)` to stub out `StorageManager` and
-      # other modules; Bun does not scope those mocks to a single file —
-      # they persist in the process-wide module cache and poison any later
-      # spec that imports the real module. Running integration specs (which
-      # import src/server.ts and expect the real StorageManager) in a
-      # separate process avoids the carry-over.
-      - name: Run unit tests
-        run: bun run --cwd packages/server test:unit --serial
-        shell: bash
-
-      - name: Run integration tests
-        # TODO: Remove this retry logic once we clone the samples and mount them for CI.
-        # Retry up to 3 times. The suite boots a real server which clones
-        # `malloy-samples` from GitHub on startup; that clone occasionally
-        # fails on hosted runners with transient git/disk errors
-        # (`fetch-pack: invalid index-pack output`). A retry is cheaper and
-        # less invasive than wrapping the clone in server code.
+      # other modules; Bun does not scope those mocks to a single file: they
+      # persist in the process-wide module cache and poison any later spec
+      # that imports the real module. Running integration specs (which import
+      # src/server.ts and expect the real StorageManager) in a separate
+      # process avoids the carry-over.
+      #
+      # The two processes run at the same time. They share no state: the
+      # integration servers own packages/server's publisher.db and
+      # publisher_data/, and every unit spec that touches storage uses a temp
+      # directory or a directory of its own under the working directory. Each
+      # process loads Malloy and DuckDB once, as it would alone, so running
+      # them side by side takes about as long as the longer of the two rather
+      # than their sum (271s down to 146s locally). Splitting further does not
+      # pay: `bun test --parallel` reloads those modules for every file and
+      # made the unit suite slower, not faster.
+      #
+      # The unit suite runs in the background into a log that is printed once
+      # both have finished, so the two outputs do not interleave; the step
+      # fails if either suite does.
+      #
+      # TODO: Remove the integration retry once we clone the samples and mount
+      # them for CI. The suite boots a real server which clones
+      # `malloy-samples` from GitHub on startup; that clone occasionally fails
+      # on hosted runners with transient git/disk errors (`fetch-pack: invalid
+      # index-pack output`). A retry is cheaper and less invasive than wrapping
+      # the clone in server code.
+      - name: Run unit and integration tests
+        env:
+          USERPROFILE: ${{ runner.os == 'Windows' && env.WINDOWS_USERPROFILE || '' }}
         run: |
-          attempt=1
-          max_attempts=3
-          until bun run --cwd packages/server test:integration --serial; do
-            status=$?
-            if [ "$attempt" -ge "$max_attempts" ]; then
-              echo "Integration tests failed after $attempt attempts."
-              exit "$status"
+          unit_log="$RUNNER_TEMP/server-unit-tests.log"
+          bun run --cwd packages/server test:unit --serial > "$unit_log" 2>&1 &
+          unit_pid=$!
+
+          integration_status=1
+          for attempt in 1 2 3; do
+            if bun run --cwd packages/server test:integration --serial; then
+              integration_status=0
+              break
             fi
-            echo "Integration tests failed on attempt $attempt; retrying..."
-            attempt=$((attempt + 1))
+            echo "Integration tests failed on attempt $attempt."
           done
+
+          if wait "$unit_pid"; then unit_status=0; else unit_status=$?; fi
+
+          # bun leaves the step's stdout pipe non-blocking. Off Windows, a
+          # multi-megabyte `cat` into it then fails with "write error:
+          # Resource temporarily unavailable" as soon as the runner reads
+          # slower than cat writes, so make the pipe blocking again first.
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            python3 -c 'import fcntl, os; fcntl.fcntl(1, fcntl.F_SETFL, fcntl.fcntl(1, fcntl.F_GETFL) & ~os.O_NONBLOCK)'
+          fi
+          echo "===== Unit tests (ran alongside the integration tests above) ====="
+          cat "$unit_log"
+
+          echo "unit tests exit $unit_status, integration tests exit $integration_status"
+          [ "$unit_status" -eq 0 ] && [ "$integration_status" -eq 0 ]
         shell: bash

@@ -22,7 +22,7 @@ Every finding emitted during a review has this shape (JSON):
   "rule": "C-12 declared primary_key is not unique in the data",
   "current": "primary_key: customer_id (customer_id has duplicates per execute_query check)",
   "expected": "customer_id is unique per row, or the source carries a where: that scopes to a uniquely-keyed subset",
-  "suggested_fix": "Pick a different (or composite) PK that IS unique, OR add a source-level where: that makes customer_id unique within the filtered set, OR declare a #(filter) ... required annotation so consumers must supply the discriminating filter.",
+  "suggested_fix": "Pick a different (or composite) PK that IS unique, OR add a source-level where: that makes customer_id unique within the filtered set, OR declare a given: with no default for the discriminating column and pin it in the source's where:, so every query must supply it.",
   "confidence": 95,
   "evidence": "rubric-correctness C-12; pk_verified=false from SKILL.md step 3 execute_query check",
   "source": "rule"
@@ -111,7 +111,7 @@ The rubric files set the default severity per rule. Defaults (can be overridden 
 | Compile-breaking syntax (parse errors, missing colons / arrows, `as` vs `is`, bare `join:`, reserved-word collisions, redefined query-source columns, trailing commas, etc.) | `blocker` | `blocking`, **handled exclusively by IDE diagnostic pre-pass; not in the rubrics** |
 | Declared `primary_key:` is not actually unique in the data (C-12, verified by `execute_query` in SKILL.md step 3) | `critical` | `blocking` |
 | Chart view with >1 aggregate (Q-01, silent render bug) | `major` | `non-blocking` |
-| `!= null` vs `is not null` (C-01), contradicts the Malloy compiler's own warning, see rule for context | `major` | `non-blocking` |
+| `!= null` vs `is not null` (C-01), both compile and return the same rows; the compiler warns on `!= null` | `major` | `non-blocking` |
 | Safe division / boolean-quote (C-03, C-05) | `major` | `blocking` |
 | `#(doc)` missing on public field (D-01) | `major` | `blocking` (public) / `non-blocking` (internal) |
 | One-tag-per-line (D-04) | `minor` | `if-minor` |
@@ -121,6 +121,7 @@ The rubric files set the default severity per rule. Defaults (can be overridden 
 | Access modifier missing when flag is on (G-02) | `major` | `blocking` (governance) |
 | `public: *` used (G-01, documentation discipline) | `minor` | `non-blocking` |
 | Business-language naming suggestion (Y-02) | `nit` | `non-blocking` |
+| Inconsistent layout, or an edit that reflows lines it didn't need (Y-04) | `nit` | `non-blocking` |
 
 ## ID conventions
 

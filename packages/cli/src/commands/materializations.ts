@@ -53,54 +53,6 @@ export async function listMaterializations(
   logOutput(table.toString());
 }
 
-/**
- * List every materialization across all packages in an environment (newest
- * first), each labeled with its package and trigger. Backed by the
- * environment-scoped endpoint, so it needs no --package.
- */
-export async function listEnvironmentMaterializations(
-  client: PublisherClient,
-  environmentName: string,
-  options: { limit?: number; offset?: number } = {},
-): Promise<void> {
-  const materializations = await client.listEnvironmentMaterializations(
-    environmentName,
-    options.limit,
-    options.offset,
-  );
-
-  if (materializations.length === 0) {
-    logInfo(`No materializations in environment: ${environmentName}`);
-    return;
-  }
-
-  const table = new Table({
-    head: [
-      "Package",
-      "ID",
-      "Status",
-      "Trigger",
-      "Started",
-      "Completed",
-      "Error",
-    ],
-  });
-
-  materializations.forEach((m: any) => {
-    table.push([
-      m.packageName ?? "",
-      m.id ?? "",
-      m.status ?? "",
-      triggerOf(m),
-      m.startedAt ?? "",
-      m.completedAt ?? "",
-      m.error ? truncate(m.error) : "",
-    ]);
-  });
-
-  logOutput(table.toString());
-}
-
 export async function getMaterialization(
   client: PublisherClient,
   environmentName: string,

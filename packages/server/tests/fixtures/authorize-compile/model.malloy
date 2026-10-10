@@ -3,6 +3,8 @@
 given:
   ROLE :: string
 
+// Deliberately the deprecated `#(authorize)` spelling: this fixture is the
+// live canary that the alias still loads and still gates.
 #(authorize) $ROLE = 'analyst'
 source: gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()

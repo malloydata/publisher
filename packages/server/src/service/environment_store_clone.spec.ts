@@ -56,7 +56,7 @@ let storageInitMessage = "storage init failed (test)";
 let cloneFailure: Error | null = null;
 
 mock.module("simple-git", () => ({
-   default: (factoryOpts?: typeof lastFactoryOpts) => {
+   simpleGit: (factoryOpts?: typeof lastFactoryOpts) => {
       lastFactoryOpts = factoryOpts ?? null;
       return {
          clone: (

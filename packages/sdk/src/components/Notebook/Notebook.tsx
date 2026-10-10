@@ -2,42 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 import "@malloydata/malloy-explorer/styles.css";
-import { Stack, Typography } from "@mui/material";
+import { Box, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { planRun } from "./runPlan";
 import { RawNotebook } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
-import { useGivensState } from "../../hooks/useGivensState";
+import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useModelGivens } from "../../hooks/useModelGivens";
+import { GIVEN_SETTLE_MS } from "../../hooks/useSettled";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { useSuggestOptions } from "../../hooks/useSuggestOptions";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
-import { encodeDrillValue, type DrillNavigation } from "../drill";
+import { DashboardProse, DashboardView } from "../Dashboard/DashboardView";
+import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
-import { givensToRequest } from "../given/paramCodec";
-import { Loading } from "../Loading";
+import { givensToParams, givensToRequest } from "../given/paramCodec";
+import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
+import { cellRuns } from "./cellKind";
 import { NotebookCell } from "./NotebookCell";
 import { EnhancedNotebookCell } from "./types";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
-
-/**
- * How long a changed parameter has to stay changed before the notebook runs.
- *
- * Aborting the superseded run is not enough on its own: an abort cancels the
- * HTTP request, but the cells already dispatched have reached the server and go
- * on compiling and running against the customer's warehouse, and their answers
- * are then thrown away. So autorun on a text control put one wave of doomed
- * queries on that warehouse per keystroke. `origin/main` bounded the load by
- * refusing to start a second run at all, which dropped the newest values;
- * waiting for the value to settle bounds it without making that trade.
- */
-const GIVEN_SETTLE_MS = 400;
 
 /**
  * The server's own explanation of why a cell would not run.
@@ -108,8 +97,73 @@ interface NotebookProps {
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
 }
 
+/** The raw notebook, one cache entry per URI however many components ask. */
+function useNotebookQuery(resourceUri: string) {
+   const { apiClients } = useServer();
+   const {
+      environmentName,
+      packageName,
+      versionId,
+      modelPath: notebookPath,
+   } = parseResourceUri(resourceUri);
+   return useQueryWithApiError<RawNotebook>({
+      queryKey: [resourceUri],
+      queryFn: async () => {
+         const response = await apiClients.notebooks.getNotebook(
+            environmentName,
+            packageName,
+            notebookPath,
+            versionId,
+         );
+         return response.data;
+      },
+   });
+}
+
 // Requires PackageProvider
-export default function Notebook({
+export default function Notebook(props: NotebookProps) {
+   const { data: notebook } = useNotebookQuery(props.resourceUri);
+   // A notebook written as a tile layout renders as a one-column dashboard.
+   if (notebook?.dashboard) {
+      const { environmentName, packageName, versionId, modelPath } =
+         parseResourceUri(props.resourceUri);
+      const { title, description } = notebook.dashboard;
+      return (
+         <CleanNotebookContainer>
+            <CleanNotebookSection>
+               {/* chrome="none" drops the view's own header, so the prose is drawn here. */}
+               {(title || description) && (
+                  <Box sx={{ mb: 2 }}>
+                     <DashboardProse
+                        // A notebook's text tiles have no card; its description matches them.
+                        chrome="none"
+                        title={title ?? ""}
+                        {...(description ? { description } : {})}
+                     />
+                  </Box>
+               )}
+               <DashboardView
+                  manifest={notebook.dashboard}
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  versionId={versionId}
+                  documentName={modelPath}
+                  givens={props.givens}
+                  onGivensChange={props.onGivensChange}
+                  onNavigate={props.onDrillNavigate}
+                  maxResultSize={props.maxResultSize}
+                  chrome="none"
+                  // A cell notebook's control panel, not a dashboard's bar.
+                  controlsLayout="panel"
+               />
+            </CleanNotebookSection>
+         </CleanNotebookContainer>
+      );
+   }
+   return <CellNotebook {...props} />;
+}
+
+function CellNotebook({
    resourceUri,
    maxResultSize = 0,
    givens,
@@ -131,18 +185,7 @@ export default function Notebook({
       isSuccess,
       isError,
       error,
-   } = useQueryWithApiError<RawNotebook>({
-      queryKey: [resourceUri],
-      queryFn: async () => {
-         const response = await apiClients.notebooks.getNotebook(
-            environmentName,
-            packageName,
-            notebookPath,
-            versionId,
-         );
-         return response.data;
-      },
-   });
+   } = useNotebookQuery(resourceUri);
 
    // State to store executed cells with results
    const [enhancedCells, setEnhancedCells] = useState<EnhancedNotebookCell[]>(
@@ -157,157 +200,38 @@ export default function Notebook({
    const lastDocumentRef = useRef<string | undefined>(undefined);
    const [executionError, setExecutionError] = useState<Error | null>(null);
 
-   // Model-level `given:` declarations, and the state behind their controls.
-   // The same hook the dashboard viewer uses, so both surfaces get URL-
-   // addressable parameters, Apply batching, and `to=self` drill from one
-   // implementation rather than two that drift.
+   // Model-level `given:` declarations, and the state behind their controls:
+   // the same hook the dashboard uses, so both surfaces get URL-addressable
+   // parameters, Apply batching and `to=self` drill from one implementation.
    const declaredGivens = useModelGivens(notebook);
-   const declaredTypes = useMemo(
-      () =>
-         new Map(
-            declaredGivens
-               .filter((given) => given.name !== undefined)
-               .map((given) => [given.name as string, given.type]),
-         ),
-      [declaredGivens],
-   );
-
-   // Silent until the notebook has actually loaded. Which givens exist is not
-   // known before then: `useModelGivens(undefined)` is empty, so a report in
-   // that window says "no values, and I manage nothing", which a host reasonably
-   // reads as "clear what you wrote". During an in-app navigation from one
-   // notebook to another that window sits between the two, and the parameters it
-   // would clear can belong to the notebook now ARRIVING. A notebook that
-   // genuinely declares no givens still reports, because by then the empty set
-   // is the answer rather than the absence of one.
-   const reportGivens = useCallback(
-      (next: Record<string, string>) => {
-         if (!isSuccess) return;
-         onGivensChange?.(next, Array.from(declaredTypes.keys()));
-      },
-      [isSuccess, onGivensChange, declaredTypes],
-   );
-
-   // Read off the notebook now that the server derives it: a file-level
-   // `## autorun=false` arrives as `RawNotebook.autorun`, the same field with
-   // the same default that a dashboard's `# artifact { autorun=false }`
-   // produces. This was hardcoded true while nothing populated the field, on
-   // the grounds that a spec declaring one nothing produces is a spec that
-   // lies; the reader has landed, so this is the follow-up that comment named.
-   //
-   // Absent means autorun, so only an explicit `false` batches. Batching
-   // matters more here than on a dashboard: one control change re-runs every
-   // cell in the document.
+   // A file-level `## autorun=false` arrives as `RawNotebook.autorun`, the same
+   // field with the same default a dashboard's `# artifact { autorun=false }`
+   // produces. Batching matters more here than on a dashboard: one control
+   // change re-runs every cell in the document.
    const autorun = notebook?.autorun !== false;
-   const { draft, applied, setGiven, reset, apply, pending } = useGivensState({
-      declaredTypes,
-      // Where the controls start, from a file-level `## givens { … }`. A URL
-      // beats them, so a shared link still shows what the sender saw.
+   const controls = useDocumentControls({
+      specs: declaredGivens,
+      loaded: isSuccess,
+      // Where the controls start, from a file-level `## givens { … }`.
       startingValues: notebook?.startingGivens,
       params: givens,
-      // Withheld until the notebook has loaded, rather than accepted and
-      // dropped. `useGivensState` records what it last reported BEFORE calling
-      // out, so a report the callback throws away is remembered as delivered
-      // and never retried, leaving a parameter stranded in the host's URL.
-      // Passing undefined makes the hook skip the report entirely, which leaves
-      // its record untouched and the next real change still reportable.
-      onParamsChange: isSuccess ? reportGivens : undefined,
-      // Which notebook these edits belong to. Navigating between notebooks
-      // reuses this component, so without it one notebook's applied values
-      // carried into the next whenever both started from the same values.
+      onGivensChange,
       documentKey: resourceUri,
       autorun,
-   });
-
-   // A notebook's model path is the notebook itself: `suggest` queries run
-   // against the same model the cells do.
-   const {
-      options: givenOptions,
-      isLoading: givenOptionsLoading,
-      failed: givenOptionsFailed,
-   } = useSuggestOptions(
       environmentName,
       packageName,
-      notebookPath,
-      declaredGivens,
+      // A notebook's model path is the notebook itself: `suggest` queries run
+      // against the same model the cells do.
+      modelPath: notebookPath,
       versionId,
-   );
-
-   // The declared names, indexed case-insensitively, so a drill tag resolves
-   // whichever way the two were spelled.
-   //
-   // Neither convention can be assumed. `# drill` defaults the given name to
-   // the DIMENSION's name, which is conventionally lower_snake, while givens
-   // are conventionally SHOUTED (both in-repo examples declare `REGION` and
-   // `MIN_AMOUNT`). An exact match therefore failed for the common case, and
-   // upper-casing the dimension name, which is what this did first, only moved
-   // the failure onto models that spell their givens in lower case. Folding
-   // case resolves both instead of picking a side.
-   const givenNamesByFold = useMemo(() => {
-      const byFold = new Map<string, string>();
-      for (const name of declaredTypes.keys()) {
-         // First declaration wins, so a model with `REGION` and `region` keeps
-         // the one it declared first rather than silently flipping.
-         if (!byFold.has(name.toLowerCase()))
-            byFold.set(name.toLowerCase(), name);
-      }
-      return byFold;
-   }, [declaredTypes]);
-
-   /** The declared given a drill tag's name refers to, or undefined. */
-   const resolveGiven = useCallback(
-      (given: string) =>
-         declaredTypes.has(given)
-            ? given
-            : givenNamesByFold.get(given.toLowerCase()),
-      [declaredTypes, givenNamesByFold],
-   );
-
-   // `to=self` filters in place, which only works for a given this notebook
-   // actually declares: sending one it cannot bind would fail every cell. The
-   // mismatch is reported to the author rather than issued: same rule, same
-   // wording, as the dashboard viewer.
-   // Asked before a cell is painted as drillable, so the affordance matches what
-   // a click can actually do. The refusal below still stands as a backstop for a
-   // caller that does not ask.
-   const canDrillSelf = useCallback(
-      (given: string) => resolveGiven(given) !== undefined,
-      [resolveGiven],
-   );
-
-   const onDrillSelf = useCallback(
-      (given: string, rawValue: unknown) => {
-         const declared = resolveGiven(given);
-         if (declared === undefined) {
-            console.warn(
-               `# drill { to=self } tried to set '${given}', which ` +
-                  `'${notebookPath}' does not declare as a given. Name the ` +
-                  `given with 'given=' on the drill tag.`,
-            );
-            return;
-         }
-         // Encoded against the declared type of the given being set, which is
-         // knowable here and is not knowable at the click. Set under the name
-         // the MODEL declares, not the one the tag spelled, so the value goes
-         // into the URL and the request under the one name the server knows.
-         const declaredType = declaredTypes.get(declared);
-         const value = encodeDrillValue(rawValue, declaredType);
-         if (value === undefined) {
-            // Say so. Returning in silence left a whole column painted as
-            // clickable while every click did nothing, and a `given=` pointing
-            // at a type the clicked value cannot become is an authoring
-            // mistake the author has no other way to see. The sibling refusal
-            // in `resolveDrill` warns for the same reason.
-            console.warn(
-               `Drill declined: ${JSON.stringify(rawValue)} cannot be a value for given "${declared}"` +
-                  (declaredType ? ` of type ${declaredType}` : ""),
-            );
-            return;
-         }
-         setGiven(declared, value);
-      },
-      [declaredTypes, notebookPath, resolveGiven, setGiven],
-   );
+      documentName: notebookPath,
+   });
+   const {
+      applied,
+      declaredTypes,
+      canSelf: canDrillSelf,
+      onSelf: onDrillSelf,
+   } = controls;
 
    /**
     * The `givens` query param for the notebook-cell GET: the same map the
@@ -323,6 +247,14 @@ export default function Notebook({
             : undefined;
       },
       [declaredTypes],
+   );
+
+   // For a cell's "Data Sources" dialog: the notebook's current values, so
+   // exploring from a cell starts from what the reader is looking at rather
+   // than the model's bare defaults.
+   const cellStartingGivens = useMemo(
+      () => givensToParams(applied, declaredTypes),
+      [applied, declaredTypes],
    );
 
    /**
@@ -415,8 +347,8 @@ export default function Notebook({
             for (let i = 0; i < notebook.notebookCells.length; i++) {
                const rawCell = notebook.notebookCells[i];
 
-               // Markdown cells don't need execution
-               if (rawCell.type === "markdown") continue;
+               // Prose and definitions have nothing to run.
+               if (!cellRuns(rawCell)) continue;
 
                // Capture cell index for closure
                const cellIndex = i;
@@ -619,40 +551,38 @@ export default function Notebook({
       executeCells,
    ]);
 
+   const shownCells =
+      enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
+   // A served notebook can open with definition cells; a .malloynb keeps the icon on its first cell.
+   const copyLinkIndex =
+      notebook?.format === "malloy"
+         ? shownCells.findIndex((cell) => cell.type === "markdown")
+         : 0;
+
    return (
       <CleanNotebookContainer>
          <CleanNotebookSection>
             <Stack spacing={3} component="section">
                {/* Parameters panel: the controls for `given:` declarations */}
-               <GivensPanel
-                  givens={declaredGivens}
-                  values={draft}
-                  onChange={setGiven}
-                  onReset={reset}
-                  options={givenOptions}
-                  optionsLoading={givenOptionsLoading}
-                  optionsFailed={givenOptionsFailed}
-                  apply={autorun ? undefined : { onApply: apply, pending }}
-               />
+               <GivensPanel {...controls.panel} />
 
                {/* Loading State */}
                {!isSuccess && !isError && (
-                  <Loading text={"Fetching Notebook..."} />
+                  <Loading text={LOADING_COPY.opening("notebook")} />
                )}
 
                {/* Notebook Cells */}
                {isSuccess &&
-                  (enhancedCells.length > 0
-                     ? enhancedCells
-                     : notebook?.notebookCells || []
-                  ).map((cell, index) => (
+                  shownCells.map((cell, index) => (
                      <NotebookCell
                         cell={cell as EnhancedNotebookCell}
                         key={index}
-                        index={index}
+                        showCopyLink={index === copyLinkIndex}
                         resourceUri={resourceUri}
                         maxResultSize={maxResultSize}
                         isExecuting={isExecuting}
+                        givens={cellStartingGivens}
+                        givenSpecs={declaredGivens}
                         // Distinct from `isExecuting`: the cell's spinner is
                         // gated on `!cell.result`, so feeding this through it
                         // showed nothing on a re-run, which is the only case

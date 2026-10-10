@@ -1,7 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { ThemeMode } from "@malloy-publisher/sdk";
+import {
+   accentFor,
+   MOTION_FAST,
+   reducedMotionSx,
+   type ThemeMode,
+} from "@malloy-publisher/sdk";
 import { createTheme } from "@mui/material/styles";
 import { colors, greyScale, SANS_FONT_FAMILY } from "./colors";
 
@@ -26,7 +31,11 @@ const DARK_DIVIDER = "#334155";
  * is resolved upstream). Component-level overrides switch on `isDark`
  * rather than re-reading the palette so the file is grep-able per token.
  */
-export const createPublisherTheme = (mode: ThemeMode = "light") => {
+export const createPublisherTheme = (
+   mode: ThemeMode = "light",
+   /** The instance palette's accent (`ResolvedTheme.accent` and its pair); absent, the default blue. */
+   accentPair?: { accent: string; accentHover: string; accentContrast: string },
+) => {
    const isDark = mode === "dark";
    const background = isDark ? DARK_BACKGROUND : colors.white;
    const surface = isDark ? DARK_SURFACE : colors.white;
@@ -34,13 +43,24 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
    const textSecondary = isDark ? DARK_TEXT_SECONDARY : colors.grey.mid;
    const divider = isDark ? DARK_DIVIDER : colors.grey.light;
 
-   // Contained primary buttons read their bg from primary.main and text
-   // from contrastText. Stock options (pure black light, near-white dark)
-   // both feel jarring next to surfaces. Neutral dark gray / slate sits
-   // one step softer than the corner of the page, with white text in
-   // both modes.
-   const primaryMain = isDark ? "#334155" : "#555450";
-   const primaryHover = isDark ? "#475569" : "#73726f";
+   // Contained primary buttons read their bg from primary.main and their text
+   // from contrastText, so this is the colour of every confirming action in
+   // the Console. The palette's first chart series, as the SDK resolves it
+   // into `accent`: the button that saves a dashboard and the first line on it
+   // are the same hue, and the page has one accent rather than a neutral
+   // button beside coloured content. Without a palette, the anchor blue.
+   //
+   // Dark mode inverts the pair rather than shifting the blue. A mid blue on a
+   // slate page is only 3.5:1 against the page and puts white text at 3.7:1,
+   // under the 4.5:1 a label needs — and its hover state was worse than its
+   // resting one. A bright fill with a near-black label reads at 7:1 on both
+   // counts, and is what a dark theme wants anyway: the button is the lit
+   // thing on the page, not a darker patch of it.
+   const {
+      accent: primaryMain,
+      accentHover: primaryHover,
+      accentContrast: primaryContrast,
+   } = accentPair ?? accentFor(undefined, mode);
 
    return createTheme({
       cssVariables: { nativeColor: true },
@@ -50,7 +70,7 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
             main: primaryMain,
             light: colors.grey.light,
             dark: primaryHover,
-            contrastText: "#ffffff",
+            contrastText: primaryContrast,
          },
          secondary: {
             main: colors.grey.mid,
@@ -99,6 +119,17 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                disableRipple: true,
                disableTouchRipple: true,
             },
+            styleOverrides: {
+               // The ripple is off, so keyboard focus needs a mark of its own:
+               // without one a tabbed-to button looks exactly like its
+               // neighbours.
+               root: {
+                  "&:focus-visible": {
+                     outline: `2px solid ${primaryMain}`,
+                     outlineOffset: 2,
+                  },
+               },
+            },
          },
          MuiCssBaseline: {
             styleOverrides: {
@@ -145,6 +176,18 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                contained: {
                   "&:hover": {
                      boxShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
+                  },
+                  // A disabled filled button defaults to a WHITE wash, which
+                  // on a dark dialog is lighter than the surface it sits on —
+                  // the one control on the page drawing attention to itself is
+                  // the one that cannot be pressed. Recede instead: a fill
+                  // barely off the surface, and a label that reads as
+                  // unavailable rather than as absent.
+                  "&.Mui-disabled": {
+                     backgroundColor: isDark
+                        ? "rgba(255, 255, 255, 0.06)"
+                        : greyScale[200],
+                     color: isDark ? "#64748b" : greyScale[500],
                   },
                },
                // Outlined buttons take their text + border color from
@@ -200,10 +243,28 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                },
             },
          },
+         MuiPaper: {
+            styleOverrides: {
+               root: {
+                  // MUI lightens `background.paper` in dark mode by painting a
+                  // white gradient over it, scaled by elevation. It makes the
+                  // value of `background.paper` a lie: a Dialog at elevation
+                  // 24 came out several steps lighter than the fields and
+                  // label notches inside it, which paint the honest value —
+                  // so every field read as a hole and every floating label sat
+                  // on a grey chip of its own. Off, so one token means one
+                  // colour wherever it is used.
+                  backgroundImage: "none",
+               },
+            },
+         },
          MuiDialog: {
             styleOverrides: {
                paper: {
                   borderRadius: 4,
+                  // Stated rather than inherited, so a dialog's surface cannot
+                  // drift from the fields drawn on it.
+                  backgroundColor: surface,
                   boxShadow:
                      "0px 20px 25px -5px rgba(0, 0, 0, 0.1), 0px 10px 10px -5px rgba(0, 0, 0, 0.04)",
                },
@@ -214,7 +275,11 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                select: {
                   fontFamily: SANS_FONT_FAMILY,
                   fontSize: "0.875rem",
-                  color: textSecondary,
+                  // The VALUE, in the text colour a typed value gets. In
+                  // secondary grey — which is what this was — a filled select
+                  // read as a disabled one, and a form of them read as a form
+                  // nobody could fill in.
+                  color: textPrimary,
                },
             },
          },
@@ -235,15 +300,28 @@ export const createPublisherTheme = (mode: ThemeMode = "light") => {
                   border: "none",
                },
                root: {
-                  border: `1px solid ${divider}`,
+                  // The card edge, not `divider`: a field is a box on the page
+                  // the same way a dashboard card is, and it is already the
+                  // construction an outlined Button uses (same two values,
+                  // just above). On `divider` a field rested a full step
+                  // lighter than the card holding it and the button beside it
+                  // — three boxes in a row outlined three different ways.
+                  // Kept in step with the SDK's `theme.cardBorder`
+                  // (#cbd5e1 / #475569), which is these same two points on the
+                  // slate ramp.
+                  border: `1px solid ${isDark ? greyScale[600] : greyScale[300]}`,
                   borderRadius: 8,
-                  transition: "border-color 120ms ease-in",
+                  transition: `border-color ${MOTION_FAST} ease-in`,
+                  ...reducedMotionSx,
                   backgroundColor: surface,
+                  // Rest darkened, so hover and focus each move up a rung to
+                  // stay told apart from it — a field whose hover state is its
+                  // resting state has no hover state.
                   "&:hover": {
-                     borderColor: isDark ? "#475569" : greyScale[300],
+                     borderColor: isDark ? "#64748b" : greyScale[400],
                   },
                   "&.Mui-focused": {
-                     borderColor: isDark ? "#64748b" : greyScale[400],
+                     borderColor: isDark ? greyScale[400] : greyScale[500],
                      outline: "none",
                   },
                },

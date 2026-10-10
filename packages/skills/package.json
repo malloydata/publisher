@@ -1,11 +1,14 @@
 {
    "name": "@malloy-publisher/skills",
    "description": "Agent skills for Malloy and the Malloy Publisher",
-   "version": "0.1.17",
+   "version": "0.0.0-dev",
    "license": "MIT",
    "type": "module",
    "main": "dist/index.js",
    "types": "dist/index.d.ts",
+   "bin": {
+      "malloy-skills": "dist/cli.js"
+   },
    "exports": {
       ".": {
          "types": "./dist/index.d.ts",
@@ -41,7 +44,7 @@
       "typecheck": "bunx tsc --noEmit",
       "lint": "bunx eslint ./src ./scripts --fix",
       "format": "bunx prettier --write --parser typescript '{src,scripts}/**/*.ts'",
-      "test": "bun run copy-skills && bun test src"
+      "test": "bun run copy-skills && bun test ./src"
    },
    "devDependencies": {
       "@eslint/js": "^8.57.0",

@@ -11,7 +11,8 @@
  * test noticing, so it is asserted here rather than only on the hook.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import {
    cacheKeys,
    clearCache,
@@ -22,7 +23,15 @@ import {
 import type { RawNotebook } from "../../client";
 
 const NOTEBOOK: RawNotebook = {
-   notebookCells: [],
+   notebookCells: [
+      {
+         type: "code",
+         text: "import { orders } from './orders.malloy'",
+         // `newSources` is what makes the cell's "Data sources" icon appear;
+         // see `NotebookCell.tsx`'s `hasValidImport` check.
+         newSources: [JSON.stringify({ name: "orders" })],
+      } as RawNotebook["notebookCells"][number],
+   ],
    sources: [
       {
          name: "orders",
@@ -32,10 +41,16 @@ const NOTEBOOK: RawNotebook = {
                control: "select",
                suggest: { source: "orders", dimension: "region" },
             },
+            // Plain text, unlike REGION: the "Data sources" dialog test below
+            // needs a control `fireEvent.change` can drive directly, rather
+            // than a select whose options load from a suggest query.
+            { name: "TENANT", type: "string" },
          ],
       },
    ],
 };
+
+let current: RawNotebook = NOTEBOOK;
 
 const getNotebook = mock(
    (
@@ -43,7 +58,7 @@ const getNotebook = mock(
       _packageName: string,
       _notebookPath: string,
       _versionId?: string,
-   ) => Promise.resolve({ data: NOTEBOOK }),
+   ) => Promise.resolve({ data: current }),
 );
 const executeQueryModel = mock(
    (
@@ -53,9 +68,42 @@ const executeQueryModel = mock(
       _request: { versionId?: string },
    ) => pending(),
 );
+// The notebook's real run path for a code cell, distinct from
+// `executeQueryModel`: without it, the cell this spec adds (for the "Data
+// sources" dialog) fails with "not a function" on every render.
+const executeNotebookCell = mock(
+   (
+      _environmentName: string,
+      _packageName: string,
+      _notebookPath: string,
+      _cellIndex: number,
+   ) => pending(),
+);
+
+// Stubbed rather than let the cell's "Data sources" dialog reach the real
+// ModelExplorer: that pulls in the lazy-loaded, WASM-backed
+// `@malloydata/malloy-explorer`, which is not this file's business. Only what
+// the notebook hands it matters here, so the stub just records its props.
+const dataSourcesDialogProps = mock(
+   (_props: {
+      open: boolean;
+      startingGivens?: Record<string, string>;
+      data?: { givens?: { name?: string }[] };
+   }) => {},
+);
+mock.module("../Model/ModelExplorerDialog", () => ({
+   ModelExplorerDialog: (props: {
+      open: boolean;
+      startingGivens?: Record<string, string>;
+      data?: { givens?: { name?: string }[] };
+   }) => {
+      dataSourcesDialogProps(props);
+      return null as ReactNode;
+   },
+}));
 
 mockServerProvider({
-   notebooks: { getNotebook },
+   notebooks: { getNotebook, executeNotebookCell },
    models: { executeQueryModel },
 });
 
@@ -65,9 +113,12 @@ const URI =
    "publisher://environments/env/packages/pkg/models/notebooks/ops.malloynb";
 
 beforeEach(() => {
+   current = NOTEBOOK;
    clearCache();
    getNotebook.mockClear();
    executeQueryModel.mockClear();
+   executeNotebookCell.mockClear();
+   dataSourcesDialogProps.mockClear();
 });
 
 it("runs its suggest queries against the version it was opened at", async () => {
@@ -85,4 +136,48 @@ it("sends none when the notebook was opened without one", async () => {
 
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
    expect(executeQueryModel.mock.calls[0][3].versionId).toBeUndefined();
+});
+
+it("opens a cell's 'Data sources' dialog with the notebook's current values", async () => {
+   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+
+   const input = (await screen.findByLabelText("TENANT")) as HTMLInputElement;
+   fireEvent.change(input, { target: { value: "acme" } });
+   // Wait for the control's own re-render before opening the dialog: without
+   // it the click can land on the render that has not yet carried the new
+   // value into `cellStartingGivens`.
+   await waitFor(() => expect(input.value).toBe("acme"));
+
+   fireEvent.click(await screen.findByLabelText("Data sources"));
+
+   await waitFor(() =>
+      expect(dataSourcesDialogProps.mock.calls.at(-1)?.[0]?.open).toBe(true),
+   );
+   const lastCall = dataSourcesDialogProps.mock.calls.at(-1)?.[0];
+   expect(lastCall?.startingGivens).toEqual({ TENANT: "acme" });
+   // The values alone render nothing: the dialog needs the declarations too.
+   expect(lastCall?.data?.givens?.map((given) => given.name)).toContain(
+      "TENANT",
+   );
+});
+
+it("renders a .malloynb as before: runs every code cell, no caption, no folded definition", async () => {
+   current = {
+      notebookCells: [
+         { type: "markdown", text: "Prose" },
+         { type: "code", text: "run: a -> b" },
+         { type: "code", text: '#" x\nrun: a -> c' },
+      ],
+   } as RawNotebook;
+   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+
+   await screen.findByText("Prose");
+   await waitFor(() => expect(executeNotebookCell).toHaveBeenCalledTimes(2));
+   expect(executeNotebookCell.mock.calls.map((call) => call[3])).toEqual([
+      1, 2,
+   ]);
+   expect(screen.queryByText("x")).toBeNull();
+   expect(
+      screen.queryByRole("button", { name: /^(run|source|import)/ }),
+   ).toBeNull();
 });

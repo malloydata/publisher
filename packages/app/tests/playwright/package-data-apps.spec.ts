@@ -4,6 +4,7 @@
 import { expect, test } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import { getPublisherStatus } from "./helpers/publisherStatus";
 
 /**
  * The only coverage of the data-app click-through. Three things have to agree
@@ -27,38 +28,46 @@ test.describe("package-data-apps", () => {
 
    test("the renamed section labels are the ones rendered", async ({
       page,
+      baseURL,
    }) => {
+      const { mutable } = await getPublisherStatus(
+         baseURL ?? "http://localhost:4000",
+      );
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.dataApp);
 
       // Anchor on a positive assertion first. toHaveCount(0) is satisfied the
       // instant the page is blank, so a bare absence check here passes before
-      // any section has rendered and pins nothing.
-      await expect(
-         page.getByRole("heading", { name: "Notebooks" }),
-      ).toBeVisible();
+      // any section has rendered and pins nothing. "Data Apps" rather than
+      // "Artifacts": an empty section no longer renders, and this package has
+      // no dashboards or notebooks.
       await expect(
          page.getByRole("heading", { name: "Data Apps" }),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("heading", { name: "Semantic Models" }),
       ).toBeVisible();
 
       await expect(
          page.getByRole("heading", { name: "Governed Reports" }),
       ).toHaveCount(0);
+      // The section this package has nothing for is absent rather than empty,
+      // except where the reader can create one: then it carries the action.
+      await expect(
+         page.getByRole("heading", { name: "Artifacts" }),
+      ).toHaveCount(mutable ? 1 : 0);
       await expect(page.getByRole("heading", { name: "Pages" })).toHaveCount(0);
    });
 
    test("clicking a data app routes to data-apps/ and mounts the viewer", async ({
       page,
    }) => {
-      // Record client-side navigations before anything loads. The final URL alone
-      // stopped being enough when the deprecated `pages/` alias landed: if the
-      // listing emitted the OLD route, the alias would rewrite it and this test
-      // would still see `data-apps/` at the end, so a regression in the emitted
-      // route would pass unnoticed until the alias is deleted and it becomes a
-      // broken listing with nothing covering it. The route the app pushes is
-      // observable even when the URL it settles on is not. Delete this along with
-      // the alias, which is when the final URL becomes sufficient again.
+      // Record client-side navigations before anything loads, and assert on the
+      // route the app PUSHES rather than on where the URL settles: the listing
+      // must emit `data-apps/` itself. (The old `pages/` alias that would once
+      // have masked a wrong route is gone; this keeps the listing honest on its
+      // own.)
       await page.addInitScript(() => {
          const seen: string[] = [];
          (window as unknown as { __navs: string[] }).__navs = seen;
@@ -114,51 +123,101 @@ test.describe("package-data-apps", () => {
       expect(navigations.filter((url) => url.includes("/pages/"))).toEqual([]);
    });
 
-   test("an old pages/ bookmark self-corrects to the data-apps URL", async ({
+   /**
+    * The framing policy, from the browser rather than from a header assertion.
+    *
+    * The Console frames a data app same-origin, so the `'self'` default admits
+    * it -- but nothing above would notice if that stopped being true. The test
+    * before this one asserts what the iframe POINTS AT, which a blocked frame
+    * still satisfies: `src` is an attribute, set whether or not the browser
+    * went on to render the document. So a policy regression leaves every
+    * existing assertion green and shows up only as a blank panel.
+    *
+    * These two close that. The first reads the policy off the response the
+    * browser actually received, so a failure names the header rather than the
+    * symptom. The second proves the frame was not merely requested but
+    * rendered, by reaching inside it for content only a loaded document has.
+    */
+   test("the data app's own response allows the Console to frame it", async ({
       page,
    }) => {
-      // The deprecated alias, and the only end-to-end proof it works. Both
-      // halves have to hold and they live in different packages: `pages` is in
-      // SPA_OWNED_SEGMENTS (server) so the shell is served at all, and ModelPage
-      // (app) rewrites the path. Drop either and this fails, which is the point,
-      // because the alias is scheduled for deletion and a test is the only thing
-      // that will tell whoever deletes it that they took half of it.
-      await page.goto(`/${DEFAULT_ENV}/${PACKAGES.dataApp}/pages/index.html`);
+      const responses: { url: string; csp: string | undefined }[] = [];
+      page.on("response", (res) => {
+         responses.push({
+            url: res.url(),
+            csp: res.headers()["content-security-policy"],
+         });
+      });
 
-      // The address bar is the deliverable here: a viewer that mounted on the
-      // old URL would still leave the stale link in circulation.
-      await expect(page).toHaveURL(
-         new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.dataApp}/data-apps/index\\.html`,
+      await page.goto(
+         `/${DEFAULT_ENV}/${PACKAGES.dataApp}/data-apps/index.html`,
+      );
+      await expect(page.locator("iframe")).toHaveCount(1);
+
+      // The iframe document itself, not the Console shell that embeds it.
+      await expect
+         .poll(
+            () =>
+               responses.filter((r) =>
+                  r.url.includes(
+                     `/environments/${DEFAULT_ENV}/packages/${PACKAGES.dataApp}/index.html`,
+                  ),
+               ).length,
+            { timeout: 15000 },
+         )
+         .toBeGreaterThan(0);
+
+      const embed = responses.find((r) =>
+         r.url.includes(
+            `/environments/${DEFAULT_ENV}/packages/${PACKAGES.dataApp}/index.html`,
          ),
       );
-      // Same reason as above: the target, not the count. An alias that reaches the
-      // viewer with the wrong path is a broken bookmark that looks like a working
-      // one, which is the failure this whole alias exists to avoid.
-      await expect(page.locator("iframe")).toHaveAttribute(
-         "src",
-         new RegExp(
-            `/environments/${DEFAULT_ENV}/packages/${PACKAGES.dataApp}/index\\.html`,
-         ),
-      );
+      // Same-origin here, so `'self'` is the expected value and the one the
+      // default produces. A deployment that framed this from another origin
+      // sets PUBLISHER_FRAME_ANCESTORS; what must never appear is a policy that
+      // admits nobody.
+      expect(
+         embed?.csp,
+         `the data app document must carry a framing policy that admits its own origin; got ${embed?.csp}`,
+      ).toContain("frame-ancestors");
+      expect(embed?.csp).toContain("'self'");
    });
 
-   test("the pages/ alias leaves a model path alone", async ({ page }) => {
-      // The exclusion that keeps the alias from eating real routes: a `.malloy`
-      // or `.malloynb` can legitimately live in a package's `pages/` directory,
-      // and the old data-app URL never named one, so it must NOT be rewritten.
-      // Broadening the alias to every path under `pages/` is the obvious
-      // simplification of that branch, and this is what refuses it.
-      //
-      // Assert on RENDERED TEXT rather than on the URL, which is the whole
-      // subtlety here. `toHaveURL` given the path just requested is satisfied on
-      // its first poll, before React has rendered and had any chance to navigate,
-      // so it passes whether the rewrite happens or not: dropping the guard left
-      // this test green in 273ms while the page really did end up on `data-apps/`.
-      // The message below is written by the app after that decision is made, and
-      // it quotes the path, so it cannot pass early and it changes if the path is
-      // rewritten. The file does not need to exist; not existing is what produces
-      // a message naming it.
+   test("the framed data app actually renders its content", async ({
+      page,
+   }) => {
+      // `src` being right does not mean the document loaded. Reaching INSIDE
+      // the frame does: a frame-ancestors refusal yields an empty document, so
+      // this fails where the src assertion above still passes.
+      await page.goto(
+         `/${DEFAULT_ENV}/${PACKAGES.dataApp}/data-apps/index.html`,
+      );
+      const frame = page.frameLocator("iframe");
+      await expect(frame.locator("body")).not.toBeEmpty({ timeout: 30000 });
+   });
+
+   test("an old pages/ bookmark is no longer rewritten to data-apps", async ({
+      page,
+   }) => {
+      // The `pages/` alias for data apps is retired: neither half of it remains
+      // (`pages` is out of SPA_OWNED_SEGMENTS on the server, and ModelPage no
+      // longer rewrites the path), so an old bookmark is an ordinary path into
+      // the package's `public/` directory and the viewer does not mount for it.
+      await page.goto(`/${DEFAULT_ENV}/${PACKAGES.dataApp}/pages/index.html`);
+      await expect(page).not.toHaveURL(/data-apps/);
+      await expect(page.locator("iframe")).toHaveCount(0);
+   });
+
+   test("a model path under pages/ is an ordinary model path", async ({
+      page,
+   }) => {
+      // A `.malloy` or `.malloynb` can legitimately live in a package's `pages/`
+      // directory. Asserted on RENDERED TEXT rather than on the URL: `toHaveURL`
+      // given the path just requested is satisfied on its first poll, before
+      // React has rendered, so it would pass whether or not a rewrite happened.
+      // The message is written by the app and quotes the path, so it cannot pass
+      // early and changes if the path is rewritten. The file need not exist; not
+      // existing is what produces a message naming it.
       await page.goto(
          `/${DEFAULT_ENV}/${PACKAGES.dataApp}/pages/report.malloy`,
       );

@@ -77,7 +77,7 @@ program
   )
   .option(
     "--package <n>",
-    "Package name (required for model/notebook/database; optional for materialization: omit to list the whole environment)",
+    "Package name (required for model, notebook, database and materialization)",
   )
   .option("--limit <n>", "Max materializations to return")
   .option("--offset <n>", "Materializations to skip")
@@ -104,30 +104,21 @@ program
           await connectionCommands.listConnections(client, options.environment);
           break;
         case "materialization": {
-          if (!options.environment) {
-            logError("--environment is required");
+          // A materialization is a run of one package's persist sources, so
+          // the package is not optional here.
+          if (!options.environment || !options.package) {
+            logError("--environment and --package are required");
             process.exit(1);
           }
-          const materializationOpts = {
-            limit: parseOptionalCount(options.limit, "--limit"),
-            offset: parseOptionalCount(options.offset, "--offset"),
-          };
-          // With --package, list that package's runs; without it, list every
-          // package's runs across the environment (each labeled by package).
-          if (options.package) {
-            await materializationCommands.listMaterializations(
-              client,
-              options.environment,
-              options.package,
-              materializationOpts,
-            );
-          } else {
-            await materializationCommands.listEnvironmentMaterializations(
-              client,
-              options.environment,
-              materializationOpts,
-            );
-          }
+          await materializationCommands.listMaterializations(
+            client,
+            options.environment,
+            options.package,
+            {
+              limit: parseOptionalCount(options.limit, "--limit"),
+              offset: parseOptionalCount(options.offset, "--offset"),
+            },
+          );
           break;
         }
         case "model":

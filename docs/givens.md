@@ -6,10 +6,10 @@ SPDX-License-Identifier: MIT
 # Givens (Runtime Parameters)
 
 > What this is: the base runtime-parameter mechanism that powers notebook filter controls,
-> [row-level access](row-level-access.md), and [`#(authorize)`](authorize.md) gates.
+> [row-level access](row-level-access.md), and [`#(access_filter)`](authorize.md) gates.
 > Runnable example: [examples/governed-analytics](../examples/governed-analytics).
 
-Givens are Malloy's native mechanism for declaring runtime parameters on a model — one typed value a caller supplies at query time — and the base primitive Publisher builds several features on top of. A model declares a `given:`, queries reference it as `$name`, and the caller supplies a value (or the declared default applies). Publisher introspects declared givens, exposes them through the API, renders inputs in the notebook UI, and forwards values to Malloy's runtime.
+Givens are Malloy's native mechanism for declaring runtime parameters on a model — one typed value a caller supplies at query time — and the base primitive Publisher builds several features on top of. A model declares a `given:`, queries reference it as `$name`, and the caller supplies a value (or the declared default applies). Publisher introspects declared givens, exposes them through the API, renders inputs in the notebook UI and the model Explorer, and forwards values to Malloy's runtime.
 
 For the authoritative Malloy reference (semantics, supported types, scoping rules), see [Malloy: Givens](https://docs.malloydata.dev/documentation/experiments/givens).
 
@@ -17,18 +17,18 @@ For the authoritative Malloy reference (semantics, supported types, scoping rule
 
 Givens are deliberately simple; the leverage is in what they enable. Jump to the application you care about:
 
-| Application | What it does | Where |
-| --- | --- | --- |
-| **Interactive filters** | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI; changing one re-runs the cells. | [Notebook UI](#notebook-ui), below |
-| **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out. | [Row-level access](row-level-access.md) |
-| **Source authorization** | An `#(authorize)` boolean expression over givens is grafted onto the source as a row filter, so a caller it admits nowhere gets a normal 200 with zero rows. A 403 means the gate could not be attached at all. | [Authorize](authorize.md) |
+| Application                              | What it does                                                                                                                                                                                                                                                 | Where                                   |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| **Interactive filters**                  | Each declared given is a typed input that becomes a control — text box, multi-select, date picker, checkbox — in the notebook UI, where changing one re-runs the cells, and in the model Explorer.                                                           | [Notebook UI](#notebook-ui), below      |
+| **Row-level filtering & access control** | A source scopes its own rows by a caller-supplied given (e.g. per-tenant), optionally made mandatory with a gate so callers can't opt out.                                                                                                                   | [Row-level access](row-level-access.md) |
+| **Source authorization**                 | `#(authorize)` decides whether a caller may reach the source at all and refuses with a 403; `#(access_filter)` is grafted as a row filter, so a caller it matches nowhere gets a normal 200 with zero rows. A 403 also covers either gate failing to attach. | [Authorize](authorize.md)               |
 
 > **Here for access control?** Givens are just the values your gates read. Skim [Declaring Givens](#declaring-givens) for the syntax, then go to [Authorize](authorize.md) to gate a source, or [Row-level access](row-level-access.md) to scope which rows a caller sees. Both enforce policy only behind a trusted tier that sets givens from verified identity — givens are caller-asserted.
 
 > **Runnable example.** [`examples/governed-analytics`](../examples/governed-analytics) is one small
 > package that exercises all three applications. It declares filter-control givens in
 > [`orders.malloy`](../examples/governed-analytics/orders.malloy) and renders their controls in
-> [`orders.malloynb`](../examples/governed-analytics/orders.malloynb); the same package backs the
+> the [`governed-analytics`](../examples/governed-analytics) package; the same package backs the
 > [authorize](authorize.md) and [row-level](row-level-access.md) docs.
 
 ## Declaring Givens
@@ -61,15 +61,15 @@ A given has a name, a Malloy type, and an optional default. Queries reference th
 
 ### Supported Types
 
-| Type          | Example declaration                                            | Use case                             |
-| ------------- | -------------------------------------------------------------- | ------------------------------------ |
-| `string`      | `given: category :: string is 'Footwear'`                      | Exact-match dimension values         |
-| `number`      | `given: min_price :: number is 0`                              | Numeric ranges, thresholds           |
-| `boolean`     | `given: include_returns :: boolean is false`                   | Toggle predicates                    |
-| `date`        | `given: cutoff :: date is @2024-01-01`                         | Date thresholds                      |
-| `timestamp`   | `given: since :: timestamp is @2024-01-01 00:00:00`            | Timestamp thresholds                 |
-| `timestamptz` | `given: since :: timestamptz is @2024-01-01 00:00:00::timestamptz` | Zone-aware timestamp thresholds  |
-| `filter<T>`   | `given: REGION :: filter<string> is f''`                       | First-class Malloy filter expression |
+| Type          | Example declaration                                                | Use case                             |
+| ------------- | ------------------------------------------------------------------ | ------------------------------------ |
+| `string`      | `given: category :: string is 'Footwear'`                          | Exact-match dimension values         |
+| `number`      | `given: min_price :: number is 0`                                  | Numeric ranges, thresholds           |
+| `boolean`     | `given: include_returns :: boolean is false`                       | Toggle predicates                    |
+| `date`        | `given: cutoff :: date is @2024-01-01`                             | Date thresholds                      |
+| `timestamp`   | `given: since :: timestamp is @2024-01-01 00:00:00`                | Timestamp thresholds                 |
+| `timestamptz` | `given: since :: timestamptz is @2024-01-01 00:00:00::timestamptz` | Zone-aware timestamp thresholds      |
+| `filter<T>`   | `given: REGION :: filter<string> is f''`                           | First-class Malloy filter expression |
 
 These are the scalar types Malloy's grammar accepts in a `given:` declaration. **Array and record
 givens are not among them**: `given: categories :: string[] is []` is a compile error
@@ -79,6 +79,8 @@ givens are not among them**: `given: categories :: string[] is []` is a compile 
 The `timestamptz` cast is not decoration. A bare `@2024-01-01 00:00:00` literal is a `timestamp`,
 so using it as a `timestamptz` default fails to compile with a type-mismatch error. Declaring the
 given with no default at all also works.
+
+A query, notebook cell or dashboard tile that reads a given with no default still loads with its package; it is refused only when it runs without a value for that given.
 
 ### Annotations
 
@@ -97,15 +99,15 @@ still reaches the API and still renders as helper text; the warning is cosmetic.
 It is called out here because the obvious ways to silence it are all worse, and each was tried
 against the compiler:
 
-| Instead of the form above | Compiles | Helper text |
-| --- | --- | --- |
-| `#(doc) Earliest report date to include` | clean | renders as `doc) Earliest report date to include` |
-| `#(description) Earliest report date to include` | clean | renders as `description) Earliest report date to include` |
-| `# description="Earliest report date to include"` (a tag, note the space) | clean | nothing renders: plain `#` tags are Malloy's reserved namespace and are filtered out before the annotation list reaches a client |
+| Instead of the form above                                                 | Compiles | Helper text                                                                                                                      |
+| ------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `#(doc) Earliest report date to include`                                  | clean    | renders as `doc) Earliest report date to include`                                                                                |
+| `#(description) Earliest report date to include`                          | clean    | renders as `description) Earliest report date to include`                                                                        |
+| `# description="Earliest report date to include"` (a tag, note the space) | clean    | nothing renders: plain `#` tags are Malloy's reserved namespace and are filtered out before the annotation list reaches a client |
 
 So for helper text in the notebook UI today, keep `#(description="…")`.
 
-The last row is about *rendering*, and it is narrowing. The server now reads a `# description="…"`
+The last row is about _rendering_, and it is narrowing. The server now reads a `# description="…"`
 tag off the declaration and returns it as `Given.description`, alongside the other control fields
 (`label`, `control`, `rangeMin`, `rangeMax`, `suggest`) it derives from the same plain `#` tags. That
 field is not what the notebook UI renders yet, so the row's "nothing renders" still holds for helper
@@ -128,14 +130,14 @@ There is no Publisher-side query rewriting (no `+ { where: ... }` refinement). T
 
 Givens are typed in Malloy, but the wire format is JSON. The mapping is:
 
-| Malloy type      | JS / JSON shape                                              |
-| ---------------- | ------------------------------------------------------------ |
-| `string`         | `"Footwear"`                                                  |
-| `number`         | `42`                                                          |
-| `boolean`        | `true` / `false`                                              |
-| `date`           | `"2024-01-01"` (ISO date string)                              |
-| `timestamp`      | `"2024-01-01T12:00:00Z"` (ISO timestamp)                      |
-| `filter<string>` | `"us-east, us-west"` (Malloy filter syntax as a string)       |
+| Malloy type      | JS / JSON shape                                         |
+| ---------------- | ------------------------------------------------------- |
+| `string`         | `"Footwear"`                                            |
+| `number`         | `42`                                                    |
+| `boolean`        | `true` / `false`                                        |
+| `date`           | `"2024-01-01"` (ISO date string)                        |
+| `timestamp`      | `"2024-01-01T12:00:00Z"` (ISO timestamp)                |
+| `filter<string>` | `"us-east, us-west"` (Malloy filter syntax as a string) |
 
 See the [Malloy accepted JS shapes table](https://docs.malloydata.dev/documentation/experiments/givens#accepted-js-shapes) for the full list.
 
@@ -143,13 +145,27 @@ See the [Malloy accepted JS shapes table](https://docs.malloydata.dev/documentat
 
 Malloy validates supplied givens when it prepares the query: an unknown given name (a typo, or a name the model doesn't declare) and a value that doesn't fit the given's declared type both throw a `runtime-given-*` error, which the publisher maps to a **400** with Malloy's message (unknown names come with a "did you mean?" hint).
 
-There is one exception. On a source guarded by `#(authorize)`, the authorize check runs first and binds the full supplied givens map, and it fails closed: a bad given (unknown name *or* wrong-typed value) makes that check throw and the gate denies, so the request returns **403** rather than 400. That looks like access denied, not validation. If a gated query returns 403 unexpectedly, check the given names and values against the model before assuming it's a permission problem.
+A `filter<T>` value is checked by the publisher itself, after the authorize check and before the query runs: a value that doesn't parse as a `T` filter gets a **400** that names the given, quotes the parser's reason, and says how to fix it.
+
+There is one exception. On a source guarded by `#(access_filter)`, the authorize check runs first and binds the full supplied givens map, and it fails closed: a bad given (unknown name _or_ wrong-typed value) makes that check throw and the gate denies, so the request returns **403** rather than 400. That looks like access denied, not validation. If a gated query returns 403 unexpectedly, check the given names and values against the model before assuming it's a permission problem.
 
 The `/compile` endpoint (with `includeSql: true`) follows the same handling: a bad given is surfaced rather than silently omitting `sql`.
 
+A given the entry model does not surface, but that some gate reads, is withheld from the query so the gate can still see it. It is not withheld when the query itself also reads a given of that name, for example a `where:` on a source imported from another file that declares its own `HIDE` with a default. Withholding it there would run that `where:` at its default and ignore the value the caller sent, so the request returns a **400** (`unknown given`). To fix it, import the given at the entry model so the query can bind the caller's value.
+
+### A notebook cell binds only the givens its own scope declares
+
+A notebook cell run ignores a given that the notebook declares only in a later cell,
+so a code cell that runs before the notebook's `import` of a given does not 400 when
+the caller sends that given's value. A given the cell's own imports declare, at any
+depth, is still forwarded, but forwarding is not binding: one declared deep and not
+surfaced by the cell's imports still 400s. A name declared nowhere in the notebook
+still 400s.
+Model queries are unaffected.
+
 ### A gate's givens must be on the gating model's own surface
 
-There is no longer a separate "whole-source (given-only)" gate class — every `#(authorize)` gate is a
+There is no longer a separate "whole-source (given-only)" gate class — every `#(access_filter)` gate is a
 row filter, compiled into the query at **package load** rather than evaluated by a separately-probed
 condition at request time. That makes it stricter about where its givens live: a given the gate
 references that is not on the gating model's own surface is refused at load, rather than silently
@@ -161,7 +177,7 @@ elsewhere (`import { NAME } from "…"`).
 
 ### Introspection
 
-Givens declared on a model appear on `CompiledModel.givens` and on each `Source.givens` in the API response. For the bundled [`governed-analytics/orders.malloy`](../examples/governed-analytics/orders.malloy):
+Givens declared on a model appear on `CompiledModel.givens` and on each `Source.givens` in the API response. The bundled `governed-analytics` package publishes its surface through [`index.malloy`](../examples/governed-analytics/index.malloy), which imports `orders.malloy` and exports `sales`, so address the API at the surface file — `orders.malloy` is off it and answers 404. Givens declared in an imported file reach the surface unchanged:
 
 ```json
 {
@@ -176,7 +192,9 @@ Givens declared on a model appear on `CompiledModel.givens` and on each `Source.
     {
       "name": "MIN_AMOUNT",
       "type": "number",
-      "annotations": ["#(description=\"Only include orders at or above this amount (USD)\")"]
+      "annotations": [
+        "#(description=\"Only include orders at or above this amount (USD)\")"
+      ]
     }
   ]
 }
@@ -224,7 +242,7 @@ The `execute_query` tool accepts a `givens` parameter on the same wire shape:
 {
   "environmentName": "examples",
   "packageName": "governed-analytics",
-  "modelPath": "orders.malloy",
+  "modelPath": "index.malloy",
   "query": "run: sales -> by_region",
   "givens": {
     "REGION": "us-east"
@@ -242,31 +260,43 @@ Change a control and every cell re-runs with the new value, no reload and no rew
 
 ![Typing into the Parameters panel re-runs the notebook's dashboard live](screenshots/givens-live.gif)
 
-The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics/orders.malloynb`](../examples/governed-analytics/) to try it.
+The example above ships in Publisher's default `examples` environment — open [`examples/governed-analytics`](../examples/governed-analytics/) to try it.
 
-| Malloy type                          | Widget                        |
-| ------------------------------------ | ----------------------------- |
-| `number`                             | Numeric input with × clear    |
-| `boolean`                            | Checkbox                      |
-| `date`, `timestamp`, `timestamptz`   | Date picker with native clear |
-| `string`, `filter<…>`, anything else | Text input with × clear       |
+The model Explorer shows the same Filters panel whenever the model it opens declares givens, and sends the values with every Run, so a source gated on a given can be explored from the Console. See [Explorer: filters](explorer.md#filters).
 
-The UI can also render a slider for a `filter<number>` lower bound and a
+| Malloy type                                                | Widget                                                                                                                                                |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `number`                                                   | Numeric input with × clear                                                                                                                            |
+| `boolean`                                                  | Checkbox                                                                                                                                              |
+| `date`, `timestamp`, `timestamptz`                         | Date picker with native clear                                                                                                                         |
+| `filter<date>`, `filter<timestamp>`, `filter<timestamptz>` | Time-range control: Today, last 7/30/90 days, last 12 months, or a custom range of days; a single day keeps the date picker                           |
+| `filter<boolean>`                                          | Dropdown of true and false; blank uses the model's default, so no filter when that is `f''`. Other spellings, such as `not true`, keep the text input |
+| `string`, `filter<…>`, anything else                       | Text input with × clear                                                                                                                               |
+
+The UI can also render a two-handled range slider for a `filter<number>` and a
 single- or multi-pick dropdown for a `filter<string>`, driven by the `label`,
-`control`, `rangeMin`, `rangeMax` and `suggest` fields on a given. Those fields
-are specified, and whether a model can ask for either control depends on the
-server it is talking to: as of this release no endpoint populates them, so every
-given falls to the table above, and the dashboard work that fills them in is
-landing separately. Where they are absent the control degrades to its row in the
-table rather than failing. When they do
-arrive, a slider or dropdown appears only where it can represent the filter
-faithfully: a `filter<number>` holding a range or a negation, or a
-`filter<string>` holding anything but a plain list of values, keeps the text box
-rather than showing a control that would rewrite the author's filter on first
-use.
+`control`, `rangeMin`, `rangeMax` and `suggest` fields on a given, which the
+server derives from the declaration's own tags (`# label="…" control=select
+range_min=0 range_max=250 suggest { … }`). Where those fields are absent the
+control degrades to its row in the table rather than failing. A slider,
+dropdown or time-range control appears only where it can represent the filter
+faithfully: a `filter<number>` holding a half-open range or a negation, a
+`filter<string>` holding anything but a plain list of values, or a date filter
+holding anything but a preset window or a range of whole days, keeps the text
+box rather than showing a control that would rewrite the author's filter on
+first use. The custom day range is inclusive on both ends as picked, and encodes
+Malloy's half-open `A to B` by writing the day after the last one.
+
+A dropdown's option list comes from its `suggest` query, which runs on the same
+governed endpoint as everything else. When the source it reads is gated by an
+`#(access_filter)` expression or scoped by a source-level `where:` that reads a
+given, the server names those givens on the suggest (`suggest.givenNames`), and
+the UI sends the current values of exactly those with the option query: enough
+for a gated source's options to load, and no more, so the list still does not
+depend on the page's other filters and is cached across them.
 
 `#(description="...")` annotations render as MUI helper text beneath the input. A
-**Reset** button appears next to the "Parameters" heading whenever any given has a
+**Reset** button appears next to the "Filters" heading whenever any given has a
 value set, whether it was typed, picked, or carried in by the URL. A given left
 unset does not count. Whether an empty parameter (`?REGION=`) counts depends on
 the type: for a `string` or a `filter<…>` the empty string is a real value (the
@@ -286,11 +316,15 @@ link's values, and Reset discards those too.
 
 ## Coming from `#(filter)`
 
+`#(filter)` is deprecated. Do not add one to a model, not even for `required`,
+`implicit`, or a date or number range: each of those has a `given:` form, listed
+below. Existing `#(filter)` models still run, and this section is for migrating
+them.
+
 The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
 `##(filters)` annotations is no longer filterable from a notebook, and one with
 a `required` filter cannot be satisfied there at all. The annotations still work
-everywhere else: the REST `filterParams` parameter and the server-side
-enforcement are unchanged. This is the UI half of the migration.
+everywhere else. `#(filter)` is not a security boundary against caller-authored query text or `bypassFilters`; use givens + `#(authorize)`. This is the UI half of the migration.
 
 There is no automatic conversion, because the two mechanisms are different
 shapes. A `#(filter)` annotation marks an existing dimension as filterable and
@@ -315,7 +349,7 @@ becomes two givens and one `where:`:
 given: REGION :: filter<string> is f''
 
 #(description="Only include orders above this amount (USD)")
-given: MIN_AMOUNT :: number is 0
+given: MIN_AMOUNT :: number
 
 source: sales is orders_base extend {
   where: region ~ $REGION and amount > $MIN_AMOUNT
@@ -329,17 +363,22 @@ is exclusive in the same way. There is no inclusive comparator, so a `>=` filter
 was already being expressed some other way and should keep whatever spelling it
 had.
 
-Three things worth knowing while converting:
+Things worth knowing while converting:
 
 - **`type=in` and `type=equal` become `filter<string>`**, whose value is filter
   syntax rather than a bare value, so one control can carry several values. The
   empty filter `f''` is the natural "no constraint" starting point.
-- **A `required` filter has no direct equivalent.** A given always has a value,
-  its default, so "the reader must choose" is expressed by picking a default
-  that is safe to run, or by using `#(authorize)` where the requirement is
-  really about access rather than about filtering. See
+- **A `required` filter becomes a given with no default**, as `MIN_AMOUNT` is
+  above. A query that omits it fails with "Given 'MIN_AMOUNT' has no value and
+  no default", which is what `required` did. Where the requirement is really
+  about access rather than filtering, use `#(access_filter)` instead. See
   [Row-level access](row-level-access.md).
-- **The name is the reader-facing label**, so it appears in the Parameters panel
+- **An `implicit` filter becomes `#(access_filter)`**, over a given that a
+  trusted tier sets, since the value comes from the system and not the reader.
+- **A range (`greater_than` and `less_than` on one dimension) becomes one
+  `filter<number>` or `filter<date>` given**, e.g. `where: amount ~ $AMOUNT`,
+  and the caller sends a filter expression such as `>= 50`.
+- **The name is the reader-facing label**, so it appears in the Filters panel
   and in the URL. `#(description=…)` supplies the helper text underneath.
 
 ### Parameters live in the URL
@@ -407,14 +446,14 @@ or leave the date bare.
 A cell the server refuses to run now shows "This cell could not be run" and the
 reason, in place of its result. Before, the failure went to the browser console
 and the reader was left with an empty space. A required given with no value, and
-an `#(authorize)` denial, both surface this way.
+a `#(access_filter)` denial, both surface this way.
 
 ## Worked Example
 
-The bundled `examples` environment ships [`governed-analytics`](../examples/governed-analytics), whose [`orders.malloy`](../examples/governed-analytics/orders.malloy) declares `REGION` and `MIN_AMOUNT` givens and [`orders.malloynb`](../examples/governed-analytics/orders.malloynb) runs a dashboard over them. Open the notebook in the Publisher UI:
+The bundled `examples` environment ships [`governed-analytics`](../examples/governed-analytics), whose [`orders.malloy`](../examples/governed-analytics/orders.malloy) declares `REGION` and `MIN_AMOUNT` givens. Open the package in the Publisher UI:
 
 ```
-http://localhost:4000/examples/governed-analytics/orders.malloynb
+http://localhost:4000/examples/governed-analytics
 ```
 
-The Parameters panel auto-renders above the cells with the declared defaults; change `REGION` (or `MIN_AMOUNT`) and every cell re-executes with the new value.
+The Filters panel auto-renders above the cells with the declared defaults; change `REGION` (or `MIN_AMOUNT`) and every cell re-executes with the new value.

@@ -24,6 +24,17 @@ export interface QueryOutcome {
    rows: Record<string, unknown>[];
    /** Raw full-result JSON string, for anything else a scenario wants. */
    raw: string;
+   /**
+    * Which tier produced this answer: `storage`, `live_fallback`, or absent
+    * when the query never reached the routing decision.
+    *
+    * The only direct evidence a scenario has that a materialized table was
+    * READ. Every other signal is circumstantial — a binding proves one exists,
+    * and the rows prove nothing at all, because a correct tier and a live
+    * fallback return the same answer by design. That is the whole feature, and
+    * it is also why a scenario asserting rows alone cannot tell them apart.
+    */
+   servedFrom?: string;
 }
 
 export class Rest {
@@ -333,22 +344,39 @@ export class Rest {
       },
    ): Promise<QueryOutcome> {
       const url = this.pkgUrl(pkg, `/models/${modelPath}/query`);
-      const post = async (compactJson: boolean): Promise<string> => {
+      // `servedFrom` rides the response ENVELOPE, beside `result`, not inside
+      // the result JSON — so the envelope is kept rather than unwrapped here.
+      const post = async (
+         compactJson: boolean,
+      ): Promise<{ result: string; servedFrom?: string }> => {
          const res = await fetch(url, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ ...spec, compactJson }),
          });
-         const json = (await res.json()) as { result?: string; error?: string };
+         const json = (await res.json()) as {
+            result?: string;
+            servedFrom?: string | null;
+            error?: string;
+         };
          if (!res.ok)
             throw new Error(
                `query ${pkg}/${modelPath} ${res.status}: ${json.error ?? JSON.stringify(json)}`,
             );
-         return json.result ?? "";
+         // Null and absent collapse: both mean "no routing decision is
+         // reported", and a scenario asserts this positively (`storage`)
+         // rather than by absence, so nothing downstream tells them apart.
+         return {
+            result: json.result ?? "",
+            servedFrom: json.servedFrom ?? undefined,
+         };
       };
-      const full = await post(false);
-      const compact = await post(true);
+      const fullRes = await post(false);
+      const compactRes = await post(true);
+      const full = fullRes.result;
+      const compact = compactRes.result;
       const sql = (JSON.parse(full) as { sql?: string }).sql ?? "";
+      const servedFrom = fullRes.servedFrom;
       let rows: Record<string, unknown>[] = [];
       try {
          const parsed = JSON.parse(compact);
@@ -356,7 +384,7 @@ export class Rest {
       } catch {
          rows = [];
       }
-      return { sql, rows, raw: full };
+      return { sql, rows, raw: full, servedFrom };
    }
 
    /** Query, tolerating failure — returns the error string instead of throwing. */

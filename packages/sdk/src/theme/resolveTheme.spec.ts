@@ -82,14 +82,82 @@ describe("resolveTheme cascade", () => {
    it("exposes derived mode values (border, foreground, axisFaint)", () => {
       const light = resolveTheme([], "light");
       const dark = resolveTheme([], "dark");
-      expect(light.border).toBe("1px solid #e5e7eb");
+      // All on one slate ramp, in both modes: these are the chrome around
+      // the data, and a neutral with a colour cast in it reads as a failed
+      // attempt at whatever the data is painted in.
+      expect(light.border).toBe("1px solid #e2e8f0");
       expect(dark.border).toBe("1px solid #334155");
-      expect(light.foreground).toBe("#1f2937");
+      // A card's edge is a step darker than a table's gridline in both modes:
+      // the gridline separates rows inside a card, the card edge says where
+      // the card stops, and at one weight the second job went undone.
+      expect(light.cardBorder).toBe("1px solid #cbd5e1");
+      expect(dark.cardBorder).toBe("1px solid #475569");
+      expect(light.cardBorder).not.toBe(light.border);
+      expect(dark.cardBorder).not.toBe(dark.border);
+      expect(light.foreground).toBe("#0f172a");
       expect(dark.foreground).toBe("#e2e8f0");
-      expect(light.axisFaint).toBe("#d1d5db");
+      expect(light.axisFaint).toBe("#cbd5e1");
       expect(dark.axisFaint).toBe("#475569");
-      expect(light.valueColor).toBe("#1f2937");
+      expect(light.valueColor).toBe("#0f172a");
       expect(dark.valueColor).toBe("#f1f5f9");
+      expect(light.pinnedBorder).toBe("1px solid #cbd5e1");
+      expect(dark.pinnedBorder).toBe("1px solid #475569");
+      // Gridlines default to the axis colour; they are separate keys so a
+      // host can quieten the grid without touching the axis rule.
+      expect(light.gridline).toBe("#cbd5e1");
+      expect(dark.gridline).toBe("#475569");
+   });
+
+   it("the chrome colours are per-mode palette keys an operator can set", () => {
+      const layer: Theme = {
+         palette: {
+            border: { light: "#e5e7eb", dark: "#1f2937" },
+            cardBorder: { light: "#d1d5db", dark: "#374151" },
+            axis: { light: "#9ca3af", dark: "#6b7280" },
+            gridline: { light: "#f3f4f6", dark: "#111827" },
+            chartText: { light: "#4b5563", dark: "#d1d5db" },
+            value: { light: "#111111", dark: "#fafafa" },
+         },
+      };
+      const light = resolveTheme([layer], "light");
+      const dark = resolveTheme([layer], "dark");
+      expect(light.border).toBe("1px solid #e5e7eb");
+      expect(dark.border).toBe("1px solid #1f2937");
+      expect(light.cardBorder).toBe("1px solid #d1d5db");
+      expect(dark.cardBorder).toBe("1px solid #374151");
+      // The pinned table header's rule follows the card edge.
+      expect(light.pinnedBorder).toBe("1px solid #d1d5db");
+      expect(dark.pinnedBorder).toBe("1px solid #374151");
+      expect(light.axisFaint).toBe("#9ca3af");
+      expect(dark.axisFaint).toBe("#6b7280");
+      expect(light.gridline).toBe("#f3f4f6");
+      expect(dark.gridline).toBe("#111827");
+      expect(light.foreground).toBe("#4b5563");
+      expect(dark.foreground).toBe("#d1d5db");
+      expect(light.valueColor).toBe("#111111");
+      expect(dark.valueColor).toBe("#fafafa");
+   });
+
+   it("a chrome colour set only for light leaves dark on its default", () => {
+      const layer: Theme = {
+         palette: {
+            border: { light: "#e5e7eb" },
+            cardBorder: { light: "#d1d5db" },
+            axis: { light: "#9ca3af" },
+            gridline: { light: "#f3f4f6" },
+            chartText: { light: "#4b5563" },
+            value: { light: "#111111" },
+         },
+      };
+      const dark = resolveTheme([layer], "dark");
+      const unthemed = resolveTheme([], "dark");
+      expect(dark.border).toBe(unthemed.border);
+      expect(dark.cardBorder).toBe(unthemed.cardBorder);
+      expect(dark.pinnedBorder).toBe(unthemed.pinnedBorder);
+      expect(dark.axisFaint).toBe(unthemed.axisFaint);
+      expect(dark.gridline).toBe(unthemed.gridline);
+      expect(dark.foreground).toBe(unthemed.foreground);
+      expect(dark.valueColor).toBe(unthemed.valueColor);
    });
 
    it("drillLink is a link colour per mode, not a series colour", () => {
@@ -106,10 +174,10 @@ describe("resolveTheme cascade", () => {
    });
 
    it("dashboardRoot is mode-keyed and immune to operator background overrides", () => {
-      // Light keeps white (no regression on existing installs).
+      // The page's own ground in each mode: the panel, the cards on it and
+      // the canvases inside them are one surface that borders divide up.
       expect(resolveTheme([], "light").dashboardRoot).toBe("#ffffff");
-      // Dark paints slate so the panel doesn't read as a bright box.
-      expect(resolveTheme([], "dark").dashboardRoot).toBe("#1e293b");
+      expect(resolveTheme([], "dark").dashboardRoot).toBe("#0f172a");
       // An operator picking a bold accent for `background` (the chart
       // canvas) must NOT bleed into the surrounding panel.
       const t = resolveTheme(
@@ -117,14 +185,14 @@ describe("resolveTheme cascade", () => {
          "dark",
       );
       expect(t.background).toBe("#ff8800");
-      expect(t.dashboardRoot).toBe("#1e293b");
+      expect(t.dashboardRoot).toBe("#0f172a");
    });
 
    it("tableBackground follows the operator's palette.background", () => {
-      // Defaults track the per-mode background (white in light, slate
-      // in dark) so existing installs see no change.
+      // Defaults track the per-mode background, which is the page's ground
+      // in both modes.
       expect(resolveTheme([], "light").tableBackground).toBe("#ffffff");
-      expect(resolveTheme([], "dark").tableBackground).toBe("#1e293b");
+      expect(resolveTheme([], "dark").tableBackground).toBe("#0f172a");
       // An operator accent on palette.background bleeds into the table
       // interior so charts and tables share a single viz surface
       // colour. The dashboard panel between tiles stays neutral —
@@ -156,5 +224,22 @@ describe("resolveMode", () => {
 
    it("falls back to light when nothing is set", () => {
       expect(resolveMode(undefined, undefined, false)).toBe("light");
+   });
+});
+
+describe("resolveTheme series in dark mode", () => {
+   it("draws the default series as it always was", () => {
+      expect(resolveTheme([], "dark").series).toEqual(
+         resolveTheme([], "light").series,
+      );
+   });
+
+   it("lifts an operator's series colour too dark for the dark canvas", () => {
+      const dark = resolveTheme(
+         [{ palette: { series: ["#1a1a1a", "#60a5fa"] } }],
+         "dark",
+      );
+      expect(dark.series[0]).not.toBe("#1a1a1a");
+      expect(dark.series[1]).toBe("#60a5fa");
    });
 });

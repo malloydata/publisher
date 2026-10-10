@@ -18,10 +18,10 @@ The Publisher SDK (`@malloy-publisher/sdk`) is a comprehensive React component l
 7. [Dimensional Filters](#dimensional-filters)
 8. [Hooks](#hooks)
 9. [Utilities](#utilities)
-10. [Workbook Storage](#workbook-storage)
-11. [Styling](#styling)
-12. [Building a Custom Data App](#building-a-custom-data-app)
-13. [API Reference](#api-reference)
+10.   [Document Storage](#document-storage)
+11.   [Styling](#styling)
+12.   [Building a Custom Data App](#building-a-custom-data-app)
+13.   [API Reference](#api-reference)
 
 ---
 
@@ -40,6 +40,14 @@ yarn add @malloy-publisher/sdk
 
 ---
 
+### Peer dependencies
+
+The SDK expects the host to provide React and the Malloy packages it renders
+with, including `@malloydata/malloy`. The Malloy parser is only loaded when the
+dashboard builder opens (it is imported lazily, about 440 KB gzipped), so an
+app that never opens the builder never downloads it — but the package still has
+to be installed, or that one dynamic import fails at open time.
+
 ## Quick Start
 
 ### Basic Setup
@@ -51,7 +59,9 @@ import "@malloy-publisher/sdk/styles.css";
 function App() {
    return (
       <ServerProvider baseURL="http://localhost:4000/api/v0">
-         <Home onClickEnvironment={(path) => console.log("Navigate to:", path)} />
+         <Home
+            onClickEnvironment={(path) => console.log("Navigate to:", path)}
+         />
       </ServerProvider>
    );
 }
@@ -169,7 +179,6 @@ ServerProvider (required wrapper)
 │       └── Package (show models, notebooks, connections)
 │           ├── Model (visual query builder + named queries)
 │           └── Notebook (read-only notebook viewer)
-└── Workbook (interactive analysis workbook)
 ```
 
 ### Navigation Pattern
@@ -200,7 +209,7 @@ The `ServerProvider` is the required context provider that wraps your applicatio
 | ---------------- | ----------------------- | ------------- | -------------------------------------------------------------------- |
 | `baseURL`        | `string`                | Auto-detected | Base URL of the Publisher API (e.g., `http://localhost:4000/api/v0`) |
 | `getAccessToken` | `() => Promise<string>` | `undefined`   | Async function returning auth token                                  |
-| `mutable`        | `boolean`               | `true`        | Enable/disable environment/package management UI                         |
+| `mutable`        | `boolean`               | `true`        | Enable/disable environment/package management UI                     |
 
 ### Basic Usage
 
@@ -463,48 +472,6 @@ const resourceUri = encodeResourceUri({
 
 ---
 
-### Workbook
-
-Interactive workbook editor for creating and saving custom analyses.
-
-```tsx
-import {
-   Workbook,
-   WorkbookStorageProvider,
-   BrowserWorkbookStorage,
-   encodeResourceUri,
-} from "@malloy-publisher/sdk";
-
-interface WorkbookProps {
-   workbookPath?: WorkbookLocator; // { path: string, workspace: string }
-   resourceUri: string;
-}
-
-// Usage
-const workbookStorage = new BrowserWorkbookStorage();
-const resourceUri = encodeResourceUri({
-   environmentName: "my-environment",
-   packageName: "analytics",
-});
-
-<WorkbookStorageProvider workbookStorage={workbookStorage}>
-   <Workbook
-      workbookPath={{ path: "my-analysis", workspace: "Local" }}
-      resourceUri={resourceUri}
-   />
-</WorkbookStorageProvider>;
-```
-
-**Features:**
-
-- Add/remove Markdown and Malloy cells
-- Model picker for source selection
-- Auto-save to storage backend
-- Export to Malloy format
-- Delete workbook
-
----
-
 ## Query & Results Components
 
 ### QueryResult
@@ -605,82 +572,31 @@ const embedded = createEmbeddedQueryResult({
 ## Dimensional Filters
 
 The SDK supports interactive dimensional filtering for hand-built data apps.
-Filters are configured through annotations in Malloy source files. The `Notebook`
-component does not use this mechanism; see [Notebooks use `given:`](#notebooks-use-given-not-these-annotations) below.
+You configure each filter in code, with a `dimensionSpecs` entry passed to the
+hooks below. The `Notebook` component does not use this mechanism; see
+[Notebooks use `given:`](#notebooks-use-given-not-these-annotations) below.
 
 ### Filter Types
 
-| Type | UI Component | Use Case |
-|------|--------------|----------|
-| `Star` | Multi-select dropdown | String fields with discrete values |
-| `MinMax` | Range slider | Numeric fields |
-| `DateMinMax` | Date range picker | Date/timestamp fields |
-| `Retrieval` | Semantic search input | Free-text semantic search |
-| `Boolean` | Toggle switch | Boolean fields |
+| Type         | UI Component          | Use Case                           |
+| ------------ | --------------------- | ---------------------------------- |
+| `Star`       | Multi-select dropdown | String fields with discrete values |
+| `MinMax`     | Range slider          | Numeric fields                     |
+| `DateMinMax` | Date range picker     | Date/timestamp fields              |
+| `Retrieval`  | Semantic search input | Free-text semantic search          |
+| `Boolean`    | Toggle switch         | Boolean fields                     |
 
-### Source Declaration Syntax
+### Choosing a filter type and label
 
-Add filter annotations to dimensions in your Malloy source files using the `#(filter)` tag:
+Set `filterType` and `label` on each `dimensionSpecs` entry, as in the hook
+example below. The model needs no annotation for this.
 
-```malloy
-source: flights is duckdb.table('data/flights.parquet') extend {
-  dimension:
-    // Multi-select dropdown for string values
-    #(filter) {"type": "Star"}
-    origin_code is origin
-
-    // Range slider for numeric values
-    #(filter) {"type": "MinMax"}
-    distance_miles is distance
-
-    // Date range picker
-    #(filter) {"type": "DateMinMax"}
-    flight_departure is dep_time
-
-  join_one: carriers with carrier
-}
-
-source: carriers is duckdb.table('data/carriers.parquet') extend {
-  dimension:
-    #(filter) {"type": "Star"}
-    nickname is nickname_old
-
-    // Semantic search for text fields (requires embedding index)
-    #(index_values) n=-1
-    #(filter) {"type": "Retrieval"}
-    name is name_old
-}
-
-source: recalls is duckdb.table('data/recalls.csv') extend {
-  dimension:
-    // Boolean toggle filter
-    #(filter) {"type": "Boolean"}
-    is_major_recall is potentially_affected > 100000
-}
-```
-
-### Custom Labels
-
-By default, filters display the dimension field name in the UI. You can customize the display label using the `# label="..."` annotation:
-
-```malloy
-source: recalls is duckdb.table('data/recalls.csv') extend {
-  dimension:
-    #(filter) {"type": "Star"}
-    # label="Vehicle Manufacturer"
-    Manufacturer is Manufacturer_old
-
-    #(filter) {"type": "Retrieval"}
-    # label="Recall Subject"
-    Subject is Subject_old
-
-    #(filter) {"type": "MinMax"}
-    # label="Number of Affected Vehicles"
-    potentially_affected is affected_count
-}
-```
-
-The `# label="..."` annotation can be placed before or after the `#(filter)` annotation. When present, the label value will be displayed in the filter UI instead of the raw field name.
+Do not add a `#(filter) {"type": "..."}` annotation to a dimension to pick the
+type. `#(filter)` is deprecated in every form, and this JSON form is legacy
+syntax. `extractDimensionSpecs` still reads it, and `# label="..."`, from a
+model that already has them, so existing apps keep working. To make a model
+filterable by its callers, declare a `given:` on the source instead; see
+[docs/givens.md](../../docs/givens.md).
 
 ### Notebooks use `given:`, not these annotations
 
@@ -690,8 +606,8 @@ come from the `given:` parameters its model declares, which is the mechanism
 described in [docs/givens.md](../../docs/givens.md). A `##(filters)` annotation in
 a notebook cell is inert.
 
-The `#(filter)` source annotations above still work, and so do the hooks below.
-They are what a hand-built data app uses; only the notebook's own panel changed.
+The hooks below still work. They are what a hand-built data app uses; only the
+notebook's own panel changed.
 
 ### React Hooks for Programmatic Filtering
 
@@ -699,34 +615,52 @@ For custom data apps, use the SDK's React hooks:
 
 ```tsx
 import {
-  useDimensionFiltersFromSpec,
-  DimensionFiltersConfig
-} from '@malloy-publisher/sdk';
+   useDimensionFiltersFromSpec,
+   DimensionFiltersConfig,
+} from "@malloy-publisher/sdk";
 
 const config: DimensionFiltersConfig = {
-  environment: "malloy-samples",
-  package: "faa",
-  indexLimit: 1000,
-  dimensionSpecs: [
-    { dimensionName: "origin_code", filterType: "Star", source: "flights", model: "flights.malloy", label: "Origin Airport" },
-    { dimensionName: "distance", filterType: "MinMax", source: "flights", model: "flights.malloy", label: "Distance (miles)" },
-    { dimensionName: "dep_time", filterType: "DateMinMax", source: "flights", model: "flights.malloy", label: "Departure Time" },
-  ],
+   environment: "malloy-samples",
+   package: "faa",
+   indexLimit: 1000,
+   dimensionSpecs: [
+      {
+         dimensionName: "origin_code",
+         filterType: "Star",
+         source: "flights",
+         model: "flights.malloy",
+         label: "Origin Airport",
+      },
+      {
+         dimensionName: "distance",
+         filterType: "MinMax",
+         source: "flights",
+         model: "flights.malloy",
+         label: "Distance (miles)",
+      },
+      {
+         dimensionName: "dep_time",
+         filterType: "DateMinMax",
+         source: "flights",
+         model: "flights.malloy",
+         label: "Departure Time",
+      },
+   ],
 };
 
 function FilteredDashboard() {
-  const {
-    filterStates,       // Current filter values
-    updateFilter,       // Update a single filter
-    clearAllFilters,    // Reset all filters
-    activeFilters,      // Array of active filter selections
-    data,               // Dimension values for dropdowns/sliders
-    isLoading,          // Loading state
-    executeQuery,       // Run query with current filters
-    queryString,        // Generated Malloy query
-  } = useDimensionFiltersFromSpec(config);
+   const {
+      filterStates, // Current filter values
+      updateFilter, // Update a single filter
+      clearAllFilters, // Reset all filters
+      activeFilters, // Array of active filter selections
+      data, // Dimension values for dropdowns/sliders
+      isLoading, // Loading state
+      executeQuery, // Run query with current filters
+      queryString, // Generated Malloy query
+   } = useDimensionFiltersFromSpec(config);
 
-  // Render filter UI and results...
+   // Render filter UI and results...
 }
 ```
 
@@ -734,14 +668,14 @@ function FilteredDashboard() {
 
 Filters support different match types depending on the filter type:
 
-| Match Type | Description | Applicable To |
-|------------|-------------|---------------|
-| `Equals` | Exact match (multi-select supported) | Star, Retrieval |
-| `Contains` | Substring match | Star |
-| `Greater Than` / `Less Than` | Comparison | MinMax |
-| `Between` | Range (inclusive) | MinMax, DateMinMax |
-| `After` / `Before` | Date comparison | DateMinMax |
-| `Semantic Search` | Semantic similarity | Retrieval |
+| Match Type                   | Description                          | Applicable To      |
+| ---------------------------- | ------------------------------------ | ------------------ |
+| `Equals`                     | Exact match (multi-select supported) | Star, Retrieval    |
+| `Contains`                   | Substring match                      | Star               |
+| `Greater Than` / `Less Than` | Comparison                           | MinMax             |
+| `Between`                    | Range (inclusive)                    | MinMax, DateMinMax |
+| `After` / `Before`           | Date comparison                      | DateMinMax         |
+| `Semantic Search`            | Semantic similarity                  | Retrieval          |
 
 ---
 
@@ -829,7 +763,8 @@ import { useMutationWithApiError } from "@malloy-publisher/sdk";
 function MyComponent() {
    const mutation = useMutationWithApiError({
       mutationFn: async (newEnvironment) => {
-         const response = await apiClients.environments.createEnvironment(newEnvironment);
+         const response =
+            await apiClients.environments.createEnvironment(newEnvironment);
          return response.data;
       },
       onSuccess: () => {
@@ -1003,145 +938,158 @@ type ParsedResource = {
 
 ---
 
-## Workbook Storage
+## Document Storage
 
-Workbooks are interactive analysis documents that can be saved and loaded. The SDK provides a storage abstraction that you can implement for different backends.
+The SDK renders dashboards and notebooks a Publisher server serves out of a package, and it will
+author them too, but it does not decide where an authored document is kept. That is the host's
+choice, made by passing a `DocumentStorage` implementation into `DocumentStorageProvider`. The
+Console keeps documents in this browser's localStorage; a platform keeps them in its own document
+store; a repo-backed host writes them to the package directory.
 
-### WorkbookStorage Interface
+### DocumentStorage Interface
 
-```typescript
+```tsx
+/** The kinds of document the SDK authors. */
+type DocumentType = "dashboard" | "notebook";
+
 interface Workspace {
    name: string;
    writeable: boolean;
+   /** What this place is, in the backend's own words. The editor shows it. */
    description: string;
+   /**
+    * This workspace holds the package's system of record: the editor opens
+    * what it keeps and writes back to it, and treats the package file as a
+    * deploy of it. Left out, the package file is the record and this is a
+    * place a copy is kept beside it, which is what every host got before the
+    * flag existed. At most one workspace per storage sets it.
+    */
+   authoritative?: boolean;
 }
 
-interface WorkbookLocator {
-   path: string;
+interface DocumentLocator {
    workspace: string;
+   type: DocumentType;
+   path: string; // as the backend spells it, e.g. "dashboards/overview.malloy"
 }
 
-interface WorkbookStorage {
+interface DocumentStorage {
    listWorkspaces(writeableOnly: boolean): Promise<Workspace[]>;
-   listWorkbooks(workspace: Workspace): Promise<WorkbookLocator[]>;
-   getWorkbook(path: WorkbookLocator): Promise<string>;
-   deleteWorkbook(path: WorkbookLocator): Promise<void>;
-   saveWorkbook(path: WorkbookLocator, workbook: string): Promise<void>;
-   moveWorkbook(from: WorkbookLocator, to: WorkbookLocator): Promise<void>;
+   listDocuments(
+      workspace: Workspace,
+      type?: DocumentType,
+   ): Promise<DocumentLocator[]>;
+   getDocument(locator: DocumentLocator): Promise<string>;
+   saveDocument(locator: DocumentLocator, content: string): Promise<void>;
+   deleteDocument(locator: DocumentLocator): Promise<void>;
+   moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
 }
 ```
 
----
+`getDocument`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
+when the document is not there, and with anything else when the backend could not be
+asked. The distinction is load-bearing rather than cosmetic: a failed read reported as
+"there is no document" reads as "the package is the only copy", and saving on that
+belief overwrites the copy that was actually there. Use `isDocumentNotFound(error)`
+rather than `instanceof`, since the `es` and `cjs` builds carry their own copy of the
+class.
 
-### BrowserWorkbookStorage
+A document is a string; the `type` on its locator says what kind so a backend can keep kinds apart
+and a listing can ask for one. Every method rejects when the document is not there, so a caller can
+tell "missing" from "empty".
 
-Built-in implementation using browser localStorage.
+### BrowserDocumentStorage
+
+The default: one workspace named `Local`, private to this browser and origin.
 
 ```tsx
 import {
-   BrowserWorkbookStorage,
-   WorkbookStorageProvider,
+   BrowserDocumentStorage,
+   DocumentStorageProvider,
 } from "@malloy-publisher/sdk";
 
-const storage = new BrowserWorkbookStorage();
+const storage = new BrowserDocumentStorage();
 
-<WorkbookStorageProvider workbookStorage={storage}>
+<DocumentStorageProvider documentStorage={storage}>
    <App />
-</WorkbookStorageProvider>;
+</DocumentStorageProvider>;
 ```
 
----
+### A custom backend
 
-### Custom Storage Implementation
+Implement the interface over whatever you have. For example, over a document API keyed by workspace,
+type and path:
 
 ```tsx
-class S3WorkbookStorage implements WorkbookStorage {
-   private s3Client: S3Client;
-   private bucket: string;
-
-   constructor(s3Client: S3Client, bucket: string) {
-      this.s3Client = s3Client;
-      this.bucket = bucket;
-   }
+class ApiDocumentStorage implements DocumentStorage {
+   constructor(private client: DocumentsApi) {}
 
    async listWorkspaces(writeableOnly: boolean): Promise<Workspace[]> {
-      return [
-         {
-            name: this.bucket,
-            writeable: true,
-            description: "S3 bucket storage",
-         },
-      ];
+      const all = await this.client.listWorkspaces();
+      return writeableOnly ? all.filter((w) => w.writeable) : all;
    }
 
-   async listWorkbooks(workspace: Workspace): Promise<WorkbookLocator[]> {
-      const objects = await this.s3Client.listObjects(
-         this.bucket,
-         "workbooks/",
-      );
-      return objects.map((obj) => ({
-         path: obj.key,
+   async listDocuments(
+      workspace: Workspace,
+      type?: DocumentType,
+   ): Promise<DocumentLocator[]> {
+      const docs = await this.client.listDocuments(workspace.name, type);
+      return docs.map((d) => ({
          workspace: workspace.name,
+         type: d.type,
+         path: d.path,
       }));
    }
 
-   async getWorkbook(path: WorkbookLocator): Promise<string> {
-      const data = await this.s3Client.getObject(this.bucket, path.path);
-      return data.toString();
+   async getDocument(locator: DocumentLocator): Promise<string> {
+      return (await this.client.getDocument(locator.workspace, locator.path))
+         .content;
    }
 
-   async saveWorkbook(path: WorkbookLocator, workbook: string): Promise<void> {
-      await this.s3Client.putObject(this.bucket, path.path, workbook);
-   }
-
-   async deleteWorkbook(path: WorkbookLocator): Promise<void> {
-      await this.s3Client.deleteObject(this.bucket, path.path);
-   }
-
-   async moveWorkbook(
-      from: WorkbookLocator,
-      to: WorkbookLocator,
+   async saveDocument(
+      locator: DocumentLocator,
+      content: string,
    ): Promise<void> {
-      const content = await this.getWorkbook(from);
-      await this.saveWorkbook(to, content);
-      await this.deleteWorkbook(from);
+      await this.client.putDocument(locator.workspace, locator.path, {
+         type: locator.type,
+         content,
+      });
+   }
+
+   async deleteDocument(locator: DocumentLocator): Promise<void> {
+      await this.client.deleteDocument(locator.workspace, locator.path);
+   }
+
+   async moveDocument(
+      from: DocumentLocator,
+      to: DocumentLocator,
+   ): Promise<void> {
+      const content = await this.getDocument(from);
+      await this.saveDocument(to, content);
+      await this.deleteDocument(from);
    }
 }
-
-// Usage
-const storage = new S3WorkbookStorage(s3Client, "my-workbooks-bucket");
-
-<WorkbookStorageProvider workbookStorage={storage}>
-   <App />
-</WorkbookStorageProvider>;
 ```
 
----
-
-### WorkbookStorageProvider
-
-Context provider for workbook storage.
+### DocumentStorageProvider
 
 ```tsx
 import {
-   WorkbookStorageProvider,
-   useWorkbookStorage,
+   DocumentStorageProvider,
+   useDocumentStorage,
 } from "@malloy-publisher/sdk";
 
-// Provider setup
-<WorkbookStorageProvider workbookStorage={myStorage}>
+<DocumentStorageProvider documentStorage={myStorage}>
    <App />
-</WorkbookStorageProvider>;
+</DocumentStorageProvider>;
 
-// Access in components
+// Inside a component:
 function MyComponent() {
-   const { workbookStorage } = useWorkbookStorage();
-
-   const workbooks = await workbookStorage.listWorkbooks({
-      name: "Local",
-      writeable: true,
-      description: "",
-   });
+   const { documentStorage } = useDocumentStorage();
+   const dashboards = await documentStorage.listDocuments(
+      { name: "Local", writeable: true, description: "" },
+      "dashboard",
+   );
 }
 ```
 
@@ -1159,9 +1107,6 @@ import "@malloy-publisher/sdk/styles.css";
 
 // If using Model/ModelExplorer outside of Publisher
 import "@malloy-publisher/sdk/malloy-explorer.css";
-
-// If using Workbook markdown editor
-import "@malloy-publisher/sdk/markdown-editor.css";
 ```
 
 ---
@@ -1204,20 +1149,25 @@ function App() {
 
 ### Styled Components
 
-The SDK exports several pre-styled components for consistent UI:
+The SDK exports the pieces the Publisher Console is built from, so a host can
+build screens that match it:
 
 ```tsx
 import {
-   StyledCard,
-   StyledCardContent,
-   StyledCardMedia,
-   PackageCard,
-   PackageCardContent,
-   PackageSectionTitle,
-   CleanNotebookContainer,
-   CleanNotebookSection,
+   AddButton, // the filled pill that adds one thing to a section
+   SecondaryButton, // the outlined control beside it
+   AppDialog, // every dialog, in one shape
+   BackLink, // the way up, at the top of a page
+   DashboardBar, // the bar above a dashboard, in both modes
+   PALETTE, // the twelve hues everything meaningful is drawn from
+   SURFACE_TINT, // which hue an environment, package or connection gets
 } from "@malloy-publisher/sdk";
 ```
+
+`ItemRow` and `PackageSection`, the row and section those screens are built
+out of, are deliberately internal for now; so are the `styled` helpers in
+`components/styles.ts`, which earlier versions of this README showed being
+imported, which never worked.
 
 ---
 
@@ -1449,38 +1399,34 @@ function EnvironmentList() {
 | Component                 | Description                                     |
 | ------------------------- | ----------------------------------------------- |
 | `ServerProvider`          | Required context provider for API access        |
-| `Home`                    | Environment listing landing page                    |
-| `Environment`                 | Package listing for an environment                   |
+| `Home`                    | Environment listing landing page                |
+| `Environment`             | Package listing for an environment              |
 | `Package`                 | Package detail (models, notebooks, connections) |
 | `Model`                   | Full model explorer with visual query builder   |
 | `ModelExplorer`           | Lower-level query builder component             |
 | `ModelExplorerDialog`     | Model explorer in a modal dialog                |
 | `Notebook`                | Read-only notebook viewer                       |
-| `Workbook`                | Interactive workbook editor                     |
-| `WorkbookList`            | List workbooks from storage                     |
-| `WorkbookManager`         | Workbook state management class                 |
-| `WorkbookStorageProvider` | Context for workbook storage                    |
+| `DocumentStorageProvider` | Context for document storage                    |
 | `QueryResult`             | Execute and display query                       |
 | `RenderedResult`          | Render Malloy result JSON                       |
 | `EmbeddedQueryResult`     | Render serialized query config                  |
 | `Loading`                 | Loading spinner with text                       |
 | `ApiErrorDisplay`         | Error display component                         |
-| `AnalyzePackageButton`    | Create/manage workbooks                         |
 | `SourcesExplorer`         | Source schema browser                           |
 | `ConnectionExplorer`      | Connection management UI                        |
 
 ### Exported Hooks
 
-| Hook                            | Description                         |
-| ------------------------------- | ----------------------------------- |
-| `useServer`                     | Access ServerProvider context       |
-| `useQueryWithApiError`          | React Query with error handling     |
-| `useMutationWithApiError`       | Mutations with error handling       |
-| `useModelData`                  | Fetch compiled model                |
-| `useRawQueryData`               | Execute query, get raw data         |
-| `useRouterClickHandler`         | Smart navigation with modifier keys |
-| `useWorkbookStorage`            | Access workbook storage context     |
-| `useDimensionFiltersFromSpec`   | Programmatic dimensional filtering  |
+| Hook                          | Description                         |
+| ----------------------------- | ----------------------------------- |
+| `useServer`                   | Access ServerProvider context       |
+| `useQueryWithApiError`        | React Query with error handling     |
+| `useMutationWithApiError`     | Mutations with error handling       |
+| `useModelData`                | Fetch compiled model                |
+| `useRawQueryData`             | Execute query, get raw data         |
+| `useRouterClickHandler`       | Smart navigation with modifier keys |
+| `useDocumentStorage`          | Access document storage context     |
+| `useDimensionFiltersFromSpec` | Programmatic dimensional filtering  |
 
 ### Exported Utilities
 
@@ -1489,24 +1435,27 @@ function EnvironmentList() {
 | `encodeResourceUri`         | Create resource URI from components |
 | `parseResourceUri`          | Parse resource URI to components    |
 | `createEmbeddedQueryResult` | Serialize query config              |
-| `BrowserWorkbookStorage`    | localStorage-based workbook storage |
+| `BrowserDocumentStorage`    | localStorage-based document storage |
 | `globalQueryClient`         | Shared React Query client           |
+| `DocumentNotFoundError`     | Absence, not a failed read          |
+| `isDocumentNotFound`        | Absence check across es/cjs builds  |
 
 ### Exported Types
 
-| Type                     | Description                          |
-| ------------------------ | ------------------------------------ |
-| `ParsedResource`         | Parsed resource URI components       |
-| `ServerContextValue`     | Server context interface             |
-| `ServerProviderProps`    | ServerProvider props                 |
-| `QueryExplorerResult`    | Query builder result                 |
-| `SourceAndPath`          | Source info with model path          |
-| `WorkbookStorage`        | Workbook storage interface           |
-| `WorkbookLocator`        | Workbook path + workspace            |
-| `Workspace`              | Workspace metadata                   |
-| `ApiError`               | Standardized API error               |
-| `ModelExplorerProps`     | ModelExplorer props                  |
-| `DimensionFiltersConfig` | Dimensional filter configuration     |
+| Type                     | Description                      |
+| ------------------------ | -------------------------------- |
+| `ParsedResource`         | Parsed resource URI components   |
+| `ServerContextValue`     | Server context interface         |
+| `ServerProviderProps`    | ServerProvider props             |
+| `QueryExplorerResult`    | Query builder result             |
+| `SourceAndPath`          | Source info with model path      |
+| `DocumentStorage`        | Document storage interface       |
+| `DocumentLocator`        | Workspace + type + path          |
+| `DocumentType`           | `"dashboard"` or `"notebook"`    |
+| `Workspace`              | Workspace metadata               |
+| `ApiError`               | Standardized API error           |
+| `ModelExplorerProps`     | ModelExplorer props              |
+| `DimensionFiltersConfig` | Dimensional filter configuration |
 
 ---
 

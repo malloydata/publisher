@@ -29,6 +29,7 @@ interface GateEntry {
    label: string;
    exprs: string[];
    selfContained: boolean;
+   route: string;
    struct?: SourceDef;
 }
 interface GateWalker {
@@ -102,7 +103,15 @@ describe("gate walk fail-closed branches", () => {
          new Set(),
          true,
       );
-      expect(gates.map((g) => g.exprs)).toEqual([["false"]]);
+      // The walk runs once per route (`authorize`, `authorize`), each
+      // with its own `seen` set, and the sentinel is synthesized on BOTH —
+      // own-wins-over-ancestor is decided per route, so neither route's call
+      // can rely on the other having already denied here.
+      expect(gates.map((g) => g.exprs)).toEqual([["false"], ["false"]]);
+      expect(gates.map((g) => g.route).sort()).toEqual([
+         "access_filter",
+         "authorize",
+      ]);
    });
 
    it("denies when a sourceRegistry entry resolves to nothing", () => {
@@ -127,7 +136,18 @@ describe("gate walk fail-closed branches", () => {
          new Set(),
          true,
       );
-      expect(gates.map((g) => g.exprs)).toEqual([["false"]]);
+      // Unlike the query_source case above, `ancestorGateExprs` resolves
+      // `route`-filtered notes at every level it walks, so the two routes CAN
+      // diverge before either reaches this same unresolvable branch (see
+      // `gate_registry_walk.ts`'s `ancestorGateExprs` doc) — a route cannot
+      // rely on its sibling having already denied. Both routes therefore
+      // synthesize `["false"]` independently here.
+      expect(gates.map((g) => g.exprs)).toEqual([["false"], ["false"]]);
+      expect(gates).toHaveLength(2);
+      expect(gates.map((g) => g.route).sort()).toEqual([
+         "access_filter",
+         "authorize",
+      ]);
    });
 
    it("reports no gate for an ordinary source that is its own declaration", () => {

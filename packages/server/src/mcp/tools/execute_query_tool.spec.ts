@@ -1,13 +1,24 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { MalloyError } from "@malloydata/malloy";
+import { isMcpIncludeHiddenFilesAndSources } from "../../config";
 import { registerExecuteQueryTool } from "./execute_query_tool";
+import {
+   PackageLoadPool,
+   __setPackageLoadPoolForTests,
+} from "../../package_load/package_load_pool";
 import type { EnvironmentStore } from "../../service/environment_store";
+import { Package } from "../../service/package";
 import type { ModelQueryMetadataInput } from "../../service/model";
 import {
+   EnvironmentNotFoundError,
    NotQueryableError,
+   OffSurfaceError,
    QueryTimeoutError,
    ServiceUnavailableError,
 } from "../../errors";
@@ -24,16 +35,66 @@ type Handler = (params: Record<string, unknown>) => Promise<{
    }>;
 }>;
 
-function captureHandler(store: Partial<EnvironmentStore>): Handler {
+/**
+ * A server root whose publisher.config.json has the given `mcp` block. With no
+ * argument there is no config file at all, which is what a test that does not
+ * care about the setting gets.
+ */
+const serverRoots: string[] = [];
+function serverRootWith(mcp?: unknown): string {
+   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-config-"));
+   serverRoots.push(dir);
+   if (mcp !== undefined) {
+      fs.writeFileSync(
+         path.join(dir, "publisher.config.json"),
+         JSON.stringify({ frozenConfig: false, environments: [], mcp }),
+      );
+   }
+   return dir;
+}
+afterAll(() => {
+   for (const dir of serverRoots)
+      fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const AUTHORING = { includeHiddenFilesAndSources: true };
+
+function captureTool(
+   store: Partial<EnvironmentStore>,
+   serverRootPath: string = serverRootWith(),
+): {
+   handler: Handler;
+   shape: Record<string, unknown>;
+} {
    let handler: Handler | undefined;
+   let shape: Record<string, unknown> | undefined;
    const fakeServer = {
-      tool: (_name: string, _desc: string, _shape: unknown, h: Handler) => {
+      tool: (
+         _name: string,
+         _desc: string,
+         s: Record<string, unknown>,
+         h: Handler,
+      ) => {
+         shape = s;
          handler = h;
       },
    };
-   registerExecuteQueryTool(fakeServer as never, store as EnvironmentStore);
-   if (!handler) throw new Error("handler was not registered");
-   return handler;
+   registerExecuteQueryTool(
+      fakeServer as never,
+      {
+         // What EnvironmentStore's constructor reads from the config, once.
+         mcpIncludeHiddenFilesAndSources:
+            isMcpIncludeHiddenFilesAndSources(serverRootPath),
+         ...store,
+         serverRootPath,
+      } as EnvironmentStore,
+   );
+   if (!handler || !shape) throw new Error("handler was not registered");
+   return { handler, shape };
+}
+
+function captureHandler(store: Partial<EnvironmentStore>): Handler {
+   return captureTool(store).handler;
 }
 
 function parse(result: { content: Array<{ resource?: { text: string } }> }) {
@@ -88,9 +149,11 @@ function storeCapturingMetadata(
    store: Partial<EnvironmentStore>;
    captured: () => ModelQueryMetadataInput | undefined;
    capturedShape: () => string | undefined;
+   capturedArgs: () => unknown[];
 } {
    let captured: ModelQueryMetadataInput | undefined;
    let capturedShape: string | undefined;
+   let capturedArgs: unknown[] = [];
    const store: Partial<EnvironmentStore> = {
       getEnvironment: async () =>
          ({
@@ -113,6 +176,7 @@ function storeCapturingMetadata(
                      // responseShape. Indexed rather than destructured off the
                      // end, because the argument list has grown twice and a
                      // trailing-element type went stale both times.
+                     capturedArgs = _args;
                      captured = _args[7] as ModelQueryMetadataInput | undefined;
                      capturedShape = _args[8] as string | undefined;
                      return {
@@ -134,6 +198,7 @@ function storeCapturingMetadata(
       store,
       captured: () => captured,
       capturedShape: () => capturedShape,
+      capturedArgs: () => capturedArgs,
    };
 }
 
@@ -145,6 +210,28 @@ const args = {
 };
 
 describe("execute_query error classification", () => {
+   it("names an unknown environment and the ones that exist", async () => {
+      // Goes through getModelForQuery's own catch, not the tool's, so it is
+      // pinned separately from the other tools.
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
+         },
+      });
+      const parsed = parse(
+         await handler({ ...args, environmentName: "analytics" }),
+      );
+      expect(parsed.error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
+   });
+
    it("tells an at-capacity caller to retry, not to check its Malloy", async () => {
       // The reported bug. tryAcquireQuerySlot runs inside the tool's try, so at
       // the concurrency cap its ServiceUnavailableError landed in a catch that
@@ -245,6 +332,28 @@ describe("execute_query error classification", () => {
       // The class exists so a hidden target is indistinguishable from a missing
       // one; echoing the name back would undo that.
       expect(parsed.error).not.toContain("salaries");
+   });
+
+   it("passes an off-surface refusal through with its reason, not as a typo", async () => {
+      // OffSurfaceError is only built where nothing is gated, and its message
+      // is the fix. Collapsing it to "Resource not found ... check the
+      // spelling" sends an agent hunting a typo for a name that is real.
+      const message =
+         'No queryable model "users.malloy". It is not on this package\'s published surface, "index.malloy".';
+      const handler = captureHandler(
+         storeWhoseQueryThrows(new OffSurfaceError(message)),
+      );
+      const parsed = parse(await handler(args));
+      expect(parsed.error).toBe(message);
+      expect(JSON.stringify(parsed.suggestions)).toContain("not a typo");
+      expect(JSON.stringify(parsed.suggestions)).not.toContain(
+         "spelled correctly",
+      );
+      // Not a way around the surface. Every agent that hits a curated-out
+      // name reads this, and one told to pass the flag would pass it.
+      expect(JSON.stringify(parsed.suggestions)).not.toContain(
+         "includeHiddenFilesAndSources",
+      );
    });
 
    it("also states the error in a text block", async () => {
@@ -357,5 +466,198 @@ describe("execute_query per-query metadata", () => {
          default: undefined,
          enforced: { tenant: "acme" },
       });
+   });
+});
+
+describe("execute_query includeHiddenFilesAndSources", () => {
+   // getQueryResults positions: 9 is bypassAuthorize, 10 is
+   // includeHiddenFilesAndSources.
+   const calls = [
+      args,
+      { ...args, query: undefined, sourceName: "orders", queryName: "v" },
+   ];
+
+   it("is offered, and passes true through on both call paths, when the config turns it on", async () => {
+      for (const call of calls) {
+         const { store, capturedArgs } = storeCapturingMetadata();
+         const { handler, shape } = captureTool(
+            store,
+            serverRootWith(AUTHORING),
+         );
+         expect(shape).toHaveProperty("includeHiddenFilesAndSources");
+         await handler({ ...call, includeHiddenFilesAndSources: true });
+         expect(capturedArgs()[9]).toBe(false);
+         expect(capturedArgs()[10]).toBe(true);
+      }
+   });
+
+   it("sends false when the argument is omitted or false", async () => {
+      for (const extra of [{}, { includeHiddenFilesAndSources: false }]) {
+         const { store, capturedArgs } = storeCapturingMetadata();
+         const { handler } = captureTool(store, serverRootWith(AUTHORING));
+         await handler({ ...args, ...extra });
+         expect(capturedArgs()[9]).toBe(false);
+         expect(capturedArgs()[10]).toBe(false);
+      }
+   });
+
+   it("is not offered, and true is ignored, unless the config turns it on", async () => {
+      // No config file is what every server without the block gets, an
+      // eval's included: an agent answering over the curated surface must not
+      // be able to leave it. A non-boolean value is warned about and ignored.
+      for (const mcp of [
+         undefined,
+         {},
+         { includeHiddenFilesAndSources: false },
+         { includeHiddenFilesAndSources: "true" },
+         "on",
+      ]) {
+         for (const call of calls) {
+            const { store, capturedArgs } = storeCapturingMetadata();
+            const { handler, shape } = captureTool(store, serverRootWith(mcp));
+            expect(shape).not.toHaveProperty("includeHiddenFilesAndSources");
+            await handler({ ...call, includeHiddenFilesAndSources: true });
+            expect(capturedArgs()[10]).toBe(false);
+         }
+      }
+   });
+
+   it("follows the store's setting and does not read the config itself", async () => {
+      // The tool is registered on every MCP request, so it must not re-read
+      // publisher.config.json. Each pair below disagrees with its config file.
+      for (const [setting, mcp, offered] of [
+         [false, AUTHORING, false],
+         [true, undefined, true],
+      ] as const) {
+         const { store } = storeCapturingMetadata();
+         const { shape } = captureTool(
+            { ...store, mcpIncludeHiddenFilesAndSources: setting },
+            serverRootWith(mcp),
+         );
+         expect("includeHiddenFilesAndSources" in shape).toBe(offered);
+      }
+   });
+});
+
+/**
+ * The same cases as explore_visibility.spec.ts pins for the model, through the
+ * real tool handler and a real loaded Package with a root index.malloy.
+ */
+describe("execute_query includeHiddenFilesAndSources on a real package", () => {
+   const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+   let tempDir: string;
+   let duckdb: { close: () => Promise<void> };
+   let handler: Handler;
+   let store: Partial<EnvironmentStore>;
+
+   beforeAll(async () => {
+      process.env.PACKAGE_LOAD_WORKERS = "1";
+      await __setPackageLoadPoolForTests(new PackageLoadPool(1));
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-mcp-hidden-"));
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({ name: "pkg", description: "test package" }),
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base_source is duckdb.sql("select 1 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "locked.malloy"),
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "base.malloy"
+source: helper is duckdb.sql("select 1 as id")
+source: customers is duckdb.sql("select 1 as id")
+export { customers }`,
+      );
+
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const connection = new DuckDBConnection("duckdb", ":memory:");
+      duckdb = connection;
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () =>
+            new FixedConnectionMap(new Map([["duckdb", connection]]), "duckdb"),
+      );
+      const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+      store = {
+         getEnvironment: async () =>
+            ({
+               assertCanAdmitQuery: () => undefined,
+               getApiConnection: () => {
+                  throw new Error("no connection config in this test");
+               },
+               getPackage: async () => pkg,
+            }) as never,
+      };
+      handler = captureTool(store, serverRootWith(AUTHORING)).handler;
+   });
+
+   afterAll(async () => {
+      await duckdb?.close();
+      await __setPackageLoadPoolForTests(null);
+      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
+      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+   });
+
+   const run = (
+      modelPath: string,
+      query: string,
+      includeHiddenFilesAndSources?: boolean,
+   ) =>
+      handler({
+         environmentName: "env",
+         packageName: "pkg",
+         modelPath,
+         query,
+         includeHiddenFilesAndSources,
+      });
+
+   it("refuses a hidden file and a hidden source without it, and runs both with it", async () => {
+      for (const [modelPath, query] of [
+         ["base.malloy", "run: base_source -> { select: * }"],
+         ["index.malloy", "run: helper -> { select: * }"],
+      ]) {
+         const refused = await run(modelPath, query);
+         expect(refused.isError).toBe(true);
+         expect(parse(refused).error).toContain("published surface");
+
+         const ran = await run(modelPath, query, true);
+         expect(ran.isError).not.toBe(true);
+         expect(parse(ran).rows).toEqual([{ id: 1 }]);
+      }
+   });
+
+   it("still refuses an #(authorize) false source with it", async () => {
+      const result = await run(
+         "locked.malloy",
+         "run: locked -> { select: * }",
+         true,
+      );
+      expect(result.isError).toBe(true);
+      expect(parse(result).error).toContain(
+         'Access denied for source "locked"',
+      );
+   });
+
+   it("refuses a hidden source even with it, on a server whose config leaves it off", async () => {
+      const curated = captureHandler(store);
+      const result = await curated({
+         environmentName: "env",
+         packageName: "pkg",
+         modelPath: "index.malloy",
+         query: "run: helper -> { select: * }",
+         includeHiddenFilesAndSources: true,
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).error).toContain("published surface");
    });
 });

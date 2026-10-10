@@ -17,7 +17,9 @@
 //
 // STEP 1: look at the sheet, because the fix needs three things this file cannot
 // tell you: which sheet, which row the header is on, and which column marks a
-// real row. Add this to the bottom of THIS FILE, reload the package, then run
+// real row. Add the probe source below to `index.malloy` -- NOT to this file --
+// and add `{{sourceName}}_probe` to the `export { ... }` line already there.
+// Reload the package, then query `index.malloy` and run
 // `{{sourceName}}_probe -> peek`. Delete it once you have what you need.
 //
 //   source: {{sourceName}}_probe is duckdb.sql("""
@@ -29,9 +31,18 @@
 //     view: peek is { select: *; limit: 25 }
 //   }
 //
-// It has to go in the file rather than being sent as a one-off query: Publisher
-// refuses raw SQL in an ad-hoc query ("`duckdb.sql(...)` cannot be used in a
-// restricted query"), and only allows it where it is part of a model.
+//   export { {{sourceName}}, {{sourceName}}_probe }   -- the existing line, probe added
+//
+// Two reasons it goes there and not here. Raw SQL has to be part of a model at
+// all: Publisher refuses it in an ad-hoc query ("`duckdb.sql(...)` cannot be
+// used in a restricted query"). And `index.malloy` is this package's published
+// surface, so it is the only model a query can be addressed to -- a query
+// against this file is refused with a 404, and a source this package does not
+// export is refused even when the query goes to the right file. Putting the
+// probe in `index.malloy` and naming it in `export { ... }` satisfies both.
+// Edit the export line that is already there rather than adding a second one:
+// Malloy refuses a name that two export statements both list. Take the probe
+// back out of that line when you delete it.
 //
 // `peek` prints the first 25 rows exactly as they sit in the sheet, banner rows
 // and all, so you can count down to the real header row and see which column
@@ -76,7 +87,8 @@
 //   }
 //
 // Then reload the package, check the reload itself came back OK, and only then
-// run `overview` again. A reload that fails to compile leaves the previously
+// run `overview` again -- addressed to `index.malloy`, like every query against
+// this package. A reload that fails to compile leaves the previously
 // compiled model serving, so `overview` answers 200 with the OLD number and it
 // looks as though your edit did nothing. The reason is in the reload response,
 // not in the query.

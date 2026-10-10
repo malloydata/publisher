@@ -30,20 +30,22 @@ and pushes, and now publishes it too: it is the third train `publish-packages` d
 job has never actually run yet, so read *The first PyPI publish* below before cutting the release that
 would be its first.
 
-**None of the three publish workflows is purely a publish workflow any more, so a red check on a PR
-that touches one package can come from its own file rather than from `build.yml`.** Know which job:
+**Not every publish workflow is purely a publish workflow, so a red check on a PR that touches one
+package can come from its own file rather than from `build.yml`.** Know which job:
 
 - `skills-npm.yml`'s `check_pack` runs on PRs and on pushes to `main` that touch `skills/**`,
-  `packages/skills/**`, or the workflow file, and it now also carries the version-bump check.
-- `create-malloy-package-npm.yml` used to be genuinely dispatch-only. It now has a `pull_request`
-  trigger, but *only* for its `check_version` job — `check_pack` and `publish` are both gated to
-  `workflow_dispatch`, so no PR pays for that install and the dispatch path is unchanged.
-- `python-sdk.yml`'s `check_version` runs on PRs touching `api-doc.yaml`,
-  `packages/python-client/**`, or the workflow file.
+  `packages/skills/**`, or the workflow file. It only builds and tests the package; skills carries
+  no PR-time version check any more (see *Skills and create-malloy-package version at release
+  time* below).
+- `create-malloy-package-npm.yml` is genuinely dispatch-only: `workflow_dispatch` is its only
+  trigger. Its `pull_request` trigger and `check_version` job are both gone.
+- `python-sdk.yml`'s `check_version` is unchanged: it still runs on PRs touching `api-doc.yaml`,
+  `packages/python-client/**`, or the workflow file, and still enforces the "declared version ahead
+  of PyPI" rule the other two used to enforce against npm.
 
-Each package's machinery stays in its own file: that is why the bump check is written three times
-rather than extracted into a reusable workflow. The two npm copies are kept textually parallel so
-they can be diffed; the PyPI one differs in registry and in where it reads the version.
+`python-sdk.yml` keeps its own bump check because `python-client` still versions by a committed
+`pyproject.toml` bump; skills and create-malloy-package no longer do, so they have nothing left for
+a PR-time check to enforce.
 
 Two workflows hold real warehouse credentials, and both should be treated as such when edited:
 `connection-integration-tests.yml` (the full connection matrix) and `k6-tests.yml`, which passes
@@ -56,8 +58,8 @@ There are three npm trains and one PyPI train, and they do not share a version.
 | Packages | Registry | Version | Published by | Missing bump caught by |
 |---|---|---|---|---|
 | `@malloy-publisher/sdk`, `app`, `server` | npm | Lockstep, set by `release.yml` | `npm-sdk.yml`, called from `release.yml` | n/a — the release sets it |
-| `@malloy-publisher/skills` | npm | Its own line | `skills-npm.yml` | a `pull_request` check in `skills-npm.yml` |
-| `@malloy-publisher/create-malloy-package` | npm | Its own line | `create-malloy-package-npm.yml` | a `pull_request` check in the same file |
+| `@malloy-publisher/skills` | npm | Decided at release time by `scripts/independent-version.mjs`; `package.json` carries a fixed `0.0.0-dev` placeholder | `skills-npm.yml` | n/a — nothing to forget, the decision reads npm itself |
+| `@malloy-publisher/create-malloy-package` | npm | Decided at release time the same way; `package.json` also carries `0.0.0-dev` | `create-malloy-package-npm.yml` | n/a, same reason |
 | `malloy-publisher-sdk` | PyPI | Its own line | `python-sdk.yml` | a `pull_request` check in the same file |
 
 ### The versioning policy
@@ -83,12 +85,12 @@ to move, on their next release, and neither is urgent: the scaffolder has no
 dependents, and the Python client has no published versions at all.
 
 `bun.lock` is a fourth reader of these numbers and is deliberately left alone. It
-records `0.0.209` for the three workspace packages, so once the stamp PR resets
-`main` it will disagree with the manifests it locked. That is benign — the entries
+records `0.0.209` for the three workspace packages, so once a release PR merges
+`main` disagrees with the manifests it locked. That is benign — the entries
 are workspace links, not registry resolutions, and `bun install --frozen-lockfile`
-does not compare them — so the stamp does not touch the lockfile, which keeps the
+does not compare them — so `prepare` does not touch the lockfile, which keeps the
 release out of the business of regenerating it. If a future bun makes that a hard
-error, the fix is to add `bun.lock` to `PKGS`' sibling staging in the stamp step,
+error, the fix is to rewrite those `bun.lock` entries beside `PKGS` in `prepare`,
 not to make `prepare` run an install.
 
 The point of the policy is that a consumer can write a range. Verified with
@@ -129,159 +131,164 @@ Prereleases keep the hyphen convention: `npm-sdk.yml` routes a hyphenated versio
 to the `next` dist-tag and `docker-image.yml` withholds `latest`, so a prerelease
 never takes over either.
 
-### A forgotten bump is a red PR check
+**The `next` dist-tag was retired on 2026-08-26, on npm and on Docker Hub.** It
+had pointed at `0.0.198-dev6` since 2026-05-21 while 51 stable versions shipped
+past it, because a dist-tag only moves when a publish uses it and no prerelease
+had been cut since. So `@malloy-publisher/server@next` silently installed a
+three-month-old build, and `ms2data/malloy-publisher:next` served the matching
+image. Nothing in this repo, in the Credible service, or in the published docs
+installed from either. Three consequences, and the first one decides what
+automation is possible here at all:
 
-It used to be invisible until release time — `publish-packages` skips a package
-whose version is already on npm and the release stays green — and it is the first
-of the *two skips* below. Each of the three published trains now carries a
-`pull_request` check asking the same question: **is the declared version ahead of
-the registry.** Not "did this PR change the version": between a release-prep merge
-and the dispatch `main` is legitimately ahead and untouched, so a did-it-change
-check would redden every PR opened in that window. Two registry questions per
-check, because a version can be free and still *below* `latest`, and publishing
-that moves the dist-tag backwards.
+- **npm OIDC cannot move a dist-tag.** Trusted publishing authenticates
+  `npm publish` and `npm stage publish` only; `npm dist-tag add|rm` needs a
+  granular token, which this repo deliberately does not have (see the OIDC note
+  below). So CI can move `next` only by publishing a real prerelease under it.
+  Re-pointing `next` at an existing stable release is not available without
+  reintroducing `NPM_TOKEN`, which is not a trade worth making for a tag nothing
+  reads. The same follows for any other dist-tag surgery: it is a human org
+  member acting by hand, never a workflow.
+- **The routing was left in place, so this is self-healing.** `npm-sdk.yml`
+  still sends any hyphenated version to `next`, and `docker-image.yml` still
+  tags `:next` on a prerelease. The first prerelease after this recreates both
+  tags, correctly, with no change here.
+- **`docs/deployment.md` now states there is no pre-release channel today.**
+  That sentence is true only while the above holds, so a release that cuts a
+  prerelease has to update it in the same PR.
 
-Each check is scoped to the paths that package's published content is built from,
-and **that list is deliberately narrower than both the workflow's own `paths:`
-trigger and `publish_pkg`'s "main moved" guard.** Both of those watch the publish
-workflow file, correctly, because a dispatch runs whatever definition `main`
-holds — but that is a question about which code runs, while this is a question
-about the tarball. Editing a publish workflow changes no published byte, so
-demanding a bump for it would force a content-free publish and make every future
-edit to the check require a release. Scoping fails **closed**: if the base ref
-will not resolve or the diff will not compute, the check runs rather than skipping.
+### Skills and create-malloy-package version at release time
 
-Two gaps in that coverage, both named rather than assumed:
+There is no PR-time bump to forget for these two: nothing is committed ahead of time, so there is
+nothing for a check to compare against. `packages/skills/package.json` and
+`packages/create-malloy-package/package.json` both carry a fixed `0.0.0-dev` placeholder version in
+the repo; what actually publishes is decided by `scripts/independent-version.mjs`, called from
+`scripts/publish-packages.sh` (a release) or from the child workflow's own "Resolve version to
+publish" step (a hand dispatch), and written into the manifest at publish time by
+`scripts/set-version.mjs`, in the runner's working tree only.
 
-- `bun.lock` and the root `package.json` change what `skills` publishes (its
-  `dist/` is emitted by `tsc`, whose version bun resolves from the lockfile) and
-  are in `publish_pkg`'s guard for that reason, but they are not in
-  `skills-npm.yml`'s `paths:` trigger, so a lockfile-only PR never reaches the
-  check. Widening the trigger would run a full install, build and test suite on
-  every dependency bump. The `publisher-release` skill's step 2 covers this case
-  by hand.
-- The **PyPI** check has nothing to *catch* until the first publish lands,
-  because nothing is on PyPI and a project-level 404 is the pass. It is not
-  incapable of failing — an unreadable `pyproject.toml`, a version that is not
-  `major.minor.patch`, or a registry that answers neither 200 nor 404 all redden
-  it. **This is the one entry here with an expiry date**: the moment
-  `malloy-publisher-sdk` has a version on PyPI, this check starts enforcing
-  exactly like its npm siblings, and the 404 branch stops being the path every
-  run takes. See *The first PyPI publish* below.
-- `BUN_VERSION` in `create-malloy-package-npm.yml` pins the bundler `prepack`
-  runs to emit `dist/index.js`, the only JS in that tarball — so bumping it does
-  change published bytes, and the check reports "no published scaffolder content
-  changed". Same shape as the `bun.lock` entry above and accepted for the same
-  reason: watching the whole workflow file to catch one line would demand a
-  release for every comment edit, and the consequence is bounded — the tarball
-  stays one bundler behind until the next real release, not broken. Hoisting
-  `BUN_VERSION` somewhere watched is what would close it.
+The two packages are decided differently:
 
-**None of these three checks may become a required status check.** They all live
-behind path-filtered `pull_request` triggers, so a PR touching none of those
-paths produces no check at all — and a required check that never runs sits at
-`expected` forever, blocking merge on every unrelated PR. `skills-npm.yml` always
-had this shape; it now applies three times. Requiring them means first giving
-each an always-run gate job that reports success when the paths did not match.
+- **skills** publishes when its published content changed since npm `latest`'s `gitHead`: a
+  `git diff --quiet <gitHead> HEAD` over `skills/`, `packages/skills/`, `bun.lock` and the root
+  `package.json`, excluding `skills/README.md` and `packages/skills/src/*.spec.ts` (neither reaches
+  the tarball). Changed publishes one patch above the highest published plain version; unchanged
+  skips. `gitHead` is what `npm publish` stamped onto the currently-published version's manifest,
+  which is why `release.yml`'s checkout now uses `fetch-depth: 0` — an arbitrary past commit a
+  shallow clone would not have.
+- **create-malloy-package** publishes on every non-prerelease release, because it bakes the
+  server's npm `latest` into every workspace it scaffolds, so a release changes what it ships even
+  when nothing in its own directory did. The only skip is a re-run: if npm `latest`'s
+  `publisherServer` field already equals this release's version, a previous attempt of the same
+  release already got it out.
+
+The publish version is one patch above the HIGHEST published plain `x.y.z` version
+(`npm view <pkg> versions --json`), not `latest` plus one: `latest` can be moved backwards by hand
+(`npm dist-tag add <pkg>@<older> latest`) after a bad release while the newer version stays
+published, and computing off `latest` alone would recompute that already-published version and
+abort — under `set -e`, before the scaffolder is ever dispatched, so a server release could ship
+with no scaffolder pinning it. `latest` and its `gitHead` stay the content-diff baseline above,
+since that's what users actually get; only the version arithmetic moved to the versions list.
+
+A hand dispatch of either child workflow (`gh workflow run skills-npm.yml` /
+`create-malloy-package-npm.yml`, no `version` input) publishes one patch above the highest
+published version, the same "free and above the ceiling" guard the old PR check used to enforce,
+now run once at dispatch time instead of on every PR. **A minor or major bump is a hand dispatch
+with `-f version=`** — nothing computes one automatically. After a hand-dispatched skills minor,
+hand-dispatch the scaffolder too (it depends on skills' version), or just wait for the next
+release, which republishes the scaffolder anyway.
+
+The old PR-time bump check's `bun.lock` gap is closed by this move, not merely inherited: `bun.lock`
+and the root `package.json` are in the skills diff's watched paths directly (they change what
+`dist/` becomes, since it's emitted by `tsc` and bun resolves that from the lockfile), where before
+they were outside `skills-npm.yml`'s `paths:` trigger and a lockfile-only PR never reached the
+check at all. A lockfile-only change now counts as "changed" and triggers a publish on its own.
+
+One gap remains, named rather than assumed: the **PyPI** check (`python-sdk.yml`, unchanged by
+this) has nothing to *catch* until the first publish lands, because nothing is on PyPI and a
+project-level 404 is the pass. It is not incapable of failing — an unreadable `pyproject.toml`, a
+version that is not `major.minor.patch`, or a registry that answers neither 200 nor 404 all redden
+it. **This is the one entry here with an expiry date**: the moment `malloy-publisher-sdk` has a
+version on PyPI, this check starts enforcing for real, and the 404 branch stops being the path
+every run takes. See *The first PyPI publish* below.
+
+**The PyPI check may not become a required status check.** It lives behind a path-filtered
+`pull_request` trigger, so a PR touching none of those paths produces no check at all — and a
+required check that never runs sits at `expected` forever, blocking merge on every unrelated PR.
+Requiring it means first giving it an always-run gate job that reports success when the paths did
+not match.
 
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
-bumps sdk/app/server, commits to a fresh `release/sdk-<version>` branch, and pushes it; `npm-sdk.yml`
-and `docker-image.yml` are then called with that ref. `publish-packages` triggers the other three
-trains (see below). `gh-release` cuts the tag, and only after npm and Docker have both succeeded.
+bumps sdk/app/server, stamps the release notes, commits both to a fresh `release/v<version>`
+branch cut from `main`, and pushes it; `npm-sdk.yml` and `docker-image.yml` are then called with that
+ref. `publish-packages` triggers the other three trains (see below). `gh-release` cuts the tag, and
+only after npm and Docker have both succeeded.
 
-`gh-release` also owns the release notes. It appends every `## [Unreleased]` section of
-`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then pushes a
-`release-notes-stamp-<version>` branch stamping those headings with the shipped version, printing a
-compare link for a human to open as a PR. Both used to be manual post-release steps and were reliably
-skipped — 0.0.243 through 0.0.247 shipped with none of their narrative.
+**The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
+heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same
+commit that sets the three `packages/{sdk,app,server}/package.json` versions
+(`scripts/set-version.mjs`). `gh-release` then puts the sections headed `[<version>]` on the release
+page (`release-notes.mjs extract <version>`) and prints a compare link. A person opens
+`release/v<version>` into `main` as a PR, titled `chore(release): <version>`, and merges it; that
+one PR is the whole post-release step. It does **not** touch `packages/skills/package.json` or
+`packages/create-malloy-package/package.json`: those two carry a fixed `0.0.0-dev` placeholder and
+their published version is decided at release time from npm's own state (see *Skills and
+create-malloy-package version at release time* above). Both halves used to be manual post-release
+steps and were reliably skipped: 0.0.243 through 0.0.247 shipped with none of their narrative.
 
-**That branch carries the version reset too, despite its name**: `scripts/set-version.mjs` over the
-three `packages/{sdk,app,server}/package.json` files, so `main` ends the release declaring what
-shipped. Either half can legitimately be zero — nothing to stamp, or `main` already at that version —
-and when both are, no branch is pushed and the summary says so. The name is unchanged because it is
-the identifier the `publisher-release` skill and this file both tell a releaser to look for.
+Why this shape, and not the ones it replaced:
 
-**The version reset cannot move into `prepare`,** which is the obvious place for it. `prepare` stages
-exactly those three files and commits them, so once this reset works — meaning `main` already declares
-the version being released — there would be no diff, `git commit` would exit non-zero, and that step
-would die under `set -euo pipefail` before pushing anything. It has to happen after the release, where
-a no-op is allowed, which is why `set_version` was extracted into a script both jobs can call.
+- **One tree.** The stamp, the version and the narrative on the release page all come from the
+  commit npm and Docker published. An earlier design extracted from the release branch and stamped a
+  fresh branch cut from `main` minutes later, which needed a `--titles` artifact to keep the two
+  agreeing about which sections shipped. A section merged to `main` while a release runs is simply
+  not on the release branch, stays `[Unreleased]`, and ships next time.
+- **A release that fails stamps nothing that matters.** The stamped branch reaches `main` only by a PR
+  someone opens after the release succeeded. A failed release leaves its branch unmerged, and the
+  next dispatch walks past it (`version_taken`) and cuts a new one from `main`, which still reads
+  `[Unreleased]`.
+- **Not a push to `main`.** `main` is protected and requires a pull request; until 0.0.250 the stamp
+  step pushed there and every attempt was rejected with `GH006`.
+- **Not `gh pr create` from the workflow.** Opening a PR with `GITHUB_TOKEN` needs the off-by-default
+  "Allow GitHub Actions to create and approve pull requests" setting, which only an admin can read.
+  Worse, a bot-authored PR triggers no workflows, so `main`'s required checks sit at `expected` and
+  only an admin can merge it. A PR opened by a person (or by an agent on that person's credentials,
+  which is what the `publisher-release` skill does) runs its checks and any maintainer can merge it.
 
-**Only the first half is automatic, and the reasons the second half stops at a branch are the whole
-story of this step.** It has been written three ways; two of them are wrong and look right.
+**`release-sync.yml` fails while a release's PR is unmerged.** It compares npm's `latest` for
+`@malloy-publisher/sdk` with the version `packages/sdk/package.json` declares, on every PR, every
+push to `main`, and right after each `release.yml` run (`workflow_run`, against `main`'s head, so
+`main` reads red as soon as there is a release PR to merge). It is its own workflow rather than a
+`build.yml` job because it is not about the build: it changes state when npm does, not when the
+code does. `main`'s version moves only when a release PR merges, so npm ahead
+of it means a release published and its PR has not merged. The next release would then stamp that
+release's still-`[Unreleased]` sections a second time under the new number. The fix is to merge
+`release/v<npm latest>` into `main`, which is also the only thing that clears the check; the
+release PR itself passes because its tree declares the new version. It reads npm rather than the
+git tags because a release whose npm publish succeeded and whose `gh-release` failed has no tag
+but did ship.
 
-*Not a push to `main`,* which is what it did until 0.0.250 and which never once worked. `main` is
-protected and requires a pull request, so every attempt was rejected with `GH006`, retry included.
-0.0.249 is the worked example: six sections on its release page, none stamped, and nobody noticed
-until the next release was being cut.
+**Expect it red on unrelated PRs.** Because it runs on every PR, contributors see it fail from the
+moment a release publishes until that release's PR merges, on changes that have nothing to do with
+the release. That is deliberate, and it is meant to be a **required status check** on `main`, so
+in that window nothing else merges and the release PR is the next thing to land. It gates merges,
+not dispatches: `release.yml` does not consult it.
 
-*Not `gh pr create` either,* which is the obvious replacement and was the first fix attempted.
-Opening a PR with `GITHUB_TOKEN` requires the repo/org setting **"Allow GitHub Actions to create and
-approve pull requests", which is off by default**, and reading that setting needs admin — so from a
-`maintain` account it cannot be confirmed. Depending on an unverifiable permission is precisely how
-the `GH006` bug was written in the first place: that code assumed a push it was never allowed to
-make, and the comment above it admitted the assumption was unconfirmed. The same shape would have
-failed the same way, silently, at the next release.
+**A prerelease is never stamped.** `prepare` skips the stamp for any version with a `-` or `+`, so
+`release-notes.mjs extract <prerelease>` finds nothing (it accepts the version, and there is no
+`[<prerelease>]` heading to match), and `main`'s `[Unreleased]` sections stay unstamped and ship
+with the next ordinary release. A prerelease gets no GitHub release page in any case.
 
-*A branch push, then.* It is **proven** on this token — `prepare` pushes `release/sdk-<version>`
-every release — and needs no permission beyond the `contents: write` the job already has. Letting a
-person open the PR is not merely the safe option, it is the better one: a PR opened by a human
-triggers `pull_request`, so its checks run and **any maintainer can merge it**, where a bot-authored
-PR triggers no workflows at all, leaving required checks at `expected` forever and an admin as the
-only possible merger. The cost is one click, and it buys back the check suite.
+**Merging it back usually needs a conflict resolved.** `main` requires branches to be up to date, and
+a new `[Unreleased]` section merged during or after the release is normally inserted directly above
+the first stamped heading. Git treats those adjacent lines as one hunk, so `RELEASE_NOTES.md`
+conflicts. Keep both sides: `main`'s new `[Unreleased]` sections as they are, and the release branch's
+`[<version>]` headings. The version lines do not conflict, since only release PRs change them.
+**Do not push to the release branch until the release has finished**, because `npm-sdk.yml` and
+`docker-image.yml` check out the branch by name, not by commit.
 
-There is a cheaper fix available to an admin, and it is worth checking before anyone assumes this
-shape is permanent. Classic protection exposes *"Allow specified actors to bypass required pull
-requests"* (`required_pull_request_reviews.bypass_pull_request_allowances`), which accepts apps and
-may accept `github-actions`; a ruleset with a bypass actor is the other route, and enabling the
-Actions-can-create-PRs setting would at least allow the bot-PR shape. None of the three is verifiable
-from a `maintain` account, which is why none is assumed here. Each also trades away something real:
-a bypass widens the surface flagged under *Hardening that is not in place yet*, since `release.yml`
-carries no ref guard, and a GitHub App token adds a stored credential to a repo that deliberately has
-none for npm.
-
-Two things about that pair are easy to get wrong.
-
-**The two halves must agree on which sections shipped.** `extract` runs against the release branch's
-snapshot of the file; `stamp` runs minutes later against whatever `main` has become, and recent
-releases take 4–10 minutes. So `extract --titles` writes the exact heading lines it consumed to a
-file under `$RUNNER_TEMP`, and `stamp --titles` rewrites only those. Unscoped, a section merged
-inside that window was stamped with a version it never shipped in — off that release's page, and off
-every later one, because its heading no longer said `[Unreleased]`. The titles file lives in
-`$RUNNER_TEMP` and not the repo because the stamp step checks out a fresh branch from `origin/main`,
-which would discard an in-tree file first.
-
-**A stamp that does not land is not cheap, and "opened a PR" is not "landed."** The stamp step is
-`continue-on-error` — by then the release is public and correct, and a failed docs commit must not
-redden it — but the cost is *not* merely a heading that still reads `[Unreleased]` for the next
-release to pick up. That heading is exactly what the next release's `extract` matches, so the next
-release re-appends **this** release's narrative to its own page, and so does the one after that,
-until a human notices. That is why every failure path in the step emits a `::warning` and a
-job-summary line naming the fix, rather than relying on `continue-on-error` alone.
-
-Ending at a branch shrinks that failure window without closing it, and moves the last inch of it
-onto a person: the consequence is identical whether the branch was never pushed or was pushed and
-never opened. **So the stamp is part of releasing, not paperwork after it** — open and merge it before
-the next dispatch, and check for a stale one before dispatching. Three things about that:
-
-- **Every outcome writes a job-summary line, including the no-ops.** "No sections to stamp" and
-  "already stamped" say so explicitly, because an empty *Release notes and version* section in the summary is
-  indistinguishable from the step dying before it wrote anything — and telling a releaser to "read
-  the summary" is useless if silence is ambiguous.
-- **The branch is pushed without `--force`.** A stamp branch already on the remote may carry a
-  human's conflict resolution, which is the documented fix when `main` moved under
-  `RELEASE_NOTES.md`; recomputing the stamp and forcing over it would discard that silently. A
-  rejected push is therefore inspected, and an existing branch is reported and left alone.
-- **A re-run of `gh-release` is not a recovery path for a missed stamp.** `gh release create` has no
-  `--clobber`, so on a re-run it fails on the existing tag, and the stamp step's implicit `success()`
-  means it never runs at all. Recovery is manual; step 3 of the `publisher-release` skill has it.
-
-One trap in that manual recovery, because the obvious command is destructive: `release-notes.mjs
-stamp <version>` **without `--titles` rewrites every `[Unreleased]` section in the file**, including
-ones the *upcoming* release is about to ship — mislabelling them and erasing them from the next
-release's page, which is the exact failure `--titles` was added to prevent. The titles file lives in
-`$RUNNER_TEMP` and does not survive the run, so a manual stamp has to re-establish the scope; the
-skill spells out how.
+**`delete_branch_on_merge` is on, so merging the PR deletes `release/v<version>`.** The tag keeps
+the commit, `version_taken` checks the tag as well as the branch, and the release page's
+"Release branch" line is the only thing left pointing at a name that no longer exists.
 
 `scripts/release-notes.mjs` and `scripts/set-version.mjs` both have unit coverage —
 `release-notes.spec.ts` and `set-version.spec.ts` — run by `build.yml`'s `lint_format` job on every PR
@@ -292,22 +299,49 @@ replace still finds the `"version"` field in all three real manifests at their r
 rename or a reformat that moved it out of reach fails a PR rather than a release. The release path
 itself is dispatch-only and cannot be exercised in CI, so the shell in the changed steps was verified
 out of band instead: each `run:` body extracted from the YAML and executed against a scratch repo with
-`npm`, `npx` and `curl` stubbed, which is how the bump checks, the server-pin substitution, the
-`--host` check and the stamp step were each covered. That harness is a one-off and is **not** in this
-repo — it is worth rebuilding rather than trusting, because a later edit to any of those bodies has
-nothing automated behind it.
+`npm`, `npx` and `curl` stubbed, which is how the version-resolution steps, the server-pin
+substitution, the `--host` check, `prepare`'s stamp and `release-sync.yml`'s comparison were each covered. That harness is a one-off and
+is **not** in this repo — it is worth rebuilding rather than trusting, because a later edit to any of
+those bodies has nothing automated behind it.
 
-The stamp step itself can no longer collide with `publish-packages`: it pushes a branch, so `main`
-does not move while that job polls npm. But the path list still matters, because the release does not
-end when the run does — the operator is told to open and merge the stamp PR next, and
-`publish-packages` can still be inside its poll budget when they do. That merge does move `main`
-mid-release, and it is harmless for one reason only: `RELEASE_NOTES.md` is in none of the paths that
-guard watches. Adding a watched path that `RELEASE_NOTES.md` matches would turn every narrative
-release into an aborted package dispatch.
+Merging the release PR cannot collide with `publish-packages`: it changes only
+`packages/{sdk,app,server}/package.json` and `RELEASE_NOTES.md`, neither of which
+`publish_indep_pkg`'s "main moved" guard watches for skills or create-malloy-package. The reason to
+wait for the run to finish before touching the PR is the release branch itself (above), not this
+guard.
 
 npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token. There is no
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets
 (`DOCKERHUB_TOKEN`, `PYPI_TOKEN`); npm does not.
+
+### Docker image signing
+
+`docker-image.yml`'s `merge` job signs the published manifest list with cosign, keyless, after
+`imagetools create` pushes it, then verifies the signature before the job ends. Things that are not
+obvious from the YAML:
+
+- **The digest comes from `imagetools create --metadata-file`, not from a tag.** A signature binds to
+  one digest; resolving `:latest` or the version tag afterwards would sign whatever the tag points at
+  by then.
+- **The certificate names `docker-image.yml`, not `release.yml`.** Fulcio's subject for GitHub
+  Actions is `job_workflow_ref`, the reusable workflow, so the identity a consumer verifies is
+  `https://github.com/malloydata/publisher/.github/workflows/docker-image.yml@refs/heads/main`.
+  Renaming or moving `docker-image.yml` changes that identity and breaks every consumer pinned to
+  it; treat the filename as a public contract.
+- **`id-token: write` has to be granted twice.** The `merge` job requests it and `release.yml`'s
+  `publish-docker` job must grant it, since a called workflow cannot hold more than its caller
+  grants. Dropping it from the caller fails `publish-docker` before any job starts.
+- **One signature covers the attestations.** The manifest list references each platform image and
+  its BuildKit SBOM and provenance attestation manifests by digest, so signing the list binds all of
+  them. The attestations themselves are not separately signed.
+- **A signing failure fails the release after the tags are already pushed.** The image is public
+  but unsigned, and `gh-release` does not run. Re-run the failed jobs: `imagetools create` re-pushes
+  the same list from the same platform digests and the signing steps run again. A Sigstore outage
+  (Fulcio or Rekor) shows up here the same way.
+- **The `@refs/heads/main` in the identity is what makes a branch dispatch distinguishable.**
+  `release.yml` has no ref guard (see *Hardening that is not in place yet*), so a release dispatched
+  from a branch is signed with that branch's ref. The in-workflow verify accepts any ref and prints
+  the identity it found; consumers pinning `@refs/heads/main` reject the branch-built image.
 
 ### Rules that bite (not guessable from the YAML)
 
@@ -351,19 +385,19 @@ everything in this file that follows from them changes with it.
   children guard on `github.ref == 'refs/heads/main'`. Dispatched on a release branch their publish
   jobs skip, and a skipped job reports success, so a release would go green having published nothing.
 - **Order is forced: skills before create-malloy-package.** The scaffolder pins its skills dependency
-  from the monorepo and then asks the registry whether that range resolves, so skills has to be on
-  npm first. Dispatching both at once fails the scaffolder.
+  from the version skills just published (or skills' npm `latest`, when skills was skipped) and then
+  asks the registry whether that range resolves, so skills has to be decided, and confirmed on npm if
+  it published, before the scaffolder is dispatched. Dispatching both at once fails the scaffolder.
 - **OIDC auto-enables provenance, which requires `repository.url`** in each published `package.json`.
   A package missing it fails to publish with a `422 ... provenance` error. This is the likely failure
   when adding a new package.
-- **`main` carries the released sdk/app/server version only if the last stamp PR merged.** Release
-  branches are still never merged back; instead `gh-release`'s stamp branch resets those three
-  `package.json` files to the shipped version, and a human merges it. Before that mechanism `main` sat
-  41 patches behind npm. So the file is now *usually* truthful and never *reliably* so, which is why
-  `prepare`'s floor is `max(npm latest, main declared)` and fails closed when the registry will not
-  answer. **Do not "simplify" that to reading the file** — an unmerged stamp PR is exactly the thing
-  that gets missed, and the max is correct either way. `prepare` then walks forward from the floor
-  until it finds a version whose release branch and tag are both free.
+- **`main` carries the released sdk/app/server version only once that release's PR merges.** Before
+  release branches were merged back, `main` sat 41 patches behind npm. `release-sync.yml`
+  reports when it lags, but nothing stops a dispatch, so `prepare`'s floor is
+  still `max(npm latest, main declared)` and fails closed when the registry will not answer. **Do
+  not "simplify" that to reading the file** — an unmerged release PR leaves the file behind npm, and
+  the max is correct either way. `prepare` then walks forward from the floor until it finds a
+  version whose release branch and tag are both free.
 - **Publish steps need scripts enabled.** `prepack` is what copies `skills/` into the skills package
   and what builds the scaffolder's `dist/`. A publish run with `--ignore-scripts`, or with
   `ignore-scripts=true` in the publisher's own npmrc, ships a package with the contents missing and
@@ -374,6 +408,12 @@ everything in this file that follows from them changes with it.
   and not a check.
 
 ### The first PyPI publish
+
+**Paused (work in progress).** `publish-packages.sh` currently does not dispatch `python-sdk.yml`:
+the `publish_pkg python-client` line at the end of the script is commented out, and the job prints a
+notice saying so. The first publish, `malloy-publisher-sdk==0.1.0`, never appeared on PyPI, and the
+25-minute wait for it failed the release after skills and create-malloy-package had already published.
+Everything below describes the path as it runs once that line is restored.
 
 `python-client` is the third train `publish-packages` dispatches, and it got there by replacing a
 publish gate that had never run rather than by repairing it. The old job was gated
@@ -464,7 +504,8 @@ which reads as a corrupt file and sends you to the wrong place.
 scope (`@malloydata`, not `@malloy-publisher`) and no workflow publishes it, so it looks shippable
 while nothing ships it. Decide separately whether to mark it `private: true` or bring it into
 `publish-packages` — and if the latter, it needs the whole *Adding a published package* dance below,
-plus a bump check like the other three.
+plus a version-decision path like skills and create-malloy-package's, or a committed-version PR check
+like python-client's.
 
 For completeness: `api-doc.yaml`'s `info.version: v0` is the REST API version behind the `/api/v0`
 path prefix, not a package version. It is unrelated to any of this and should not be bumped with a
@@ -503,27 +544,29 @@ One thing the derived `SERVER_VERSION` changed about that hand dispatch: it is n
 used to be loud. Dispatching `create-malloy-package-npm.yml` resolves the pin from whatever the server's
 `latest` is at that moment, so a dispatch fired before `publish-npm` has landed the new server
 publishes a scaffolder pinned a release behind, and passes. The old hand-maintained pin failed the run
-instead. So order still matters even though nothing enforces it: confirm the server version is on npm
-(`npm view @malloy-publisher/server dist-tags.latest`) before dispatching the scaffolder by hand.
+instead. A release waits for this itself (see below), but a hand dispatch does not: confirm the server
+version is on npm (`npm view @malloy-publisher/server dist-tags.latest`) before dispatching the
+scaffolder by hand.
 
 It fires only when `main` moved **under the paths that package's published content is built from**, not
 on any movement at all: the second package is checked after the first has finished a full
 dispatch-and-wait, so a bare sha comparison failed it whenever anything merged inside that window,
-including changes that could not affect it. Those paths are not simply "where the package lives".
-`create-malloy-package` includes `packages/skills/package.json`, because its publish job reads the
-skills version from `main` at dispatch time and bakes it into the published dependency range, even
-though no skills file enters its tarball. Every uncertain answer still aborts: an unanswered compare
-API, and a diff at that API's 300-file cap, where the list may be truncated.
+including changes that could not affect it. `create-malloy-package` no longer watches
+`packages/skills/package.json`: its publish job now takes the skills version to depend on as a
+dispatch input (`skills_version`, set from what skills just published, or its npm `latest` when
+skills was skipped) rather than reading that file from `main`, so a skills publish with no
+scaffolder-relevant change no longer retriggers this guard. Every uncertain answer still aborts: an
+unanswered compare API, and a diff at that API's 300-file cap, where the list may be truncated.
 
-**Two skips are how a green release ships nothing, and both name themselves in the job summary.**
-Read that summary rather than the run's green tick if you expected a publish.
+**Two kinds of skip are how a green release ships nothing (or ships less than expected), and both
+name themselves in the job summary.** Read that summary rather than the run's green tick if you
+expected a publish.
 
-1. **The version was not bumped.** `publish-packages` decides purely on the version in `main`'s
-   `package.json`, so if a change lands in `skills/` or `packages/create-malloy-package/` without a
-   version bump, the release skips that package and stays green. This is now much harder to reach: each
-   package carries a `pull_request` bump check (see *A forgotten bump is a red PR check*). It is not
-   impossible — a lockfile-only change to `skills` is outside that check's trigger — so the skip and
-   its summary line stay.
+1. **Nothing was decided to publish.** `independent-version.mjs` can return `skip` for a real reason,
+   not a bug: skills skips when nothing in its watched paths changed since npm `latest`'s `gitHead`,
+   and the scaffolder skips only on a re-run where its published `publisherServer` already equals
+   this release. Either skip is expected and reported by name in the summary; it is not the same
+   failure mode a forgotten bump used to be, because there is no bump to forget any more.
 2. **The release was a prerelease.** Any hyphen in the release version skips both packages, because
    their own versions carry no hyphen and their publish workflows would tag them `latest`.
    `gh-release` skips prereleases for the same reason. Publish these from an ordinary release, or
@@ -578,6 +621,26 @@ up. 0.0.250 is the worked example — the guard ran at 15:07:55 against a `lates
 0.0.250 until 15:09:13. **Narrowing that `needs:` back to `prepare` alone now breaks the derivation
 silently** rather than loudly: the substituted value would simply be a release behind, and every
 generated workspace would pin the previous server.
+
+That `needs:` is not enough on its own, because npm can take minutes to show a version after
+`npm publish` returns. In 0.7.0, `publish-npm` finished at 19:09 and `latest` read 0.7.0 only at
+19:16, so the scaffolder read 0.6.0. So `publish-packages.sh` also waits, up to 15 minutes, for the
+server's `latest` to read the version the release shipped before it dispatches the scaffolder
+(`wait_for_server_latest`). If `latest` never gets there, the scaffolder is not dispatched, `set -e`
+ends the job so python-client is not reached either, and the job says to re-run it once `latest` reads
+the new version.
+
+That wait proves only the release runner's view of npm. The registry is cached per CDN edge
+(`cache-control: public, max-age=300`), so the scaffolder's runners can read the previous `latest` for
+a few more minutes. So the release also dispatches the scaffolder with `server_version` set to the
+version it shipped. Both scaffolder jobs wait for their own `latest` to read it, and the pin step
+refuses anything else. A hand dispatch leaves the input empty and pins `latest` as before.
+
+The `--host` check runs `npx @malloy-publisher/server@<pin>` from an empty temporary directory, not
+the checkout. In the checkout, npx uses the workspace's own unbuilt `packages/server` whenever the pin
+equals the version that file declares, and fails with `malloy-publisher: not found`. That failed the
+0.5.1 and 0.7.0 scaffolder publishes. In 0.7.0 it was also the only thing that stopped a scaffolder
+pinned to the previous server from shipping.
 
 sdk/app/server are not re-runnable at the same version today. `prepare` walks the version forward
 whenever a release branch or tag exists, so a release that fails after `npm-sdk.yml` has published

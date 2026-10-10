@@ -8,7 +8,7 @@ import { tmpName } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
- * The dashboard viewer, end to end in a browser: the Dashboards section on the
+ * The dashboard viewer, end to end in a browser: the Artifacts section on the
  * package page, the control row the manifest's given specs produce, URL-carried
  * filter state, Apply mode, and the composite tile grid.
  *
@@ -62,7 +62,7 @@ test.describe("package-dashboards", () => {
       await page.goto(`/${env}/${PKG}/dashboards/${slug}`);
    };
 
-   test("the package page lists dashboards and lists them only once", async ({
+   test("the package page lists dashboards and notebooks as artifacts, each once, with New on the heading row", async ({
       page,
    }) => {
       await gotoHome(page);
@@ -70,8 +70,25 @@ test.describe("package-dashboards", () => {
       await openPackage(page, env, PKG);
 
       await expect(
-         page.getByRole("heading", { name: "Dashboards", level: 6 }),
+         page.getByRole("heading", { name: "Artifacts", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
+      await expect(
+         page.getByRole("heading", { name: "Dashboards", exact: true }),
+      ).toHaveCount(0);
+      await expect(
+         page.getByRole("heading", { name: "Notebooks", exact: true }),
+      ).toHaveCount(0);
+      // One list: a dashboard row and a notebook row, each once, by name.
+      const artifacts = page.getByRole("region", { name: "Artifacts" });
+      await expect(
+         artifacts.getByRole("button", { name: /Business Overview/ }),
+      ).toHaveCount(1);
+      await expect(
+         artifacts.getByRole("button", { name: /Orders in a window/ }),
+      ).toHaveCount(1);
+      await expect(
+         artifacts.getByRole("button", { name: "New", exact: true }),
+      ).toBeVisible();
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),
       ).toBeVisible();
@@ -100,7 +117,7 @@ test.describe("package-dashboards", () => {
       await openPackage(page, env, PKG);
 
       await expect(
-         page.getByRole("heading", { name: "Notebooks", level: 6 }),
+         page.getByRole("heading", { name: "Artifacts", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
 
       // An explicit `## title=`, and a title read from the first markdown
@@ -126,7 +143,7 @@ test.describe("package-dashboards", () => {
       await openEnvironment(page, env);
       await openPackage(page, env, PKG);
       await expect(
-         page.getByRole("heading", { name: "Dashboards", level: 6 }),
+         page.getByRole("heading", { name: "Artifacts", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
 
       // Polled rather than snapshotted once: the rows arrive after the section
@@ -188,10 +205,14 @@ test.describe("package-dashboards", () => {
       // `control=select` becomes a combobox, labelled by `# label=` rather than
       // by the given's name.
       await expect(page.getByRole("combobox", { name: "Brand" })).toBeVisible();
-      // `range_min`/`range_max` become a slider, and no control appears for the
-      // givens this dashboard's query does not reference.
+      // `range_min`/`range_max` become a two-handled range slider, and no
+      // control appears for the givens this dashboard's query does not
+      // reference.
       await expect(
-         page.getByRole("slider", { name: "Minimum amount" }),
+         page.getByRole("slider", { name: "Minimum amount from" }),
+      ).toBeVisible();
+      await expect(
+         page.getByRole("slider", { name: "Minimum amount to" }),
       ).toBeVisible();
       await expect(page.getByRole("combobox", { name: "Region" })).toHaveCount(
          0,
@@ -450,6 +471,68 @@ test.describe("package-dashboards", () => {
             Math.abs(cards.at(-1)!.right - tiles.at(-1)!.right),
          ).toBeLessThanOrEqual(1);
       }).toPass({ timeout: 30_000 });
+   });
+
+   test("a short table fills its card beside a chart, with no filter warning", async ({
+      page,
+   }) => {
+      await openDashboard(page, "tiled");
+      const heading = page.locator('[title="tiles -> brand_tile"]');
+      await expect(heading).toBeVisible({ timeout: 30_000 });
+      const card = page
+         .locator('[data-chrome="card"]')
+         .filter({ has: heading });
+      const table = card.locator(".malloy-table.root");
+      await expect(table).toBeVisible({ timeout: 30_000 });
+      const chartCard = page
+         .locator('[data-chrome="card"]')
+         .filter({ has: page.locator('[title="tiles -> region_tile"]') });
+      await expect(
+         chartCard.locator('[data-malloy-sizing="container"]'),
+      ).toBeVisible({
+         timeout: 30_000,
+      });
+
+      // The card pads its body, so the table ends one padding short of its edge.
+      await expect(async () => {
+         const [cardBox, tableBox, chartBox] = await Promise.all([
+            card.boundingBox(),
+            table.boundingBox(),
+            chartCard.boundingBox(),
+         ]);
+         const padding = await card.evaluate((el) =>
+            parseFloat(getComputedStyle(el).paddingBottom),
+         );
+         expect(
+            Math.abs(cardBox!.height - chartBox!.height),
+         ).toBeLessThanOrEqual(1);
+         expect(
+            cardBox!.y +
+               cardBox!.height -
+               padding -
+               (tableBox!.y + tableBox!.height),
+         ).toBeLessThanOrEqual(3);
+      }).toPass({ timeout: 30_000 });
+
+      // Every tile reads BRAND through the extension's own `where:`, so none warns.
+      await expect(page.getByTestId("tile-filter-tag")).toHaveCount(0);
+   });
+
+   test("a tile that ignores a filter says so above its result", async ({
+      page,
+   }) => {
+      await openDashboard(page, "combined");
+      const card = page
+         .locator('[data-chrome="card"]')
+         .filter({ has: page.locator('[title="orders -> by_brand"]') });
+      const table = card.locator(".malloy-table.root");
+      await expect(table).toBeVisible({ timeout: 30_000 });
+
+      const tag = card.getByTestId("tile-filter-tag");
+      await expect(tag).toHaveText("Doesn't respond to Region");
+      const tagBox = (await tag.boundingBox())!;
+      const tableBox = (await table.boundingBox())!;
+      expect(tagBox.y + tagBox.height).toBeLessThanOrEqual(tableBox.y);
    });
 
    /**
@@ -1087,6 +1170,77 @@ test.describe("package-dashboards", () => {
       );
    });
 
+   // The other card, and the last piece of the two that did not agree. Radius,
+   // padding, border, shadow and gap were reconciled already; the background was
+   // not, because the composite `Paper` left it unset and took MUI's white while
+   // the renderer card painted `theme.tile`. On a theme whose page is also white
+   // that is the difference between tiles that read as cards and tiles that read
+   // as nothing, and it is exactly the "they render differently" in #1069.
+   //
+   // Asserted across BOTH forms against one sentinel, rather than against a
+   // literal on the composite alone: the claim is that the two cards agree, so a
+   // test that only pins one of them would stay green if the renderer's card
+   // moved.
+   test("both dashboard forms paint their card with the theme's tile colour", async ({
+      page,
+   }) => {
+      const TILE_COLOR = "rgb(4, 5, 6)";
+      await page.route("**/api/v0/status", async (route) => {
+         const res = await route.fetch();
+         const body = await res.json();
+         await route.fulfill({
+            response: res,
+            json: {
+               ...body,
+               theme: {
+                  ...(body.theme ?? {}),
+                  palette: {
+                     ...(body.theme?.palette ?? {}),
+                     tile: { light: "#040506", dark: "#040506" },
+                  },
+               },
+            },
+         });
+      });
+
+      await openDashboard(page, "tiled");
+      const tile = page.locator(
+         '.MuiPaper-root:has([title="tiles -> brand_tile"])',
+      );
+      await expect(tile).toBeVisible({ timeout: 30_000 });
+      await expect
+         .poll(
+            () => tile.evaluate((el) => getComputedStyle(el).backgroundColor),
+            { timeout: 15_000 },
+         )
+         .toBe(TILE_COLOR);
+
+      await openDashboard(page, "grid");
+      const card = page.locator(".dashboard-item").first();
+      await expect(card).toBeVisible({ timeout: 30_000 });
+      await expect
+         .poll(
+            () => card.evaluate((el) => getComputedStyle(el).backgroundColor),
+            { timeout: 15_000 },
+         )
+         .toBe(TILE_COLOR);
+   });
+
+   // A dashboard's description is its narrative header, and it is MARKDOWN: the
+   // doc comment can carry paragraphs, emphasis, lists and inline code, and
+   // Malloy delivers the block with its newlines intact. Rendered as plain text
+   // it collapsed onto one line with the asterisks showing, which is what this
+   // asserts against: `<strong>` exists, and no literal `**` survives.
+   test("a dashboard's description renders as markdown", async ({ page }) => {
+      await openDashboard(page, "tiled");
+      const header = page.locator("h5", { hasText: "Tiled" }).locator("..");
+      await expect(header).toBeVisible({ timeout: 30_000 });
+      await expect(
+         header.locator("strong", { hasText: "tiles" }),
+      ).toBeVisible();
+      expect(await header.innerText()).not.toContain("**");
+   });
+
    // The claim the one-form decision rests on: a view laid out with `# colspan`
    // and `# break` lands in the same place as a composite tile as it does nested
    // under a `# dashboard` query. `tiled` is `grid` re-authored as tiles, so the
@@ -1135,7 +1289,7 @@ test.describe("package-dashboards", () => {
          // Normalized against the page's own grid: its leftmost left and its
          // rightmost right. Heights are deliberately not compared, since a tile
          // is capped and a card is not, and pinning them would make this a test
-         // about TILE_HEIGHT rather than about the colspans.
+         // about TILE_MAX_HEIGHT rather than about the colspans.
          const origin = Math.min(...boxes.map((b) => b.left));
          const span = Math.max(...boxes.map((b) => b.right)) - origin;
          const rows = [...new Set(boxes.map((b) => b.top))].sort(

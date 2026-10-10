@@ -13,6 +13,7 @@ import {
    assertStorageServeShapeCompiles,
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
+   type BuildSessionDeps,
    createIsolatedBuildSession,
    createTableAndDescribe,
    dropStorageTable,
@@ -250,6 +251,222 @@ describe("buildSourceIntoStorage gating (no session I/O before the gates)", () =
             environmentPath: "/tmp/env",
          }),
       ).rejects.toThrow(/query-passthrough build supports/i);
+   });
+});
+
+describe("buildSourceIntoStorage closes a federated source's tunnel", () => {
+   // The federation tests prove `federatePostgres` RETURNS a close; this proves
+   // the build session CALLS it, on both outcomes. A stubbed federate hands back
+   // a spy close and a stubbed read supplies the SELECT the CTAS wraps, so the
+   // whole session path runs against a real plain-DuckDB file destination with
+   // no live warehouse.
+   const source = { name: "wh", type: "postgres" } as ApiConnection;
+   function harness(read: BuildSessionDeps["read"]) {
+      let closed = 0;
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {
+               closed += 1;
+            },
+         }),
+         read,
+      };
+      const dir = mkdtempSync(join(tmpdir(), "tunnel-close-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: source,
+         buildSQL: "SELECT 1",
+         physicalTableName: "t",
+         environmentPath: dir,
+         deps,
+      };
+      return { params, dir, closed: () => closed };
+   }
+
+   it("on a clean build, after the session is disposed", async () => {
+      const h = harness(async () => ({
+         selectSQL: "SELECT 1 AS x",
+         jobId: null,
+         cost: null,
+      }));
+      try {
+         const result = await buildSourceIntoStorage(h.params);
+         expect(result.schema.map((c) => c.name)).toEqual(["x"]);
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("when the read throws, and the build's own error is the one raised", async () => {
+      const h = harness(async () => {
+         throw new Error("warehouse boom");
+      });
+      try {
+         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
+            "warehouse boom",
+         );
+         expect(h.closed()).toBe(1);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+});
+
+describe("buildSourceIntoStorage hands the warehouse its SQL verbatim, partitioned or not", () => {
+   // The ordering a partitioned build needs is applied at the top of the INSERT
+   // (materialization_partitioned_build.spec), never to the SELECT the warehouse
+   // runs: what is executed there, attributed there, and addressed by is the
+   // compiled SQL and nothing else.
+   function harness(partitionColumns: string[] | undefined) {
+      const received: string[] = [];
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {},
+         }),
+         read: async (_session, _type, _handle, buildSQL) => {
+            received.push(buildSQL);
+            return { selectSQL: "SELECT 1 AS org_id", jobId: null, cost: null };
+         },
+      };
+      const dir = mkdtempSync(join(tmpdir(), "partition-verbatim-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+         buildSQL: "SELECT 1 AS org_id",
+         physicalTableName: "t",
+         environmentPath: dir,
+         partitionColumns,
+         deps,
+      };
+      return { params, dir, received };
+   }
+
+   it("for a partitioned build", async () => {
+      const h = harness(["org_id"]);
+      try {
+         // The plain-DuckDB file destination cannot take a layout, so the build
+         // fails at the ALTER — after the read has been issued, which is the
+         // statement this test is about.
+         await expect(buildSourceIntoStorage(h.params)).rejects.toThrow(
+            /PARTITIONED BY/,
+         );
+         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("for an unpartitioned build", async () => {
+      const h = harness(undefined);
+      try {
+         await buildSourceIntoStorage(h.params);
+         expect(h.received).toEqual(["SELECT 1 AS org_id"]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+});
+
+describe("buildSourceIntoStorage bounds the incremental delta's session too", () => {
+   // A delta into a laid-out table is the same partitioned COPY as the seed, and
+   // its memory is width x partitions, not row count. The threshold and the
+   // single appender reach the delta through the session it runs on; proved by
+   // reading the settings back from INSIDE the refresh hook, on a real session.
+   function harness(partitionColumns: string[] | undefined) {
+      const seen: Record<string, string>[] = [];
+      const afterPlan: Record<string, string>[] = [];
+      const deps: BuildSessionDeps = {
+         federate: async () => ({
+            handle: "wh",
+            sourceType: "postgres" as const,
+            close: async () => {},
+         }),
+         read: async () => ({
+            selectSQL: "SELECT 1 AS org_id",
+            jobId: null,
+            cost: null,
+         }),
+      };
+      const settings = async (session: DuckDBConnection) => {
+         const r = await session.runSQL(
+            "SELECT name, value FROM duckdb_settings() " +
+               "WHERE name IN ('threads', 'partitioned_write_flush_threshold')",
+         );
+         return Object.fromEntries(
+            (r.rows as { name: string; value: string }[]).map((x) => [
+               x.name,
+               String(x.value),
+            ]),
+         );
+      };
+      const dir = mkdtempSync(join(tmpdir(), "partition-delta-"));
+      mkdirSync(storageDestinationRoot(dir), { recursive: true });
+      const params = {
+         destinationName: "lake",
+         destinationConnection: {
+            name: "lake",
+            type: "duckdb",
+         } as ApiConnection,
+         sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+         buildSQL: "SELECT 1 AS org_id",
+         physicalTableName: "t",
+         environmentPath: dir,
+         partitionColumns,
+         incremental: {
+            plan: async ({ session }: { session: DuckDBConnection }) => {
+               seen.push(await settings(session));
+               // A delta was applied: the build returns here, before the seed.
+               return {
+                  readCost: null,
+                  refreshed: true,
+               } as never;
+            },
+            afterSeed: async () => undefined,
+         },
+         deps,
+      };
+      return { params, dir, seen, afterPlan, settings };
+   }
+
+   it("a partitioned build's delta runs on one thread at the flush threshold", async () => {
+      const h = harness(["org_id"]);
+      try {
+         // The plain-DuckDB destination has no laid-out table to describe, so
+         // the build fails after the hook -- which is the part under test.
+         await buildSourceIntoStorage(h.params).catch(() => undefined);
+         expect(h.seen).toEqual([
+            { threads: "1", partitioned_write_flush_threshold: "8192" },
+         ]);
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
+   });
+
+   it("an unpartitioned build's delta sees the session as it was", async () => {
+      const h = harness(undefined);
+      try {
+         await buildSourceIntoStorage(h.params).catch(() => undefined);
+         expect(h.seen).toHaveLength(1);
+         expect(h.seen[0].threads).not.toBe("1");
+         expect(h.seen[0].partitioned_write_flush_threshold).toBe("524288");
+      } finally {
+         rmSync(h.dir, { recursive: true, force: true });
+      }
    });
 });
 

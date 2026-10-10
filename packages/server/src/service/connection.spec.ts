@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { PooledPostgresConnection } from "@malloydata/db-postgres";
 import {
    afterAll,
    afterEach,
+   beforeAll,
    beforeEach,
    describe,
    expect,
@@ -19,18 +21,32 @@ import {
    attachDuckLakeReadWrite,
    buildCloudStorageSecretSQL,
    buildEnvironmentMalloyConfig,
+   buildPgConnectionString,
    buildProxiedSslQuery,
    createEnvironmentConnections,
+   EnvironmentPooledPostgresConnection,
    resolveProxiedTls,
    testConnectionConfig,
    isExpiredCredentialError,
+   redactTestFailure,
 } from "./connection";
 import {
    DEFAULT_S3_CREDENTIAL_CHAIN,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { assembleEnvironmentConnections } from "./connection_config";
-import { UnsupportedCatalogFormatError } from "../errors";
+import {
+   ConnectionPoolExhaustedError,
+   PayloadTooLargeError,
+   UnconfiguredConnectionError,
+   UnsupportedCatalogFormatError,
+} from "../errors";
+import { logger } from "../logger";
+import { isStreamingConnection, streamSqlWithBudget } from "../stream_helpers";
+import {
+   startClosingListener,
+   type ClosingListener,
+} from "../test_helpers/closing_listener";
 import { EnvironmentStore } from "./environment_store";
 
 type ApiConnection = components["schemas"]["Connection"];
@@ -1776,7 +1792,9 @@ describe("connection integration tests", () => {
                   ],
                   testEnvironmentPath,
                ),
-            ).rejects.toThrow(/has no attached databases/);
+            ).rejects.toThrow(
+               /must provide either attachedDatabases or non-empty setupSQL/,
+            );
          });
 
          it("should reject unsupported DuckDB connector fields", async () => {
@@ -1784,11 +1802,11 @@ describe("connection integration tests", () => {
                createEnvironmentConnections(
                   [
                      {
-                        name: "duckdb_with_setup_sql",
+                        name: "duckdb_with_unsupported_field",
                         type: "duckdb",
                         duckdbConnection: {
                            attachedDatabases: [],
-                           setupSQL: "INSTALL httpfs",
+                           customUnsupportedField: "invalid",
                         },
                      } as unknown as ApiConnection,
                   ],
@@ -1988,6 +2006,446 @@ describe("connection integration tests", () => {
             }
          });
 
+         const testPostgresFields = () => ({
+            host: process.env.POSTGRES_TEST_HOST,
+            port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+            userName: process.env.POSTGRES_TEST_USER!,
+            password: process.env.POSTGRES_TEST_PASSWORD!,
+            databaseName: process.env.POSTGRES_TEST_DATABASE,
+         });
+
+         const buildPlainPostgresConfig = () =>
+            buildEnvironmentMalloyConfig(
+               [
+                  {
+                     name: "pg_pooled",
+                     type: "postgres",
+                     postgresConnection: testPostgresFields(),
+                  },
+               ],
+               testEnvironmentPath,
+            );
+
+         it(
+            "should resolve a plain environment-level Postgres connection as pooled and capped",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // The pool's resolved options, not just the constructor arguments.
+               const config = buildPlainPostgresConfig();
+
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  expect(connection.isPool()).toBe(true);
+                  // isPool() narrows to a type without getPool().
+                  const pooled =
+                     connection as unknown as PooledPostgresConnection;
+                  const pool = await pooled.getPool();
+                  expect(pool.options.max).toBe(5);
+                  expect(pool.options.maxUses).toBe(1);
+                  expect(pool.options.application_name).toBe(
+                     "malloy-publisher",
+                  );
+
+                  // runSQL de-JSONs each row via row.row.
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
+                  );
+                  expect(result.rows[0]).toEqual({ ok: 1 });
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should size a plain Postgres connection's pool from PUBLISHER_POSTGRES_POOL_MAX",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const previous = process.env.PUBLISHER_POSTGRES_POOL_MAX;
+               process.env.PUBLISHER_POSTGRES_POOL_MAX = "3";
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.options.max).toBe(3);
+               } finally {
+                  await config.releaseConnections();
+                  if (previous === undefined) {
+                     delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
+                  } else {
+                     process.env.PUBLISHER_POSTGRES_POOL_MAX = previous;
+                  }
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should keep a plain Postgres connection usable after more row-cap overflows than its pool size",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // Each overflow stops its stream early; one more than the pool size
+               // shows that every early stop returns its slot.
+               const config = buildPlainPostgresConfig();
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  if (!isStreamingConnection(connection)) {
+                     throw new Error(
+                        "Expected a streaming Postgres connection",
+                     );
+                  }
+                  const manyRows =
+                     "SELECT row_to_json(t) AS row FROM (SELECT generate_series(1, 1000) AS n) t";
+                  for (let i = 0; i < 6; i++) {
+                     await expect(
+                        streamSqlWithBudget(
+                           connection,
+                           manyRows,
+                           { rowLimit: 11 },
+                           { maxRows: 10, maxBytes: 0 },
+                        ),
+                     ).rejects.toBeInstanceOf(PayloadTooLargeError);
+                  }
+                  const pool = await (
+                     connection as unknown as PooledPostgresConnection
+                  ).getPool();
+                  expect(pool.totalCount - pool.idleCount).toBe(0);
+                  const result = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT 42 AS answer) t",
+                  );
+                  expect(result.rows).toEqual([{ answer: 42 }]);
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should not carry one query's session state into the next query on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               // now() equals statement_timestamp() only outside a transaction left
+               // open by an earlier query.
+               const config = buildPlainPostgresConfig();
+               const probe =
+                  "SELECT row_to_json(t) AS row FROM (SELECT current_setting('search_path') AS search_path, now() = statement_timestamp() AS own_txn) t";
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_pooled",
+                     );
+                  const before = (await connection.runSQL(probe)).rows[0];
+                  await connection.runSQL("SET search_path TO no_such_schema");
+                  await connection.runSQL("BEGIN");
+                  const after = (await connection.runSQL(probe)).rows[0];
+                  expect(after).toEqual(before);
+                  expect(after).toEqual(
+                     expect.objectContaining({ own_txn: true }),
+                  );
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should fail a query that waited out a full pool with ConnectionPoolExhaustedError on a plain Postgres connection",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+
+               class OneSessionShortWait extends EnvironmentPooledPostgresConnection {
+                  protected poolLimits() {
+                     return { max: 1, connectionTimeoutMillis: 200 };
+                  }
+               }
+               const connection = new OneSessionShortWait({
+                  name: "pg_wait",
+                  host: process.env.POSTGRES_TEST_HOST,
+                  port: parseInt(process.env.POSTGRES_TEST_PORT || "5432"),
+                  username: process.env.POSTGRES_TEST_USER,
+                  password: process.env.POSTGRES_TEST_PASSWORD,
+                  databaseName: process.env.POSTGRES_TEST_DATABASE,
+               });
+               const waitedOut =
+                  "Connection 'pg_wait' has no free database session: this server opens at most 1 at a time for it, and none came free within 0.2 s. Retry once fewer queries are running on this connection.";
+               const expectExhausted = async (run: Promise<unknown>) => {
+                  const thrown = await run.catch((e: unknown) => e);
+                  expect(thrown).toBeInstanceOf(ConnectionPoolExhaustedError);
+                  expect((thrown as Error).message).toBe(waitedOut);
+               };
+               const one =
+                  "SELECT row_to_json(t) AS row FROM (SELECT 1 AS v) t";
+               try {
+                  await connection.getPool();
+                  const holding = connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
+                  );
+                  await new Promise((resolve) => setTimeout(resolve, 100));
+                  await expectExhausted(connection.runSQL(one));
+                  const drain = async () => {
+                     for await (const _row of connection.runSQLStream(one)) {
+                        // drain
+                     }
+                  };
+                  await expectExhausted(drain());
+                  await holding;
+               } finally {
+                  await connection.close();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should apply a direct connection's statementTimeoutMilliseconds on the database",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const config = buildEnvironmentMalloyConfig(
+                  [
+                     {
+                        name: "pg_stmt_timeout",
+                        type: "postgres",
+                        postgresConnection: {
+                           ...testPostgresFields(),
+                           statementTimeoutMilliseconds: 750,
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               try {
+                  const connection =
+                     await config.malloyConfig.connections.lookupConnection(
+                        "pg_stmt_timeout",
+                     );
+                  // The server's own view of the session setting, not ours.
+                  const setting = await connection.runSQL(
+                     "SELECT row_to_json(t) AS row FROM (SELECT current_setting('statement_timeout') AS v) t",
+                  );
+                  expect(setting.rows[0]).toEqual({ v: "750ms" });
+                  // And the server enforces it: a statement that outlives the
+                  // timeout is cancelled rather than left to run.
+                  await expect(
+                     connection.runSQL(
+                        "SELECT row_to_json(t) AS row FROM (SELECT pg_sleep(2)::text AS s) t",
+                     ),
+                  ).rejects.toThrow(
+                     "canceling statement due to statement timeout",
+                  );
+               } finally {
+                  await config.releaseConnections();
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should connect a direct connection with the sslmode it sets, not the deployment's",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               // The test server runs without TLS, which makes the mode that
+               // reached pg observable: `disable` connects, `no-verify`
+               // demands TLS and is refused.
+               const lookupAndQuery = async (
+                  sslmode: "disable" | "no-verify",
+               ) => {
+                  const config = buildEnvironmentMalloyConfig(
+                     [
+                        {
+                           name: `pg_ssl_${sslmode.replace("-", "_")}`,
+                           type: "postgres",
+                           postgresConnection: {
+                              ...testPostgresFields(),
+                              sslmode,
+                           },
+                        },
+                     ],
+                     testEnvironmentPath,
+                  );
+                  try {
+                     const connection =
+                        await config.malloyConfig.connections.lookupConnection(
+                           `pg_ssl_${sslmode.replace("-", "_")}`,
+                        );
+                     return await connection.runSQL(
+                        "SELECT row_to_json(t) AS row FROM (SELECT 1 AS ok) t",
+                     );
+                  } finally {
+                     await config.releaseConnections();
+                  }
+               };
+               const previous = process.env.PGSSLMODE;
+               // The deployment default says the opposite of each field, so
+               // a pass proves the field won.
+               process.env.PGSSLMODE = "no-verify";
+               try {
+                  const result = await lookupAndQuery("disable");
+                  expect(result.rows[0]).toEqual({ ok: 1 });
+               } finally {
+                  process.env.PGSSLMODE = "disable";
+               }
+               try {
+                  await expect(lookupAndQuery("no-verify")).rejects.toThrow(
+                     "The server does not support SSL connections",
+                  );
+               } finally {
+                  if (previous === undefined) delete process.env.PGSSLMODE;
+                  else process.env.PGSSLMODE = previous;
+               }
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "should apply an attached database's statementTimeoutMilliseconds through DuckDB",
+            async () => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [
+                     {
+                        name: "duckdb_pg_stmt_timeout",
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name: "pg_stmt_timeout",
+                                 type: "postgres",
+                                 postgresConnection: {
+                                    ...testPostgresFields(),
+                                    statementTimeoutMilliseconds: 750,
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               const connection = malloyConnections.get(
+                  "duckdb_pg_stmt_timeout",
+               ) as DuckDBConnection;
+               createdConnections.push(connection);
+               // postgres_query runs on the attach's own Postgres session, so
+               // this reads the setting the libpq `options` pair gave it.
+               const result = await connection.runSQL(
+                  "SELECT * FROM postgres_query('pg_stmt_timeout', 'SELECT current_setting(''statement_timeout'') AS v')",
+               );
+               expect(Object.values(result.rows[0])[0]).toBe("750ms");
+            },
+            { timeout: 30000 },
+         );
+
+         it.each(["uri", "keyword"] as const)(
+            "should keep a %s connectionString's own options when adding the statement timeout to an attach",
+            async (form) => {
+               if (!hasPostgresCredentials()) {
+                  console.log(
+                     "Skipping: PostgreSQL credentials not configured",
+                  );
+                  return;
+               }
+               const f = testPostgresFields();
+               const connectionString =
+                  form === "uri"
+                     ? `postgresql://${encodeURIComponent(f.userName)}:${encodeURIComponent(f.password)}@${f.host}:${f.port}/${f.databaseName}?options=${encodeURIComponent("-c search_path=pg_catalog -c statement_timeout=100")}`
+                     : `host=${f.host} port=${f.port} dbname=${f.databaseName} user=${f.userName} password=${f.password} options='-c search_path=pg_catalog -c statement_timeout=100'`;
+               const name = `pg_opts_${form}`;
+               const { malloyConnections } = await createEnvironmentConnections(
+                  [
+                     {
+                        name: `duckdb_${name}`,
+                        type: "duckdb",
+                        duckdbConnection: {
+                           attachedDatabases: [
+                              {
+                                 name,
+                                 type: "postgres",
+                                 postgresConnection: {
+                                    connectionString,
+                                    statementTimeoutMilliseconds: 750,
+                                 },
+                              },
+                           ],
+                        },
+                     },
+                  ],
+                  testEnvironmentPath,
+               );
+               const connection = malloyConnections.get(
+                  `duckdb_${name}`,
+               ) as DuckDBConnection;
+               createdConnections.push(connection);
+               // libpq's own parse of the merged string, read back from the
+               // session it opened: the string's search_path survives and the
+               // field's timeout replaces the string's.
+               const result = await connection.runSQL(
+                  `SELECT * FROM postgres_query('${name}', 'SELECT current_setting(''search_path'') AS sp, current_setting(''statement_timeout'') AS st')`,
+               );
+               expect(result.rows[0]).toEqual({
+                  sp: "pg_catalog",
+                  st: "750ms",
+               });
+            },
+            { timeout: 30000 },
+         );
+
          it("should use environment-root-relative file paths for environment-level DuckDB", async () => {
             const insideCsvPath = path.join(testEnvironmentPath, "inside.csv");
             await fs.writeFile(insideCsvPath, "id\n1\n");
@@ -2142,6 +2600,15 @@ describe("connection integration tests", () => {
    });
 
    describe("testConnectionConfig", () => {
+      // Where the specs below send a Postgres connection that has to fail.
+      let unreachable: ClosingListener;
+      beforeAll(async () => {
+         unreachable = await startClosingListener();
+      });
+      afterAll(async () => {
+         await unreachable.close();
+      });
+
       it(
          "should successfully test valid PostgreSQL connection",
          async () => {
@@ -2198,6 +2665,433 @@ describe("connection integration tests", () => {
 
          expect(result.status).toBe("failed");
          expect(result.errorMessage).toContain("name is required");
+      });
+
+      // The connection test is unauthenticated and stores nothing, so it is
+      // where an unscreened setupSQL would run first. The marker file is the
+      // proof: setupSQL either ran (file present) or it did not.
+      describe("DuckDB setupSQL opt-in", () => {
+         const originalAllow = process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+         let dir: string;
+
+         beforeEach(async () => {
+            dir = await fs.mkdtemp(path.join(os.tmpdir(), "setupsql-gate-"));
+         });
+
+         afterEach(async () => {
+            if (originalAllow === undefined) {
+               delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            } else {
+               process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = originalAllow;
+            }
+            await fs.rm(dir, { recursive: true, force: true });
+         });
+
+         const markerConfig = (marker: string): ApiConnection => ({
+            name: "setup_sql_gate",
+            type: "duckdb",
+            duckdbConnection: {
+               setupSQL: `COPY (SELECT 1 AS ran) TO '${marker}'`,
+            },
+         });
+
+         const exists = (file: string) =>
+            fs.access(file).then(
+               () => true,
+               () => false,
+            );
+
+         it("refuses setupSQL without running it when the opt-in is unset", async () => {
+            delete process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL;
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).toContain(
+               "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true",
+            );
+            expect(await exists(marker)).toBe(false);
+         });
+
+         it("runs setupSQL when the opt-in is set", async () => {
+            process.env.PUBLISHER_ALLOW_DUCKDB_SETUP_SQL = "true";
+            const marker = path.join(dir, "ran.csv");
+
+            const result = await testConnectionConfig(markerConfig(marker));
+
+            expect(result.status).toBe("ok");
+            expect(await exists(marker)).toBe(true);
+         });
+      });
+
+      // These specs drive real attach failures offline: the closing listener
+      // accepts the connection and drops it, so DuckDB's postgres extension
+      // fails with "server closed the connection unexpectedly" and echoes the
+      // full connection string into the error message. The assertions prove
+      // that string reaches the caller redacted (`***`) and never in
+      // cleartext.
+      describe("errorMessage redaction", () => {
+         const leakedPassword = "supersecretpw";
+
+         // The security invariant is unconditional: the cleartext password
+         // must never appear (this is also what fails if the fix regresses).
+         // The positive redaction marker is asserted only once the DSN has
+         // actually reached the message (the attach got as far as the connect
+         // refusal, so the host is present). On a runner where a DuckDB
+         // extension can't load, the attach fails earlier with a message that
+         // carries no DSN to redact, and the marker check would then be
+         // meaningless rather than a real failure.
+         const expectRedacted = (
+            errorMessage: string | undefined,
+            marker: string,
+         ) => {
+            expect(errorMessage).not.toContain(leakedPassword);
+            if (
+               typeof errorMessage === "string" &&
+               errorMessage.includes("127.0.0.1")
+            ) {
+               expect(errorMessage).toContain(marker);
+            }
+         };
+
+         it(
+            "redacts a URL-form DSN in a failed duckdb attached-postgres test",
+            async () => {
+               const result = await testConnectionConfig({
+                  name: "redact_pg_url",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "redact_pg_url_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expectRedacted(result.errorMessage, ":***@");
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "redacts a keyword-form connection string in a failed duckdb attached-postgres test",
+            async () => {
+               const result = await testConnectionConfig({
+                  name: "redact_pg_kw",
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "redact_pg_kw_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              host: "127.0.0.1",
+                              port: unreachable.port,
+                              userName: "alice",
+                              password: leakedPassword,
+                              databaseName: "mydb",
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expectRedacted(result.errorMessage, "password=***");
+            },
+            { timeout: 30000 },
+         );
+
+         it(
+            "redacts the catalog DSN in a failed ducklake connection test",
+            async () => {
+               const result = await testConnectionConfig({
+                  name: "redact_ducklake",
+                  type: "ducklake",
+                  ducklakeConnection: {
+                     catalog: {
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/mydb`,
+                        },
+                     },
+                     storage: {
+                        bucketUrl: "s3://redact-test-bucket",
+                        s3Connection: {
+                           accessKeyId: "testkey",
+                           secretAccessKey: "testsecret",
+                        },
+                     },
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expectRedacted(result.errorMessage, ":***@");
+            },
+            { timeout: 30000 },
+         );
+
+         // The three specs above depend on the DuckDB postgres extension
+         // loading so the attach reaches a DSN-bearing connection failure.
+         // This one pins the redaction wiring independently: stub runSQL to
+         // throw a DSN-bearing error, so the failure carries a secret whether
+         // or not any extension is available, and assert it comes back
+         // redacted. (`expectRedacted` would pass vacuously here because a
+         // no-DSN failure trivially satisfies the not-contains invariant.)
+         it("redacts a DSN thrown before any extension loads (stubbed runSQL)", async () => {
+            const dsn = `postgres://alice:${leakedPassword}@127.0.0.1:5432/db`;
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .rejects(
+                  new Error(
+                     `IO Error: Unable to connect to Postgres at "${dsn}"`,
+                  ),
+               );
+
+            const result = await testConnectionConfig({
+               name: "redact_stubbed",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "probe_db",
+                        type: "postgres",
+                        postgresConnection: {
+                           host: "127.0.0.1",
+                           port: 1,
+                           userName: "u",
+                           password: "p",
+                           databaseName: "d",
+                        },
+                     },
+                  ],
+               },
+            });
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).not.toContain(leakedPassword);
+            expect(result.errorMessage).toContain(":***@");
+         });
+
+         // Best-effort, not the primary pin: `installAndLoadExtension` runs
+         // before the ATTACH, so on a runner that cannot load the ducklake
+         // extension this never reaches the parse error and passes without
+         // proving anything. The deterministic pins are the stubbed
+         // `AS "evil-db"` spec below and the ducklake alias assertions in
+         // connection_federation.spec.ts.
+         //
+         // `SAFE_NAME_RE` admits `-`, so a hyphenated name clears both guards
+         // and then, unquoted, fails to PARSE at the hyphen -- putting the error
+         // position after the DSN literal. DuckDB renders a bounded window
+         // around that position, and at some DSN lengths the window opens
+         // between the scheme and the password: `//alice:supersecretpw@...`.
+         // Every `redactPgSecrets` pass anchors on `scheme://user:`, so a window
+         // that clips the scheme redacts nothing and the password comes back
+         // whole. Which lengths land in that band depends on the window width,
+         // so sweep a spread rather than one value -- a single length would go
+         // vacuously green if DuckDB ever widened it.
+         it(
+            "redacts the catalog DSN under a hyphenated ducklake name",
+            async () => {
+               const leaks: number[] = [];
+               for (let length = 8; length <= 56; length += 6) {
+                  const database = "d".repeat(length);
+                  const result = await testConnectionConfig({
+                     name: "prod-lake",
+                     type: "ducklake",
+                     ducklakeConnection: {
+                        catalog: {
+                           postgresConnection: {
+                              connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:${unreachable.port}/${database}`,
+                           },
+                        },
+                        storage: {
+                           bucketUrl: "s3://redact-test-bucket",
+                           s3Connection: {
+                              accessKeyId: "testkey",
+                              secretAccessKey: "testsecret",
+                           },
+                        },
+                     },
+                  });
+
+                  expect(result.status).toBe("failed");
+                  if ((result.errorMessage ?? "").includes(leakedPassword)) {
+                     leaks.push(length);
+                  }
+               }
+               expect(leaks).toEqual([]);
+            },
+            { timeout: 60000 },
+         );
+
+         // The DSN-leak fix itself, pinned without depending on any extension:
+         // `attachedDatabases[].name` has a `pattern` in api-doc.yaml but there
+         // is no request validator, so a hyphen reaches the ATTACH. Unquoted it
+         // fails to parse after the DSN literal, which is what truncates the
+         // redactor's anchor away.
+         it("quotes a hyphenated attached-database alias in the ATTACH", async () => {
+            const sql: string[] = [];
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .callsFake(async (query: string) => {
+                  sql.push(query);
+                  return { rows: [], totalRows: 0, runStats: {} } as never;
+               });
+
+            await testConnectionConfig({
+               name: "probe_duckdb",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "evil-db",
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/db`,
+                        },
+                     },
+                  ],
+               },
+            });
+
+            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            expect(attach).toBeDefined();
+            expect(attach).toContain('AS "evil-db"');
+         });
+
+         // An absent alias must fail before the ATTACH is built: emitting
+         // `AS ""` runs a statement carrying the DSN and fails at the alias,
+         // which is the truncation that defeats redaction.
+         it("fails a nameless attached database without running the DSN", async () => {
+            const result = await testConnectionConfig({
+               name: "probe_noname",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString: `postgres://alice:${leakedPassword}@127.0.0.1:1/analytics_db`,
+                        },
+                     },
+                  ],
+               },
+            } as never);
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).not.toContain(leakedPassword);
+            // The load-bearing half: it must fail at the guard, not at DuckDB
+            // parsing `AS ""`. A short DSN still redacts cleanly, so the
+            // not-contains check alone would pass either way.
+            expect(result.errorMessage).toContain(
+               "Attached database name is required",
+            );
+         });
+      });
+
+      // testConnectionConfig isolates the throwaway config in a fresh temp
+      // directory, so a connection test never reads, writes, or deletes a file
+      // in the server's cwd, and a path-traversal name is rejected outright.
+      describe("connection-name path safety", () => {
+         it("rejects a path-traversal connection name without touching the filesystem", async () => {
+            // Unique per run: the finally deletes this path unconditionally,
+            // so a fixed name could remove an unrelated file that happened to
+            // sit there.
+            const probe = `redact_traversal_probe_${process.pid}_${Date.now()}`;
+            const traversalName = `../${probe}`;
+            // Where a regressed guard would actually land: the throwaway config
+            // is rooted at an mkdtemp directory, so a `../name` escape resolves
+            // one level up into tmpdir, never into cwd.
+            const escapedPath = path.join(os.tmpdir(), `${probe}.duckdb`);
+            try {
+               const result = await testConnectionConfig({
+                  name: traversalName,
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "probe_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString:
+                                 "postgres://u:p@127.0.0.1:1/mydb",
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expect(result.errorMessage).toContain("Invalid package name");
+
+               const created = await fs
+                  .access(escapedPath)
+                  .then(() => true)
+                  .catch(() => false);
+               expect(created).toBe(false);
+            } finally {
+               await fs.rm(escapedPath, { force: true });
+            }
+         });
+
+         it("does not read, write, or delete a pre-existing <name>.duckdb in cwd", async () => {
+            // Seed a sentinel where a cwd-rooted test would open (and, with the
+            // old cleanup, delete) the operator's own database. The temp-dir
+            // isolation must leave it byte-for-byte untouched.
+            const name = `operator_db_probe_${process.pid}_${Date.now()}`;
+            const dbPath = path.join(process.cwd(), `${name}.duckdb`);
+            const sentinel = "SENTINEL_DO_NOT_TOUCH";
+            await fs.writeFile(dbPath, sentinel);
+            try {
+               const result = await testConnectionConfig({
+                  name,
+                  type: "duckdb",
+                  duckdbConnection: {
+                     attachedDatabases: [
+                        {
+                           name: "probe_db",
+                           type: "postgres",
+                           postgresConnection: {
+                              connectionString: `postgres://u:p@127.0.0.1:${unreachable.port}/mydb`,
+                           },
+                        },
+                     ],
+                  },
+               });
+
+               expect(result.status).toBe("failed");
+               expect(await fs.readFile(dbPath, "utf-8")).toBe(sentinel);
+            } finally {
+               await fs.rm(dbPath, { force: true });
+            }
+         });
+
+         it("does not apply the filename guard to a non-filesystem connection type", async () => {
+            // A postgres connection never derives a filename, so a name that
+            // wouldn't pass assertSafePackageName must still be testable: the
+            // failure is a connection error, not "Invalid package name".
+            const result = await testConnectionConfig({
+               name: "my prod db",
+               type: "postgres",
+               postgresConnection: {
+                  host: "127.0.0.1",
+                  port: 1,
+                  userName: "u",
+                  password: "p",
+                  databaseName: "d",
+               },
+            });
+
+            expect(result.status).toBe("failed");
+            expect(result.errorMessage).not.toContain("Invalid package name");
+         });
       });
    });
 
@@ -2748,5 +3642,284 @@ describe("isExpiredCredentialError", () => {
       expect(isExpiredCredentialError("ExpiredToken as a bare string")).toBe(
          true,
       );
+   });
+});
+
+/**
+ * The connection test resolves every failure into a ConnectionStatus rather than
+ * throwing, so this function -- not the controller's catch -- is what decides
+ * whether a credential reaches the caller. Pinned here for that reason.
+ *
+ * Driven with the driver text rather than through a live attempt: which message
+ * a driver produces depends on how far it gets, and the ones reachable against
+ * an unroutable host fail before they embed anything. A test that asserted on
+ * those would pass whether or not the redaction ran.
+ *
+ * Values below are generated fixtures, never real credentials.
+ */
+describe("redactTestFailure", () => {
+   const PG_PASSWORD = "pg-password-sentinel-9ty9u5";
+   const SSH_KEY = "ssh-private-key-sentinel-0uz0v6";
+
+   const config = {
+      name: "analytics",
+      type: "postgres",
+      postgresConnection: {
+         host: "db.internal",
+         userName: "analytics_ro",
+         password: PG_PASSWORD,
+      },
+      proxy: { type: "ssh", ssh: { host: "bastion", privateKey: SSH_KEY } },
+   };
+
+   it("removes the exact credential values this request supplied", () => {
+      const msg =
+         `connection failed for postgres://analytics_ro:${PG_PASSWORD}@db.internal:5432/a` +
+         ` using key ${SSH_KEY}`;
+      const out = redactTestFailure(msg, config);
+      expect(out).not.toContain(PG_PASSWORD);
+      expect(out).not.toContain(SSH_KEY);
+      // The non-secret half is what makes the failure diagnosable.
+      expect(out).toContain("db.internal");
+      expect(out).toContain("analytics_ro");
+   });
+
+   it("still redacts a credential the config did not carry", () => {
+      // The value pass cannot see this one; the shape pass is the backstop.
+      const out = redactTestFailure(
+         'auth failed: {"accessToken":"token-sentinel-1va1w7"}',
+         config,
+      );
+      expect(out).not.toContain("token-sentinel-1va1w7");
+   });
+
+   it("leaves a failure carrying no credential untouched", () => {
+      const msg = "getaddrinfo ENOTFOUND db.internal";
+      expect(redactTestFailure(msg, config)).toBe(msg);
+   });
+});
+
+describe("environment connection lookup for a connection the environment does not have", () => {
+   it("raises UnconfiguredConnectionError with Malloy's message, and still resolves a configured one", async () => {
+      // The staging case: a model loaded while `bq_demo` existed, then the
+      // connection was deleted. Malloy's own lookup throws a plain Error.
+      const config = buildEnvironmentMalloyConfig(
+         [
+            {
+               name: "present",
+               type: "postgres",
+               postgresConnection: { host: "127.0.0.1", userName: "x" },
+            },
+         ],
+         "/tmp",
+      );
+      try {
+         const missing = await config.malloyConfig.connections
+            .lookupConnection("bq_demo")
+            .then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+         expect(missing).toBeInstanceOf(UnconfiguredConnectionError);
+         expect((missing as Error).message).toBe(
+            'No connection named "bq_demo" found in config',
+         );
+         expect(
+            await config.malloyConfig.connections.lookupConnection("present"),
+         ).toBeDefined();
+      } finally {
+         await config.releaseConnections();
+      }
+   });
+});
+
+describe("buildPgConnectionString", () => {
+   const fields = {
+      host: "db.example.com",
+      port: 5432,
+      databaseName: "lake",
+      userName: "u",
+      password: "p",
+   };
+   let previousPgSslMode: string | undefined;
+   beforeEach(() => {
+      previousPgSslMode = process.env.PGSSLMODE;
+      delete process.env.PGSSLMODE;
+   });
+   afterEach(() => {
+      if (previousPgSslMode === undefined) delete process.env.PGSSLMODE;
+      else process.env.PGSSLMODE = previousPgSslMode;
+   });
+
+   it("builds a DuckLake catalog's string exactly as before, whatever the new fields say", () => {
+      const withFields = buildPgConnectionString(
+         {
+            ...fields,
+            sslmode: "verify-full",
+            statementTimeoutMilliseconds: 5000,
+         },
+         { name: "lake", applyConnectionOptions: false },
+      );
+      expect(withFields).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p",
+      );
+      process.env.PGSSLMODE = "require";
+      expect(
+         buildPgConnectionString(
+            {
+               ...fields,
+               sslmode: "disable",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "lake", applyConnectionOptions: false },
+         ),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
+
+   it("gives an attached database its statement timeout and its own sslmode", () => {
+      process.env.PGSSLMODE = "disable";
+      expect(
+         buildPgConnectionString(
+            {
+               ...fields,
+               sslmode: "no-verify",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p options='-c statement_timeout=5000' sslmode=require",
+      );
+   });
+
+   it("falls back to the deployment PGSSLMODE when an attached database sets no sslmode", () => {
+      process.env.PGSSLMODE = "require";
+      expect(
+         buildPgConnectionString(fields, {
+            name: "pg_att",
+            applyConnectionOptions: true,
+         }),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
+
+   it("appends the statement timeout to a URI connectionString as a query parameter", () => {
+      expect(
+         buildPgConnectionString(
+            {
+               connectionString:
+                  "postgresql://u:p@db.example.com/lake?sslmode=require",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "postgresql://u:p@db.example.com/lake?sslmode=require&options=-c%20statement_timeout%3D5000",
+      );
+   });
+
+   it("appends the statement timeout to a keyword connectionString as an options pair", () => {
+      expect(
+         buildPgConnectionString(
+            {
+               connectionString: "host=db.example.com dbname=lake",
+               statementTimeoutMilliseconds: 5000,
+            },
+            { name: "pg_att", applyConnectionOptions: true },
+         ),
+      ).toBe(
+         "host=db.example.com dbname=lake options='-c statement_timeout=5000'",
+      );
+   });
+
+   it.each([
+      [
+         "a URI",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics&sslmode=require",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics%20-c%20statement_timeout%3D5000&sslmode=require",
+      ],
+      [
+         "a keyword string with a quoted value",
+         "host=db.example.com dbname=lake options='-c search_path=analytics'",
+         "host=db.example.com dbname=lake options='-c search_path=analytics -c statement_timeout=5000'",
+      ],
+      [
+         "a keyword string with an unquoted value",
+         "host=db.example.com options=-csearch_path=analytics dbname=lake",
+         "host=db.example.com options='-csearch_path=analytics -c statement_timeout=5000' dbname=lake",
+      ],
+   ])(
+      "merges the statement timeout into %s connectionString's existing options",
+      (_shape, connectionString, expected) => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            expect(
+               buildPgConnectionString(
+                  { connectionString, statementTimeoutMilliseconds: 5000 },
+                  { name: "pg_att", applyConnectionOptions: true },
+               ),
+            ).toBe(expected);
+            expect(warn.called).toBe(false);
+         } finally {
+            warn.restore();
+         }
+      },
+   );
+
+   it.each([
+      [
+         "a URI",
+         "postgresql://u:p@db.example.com/lake?options=-c%20statement_timeout%3D100%20-c%20search_path%3Danalytics",
+         "postgresql://u:p@db.example.com/lake?options=-c%20search_path%3Danalytics%20-c%20statement_timeout%3D5000",
+      ],
+      [
+         "a keyword string",
+         "host=db.example.com options='-c statement_timeout=100 --search_path=analytics -cstatement_timeout=200 --statement-timeout=300'",
+         "host=db.example.com options='--search_path=analytics -c statement_timeout=5000'",
+      ],
+   ])(
+      "replaces a statement_timeout already in %s connectionString's options and warns",
+      (_shape, connectionString, expected) => {
+         const warn = sinon.stub(logger, "warn");
+         try {
+            expect(
+               buildPgConnectionString(
+                  { connectionString, statementTimeoutMilliseconds: 5000 },
+                  { name: "pg_att", applyConnectionOptions: true },
+               ),
+            ).toBe(expected);
+            expect(warn.calledOnce).toBe(true);
+            expect(warn.firstCall.args[0] as unknown).toBe(
+               "Connection 'pg_att' sets statementTimeoutMilliseconds and its connectionString's options also set statement_timeout; statementTimeoutMilliseconds applies.",
+            );
+         } finally {
+            warn.restore();
+         }
+      },
+   );
+
+   it("leaves a connectionString's sslmode alone and warns that the field was ignored", () => {
+      const warn = sinon.stub(logger, "warn");
+      try {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "postgresql://u:p@db.example.com/lake",
+                  sslmode: "verify-full",
+               },
+               { name: "pg_att", applyConnectionOptions: true },
+            ),
+         ).toBe("postgresql://u:p@db.example.com/lake");
+         expect(warn.calledOnce).toBe(true);
+         expect(warn.firstCall.args[0] as unknown).toBe(
+            "Connection 'pg_att' sets both postgresConnection.sslmode and connectionString; " +
+               "sslmode is ignored and the connectionString's own sslmode applies.",
+         );
+      } finally {
+         warn.restore();
+      }
    });
 });

@@ -8,6 +8,8 @@ import * as sinon from "sinon";
 import {
    MaterializationEligibilityError,
    BadRequestError,
+   ChainedShapeNotCarriedError,
+   ChainedUpstreamMissingError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
@@ -38,6 +40,9 @@ import {
    MaterializationService,
    redactConnectionSecrets,
    stagingSuffix,
+   upstreamReuseFromManifest,
+   strictMissSourceId,
+   manifestForCompiler,
 } from "./materialization_service";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
@@ -1294,12 +1299,8 @@ describe("autoLoadManifest", () => {
       ctx = createMocks();
    });
 
-   it("binds every entry it is given, since a failed source is not one", () => {
-      // This is the path that rewrites a query's FROM. It binds what `entries`
-      // holds without asking whether each one built, which is only safe because
-      // a failed source is reported in `failures` and never reaches here -- so
-      // the coverage that matters is the producer's split (below), not a filter
-      // on this side.
+   it("binds an entry that built", () => {
+      // This is the path that rewrites a query's FROM.
       const reload = sinon.stub().resolves();
       const environment = {
          reloadAllModelsForPackage: reload,
@@ -1324,6 +1325,44 @@ describe("autoLoadManifest", () => {
 
       const bound = reload.firstCall?.args[1] ?? {};
       expect(Object.keys(bound)).toContain("ok");
+   });
+
+   it("does not bind a failed source mirrored into entries", async () => {
+      // During the `ManifestEntry.error` deprecation window a failed source is
+      // also written into `entries`, under the physical name it was headed for.
+      // Auto-run names are stable, so that name is the previous generation's
+      // table: binding it would serve stale rows as though this run built them.
+      const reload = sinon.stub().resolves();
+      const bindStorage = sinon.stub().resolves();
+      const environment = {
+         reloadAllModelsForPackage: reload,
+         bindPackageStorageServeBindings: bindStorage,
+      };
+
+      await (
+         ctx.service as unknown as {
+            autoLoadManifest: (
+               env: unknown,
+               pkg: string,
+               entries: Record<string, unknown>,
+            ) => Promise<void>;
+         }
+      ).autoLoadManifest(environment, "pkg", {
+         ok: {
+            sourceEntityId: "ok",
+            sourceName: "healthy",
+            physicalTableName: "ok_v1",
+         },
+         bad: {
+            sourceEntityId: "bad",
+            sourceName: "broken",
+            physicalTableName: "bad",
+            error: "Permission denied while writing to dataset analytics",
+         },
+      });
+
+      expect(Object.keys(reload.firstCall.args[1])).toEqual(["ok"]);
+      expect(Object.keys(bindStorage.firstCall.args[1])).toEqual(["ok"]);
    });
 });
 
@@ -1680,7 +1719,7 @@ describe("deriveSelfInstructions", () => {
       ).deriveSelfInstructions(compiled, undefined, {});
    }
 
-   /** A colocated (no `storage=`) fakeSource carrying an #(authorize) gate. */
+   /** A colocated (no `storage=`) fakeSource carrying an #(access_filter) gate. */
    const authorizeGatedColocated = fakeSource({
       name: "s1",
       sourceEntityId: "c1c1c1c1c1c1c1c1",
@@ -1770,6 +1809,159 @@ describe("deriveSelfInstructions", () => {
          expect(() => derive(compiled)).toThrow(
             /cannot be materialized into a storage destination/,
          );
+      });
+   });
+
+   describe("a refused source beside admitted ones", () => {
+      type Derived = {
+         instructions: BuildInstruction[];
+         carried: Record<string, unknown>;
+         refused: Record<
+            string,
+            { name: string; tier: string; reason: string; message: string }
+         >;
+      };
+      function deriveWith(
+         compiled: unknown,
+         sourceNames?: string[],
+         priorEntries: Record<string, unknown> = {},
+      ): Derived {
+         return (
+            ctx.service as unknown as {
+               deriveSelfInstructions: (
+                  c: unknown,
+                  n: string[] | undefined,
+                  p: unknown,
+               ) => Derived;
+            }
+         ).deriveSelfInstructions(compiled, sourceNames, priorEntries);
+      }
+      const ok = fakeSource({ name: "ok", sourceEntityId: "a0a0a0a0a0a0a0a0" });
+      const gated = (name: string) =>
+         fakeSource({
+            name,
+            sourceEntityId: `${name}-c1c1c1c1c1c1`,
+            sourceDef: { blockNotes: ["#(authorize) true"] },
+         });
+
+      it("instructs the admitted source and records the refused one instead of throwing", () => {
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         const { instructions, refused } = deriveWith(compiled);
+
+         expect(instructions.map((i) => i.sourceEntityId)).toEqual([
+            "a0a0a0a0a0a0a0a0",
+         ]);
+         expect(Object.keys(refused)).toEqual(["refused"]);
+         expect(refused.refused).toMatchObject({
+            name: "refused",
+            tier: "colocated",
+         });
+         expect(refused.refused.message).toMatch(/authorize/i);
+      });
+
+      it("records a refused storage= source under the storage tier", () => {
+         process.env.PERSIST_STORAGE_MODE = "on";
+         try {
+            const compiled = compiledWith(
+               {
+                  ok,
+                  lake: fakeSource({
+                     name: "lake",
+                     sourceEntityId: "f1f1f1f1f1f1f1f1",
+                     annotationFields: { storage: "lake" },
+                     sourceDef: { blockNotes: ["#(authorize) true"] },
+                  }),
+               },
+               [["lake", "ok"]],
+            );
+
+            const { instructions, refused } = deriveWith(compiled);
+
+            expect(instructions).toHaveLength(1);
+            expect(refused.lake.tier).toBe("storage");
+            expect(refused.lake.message).toMatch(
+               /cannot be materialized into a storage destination/,
+            );
+         } finally {
+            delete process.env.PERSIST_STORAGE_MODE;
+         }
+      });
+
+      it("does not throw when every admitted source is reused rather than rebuilt", () => {
+         // Nothing is instructed, but the run still has a table to serve for
+         // `ok`, so the refusal must not turn an all-reused run into a failure.
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         const { instructions, carried, refused } = deriveWith(
+            compiled,
+            undefined,
+            {
+               a0a0a0a0a0a0a0a0: {
+                  sourceEntityId: "a0a0a0a0a0a0a0a0",
+                  physicalTableName: "ok",
+                  connectionName: "duckdb",
+               },
+            },
+         );
+
+         expect(instructions).toHaveLength(0);
+         expect(Object.keys(carried)).toEqual(["a0a0a0a0a0a0a0a0"]);
+         expect(Object.keys(refused)).toEqual(["refused"]);
+      });
+
+      it("records a refused rollup without failing a run that has nothing else to build", () => {
+         // A rollup asked for nothing an author can see: a package whose only
+         // refused work is one must not fail every run over it.
+         const rollup = gated("rollup");
+         const compiled = compiledWith({ rollup }, [["rollup"]]);
+         (
+            compiled as unknown as {
+               preaggregatePlans: Record<string, unknown>;
+            }
+         ).preaggregatePlans = {
+            rollup: {
+               baseSourceName: "orders",
+               grainDimensions: ["category"],
+               measures: [],
+            },
+         };
+
+         const { instructions, refused } = deriveWith(compiled);
+
+         expect(instructions).toHaveLength(0);
+         expect(refused.rollup.tier).toBe("preaggregate");
+      });
+
+      it("still throws when sourceNames names the refused source", () => {
+         const compiled = compiledWith({ ok, refused: gated("refused") }, [
+            ["refused", "ok"],
+         ]);
+
+         expect(() => deriveWith(compiled, ["refused", "ok"])).toThrow(
+            MaterializationEligibilityError,
+         );
+      });
+
+      it("throws naming every refused source when all of them are refused", () => {
+         const compiled = compiledWith(
+            { first: gated("first"), second: gated("second") },
+            [["first", "second"]],
+         );
+
+         let thrown: unknown;
+         try {
+            deriveWith(compiled);
+         } catch (err) {
+            thrown = err;
+         }
+         expect(thrown).toBeInstanceOf(MaterializationEligibilityError);
+         expect(String((thrown as Error).message)).toContain("'first'");
+         expect(String((thrown as Error).message)).toContain("'second'");
       });
    });
 
@@ -2034,6 +2226,7 @@ describe("executeInstructedBuild", () => {
          string,
          { reason?: string; physicalTableName?: string; sourceName?: string }
       >;
+      sourcesRefused: number;
    };
 
    function callExecute(
@@ -2349,6 +2542,8 @@ describe("executeInstructedBuild", () => {
          failures["cbadbbbbbbbbbbb"]?.reason,
          "and it must still say what went wrong",
       ).toContain("auth failed");
+      // A warehouse failure may clear on its own, so it is not marked permanent.
+      expect(failures["cbadbbbbbbbbbbb"]).not.toHaveProperty("refused");
    });
 
    it("still redacts a failed source's reason when the config is unavailable", async () => {
@@ -3254,7 +3449,7 @@ describe("executeInstructedBuild", () => {
          expect(failures["bref1bref1bref1b"]).toBeUndefined();
       });
 
-      it("still 422s when the caller DOES instruct the refused source", async () => {
+      it("fails only itself, reported in failures, and its siblings still build, when the caller DOES instruct it", async () => {
          const runSQL = sinon.stub().resolves();
          const connection = { runSQL } as unknown as MalloyConnection;
          const ok = fakeSource({
@@ -3264,7 +3459,61 @@ describe("executeInstructedBuild", () => {
          const refused = refusedColocated("bref1bref1bref1b");
          const compiled = compiledWith(
             { ok, refused },
-            [["ok"], ["refused"]],
+            [["refused"], ["ok"]],
+            new Map([["duckdb", connection]]),
+         );
+
+         const result = await callExecute(
+            compiled,
+            [
+               {
+                  sourceEntityId: "b0k0k0k0k0k0k0k0",
+                  materializedTableId: "mt-ok",
+                  physicalTableName: "ok_v1",
+                  realization: "COPY",
+               },
+               {
+                  sourceEntityId: "bref1bref1bref1b",
+                  materializedTableId: "mt-ref",
+                  physicalTableName: "refused_v1",
+                  realization: "COPY",
+               },
+            ],
+            {},
+         );
+
+         expect(result.entries["b0k0k0k0k0k0k0k0"].physicalTableName).toBe(
+            "ok_v1",
+         );
+         // Reported where the caller resolves failures, under the address it
+         // dispatched and with the gate's own message: an absent entry would
+         // read as "built" to a caller that asked for this table.
+         expect(result.failures["bref1bref1bref1b"]).toMatchObject({
+            sourceName: "refused",
+            physicalTableName: "refused_v1",
+            materializedTableId: "mt-ref",
+            // Permanent until the model changes, so a caller need not retry it.
+            refused: true,
+         });
+         expect(result.failures["bref1bref1bref1b"].reason).toMatch(
+            /authorize/i,
+         );
+         expect(result.sourcesRefused).toBe(1);
+         expect(
+            runSQL
+               .getCalls()
+               .some((c) => String(c.args[0]).includes("refused_v1")),
+            "a refused source must not be written",
+         ).toBe(false);
+      });
+
+      it("still 422s when every instructed source is refused", async () => {
+         const runSQL = sinon.stub().resolves();
+         const connection = { runSQL } as unknown as MalloyConnection;
+         const refused = refusedColocated("bref1bref1bref1b");
+         const compiled = compiledWith(
+            { refused },
+            [["refused"]],
             new Map([["duckdb", connection]]),
          );
 
@@ -3272,12 +3521,6 @@ describe("executeInstructedBuild", () => {
             callExecute(
                compiled,
                [
-                  {
-                     sourceEntityId: "b0k0k0k0k0k0k0k0",
-                     materializedTableId: "mt-ok",
-                     physicalTableName: "ok_v1",
-                     realization: "COPY",
-                  },
                   {
                      sourceEntityId: "bref1bref1bref1b",
                      materializedTableId: "mt-ref",
@@ -3288,6 +3531,7 @@ describe("executeInstructedBuild", () => {
                {},
             ),
          ).rejects.toThrow(MaterializationEligibilityError);
+         expect(runSQL.called).toBe(false);
       });
    });
 });
@@ -3550,18 +3794,23 @@ describe("buildOneSource", () => {
       // A colocated downstream that reads a storage-materialized
       // upstream must NOT get the lake table name in its warehouse build SQL —
       // the warehouse can't resolve it. The storage upstream is excluded (⇒
-      // inlined/recomputed); a colocated upstream is kept.
+      // inlined/recomputed); a colocated upstream is kept. The build SQL is
+      // the first render; the second is the permissive full-manifest render
+      // the reuse classification compares it with.
       const runSQL = sinon.stub().resolves();
-      let seenManifest:
-         | { entries?: Record<string, { tableName?: string }> }
-         | undefined;
+      type SeenManifest = {
+         entries?: Record<string, { tableName?: string }>;
+         strict?: boolean;
+      };
+      const seenManifests: (SeenManifest | undefined)[] = [];
       const down = fakeSource({
          name: "down",
          sourceEntityId: "downdowndowndown",
          sql: "SELECT 1",
          onGetSQL: (o) => {
-            seenManifest = (o as { buildManifest?: typeof seenManifest })
-               .buildManifest;
+            seenManifests.push(
+               (o as { buildManifest?: SeenManifest }).buildManifest,
+            );
          },
       });
       const manifest = new Manifest();
@@ -3602,8 +3851,11 @@ describe("buildOneSource", () => {
          },
          builtEntries,
       );
-      expect(seenManifest?.entries?.up_storage).toBeUndefined();
-      expect(seenManifest?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
+      const [buildRender, compareRender] = seenManifests;
+      expect(buildRender?.entries?.up_storage).toBeUndefined();
+      expect(buildRender?.entries?.up_pathc?.tableName).toBe('"orders_v1"');
+      expect(compareRender?.entries?.up_storage?.tableName).toBe("daily__mabc");
+      expect(compareRender?.strict).toBe(false);
    });
 
    it("records the QUOTED just-built name in the build manifest (matches the CREATE)", async () => {
@@ -3642,10 +3894,19 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
 
    function callInto(opts: {
       strict: boolean;
-      stackOnParent: "ok" | "throw" | "infra";
+      /**
+       * What the stack-on-parent seam does: builds (`ok`); finds the downstream
+       * REACHES the warehouse, so no build over the parents exists (`raw`);
+       * could not CARRY a shape that reads only stored parents (`uncarried`);
+       * finds a persisted upstream MISSING from the destination; or fails on
+       * infrastructure.
+       */
+      stackOnParent: "ok" | "raw" | "uncarried" | "missing" | "infra";
    }): Promise<{
       physicalTableName: string;
       storageDestinationName?: string;
+      upstreamReuse?: string;
+      upstreamRecomputeReason?: string;
    }> {
       const source = fakeSource({
          name: "monthly",
@@ -3679,29 +3940,53 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
          }) => Promise<{
             physicalTableName: string;
             storageDestinationName?: string;
+            upstreamReuse?: string;
+            upstreamRecomputeReason?: string;
          }>;
       };
       // Stub the stack-on-parent seam so the test exercises the LADDER, not the build.
-      svc.buildDownstreamViaParents =
-         opts.stackOnParent === "ok"
-            ? sinon.stub().resolves({
-                 storageDestinationName: "lake",
-                 schema: [
-                    { name: "order_month", type: "DATE" },
-                    { name: "monthly_total", type: "DOUBLE" },
-                 ],
-              })
-            : opts.stackOnParent === "infra"
-              ? // An outage, not a modelling limit: a plain Error, as a failed
-                // ATTACH or CTAS would throw.
-                sinon.stub().rejects(new Error("IO Error: destination is down"))
-              : // A shape limit: the downstream cannot be expressed over its
-                // rebound parents.
-                sinon.stub().rejects(
-                   new MaterializationEligibilityError({
-                      message: "uncarried parent",
-                   }),
-                );
+      const seam: Record<typeof opts.stackOnParent, sinon.SinonStub> = {
+         ok: sinon.stub().resolves({
+            storageDestinationName: "lake",
+            schema: [
+               { name: "order_month", type: "DATE" },
+               { name: "monthly_total", type: "DOUBLE" },
+            ],
+            upstreamReuse: "reused",
+         }),
+         // An outage, not a modelling limit: a plain Error, as a failed ATTACH
+         // or CTAS would throw.
+         infra: sinon
+            .stub()
+            .rejects(new Error("IO Error: destination is down")),
+         // The downstream reads the warehouse through a non-persisted source:
+         // nothing stored stands in for that, so no build over the parents exists.
+         raw: sinon.stub().rejects(
+            new MaterializationEligibilityError({
+               message:
+                  "'monthly' reads the source warehouse (regions) through 'daily_regional'",
+            }),
+         ),
+         // Every upstream is stored and present, yet the build could not carry
+         // the shape over them: a limit of the carrying, not of the source.
+         uncarried: sinon
+            .stub()
+            .rejects(
+               new ChainedShapeNotCarriedError(
+                  "'monthly' reads only stored upstreams ('daily') but could not be built over them: Reference to undefined object 'r'",
+               ),
+            ),
+         // A dispatch miss: a persisted upstream this build cannot see.
+         missing: sinon
+            .stub()
+            .rejects(
+               new ChainedUpstreamMissingError(
+                  ["daily"],
+                  "persisted upstream 'daily' of 'monthly' is not materialized in destination 'lake' for this build",
+               ),
+            ),
+      };
+      svc.buildDownstreamViaParents = seam[opts.stackOnParent];
       return svc.buildOneSourceIntoStorage({
          persistSource: source,
          instruction,
@@ -3722,37 +4007,113 @@ describe("buildOneSourceIntoStorage (chained-build fallback ladder)", () => {
       });
    }
 
-   it("stacks on the parent: builds by reading it and returns the storage entry", async () => {
+   it("stacks on the parent: builds by reading it and the entry says so", async () => {
       const entry = await callInto({ strict: false, stackOnParent: "ok" });
       expect(entry.storageDestinationName).toBe("lake");
       expect(entry.physicalTableName).toBe("monthly__mabc");
+      expect(entry.upstreamReuse).toBe("reused");
+      expect(entry.upstreamRecomputeReason).toBeUndefined();
    });
 
-   it("strict + cannot stack on the parent: refuses loudly instead of recomputing from raw", async () => {
+   it("strict + a persisted upstream the build cannot see: refuses, naming it, instead of recomputing from raw", async () => {
+      // The orchestrator meant to pin that upstream; recomputing it here would
+      // rebuild a table it did not ask for. The refusal carries the upstream's
+      // name so the dispatch, not the model, is what gets fixed.
       await expect(
-         callInto({ strict: true, stackOnParent: "throw" }),
-      ).rejects.toThrow(/strict upstreams forbid/i);
+         callInto({ strict: true, stackOnParent: "missing" }),
+      ).rejects.toThrow(
+         /strict upstreams forbid.*persisted upstream 'daily'/is,
+      );
    });
 
-   it("non-strict + an INFRA failure fails rather than recomputing from raw", async () => {
+   it("strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
+      // No build over the parents exists for this source, so the recompute is
+      // the only build there is and strict permits it. Only the parent-reuse
+      // seam is stubbed, so the recompute runs for real and fails for its own
+      // reason (no destination file) — the proof it was reached, since the two
+      // paths report differently: "chained source" from the stack-on-parent
+      // path, "source" from the single-source recompute.
+      await expect(
+         callInto({ strict: true, stackOnParent: "raw" }),
+      ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   it("strict + a shape over stored upstreams the build could not carry: refuses rather than recomputing them", async () => {
+      // Every upstream was handed to the build; recomputing them would rebuild
+      // pinned tables because of a limit in the carrying, which is not the
+      // source's doing and not a licence strict grants.
+      await expect(
+         callInto({ strict: true, stackOnParent: "uncarried" }),
+      ).rejects.toThrow(
+         /strict upstreams forbid.*could not be built over them/is,
+      );
+   });
+
+   it("non-strict + a persisted upstream the build cannot see, or an uncarried shape, falls through to recompute-from-raw", async () => {
+      for (const stackOnParent of ["missing", "uncarried"] as const) {
+         await expect(
+            callInto({ strict: false, stackOnParent }),
+         ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+      }
+   });
+
+   it("an INFRA failure fails rather than recomputing from raw, strict or not", async () => {
       // Recompute-from-raw writes to the same destination, so retrying an outage
       // there just fails again — and metering it as a fallback files the outage
       // under the same label as a legitimate shape miss. Only a shape failure is
       // a reason to try the other path.
-      await expect(
-         callInto({ strict: false, stackOnParent: "infra" }),
-      ).rejects.toThrow(/Failed to materialize chained source/i);
+      for (const strict of [false, true]) {
+         await expect(
+            callInto({ strict, stackOnParent: "infra" }),
+         ).rejects.toThrow(/Failed to materialize chained source/i);
+      }
    });
 
-   it("non-strict + a SHAPE failure falls through to recompute-from-raw", async () => {
-      // Only the parent-reuse seam is stubbed, so the recompute runs for real and
-      // fails for its own reason (no destination file). That is the proof it was
-      // reached: the two paths report differently — the chained path says
-      // "chained source", the single-source recompute says "source". A shape
-      // failure must reach the second; an infra failure must not.
+   it("non-strict + a downstream that reaches the warehouse falls through to recompute-from-raw", async () => {
       await expect(
-         callInto({ strict: false, stackOnParent: "throw" }),
+         callInto({ strict: false, stackOnParent: "raw" }),
       ).rejects.toThrow(/Failed to materialize source 'monthly'/i);
+   });
+
+   describe("telemetry", () => {
+      let harness: MetricsHarness;
+      beforeEach(async () => {
+         harness = await startMetricsHarness();
+         resetMaterializationTelemetryForTesting();
+      });
+      afterEach(async () => {
+         resetMaterializationTelemetryForTesting();
+         await harness.shutdown();
+      });
+      const COUNTER = "publisher_storage_chained_build_total";
+
+      it("meters each rung under its own outcome", async () => {
+         await callInto({ strict: false, stackOnParent: "ok" });
+         await callInto({ strict: true, stackOnParent: "raw" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: false, stackOnParent: "raw" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "missing" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "uncarried" }).catch(
+            () => undefined,
+         );
+         await callInto({ strict: true, stackOnParent: "infra" }).catch(
+            () => undefined,
+         );
+         for (const [outcome, n] of [
+            ["parent_reuse", 1],
+            ["strict_shape_fallback", 1],
+            ["inline_fallback", 1],
+            ["strict_refused", 2],
+            ["infra_failure", 1],
+         ] as const) {
+            expect(await harness.collectCounter(COUNTER, { outcome })).toBe(n);
+         }
+      });
    });
 });
 
@@ -3939,7 +4300,7 @@ describe("runBuild (branch behavior)", () => {
       const svc = ctx.service as unknown as RunBuildInternals;
       svc.executeInstructedBuild = sinon
          .stub()
-         .resolves({ entries, failures: {} });
+         .resolves({ entries, failures: {}, sourcesRefused: 0 });
       svc.commitManifest = sinon.stub().resolves();
       svc.autoLoadManifest = sinon.stub().resolves();
       return svc;
@@ -3978,6 +4339,9 @@ describe("runBuild (branch behavior)", () => {
          sourcesBuilt: 1,
          sourcesReused: 0,
       });
+      expect(svc.commitManifest.firstCall.args[3]).not.toHaveProperty(
+         "sourcesRefused",
+      );
       // Orchestrated leaves distribution to the caller.
       expect(svc.autoLoadManifest.called).toBe(false);
    });
@@ -4048,6 +4412,91 @@ describe("runBuild (branch behavior)", () => {
       });
       // Auto-run owns distribution: it loads the fresh manifest into the models.
       expect(svc.autoLoadManifest.calledOnce).toBe(true);
+   });
+
+   it("records auto-run's refused sources in the run metadata, not on the manifest", async () => {
+      // A refused source binds no table, and the manifest is what a
+      // strict-schema caller parses, so the list rides the free-form metadata.
+      const svc = stubEngine();
+      const refused = {
+         gated: {
+            name: "gated",
+            sourceID: "gated",
+            tier: "storage",
+            reason: "given",
+            message: "Source 'gated' cannot be materialized",
+         },
+      };
+      (
+         svc as unknown as { deriveSelfInstructions: sinon.SinonStub }
+      ).deriveSelfInstructions = sinon.stub().returns({
+         instructions: [makeInstruction()],
+         carried: {},
+         refused,
+      });
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: true,
+            buildInstructions: undefined,
+         },
+         new AbortController().signal,
+      );
+
+      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+         sourcesBuilt: 1,
+         sourcesRefused: 1,
+         refusedSources: refused,
+      });
+      // Named in the error of a run whose every instructed source failed.
+      expect(svc.executeInstructedBuild.firstCall.args[9]).toEqual([
+         refused.gated,
+      ]);
+   });
+
+   it("counts an orchestrated refusal in the metadata, and lists it only in failures", async () => {
+      const svc = stubEngine();
+      svc.executeInstructedBuild.resolves({
+         entries: {
+            "build-orders": {
+               sourceEntityId: "build-orders",
+               physicalTableName: '"orders_v1"',
+               connectionName: "duckdb",
+            },
+         },
+         failures: {
+            gated: {
+               sourceEntityId: "gated",
+               sourceName: "gated",
+               reason: "Source 'gated' cannot be materialized",
+            },
+         },
+         sourcesRefused: 1,
+      });
+
+      await svc.runBuild(
+         "mat-1",
+         "my-env",
+         "pkg",
+         {
+            sourceNames: undefined,
+            forceRefresh: false,
+            buildInstructions: [makeInstruction()],
+         },
+         new AbortController().signal,
+      );
+
+      expect(svc.commitManifest.firstCall.args[2]).toHaveProperty("gated");
+      expect(svc.commitManifest.firstCall.args[3]).toMatchObject({
+         sourcesRefused: 1,
+      });
+      expect(svc.commitManifest.firstCall.args[3]).not.toHaveProperty(
+         "refusedSources",
+      );
    });
 
    // What the incremental context is told to do comes from `reseed` ALONE.
@@ -5248,5 +5697,457 @@ describe("buildOneSource: incremental refresh", () => {
          expect(entry.refresh).toBe("full");
          expect(upsert.called).toBe(false);
       });
+   });
+});
+
+describe("upstreamReuseFromManifest", () => {
+   const addressBySourceId = {
+      "daily@m": "addr-daily",
+      "sites@m": "addr-sites",
+   };
+   const daily = { name: "daily", sourceID: "daily@m" };
+   const sites = { name: "sites", sourceID: "sites@m" };
+   const builtEntries = {
+      "addr-daily": {
+         sourceEntityId: "addr-daily",
+         sourceName: "daily",
+         physicalTableName: "daily__g1",
+         storageDestinationName: "lake",
+      },
+   };
+
+   it("reused when every upstream's address is in the manifest the SQL was rendered with", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily, sites],
+         addressBySourceId,
+         sqlInlinesStored: false,
+         compilerMissing: [],
+         substituted: { "addr-daily": {}, "addr-sites": {} },
+         full: { "addr-daily": {}, "addr-sites": {} },
+         builtEntries: {},
+         tier: "colocated",
+      });
+      expect(out).toEqual({
+         fields: { upstreamReuse: "reused" },
+         inManifestOnly: [],
+         missing: [],
+      });
+   });
+
+   it("an entry handed over by reference counts, whatever it is called: the lookup is by address, never by name", () => {
+      // A thin reference carries no sourceName. By address it is present.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
+         compilerMissing: [],
+         substituted: { "addr-daily": { tableName: "daily__g1" } },
+         full: { "addr-daily": { tableName: "daily__g1" } },
+         builtEntries: {
+            "addr-daily": {
+               sourceEntityId: "addr-daily",
+               physicalTableName: "daily__g1",
+            },
+         },
+         tier: "colocated",
+      });
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a colocated build recomputes a storage-tier upstream and says which destination holds it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: true,
+         compilerMissing: [],
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "colocated",
+      });
+      expect(out.inManifestOnly).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /'daily' is materialized in storage destination 'lake'/,
+      );
+   });
+
+   it("a storage build treats a storage-tier upstream as a parent to stack on, not a reason", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: true,
+         compilerMissing: [],
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "storage",
+      });
+      expect(out.inManifestOnly).toEqual(["daily"]);
+      expect(out.missing).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("an upstream the compiler misses is missing, and the reason says what would have supplied it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         sqlInlinesStored: false,
+         compilerMissing: [daily],
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+      });
+      expect(out.missing).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /neither built in this run nor supplied by reference/,
+      );
+   });
+
+   it("a source with no stored upstream reports nothing", () => {
+      expect(
+         upstreamReuseFromManifest({
+            reached: [],
+            addressBySourceId,
+            sqlInlinesStored: false,
+            compilerMissing: [],
+            substituted: {},
+            full: {},
+            builtEntries: {},
+            tier: "colocated",
+         }).fields,
+      ).toEqual({});
+   });
+
+   it("the compiler's reach is the floor: a stored table inlined past the walk is recomputed, with a reason", () => {
+      // Every upstream the walk named was read from its table, but the build
+      // SQL differs from the SQL rendered with every stored entry available:
+      // a join declared on a stored stop reached a storage-tier table.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: true,
+         compilerMissing: [],
+      });
+      expect(out.inManifestOnly).toEqual([]);
+      expect(out.missing).toEqual([]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /^the build SQL inlines a stored table reached through a refinement declared on a stored upstream/,
+      );
+   });
+
+   it("the floor reports even when the walk named nothing", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [],
+         addressBySourceId,
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: true,
+         compilerMissing: [],
+      });
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+   });
+
+   it("an upstream with no content address is reached but unread: not missing, not a reason, not reported", () => {
+      // Its SQL could not be rendered, so a build that read it would have
+      // failed on its own render; the compiler's strict render is the oracle
+      // for what the SQL reads, and it says nothing about this one.
+      const out = upstreamReuseFromManifest({
+         reached: [{ name: "given", sourceID: "given@m" }],
+         addressBySourceId: { ...addressBySourceId, "given@m": undefined },
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+   });
+
+   it("two models' same-named sources resolve by id, not by name", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [
+            { name: "daily", sourceID: "daily@a" },
+            { name: "daily", sourceID: "daily@b" },
+         ],
+         addressBySourceId: { "daily@a": "addr-a", "daily@b": "addr-b" },
+         substituted: { "addr-a": {} },
+         full: { "addr-a": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [{ name: "daily", sourceID: "daily@b" }],
+      });
+      expect(out.missing).toEqual(["daily"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+   });
+
+   it("a walk stop in no manifest that the compiler did not miss is a join the SQL never reads: not missing, not a reason", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily, sites],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out.missing).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a storage-tier stop the SQL never read is neither a parent nor a reason", () => {
+      // In the full manifest, excluded from the warehouse manifest — and the
+      // compare says nothing stored was inlined: a declared join the query
+      // does not use. The build is the passthrough it always was.
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: {},
+         full: { "addr-daily": {} },
+         builtEntries,
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+      });
+      expect(out.inManifestOnly).toEqual([]);
+      expect(out.fields).toEqual({ upstreamReuse: "reused" });
+   });
+
+   it("a dependency only the compiler reaches is missing even though the walk never named it", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: { "addr-daily": {} },
+         full: { "addr-daily": {} },
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [{ name: "counts", sourceID: "counts@m" }],
+      });
+      expect(out.missing).toEqual(["counts"]);
+      expect(out.fields.upstreamReuse).toBe("recomputed");
+      expect(out.fields.upstreamRecomputeReason).toMatch(
+         /'counts' is not in this build's manifest/,
+      );
+   });
+
+   it("a stop sharing the root's address is the table being built, not an upstream", () => {
+      const out = upstreamReuseFromManifest({
+         reached: [daily],
+         addressBySourceId,
+         substituted: {},
+         full: {},
+         builtEntries: {},
+         tier: "storage",
+         sqlInlinesStored: false,
+         compilerMissing: [],
+         rootAddress: "addr-daily",
+      });
+      expect(out).toEqual({ fields: {}, inManifestOnly: [], missing: [] });
+   });
+});
+
+describe("manifestForCompiler", () => {
+   const facts = {
+      addressBySourceId: {
+         "p@m": "addr-p-partitioned",
+         "u@m": "addr-u",
+         "x@m": undefined,
+      },
+      compilerKeyBySourceId: {
+         "p@m": "key-p",
+         "u@m": "addr-u",
+         "x@m": "key-x",
+      },
+   };
+   it("adds a partitioned entry under the compiler's key and leaves everything else alone", () => {
+      const full = {
+         entries: {
+            "addr-p-partitioned": { tableName: "p__g1" },
+            "addr-u": { tableName: "u__g1" },
+         },
+         strict: true,
+      } as never;
+      const out = manifestForCompiler(full, facts) as unknown as {
+         entries: Record<string, unknown>;
+         strict: boolean;
+      };
+      expect(out.entries["key-p"]).toEqual({ tableName: "p__g1" });
+      expect(out.entries["addr-p-partitioned"]).toEqual({ tableName: "p__g1" });
+      expect(Object.keys(out.entries).sort()).toEqual([
+         "addr-p-partitioned",
+         "addr-u",
+         "key-p",
+      ]);
+      expect(out.strict).toBe(true);
+   });
+   it("returns the same manifest when nothing needs aliasing", () => {
+      const full = { entries: { "addr-u": {} } } as never;
+      expect(manifestForCompiler(full, facts)).toBe(full);
+   });
+});
+
+describe("strictMissSourceId", () => {
+   it("names the source a compiler strict miss reports, and nothing else", () => {
+      const miss = Object.assign(
+         new Error(
+            "Persisted source 'counts@file:///m.malloy' not found in manifest (buildId: abc); strict manifest mode forbids fallback to live compilation.",
+         ),
+         { code: "runtime-manifest-strict-miss" },
+      );
+      expect(strictMissSourceId(miss)).toEqual({
+         sourceID: "counts@file:///m.malloy",
+      });
+      // The code is the contract: a reworded message is still a miss, of an
+      // unnamed source.
+      expect(
+         strictMissSourceId(
+            Object.assign(new Error("manifest has no entry"), {
+               code: "runtime-manifest-strict-miss",
+            }),
+         ),
+      ).toEqual({ sourceID: undefined });
+      expect(
+         strictMissSourceId(
+            new Error("Persisted source 'x' not found in manifest"),
+         ),
+      ).toBeUndefined();
+      expect(
+         strictMissSourceId(
+            Object.assign(new Error("boom"), { code: "other" }),
+         ),
+      ).toBeUndefined();
+      expect(strictMissSourceId(undefined)).toBeUndefined();
+   });
+});
+
+describe("buildOneSource reports upstreamReuse from the manifest it substituted from", () => {
+   let ctx: ReturnType<typeof createMocks>;
+   withQueryMetadataOn();
+   beforeEach(() => {
+      ctx = createMocks();
+   });
+
+   // The author model: `rollup` (the source being built) reads `daily`, a
+   // persist source over a table.
+   const modelDef = {
+      contents: {
+         orders: { sourceID: "orders@m", type: "table" },
+         daily: {
+            sourceID: "daily@m",
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "orders@m" },
+         },
+         rollup: {
+            sourceID: "rollup@m",
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "daily@m" },
+         },
+      },
+   };
+   const planFacts = {
+      persistSourceIds: new Set(["daily@m", "rollup@m"]),
+      aliasesBySourceName: {},
+      addressBySourceId: { "daily@m": "addr-daily", "rollup@m": "addr-rollup" },
+      compilerKeyBySourceId: {
+         "daily@m": "addr-daily",
+         "rollup@m": "addr-rollup",
+      },
+   };
+
+   async function build(
+      manifest: Manifest,
+      builtEntries: Record<string, unknown>,
+      onGetSQL?: (sqlOpts: unknown) => void,
+   ) {
+      const source = fakeSource({
+         name: "rollup",
+         sourceEntityId: "addr-rollup",
+         sql: "SELECT * FROM t",
+         modelDef,
+         onGetSQL,
+      });
+      const instruction: BuildInstruction = {
+         sourceEntityId: "addr-rollup",
+         materializedTableId: "mt-1",
+         physicalTableName: "rollup_mz",
+         realization: "COPY",
+      };
+      return (
+         ctx.service as unknown as {
+            buildOneSource: (...args: unknown[]) => Promise<{
+               upstreamReuse?: string;
+               upstreamRecomputeReason?: string;
+            }>;
+         }
+      ).buildOneSource(
+         source,
+         instruction,
+         { runSQL: sinon.stub().resolves(undefined) },
+         { duckdb: "dig" },
+         manifest,
+         {
+            getApiConnection: () => ({}),
+            getEnvironmentPath: () => "/tmp/env",
+         },
+         builtEntries,
+         undefined,
+         undefined,
+         undefined,
+         planFacts,
+      );
+   }
+
+   it("reused when the upstream's address is in the manifest, even as a thin reference with no name", async () => {
+      const manifest = new Manifest();
+      manifest.update("addr-daily", { tableName: "daily__g1" });
+      const entry = await build(manifest, {
+         "addr-daily": {
+            sourceEntityId: "addr-daily",
+            physicalTableName: "daily__g1",
+            connectionName: "duckdb",
+         },
+      });
+      expect(entry.upstreamReuse).toBe("reused");
+      expect(entry.upstreamRecomputeReason).toBeUndefined();
+   });
+
+   it("recomputed, with the reason, when the upstream is in no manifest and the compiler's strict render misses it", async () => {
+      const entry = await build(new Manifest(), {}, (sqlOpts) => {
+         const m = (
+            sqlOpts as {
+               buildManifest?: {
+                  strict?: boolean;
+                  entries?: Record<string, unknown>;
+               };
+            }
+         ).buildManifest;
+         if (m?.strict === true && !("addr-daily" in (m.entries ?? {}))) {
+            throw Object.assign(
+               new Error(
+                  "Persisted source 'daily@m' not found in manifest (buildId: addr-daily); strict manifest mode forbids fallback to live compilation.",
+               ),
+               { code: "runtime-manifest-strict-miss" },
+            );
+         }
+      });
+      expect(entry.upstreamReuse).toBe("recomputed");
+      expect(entry.upstreamRecomputeReason).toMatch(
+         /'daily' is not in this build's manifest/,
+      );
    });
 });

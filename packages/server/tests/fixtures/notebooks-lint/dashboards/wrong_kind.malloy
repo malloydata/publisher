@@ -1,0 +1,4 @@
+## artifact { kind=notebook tiles=["q"] }
+source: a is duckdb.sql("select 1 as x")
+
+query: q is a -> { select: x }

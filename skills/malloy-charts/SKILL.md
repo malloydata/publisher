@@ -1,6 +1,6 @@
 ---
 name: malloy-charts
-description: Chart selection guidance and renderer reference for Malloy views. Use when choosing visualization types, adding chart annotations, user asks "what chart should I use", "how should I visualize this", or when deciding between bar_chart, line_chart, scatter_chart, etc.
+description: Read before choosing a chart or adding a chart annotation. Chart types, tag syntax and scale rules, KPI cards, dashboards, sparklines, and the renderer mistakes that fail silently.
 ---
 <!--
 Copyright (c) Credible Data Inc.
@@ -10,6 +10,8 @@ SPDX-License-Identifier: MIT
 # Chart Selection for Malloy
 
 > Malloy uses Vega-Lite under the hood. `#` tags control visualization. Call `search_malloy_docs` with topic "rendering" for the full tag reference (or see https://docs.malloydata.dev/documentation/visualizations/overview).
+
+> **This file is about the Malloy renderer's `#` tags.** It applies when the view itself is rendered - a notebook, a dashboard, an explore result. It does **not** apply to an app that draws its own charts with a vendored chart library: there the tag vocabulary is irrelevant and the full form vocabulary is available, so the approximations below (a funnel as a bar chart, a treemap as a nested table) are the wrong advice. Design to whichever vocabulary the surface actually uses.
 
 > **Tool names** are written bare here - `get_context`, `execute_query`, `search_malloy_docs`. The exact prefixed name depends on the host surface; match each against the tools you actually have.
 
@@ -41,8 +43,8 @@ SPDX-License-Identifier: MIT
 
 **Constraints:**
 - ONE aggregate per chart view (charts render only the first; use `y=['a','b']` for multi-measure)
-- No fixed scale on measure definitions: use `# currency` not `# currency=usd0m`
-- One tag per line
+- No fixed scale on measure definitions: use `# currency` not `# currency=usd0m`. The same measure renders at many granularities, and `usd0m` turns $500 into `$0.0M`. Add a scale only in a view, after confirming the value range with a query.
+- One tag per line, each directly above the field it styles. Two `#` tags on one line do not work.
 - Alias joined fields in `group_by` before `order_by`
 - Define measures in source, not in views
 
@@ -126,6 +128,8 @@ view: summary is {
 
 **Properties:** `.size`, `.sparkline=<nested_view_name>`, `.comparison_field`, `.comparison_label`, `.down_is_good`
 
+Put `# label` on every measure. Without it the card shows the raw field name, which is often unclear.
+
 ### `# dashboard`
 
 Card-based multi-tile layout. Apply to a view whose body is a nested query; the view's own fields lay out automatically:
@@ -134,7 +138,7 @@ Card-based multi-tile layout. Apply to a view whose body is a nested query; the 
 - `aggregate` measures -> KPI cards, one per measure
 - each `nest:` -> a tile, rendered by the tag above it (`# table` default, or `# bar_chart` / `# line_chart` / `# big_value`)
 
-**Two modes.** Flex (default): tiles flow and wrap; `# break` forces a new row. Columns: `# dashboard { columns=N }` lays tiles into N equal columns, `# colspan=n` widens a tile, `# break` starts a new row, overflow wraps.
+**Two modes.** Flex (default): tiles flow and wrap; `# break` forces a new row. Columns: `# dashboard { columns=N }` lays tiles into N equal columns, `# colspan=n` widens a tile (the old `# span` is gone), `# break` starts a new row, overflow wraps.
 
 ```malloy
 // Flex: measures become KPI cards, the nest becomes a tile
@@ -260,6 +264,8 @@ Default (implicit). Use explicitly for `.size=fill` property.
 | `# link` | Hyperlinks | `.url_template="https://example.com/$$"` |
 | `# image` | Inline images | `.height=40px`, `.width=100px` |
 
+`# image` and `# link` are fine in a model file. A document held as text (one with a model-level `## artifact` tag, compiled at scope `append`) is refused if it writes either; define the field in the model file and check that edit at scope `file`.
+
 **Currency codes:** `usd` ($), `eur`, `gbp`. **Scale:** K/M/B/T/Q or `auto`.
 **Number suffix styles:** `word` ("42.5 million"), `letter` ("42.5M"), `scientific`.
 
@@ -295,10 +301,16 @@ Publisher styles charts and tables from one structured theme. The instance sets 
 | `# theme.palette.tile.{light,dark}` | Dashboard tile background | per-mode |
 | `# theme.palette.tileTitle.{light,dark}` | Dashboard tile title color | per-mode |
 | `# theme.palette.mapColor.{light,dark}` | Choropleth gradient (`# shape_map` / `# segment_map`) | per-mode |
+| `# theme.palette.border.{light,dark}` | Table gridlines and row rules | per-mode |
+| `# theme.palette.cardBorder.{light,dark}` | Dashboard card edge and pinned table header rule | per-mode |
+| `# theme.palette.axis.{light,dark}` | Chart axis domain and tick lines | per-mode |
+| `# theme.palette.gridline.{light,dark}` | Chart gridlines | per-mode |
+| `# theme.palette.chartText.{light,dark}` | Chart axis, legend and title text | per-mode |
+| `# theme.palette.value.{light,dark}` | Big-value (KPI) number color | per-mode |
 | `# theme.font.family` | Font for all rendered text | shared |
 | `# theme.font.size` | Table font size (px) | shared |
 
-The seven `palette.*` color keys each take a `.light` and/or `.dark` variant so dark mode gets its own value. `palette.series`, `font.family`, and `font.size` are single values shared across modes.
+The thirteen per-mode `palette.*` color keys each take a `.light` and/or `.dark` variant so dark mode gets its own value. `palette.series`, `font.family`, and `font.size` are single values shared across modes (a `.light` or `.dark` on them does nothing). `palette.mapColor` recolors choropleths only; heatmaps keep their built-in scheme. No annotation sets the default light or dark mode or the user toggle: that lives in the instance theme. Environment-level theming is not applied yet.
 
 ```malloy
 // Model-wide defaults (## applies to every view in the model):
@@ -317,18 +329,25 @@ view: revenue_by_month is {
 
 **Precedence**, highest to lowest, per key: `# theme.*` on the view, then `## theme.*` model default, then the instance theme, then Publisher's built-in defaults. A per-chart annotation overrides the instance for the keys it sets; unset keys fall through to the instance. (This is the reverse of a bare `@malloydata/render` embed, where the embedder wins: Publisher reads the annotation itself and layers it on top.)
 
-Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. The malloy-gotchas-rendering skill lists the annotation forms that look valid but do nothing.
+Quote values that contain spaces or a leading `#`. The light/dark default (`defaultMode`) and the toggle lock (`allowUserToggle`) are instance-only: set them in the config `theme` block or the editor, not as annotations. Annotation forms that look valid but do nothing, such as a flat `# theme.tableHeaderColor`, are dropped without an error.
 
 
 ## Advanced Patterns
 
 ### Sparklines in KPI Cards
 
+A sparkline needs two things: a `# hidden` nested view and a `.sparkline=` property naming it. If it does not show, check that `# hidden` is on the nested view and that its name matches `.sparkline=`.
+
 ```malloy
 # big_value { sparkline=trend }
 view: revenue_kpi is {
-  aggregate: # label="Revenue" # currency revenue
-  nest: # line_chart { size=spark } # hidden
+  aggregate:
+    # label="Revenue"
+    # currency
+    revenue
+  nest:
+    # line_chart { size=spark }
+    # hidden
     trend is { group_by: order_date, aggregate: revenue, order_by: order_date }
 }
 ```
@@ -338,7 +357,12 @@ view: revenue_kpi is {
 ```malloy
 # big_value { comparison_field=prior_month comparison_label="vs Last Month" }
 view: rev_delta is {
-  aggregate: # label="Revenue" # currency revenue, # hidden prior_month
+  aggregate:
+    # label="Revenue"
+    # currency
+    revenue
+    # hidden
+    prior_month
 }
 ```
 
@@ -409,7 +433,7 @@ A top-level chart tag (e.g., `# bar_chart`) renders only the outer query; any `n
 |---------|-----|
 | Two aggregates in chart | ONE aggregate, or use `y=['a','b']` |
 | `# currency=usd0m` on measure | `# currency` (no scale) on defs; scale only in views |
-| Chart annotation on `nest:` line | Put on the **view definition** |
+| Several tags on a `nest:` line | One lone tag on the `nest:` line works; with several, put each tag on its own line above the nested view |
 | Tags on same line | One tag per line |
 | Sparkline not showing | Add `# hidden` to nested view AND reference in `.sparkline=` |
 | Pivot > 30 columns | Filter/limit the nested group_by |

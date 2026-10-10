@@ -7,7 +7,16 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../errors";
+import { hasCallerAuthorizeAnnotation } from "./authorize";
 import { Environment } from "./environment";
+
+/** The rows of a query result, whatever wrapper the result carries them in. */
+function rowsOf(result: unknown): unknown[] {
+   const rows = (result as { result?: { data?: { array_value?: unknown[] } } })
+      ?.result?.data?.array_value;
+   if (!Array.isArray(rows)) throw new Error("result carries no rows");
+   return rows;
+}
 
 // End-to-end gate on the /compile path. Exercises environment.compileSource
 // through a real installed package, not just the Model primitives — pins that
@@ -27,31 +36,21 @@ given:
   ROLE :: string
   GROUPS :: number[]
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }
 
 source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend {
-  measure: c is count()
-}
-
-#(authorize) 1 = 1
-source: always_true is duckdb.sql("SELECT 1 as x") extend {
-  measure: c is count()
-}
-
-#(authorize) false
-source: always_false is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }
 `;
 
 /**
- * MODEL with every `#(authorize)` line removed.
+ * MODEL with every gate line removed, on BOTH routes.
  *
  * The tests below submit a caller edit that has dropped the author's gate, and
  * assert the on-disk gate denies anyway. They must drop ALL of them: a leftover
@@ -62,7 +61,11 @@ source: always_false is duckdb.sql("SELECT 1 as x") extend {
 const withoutGates = (model: string): string =>
    model
       .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#(authorize)"))
+      .filter(
+         (line) =>
+            !line.trimStart().startsWith("#(authorize)") &&
+            !line.trimStart().startsWith("#(access_filter)"),
+      )
       .join("\n");
 
 describe("compile-path authorize gate (compileSource)", () => {
@@ -98,10 +101,9 @@ describe("compile-path authorize gate (compileSource)", () => {
    });
 
    it("denies a gated source reached via the LAST run: statement (backstop, includeSql=false)", async () => {
-      // Regression guard: the early gate only matches the first `run:` (ungated
-      // open_src here), so the gated source in the executed final statement is
-      // caught only by the compiled-source backstop — which must run even when
-      // no SQL is requested.
+      // The pre-compile lock sees `gated` wherever it appears, so this denies
+      // before compile. The compiled-source backstop still runs when no SQL is
+      // requested; this pins that a last-statement gate is not a compile error.
       await expect(
          compile(
             "run: open_src -> { aggregate: c }\nrun: gated -> { aggregate: c }",
@@ -126,55 +128,33 @@ describe("compile-path authorize gate (compileSource)", () => {
       expect(problems).toEqual([]);
    });
 
-   it("ADMITS at APPEND scope even when the given does NOT satisfy the gate — /compile decides on PRESENCE, not the value", async () => {
-      // The `checkOnly` decidable escape only asks whether the caller
-      // engaged with the gate (supplied SOME value for every given it
-      // reads), not whether that value would pass — the real row filter is
-      // evaluated against the actual value at RUN time, never here. `/compile`
-      // returns a schema, not rows, so admitting on presence alone reveals
-      // nothing a query wouldn't already answer with (possibly empty)
-      // filtered rows.
+   it("REFUSES at APPEND scope when the LOCK's given does not satisfy it — the lock is truth-evaluated on /compile", async () => {
+      // If "may this caller reach this source at all" is what `#(authorize)`
+      // means, then reading the source's SQL is reaching it. So the lock is
+      // evaluated here, not merely checked for presence. The accepted cost:
+      // an author outside the group can no longer compile-check a locked
+      // source.
+      await expect(
+         compile("run: gated -> { aggregate: c }", { ROLE: "nobody" }),
+      ).rejects.toBeInstanceOf(AccessDeniedError);
+   });
+
+   it("ADMITS at APPEND scope once the LOCK's given satisfies it", async () => {
       const { problems } = await compile("run: gated -> { aggregate: c }", {
-         ROLE: "nobody",
+         ROLE: "analyst",
       });
       expect(problems).toEqual([]);
    });
 
-   it("ADMITS a row-field gate (`org_id`) at APPEND scope once its given is supplied", async () => {
-      // `row_gated`'s condition reads `org_id`, a real column — the fold-in
-      // still resolves the on-disk twin for it exactly as it does for the
-      // given-only "gated" case above, so the same decidable escape applies:
-      // `GROUPS` was supplied, so this compiles without running the query.
+   it("ADMITS a row-field #(access_filter) at APPEND scope on PRESENCE, not value", async () => {
+      // The other route keeps the `checkOnly` decidable escape: a filter has
+      // no whole-source answer to evaluate, and `/compile` returns a schema
+      // rather than rows, so admitting once the caller has engaged with the
+      // gate reveals nothing a query would not already answer with (possibly
+      // empty) filtered rows. `GROUPS: [-1]` matches nothing, and compiles.
       const { problems } = await compile("run: row_gated -> { aggregate: c }", {
-         GROUPS: [1],
+         GROUPS: [-1],
       });
-      expect(problems).toEqual([]);
-   });
-
-   it("ADMITS a gate referencing NO given (`authorized is 1 = 1`) with no given supplied at all", async () => {
-      // Routed defect fix: `givenNames.length === 0` is decidable by
-      // construction — there is no caller value left to wait on, since
-      // `/compile` executes nothing. Before the fix this denied (the
-      // dimension form's `literalAtoms` was hardcoded empty, so
-      // `constantTrue` could never be true), while the query path admitted
-      // every row for the identical gate — an inconsistency between the two
-      // enforcement points for the exact same access rule.
-      const { problems } = await compile(
-         "run: always_true -> { aggregate: c }",
-      );
-      expect(problems).toEqual([]);
-   });
-
-   it("ADMITS a gate referencing NO given that is constant `false` — /compile decides on PRESENCE, not the value, same as a supplied-but-wrong given", async () => {
-      // `givenNames.length === 0` is decidable regardless of which way the
-      // gate itself resolves — /compile never runs the query, so there is
-      // no row-truth to check here either way. The deny-everyone kill
-      // switch is a QUERY-path guarantee (a real run grafts `where: false`
-      // and gets zero rows, pinned in
-      // `row_level_authorize.integration.spec.ts`), not a `/compile` one.
-      const { problems } = await compile(
-         "run: always_false -> { aggregate: c }",
-      );
       expect(problems).toEqual([]);
    });
 
@@ -182,6 +162,65 @@ describe("compile-path authorize gate (compileSource)", () => {
       const { problems } = await compile("run: open_src -> { aggregate: c }");
       expect(problems).toEqual([]);
    });
+
+   it("decides a caller join's lock at APPEND scope, with includeSql", async () => {
+      const query =
+         "run: open_src extend { join_cross: g is gated } -> { aggregate: g.c }";
+      await expect(
+         env.compileSource("pkg", "model.malloy", query, true, {
+            ROLE: "nobody",
+         }),
+      ).rejects.toThrow(new AccessDeniedError('Access denied for source "g".'));
+      const { problems, sql } = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         query,
+         true,
+         { ROLE: "analyst" },
+      );
+      expect(problems).toEqual([]);
+      expect(sql).toBeDefined();
+   });
+
+   it("holds a caller join to a row-field #(access_filter) to its givens at APPEND scope", async () => {
+      const query =
+         "run: open_src extend { join_cross: r is row_gated } -> { aggregate: r.c }";
+      await expect(compile(query)).rejects.toBeInstanceOf(AccessDeniedError);
+      const { problems } = await compile(query, { GROUPS: [-1] });
+      expect(problems).toEqual([]);
+   });
+
+   it("decides the lock of a caller join to a caller source over a parenthesised base, at APPEND scope with includeSql", async () => {
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            "source: mine is ((gated)) extend { dimension: `source: mine is open_src` is 1 }\nrun: open_src extend { join_one: m is mine on x = m.x } -> { aggregate: m.c }",
+            true,
+            { ROLE: "nobody" },
+         ),
+      ).rejects.toThrow(new AccessDeniedError('Access denied for source "m".'));
+   });
+
+   // A file or package submission is the author's own file, so its joins are
+   // author joins.
+   for (const scope of ["file", "package"] as const) {
+      it(`does not gate an author join at ${scope.toUpperCase()} scope`, async () => {
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGates(MODEL)}
+source: joined_author is duckdb.sql("SELECT 1 as x") extend {
+  join_one: ag is gated on x = ag.x
+}
+run: joined_author -> { aggregate: ag.c }`,
+            scope === "file",
+            { ROLE: "nobody" },
+            scope,
+         );
+         expect(problems).toEqual([]);
+      });
+   }
 
    it("rejects an authorize annotation in the submitted source", async () => {
       // /compile appends the text to the model, so a caller-declared gate would
@@ -306,6 +345,331 @@ run: gated -> { aggregate: c }`,
          ),
       ).resolves.toBeDefined();
    });
+
+   // Boundary: this package declares no `explores`, so the query boundary is
+   // inert. These refusals are the lock, and they happen before compile.
+   describe("a locked name is decided wherever it appears (append scope)", () => {
+      const refused = [
+         ["uppercase RUN:", "RUN: gated -> { group_by: nope }"],
+         ["backtick name", "run: `gated` -> { group_by: nope }"],
+         ["escaped backtick", "run: `\\gated` -> { group_by: nope }"],
+         ["parentheses", "run: (gated) -> { group_by: nope }"],
+         ["compose", "run: compose(gated, open_src) -> { aggregate: c }"],
+         [
+            "nested is",
+            "source: a is ((gated)) extend {}\nrun: a -> { group_by: nope }",
+         ],
+         [
+            "gated run first",
+            "run: gated -> { group_by: nope }\nrun: open_src -> { aggregate: c }",
+         ],
+         [
+            "newline string does not hide the alias",
+            "run: open_src -> { where: s = 'x\n}\nsource: a is gated extend {}\nrun: a -> { group_by: nope }",
+         ],
+         [
+            "join inside a caller extend",
+            "run: open_src extend { join_one: j is gated on true } -> { aggregate: c }",
+         ],
+      ] as const;
+
+      for (const [label, source] of refused) {
+         it(`denies before compile: ${label}`, async () => {
+            await expect(
+               env.compileSource("pkg", "model.malloy", source, false),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         });
+      }
+
+      it("denies a 65-link chain before compile", async () => {
+         const lines = ["source: n0 is gated extend {}"];
+         for (let i = 1; i <= 64; i++) {
+            lines.push(`source: n${i} is n${i - 1} extend {}`);
+         }
+         lines.push("run: n64 -> { group_by: nope }");
+         await expect(
+            env.compileSource("pkg", "model.malloy", lines.join("\n"), false),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      it("file scope still compiles a two-run text whose last run is open", async () => {
+         const source = `${withoutGates(MODEL)}
+run: gated -> { aggregate: c }
+run: open_src -> { aggregate: c }`;
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            source,
+            false,
+            undefined,
+            "file",
+         );
+         expect(problems).toEqual([]);
+      });
+
+      // The file-scope derivation walk (assertLocksOnRequestDeclaredBases) has
+      // no cap: with no run target every declared name is a root, so a cap
+      // here would measure file size, not chain depth. Pins that a large
+      // file with no aliasing still compiles.
+      it("compiles a 70-definition file at file scope with no final run:", async () => {
+         const lines: string[] = [];
+         for (let i = 0; i < 70; i++) {
+            lines.push(
+               `source: n${i} is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+            );
+         }
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            lines.join("\n"),
+            false,
+            undefined,
+            "file",
+         );
+         expect(problems).toEqual([]);
+      });
+
+      it("still refuses the same large file with one alias of gated added, at file scope", async () => {
+         const lines: string[] = [];
+         for (let i = 0; i < 70; i++) {
+            lines.push(
+               `source: n${i} is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }`,
+            );
+         }
+         lines.push("source: n70 is gated extend {}");
+         await expect(
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               lines.join("\n"),
+               false,
+               undefined,
+               "file",
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      // Nothing after compile decides a lock at file scope for a declared
+      // alias that never runs, so the walk must read past a SQL block.
+      it("refuses an alias of gated declared after a multi-line SQL block, at file scope", async () => {
+         // The text declares no `gated` of its own, so only the alias can name it.
+         const source = `source: s is duckdb.sql("""
+  select 1 as x -- "
+""") extend { measure: c is count() } a is gated extend {}`;
+         await expect(
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               source,
+               false,
+               undefined,
+               "file",
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      it("package scope compiles a non-final locked run, and refuses an alias of gated", async () => {
+         const twoRuns = `${withoutGates(MODEL)}
+run: gated -> { aggregate: c }
+run: open_src -> { aggregate: c }`;
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            twoRuns,
+            false,
+            undefined,
+            "package",
+         );
+         expect(problems).toEqual([]);
+         await expect(
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               "source: a is gated extend {}",
+               false,
+               undefined,
+               "package",
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+   });
+});
+
+describe("caller-annotation guard on markdown prose (compileSource)", () => {
+   let rootDir: string;
+   let env: Environment;
+
+   const install = async (model: string) => {
+      rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-prose-"));
+      const envPath = path.join(rootDir, "env");
+      await fs.mkdir(envPath, { recursive: true });
+      env = await Environment.create("testEnv", envPath, []);
+      await env.installPackage("pkg", async (stagingPath) => {
+         await fs.mkdir(stagingPath, { recursive: true });
+         await fs.writeFile(
+            path.join(stagingPath, "publisher.json"),
+            PUBLISHER_JSON,
+         );
+         await fs.writeFile(path.join(stagingPath, "model.malloy"), model);
+      });
+   };
+
+   afterEach(async () => {
+      await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
+   });
+
+   it("compiles text whose markdown block prose names #(authorize), at every scope", async () => {
+      await install(MODEL);
+      const prose =
+         "#|(markdown)\nThe base is locked with #(authorize) and filtered by #(access_filter).\n|#\n";
+      const append = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         `${prose}run: open_src -> { aggregate: c }`,
+      );
+      expect(append.problems).toEqual([]);
+      const file = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         `${withoutGates(MODEL)}\n${prose}run: open_src -> { aggregate: c }`,
+         false,
+         undefined,
+         "file",
+      );
+      expect(file.problems).toEqual([]);
+      const pkg = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         `${withoutGates(MODEL)}\n${prose}run: open_src -> { aggregate: c }`,
+         false,
+         undefined,
+         "package",
+      );
+      expect(pkg.problems).toEqual([]);
+      const line = await env.compileSource(
+         "pkg",
+         "model.malloy",
+         "##(markdown) Rows are limited by #(access_filter).\nrun: open_src -> { aggregate: c }",
+      );
+      expect(line.problems).toEqual([]);
+   });
+
+   it("refuses a real gate behind prose, at file scope", async () => {
+      await install(MODEL);
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            `${withoutGates(MODEL)}\n#|(markdown)\nprose\n|#\n#(authorize) true\nsource: mine is open_src extend {}\n`,
+            false,
+            undefined,
+            "file",
+         ),
+      ).rejects.toThrow(/authorize` annotation is not permitted/);
+   });
+
+   // An append compile reads the model file as saved, which can be an edit not
+   // yet reloaded that ends inside an indented block note; appended text is
+   // lexed inside it, so the caller's prose block is not what the compiler reads.
+   it("refuses appended prose that a saved model's unclosed block note turns into a gate", async () => {
+      await install(MODEL);
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "model.malloy"),
+         `${MODEL}\n  #|(markdown)\n  A note the author has not closed yet.\n`,
+      );
+      await expect(
+         env.compileSource(
+            "pkg",
+            "model.malloy",
+            [
+               "#|(markdown)",
+               "  |#",
+               "#(authorize) true",
+               "source: mine is gated extend {}",
+               "run: mine -> { aggregate: c }",
+               "  #|(markdown)",
+               "|#",
+               "",
+            ].join("\n"),
+            true,
+            { ROLE: "nobody" },
+         ),
+      ).rejects.toThrow(/authorize` annotation is not permitted/);
+   });
+
+   it("refuses the same forgery when the combined text closes every block and compiles", async () => {
+      await install(MODEL);
+      await fs.writeFile(
+         path.join(rootDir, "env", "pkg", "model.malloy"),
+         `${MODEL}\n  #|(markdown)\n  A note the author has not closed yet.\n`,
+      );
+      const forged = [
+         "#|(markdown)",
+         "  |#",
+         "#(authorize) true",
+         "source: mine is gated extend {}",
+         " #|(markdown)",
+         "|#",
+         " #|(markdown)",
+         " |#",
+         "run: mine -> { aggregate: c }",
+         "",
+      ].join("\n");
+      // Prose on its own; a real gate where the compiler reads it.
+      expect(hasCallerAuthorizeAnnotation(forged)).toBe(false);
+      expect(
+         hasCallerAuthorizeAnnotation(
+            forged,
+            `${MODEL}\n  #|(markdown)\n  A note the author has not closed yet.\n\n`,
+         ),
+      ).toBe(true);
+      await expect(
+         env.compileSource("pkg", "model.malloy", forged, true, {
+            ROLE: "nobody",
+         }),
+      ).rejects.toThrow(/authorize` annotation is not permitted/);
+   });
+
+   it("still filters a derived row-gated source whose caller text wraps #(access_filter) true in prose", async () => {
+      await install(MODEL);
+      const model = (await env.getPackage("pkg", false)).getModel(
+         "model.malloy",
+      );
+      const DERIVED =
+         "source: mine is row_gated extend {}\nrun: mine -> { select: org_id }";
+      /** The rows the query returns, or the error it was refused with. */
+      const run = (query: string, groups: number[]) =>
+         model
+            ?.getQueryResults(
+               undefined,
+               undefined,
+               query,
+               undefined,
+               undefined,
+               {
+                  ROLE: "nobody",
+                  GROUPS: groups,
+               },
+            )
+            .then(
+               (r) => rowsOf(r),
+               (e: Error) => e,
+            );
+      // The fixture's one row is org 1, so a caller in group 1 sees it.
+      expect(await run(DERIVED, [1])).toHaveLength(1);
+      for (const prose of [
+         "#|(markdown)\n#(access_filter) true\n|#\n",
+         "##|(markdown)\n#(access_filter) true\n|##\n",
+         "#(markdown) #(access_filter) true\n",
+         "##(markdown) #(access_filter) true\n",
+      ]) {
+         const outcome = await run(`${prose}${DERIVED}`, [2]);
+         // The base's filter still decides: no row, or the fail-closed refusal.
+         if (outcome instanceof Error)
+            expect(outcome).toBeInstanceOf(AccessDeniedError);
+         else expect(outcome).toEqual([]);
+      }
+   });
 });
 
 describe("compile-path is exempt from the query boundary (compileSource)", () => {
@@ -420,7 +784,7 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
 given:
   ROLE :: string
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }`,
@@ -434,7 +798,7 @@ source: hidden_gated is duckdb.sql("SELECT 1 as x") extend {
             `##! experimental.givens
 import "secret.malloy"
 
-#(authorize) $ROLE = 'analyst'
+#(authorize) 'analyst' = $ROLE
 source: visible_gated is duckdb.sql("SELECT 1 as x") extend {
   measure: c is count()
 }
@@ -532,6 +896,26 @@ export { customers, visible_gated }`,
       ).rejects.toBeInstanceOf(AccessDeniedError);
    });
 
+   it("decides the alias's lock BEFORE compiling, so /compile is not a schema oracle", async () => {
+      // /compile answers WITH the compiler's diagnostics, so ordering is the
+      // whole guarantee here: a refused caller aliasing the source and naming a
+      // column that does not exist must hear the denial, never which names
+      // resolve on a source they cannot read.
+      const err = await env
+         .compileSource(
+            "pkg",
+            "index.malloy",
+            "source: mine is visible_gated extend {}\nrun: mine -> { group_by: no_such_field }",
+            false,
+         )
+         .then(
+            () => undefined,
+            (e: Error) => e,
+         );
+      expect(err).toBeInstanceOf(AccessDeniedError);
+      expect(String(err!.message)).not.toContain("no_such_field");
+   });
+
    it("ADMITS the hidden source once the gate's given is supplied — denyHiddenAsNotQueryable scrubs a denial, it is not an access check", async () => {
       // `denyHiddenAsNotQueryable` (environment.ts) runs the gate first and
       // only converts to `NotQueryableError` when the gate itself threw
@@ -561,23 +945,22 @@ export { customers, visible_gated }`,
       expect(sql).toBeUndefined();
    });
 
-   it("with includeSql AND a non-satisfying given, returns the hidden source's UNGRAFTED SQL — the widest point of the accepted trade", async () => {
-      // Same admission as above (presence, not value, decides), but now with
-      // `includeSql: true` and `ROLE: "nobody"` — a value that would fail the
-      // gate at run time. `/compile` never runs the query, so there is no row
-      // filter to apply here even for a value that would have failed one:
-      // the returned SQL is the plain compiled query, with no `$ROLE`
-      // reference at all. This is the actual shape of the residual the
-      // product owner accepted, not just that some string was returned.
-      const { problems, sql } = await env.compileSource(
-         "pkg",
-         "secret.malloy",
-         "run: hidden_gated -> { aggregate: c }",
-         true,
-         { ROLE: "nobody" },
-      );
-      expect(problems).toEqual([]);
-      expect(sql).toContain("FROM (SELECT 1 as x) as base");
-      expect(sql).not.toMatch(/ROLE|analyst|nobody/i);
+   it("with includeSql AND a non-satisfying given, returns NOTHING — the lock closed the widest point of the accepted trade", async () => {
+      // This test used to record the residual exposure: `includeSql: true`
+      // plus `ROLE: "nobody"` returned the hidden source's plain compiled SQL,
+      // because `/compile` admitted on the PRESENCE of a given rather than
+      // its value. Truth-evaluating the lock closes it. The refusal is the
+      // boundary's 404 rather than a 403 because the source is also hidden —
+      // a lock thrown outside `denyHiddenAsNotQueryable` would be an
+      // existence oracle, which is this describe block's whole subject.
+      await expect(
+         env.compileSource(
+            "pkg",
+            "secret.malloy",
+            "run: hidden_gated -> { aggregate: c }",
+            true,
+            { ROLE: "nobody" },
+         ),
+      ).rejects.toBeInstanceOf(NotQueryableError);
    });
 });

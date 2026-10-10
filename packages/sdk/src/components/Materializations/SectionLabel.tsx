@@ -5,10 +5,13 @@ import { Typography } from "@mui/material";
 import { ReactNode } from "react";
 
 /**
- * Small uppercase section heading for consistent hierarchy across the
- * materialization views (detail dialog, manifest view). One source of truth for
- * the style so the headings can't drift. Renders as an <h6> so it is a real
- * heading (role="heading") — the caption styling is purely visual.
+ * A sub-heading INSIDE a materialization view — the detail dialog and the
+ * manifest view — where `PackageSection` does not apply: those are sections of
+ * a dialog, not of a page. Small and uppercase to sit a level under the
+ * dialog's own title.
+ *
+ * Renders as an `<h6>`, so it is a real heading to anything navigating by
+ * them; the caption styling is purely visual.
  */
 export default function SectionLabel({ children }: { children: ReactNode }) {
    return (

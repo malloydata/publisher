@@ -7,12 +7,18 @@ import { classifyToolError } from "./handler_utils";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionAuthError,
+   ConnectionFailedError,
+   EnvironmentNotFoundError,
    InvalidArgumentError,
    ModelCompilationError,
+   PackageManifestError,
    PackageNotFoundError,
    PayloadTooLargeError,
    ResponseUnserializableError,
    ServiceUnavailableError,
+   ConnectionPoolExhaustedError,
+   UnconfiguredConnectionError,
 } from "../errors";
 
 /**
@@ -39,6 +45,100 @@ describe("classifyToolError", () => {
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
    });
 
+   it("tells the agent an unreachable database is not its query to fix", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionFailedError("connect ECONNREFUSED 10.0.0.5:5432"),
+      );
+      expect(details).toEqual({
+         message:
+            "The database connection for env/pkg is down: the database could not be reached, so the query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them.",
+            "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      });
+      // The driver's text names an internal host; it is logged, not returned.
+      expect(JSON.stringify(details)).not.toContain("10.0.0.5");
+   });
+
+   it("tells the agent rejected credentials are the connection's to fix, not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new ConnectionAuthError(
+            'password authentication failed for user "analytics"',
+         ),
+      );
+      expect(details).toEqual({
+         message:
+            "The database rejected the connection's credentials for env/pkg. The query never ran.",
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+            "Report that the connection's user, password, key or token needs updating.",
+         ],
+      });
+      expect(JSON.stringify(details)).not.toContain("analytics");
+   });
+
+   it("tells the agent a model naming a missing connection is not a retry", () => {
+      const details = classifyToolError(
+         "executeQuery",
+         "env/pkg",
+         new UnconfiguredConnectionError("bq_demo"),
+      );
+      expect(details).toEqual({
+         message:
+            'No connection named "bq_demo" found in config. The model for env/pkg uses a connection this environment does not have, so the query never ran.',
+         suggestions: [
+            "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+            "Report that the environment is missing this connection; it was likely deleted or renamed.",
+         ],
+      });
+   });
+
+   it("names an unknown environment and the environments that exist", () => {
+      // The generic "Resource not found: analytics/bq_demo" did not say which
+      // half was wrong, and the store's own error, which knew, was dropped.
+      const details = classifyToolError(
+         "searchDatabaseSchema",
+         "analytics/bq_demo",
+         new EnvironmentNotFoundError(
+            'Environment "analytics" could not be resolved to a path.',
+            { environmentName: "analytics", availableEnvironments: ["a", "b"] },
+         ),
+      );
+      expect(details.message).toBe(
+         "Environment 'analytics' not found. Available environments: a, b. Use a name from list_packages.",
+      );
+   });
+
+   it("says so when no environment is loaded at all", () => {
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new EnvironmentNotFoundError("x", {
+            environmentName: "analytics",
+            availableEnvironments: [],
+         }),
+      );
+      expect(details.message).toBe(
+         "Environment 'analytics' not found. This server has no environments loaded. Use a name from list_packages.",
+      );
+   });
+
+   it("keeps the generic not-found for an environment error with no lookup", () => {
+      // The other throw sites carry a storage path or bucket in the message,
+      // which the generic text exists not to echo.
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new EnvironmentNotFoundError("Environment path /srv/x not found"),
+      );
+      expect(details.message).toBe("Resource not found: env/pkg");
+   });
+
    it("homes back-pressure as retryable, not as Malloy", () => {
       const details = classifyToolError(
          "op",
@@ -47,6 +147,22 @@ describe("classifyToolError", () => {
       );
       expect(details.message).toContain("Memory limit reached");
       expect(JSON.stringify(details.suggestions)).toContain("Retry");
+      expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
+   });
+
+   it("homes an exhausted connection pool as retryable, not as Malloy", () => {
+      const details = classifyToolError(
+         "op",
+         "env/pkg",
+         new ConnectionPoolExhaustedError(
+            "Connection 'pg' has no free database session: this server opens at most 5 at a time for it, and none came free within 30 s. Retry once fewer queries are running on this connection.",
+         ),
+      );
+      expect(details.message).toContain("has no free database session");
+      expect(JSON.stringify(details.suggestions)).toContain("Retry");
+      expect(JSON.stringify(details.suggestions)).toContain(
+         "PUBLISHER_POSTGRES_POOL_MAX",
+      );
       expect(JSON.stringify(details.suggestions)).not.toContain("Malloy file");
    });
 
@@ -89,7 +205,7 @@ describe("classifyToolError", () => {
       // marker is the authorize advice, not "Malloy file".
       expect(
          advice(new AccessDeniedError('Access denied for source "orders"')),
-      ).toContain("#(authorize)");
+      ).toContain("restricted by an authorize gate");
       expect(advice(new BadRequestError("Invalid query request."))).toContain(
          "Malloy file",
       );
@@ -166,6 +282,25 @@ describe("classifyToolError", () => {
             ),
          ),
       ).toContain("raise the configured cap");
+   });
+
+   it("homes an unusable publisher.json as the author's to fix, not as internal", () => {
+      // What reload_package throws for a bad manifest. The internal branch said
+      // "unexpected internal error" and "try again later", which tells an agent
+      // to retry a typo.
+      const message =
+         'Invalid "explores" in publisher.json: expected an array of model paths, got "index.malloy".';
+      const details = classifyToolError(
+         "reloadPackage",
+         "env/pkg",
+         new PackageManifestError(message),
+      );
+      expect(details.message).toBe(message);
+      const suggestions = JSON.stringify(details.suggestions);
+      expect(suggestions).toContain("publisher.json");
+      expect(suggestions).toContain("not transient");
+      expect(suggestions).not.toContain("Malloy file");
+      expect(suggestions).not.toContain("again later");
    });
 
    it("reports anything else as internal rather than blaming the Malloy", () => {

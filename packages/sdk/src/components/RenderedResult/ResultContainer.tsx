@@ -3,18 +3,27 @@
 
 import { Warning } from "@mui/icons-material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import { Box, Button, IconButton, Tooltip, Typography } from "@mui/material";
-import { lazy, Suspense, useRef, useState } from "react";
+import { Box, Button, Tooltip, Typography } from "@mui/material";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { LogMessage } from "../../client";
 import type { DrillBinding } from "../drill/useDrill";
-import { Loading } from "../Loading";
+import { FloatingIconButton } from "../FloatingIconButton";
+import { Loading, LOADING_COPY } from "../Loading";
+import { warmMalloyRenderer } from "./loadRenderer";
 import { summarizeRenderLogs } from "./renderLogs";
+import { resolveResultHeight, type ResultSizing } from "./resultSizing";
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 
 interface ResultContainerProps {
    result: string | undefined;
-   maxHeight: number;
+   /**
+    * Cap on the panel's height. A CAP, not a height request: a result shorter
+    * than this paints at its own height. Leave it out for no cap, which is what
+    * the single-query dashboard form wants — a result that IS the page should
+    * not be clipped to tidy it.
+    */
+   maxHeight?: number;
    // if Results are larger than this size, show a warning and a button to proceed
    // this is to prevent performance issues with large results.
    // the default is 0, which means no warning will be shown.
@@ -26,25 +35,14 @@ interface ResultContainerProps {
    // is the one render path dashboards and notebooks share, which is what lets
    // drill be implemented once for both.
    drill?: DrillBinding;
+   /**
+    * Stretch to the cell this sits in: a content-sized result is floored at
+    * the cell's height, so a short table reaches the bottom of its card. The
+    * parent has to be a flex column with a definite height, which a dashboard
+    * tile's card is. Leave it off wherever the result sets the surface's height.
+    */
+   fill?: boolean;
 }
-
-/**
- * Height to paint at before the result has been measured.
- *
- * `maxHeight` is a CAP, but it was also the first paint's height, because the
- * measured height starts out equal to it. That was harmless while every caller
- * passed something viewport-sized (400 to 800). A caller that means "no cap"
- * passes a number that is not a height anyone wants to see: the dashboard
- * viewer's whole-page form passes 20000, so the panel painted twenty thousand
- * pixels tall until the measurement landed, and a result the renderer sizes to
- * its CONTAINER (a top-level chart, as opposed to a `# dashboard` grid, which
- * reports its own height) measured that back and kept it.
- *
- * Bounded here rather than by lowering the cap, so "no cap" stays expressible.
- * Above the cap it does nothing, which is every caller that passes a real
- * height, so this changes nothing for them.
- */
-const INITIAL_RENDER_HEIGHT = 2000;
 
 // ResultContainer is a component that renders a result, with a toggle button to expand/collapse the result.
 // For fill-elements, the result is rendered at minHeight, and the toggle button is shown to scale up to maxHeight.
@@ -56,13 +54,32 @@ export default function ResultContainer({
    maxResultSize = 0,
    renderLogs,
    drill,
+   fill = false,
 }: ResultContainerProps) {
    const containerRef = useRef<HTMLDivElement>(null);
-   const [measuredHeight, setMeasuredHeight] = useState(
-      Math.min(maxHeight, INITIAL_RENDER_HEIGHT),
+   // A result is here: start the renderer download if no panel already has.
+   useEffect(() => warmMalloyRenderer(), []);
+   // Both start unknown and are filled in by the render: `sizing` as soon as
+   // the renderer's metadata is read, `contentHeight` only if the root has one
+   // to report. `resolveResultHeight` owns what to paint at each stage.
+   const [sizing, setSizing] = useState<ResultSizing | undefined>(undefined);
+   const [contentHeight, setContentHeight] = useState<number | undefined>(
+      undefined,
    );
    const [userAcknowledged, setUserAcknowledged] = useState(false);
+   const [cellHeight, setCellHeight] = useState<number | undefined>(undefined);
    const renderLogSummary = summarizeRenderLogs(renderLogs);
+
+   const hasResult = Boolean(result);
+   useEffect(() => {
+      const box = containerRef.current;
+      if (!fill || !box) return;
+      const observer = new ResizeObserver(([entry]) =>
+         setCellHeight(Math.round(entry.contentRect.height)),
+      );
+      observer.observe(box);
+      return () => observer.disconnect();
+   }, [fill, hasResult, userAcknowledged]);
 
    if (!result) {
       return null;
@@ -103,9 +120,27 @@ export default function ResultContainer({
       );
    }
 
-   const loading = <Loading text="Loading..." centered={true} size={32} />;
-   // Fixed height for content - no resizing
-   const renderedHeight = Math.min(maxHeight, measuredHeight);
+   const loading = (
+      <Loading text={LOADING_COPY.loading} centered={true} size={32} />
+   );
+   const renderedHeight = resolveResultHeight({
+      sizing,
+      contentHeight,
+      maxHeight,
+      fillHeight: fill ? cellHeight : undefined,
+   });
+   const renderedResult = (
+      <Suspense fallback={loading}>
+         <RenderedResult
+            result={result}
+            height={renderedHeight}
+            onSizeChange={setContentHeight}
+            onSizing={setSizing}
+            drill={drill}
+            fill={fill}
+         />
+      </Suspense>
+   );
 
    return (
       <Box
@@ -116,17 +151,18 @@ export default function ResultContainer({
             border: "0px",
             borderRadius: 0,
             overflow: "hidden",
+            // Grows from the unfloored height, so a result that gets shorter
+            // lets its row shrink; the result is out of flow for the same reason.
+            ...(fill && {
+               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight })}px`,
+               minHeight: 0,
+            }),
          }}
       >
-         {result && (
-            <Suspense fallback={loading}>
-               <RenderedResult
-                  result={result}
-                  height={renderedHeight}
-                  onSizeChange={setMeasuredHeight}
-                  drill={drill}
-               />
-            </Suspense>
+         {fill ? (
+            <Box sx={{ position: "absolute", inset: 0 }}>{renderedResult}</Box>
+         ) : (
+            renderedResult
          )}
          {renderLogSummary && (
             // Overlaid rather than stacked, so the note cannot change the height
@@ -137,16 +173,7 @@ export default function ResultContainer({
                   title={renderLogSummary.title}
                   slotProps={{ tooltip: { sx: { whiteSpace: "pre-line" } } }}
                >
-                  <IconButton
-                     size="small"
-                     aria-label="Render tag warnings"
-                     sx={{
-                        backgroundColor: "rgba(255, 255, 255, 0.9)",
-                        "&:hover": {
-                           backgroundColor: "rgba(255, 255, 255, 1)",
-                        },
-                     }}
-                  >
+                  <FloatingIconButton aria-label="Render tag warnings">
                      <InfoOutlinedIcon
                         fontSize="small"
                         color={
@@ -155,7 +182,7 @@ export default function ResultContainer({
                               : "warning"
                         }
                      />
-                  </IconButton>
+                  </FloatingIconButton>
                </Tooltip>
             </Box>
          )}

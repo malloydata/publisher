@@ -1,0 +1,203 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { Box } from "@mui/material";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+
+/** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
+export const DEFAULT_COLUMNS = 2;
+
+/** The widest grid the builder offers; the server lints wider ones and the reader still renders them. */
+export const MAX_COLUMNS = 24;
+
+/** A tile's width after an arrow nudge, held to the grid and to what the builder offers. */
+export const nudgedSpan = (current: number, delta: 1 | -1, columns: number) =>
+   Math.min(Math.max(current + delta, 1), Math.min(columns, MAX_COLUMNS));
+
+/**
+ * The gutter between tiles, in px.
+ *
+ * A number rather than a `gap: 2` spacing unit because a tile's default span is
+ * solved for the track width in px. Exported so the builder's column guides sit
+ * on the same gutters the grid paints.
+ */
+export const GRID_GAP_PX = 16;
+
+/**
+ * The space between a notebook's tiles, which stack in one column with no card
+ * around them: wider than a dashboard's gap so the reading flow breathes, and
+ * so the builder's selection ring, drawn {@link BARE_RING_OFFSET_PX} clear of
+ * a bare tile, never meets the next tile's.
+ */
+export const NOTEBOOK_GAP_PX = 40;
+
+/** How far a bare (uncarded) tile's selection ring sits from its content. */
+export const BARE_RING_OFFSET_PX = 12;
+
+/**
+ * The space above and below a notebook's description, in both modes: a bare
+ * description's ring in the builder is {@link BARE_RING_OFFSET_PX} clear of
+ * its text, and needs the room to stay clear of the title and the filters.
+ */
+export const BARE_DESCRIPTION_MARGIN_PX = BARE_RING_OFFSET_PX + 8;
+
+/**
+ * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing
+ * it to start a fresh row.
+ *
+ * Clamped to the grid width the same way @malloydata/render clamps it, so one
+ * view laid out as a composite tile and as a `nest:` under `# dashboard` lands
+ * in the same place. A break is `1 / span N` — an explicit start line, which is
+ * what pushes the tile down to the next row; the renderer's grid does the same.
+ */
+export function tileGridColumn(
+   tile: { colspan?: number; break?: boolean },
+   columns: number,
+): string {
+   const span = Math.min(tile.colspan ?? 1, columns);
+   return tile.break ? `1 / span ${span}` : `span ${span}`;
+}
+
+/**
+ * Columns a tile with no `# colspan` spans so it is at least `minTilePx` wide.
+ *
+ * In a 12 or 16 column grid a one-column tile is a sliver a few dozen px wide.
+ * Only tiles that never asked for a width are widened, so an explicit
+ * `colspan=1` stays the author's call. An unmeasured width changes nothing.
+ */
+export function defaultTileSpan(
+   columns: number,
+   containerPx: number,
+   minTilePx: number,
+): number {
+   if (!(containerPx > 0) || columns <= 1) return 1;
+   const track = (containerPx - (columns - 1) * GRID_GAP_PX) / columns;
+   return Math.min(
+      columns,
+      Math.max(1, Math.ceil((minTilePx + GRID_GAP_PX) / (track + GRID_GAP_PX))),
+   );
+}
+
+/** The layout a tile carries, whatever else its own shape holds. */
+export interface GridTile {
+   colspan?: number;
+   break?: boolean;
+}
+
+/**
+ * The composite dashboard's grid: the column track, and each tile's place on
+ * it.
+ *
+ * Shared by the READER ({@link Dashboard}) and the BUILDER, which is the whole
+ * point of it being a component rather than a rule each surface applies. An
+ * author arranging a dashboard is arranging the thing a reader will open, so
+ * the two cannot be allowed to lay tiles out even slightly differently; a
+ * restated track without the grid item's own `display: grid` ends rows at
+ * ragged heights on one surface and level on the other.
+ *
+ * **Why the item is a grid and not a block.** A grid item stretches to its row,
+ * but a block CHILD of one does not — it keeps its content height. Results
+ * divide on exactly that line (see `resultSizing`): a table, a map or a
+ * `# big_value` sizes to its content, while a plotted chart fills whatever box
+ * it is handed. So a block item put a short table beside a tall chart and let
+ * the row end twice. Making the item a grid passes the row's height down to the
+ * tile, and every card in a row ends level.
+ *
+ * The tile itself is the caller's: the reader renders a `DashboardTile`, the
+ * builder wraps one in its selection outline. Anything this component rendered
+ * on their behalf would be a third opinion about what a tile looks like.
+ */
+export function DashboardGrid<T extends GridTile>({
+   tiles,
+   columns,
+   keyOf,
+   renderTile,
+   minTilePx,
+   rowGapPx = GRID_GAP_PX,
+}: {
+   tiles: readonly T[];
+   /** Track count — `# dashboard { columns=N }`, or {@link DEFAULT_COLUMNS}. */
+   columns: number;
+   /**
+    * This tile's React key. Taken from the caller because the two surfaces
+    * identify a tile differently and both are right: the manifest's `tiles=[…]`
+    * can repeat one expression (a typo, not a request for two identical
+    * panels), so the reader keys on position as well.
+    */
+   keyOf: (tile: T, index: number) => string;
+   renderTile: (tile: T, index: number) => ReactNode;
+   /**
+    * Floor on the width of a tile that sets no `colspan`. Off by default: the
+    * builder assumes an unset colspan is one column.
+    */
+   minTilePx?: number;
+   /** The space between rows; a notebook's is {@link NOTEBOOK_GAP_PX}. */
+   rowGapPx?: number;
+}) {
+   const ref = useRef<HTMLDivElement>(null);
+   const [width, setWidth] = useState(0);
+   useEffect(() => {
+      const node = ref.current;
+      if (
+         minTilePx === undefined ||
+         !node ||
+         typeof ResizeObserver === "undefined"
+      )
+         return;
+      const observer = new ResizeObserver(([entry]) =>
+         setWidth(entry?.contentRect.width ?? 0),
+      );
+      observer.observe(node);
+      return () => observer.disconnect();
+   }, [minTilePx]);
+   const floor =
+      minTilePx === undefined ? 1 : defaultTileSpan(columns, width, minTilePx);
+   return (
+      <Box
+         ref={ref}
+         sx={{
+            display: "grid",
+            gridTemplateColumns: {
+               xs: "1fr",
+               md: `repeat(${columns}, minmax(0, 1fr))`,
+            },
+            columnGap: `${GRID_GAP_PX}px`,
+            rowGap: `${rowGapPx}px`,
+         }}
+      >
+         {tiles.map((tile, index) => (
+            <Box
+               key={keyOf(tile, index)}
+               sx={{
+                  // Load-bearing — see the note above.
+                  display: "grid",
+                  // A tile follows its TRACK, whatever it holds. A grid item's
+                  // minimum width is `auto` — its content's minimum — and a
+                  // chart's content is an SVG drawn at the width the tile had
+                  // when it rendered. So without this, narrowing a tile did not
+                  // narrow it: the item stayed as wide as the old chart, ran
+                  // under its neighbour, and the renderer's own size observer
+                  // never saw a change to redraw for. Widening worked, which is
+                  // what made it look like the chart filled in one direction
+                  // only. With the minimum at zero the item takes the track's
+                  // width, the chart's box shrinks with it, and the renderer
+                  // redraws to fit — the same way it already did on growth.
+                  minWidth: 0,
+                  // Only above `md`: the narrow breakpoint is one column, where
+                  // a span would overflow the grid rather than widen anything.
+                  gridColumn: {
+                     md: tileGridColumn(
+                        tile.colspan === undefined && floor > 1
+                           ? { ...tile, colspan: floor }
+                           : tile,
+                        columns,
+                     ),
+                  },
+               }}
+            >
+               {renderTile(tile, index)}
+            </Box>
+         ))}
+      </Box>
+   );
+}

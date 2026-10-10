@@ -1,16 +1,18 @@
 # Eval-run package
 
 A finished run as a Malloy package you can open: the semantic model in
-`eval_run.malloy`, a notebook in `eval_run.malloynb`, an HTML data app in
+`eval_run.malloy`, a notebook in `notebooks/eval_run.malloy`, an HTML data app in
 `public/`, and CSV under `data/` written by `../../scripts/build_run_package.py`.
 
 ```bash
-python skills/eval-loop/scripts/build_run_package.py \
-  --run results/2026-08-30-sonnet \
-  --run results/2026-08-30-opus \
-  --set evals/ecommerce \
-  --out target/eval-run
+python3 skills/eval-loop/scripts/eval.py package --set <set-dir> --label <label>
+# an A/B: name each run
+python3 skills/eval-loop/scripts/build_run_package.py --set <set-dir> \
+  --run <workdir>/runs/sonnet-01 --run <workdir>/runs/opus-01
 ```
+
+The package's own README (written by the builder) holds the exact `curl`
+that registers it, and on which server.
 
 Two `--run` flags build both arms into one package, which is what makes an A/B a
 `group_by` rather than a diff of two reports.
@@ -32,22 +34,28 @@ product, found on data we control and understand.
 
 Both, and the split is not stylistic.
 
-**`eval_run.malloynb`** holds the analytical tables: pass rate, cost, effort,
+**`notebooks/eval_run.malloy`** holds the analytical tables: pass rate, cost, effort,
 where the failures are, retrieval, the backlog. Publisher renders it natively, so
 these are Malloy reading the model directly with no JavaScript in between and
-nothing to drift.
+nothing to drift. It is written as `run:` cells, a form Publisher still reads and
+converts to the notebook tile layout if someone saves it in the Console.
 
-**`public/index.html`** is the case list -- one expandable row per case, with a
-verdict pill and a row of dots per arm (the entities the golden depends on: a
-ranked entity, a sibling-source alias, in a returned source's docs, or missing).
-Opening a row shows the golden as a table, then per arm: the effort line (turns,
-calls, errors, seconds, dollars), the judge's reasoning, the re-executed rows,
-and the attempt as a **timeline** -- every `get_context` and `execute_query` with
-its input and result, and the prose between them. That is the view a verdict
-cannot give: whether a wrong number came out of a wrong query or a right query
-read wrongly. A notebook cannot do that, and drilling into one case is most of
-what reading an eval consists of. Data comes from `steps.csv`, `required.csv`
-and the `prediction` column on attempts, all built from the run's transcripts.
+**`public/index.html`** leads with the score and where every question landed,
+then the diagnosis backlog (failures grouped by shared cause), an effort strip
+(one dot per question), and the case list: one row per case, with a verdict pill
+and a row of dots per arm (the entities the golden depends on: a ranked entity, a
+sibling-source alias, in a returned source's docs, or missing). Clicking a row
+opens that case in a side panel. Its **Summary** tab says why the judge decided
+as it did, puts the golden beside the rows the agent's final query returns when
+the harness re-runs it, shows the agent's final message, which required entities
+search delivered, and what the attempt cost. Its **Step by step** tab is the
+attempt as a list -- every `get_context` and `execute_query` and the prose
+between them, one line each, opened in place to show the full query and its
+result. That is the view a verdict cannot give: whether a wrong number came out
+of a wrong query or a right query read wrongly. A notebook cannot do that, and
+drilling into one case is most of what reading an eval consists of. Data comes
+from `steps.csv`, `required.csv` and the `prediction` column on attempts, all
+built from the run's transcripts.
 
 Both read the same model, which is what stops the two from disagreeing.
 
@@ -89,20 +97,39 @@ Comparing retrieval itself across engine versions is not this package's job; a c
 
 ## Every failure is placed
 
-`where_to_fix` is one of *query construction*, *retrieval ranking*, *model
-coverage* or *refusal behaviour*, and every scored failure has exactly one. The
-counts in `failures_by_where_to_fix` therefore sum to the failure count in
-`run_summary`. If they ever do not, attribution has a hole -- that exact bug is why
-the tables are cross-checked rather than trusted.
+`where_to_fix` is one of *model coverage*, *never asked*, *not retrieved*,
+*delivered, wrong*, *refusal behaviour* or *coverage not measured*, and every
+scored failure has exactly one. Only two name an owner.
+
+*never asked* is the agent's, and it is mechanical: no search asked for the
+missing entity's kind, so nothing of that kind could come back. *model coverage*
+is the model's. *not retrieved* means the entity exists, a search of the right
+kind was issued, and it still did not come back -- the docs may not say what the
+question asks, or the search wording may be off, and eval-diagnose separates
+NOT-RETURNED from QUESTION-VOCAB. *delivered, wrong* means everything arrived and
+the answer is still wrong: the agent misused it, or the docs never said how.
+*coverage not measured* is a miss whose case carries no measured coverage label.
+
+Two of these are deliberately ownerless. A label that asserted *documentation* on
+every retrieval miss was wrong on the first real run, where the agent had searched
+only for a source and a dimension and the measure it needed was blamed on docs
+that described it perfectly well. The counts in `failures_by_where_to_fix` therefore sum
+to the failure count in `run_summary`. If they ever do not, attribution has a
+hole -- that exact bug is why the tables are cross-checked rather than trusted.
 
 `needs_human` is neither a pass nor a failure and is attributed to nothing.
 
 ## Serving it
 
+`eval.py package` registers this package on the set's truth server, and
+writes the `curl` that does it into the README.md it builds, for serving it
+again later. The
+rest of this section is for serving it on a Publisher of its own.
+
 ```bash
 publisher --server_root <parent-of-package> --mcp_port 4049
 # app      http://localhost:4000/environments/evals/packages/eval-run/index.html
-# notebook http://localhost:4000/evals/eval-run/eval_run.malloynb
+# notebook http://localhost:4000/evals/eval-run/notebooks/eval_run
 ```
 
 The two URLs are different on purpose and neither is guessable. `public/` is
@@ -119,13 +146,14 @@ file:
 
 ```bash
 curl -s .../api/v0/environments/<env>/packages/<pkg>/models      # compiles the model
-curl -s .../api/v0/environments/<env>/packages/<pkg>/notebooks   # lists .malloynb
+curl -s .../api/v0/environments/<env>/packages/<pkg>/notebooks   # lists the notebook
 ```
 
 `models` returns a 424 with the full compiler error when the Malloy is broken,
 which is the fastest way to see a compile failure. Notebooks are listed by
-`notebooks` and are **not** in `models`; asking for one under `models` returns
-`404 "<file> is a notebook"`. A notebook fetched from `notebooks/<file>` reports
+`notebooks` and are **not** in the `models` list. A `.malloy` notebook still compiles
+as a model, so `models/notebooks/eval_run.malloy` shows its compile errors; only a
+legacy `.malloynb` returns `404 "<file> is a notebook"` there. A notebook fetched from `notebooks/<file>` reports
 its cells' compiled schemas under `modelInfo`, but only the cells it treats as
 anonymous queries -- do not read a low count there as cells failing to compile. To
 verify every cell, run each named query through `execute_query`.

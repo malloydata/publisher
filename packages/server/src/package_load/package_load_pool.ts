@@ -82,12 +82,12 @@ import { Worker } from "node:worker_threads";
 import { dirname, join } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
-import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
 import type {
    PackageMaterializationConfig,
    PackageScope,
 } from "../service/package_manifest";
+import type { PackageRetrievalSettings } from "../service/package_retrieval";
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -102,7 +102,6 @@ import type {
    SchemaForSqlResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
-   SerializedError,
    SerializedModel,
    WorkerToMainMessage,
 } from "./protocol";
@@ -241,6 +240,7 @@ export interface LoadPackageOutcome {
    packageMetadata: {
       name?: string;
       description?: string;
+      location?: string;
       explores?: string[];
       queryableSources?: "declared" | "all";
       manifestLocation?: string | null;
@@ -248,6 +248,8 @@ export interface LoadPackageOutcome {
       scope?: PackageScope;
       /** See {@link LoadPackageResult.packageMetadata.manifestWarnings}. */
       manifestWarnings?: string[];
+      /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
+      retrieval?: PackageRetrievalSettings;
    };
    replacementMatchedExisting?: boolean;
    models: Array<
@@ -863,45 +865,8 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
    };
 }
 
-function serializeError(error: unknown): SerializedError {
-   if (error instanceof Error) {
-      return {
-         name: error.name,
-         message: error.message,
-         stack: error.stack,
-      };
-   }
-   return { name: "Error", message: String(error) };
-}
-
-/**
- * Reconstitute an Error from a serialized payload. When the original
- * was a Malloy compile error we re-wrap as `ModelCompilationError` so
- * downstream `instanceof` checks (which decide e.g. HTTP 424 vs 500)
- * keep firing across the worker boundary.
- */
-export function deserializeError(serialized: SerializedError): Error {
-   const err = new Error(serialized.message);
-   err.name = serialized.name;
-   if (serialized.stack) err.stack = serialized.stack;
-   if (serialized.malloyProblems) {
-      (err as unknown as { problems: unknown }).problems =
-         serialized.malloyProblems;
-   }
-   if (serialized.isCompilationError) {
-      // ModelCompilationError's ctor expects a MalloyError-shaped
-      // input but only reads `.message` at runtime. Cast through to
-      // satisfy the nominal type without losing data.
-      const wrapped = new ModelCompilationError(
-         err as unknown as ConstructorParameters<
-            typeof ModelCompilationError
-         >[0],
-      );
-      if (serialized.stack) wrapped.stack = serialized.stack;
-      return wrapped;
-   }
-   return err;
-}
+export { deserializeError, serializeError } from "./error_wire";
+import { deserializeError, serializeError } from "./error_wire";
 
 const defaultUrlReader = {
    readURL: async (url: URL): Promise<string> => {

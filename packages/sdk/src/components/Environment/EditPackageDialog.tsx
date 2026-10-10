@@ -2,20 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { Edit } from "@mui/icons-material";
-import { ListItemIcon, ListItemText, MenuItem, Snackbar } from "@mui/material";
+import { ListItemIcon, ListItemText, MenuItem } from "@mui/material";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogContentText from "@mui/material/DialogContentText";
-import DialogTitle from "@mui/material/DialogTitle";
 import TextField from "@mui/material/TextField";
-import { useQueryClient } from "@tanstack/react-query";
 import React, { useState } from "react";
 import { Package } from "../../client";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { parseResourceUri } from "../../utils/formatting";
 import { useServer } from "../ServerProvider";
+import { Stack } from "@mui/material";
+import { AppDialog } from "../AppDialog";
 
 interface EditPackageDialogProps {
    package: Package;
@@ -30,8 +26,6 @@ export default function EditPackageDialog({
 }: EditPackageDialogProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
 
    const handleClickOpen = () => {
       setOpen(true);
@@ -43,8 +37,8 @@ export default function EditPackageDialog({
    };
 
    const { packageName, environmentName } = parseResourceUri(resourceUri);
-   const editPackage = useMutationWithApiError({
-      async mutationFn(variables: { description: string }) {
+   const editPackage = useCrudMutation({
+      mutationFn(variables: { description: string }) {
          return apiClients.packages.updatePackage(
             environmentName,
             packageName,
@@ -54,20 +48,11 @@ export default function EditPackageDialog({
             },
          );
       },
-      onSuccess() {
-         handleClose();
-         setNotificationMessage("Package updated successfully");
-         queryClient.invalidateQueries({
-            queryKey: ["packages", environmentName],
-         });
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Package updated",
+      invalidates: [["packages", environmentName]],
+      closeDialog: handleClose,
+      resource: "package",
+      action: "update",
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -86,25 +71,44 @@ export default function EditPackageDialog({
             <ListItemText>Edit</ListItemText>
          </MenuItem>
 
-         <Dialog open={open} onClose={handleClose}>
-            <DialogTitle>Edit Package</DialogTitle>
-            <DialogContent>
-               <DialogContentText>
-                  Update the details for &quot;{_package.name}&quot;.
-               </DialogContentText>
-               <form onSubmit={handleSubmit} id="package-form">
+         <AppDialog
+            open={open}
+            onClose={handleClose}
+            title="Edit package"
+            description={`What ${_package.name} is, for the people who open it.`}
+            actions={
+               <>
+                  <Button
+                     disabled={editPackage.isPending}
+                     onClick={handleClose}
+                  >
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="package-form"
+                     variant="contained"
+                     loading={editPackage.isPending}
+                  >
+                     Save changes
+                  </Button>
+               </>
+            }
+         >
+            <form onSubmit={handleSubmit} id="package-form">
+               <Stack sx={{ gap: 2 }}>
                   <TextField
                      autoFocus
                      required
-                     margin="dense"
                      id="name"
                      name="name"
-                     label="Package Name"
+                     label="Name"
                      disabled
                      type="text"
                      fullWidth
-                     variant="standard"
+                     size="small"
                      defaultValue={_package.name}
+                     InputLabelProps={{ shrink: true }}
                   />
                   <TextField
                      id="description"
@@ -113,30 +117,14 @@ export default function EditPackageDialog({
                      multiline
                      fullWidth
                      rows={4}
+                     size="small"
                      defaultValue={_package.description}
-                     variant="standard"
+                     InputLabelProps={{ shrink: true }}
                   />
-               </form>
-            </DialogContent>
-            <DialogActions>
-               <Button disabled={editPackage.isPending} onClick={handleClose}>
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="package-form"
-                  loading={editPackage.isPending}
-               >
-                  Save Changes
-               </Button>
-            </DialogActions>
-         </Dialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+               </Stack>
+            </form>
+         </AppDialog>
+         {editPackage.notice}
       </React.Fragment>
    );
 }

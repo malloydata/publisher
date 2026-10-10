@@ -10,12 +10,24 @@
 # before bringing the stack up.
 #
 # REST is on :4000 and MCP is on :4040. See docs/deployment.md for
-# tag-scheme guidance (`:latest`, `:X.Y.Z`, `:next`).
+# tag-scheme guidance (`:latest`, `:X.Y.Z`).
 #
 # The `publisher_data` named volume persists the per-environment
 # package clones and DuckDB extension cache across container
 # restarts, so the first-boot clone of sample packages from GitHub
 # only happens once.
+#
+# The server runs as uid 1000, not root. A new `publisher_data` volume
+# is created writable by it. One an earlier, root-run image created
+# needs a one-time chown through Compose, from this directory:
+#
+#   docker compose run --rm --no-deps --user 0 --entrypoint chown \
+#     publisher -R 1000:1000 /publisher/publisher_data
+#
+# Not `docker run -v publisher_data:...`: Compose names the volume
+# `<project>_publisher_data`, so that would chown a new, empty one.
+# Any other writable volume you add must be prepared for uid 1000 too;
+# packages/server/README.docker.md explains how.
 
 services:
   publisher:
@@ -26,8 +38,20 @@ services:
       - "4000:4000" # REST
       - "4040:4040" # MCP
     volumes:
+      # Read only: the server only needs to read it, so bind it :ro. It must be
+      # readable by uid 1000 (a 0644 file is).
       - ./publisher.config.json:/publisher/publisher.config.json:ro
+      # Written: a new named volume here is seeded from the image, owned by
+      # uid 1000. One created by an image older than 0.9.0 needs the one-time
+      # chown in the comment at the top of this file.
       - publisher_data:/publisher/publisher_data
+      # Written, when a DuckLake storage destination's bucketUrl is a local
+      # path. Same seeding as publisher_data; leave it out otherwise.
+      # - ducklake_data:/publisher/ducklake_data
+      # Read only: a key file for GOOGLE_APPLICATION_CREDENTIALS. A gcloud
+      # application-default credentials file is 0600 and uid 1000 cannot read
+      # it; bind a copy made with `sudo install -o 1000 -g 1000 -m 0400`.
+      # - ./secrets/key.json:/var/secrets/google/key.json:ro
     # Uncomment to override defaults. See packages/server/README.docker.md
     # for the full env-var table.
     # environment:
@@ -50,3 +74,4 @@ services:
 
 volumes:
   publisher_data:
+  # ducklake_data:

@@ -2,21 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { Delete } from "@mui/icons-material";
-import CloseIcon from "@mui/icons-material/Close";
 import Button from "@mui/material/Button";
 import Checkbox from "@mui/material/Checkbox";
-import Dialog from "@mui/material/Dialog";
-import DialogActions from "@mui/material/DialogActions";
-import DialogContent from "@mui/material/DialogContent";
-import DialogTitle from "@mui/material/DialogTitle";
 import FormControlLabel from "@mui/material/FormControlLabel";
-import IconButton from "@mui/material/IconButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
 import MenuItem from "@mui/material/MenuItem";
 import Typography from "@mui/material/Typography";
 import React, { useState } from "react";
 import { Materialization } from "../../client";
+import { AppDialog } from "../AppDialog";
 
 export default function DeleteMaterializationDialog({
    materialization,
@@ -55,55 +50,38 @@ export default function DeleteMaterializationDialog({
             <ListItemText>Delete</ListItemText>
          </MenuItem>
 
-         <Dialog
-            onClose={handleClose}
+         <AppDialog
             open={open}
-            aria-labelledby="delete-materialization-title"
+            onClose={handleClose}
+            title="Delete materialization"
+            actions={
+               <>
+                  <Button onClick={handleClose}>Cancel</Button>
+                  <Button
+                     variant="contained"
+                     color="error"
+                     autoFocus
+                     onClick={() => onDelete(dropTables)}
+                     loading={isMutating}
+                  >
+                     Delete run
+                  </Button>
+               </>
+            }
          >
-            <DialogTitle sx={{ m: 0, p: 2 }} id="delete-materialization-title">
-               Delete Materialization
-            </DialogTitle>
-            <IconButton
-               aria-label="close"
-               onClick={handleClose}
-               sx={(theme) => ({
-                  position: "absolute",
-                  right: 8,
-                  top: 8,
-                  color: theme.palette.grey[500],
-               })}
-            >
-               <CloseIcon />
-            </IconButton>
-            <DialogContent dividers>
-               <Typography gutterBottom>
-                  Are you sure you want to delete this materialization record?
-                  This action cannot be undone.
-               </Typography>
-               <FormControlLabel
-                  control={
-                     <Checkbox
-                        checked={dropTables}
-                        onChange={(event) =>
-                           setDropTables(event.target.checked)
-                        }
-                     />
-                  }
-                  label="Also drop the materialized table(s) this run produced"
-               />
-            </DialogContent>
-            <DialogActions>
-               <Button
-                  loading={isMutating}
-                  variant="contained"
-                  autoFocus
-                  onClick={() => onDelete(dropTables)}
-                  color="error"
-               >
-                  Delete
-               </Button>
-            </DialogActions>
-         </Dialog>
+            <Typography variant="body2">
+               Delete this run&apos;s record? This cannot be undone.
+            </Typography>
+            <FormControlLabel
+               control={
+                  <Checkbox
+                     checked={dropTables}
+                     onChange={(event) => setDropTables(event.target.checked)}
+                  />
+               }
+               label="Also drop the materialized tables this run produced"
+            />
+         </AppDialog>
       </React.Fragment>
    );
 }

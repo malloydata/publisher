@@ -1,0 +1,12 @@
+##! experimental.givens
+## artifact { kind=notebook title="Named runs" }
+import "../models/orders.malloy"
+
+query: q is orders -> kpis
+
+run: q
+
+# bar_chart
+run: q -> { select: order_count }
+
+run: q + { limit: 1 }

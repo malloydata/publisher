@@ -66,8 +66,11 @@ Two rules override the generosity built into the main rubric.
 
 9. **Absence of a number is not evidence of a refusal.** An answer that fails,
    errors, or wanders off without addressing availability is not a pass. The
-   refusal has to be a stated conclusion. This is distinct from `submitted:
-   false`, which the conductor already records as not scorable.
+   refusal has to be a stated conclusion. `submitted: false` does not excuse it
+   and does not withhold a verdict: an attempt that wrote prose and ran no query
+   is judged like any other, and against a golden holding a value, prose
+   containing none of it is `no_match` however well it reasons. Only an attempt
+   with neither prose nor a query is unscored, as `not_submitted`.
 10. **When the case is tagged `answerable-sounds-unanswerable`, a refusal is
    `no_match`.** Score it against the golden normally. Rule 2's "benign extra
    context never makes a containing answer `no_match`" does not apply to an

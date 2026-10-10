@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { CompileController } from "../../controller/compile.controller";
 import { type ErrorDetails } from "../error_messages";
 import { buildMalloyUri, classifyToolError } from "../handler_utils";
+import {
+   type QuerySlotHandle,
+   tryAcquireQuerySlot,
+} from "../../query_concurrency";
 import { jsonResource, jsonToolError } from "../tool_response";
 
 // Zod shape for compile_model. environmentName/packageName mirror the other
@@ -16,14 +20,10 @@ import { jsonResource, jsonToolError } from "../tool_response";
 const compileShape = {
    environmentName: z
       .string()
-      .describe(
-         "Environment name. Call get_context with no arguments to list the available environments.",
-      ),
+      .describe("Environment name, as list_packages returns it."),
    packageName: z
       .string()
-      .describe(
-         "Package containing the model. Call get_context with just environmentName to list its packages.",
-      ),
+      .describe("Package containing the model, as list_packages returns it."),
    modelPath: z
       .string()
       .describe(
@@ -39,7 +39,7 @@ const compileShape = {
       .enum(["append", "file", "package"])
       .optional()
       .describe(
-         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": run reload\'s worker compiler over all .malloy/.malloynb files without serving the result; an optional source replaces modelPath.',
+         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": dry-run a reload over all .malloy/.malloynb files without serving the result, including its render-tag and dashboard checks; an optional source replaces modelPath.',
       ),
    includeSql: z
       .boolean()
@@ -51,19 +51,19 @@ const compileShape = {
       .record(z.unknown())
       .optional()
       .describe(
-         "Given values for the model's given: block. Also required to satisfy any #(authorize) gate on the target model, whether or not includeSql is set.",
+         "Given values for the model's given: block. Also required to satisfy any authorize gate on the target model, whether or not includeSql is set.",
       ),
 };
 
 const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use this while authoring instead of a throwaway execute_query.
 
 ## Scopes (the scope parameter)
-- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file.
+- "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file (a ## artifact document reads only your text, and no document is returned). Refused here, with a 400: import, connection.table(...), connection.sql(...), raw-SQL functions, given: declarations (reading the model's givens as $NAME is fine), ##! flags, and text that does not stand alone as top-level Malloy — a bare view:/dimension:/measure:, or anything parsing only as a continuation of the model's last statement. A ## artifact document also refuses # image, # link and @env.; plain text keeps them. Wrap a view body in a top-level query:, a field in a throwaway source: check is <source> extend { … }; use "file" or "package" for a model that declares data roots.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
-- "package": run reload's worker compiler over all .malloy/.malloynb files without changing the served package. Optional source replaces modelPath so importers see the edit. Diagnostics may name files hidden from discovery; no rows or SQL are returned, and #(authorize) still gates caller text. A missing exact path is warned and treated as a new file. Save and call reload_package to serve a clean edit.
+- "package": dry-run a reload of every .malloy/.malloynb file without serving the result, with its render-tag and dashboard checks (no position) but not its other warnings. A source replaces modelPath so importers see the edit. Diagnostics may name hidden files; no rows or SQL are returned, and authorize gates still apply to caller text. An unmatched path is warned and treated as new. Save, then reload_package to serve it.
 
 ## Parameters
-- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. includeSql: append/file only. givens: model givens and #(authorize) values. Caller source may not declare #(authorize).
+- environmentName, packageName, modelPath: required. source: required at append/file, optional at package. Caller source may not declare an access-control gate outside prose — neither #(authorize) nor #(access_filter).
 
 ## Response
 { status: "success"|"error", diagnostics: [{ severity, message, code, model, line, character, endLine, endCharacter, replacement }], sql? }. Positions are 0-based; model is the package-relative file the diagnostic points at (which can be pre-existing content, not your source). status is "error" only when an error-severity diagnostic exists; errors are also stated in a plain text block.`;
@@ -158,7 +158,15 @@ export function registerCompileTool(
             "compile",
          );
 
+         // Compile resolves source schemas against the connection, so it draws on
+         // the same warehouse work the query cap exists to bound. Gated here for
+         // the same reason the HTTP compile route is: leaving one surface ungated
+         // relocates the bypass rather than closing it. A refusal throws
+         // ServiceUnavailableError, which the catch below turns into the standard
+         // MCP error payload.
+         let querySlot: QuerySlotHandle | null = null;
          try {
+            querySlot = tryAcquireQuerySlot("mcp:compile");
             const result = await compileController.compile(
                environmentName,
                packageName,
@@ -207,10 +215,12 @@ export function registerCompileTool(
             });
          } catch (error) {
             // Unknown environment/package, a notebook (.malloynb) rejected up
-            // front, an authorize denial, or a system error: surface as a clean
-            // isError payload rather than a transport fault. A missing modelPath
-            // does NOT error here; compileSource compiles the source against an
-            // empty namespace, so a typo in modelPath yields a normal result.
+            // front, an authorize denial, a model that could not be loaded to
+            // check the caller's text against, or a system error: surface as a
+            // clean isError payload rather than a transport fault. A typo in
+            // modelPath reaches here at the default scope, because the
+            // restricted-construct gate needs the named model to classify
+            // against and refuses when it cannot load one.
             logger.warn("[MCP Tool compile] compile failed", {
                environmentName,
                packageName,
@@ -223,6 +233,8 @@ export function registerCompileTool(
                error,
             );
             return jsonToolError(uri, errorDetails);
+         } finally {
+            querySlot?.release();
          }
       },
    );

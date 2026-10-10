@@ -44,18 +44,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y iptables
 
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.ref }}
+
+      # `context: git` takes `sha` and `ref` from the checkout above rather than from
+      # the event, so the image's revision label names the commit that is built. On a
+      # release that is `inputs.ref`, not the commit the release was dispatched on.
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY_IMAGE }}
+          context: git
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ inputs.ref || github.ref }}
 
       - uses: docker/login-action@v3
         name: Login to Docker Hub
@@ -74,16 +78,41 @@ jobs:
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
 
+      # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds daily instead of being served from the build cache forever.
+      # Daily rather than weekly so a Debian fix published mid-week is picked up by
+      # the next build instead of waiting for the week to roll over.
+      - name: Date for the apt refresh
+        id: day
+        run: echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: Build and push tag
         id: build
         uses: docker/build-push-action@v6
         with:
+          # Build from the checkout. Without `context`, the action builds from a git
+          # context at the event's commit and ignores the checkout, so a release built
+          # the commit it was dispatched on rather than `inputs.ref`, and the image's
+          # SBOM and provenance described that commit instead of the tagged one.
+          context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
+            APT_REFRESH=${{ steps.day.outputs.value }}
           tags: ${{ env.REGISTRY_IMAGE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+          # Attach an SPDX SBOM and SLSA provenance to each platform image as
+          # BuildKit attestations. They are stored as attestation manifests next to
+          # the image in the per-platform index, and the merge job's
+          # `imagetools create` carries them into the published tag. Provenance is
+          # set explicitly because the action's default depends on repository
+          # visibility (max for public, min for private). SBOM has no default and is
+          # off unless requested. Max provenance publishes every build arg, so a
+          # secret must reach this build through `secrets:`, never `build-args`.
+          sbom: true
+          provenance: mode=max
           cache-from: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ env.PLATFORM_PAIR }}
           cache-to: type=registry,ref=${{ env.REGISTRY_IMAGE }}:buildcache-${{ env.PLATFORM_PAIR }},mode=max
 
@@ -105,6 +134,12 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build
+    # id-token: write lets cosign request a GitHub OIDC token, which Fulcio exchanges
+    # for a short-lived certificate naming this workflow. release.yml's
+    # publish-docker job must grant the same, or this job fails to start.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -178,7 +213,58 @@ jobs:
           fi
 
           docker buildx imagetools create $TAGS \
+            --metadata-file "${{ runner.temp }}/imagetools-metadata.json" \
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+
+      # The digest of the manifest list just pushed, read from what `imagetools
+      # create` wrote rather than by resolving a tag, which could move between the
+      # push and the signature.
+      - name: Resolve pushed digest
+        id: pushed
+        run: |
+          set -euo pipefail
+          digest=$(jq -r '."containerimage.descriptor".digest // empty' "${{ runner.temp }}/imagetools-metadata.json")
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=No manifest list digest::imagetools create wrote no digest to its metadata file; got '${digest}'"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        # Pinned to a commit: cosign-installer publishes no floating major tag
+        # (there is no `v4`), and this step installs the tool that signs the
+        # release, so it is pinned exactly rather than to a moving ref.
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      # Keyless signing: the certificate names this workflow file and the ref it
+      # ran from, and the signature is recorded in the public Rekor log. Signing the
+      # manifest list covers the platform images and their SBOM and provenance
+      # attestation manifests too, since the list references each of them by digest.
+      # A failure here leaves the tags pushed but unsigned and fails the release
+      # before gh-release; re-running the failed jobs re-pushes the same list and
+      # signs it.
+      - name: Sign image
+        env:
+          IMAGE: ${{ env.REGISTRY_IMAGE }}@${{ steps.pushed.outputs.digest }}
+        run: cosign sign --yes "$IMAGE"
+
+      # Verify against the workflow identity a consumer checks, so a signature that
+      # would not verify fails the release instead of shipping. Fulcio puts the
+      # reusable workflow (job_workflow_ref) in the certificate, so the identity
+      # names this file, not release.yml. The ref is matched loosely here and
+      # printed, so the exact identity is visible in the run.
+      - name: Verify signature
+        env:
+          IMAGE: ${{ env.REGISTRY_IMAGE }}@${{ steps.pushed.outputs.digest }}
+        run: |
+          set -euo pipefail
+          identity=$(cosign verify "$IMAGE" \
+            --certificate-identity-regexp "^https://github\.com/${GITHUB_REPOSITORY}/\.github/workflows/docker-image\.yml@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            | jq -r '.[0].optional.Subject')
+          echo "::notice title=Image signed::${IMAGE} signed by ${identity}"
 
       - name: Inspect image
         run: |

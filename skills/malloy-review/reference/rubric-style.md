@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 # Rubric: Style & Naming
 
 **Dimension:** `style`
-**Rules:** 3
+**Rules:** 4
 
 Style findings are almost always `nit` severity, aggregate them in the output rather than listing per-site.
 
@@ -46,6 +46,15 @@ For every rule, the linked instruction-skill section is the canonical source for
 - **Fix:** match the prevailing style. Switching to `with` requires the target to declare `primary_key:` (also S-02's recommendation).
 - **Never promote above `nit`.** Both forms produce equivalent SQL, see the C-07 entry in `rubric-correctness.md`'s "Rules we dropped" section. The actual silent-correctness hazard (declared PK has duplicates) is `rubric-correctness.md` § C-12, not this rule.
 - **See:** `skill:malloy-model` § Join Syntax
+
+---
+
+## Y-04: Lay a file out one way, and keep an edit to the lines it changes
+
+- **Severity:** nit (non-blocking) · **Category:** style · LLM-judgment
+- **Detection:** in a new file, tab indentation or indentation that is not two spaces (unless the project's other files use that layout), trailing whitespace, or top-level declarations not separated by one blank line (consecutive `import` lines are one group, not a fault). In a diff, lines reindented or rewrapped that the change did not need: they bury the real change.
+- **Fix:** in a new file, the project's existing layout, or two-space when it has none; in an edited file, keep the file's own layout (a tab-indented file stays tab-indented) and revert reflowed lines the edit did not need. Don't flag a line width unless the project states one.
+- **See:** `skill:malloy-model` § Key Rules
 
 ---
 

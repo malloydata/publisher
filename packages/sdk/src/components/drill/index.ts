@@ -18,6 +18,7 @@ export {
    type DrillField,
    type DrillIntent,
    type DrillNavigation,
+   type DrillRowsRequest,
    type DrillTagReader,
 } from "./resolveDrill";
 export {
@@ -26,3 +27,8 @@ export {
    type UseDrillOptions,
    type UseDrillResult,
 } from "./useDrill";
+export {
+   useDrillSelf,
+   type UseDrillSelfOptions,
+   type UseDrillSelfResult,
+} from "./useDrillSelf";

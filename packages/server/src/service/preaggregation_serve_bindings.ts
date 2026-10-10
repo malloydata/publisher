@@ -107,9 +107,10 @@ export function rollupServeRefinements(plan: RollupPlan): SourceRefinement[] {
  * A conflict DROPS that base's rollups rather than failing anything: its queries
  * serve from the base, which is always correct because the tier is a performance
  * tier. Dropping is also the only safe answer — emitting two `source: orders is …`
- * declarations would fail the whole package's serve shape, and `compileServeShape`
- * treats base-only as its guaranteed floor, so a duplicate name breaches a floor
- * the escalation ladder cannot recover from.
+ * declarations would fail the whole package's serve shape, and the escalation
+ * ladder cannot recover from a duplicate name: thinning refinements does not
+ * remove a declaration, and the floor withholds only bindings whose own shape
+ * will not compile, which a name collision is not.
  */
 export function rollupServeBindings(
    bindings: ServeBinding[],

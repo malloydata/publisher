@@ -12,12 +12,24 @@ import {
 import {
    BadRequestError,
    ConnectionError,
+   ConnectionNotFoundError,
+   databaseAccessFailure,
+   InvalidArgumentError,
+   PackageNotFoundError,
    PayloadTooLargeError,
+   TableNotFoundError,
+   UnconfiguredConnectionError,
 } from "../errors";
 import { recordQueryCapExceeded } from "../query_cap_metrics";
 import { logger } from "../logger";
+import { assertSafePackageName } from "../path_safety";
+import { redactConnectionSecretShapes } from "../pg_helpers";
 import { runWithQueryTimeout } from "../query_timeout";
 import { testConnectionConfig } from "../service/connection";
+import {
+   toPublicConnection,
+   toPublicConnections,
+} from "../service/connection_public_view";
 import { validateDuckdbApiSurface } from "../service/connection_config";
 import { ConnectionService } from "../service/connection_service";
 import {
@@ -142,6 +154,122 @@ function validateAdminAuthoredConnection(
    }
 }
 
+/**
+ * BigQuery's driver signals failure by RETURNING `error.message` instead of
+ * throwing, discarding the structured `code: 404` the Google client gave it
+ * (`@malloydata/db-bigquery` fetchTableSchema). That text is the only surviving
+ * signal, so a missing table is told apart from a broken connection by matching
+ * BigQuery's own API wording.
+ *
+ * Deliberately not generalized to other dialects. Postgres reports a missing
+ * table as the generic "Unable to read schema.", indistinguishable from any
+ * other failure, and Snowflake's DESCRIBE TABLE answers "does not exist or not
+ * authorized", conflating absence with denial by design. Guessing on either
+ * would be worse than leaving them 502.
+ */
+const BIGQUERY_NOT_FOUND = /^Not found: (Table|Dataset)\b/;
+
+/**
+ * A path that cannot name a table in this dialect at all -- BigQuery needs
+ * `dataset.table`, so a bare `sales` is rejected before any lookup happens. The
+ * caller's argument is malformed, which is a 400, not a 404: the answer is "that
+ * is not a table path", not "no such table".
+ *
+ * Reached constantly while a path is being typed, since every prefix before the
+ * first dot has one segment.
+ */
+const BIGQUERY_IMPROPER_PATH = /^Improper table path\b/;
+
+/**
+ * DuckDB -- the sandbox, and the Azure and DuckLake connections built on it --
+ * rejects rather than resolving empty, so a missing table arrives as a thrown
+ * catalog error. These two cover the three shapes it produces for an absent
+ * object: a missing table, a missing schema behind a table lookup, and a missing
+ * catalog on a three-part path.
+ *
+ * Deliberately not `Catalog Error: .* does not exist`. DuckDB words a missing
+ * EXTENSION the same way -- "Catalog Error: Table Function with name read_csv
+ * does not exist!" -- and that is a misconfigured deployment, not an absent
+ * table. Answering it 404 would hide a broken Azure or DuckLake connection
+ * behind the one status nobody investigates.
+ */
+const DUCKDB_TABLE_NOT_FOUND =
+   /^Catalog Error: Table with name .+ does not exist/;
+const DUCKDB_CATALOG_NOT_FOUND = /^Binder Error: Catalog .+ does not exist/;
+
+/**
+ * Deliberately no pattern for `IO Error: No files found that match the
+ * pattern`. A file-backed table is DuckLake or an Azure blob, where an absent
+ * parquet means corruption or a misconfigured mount rather than a name the
+ * caller mistyped -- the same reason the extension errors above stay 502.
+ */
+
+function driverErrorToPublisherError(message: string): Error {
+   if (
+      BIGQUERY_NOT_FOUND.test(message) ||
+      DUCKDB_TABLE_NOT_FOUND.test(message) ||
+      DUCKDB_CATALOG_NOT_FOUND.test(message)
+   ) {
+      return new TableNotFoundError(message);
+   }
+   if (BIGQUERY_IMPROPER_PATH.test(message)) {
+      return new InvalidArgumentError(message);
+   }
+   return new ConnectionError(message);
+}
+
+/**
+ * Shared by the two schema-introspection catches. Both take a driver failure
+ * that may be a thrown Error, a thrown string, or an already-classified error,
+ * and answer with the narrowest error the message supports.
+ */
+function classifyDriverFailure(error: unknown): Error {
+   if (
+      error instanceof TableNotFoundError ||
+      error instanceof InvalidArgumentError
+   ) {
+      return error;
+   }
+   const message =
+      error instanceof Error
+         ? error.message
+         : typeof error === "string"
+           ? error
+           : JSON.stringify(error);
+   return databaseAccessFailure(error) ?? driverErrorToPublisherError(message);
+}
+
+/**
+ * A failure running SQL the caller sent: a 502 with the driver's text logged
+ * and generalized, unless the database was unreachable (502 with
+ * `reason: CONNECTION_FAILED`) or rejected the credentials (424 with
+ * `reason: CONNECTION_AUTH_FAILED`).
+ */
+function sqlRunFailure(error: unknown): Error {
+   // Already classified (an exhausted pool), with a message written for the
+   // caller.
+   if (error instanceof ConnectionError) return error;
+   return (
+      databaseAccessFailure(error) ??
+      new ConnectionError((error as Error).message)
+   );
+}
+
+/**
+ * Schema listing lets most driver failures through as they are (a 500), but
+ * an unreachable database or rejected credentials answer the same as on every
+ * other route that reaches the database.
+ */
+async function withDatabaseAccessClassified<T>(
+   list: () => Promise<T>,
+): Promise<T> {
+   try {
+      return await list();
+   } catch (error) {
+      throw databaseAccessFailure(error) ?? error;
+   }
+}
+
 export class ConnectionController {
    private environmentStore: EnvironmentStore;
    private connectionService: ConnectionService;
@@ -205,7 +333,37 @@ export class ConnectionController {
       }
    }
 
+   /**
+    * The Malloy connection a route runs against. Failures are classified here,
+    * before any route's own catch, because resolving a connection can already
+    * reach the database (a Postgres SSH tunnel opens on first lookup).
+    *
+    * A name the environment does not configure is a 404, as on the listing
+    * routes: the caller typed it. The 424 `CONNECTION_NOT_FOUND` is for a
+    * model naming a deleted connection, which the caller did not choose.
+    */
    private async getMalloyConnection(
+      environmentName: string,
+      connectionName: string,
+      packageName?: string,
+   ): Promise<Connection> {
+      try {
+         return await this.lookupMalloyConnection(
+            environmentName,
+            connectionName,
+            packageName,
+         );
+      } catch (error) {
+         if (error instanceof UnconfiguredConnectionError) {
+            throw new ConnectionNotFoundError(
+               `Connection ${connectionName} not found`,
+            );
+         }
+         throw databaseAccessFailure(error) ?? error;
+      }
+   }
+
+   private async lookupMalloyConnection(
       environmentName: string,
       connectionName: string,
       packageName?: string,
@@ -221,25 +379,31 @@ export class ConnectionController {
       // and the caller must say which package to use.
       if (connectionName === "duckdb") {
          const packages = await environment.listPackages();
-         if (packages.length === 0) {
-            // Fall through to environment; this will surface the standard
-            // "connection not found" rather than silently inventing one.
-            return await environment.getMalloyConnection(connectionName);
-         }
          if (packageName) {
+            // A package this server does not hold is a missing resource, so
+            // 404 -- including when it holds no packages at all. Routers treat
+            // a 404 as "this worker no longer serves that package" and
+            // re-resolve; a 400 leaves them routing to the same stale worker.
             const known = packages.some((p) => p.name === packageName);
             if (!known) {
-               throw new BadRequestError(
+               throw new PackageNotFoundError(
                   `Package "${packageName}" not found in environment "${environmentName}"`,
                );
             }
             const pkg = await environment.getPackage(packageName);
             return await pkg.getMalloyConnection(connectionName);
          }
+         if (packages.length === 0) {
+            // Fall through to environment; this will surface the standard
+            // "connection not found" rather than silently inventing one.
+            return await environment.getMalloyConnection(connectionName);
+         }
          if (packages.length === 1) {
             const onlyPackage = packages[0].name;
             if (!onlyPackage) {
-               throw new ConnectionError("Package name is undefined");
+               throw new ConnectionError("Package name is undefined", {
+                  callerSafe: true,
+               });
             }
             const pkg = await environment.getPackage(onlyPackage);
             return await pkg.getMalloyConnection(connectionName);
@@ -277,11 +441,20 @@ export class ConnectionController {
             }
          ).fetchTableSchema(tableKey, tablePath);
          if (!source) {
-            throw new ConnectionError(`Table ${tablePath} not found`);
+            throw new TableNotFoundError(`Table ${tablePath} not found`);
          }
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof source === "string") {
-            throw new ConnectionError(source);
+            // Malloy's Postgres and Databricks drivers return a failed lookup
+            // as `Error fetching schema for <path>: <driver message>`, which
+            // drops the error's code. The driver message is still matched
+            // like any other code-less one, so a dead database answers 502
+            // CONNECTION_FAILED here as on every other route.
+            const prefix = `Error fetching schema for ${tablePath}: `;
+            const accessFailure = source.startsWith(prefix)
+               ? databaseAccessFailure(new Error(source.slice(prefix.length)))
+               : undefined;
+            throw accessFailure ?? driverErrorToPublisherError(source);
          }
 
          return {
@@ -293,18 +466,32 @@ export class ConnectionController {
             })),
          };
       } catch (error) {
-         const errorMessage =
-            error instanceof Error
-               ? error.message
-               : typeof error === "string"
-                 ? error
-                 : JSON.stringify(error);
+         // Where most not-founds actually land. BigQuery returns its message, but
+         // every other driver -- DuckDB included -- rejects, so the falsy checks
+         // above never see them and the blanket rewrap this replaces turned them
+         // all into 502s.
+         const classified = classifyDriverFailure(error);
+         if (
+            classified instanceof TableNotFoundError ||
+            classified instanceof InvalidArgumentError
+         ) {
+            // A caller's bad reference, not a fault: warn, so a mistyped path
+            // cannot fill the error log while it is being typed.
+            logger.warn("table not resolvable", {
+               tableKey,
+               tablePath,
+               reason: classified.constructor.name,
+            });
+            throw classified;
+         }
+         // A connection problem is logged once, at warn, where it is mapped.
+         if (databaseAccessFailure(classified)) throw classified;
          logger.error("fetchTableSchema error", {
             error,
             tableKey,
             tablePath,
          });
-         throw new ConnectionError(errorMessage);
+         throw classified;
       }
    }
 
@@ -322,7 +509,7 @@ export class ConnectionController {
          environmentName,
          false,
       );
-      return environment.getApiConnection(connectionName);
+      return toPublicConnection(environment.getApiConnection(connectionName));
    }
 
    public async listConnections(
@@ -332,7 +519,7 @@ export class ConnectionController {
          environmentName,
          false,
       );
-      return environment.listApiConnections();
+      return toPublicConnections(environment.listApiConnections());
    }
 
    // Lists schemas (namespaces) available in a connection.
@@ -357,7 +544,9 @@ export class ConnectionController {
          packageName,
       );
 
-      return getSchemasForConnection(connection, malloyConnection);
+      return withDatabaseAccessClassified(() =>
+         getSchemasForConnection(connection, malloyConnection),
+      );
    }
 
    // Lists tables available in a schema. For postgres the schema is usually "public".
@@ -383,11 +572,13 @@ export class ConnectionController {
          packageName,
       );
 
-      return listTablesForSchema(
-         connection,
-         schemaName,
-         malloyConnection,
-         tableNames,
+      return withDatabaseAccessClassified(() =>
+         listTablesForSchema(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         ),
       );
    }
 
@@ -417,14 +608,18 @@ export class ConnectionController {
 
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof schema === "string") {
-            throw new ConnectionError(schema);
+            throw driverErrorToPublisherError(schema);
          }
 
          return {
             source: JSON.stringify(schema),
          };
       } catch (error) {
-         throw new ConnectionError((error as Error).message);
+         // Same classification as fetchTable: a driver that rejects has to reach
+         // it too, or this route keeps answering 502 for a reference that is
+         // merely absent. `(error as Error).message` also dropped the message
+         // entirely for a thrown string.
+         throw classifyDriverFailure(error);
       }
    }
 
@@ -674,13 +869,18 @@ export class ConnectionController {
                   { maxRows, maxBytes },
                );
             } catch (error) {
-               if (error instanceof PayloadTooLargeError) throw error;
+               // Already classified, with a message written for the caller.
+               if (
+                  error instanceof PayloadTooLargeError ||
+                  error instanceof ConnectionError
+               )
+                  throw error;
                // If runWithQueryTimeout is about to wrap this in a
                // QueryTimeoutError (because the timer fired), the
                // ConnectionError we'd throw here is discarded — the
                // timeout verdict wins. So this branch only matters
                // for genuine driver failures.
-               throw new ConnectionError((error as Error).message);
+               throw sqlRunFailure(error);
             }
          }, getQueryTimeoutMs());
          return { data: JSON.stringify(streamed), queryCorrelationId };
@@ -697,7 +897,7 @@ export class ConnectionController {
                optionsWithSignal,
             );
          } catch (error) {
-            throw new ConnectionError((error as Error).message);
+            throw sqlRunFailure(error);
          }
       }, getQueryTimeoutMs());
 
@@ -787,7 +987,7 @@ export class ConnectionController {
             // will convert this to QueryTimeoutError on its own
             // — don't bury the reason in ConnectionError.
             if (signal.aborted) throw error;
-            throw new ConnectionError((error as Error).message);
+            throw sqlRunFailure(error);
          }
       }, getQueryTimeoutMs());
    }
@@ -817,12 +1017,42 @@ export class ConnectionController {
          );
       }
 
+      // duckdb/ducklake derive a `<name>.duckdb` filename from the name, so an
+      // unsafe name is a bad request (400), consistent with the checks above,
+      // rather than a test that runs and "fails". Only these two types touch
+      // the filesystem; other types accept any name. Empty names fall through
+      // to the service, which reports the missing-name test failure.
+      if (
+         (connectionConfig.type === "duckdb" ||
+            connectionConfig.type === "ducklake") &&
+         connectionConfig.name
+      ) {
+         assertSafePackageName(connectionConfig.name);
+      }
+
       try {
          return await testConnectionConfig(connectionConfig);
       } catch (error) {
+         // The driver's text is the payload here, not a leak: the caller just
+         // supplied this connection config and is being told why it does not
+         // work, so "password authentication failed" or "no such host" is the
+         // answer to their own question about their own credentials. Unlike the
+         // 500/502 bodies the mapper generalizes, nothing in scope belongs to
+         // another tenant or to the server -- the host, port and user are all
+         // values that arrived in this request.
          return {
             status: "failed",
-            errorMessage: `Connection test failed: ${(error as Error).message}`,
+            // Defence in depth, NOT the redaction point. testConnectionConfig
+            // resolves every failure into a ConnectionStatus rather than
+            // throwing, so this catch only fires if it throws before reaching
+            // its own catch-all -- which is also why it cannot be tested
+            // without a module mock. The redaction that matters is in
+            // service/connection.ts, on the object this path returns.
+            errorMessage: redactConnectionSecretShapes(
+               `Connection test failed: ${
+                  error instanceof Error ? error.message : String(error)
+               }`,
+            ),
          };
       }
    }

@@ -384,6 +384,65 @@ const enforcedVectors: EnforcedVector[] = [
       expectedRows: 2,
    },
    {
+      // A comment between `is` and the base. The compiler reads around it and
+      // still derives from products, so a scan that stops at the comment
+      // resolves no protected source and injects no filter.
+      label: "line comment between is and the base",
+      modelPath: "products.malloy",
+      query: "source: a is -- c\n products extend {}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // Block form of the same.
+      label: "block comment between is and the base",
+      modelPath: "products.malloy",
+      query: "source: a is /* c */ products extend {}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // A declaration forged inside a string literal. The alias map is
+      // last-declaration-wins, so read as raw text this REPLACES the real
+      // `a is products` edge and points the walk at a name with no filters.
+      label: "forged derivation inside a string literal",
+      modelPath: "products.malloy",
+      query:
+         "source: a is products extend {\n" +
+         "  dimension: note is 'source: a is unprotected'\n" +
+         "}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // A forged `run:` inside a literal re-points run-target extraction at a
+      // name that is not the query's actual target.
+      label: "forged run: target inside a string literal",
+      modelPath: "products.malloy",
+      query:
+         "source: a is products extend {\n" +
+         "  dimension: note is 'run: zzz'\n" +
+         "}\nrun: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
+      // The same, hidden in a comment ahead of the real `run:`.
+      label: "forged run: target inside a comment",
+      modelPath: "products.malloy",
+      query:
+         "-- run: zzz\n" +
+         "source: a is products extend {}\n" +
+         "run: a -> { group_by: org_id, product_name; aggregate: n is count() }",
+      missing: "Organization",
+      validParams: { Organization: "acme" },
+      expectedRows: 2,
+   },
+   {
       // orders alias — confirms enforcement on a multi-required-filter source.
       label: "orders alias (source a is orders)",
       modelPath: "orders.malloy",
@@ -397,6 +456,15 @@ const enforcedVectors: EnforcedVector[] = [
       label: "orders extend",
       modelPath: "orders.malloy",
       query: "source: e is orders extend { measure: rc is count() }\nrun: e -> { group_by: org_id, category; aggregate: rc }",
+      missing: "Organization",
+      validParams: { Organization: "acme", Category: "widgets" },
+      expectedRows: 1,
+   },
+   {
+      // Case-insensitive `run:` still resolves the protected source.
+      label: "uppercase RUN: orders",
+      modelPath: "orders.malloy",
+      query: "RUN: orders -> { group_by: org_id, category; aggregate: n is count() }",
       missing: "Organization",
       validParams: { Organization: "acme", Category: "widgets" },
       expectedRows: 1,
@@ -535,5 +603,42 @@ describe("regressions", () => {
          true,
       );
       expect(asRows(compactResult).length).toBe(3);
+   });
+});
+
+// Malloy keywords are case-insensitive, so `RUN:` compiles like `run:`.
+describe("a keyword spelled in another case does not skip enforcement", () => {
+   for (const runKw of ["RUN:", "Run:"]) {
+      it(`rejects \`${runKw}\` with no filter params`, async () => {
+         const model = await makeModel("products.malloy");
+         await expectFilterRejected(
+            model,
+            `${runKw} products -> { group_by: org_id, product_name }`,
+            undefined,
+            "Organization",
+         );
+      });
+
+      it(`scopes \`${runKw}\` to the supplied Organization`, async () => {
+         const model = await makeModel("products.malloy");
+         const rows = await runAdHoc(
+            model,
+            `${runKw} products -> { group_by: org_id, product_name }`,
+            { Organization: "acme" },
+         );
+         expectAcmeScoped(rows, 2);
+      });
+   }
+
+   it("enforces through an upper-case `SOURCE: x IS products EXTEND {}` alias", async () => {
+      const model = await makeModel("products.malloy");
+      const query =
+         "SOURCE: mine IS products EXTEND {}\n" +
+         "RUN: mine -> { group_by: org_id, product_name }";
+      await expectFilterRejected(model, query, undefined, "Organization");
+      expectAcmeScoped(
+         await runAdHoc(model, query, { Organization: "acme" }),
+         2,
+      );
    });
 });

@@ -34,7 +34,8 @@ do. Every step here was run against a real server; the outputs shown are real.
 - A **Postgres** database with one table (`orders`) — your "warehouse" source.
   The build pushes the compiled query to the source warehouse via a native
   passthrough; supported source types are `postgres`, `bigquery`, and
-  `snowflake`. Postgres is the easiest to run locally.
+  `snowflake`. Postgres is the easiest to run locally. A Postgres connection
+  that carries a `proxy` (SSH tunnel) is built through that tunnel, as it is queried.
 - A **DuckLake** storage destination — a catalog (a Postgres database)
   plus a local data directory — that you create and materialize into. (A cloud
   deployment would
@@ -492,6 +493,16 @@ materialized** (the join runs in DuckDB over the two stored tables) and its
 **views** built from what's carried, so a query traversing such a join or
 invoking such a view by name is served from storage too.
 
+And it re-declares the source's own **`where:` clauses**. Those are not an
+optimization like the rest: a source's filter is part of what the source means,
+and the build does not apply it — the build SQL is the persisted relation alone,
+and an extend-block `where:` refines that relation when it is read. The
+colocated tier gets this for free, because substitution swaps only the `FROM` and
+leaves the reading query's own `WHERE` in place; the storage tier re-declares the
+source, so it has to carry the filter or answer with rows the source excludes.
+Filters accumulate through `extend`, so a source extending a filtered source
+carries both.
+
 What still **falls back to serving live** (no error; the right answer, computed
 in the warehouse): a query that reaches something the serve shape can't
 reproduce — a join or view that reaches a **non-materialized source**, a
@@ -502,7 +513,23 @@ or a query against a source that isn't materialized. (When a view reaches
 something not carried, only that view falls back; the source's other queries
 still serve from storage.) Note this is per-query, not per-source: a source with
 a nested field still serves its scalar columns from storage, and only the queries
-touching the nested field recompute. You'll see:
+touching the nested field recompute.
+
+A **filter** is the one exception to that per-query rule, deliberately. If a
+source's `where:` cannot be reproduced on the shape — one reaching through a join
+whose target is not materialized, or one over a column the source hides with
+`except:` — that **source** serves live, rather than serving from storage without
+its filter. Serving fewer queries from the tier is a cost; serving the wrong rows
+is not a trade worth making. Normally only that source is affected: its siblings
+keep the tier, and keep it at full strength rather than falling back to bare
+stored columns. Two cases still cost the whole model its tier — when no source in
+it can be served, and when each compiles alone so the failure is in their
+combination rather than in any one of them (a duplicate source name). Both serve
+live, so the rows stay right either way. For the same reason a filter is never dropped when the shape sheds
+its riskier refinements: a source whose view cannot be reproduced loses the view
+and keeps the filter.
+
+You'll see:
 
 ```
 debug: storage serve-shape ineligible for this query; serving live { modelPath: "orders.malloy", ... }
@@ -592,25 +619,56 @@ work and makes the downstream **consistent by construction**: it is a pure
 function of the parent's stored rows, so a chain built in one package run cannot
 drift between levels.
 
-If the downstream can't be built that way — it reaches a field defined on the
-parent that isn't a stored column, joins a live (non-materialized) source in the
-same query, or its upstream lives in a _different_ destination — Publisher falls
-back to **recomputing the upstream from raw** (inlining it into the downstream's
-build query). That still produces a correct table, but two independently-timed
-builds can then drift; rebuild the whole package together (`forceRefresh`) to
-keep them aligned. Under `strictUpstreams` (orchestrated builds) the fallback is
-refused rather than silently recomputing — the build fails loudly instead. The
+The downstream need not name the upstream directly. Non-persisted sources
+between them — a `select: *` wrapper, an `extend` that adds a dimension, a query
+over the upstream — are carried into the build, in dependency order and under
+the `##!` flags of the files that declare them, so the downstream still reads
+the upstream's stored table through them.
+
+If the downstream can't be built that way — it reads the warehouse through a
+source between them (one that joins a live, non-materialized table), or it
+reaches a field defined on the parent that isn't a stored column — Publisher
+falls back to **recomputing the upstream from raw** (inlining it into the
+downstream's build query). That still produces a correct table, but two
+independently-timed builds can then drift; rebuild the whole package together
+(`forceRefresh`) to keep them aligned. Under `strictUpstreams` (orchestrated
+builds) only the first kind is recomputed, because no build over the stored
+tables exists for a source that reaches the warehouse; everything else strict
+refuses, since recomputing it would rebuild a table the orchestrator meant to
+pin — an upstream the build neither materialized nor was handed by reference,
+one whose table lives in a _different_ destination, or a shape over stored
+upstreams the build could not carry. Each entry says which happened: `upstreamReuse` is `reused` when
+every persisted upstream was read from its table and `recomputed` when one was
+inlined, with `upstreamRecomputeReason` naming it. The
 `publisher_storage_chained_build_total` counter (labeled `parent_reuse` /
-`inline_fallback` / `strict_refused`) reports which path each chained build took.
+`inline_fallback` / `strict_shape_fallback` / `strict_refused`) reports which
+path each chained build took.
 
 ### Eligibility refusals (refused at build time)
 
 Some sources can't be safely materialized into a shared store, and Publisher
-refuses them at build time rather than producing a subtly wrong table. In the
-**auto-run** flow shown here the refusal surfaces as a **failed materialization**
-(`status: FAILED`, reason in `error`); the **orchestrated** build path (a
-caller-supplied `buildInstructions`) returns the same refusal synchronously as
-**HTTP 422**. Add a given-filtered persist source and materialize it:
+refuses them at build time rather than producing a subtly wrong table. The
+refusal is known when the model compiles, and the build plan reports it under
+`refusedSources`. A run **skips** a refused source and builds the rest of the
+package: the run completes (`MANIFEST_FILE_READY`), the refused source serves
+live, and the run records it in `metadata.refusedSources` with the gate's
+message and counts it in `metadata.sourcesRefused`. (A build with caller-supplied
+`buildInstructions` reports an instructed refusal in the manifest's `failures`
+instead, since that caller asked for the table.) One refused source never costs its
+siblings their freshness.
+
+A run **fails** on a refusal in only two cases: every source it targeted was
+refused, so there is nothing to build, or `sourceNames` named a refused source,
+so the caller asked for exactly the table that cannot be built. Then the refusal
+surfaces as a **failed materialization** (`status: FAILED`, reason in `error`).
+The walkthroughs below use one of each.
+
+A given is refused when the **build** would substitute its value — here, because
+the persisted query itself reads it. A given in the source's extend block is a
+different matter: it is left out of the build and applied per caller when the
+artifact is read, so such a source materializes and serves normally (see
+[materialization.md § Tenant-scoped sources](materialization.md#tenant-scoped-sources-where-a-given-may-sit)).
+Add the refused form and materialize it:
 
 ```bash
 cat > "$ENVDIR/persist-tutorial/givens.malloy" <<'MALLOY'
@@ -629,21 +687,35 @@ curl -s "http://localhost:4000/api/v0/environments/examples/packages/persist-tut
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
   -H 'content-type: application/json' -d '{"forceRefresh": true}' >/dev/null
 MZID=$(curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations | jq -r '.[0].id')
-curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/$MZID | jq '{status, error}'
+curl -s http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations/$MZID \
+  | jq '{status, built: .metadata.sourcesBuilt, refused: .metadata.sourcesRefused, reasons: [.metadata.refusedSources[] | {name, reason, message}]}'
 ```
 
 ```json
 {
-  "status": "FAILED",
-  "error": "Source 'secret_rollup' cannot be materialized into a storage destination: it references a given. Givens bind per query and are used for row-level access control, so a materialized-once table served to everyone would leak filtered rows across tenants. This is refused for safety. Serve this source live (drop 'storage=')."
+  "status": "MANIFEST_FILE_READY",
+  "built": 1,
+  "refused": 1,
+  "reasons": [
+    {
+      "name": "secret_rollup",
+      "reason": "given_in_persisted_query",
+      "message": "Source 'secret_rollup' cannot be materialized into a storage destination: a given is read while the persisted relation is BUILT, so its value is substituted at build time — from the declaration's default, the only value available then — and every caller is served that one slice. Move the given out of the persisted query and into the source's extend block (`where: …`), where it is left out of the build and applied per caller when the artifact is read."
+    }
+  ]
 }
 ```
 
-The build fails with a clear, actionable message — and the package keeps
-serving. Remove `givens.malloy` and reload to continue.
+The run completes: `daily_orders` from `orders.malloy` is rebuilt, and
+`secret_rollup` is skipped, serves live, and is listed with a clear, actionable
+message. The message names the move that fixes it: writing the source as
+`orders_g -> { aggregate: … } extend { where: region = $region_filter }` puts the
+term where the build leaves it out, and the source materializes. Remove
+`givens.malloy` and reload to continue.
 
 The other refusal is an **unbound (free) parameter** — a source with a free
-parameter is a template with no single relation to freeze:
+parameter is a template with no single relation to freeze. Naming it in
+`sourceNames` asks for exactly that table, so the run fails:
 
 ```bash
 cat > "$ENVDIR/persist-tutorial/paramtest.malloy" <<'MALLOY'
@@ -680,9 +752,9 @@ forms a valid DuckDB source.
 
 These are the checks derivable from the compiled source and the built schema
 alone. One more belongs here and **is enforced**: a source protected by
-`#(authorize)` — directly, or transitively through a join or derivation — is
+`#(access_filter)` — directly, or transitively through a join or derivation — is
 refused, because the serve path rebinds it to a virtual source whose shape
-carries no `#(authorize)` annotation, so the gate can't be evaluated on the
+carries no `#(access_filter)` annotation, so the gate can't be evaluated on the
 served table. The check walks the compiled source for the gate and fails
 closed: a source it cannot prove gate-free is refused.
 
@@ -713,7 +785,7 @@ there the table lives in your own warehouse; a `storage=` destination may be a
 separate, shared store). If a column is genuinely sensitive, **don't rely on
 `except:` for a `storage=` source — filter it out in the SQL** so it never lands
 in the store. This is the same "sensitive data crossing into the tier's store"
-concern as the `#(authorize)` note above.
+concern as the `#(access_filter)` note above.
 
 ---
 
@@ -749,11 +821,14 @@ Everything you need is on the package status and the logs:
     transform was *ineligible*, which the field reports as `null`; the run-time
     store failure the field calls `live_fallback` is `runtime_live_fallback` here.
     Correlating the two on the token is wrong in both directions.
-  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_refused|infra_failure}`
+  - `publisher_storage_chained_build_total{outcome=parent_reuse|inline_fallback|strict_shape_fallback|strict_refused|infra_failure}`
     — for a chained source, whether it built by reading its parent's stored table
-    (`parent_reuse`) or fell back to recompute-from-raw. `infra_failure` is a
-    destination that was unreachable, kept distinct from the shape limits so a
-    store outage is not read as an un-carriable query.
+    (`parent_reuse`) or fell back to recompute-from-raw (`inline_fallback`
+    non-strict, `strict_shape_fallback` under `strictUpstreams`, where only a
+    shape the destination cannot express is recomputed). `strict_refused` is an
+    upstream strict would not recompute. `infra_failure` is a destination that
+    was unreachable, kept distinct from the shape limits so a store outage is not
+    read as an un-carriable query.
   - `malloy_model_query_duration` tags a routed query with
     `served_from=storage`, or `served_from=live_fallback` when a run-time store
     failure degraded it to live (so a fallback never counts as a storage hit).

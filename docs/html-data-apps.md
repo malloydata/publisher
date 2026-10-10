@@ -224,8 +224,8 @@ matter:
 
 Where you must build query text from input, constrain it to a known set and
 escape it, or keep the filtering in model-defined views. The
-`malloy-html-data-app-runtime` skill covers the same ground for an agent writing
-the page.
+`malloy-html-data-apps` skill (its `reference/runtime.md`) covers the same ground for an agent
+writing the page.
 
 `Publisher.queryFull(...)` takes the same arguments but resolves to the full
 Malloy result envelope rather than just the rows. Use it when you want to hand
@@ -259,7 +259,7 @@ hook a host application uses to pass a signed token into an embedded page (see
 
 What the Publisher server enforces on these routes is the package's own model
 governance: filter and runtime-parameter (given) rules, access modifiers, and
-`#(authorize)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
+`#(access_filter)` annotations are applied when the query compiles and runs. The static file, data-app-listing, and
 events routes themselves are open; treat anything you put under `public/` as
 world-readable to anyone who can reach the server, and keep secrets in the models
 and the database, behind the query API, not in the page.
@@ -306,6 +306,14 @@ iframe and you pass no token. For a cross-origin embed (your customer's app on a
 different domain), mint a short-lived signed token on your server and pass it as `token`; the
 embedded page reads `embed_token` and calls `Publisher.setToken(...)`. Mint the token server-side with
 the same signing key the server verifies; never put a long-lived or admin token in client HTML.
+
+**A cross-origin embed also needs the server to permit the framing itself**, which
+is separate from authenticating it. Publisher sends `frame-ancestors 'self'` by
+default, so the browser refuses a frame from another origin before any token is
+read: the iframe renders blank, and nothing is logged server-side, which makes it
+look like a broken page rather than a policy. Set `PUBLISHER_FRAME_ANCESTORS` to
+the host page's origin on the deployment being embedded. If an embed is blank,
+check the browser console first -- it names `frame-ancestors`.
 
 ## Live reload
 
@@ -396,11 +404,14 @@ the manifest field reference is [packages.md](packages.md).
   traversal (`..`) and names that resolve outside the package are rejected, and a
   symlink under `public/` that points outside it returns 403. Models, data, and
   `publisher.json` are never reachable over the web.
-- Served HTML carries `Content-Security-Policy: frame-ancestors *` so pages are
-  framable by default, which means any site can frame them (a clickjacking
-  vector). Set `PUBLISHER_FRAME_ANCESTORS` to restrict which origins may embed
-  your pages (for example to your own app's origin), and do so for any page that
-  shows sensitive data. All responses carry `X-Content-Type-Options: nosniff`.
+- Every document carries `Content-Security-Policy: frame-ancestors 'self'` by
+  default, so a page is framable only from its own origin. To embed one
+  elsewhere, set `PUBLISHER_FRAME_ANCESTORS` to the embedding origins (for
+  example `https://app.example.com`, space-separated for several). The value is
+  a CSP source list, and `*` restores framing from anywhere. The policy covers
+  the Console as well as `public/` files, so setting the variable is the whole
+  configuration rather than part of it. All responses carry
+  `X-Content-Type-Options: nosniff`.
 - The query API applies the model's governance (filters, access modifiers,
   authorize annotations). The static, data-apps, and events routes do not add
   their own auth, so do not place anything sensitive under `public/`.

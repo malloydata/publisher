@@ -43,15 +43,17 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
 
 ### Working as documented (not vulnerabilities)
 
-- The REST and MCP surfaces being unauthenticated, and the server binding `0.0.0.0` by default
+- The REST and MCP surfaces being unauthenticated, and the REST port binding `0.0.0.0` by default
+  (MCP binds `127.0.0.1` unless `MCP_HOST` or `PUBLISHER_HOST` widens it)
   ([README.md § Point your agent at it](README.md#point-your-agent-at-it),
   [docs/ai-agents.md](docs/ai-agents.md)). The supported posture is loopback for local use, an
   authenticating gateway in front for anything wider.
-- `givens`, `#(authorize)`, and row-level access being caller-asserted, including the gaps in
+- `givens`, `#(access_filter)`, and row-level access being caller-asserted, including the gaps in
   [docs/authorize.md § Security model](docs/authorize.md#security-model) and
   [§ Known limitations](docs/authorize.md#known-limitations), and in
   [docs/row-level-access.md](docs/row-level-access.md).
-- A gate skipped for a request carrying `x-publisher-bypass-authorize: true` — the documented
+- A gate skipped for a request carrying `x-publisher-bypass-authorize` with the configured
+  `PUBLISHER_BYPASS_AUTHORIZE_SECRET` — the documented
   data-management bypass ([docs/authorize.md § Authorize
   bypass](docs/authorize.md#authorize-bypass-for-trusted-data-management-callers)). Publisher
   bounds nobody who may send it; stripping it at the edge is the deployment's job
@@ -61,8 +63,8 @@ caller-asserted conventions rather than boundaries — that shapes what counts a
   it — is in scope below.
 - Broad reach for whoever can publish a package or `PATCH` a connection on a bare Publisher
   ([docs/query-metadata.md](docs/query-metadata.md), [docs/packages.md](docs/packages.md)).
-- The default `Content-Security-Policy: frame-ancestors *`, which `PUBLISHER_FRAME_ANCESTORS` exists
-  to tighten ([docs/html-data-apps.md § Security model](docs/html-data-apps.md#security-model),
+- A deployment that has widened `PUBLISHER_FRAME_ANCESTORS` from its `'self'` default, which is how
+  cross-origin embedding is opted into ([docs/html-data-apps.md § Security model](docs/html-data-apps.md#security-model),
   [docs/configuration.md](docs/configuration.md)).
 - Findings that require ignoring the deployment posture above.
 
@@ -73,7 +75,7 @@ Anything that breaks a boundary Publisher does claim, including:
 - A direct query succeeding against a source the package never exported — past the
   **queryable == discoverable** boundary in
   [docs/discovery-and-access.md](docs/discovery-and-access.md).
-- An `#(authorize)` gate granting access its expression should deny for the givens actually sent,
+- A `#(access_filter)` gate granting access its expression should deny for the givens actually sent,
   including none — absent the documented bypass header above.
 - The bypass applying where it should not: honoured on a notebook cell or `/compile` request,
   reachable from the request body rather than the header, surviving onto a subsequent request, or

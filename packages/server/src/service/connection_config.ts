@@ -5,13 +5,23 @@ import { createPrivateKey } from "crypto";
 import { existsSync } from "fs";
 import path from "path";
 import { components } from "../api";
+import {
+   ALLOW_DUCKDB_SETUP_SQL_ENV,
+   getExtensionFetchPolicy,
+   isDuckdbSetupSqlAllowed,
+} from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
 import {
    resolveCloudStorageCredentials,
    validateS3ProviderShape,
 } from "./gcs_s3_utils";
-import { parseHostKeys } from "./proxy";
+import { parseBoolEnv } from "../config";
+import {
+   ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
+   allowUnverifiedHostKey,
+   parseHostKeys,
+} from "./proxy";
 import {
    queryMetadataAdvisoryWarnings,
    queryMetadataBudgetWarning,
@@ -21,16 +31,73 @@ import {
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 
-// TLS modes accepted on a proxied postgres connection. Canonical here (rather
-// than in connection.ts, which imports this module) so both the config-load
-// validator and the connect-time builder derive from one list. Mirrors the
-// `sslmode` enum in api-doc.yaml.
+// TLS modes accepted on a postgres connection, proxied or direct. Canonical here
+// (rather than in connection.ts, which imports this module) so both the
+// config-load validator and the connect-time builders derive from one list.
+// Mirrors the `sslmode` enum in api-doc.yaml.
 export const PROXIED_SSLMODES = [
    "disable",
    "no-verify",
    "verify-ca",
    "verify-full",
 ] as const;
+
+/**
+ * Throws unless `sslmode` is one of PROXIED_SSLMODES, and, for `verify-ca`,
+ * unless a readable CA bundle is available to pin it against. `subject` is the
+ * phrase error messages lead with, so a proxied and a direct connection each
+ * name themselves the way their existing errors do.
+ */
+function validatePostgresSslmode(subject: string, sslmode: string): void {
+   if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
+      throw new Error(
+         `${subject} has unsupported sslmode '${sslmode}' ` +
+            `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
+      );
+   }
+   if (sslmode === "verify-ca") {
+      const caBundle = process.env.NODE_EXTRA_CA_CERTS;
+      if (!caBundle || !existsSync(caBundle)) {
+         throw new Error(
+            `${subject} uses sslmode 'verify-ca' but no readable ` +
+               `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
+               `Add the CA bundle to the image or use sslmode 'no-verify'.`,
+         );
+      }
+   }
+}
+
+// Postgres's own ceiling for statement_timeout, which is an int in ms. A larger
+// value makes the session SET fail on every connection that applies it.
+const POSTGRES_MAX_STATEMENT_TIMEOUT_MS = 2_147_483_647;
+
+/**
+ * The connection's statement timeout, validated. Returns undefined when unset.
+ *
+ * Every consumer interpolates this value into SQL (`SET statement_timeout`) or
+ * a libpq conninfo string, so anything but an integer from 1 to
+ * POSTGRES_MAX_STATEMENT_TIMEOUT_MS is rejected here rather than trusted: a JSON
+ * body is not held to the schema before it reaches this code.
+ */
+export function postgresStatementTimeoutMs(
+   name: string,
+   pg: components["schemas"]["PostgresConnection"],
+): number | undefined {
+   const value: unknown = pg.statementTimeoutMilliseconds;
+   if (value === undefined || value === null) return undefined;
+   if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > POSTGRES_MAX_STATEMENT_TIMEOUT_MS
+   ) {
+      throw new Error(
+         `Connection '${name}' has an invalid statementTimeoutMilliseconds ` +
+            `${JSON.stringify(value)} (expected an integer from 1 to ${POSTGRES_MAX_STATEMENT_TIMEOUT_MS}).`,
+      );
+   }
+   return value;
+}
 
 export type CoreConnectionEntry = {
    is: string;
@@ -58,7 +125,10 @@ export type AssembledEnvironmentConnections = {
    apiConnections: ApiConnection[];
 };
 
-const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>(["attachedDatabases"]);
+const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>([
+   "attachedDatabases",
+   "setupSQL",
+]);
 
 /**
  * Collapse `null` to `undefined` for an optional connection field.
@@ -148,7 +218,8 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
 }
 
 // NOTE: This narrows the environment-author API surface (it rejects securityPolicy,
-// allowedDirectories, setupSQL, etc.). It is NOT a filesystem isolation
+// allowedDirectories, etc., and admits setupSQL only behind
+// PUBLISHER_ALLOW_DUCKDB_SETUP_SQL). It is NOT a filesystem isolation
 // boundary: attachedDatabases[].path is not normalized or constrained to stay
 // under the environment root, and DuckDB's local-file access is unchanged.
 // Adversarial filesystem isolation is an explicit non-goal here: DuckDB
@@ -169,7 +240,27 @@ export function validateDuckdbApiSurface(connection: ApiConnection): void {
       throw new Error(
          `Unsupported DuckDB connection field(s): ${unsupportedFields.join(
             ", ",
-         )}. Publisher only supports attachedDatabases for environment-authored DuckDB connections.`,
+         )}. Publisher only supports attachedDatabases and setupSQL for environment-authored DuckDB connections.`,
+      );
+   }
+
+   const setupSQL = connection.duckdbConnection.setupSQL;
+   const hasSetupSQL =
+      typeof setupSQL === "string" && setupSQL.trim().length > 0;
+   if (!hasSetupSQL) return;
+   // Every path that builds a connection passes through here: config load,
+   // create and update, and the connection test, which runs setupSQL without
+   // storing anything. Refusing here covers all of them.
+   if (!isDuckdbSetupSqlAllowed()) {
+      throw new Error(
+         `setupSQL on DuckDB connection "${connection.name}" is disabled in this deployment. ` +
+            `setupSQL runs arbitrary DuckDB statements on the server when the connection is set up. ` +
+            `Fix: set the environment variable ${ALLOW_DUCKDB_SETUP_SQL_ENV}=true to enable it.`,
+      );
+   }
+   if (getExtensionFetchPolicy() === "local-only") {
+      throw new Error(
+         `setupSQL is not allowed on DuckDB connection "${connection.name}" when EXTENSION_FETCH_POLICY is "local-only".`,
       );
    }
 }
@@ -185,7 +276,7 @@ function getStaticConnectionAttributes(
       case "postgres":
          return {
             dialectName: "postgres",
-            isPool: false,
+            isPool: true,
             canPersist: true,
             canStream: true,
          };
@@ -238,9 +329,11 @@ function getStaticConnectionAttributes(
    }
 }
 
+// Field names follow Google's service-account key file format, so they are
+// fixed by that format and do not track Publisher's own vocabulary.
 type ServiceAccountKey = {
    type?: string;
-   environment_id?: string;
+   project_id?: string;
    private_key?: string;
    client_email?: string;
    [key: string]: unknown;
@@ -263,15 +356,60 @@ function parseServiceAccountKey(json?: string): ServiceAccountKey | undefined {
    return keyData;
 }
 
-function buildPostgresConnectionString(
+/**
+ * The pg connectionString query params for a direct connection's own sslmode.
+ * Same meanings as the proxied query path (buildProxiedSslQuery): `no-verify`
+ * encrypts without verifying, `verify-ca` pins the chain to NODE_EXTRA_CA_CERTS
+ * without the hostname (libpq-compatible parsing is what makes pg honor that),
+ * and `verify-full` checks the chain and the real hostname.
+ */
+function directSslParams(
+   sslmode: (typeof PROXIED_SSLMODES)[number],
+): Record<string, string> {
+   switch (sslmode) {
+      case "disable":
+      case "no-verify":
+      case "verify-full":
+         return { sslmode };
+      case "verify-ca":
+         return {
+            uselibpqcompat: "true",
+            sslmode: "verify-ca",
+            sslrootcert: process.env.NODE_EXTRA_CA_CERTS ?? "",
+         };
+   }
+}
+
+/**
+ * The connectionString a postgres connection is opened with, or undefined when
+ * the individual host/port/user/password/database fields should be used as-is.
+ *
+ * A raw `connectionString` always wins. Otherwise the sslmode is the
+ * connection's own `sslmode` when `applySslmode` is set and the field is
+ * present, else the deployment PGSSLMODE, else none. `applySslmode` is false
+ * for a proxied connection, which applies its sslmode on the tunnel instead
+ * and must not have it baked into a string that targets the real host.
+ */
+export function buildPostgresConnectionString(
    config: components["schemas"]["PostgresConnection"],
+   { applySslmode }: { applySslmode: boolean },
 ): string | undefined {
-   if (config.connectionString || !process.env.PGSSLMODE) {
+   if (config.connectionString) {
       return config.connectionString;
    }
 
    const params = new URLSearchParams();
-   params.set("sslmode", process.env.PGSSLMODE);
+   if (applySslmode && config.sslmode != null) {
+      for (const [key, value] of Object.entries(
+         directSslParams(config.sslmode),
+      )) {
+         params.set(key, value);
+      }
+   } else if (process.env.PGSSLMODE) {
+      params.set("sslmode", process.env.PGSSLMODE);
+   } else {
+      return undefined;
+   }
    const auth =
       config.userName && config.password
          ? `${encodeURIComponent(config.userName)}:${encodeURIComponent(
@@ -292,11 +430,16 @@ function buildDuckdbEntry(
    name: string,
    environmentPath: string,
    databaseFilename = `${name}.duckdb`,
+   setupSQL?: string,
 ): CoreConnectionEntry {
-   return {
+   const entry: CoreConnectionEntry = {
       is: "duckdb",
       databasePath: path.join(environmentPath, databaseFilename),
    };
+   if (typeof setupSQL === "string" && setupSQL.trim().length > 0) {
+      entry.setupSQL = setupSQL;
+   }
+   return entry;
 }
 
 /**
@@ -348,8 +491,9 @@ function validateConnectionShape(connection: ApiConnection): void {
       // authorized by whoever configures the connection — deliberately NOT gated
       // by an env flag, and kept separate from the `publisher` HTTP multi-hop
       // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
-      // publisher-to-publisher proxying, a distinct operator decision). Optional
-      // host-key pinning is fail-closed at connect time when configured (see
+      // publisher-to-publisher proxying, a distinct operator decision). Host-key
+      // pinning is required and fail-closed at connect time, unless the deployment
+      // sets PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see
       // openProxy); the proxy-specific fields are validated up front below so a
       // permanent misconfig fails at config load, not by repeatedly dialing the
       // tenant's bastion at query time.
@@ -390,19 +534,42 @@ function validateConnectionShape(connection: ApiConnection): void {
          );
       }
 
-      // hostKey is optional (omitted or empty string => connect unpinned), but a
-      // non-empty hostKey that parses to zero keys — only blank lines, whitespace,
-      // or `#` comments, e.g. a paste that grabbed just ssh-keyscan's
-      // `# host:port ...` header — is a misconfigured pin, not a licence to
-      // connect unverified. Reject it here so the operator gets a config error
-      // instead of a silently unpinned tunnel. (Truthiness, not trim(): "" is the
-      // unpinned signal; "   " is a non-empty value that must yield a key.)
+      // hostKey is optional at config time, but a non-empty hostKey that parses to
+      // zero keys -- only blank lines, whitespace, or `#` comments, e.g. a paste
+      // that grabbed just ssh-keyscan's `# host:port ...` header -- is a
+      // misconfigured pin and is rejected here so the operator gets a config error.
+      // (Truthiness, not trim(): "" is the unpinned signal; "   " is a non-empty
+      // value that must yield a key.) An omitted/empty hostKey is unpinned, which
+      // the tunnel refuses at connect time unless the deployment sets
+      // PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see openProxy's host-key policy).
       const hostKey = connection.proxy.ssh?.hostKey;
+      // Warn at config load rather than leaving the refusal to be discovered by a
+      // failing query. The tunnel is dialed lazily, so an upgrading deployment with
+      // unpinned connections is silent through startup and first learns of the new
+      // policy when a user runs a query. Naming them here lets an operator pin the
+      // keys before anyone hits one. Not an error: refusing to start over a
+      // connection nobody may use today would be worse than the problem.
+      // Config load is a context that can throw, so this is where a
+      // misspelled opt-in is caught: parseBoolEnv rejects anything that is
+      // neither a boolean spelling nor empty, which stops `=ture` from reading
+      // as "off" and silently refusing every tunnel through this connection.
+      // The connect-time check in proxy.ts cannot do this -- see
+      // allowUnverifiedHostKey for why it falls back instead of throwing.
+      parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
+      if (!hostKey && !allowUnverifiedHostKey()) {
+         logger.warn(
+            `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +
+               `be refused when a query first uses it. Set ssh.hostKey to the bastion's host ` +
+               `key, or set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
+               `key for this deployment.`,
+         );
+      }
       if (hostKey && parseHostKeys(hostKey).size === 0) {
          throw new Error(
             `Connection proxy on '${connection.name}' has a hostKey with no usable host-key line ` +
                `(only blanks/comments). Provide an OpenSSH known_hosts line or base64 blob, or omit ` +
-               `hostKey to connect unpinned.`,
+               `hostKey to connect unpinned (which the tunnel refuses unless ` +
+               `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY is set).`,
          );
       }
 
@@ -415,22 +582,10 @@ function validateConnectionShape(connection: ApiConnection): void {
       // null/undefined mean unset (server applies the default).
       const sslmode = connection.postgresConnection?.sslmode;
       if (sslmode != null) {
-         if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
-            throw new Error(
-               `Connection proxy on '${connection.name}' has unsupported sslmode '${sslmode}' ` +
-                  `(expected ${PROXIED_SSLMODES.join(" | ")}).`,
-            );
-         }
-         if (sslmode === "verify-ca") {
-            const caBundle = process.env.NODE_EXTRA_CA_CERTS;
-            if (!caBundle || !existsSync(caBundle)) {
-               throw new Error(
-                  `Connection proxy on '${connection.name}' uses sslmode 'verify-ca' but no readable ` +
-                     `CA bundle is available (NODE_EXTRA_CA_CERTS is unset or points at a missing file). ` +
-                     `Add the CA bundle to the image or use sslmode 'no-verify'.`,
-               );
-            }
-         }
+         validatePostgresSslmode(
+            `Connection proxy on '${connection.name}'`,
+            sslmode,
+         );
          // No precondition for `verify-full`: unlike `verify-ca` (which passes an
          // explicit `sslrootcert` path), it verifies against Node's ambient trust
          // anchors (its bundled Mozilla CA roots + NODE_EXTRA_CA_CERTS), so
@@ -458,13 +613,27 @@ function validateConnectionShape(connection: ApiConnection): void {
       }
    }
 
-   // sslmode is only honored on the proxied path (the direct path builds TLS from
-   // the deployment PGSSLMODE). Reject it on a non-proxied connection so a tenant
-   // who sets it doesn't silently get a different TLS posture than they asked for.
-   if (!connection.proxy && connection.postgresConnection?.sslmode) {
-      throw new Error(
-         `Connection '${connection.name}' sets postgresConnection.sslmode but has no proxy; sslmode is ` +
-            `only supported for proxied connections (direct connections use the deployment PGSSLMODE).`,
+   // A direct connection's sslmode, when set, takes the place of the deployment
+   // PGSSLMODE; unset, PGSSLMODE applies as before. A connectionString carries its
+   // own sslmode, so alongside one the field is ignored - said here, once per
+   // config load, rather than left for the operator to discover from the TLS
+   // posture the connection actually got.
+   if (!connection.proxy && connection.postgresConnection?.sslmode != null) {
+      validatePostgresSslmode(
+         `Connection '${connection.name}'`,
+         connection.postgresConnection.sslmode,
+      );
+      if (connection.postgresConnection.connectionString) {
+         logger.warn(
+            `Connection '${connection.name}' sets both postgresConnection.sslmode and ` +
+               `connectionString; sslmode is ignored and the connectionString's own sslmode applies.`,
+         );
+      }
+   }
+   if (connection.postgresConnection) {
+      postgresStatementTimeoutMs(
+         connection.name ?? "",
+         connection.postgresConnection,
       );
    }
 
@@ -531,9 +700,12 @@ function validateConnectionShape(connection: ApiConnection): void {
                   );
                }
             }
-            if (attached.length === 0) {
+            const setupSQL = connection.duckdbConnection.setupSQL;
+            const hasSetupSQL =
+               typeof setupSQL === "string" && setupSQL.trim().length > 0;
+            if (attached.length === 0 && !hasSetupSQL) {
                throw new Error(
-                  `DuckDB connection "${connection.name}" has no attached databases. Add at least one foreign database (BigQuery, Snowflake, Postgres, GCS, S3, Azure) to attachedDatabases, or remove this connection entirely — each package already gets a per-package DuckDB sandbox named "duckdb" automatically.`,
+                  `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
                );
             }
             // Shape only, deliberately not the whole credential check. This
@@ -1095,7 +1267,9 @@ export function assembleEnvironmentConnections(
                password: postgresConnection?.password,
                databaseName: postgresConnection?.databaseName,
                connectionString: postgresConnection
-                  ? buildPostgresConnectionString(postgresConnection)
+                  ? buildPostgresConnectionString(postgresConnection, {
+                       applySslmode: !connection.proxy,
+                    })
                   : undefined,
             };
             break;
@@ -1133,8 +1307,8 @@ export function assembleEnvironmentConnections(
             pojo.connections[connection.name] = {
                is: "bigquery",
                projectId:
-                  connection.bigqueryConnection?.defaultProjectId ??
-                  serviceAccountKey?.environment_id,
+                  connection.bigqueryConnection?.defaultProjectId ||
+                  serviceAccountKey?.project_id,
                serviceAccountKey,
                // Spread rather than `authClient: x ?? undefined`: the property
                // is mustHaveValue, and core keys off the property being SET —
@@ -1243,6 +1417,7 @@ export function assembleEnvironmentConnections(
                connection.name,
                environmentPath,
                `${connection.name}.duckdb`,
+               connection.duckdbConnection?.setupSQL,
             );
             break;
          }

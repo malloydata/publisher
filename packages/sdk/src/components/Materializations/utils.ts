@@ -81,6 +81,62 @@ export interface MaterializationMetadata {
    trigger?: "ON_DEMAND" | "SCHEDULER";
    sourcesBuilt?: number;
    sourcesReused?: number;
+   /**
+    * Persist sources the eligibility gate refused, so the run skipped them and
+    * they serve live. Absent when the run refused nothing; the refused sources
+    * themselves are named in `refusedSources`, beside this count.
+    */
+   sourcesRefused?: number;
+   /**
+    * The sources auto-run refused, keyed by sourceID. An orchestrated run
+    * reports its refusals in the manifest's `failures` instead, marked
+    * `refused`; {@link refusedSourcesOf} reads both.
+    */
+   refusedSources?: Record<string, { name: string; message: string }>;
+}
+
+/** One source a run did not build because the eligibility gate refused it. */
+export interface RunRefusal {
+   name: string;
+   message: string;
+}
+
+/**
+ * Every source the run refused, from either place a run records one: the
+ * metadata list auto-run writes, and the `failures` an orchestrated run marks
+ * `refused`. Sorted by name so the list reads the same on every render.
+ */
+export function refusedSourcesOf(
+   materialization: Materialization,
+): RunRefusal[] {
+   const fromMetadata = Object.values(
+      parseMetadata(materialization).refusedSources ?? {},
+   ).map((r) => ({ name: r.name, message: r.message }));
+   const fromFailures = Object.values(materialization.manifest?.failures ?? {})
+      .filter((f) => f.refused)
+      .map((f) => ({
+         name: f.sourceName ?? f.sourceEntityId,
+         message: f.reason,
+      }));
+   return [...fromMetadata, ...fromFailures].sort((a, b) =>
+      a.name.localeCompare(b.name),
+   );
+}
+
+/**
+ * The run's source counts, joined by `separator`. Refused sources are named
+ * only when there are some, so a clean run reads as it always has.
+ */
+export function sourcesSummary(
+   meta: MaterializationMetadata,
+   separator: string,
+): string {
+   const parts = [
+      `${meta.sourcesBuilt ?? 0} built`,
+      `${meta.sourcesReused ?? 0} reused`,
+   ];
+   if (meta.sourcesRefused) parts.push(`${meta.sourcesRefused} refused`);
+   return parts.join(separator);
 }
 
 export function parseMetadata(

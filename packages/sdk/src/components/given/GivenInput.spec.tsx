@@ -18,7 +18,7 @@ import { GivenInput } from "./GivenInput";
  * the clear (x) affordance is showing, so each test below asserts on it.
  */
 
-const clearButtons = () => screen.queryAllByLabelText("clear value");
+const clearButtons = () => screen.queryAllByLabelText("Clear value");
 
 describe("GivenInput: unset vs. explicit override", () => {
    it("unset shows the model default as a placeholder and offers no revert", () => {
@@ -209,7 +209,11 @@ describe("GivenInput: a control= the widget cannot honour falls through", () => 
    // rejects, and a `number` given would get a string `givensToRequest` forwards
    // verbatim for Malloy to refuse. Nothing populates `control` yet, so these
    // pin the refusal before the slice that starts populating it.
-   const pickerCount = () => screen.queryAllByRole("combobox").length;
+   // Autocomplete pickers only. The time-range control's dropdown is a
+   // combobox too, on a `<div>`; the picker this suite is about is an `<input>`.
+   const pickerCount = () =>
+      screen.queryAllByRole("combobox").filter((el) => el.tagName === "INPUT")
+         .length;
 
    for (const type of ["string", "filter<string>"]) {
       it(`renders a picker for ${type}`, () => {
@@ -256,6 +260,54 @@ describe("GivenInput: a slider only claims a filter it can represent", () => {
                rangeMax: 10,
             }}
             value=">= 5"
+            onChange={() => {}}
+         />,
+      );
+      // Two handles, the lower at the bound and the upper at the ceiling.
+      const sliders = screen.queryAllByRole("slider") as HTMLInputElement[];
+      expect(sliders.map((s) => s.value)).toEqual(["5", "10"]);
+      expect(screen.getByText("≥ 5")).toBeDefined();
+   });
+
+   it("renders a closed range on both handles", () => {
+      render(
+         <GivenInput
+            given={{
+               name: "n",
+               type: "filter<number>",
+               rangeMin: 0,
+               rangeMax: 10,
+            }}
+            value="[2 to 7]"
+            onChange={() => {}}
+         />,
+      );
+      const sliders = screen.queryAllByRole("slider") as HTMLInputElement[];
+      expect(sliders.map((s) => s.value)).toEqual(["2", "7"]);
+      expect(screen.getByText("2 to 7")).toBeDefined();
+   });
+
+   it("still refuses a half-open range", () => {
+      render(
+         <GivenInput
+            given={{
+               name: "n",
+               type: "filter<number>",
+               rangeMin: 0,
+               rangeMax: 10,
+            }}
+            value="(2 to 7]"
+            onChange={() => {}}
+         />,
+      );
+      expect(screen.queryAllByRole("slider")).toHaveLength(0);
+   });
+
+   it("keeps one handle for a plain number given", () => {
+      render(
+         <GivenInput
+            given={{ name: "n", type: "number", rangeMin: 0, rangeMax: 10 }}
+            value={4}
             onChange={() => {}}
          />,
       );
@@ -330,6 +382,8 @@ describe("GivenInput: the whole type x control matrix", () => {
    // the property that matters most is the last assertion: no combination falls
    // through every branch and renders nothing at all.
    const widget = () => {
+      if (screen.queryAllByTestId("time-range").length) return "timerange";
+      if (screen.queryAllByTestId("boolean-filter").length) return "boolfilter";
       if (screen.queryAllByRole("combobox").length) return "picker";
       if (screen.queryAllByRole("slider").length) return "slider";
       if (screen.queryAllByRole("checkbox").length) return "checkbox";
@@ -379,6 +433,7 @@ describe("GivenInput: the whole type x control matrix", () => {
          "timestamptz",
          "filter<number>",
          "filter<date>",
+         "filter<boolean>",
       ]) {
          expect(show(type, "select")).not.toBe("picker");
       }
@@ -407,9 +462,31 @@ describe("GivenInput: the whole type x control matrix", () => {
       // A filter the picker cannot represent falls through to the text box, so
       // the author's filter stays visible rather than being re-encoded.
       expect(show("filter<string>", "select", false, "-Nike")).toBe("text");
-      // A lower-bound filter keeps the slider; a range cannot be a threshold.
+      // A lower bound and a closed range both fit the handles; `1 to 5` is not
+      // number-filter syntax at all and stays visible as written.
       expect(show("filter<number>", undefined, true, ">= 5")).toBe("slider");
+      expect(show("filter<number>", undefined, true, "[1 to 5]")).toBe(
+         "slider",
+      );
       expect(show("filter<number>", undefined, true, "1 to 5")).toBe("text");
+      // A date filter gets the time-range control for a window or a day range,
+      // the single day picker for one day, and the text box for the rest.
+      expect(show("filter<date>", undefined, false, undefined)).toBe(
+         "timerange",
+      );
+      expect(show("filter<date>", undefined, false, "7 days")).toBe(
+         "timerange",
+      );
+      expect(
+         show(
+            "filter<timestamp>",
+            undefined,
+            false,
+            "2024-01-01 to 2024-02-01",
+         ),
+      ).toBe("timerange");
+      expect(show("filter<date>", undefined, false, "2024-01-15")).toBe("text");
+      expect(show("filter<date>", undefined, false, "last month")).toBe("text");
    });
 
    // One test per type rather than one test for the whole matrix. The matrix is
@@ -428,6 +505,7 @@ describe("GivenInput: the whole type x control matrix", () => {
       "filter<number>",
       "filter<date>",
       "filter<timestamp>",
+      "filter<boolean>",
       "array<string>",
       "record",
       undefined,
@@ -502,7 +580,7 @@ describe("GivenInput: a date value the codec cannot read", () => {
          <GivenInput given={DATE} value="last month" onChange={onChange} />,
       );
 
-      fireEvent.click(screen.getByRole("button", { name: "clear value" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear value" }));
 
       expect(onChange.mock.calls[0][0]).toBeNull();
    });
@@ -538,7 +616,7 @@ describe("GivenInput: a date value the codec cannot read", () => {
       render(<GivenInput given={DATE} value={undefined} onChange={() => {}} />);
       expect(screen.queryAllByText(/Not a date/)).toHaveLength(0);
       expect(
-         screen.queryAllByRole("button", { name: "clear value" }),
+         screen.queryAllByRole("button", { name: "Clear value" }),
       ).toHaveLength(0);
    });
 });
@@ -558,7 +636,7 @@ describe("GivenInput: a number value the control cannot show", () => {
    it("offers a revert", () => {
       const onChange = mock((_next: GivenValue) => {});
       render(<GivenInput given={NUM} value="lots" onChange={onChange} />);
-      fireEvent.click(screen.getByRole("button", { name: "clear value" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear value" }));
       expect(onChange.mock.calls[0][0]).toBeNull();
    });
 
@@ -591,7 +669,7 @@ describe("GivenInput: a boolean value the control cannot show", () => {
    it("offers a revert", () => {
       const onChange = mock((_next: GivenValue) => {});
       render(<GivenInput given={FLAG} value="yes" onChange={onChange} />);
-      fireEvent.click(screen.getByRole("button", { name: "clear value" }));
+      fireEvent.click(screen.getByRole("button", { name: "Clear value" }));
       expect(onChange.mock.calls[0][0]).toBeNull();
    });
 
@@ -686,4 +764,186 @@ describe("GivenInput: a date renders its UTC day, whatever zone the runner is in
          );
       },
    );
+});
+
+describe("GivenInput: the true/false dropdown for a boolean filter", () => {
+   const given: Given = { name: "FLAG", type: "filter<boolean>" };
+   const dropdown = () =>
+      screen
+         .getAllByRole("combobox")
+         .find((el) => el.tagName !== "INPUT") as HTMLElement;
+   const widget = (value: GivenValue | undefined) => {
+      cleanup();
+      render(<GivenInput given={given} value={value} onChange={() => {}} />);
+      return screen.queryAllByTestId("boolean-filter").length
+         ? "dropdown"
+         : "text";
+   };
+
+   it("offers true and false, and commits the one picked", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput given={given} value={undefined} onChange={onChange} />,
+      );
+      fireEvent.mouseDown(dropdown());
+      expect(
+         screen.getAllByRole("option").map((option) => option.textContent),
+      ).toEqual(["true", "false"]);
+      fireEvent.click(screen.getByRole("option", { name: "false" }));
+      expect(onChange).toHaveBeenCalledWith("false");
+   });
+
+   it("shows an unset given as its default, with no revert", () => {
+      render(
+         <GivenInput
+            given={{ ...given, default: "f'true'" }}
+            value={undefined}
+            onChange={() => {}}
+         />,
+      );
+      expect(dropdown().textContent).toBe("true");
+      expect(clearButtons()).toHaveLength(0);
+   });
+
+   it("shows a picked value, however it is spelled, and reverts it", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<GivenInput given={given} value=" TRUE " onChange={onChange} />);
+      expect(dropdown().textContent).toBe("true");
+      fireEvent.click(clearButtons()[0]);
+      expect(onChange).toHaveBeenCalledWith(null);
+   });
+
+   it("shows the empty filter as Any, an override it can revert", () => {
+      render(<GivenInput given={given} value="" onChange={() => {}} />);
+      expect(dropdown().textContent).toBe("Any");
+      expect(clearButtons()).toHaveLength(1);
+   });
+
+   it("leaves any other filter in the text box, as written", () => {
+      // `=false` leaves null rows out and `false` keeps them, so showing it as
+      // "false" would claim a filter that is not running.
+      for (const value of ["=false", "not true", "null", "asdf"]) {
+         expect(widget(value)).toBe("text");
+      }
+      expect(widget("false")).toBe("dropdown");
+   });
+});
+
+describe("GivenInput: the time-range control for a date filter", () => {
+   const given: Given = { name: "PERIOD", type: "filter<timestamp>" };
+   const dropdown = () =>
+      screen
+         .getAllByRole("combobox")
+         .find((el) => el.tagName !== "INPUT") as HTMLElement;
+
+   it("shows an unset given as blank, with no revert", () => {
+      render(
+         <GivenInput given={given} value={undefined} onChange={() => {}} />,
+      );
+      expect(screen.getByTestId("time-range")).toBeDefined();
+      expect(clearButtons()).toHaveLength(0);
+      expect(screen.queryAllByLabelText("From")).toHaveLength(0);
+   });
+
+   it("shows the preset a value spells, however it is spelled", () => {
+      render(<GivenInput given={given} value="30 day" onChange={() => {}} />);
+      expect(dropdown().textContent).toBe("Last 30 days");
+      expect(clearButtons()).toHaveLength(1);
+   });
+
+   it("commits a picked preset in Malloy's filter grammar", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput given={given} value={undefined} onChange={onChange} />,
+      );
+      fireEvent.mouseDown(dropdown());
+      fireEvent.click(screen.getByRole("option", { name: "Last 7 days" }));
+      expect(onChange).toHaveBeenCalledWith("7 days");
+   });
+
+   it("opens two day pickers for a custom range, committing nothing yet", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(
+         <GivenInput given={given} value={undefined} onChange={onChange} />,
+      );
+      fireEvent.mouseDown(dropdown());
+      fireEvent.click(screen.getByRole("option", { name: "Custom range" }));
+      expect(screen.getByLabelText("From")).toBeDefined();
+      expect(screen.getByLabelText("To")).toBeDefined();
+      expect(onChange).not.toHaveBeenCalled();
+   });
+
+   it("shows a day range as the inclusive days it selects", () => {
+      render(
+         <GivenInput
+            given={given}
+            value="2024-01-01 to 2024-02-01"
+            onChange={() => {}}
+         />,
+      );
+      expect(dropdown().textContent).toBe("Custom range");
+      expect((screen.getByLabelText("From") as HTMLInputElement).value).toBe(
+         "01/01/2024",
+      );
+      expect((screen.getByLabelText("To") as HTMLInputElement).value).toBe(
+         "01/31/2024",
+      );
+   });
+
+   it("shows the empty filter as an override it can revert", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<GivenInput given={given} value="" onChange={onChange} />);
+      expect(dropdown().textContent).toBe("Any time");
+      fireEvent.click(clearButtons()[0]);
+      expect(onChange).toHaveBeenCalledWith(null);
+   });
+
+   it("leaves a filter it cannot show in the text box, as written", () => {
+      render(
+         <GivenInput given={given} value="last month" onChange={() => {}} />,
+      );
+      expect(screen.queryAllByTestId("time-range")).toHaveLength(0);
+      expect((screen.getByLabelText("PERIOD") as HTMLInputElement).value).toBe(
+         "last month",
+      );
+   });
+
+   it("keeps the single day picker for one day", () => {
+      render(
+         <GivenInput given={given} value="2024-01-15" onChange={() => {}} />,
+      );
+      expect(screen.queryAllByTestId("time-range")).toHaveLength(0);
+      expect(screen.getByLabelText("PERIOD")).toBeDefined();
+   });
+});
+
+describe("GivenInput: the range slider's commits", () => {
+   const given: Given = {
+      name: "n",
+      type: "filter<number>",
+      rangeMin: 0,
+      rangeMax: 10,
+   };
+   const handles = () => screen.getAllByRole("slider") as HTMLInputElement[];
+
+   it("writes a closed range when the upper handle is inside the track", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<GivenInput given={given} value="[2 to 7]" onChange={onChange} />);
+      fireEvent.change(handles()[1], { target: { value: "6" } });
+      expect(onChange).toHaveBeenCalledWith("[2 to 6]");
+   });
+
+   it("collapses to a threshold once the upper handle reaches the ceiling", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<GivenInput given={given} value="[2 to 7]" onChange={onChange} />);
+      fireEvent.change(handles()[1], { target: { value: "10" } });
+      expect(onChange).toHaveBeenCalledWith(">= 2");
+   });
+
+   it("reverts when both handles are at the ends", () => {
+      const onChange = mock((_next: GivenValue) => {});
+      render(<GivenInput given={given} value=">= 2" onChange={onChange} />);
+      fireEvent.change(handles()[0], { target: { value: "0" } });
+      expect(onChange).toHaveBeenCalledWith(null);
+   });
 });

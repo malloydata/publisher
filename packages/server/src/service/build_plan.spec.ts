@@ -25,6 +25,10 @@ import {
    resolvePackageConnections,
 } from "./build_plan";
 import { MaterializationEligibilityError } from "../errors";
+import {
+   compilePersistSources,
+   duckdbTestConnections,
+} from "./incremental_test_harness";
 import { fakeSource } from "./materialization_test_fixtures";
 import { Model } from "./model";
 
@@ -261,6 +265,65 @@ describe("resolvePackageConnections", () => {
 });
 
 describe("deriveBuildPlan", () => {
+   it("reports a join to a given-scoped persisted source as joinedTerms, apart from strippedTerms", async () => {
+      process.env.PERSIST_STORAGE_MODE = "on";
+      try {
+         const { connections } = duckdbTestConnections();
+         const { sources, materializer } = await compilePersistSources(
+            connections,
+            `##! experimental { persistence givens }
+given:
+  ORG_ID :: number is 1
+  USER_ID :: number is 7
+source: raw is duckdb.sql("""SELECT * FROM (VALUES (1,10)) AS t(org_id, opp_id)""")
+source: grants_raw is duckdb.sql("""SELECT * FROM (VALUES (1,7,10)) AS g(org_id, user_id, opp_id)""")
+#@ persist name="grants" storage=lake
+source: grants is grants_raw -> { select: * } extend {
+  where: org_id = $ORG_ID and user_id = $USER_ID
+}
+#@ persist name="opps" storage=lake
+source: opps is raw -> { select: * } extend {
+  where: org_id = $ORG_ID
+  join_one: g is grants on opp_id = g.opp_id
+  dimension: visible is g.opp_id is not null
+}`,
+         );
+         const compiled = await materializer.getModel();
+         const bySourceID = Object.fromEntries(
+            Object.values(sources).map((src) => [src.sourceID, src]),
+         );
+         const plan = deriveBuildPlan(
+            compiled.getBuildPlan().graphs,
+            bySourceID,
+            { duckdb: "dig" },
+         );
+         const opps = Object.values(plan.sources).find(
+            (p) => p.name === "opps",
+         );
+         expect(opps?.strippedTerms).toEqual([
+            { code: "org_id = $ORG_ID", givens: ["ORG_ID"] },
+         ]);
+         expect(opps?.joinedTerms).toEqual([
+            {
+               alias: "g",
+               source: "grants",
+               terms: [
+                  {
+                     code: "org_id = $ORG_ID and user_id = $USER_ID",
+                     givens: ["ORG_ID", "USER_ID"],
+                  },
+               ],
+            },
+         ]);
+         const grants = Object.values(plan.sources).find(
+            (p) => p.name === "grants",
+         );
+         expect(grants?.joinedTerms).toBeUndefined();
+      } finally {
+         delete process.env.PERSIST_STORAGE_MODE;
+      }
+   });
+
    it("projects graphs and sources into the wire build plan", () => {
       const orders = fakeSource({
          name: "orders",
@@ -738,7 +801,7 @@ given:
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `);
@@ -913,7 +976,7 @@ given:
 
 source: base_a is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="s"
 source: s is base_a -> { select: org_id } extend {}
 `,
@@ -994,7 +1057,7 @@ given:
 source: base is duckdb.sql("select 1 as x")
 
 #@ persist name="s"
-#(authorize) x = $ORG
+#(access_filter) x = $ORG
 source: s is base -> { select: x }
 `,
                "model_b.malloy": `##! experimental.persistence
@@ -1003,7 +1066,7 @@ source: s is base -> { select: x }
 given:
   ORG :: number
 
-#(authorize) x = 1
+#(access_filter) x = 1
 source: locked is duckdb.sql("select 1 as x")
 
 #@ persist name="s"
@@ -1163,7 +1226,7 @@ source: mz_free(threshold::number) is base -> { aggregate: c is count() }
          const byName = Object.fromEntries(refused.map((r) => [r.name, r]));
          expect(byName.mz_given).toMatchObject({
             tier: "storage",
-            reason: "given",
+            reason: "given_in_persisted_query",
          });
          expect(byName.mz_given.message).toMatch(/given/i);
          expect(byName.mz_free).toMatchObject({
@@ -1202,7 +1265,7 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
          expect(refused).toMatchObject({
             name: "mz_given",
             tier: "storage",
-            reason: "given",
+            reason: "given_in_persisted_query",
          });
          // No SQL/content-address fields leak onto the refused entry — it is
          // a genuinely different wire shape, not `PersistSourcePlan` with two
@@ -1217,7 +1280,7 @@ source: mz_given is base -> { where: tenant = $tenant; aggregate: c is count() }
       "does NOT report a colocated gated source as refused once the row-level relaxation admits it (the storage-rules SourceEligibility.refused trap)",
       async () => {
          // Plain `#@ persist` (no `storage=`): the entry point's own
-         // `#(authorize)` gate classifies row_level + attributed, so the
+         // `#(access_filter)` gate classifies row_level + attributed, so the
          // colocated relaxation admits it. The OLD `SourceEligibility.refused`
          // (computed with the unconditional storage-tier assert) would report
          // this same source as `refused: authorize` — refusedSources must not
@@ -1229,7 +1292,7 @@ given: ORG :: number
 
 source: base is duckdb.sql("select 1 as org_id")
 
-#(authorize) org_id = $ORG
+#(access_filter) org_id = $ORG
 #@ persist name="gated"
 source: gated is base -> { select: org_id } extend {}
 `);
@@ -1261,7 +1324,7 @@ source: gated is base -> { select: org_id } extend {}
 given:
   GROUPS :: number[]
 
-#(authorize) org_id in $GROUPS
+#(access_filter) org_id in $GROUPS
 source: orders is duckdb.sql("""
   SELECT * FROM (VALUES
     (10, 'A', 1),

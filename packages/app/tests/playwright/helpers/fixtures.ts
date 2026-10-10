@@ -10,7 +10,7 @@ export const PACKAGES = {
     * write their own throwaway fixtures into it.
     */
    storefront: "storefront",
-   /** Givens, `#(authorize)` gates, and row-level access. */
+   /** Givens and row-level access, via an `#(access_filter)` gate. */
    governed: "governed-analytics",
    /** A no-build HTML dashboard served from the package's `public/`. */
    dataApp: "html-data-app",

@@ -37,6 +37,10 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
    let e2e: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    let currentEnv: string | null = null;
+   // The packages `createEnv` registered, so a helper can walk each package's
+   // own materialization list. There is no environment-wide list: a
+   // materialization belongs to a package.
+   let currentPackages: string[] = [];
 
    beforeAll(async () => {
       e2e = await startRestE2E();
@@ -53,6 +57,7 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
             // best-effort teardown
          }
          currentEnv = null;
+         currentPackages = [];
       }
    });
 
@@ -86,6 +91,7 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
          );
       }
       currentEnv = name;
+      currentPackages = packages.map((pkg) => pkg.name);
    }
 
    async function waitForPackage(env: string, pkg: string): Promise<void> {
@@ -129,12 +135,18 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
 
    type Row = Record<string, unknown>;
 
+   /** Every package's runs in this environment, as one list. */
    async function envMaterializations(env: string): Promise<Row[]> {
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${env}/packages/materializations`,
+      const perPackage = await Promise.all(
+         currentPackages.map(async (pkg) => {
+            const res = await fetch(
+               `${baseUrl}/api/v0/environments/${env}/packages/${pkg}/materializations`,
+            );
+            expect(res.status).toBe(200);
+            return (await res.json()) as Row[];
+         }),
       );
-      expect(res.status).toBe(200);
-      return (await res.json()) as Row[];
+      return perPackage.flat();
    }
 
    function triggerOf(m: Row): string | undefined {

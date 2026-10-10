@@ -6,19 +6,27 @@ import { EnvironmentStore } from "../service/environment_store";
 import {
    AccessDeniedError,
    BadRequestError,
+   ConnectionAuthError,
+   ConnectionFailedError,
+   UnconfiguredConnectionError,
    ConnectionNotFoundError,
+   ConnectionPoolExhaustedError,
    InvalidArgumentError,
    PackageNotFoundError,
    ModelNotFoundError,
    ModelCompilationError,
    EnvironmentNotFoundError,
    NotQueryableError,
+   OffSurfaceError,
+   PackageManifestError,
    PayloadTooLargeError,
    QueryTimeoutError,
    ResponseUnserializableError,
    ServiceUnavailableError,
+   logInternalFailure,
 } from "../errors";
 import {
+   getEnvironmentNotFoundError,
    getNotFoundError,
    getInternalError,
    getMalloyErrorDetails,
@@ -63,6 +71,34 @@ export function classifyToolError(
    identifier: string,
    error: unknown,
 ): ErrorDetails {
+   if (error instanceof OffSurfaceError) {
+      // Checked before the not-found branch, which would drop this message and
+      // tell the agent to check its spelling. The message names the surface and
+      // the fix, and is only ever built where nothing is gated (see the class).
+      return {
+         message: error.message,
+         suggestions: [
+            "This is curation, not a typo: the name is real and the package does not publish it. Retrying with a different spelling will not help.",
+            "To query what IS published, call get_context for this package and use the model_path it returns, verbatim.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof PackageManifestError) {
+      // An unusable publisher.json, from reload_package or a package-scope
+      // compile_model. The internal branch would call it unexpected and say to
+      // retry, and the Malloy branch would send the agent to its .malloy files.
+      // The message already names the field and what was wrong with it.
+      return {
+         message: error.message,
+         suggestions: [
+            "This is not transient. The package's publisher.json is invalid, so retrying fails the same way until the file is fixed.",
+            "Fix the field the message names in publisher.json, then call reload_package.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof EnvironmentNotFoundError && error.lookup) {
+      return getEnvironmentNotFoundError(error.lookup);
+   }
    if (
       error instanceof EnvironmentNotFoundError ||
       error instanceof PackageNotFoundError ||
@@ -79,12 +115,70 @@ export function classifyToolError(
    ) {
       return getNotFoundError(identifier);
    }
+   if (error instanceof ConnectionFailedError) {
+      // The database could not be reached. The internal branch below would
+      // call it unexpected, and nothing here should send the agent to its
+      // Malloy. The driver's text can name an internal host, so it is logged
+      // and left out, as on the HTTP 502.
+      logInternalFailure(
+         `Database unreachable during ${operation}`,
+         error,
+         "warn",
+      );
+      return {
+         message: `The database connection for ${identifier} is down: the database could not be reached, so the query never ran.`,
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them.",
+            "Retry once. If it fails again, report that the database connection is down rather than changing the query.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof UnconfiguredConnectionError) {
+      // The model names a connection this environment does not have. Nothing
+      // the agent can change in the query fixes that, and a retry fails the
+      // same way.
+      return {
+         message: `${error.message}. The model for ${identifier} uses a connection this environment does not have, so the query never ran.`,
+         suggestions: [
+            "The query is fine. Do not rewrite it, and do not retry: it fails the same way until the connection exists.",
+            "Report that the environment is missing this connection; it was likely deleted or renamed.",
+         ],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof ConnectionAuthError) {
+      // The database rejected the connection's credentials. Retrying or
+      // rewriting the query fails the same way until the connection is fixed.
+      // The driver's text can name the user or account, so it is logged.
+      logInternalFailure(
+         `Connection credentials rejected during ${operation}`,
+         error,
+         "warn",
+      );
+      return {
+         message: `The database rejected the connection's credentials for ${identifier}. The query never ran.`,
+         suggestions: [
+            "The query and the model are fine. Do not rewrite them, and do not retry: it fails the same way until the credentials are fixed.",
+            "Report that the connection's user, password, key or token needs updating.",
+         ],
+      } satisfies ErrorDetails;
+   }
    if (error instanceof ServiceUnavailableError) {
       // Back-pressure: surface the server's own message so the caller knows to
       // retry rather than to go edit its Malloy.
       return {
          message: error.message,
          suggestions: [...BACK_PRESSURE_SUGGESTIONS],
+      } satisfies ErrorDetails;
+   }
+   if (error instanceof ConnectionPoolExhaustedError) {
+      // Transient: the query never reached the database because every session
+      // this server may open for the connection was busy.
+      return {
+         message: error.message,
+         suggestions: [
+            "Retry shortly; this clears as other queries on the connection finish.",
+            "If it persists, run fewer queries at once on this connection, or ask the operator to raise PUBLISHER_POSTGRES_POOL_MAX.",
+         ],
       } satisfies ErrorDetails;
    }
    if (error instanceof ResponseUnserializableError) {
@@ -205,7 +299,11 @@ export async function getModelForQuery(
       // Handle errors during package/model access or initial compilation
       let errorDetails: ErrorDetails;
       if (error instanceof EnvironmentNotFoundError) {
-         errorDetails = getNotFoundError(`environment '${environmentName}'`);
+         errorDetails = classifyToolError(
+            "executeQuery (load model)",
+            `environment '${environmentName}'`,
+            error,
+         );
       } else if (error instanceof PackageNotFoundError) {
          errorDetails = getNotFoundError(
             `package '${packageName}' in environment '${environmentName}'`,

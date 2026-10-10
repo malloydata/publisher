@@ -39,19 +39,6 @@ describe("MaterializationRepository list bounds", () => {
       expect(calls[0].sql).toContain("OFFSET ?");
       expect(calls[0].params).toEqual(["env-1", "pkg-a", 5, 10]);
    });
-
-   it("environment-scoped list always applies a default cap (500)", async () => {
-      const { repo, calls } = fakeRepo();
-      await repo.listByEnvironment("env-1");
-      expect(calls[0].sql).toContain("LIMIT ?");
-      expect(calls[0].params).toEqual(["env-1", 500]);
-   });
-
-   it("environment-scoped list honors an explicit limit over the default", async () => {
-      const { repo, calls } = fakeRepo();
-      await repo.listByEnvironment("env-1", { limit: 25 });
-      expect(calls[0].params).toEqual(["env-1", 25]);
-   });
 });
 
 // The restart-recovery anchor (MaterializationScheduler.recoveryAnchor) hangs on

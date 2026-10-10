@@ -286,6 +286,14 @@ jobs:
         id: duckdb
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
+      # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
+      # layer rebuilds daily instead of being served from the build cache forever.
+      # Daily rather than weekly so a Debian fix published mid-week is picked up by
+      # the next build instead of waiting for the week to roll over.
+      - name: Date for the apt refresh
+        id: day
+        run: echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+        shell: bash
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -294,6 +302,7 @@ jobs:
           load: true
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
+            APT_REFRESH=${{ steps.day.outputs.value }}
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -336,6 +345,14 @@ jobs:
           echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
             || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
           echo "✓ .mcp.json creation suppressed in the image"
+          # The server runs as uid 1000, and the USER must stay numeric:
+          # Kubernetes' runAsNonRoot cannot verify a named user. A new final
+          # stage, or a USER line lost in a reorder, would put the server back
+          # on root with every other check here still passing.
+          user=$(docker inspect malloy-publisher:smoke-test --format='{{.Config.User}}')
+          [ "$user" = "1000:1000" ] \
+            || { echo "✗ Image USER is '${user:-<unset, root>}', expected 1000:1000"; exit 1; }
+          echo "✓ Image runs as uid 1000"
       - name: Verify baked DuckDB extensions
         run: |
           # The image bakes the DuckDB extensions the server loads at runtime
@@ -388,15 +405,22 @@ jobs:
           #    status is its last command's. The explicit zero-match guard matters
           #    for the same reason: `find | while read` succeeds vacuously when the
           #    loop body never runs.
+          #    ADBC-SHIM: libadbc_driver_snowflake.so is currently the shim from
+          #    packages/server/adbc-shim/ and the upstream driver sits beside it as
+          #    libadbc_driver_snowflake.real.so, so BOTH are asserted per directory —
+          #    the shim alone loads and then fails every query when its driver is
+          #    missing, which is the exact failure this step exists to catch. When the
+          #    shim is removed, drop the .real.so line and this note.
           docker run --rm --entrypoint sh malloy-publisher:smoke-test -c '
-            n=$(find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
+            n=$(find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
             [ "$n" -gt 0 ] || { echo "no snowflake.duckdb_extension in the image"; exit 1; }
-            find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
+            find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
               | while read -r d; do
                   [ -f "$d/libadbc_driver_snowflake.so" ] || { echo "no driver beside $d"; exit 1; }
+                  [ -f "$d/libadbc_driver_snowflake.real.so" ] || { echo "no real driver beside $d (ADBC-SHIM)"; exit 1; }
                 done' \
-            || { echo "✗ ADBC Snowflake driver not co-located with the extension"; exit 1; }
-          echo "✓ ADBC driver sits beside every snowflake.duckdb_extension"
+            || { echo "✗ ADBC Snowflake driver (shim + real) not co-located with the extension"; exit 1; }
+          echo "✓ ADBC driver shim and real driver sit beside every snowflake.duckdb_extension"
 
           #    4b. Functional: the driver actually LOADS. Presence cannot show that
           #    -- a truncated or wrong-architecture .so sits there and fails to
@@ -431,8 +455,12 @@ jobs:
           echo "✓ All baked DuckDB extensions load offline"
       - name: Start container
         run: |
+          # A fresh named volume on publisher_data/, the way the Compose
+          # example runs it: Docker seeds it from the image's directory, so
+          # this boot is what shows the non-root server can write there.
           docker run -d --name malloy-publisher-smoke \
             -p 4000:4000 \
+            -v malloy-publisher-smoke-data:/publisher/publisher_data \
             malloy-publisher:smoke-test
           echo "Container ID: $(docker ps -q -f name=malloy-publisher-smoke)"
       - name: Wait for server to reach 'serving' state
@@ -459,16 +487,111 @@ jobs:
           exit 1
       - name: Test /api/v0/environments
         run: |
+          # This container mounts no config, so an empty list is the CORRECT
+          # answer and the assertion pins that rather than tolerating it: a
+          # `type == "array"` check alone passes for both an empty catalog and
+          # a full one, which is how an image that served nothing stayed green.
+          #
+          # This job only ever boots the image unconfigured, so it cannot also
+          # show that a configured image SERVES.
+          set -e
           response=$(curl -s http://localhost:4000/api/v0/environments)
           echo "API Response: $response"
-          if echo "$response" | jq -e '. | type == "array"' > /dev/null; then
-            echo "✓ /api/v0/environments returned a JSON array"
-          else
-            echo "✗ /api/v0/environments did not return a JSON array"
-            echo "--- container logs ---"
-            docker logs malloy-publisher-smoke || true
-            exit 1
-          fi
+          echo "$response" | jq -e '. | type == "array"' >/dev/null \
+            || { echo "✗ /api/v0/environments did not return a JSON array"; exit 1; }
+          echo "$response" | jq -e '. | length == 0' >/dev/null \
+            || { echo "✗ unmounted image loaded environments it was never given"; exit 1; }
+          echo "✓ /api/v0/environments returned an empty JSON array"
+      - name: Assert the unconfigured boot says why it is empty
+        run: |
+          # The counts already distinguish "serving" from "serving nothing"
+          # (PUBLISHER_READY carries environments=/packages=/load_errors=), but
+          # nothing said WHY the numbers were zero, so an operator who forgot
+          # the config mount saw a healthy server and an empty catalog. Assert
+          # the reason is emitted, naming the path that was checked.
+          #
+          # One grep spanning both halves, not two independent ones: the
+          # bundled-default line in config.ts has the shape "No
+          # publisher.config.json found at <root>/publisher.config.json", so
+          # separate greps would pass on a notice naming the WRONG path as long
+          # as any other line carried the right one.
+          set -e
+          logs=$(docker logs malloy-publisher-smoke 2>&1)
+          echo "$logs" \
+            | grep -q "Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json" \
+            || { echo "✗ empty boot did not name its missing config"; echo "$logs" | tail -30; exit 1; }
+          echo "✓ the empty boot names its missing config"
+      - name: Assert the server writes as uid 1000
+        run: |
+          # The image's USER says what the container starts as; this says what
+          # the running server actually wrote as. Both writable places are
+          # checked: the server root, where publisher.db lives, and the named
+          # volume. Reaching serving proves neither: a server denied
+          # publisher_data/ still serves, with the environment it could not
+          # write reported under loadErrors.
+          set -e
+          docker exec malloy-publisher-smoke sh -c '
+            for f in /publisher/publisher.db /publisher/publisher_data /publisher/ducklake_data; do
+              [ -e "$f" ] || { echo "$f does not exist"; exit 1; }
+              owner=$(stat -c %u "$f")
+              [ "$owner" = 1000 ] || { echo "$f is owned by uid $owner"; exit 1; }
+            done
+            touch /publisher/publisher_data/.write-probe && rm /publisher/publisher_data/.write-probe' \
+            || { echo "✗ the server is not writing as uid 1000"; exit 1; }
+          echo "✓ publisher.db, publisher_data and ducklake_data are owned by uid 1000"
+      - name: Assert a fresh volume on ducklake_data takes a DuckLake write as uid 1000
+        # What the prepared directory is for: a named volume mounted there is
+        # seeded owned by uid 1000, so a DuckLake storage destination with a
+        # local bucketUrl can write Parquet into it with no chown. Uses the
+        # image's baked duckdb CLI and the ducklake extension offline, with a
+        # metadata-file catalog so no Postgres is needed. DATA_INLINING_ROW_LIMIT
+        # 0 forces a real Parquet file; a small table would otherwise be
+        # inlined into the metadata and the data path never written.
+        run: |
+          set -e
+          docker volume create smoke-ducklake >/dev/null
+          trap 'docker volume rm -f smoke-ducklake >/dev/null' EXIT
+          docker run --rm --network none -v smoke-ducklake:/publisher/ducklake_data \
+            --entrypoint duckdb malloy-publisher:smoke-test -noheader -list -c "
+              LOAD ducklake;
+              ATTACH 'ducklake:/publisher/ducklake_data/meta.ducklake' AS l
+                (DATA_PATH '/publisher/ducklake_data/data/', DATA_INLINING_ROW_LIMIT 0);
+              CREATE TABLE l.t AS SELECT range AS x FROM range(1000);
+              SELECT count(*) FROM l.t;" | grep -qx 1000 \
+            || { echo "✗ a fresh ducklake_data volume is not writable by uid 1000"; exit 1; }
+          docker run --rm -v smoke-ducklake:/d --entrypoint sh malloy-publisher:smoke-test \
+            -c 'find /d -name "*.parquet" -user 1000 | grep -q .' \
+            || { echo "✗ no Parquet file written as uid 1000"; exit 1; }
+          echo "✓ a fresh ducklake_data volume takes a DuckLake write as uid 1000"
+      - name: Assert the image runs on Bun and carries no Node or Python runtime
+        run: |
+          # The server is a Bun process and nothing in it spawns `node`, so the
+          # image installs no Node: the NodeSource package would also bring in
+          # python3 and its unfixed Debian CVEs. This pins that decision. Three
+          # things are checked against the running container: PID 1 is Bun (the
+          # image's CMD), a `node` command resolves to the Bun fallback the
+          # oven/bun base provides rather than to a real Node, and python3 is
+          # absent. Reaching 'serving' alone shows the server boots, not that
+          # a real Node did not quietly come back.
+          set -e
+          docker exec malloy-publisher-smoke sh -c '
+            exe=$(basename "$(readlink /proc/1/exe)")
+            [ "$exe" = bun ] || { echo "PID 1 is $exe, not bun"; exit 1; }
+            runtime=$(node -e "console.log(typeof Bun)")
+            [ "$runtime" = object ] || { echo "node resolves to a runtime where typeof Bun is $runtime, not Bun"; exit 1; }
+            if command -v python3 >/dev/null 2>&1; then echo "python3 is installed: $(command -v python3)"; exit 1; fi' \
+            || { echo "FAIL: the image is expected to run on Bun with no Node or Python runtime"; exit 1; }
+          echo "OK: PID 1 is Bun, node resolves to Bun, and python3 is absent"
+      - name: Assert package mounts need no writes, and a refused access names its errno
+        # The step above proves the server CAN write where the image prepared
+        # it to. This one proves a root-owned or read-only package mount still
+        # loads (nothing is written beside a zip), and that a write the uid-1000
+        # server cannot make -- a publisher_data volume left root-owned by a
+        # 0.8.x, an unreadable config or credentials file -- is reported with
+        # its errno rather than a bare 500. Its own containers and volumes, on
+        # their own ports, so the container above is untouched. Extracted to a
+        # script so it runs identically on a laptop.
+        run: scripts/docker-smoke-fs-write-errors.sh malloy-publisher:smoke-test
       - name: Container logs (always)
         if: always()
         run: docker logs malloy-publisher-smoke || true
@@ -476,6 +599,7 @@ jobs:
         if: always()
         run: |
           docker rm -f malloy-publisher-smoke || true
+          docker volume rm malloy-publisher-smoke-data || true
 
   cross_platform_test:
     name: Cross Platform Tests

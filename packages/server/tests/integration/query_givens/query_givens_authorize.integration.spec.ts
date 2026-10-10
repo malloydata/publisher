@@ -4,23 +4,23 @@
 /// <reference types="bun-types" />
 
 /**
- * HTTP E2E for the givens × `#(authorize)` interaction. Every gate is a row
- * filter, so there is no separate admit/deny probe to fail closed and no
- * gated-vs-ungated asymmetry left to pin. A bad given (unknown NAME or
- * wrong-typed VALUE) is now the SAME clean 400 on a gated source as on an
- * ungated one, and the gate's own verdict is expressed in the rows returned:
+ * HTTP E2E for the givens × `#(authorize)` interaction over the wire. The
+ * fixture's gate is a LOCK, so the matrix has three outcomes rather than two,
+ * and which one a caller gets turns on WHERE the request fails:
  *
  *   - unknown given name        -> 400 (as ungated; nothing executes)
  *   - authorized + valid givens -> 200 (retargets rows)
- *   - authorize denies          -> 200 with ZERO rows
+ *   - lock denies the caller    -> 403
  *   - valid name, BAD value     -> 400 (as ungated; nothing executes)
  *
- * The 400s still fail closed — they are refused before execution, so no row is
- * served and the response is identical to the ungated path, revealing nothing
- * about whether a gate exists. Only a package-level FGA denial is still a 403.
+ * The 400s fail closed before execution, so the response is identical to the
+ * ungated path and reveals nothing about whether a gate exists. The 403 is the
+ * lock's own verdict: a caller it does not admit gets no answer about this
+ * source at all, rather than a zero-row result it could mistake for data.
  *
- * See packages/server/src/service/authorize.ts and
- * `Model.authorizeAndBindRunnable` (the graft that applies the filter).
+ * See packages/server/src/service/authorize_lock.ts (the decision) and
+ * `Model.authorizeAndBindRunnable` (the graft, which a refused caller never
+ * reaches).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -109,14 +109,9 @@ describe("givens × authorize on /query (HTTP E2E)", () => {
       expect(Number(r[0].order_count)).toBe(3);
    });
 
-   it("authorize deny (non-admin role) -> 200 with zero rows", async () => {
-      // The gate is a row filter, so a caller it excludes gets the query's own
-      // result schema with nothing in it rather than a 403.
+   it("lock denies (non-admin role) -> 403", async () => {
       const res = await queryGated({ givens: { role: "guest" } });
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { result: string };
-      const r = JSON.parse(body.result) as Row[];
-      expect(Number(r[0].order_count)).toBe(0);
+      expect(res.status).toBe(403);
    });
 
    it("valid given name with a bad value -> 400 on a gated source, same as ungated", async () => {

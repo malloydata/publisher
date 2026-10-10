@@ -112,8 +112,20 @@ export function resetActiveQueryCountForTesting(): void {
  *   - Row/byte caps bound a single response.
  *   - Memory governor (Step 4) sheds load when RSS crosses the
  *     high-water mark.
- *   - Query timeout (Step 5) prevents one query from monopolising a
- *     slot indefinitely.
+ *   - Query timeout (Step 5) prevents one QUERY from monopolising a
+ *     slot indefinitely. It does not reach every slot holder: compile
+ *     and both sqlSource routes run through `compileSource` and
+ *     `fetchSelectSchema`, and upstream exposes an `abortSignal` only
+ *     on `RunSQLOptions` -- the query-execution path -- so there is
+ *     nothing for the timeout to cancel. Wrapping them anyway would
+ *     answer the caller and release the slot while the work carried
+ *     on, leaving the pod holding more than it had slots outstanding.
+ *     Their bound is the HTTP server timeout, whose `res.on("close")`
+ *     returns the slot when the socket is destroyed; the MCP compile
+ *     tool has no equivalent, releasing in a `finally` on the awaited
+ *     promise, so a client that disconnects mid-compile holds its slot
+ *     until the compile finishes. Cancellable compilation is upstream
+ *     work.
  * This middleware caps the *number of slots in flight* at any one
  * moment so a burst of well-behaved but expensive queries can't all
  * land simultaneously and stampede aggregate memory.

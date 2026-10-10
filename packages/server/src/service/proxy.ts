@@ -19,11 +19,12 @@
  * `ssh.hostKey` is optional. When set, it pins the bastion's host key(s) and the
  * tunnel is fail-closed on mismatch; it may list multiple known_hosts lines (a
  * load-balanced/HA bastion presents a different key per backend), and any listed
- * key is accepted. When absent, the tunnel connects without host-key
- * verification — the self-service default, matching mainstream BI tools' SSH
- * tunnels. The SSH transport is still encrypted; unpinned, a MITM on the
- * publisher→bastion hop is possible, mitigated by the customer allowlisting our
- * egress on the bastion.
+ * key is accepted. When absent, the tunnel is fail-closed by default: an
+ * unverified host key means a MITM on the publisher->bastion hop is undetectable,
+ * so the connection is refused. An operator who accepts that risk (typically
+ * because egress is allowlisted on the bastion) opts in for the deployment via
+ * PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY=true, which restores the unpinned
+ * connect with a warning. The SSH transport is encrypted regardless.
  */
 
 import net from "net";
@@ -33,6 +34,46 @@ import { components } from "../api";
 import { logger } from "../logger";
 
 type ConnectionProxy = components["schemas"]["ConnectionProxy"];
+
+// Deployment opt-in to connect an SSH tunnel whose bastion host key is not pinned.
+// Off by default (fail closed): whether to accept an unverified host key is an
+// operator posture, so it is an env flag rather than a per-connection spec field.
+export const ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV =
+   "PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY";
+
+/**
+ * Whether this deployment accepts an unverified bastion host key.
+ *
+ * Accepts the same spellings as every other boolean flag in this server (`1`,
+ * `true`, `yes`, `on`, and their negatives) so an operator who writes `=1` here
+ * gets what they get everywhere else. It does NOT use `parseBoolEnv`, whose
+ * contract is to throw on an unrecognised value: one of the two callers is
+ * ssh2's `hostVerifier`, a synchronous callback inside a Promise constructor,
+ * and a throw there escapes past `fail()` -- losing the descriptive refusal and
+ * settling the connection through a path this module does not control. An
+ * unrecognised value therefore falls back to the secure default here, and the
+ * loud version of that check lives at config load, which is a context that can
+ * throw (see validateConnectionShape).
+ */
+export function allowUnverifiedHostKey(): boolean {
+   return TRUTHY_ENV_VALUES.has(
+      (process.env[ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV] ?? "")
+         .trim()
+         .toLowerCase(),
+   );
+}
+
+// Mirrors the accepted set in config.ts's parseBoolEnv.
+const TRUTHY_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
+
+function unpinnedRefusal(host: string): Error {
+   return new Error(
+      `SSH host-key verification is required for ${host}: no hostKey is ` +
+         `pinned. Pin the bastion host key on the connection's ssh.hostKey, or ` +
+         `set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
+         `key (a MITM on the publisher-to-bastion hop is then undetectable).`,
+   );
+}
 
 export interface ProxyEndpoint {
    host: string;
@@ -94,6 +135,20 @@ function openSshProxy(
    target: { host: string; port: number },
 ): Promise<ProxyEndpoint> {
    return new Promise((resolve, reject) => {
+      // Refuse an unpinned tunnel BEFORE dialing. This needs no network, and the
+      // condition is a permanent misconfiguration rather than a transient one: a
+      // rejected build is evicted from proxyConnectionCache so the next query
+      // rebuilds, and the passthrough federate caller is not cached at all, so
+      // leaving this to the hostVerifier below costs a real TCP connect and key
+      // exchange against the tenant's bastion on every query, forever. It also
+      // buries the actionable message, because a bastion that accepts but stalls
+      // the handshake surfaces as a handshake timeout instead. Same reasoning as
+      // the sslmode check in validateConnectionShape, which fails at config load
+      // for this exact reason. The hostVerifier branch stays as the backstop.
+      if (!ssh.hostKey && !allowUnverifiedHostKey()) {
+         reject(unpinnedRefusal(ssh.host));
+         return;
+      }
       const client = new SshClient();
       let localPort = 0;
       let server: net.Server | undefined;
@@ -149,12 +204,21 @@ function openSshProxy(
                );
                return false;
             }
-            // Unpinned (no hostKey): connect without host-key verification — the
-            // self-service default (see file header).
-            logger.warn(
-               `Connecting to SSH bastion ${ssh.host} without host-key verification (no hostKey pinned).`,
-            );
-            return true;
+            // Unpinned (no hostKey). Fail closed by default: an unverified host
+            // key means a MITM on the publisher->bastion hop is undetectable.
+            // An operator who accepts that risk (e.g. egress is allowlisted on the
+            // bastion) opts in explicitly via the deployment env flag; this is an
+            // operator posture, not a per-connection author choice, so it is an
+            // env flag rather than a spec field.
+            if (allowUnverifiedHostKey()) {
+               logger.warn(
+                  `Connecting to SSH bastion ${ssh.host} without host-key verification ` +
+                     `(no hostKey pinned; ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true).`,
+               );
+               return true;
+            }
+            fail(unpinnedRefusal(ssh.host));
+            return false;
          }) as SyncHostVerifier,
       };
 

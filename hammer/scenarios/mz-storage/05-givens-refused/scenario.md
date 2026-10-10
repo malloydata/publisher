@@ -8,12 +8,22 @@ Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
 -->
 
-# Eligibility: a given-referencing source is refused
+# A given the persisted query READS is refused, wherever it was declared
 
-A source that references a `given` must be REFUSED for a `storage=` destination: a
-given binds per query for row-level access control, so a materialized-once table
-served to everyone would leak filtered rows across tenants. The build must fail
-with a clear reason. This is the security-critical negative case.
+`scoped` carries `where: region ~ $REGION`, and `scoped_rollup` is a query over
+it. The query reads that filter, so the predicate is in the build SQL with the
+given's value already substituted — the artifact is one region's rows, and the
+source's own `filterList` is empty, so nothing is left for the read to re-apply.
+
+The given is not written inside the persisted query here; it is inherited from
+the source the query reads. That is the point of this case. What decides the
+refusal is whether the BUILD substitutes a value, not which line the author
+typed the given on — and a filter one derivation up is substituted just as
+surely as one written in place.
+
+The contrast is `tenant-scoped-source-serves-per-caller`, where the given sits in
+the persist source's OWN extend block: absent from the build, re-applied per
+caller, and served from the tier.
 
 ## Publisher
 
@@ -52,4 +62,12 @@ source: scoped_rollup is scoped -> {
 The package compiles (givens are valid Malloy), but the build is refused by the
 eligibility gate and ends FAILED.
 
-cites: references a given
+cites: substituted at build time
+
+## Build refusals
+
+Expect:
+
+| source        | tier    | reason                   |
+| ------------- | ------- | ------------------------ |
+| scoped_rollup | storage | given_in_persisted_query |

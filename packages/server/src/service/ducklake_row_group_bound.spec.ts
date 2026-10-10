@@ -38,7 +38,7 @@ describe("applyDuckLakeRowGroupBound", () => {
       await applyDuckLakeRowGroupBound(conn, "lake");
       expect(sql).toEqual([
          "SET preserve_insertion_order=false",
-         "CALL lake.set_option('parquet_row_group_size_bytes', '16MB')",
+         "CALL \"lake\".set_option('parquet_row_group_size_bytes', '16MB')",
       ]);
    });
 

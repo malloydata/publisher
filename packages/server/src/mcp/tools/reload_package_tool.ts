@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import { logger } from "../../logger";
 import { EnvironmentStore } from "../../service/environment_store";
 import { PackageController } from "../../controller/package.controller";
@@ -11,18 +11,14 @@ import { buildMalloyUri, classifyToolError } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 
 // Zod shape for reload_package. environmentName/packageName mirror the
-// other tools and point the agent at get_context for name discovery.
+// other tools and point the agent at list_packages for name discovery.
 const reloadShape = {
    environmentName: z
       .string()
-      .describe(
-         "Environment name. Call get_context with no arguments to list the available environments.",
-      ),
+      .describe("Environment name, as list_packages returns it."),
    packageName: z
       .string()
-      .describe(
-         "Package to reload. Call get_context with just environmentName to list its packages.",
-      ),
+      .describe("Package to reload, as list_packages returns it."),
 };
 
 /**
@@ -39,18 +35,18 @@ export const RELOAD_FAILURE_IS_SAFE =
 
 const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-${RELOAD_FAILURE_IS_SAFE} Running compile_model first is still the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload.
+${RELOAD_FAILURE_IS_SAFE} Running compile_model at scope "package" first is the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload. It reports the compile errors, render-tag findings and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface and discovery warnings, among others) appears only here.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names get_context returns.
 
 ## Behavior
-Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package whose stored metadata carries an install location (only a PATCH that supplies one sets it) is re-fetched from that source instead, which overwrites on-disk edits.
+Recompiles the package from its current on-disk content under publisher_data/, so your saved edits are picked up. This is the path every package from publisher.config.json takes. A package the server installed from a location (a publish or an update that supplied one) is re-fetched from that location instead, keeping its manifest binding, which overwrites on-disk edits.
 
 ## Response
-A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). Check mode if you had unsaved-elsewhere edits on disk: "in-place" recompiled them, "reinstalled" re-fetched over them. A reload that hits a hard compile error returns an error payload instead.
+A JSON object with status "reloaded", a mode of "in-place" or "reinstalled", the package name, sourceContentSha and servedRevision, any render-tag warnings, and any exploresWarnings (curated-discovery entries that did not resolve to a model). "in-place" recompiled your on-disk edits; "reinstalled" re-fetched over them. A hard compile error returns an error payload instead.
 
-sourceContentSha is the receipt. A reload succeeds whether or not it saw your edit, because Publisher compiles a COPY under publisher_data/ unless the environment was started with --watch-env. Compare sourceContentSha across the reload: unchanged means your edit never reached the server, and any query after it describes the old model. servedRevision moves either way, so it identifies the load, not the content.`;
+sourceContentSha is the receipt: Publisher compiles a COPY under publisher_data/ unless the environment is watch-mounted, so a reload succeeds whether or not it saw your edit. Unchanged across the reload means your edit never reached the server. servedRevision moves either way.`;
 
 /**
  * Registers the reload_package MCP tool: recompiles a package from its

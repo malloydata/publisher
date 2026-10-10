@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { tileGridColumn } from "./Dashboard";
+import { tileGridColumn } from "./DashboardGrid";
 
 describe("tileGridColumn", () => {
    it("spans one column when the view carries no colspan", () => {

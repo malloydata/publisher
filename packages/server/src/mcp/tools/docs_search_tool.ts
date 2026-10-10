@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { z } from "zod/v3";
 import lunr from "lunr";
 import { EnvironmentStore } from "../../service/environment_store";
 import { buildMalloyUri } from "../handler_utils";
@@ -89,7 +89,7 @@ export function searchDocsIndex(
 const SEARCH_DOCS_DESCRIPTION = `Search the Malloy documentation by keyword and return the most relevant doc pages, each with a short excerpt and a link. Use this to look up Malloy language or rendering syntax instead of guessing.
 
 ## When to use
-- Before writing unfamiliar Malloy syntax (window functions, autobin, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
+- Before writing unfamiliar Malloy syntax (window functions, dialect-specific functions, rendering tags) or when a query fails with a syntax error you do not recognize.
 - Do NOT use it to look up field or source names in a model; use get_context for that.
 - Do NOT use it for anything about running Publisher itself — server flags, deployment, connection or embedding-provider configuration, publisher.json, packages, watch mode. This index covers the Malloy LANGUAGE docs only. Those answers live in the deployment's own docs/ directory and bundled skills, not here.
 

@@ -1,26 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Add } from "@mui/icons-material";
-import {
-   Box,
-   Button,
-   Dialog,
-   DialogActions,
-   DialogContent,
-   DialogTitle,
-   Snackbar,
-   Stack,
-   TextField,
-   Typography,
-} from "@mui/material";
-import { useQueryClient } from "@tanstack/react-query";
+import { Box, Button, Stack, TextField } from "@mui/material";
 import React, { useState } from "react";
 import { Package } from "../../client";
-import { useMutationWithApiError } from "../../hooks/useQueryWithApiError";
+import { useCrudMutation } from "../../hooks/useCrudMutation";
 import { parseResourceUri } from "../../utils/formatting";
 import { DOC_LINKS } from "../../constants/docLinks";
 import { useServer } from "../ServerProvider";
+import { AppDialog } from "../AppDialog";
+import { AddButton } from "../buttons";
 
 interface AddPackageDialogProps {
    resourceUri: string;
@@ -31,33 +20,22 @@ export default function AddPackageDialog({
 }: AddPackageDialogProps) {
    const [open, setOpen] = useState(false);
    const { apiClients } = useServer();
-   const queryClient = useQueryClient();
-   const [notificationMessage, setNotificationMessage] = useState("");
 
    const { environmentName } = parseResourceUri(resourceUri);
 
-   const addPackage = useMutationWithApiError({
-      async mutationFn(variables: Package) {
+   const addPackage = useCrudMutation({
+      mutationFn(variables: Package) {
          return apiClients.packages.createPackage(environmentName, {
             name: variables.name,
             description: variables.description,
             location: variables.location,
          });
       },
-      onSuccess() {
-         setOpen(false);
-         setNotificationMessage("Package created successfully");
-         queryClient.invalidateQueries({
-            queryKey: ["packages", environmentName],
-         });
-      },
-      onError(error) {
-         setNotificationMessage(
-            error instanceof Error
-               ? error.message
-               : "An unknown error occurred",
-         );
-      },
+      success: "Package created",
+      invalidates: [["packages", environmentName]],
+      closeDialog: () => setOpen(false),
+      resource: "package",
+      action: "create",
    });
 
    const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -71,132 +49,85 @@ export default function AddPackageDialog({
 
    return (
       <>
-         <Button
-            onClick={() => setOpen(true)}
-            variant="contained"
-            color="primary"
-            startIcon={<Add />}
-         >
-            Add Package
-         </Button>
+         <AddButton label="Package" onClick={() => setOpen(true)} />
 
-         <Dialog
+         <AppDialog
             open={open}
             onClose={() => setOpen(false)}
-            maxWidth="sm"
-            fullWidth
-            PaperProps={{ sx: { borderRadius: 2 } }}
+            title="New package"
+            description={
+               <>
+                  A package is a directory of Malloy models and their data. Give
+                  its location as a GitHub, S3 or GCS URL, or an absolute path
+                  the server can read; see the{" "}
+                  <Box
+                     component="a"
+                     href={DOC_LINKS.publishing}
+                     target="_blank"
+                     rel="noopener noreferrer"
+                     sx={{ color: "text.primary" }}
+                  >
+                     package format
+                  </Box>
+                  .
+               </>
+            }
+            actions={
+               <>
+                  <Button
+                     disabled={addPackage.isPending}
+                     onClick={() => setOpen(false)}
+                  >
+                     Cancel
+                  </Button>
+                  <Button
+                     type="submit"
+                     form="package-form"
+                     variant="contained"
+                     loading={addPackage.isPending}
+                  >
+                     Create package
+                  </Button>
+               </>
+            }
          >
-            <DialogTitle
-               sx={{
-                  fontSize: "1.25rem",
-                  fontWeight: 600,
-                  letterSpacing: "-0.025em",
-                  pt: 3,
-                  pb: 1,
-                  px: 3,
-               }}
-            >
-               Create New Package
-            </DialogTitle>
-            <DialogContent sx={{ px: 3, pb: 0 }}>
-               <Box sx={{ mb: 3 }}>
-                  <Typography
-                     variant="body2"
-                     color="text.secondary"
-                     sx={{ mb: 1.5 }}
-                  >
-                     Create a new Malloy package to start exploring your data.
-                  </Typography>
-                  <Typography
-                     variant="body2"
-                     color="text.secondary"
-                     sx={{ mb: 1.5 }}
-                  >
-                     The location can be a GitHub/S3/GCP URL containing a
-                     package (zipped or unzipped), or an absolute path to a
-                     directory the publisher server has access to.
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary">
-                     Make sure to conform to the{" "}
-                     <Box
-                        component="a"
-                        href={DOC_LINKS.publishing}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        sx={{
-                           color: "text.primary",
-                           textDecoration: "underline",
-                        }}
-                     >
-                        Malloy Package Format
-                     </Box>
-                     .
-                  </Typography>
-               </Box>
-               <form onSubmit={handleSubmit} id="package-form">
-                  <Stack spacing={2.5}>
-                     <TextField
-                        autoFocus
-                        required
-                        id="name"
-                        name="name"
-                        label="Package Name"
-                        type="text"
-                        fullWidth
-                        variant="outlined"
-                        size="small"
-                        InputLabelProps={{ shrink: true }}
-                     />
-                     <TextField
-                        id="description"
-                        name="description"
-                        label="Description"
-                        multiline
-                        rows={3}
-                        fullWidth
-                        variant="outlined"
-                        size="small"
-                        InputLabelProps={{ shrink: true }}
-                     />
-                     <TextField
-                        id="location"
-                        name="location"
-                        label="Location"
-                        type="text"
-                        placeholder="e.g. s3://my-bucket/my-package.zip"
-                        fullWidth
-                        variant="outlined"
-                        size="small"
-                        InputLabelProps={{ shrink: true }}
-                     />
-                  </Stack>
-               </form>
-            </DialogContent>
-            <DialogActions sx={{ px: 3, pt: 2, pb: 3, gap: 1 }}>
-               <Button
-                  variant="outlined"
-                  disabled={addPackage.isPending}
-                  onClick={() => setOpen(false)}
-               >
-                  Cancel
-               </Button>
-               <Button
-                  type="submit"
-                  form="package-form"
-                  variant="contained"
-                  loading={addPackage.isPending}
-               >
-                  Save Changes
-               </Button>
-            </DialogActions>
-         </Dialog>
-         <Snackbar
-            open={notificationMessage !== ""}
-            autoHideDuration={6000}
-            onClose={() => setNotificationMessage("")}
-            message={notificationMessage}
-         />
+            <form onSubmit={handleSubmit} id="package-form">
+               <Stack sx={{ gap: 2 }}>
+                  <TextField
+                     autoFocus
+                     required
+                     id="name"
+                     name="name"
+                     label="Name"
+                     type="text"
+                     fullWidth
+                     size="small"
+                     InputLabelProps={{ shrink: true }}
+                  />
+                  <TextField
+                     id="description"
+                     name="description"
+                     label="Description"
+                     multiline
+                     rows={3}
+                     fullWidth
+                     size="small"
+                     InputLabelProps={{ shrink: true }}
+                  />
+                  <TextField
+                     id="location"
+                     name="location"
+                     label="Location"
+                     type="text"
+                     placeholder="e.g. s3://my-bucket/my-package.zip"
+                     fullWidth
+                     size="small"
+                     InputLabelProps={{ shrink: true }}
+                  />
+               </Stack>
+            </form>
+         </AppDialog>
+         {addPackage.notice}
       </>
    );
 }

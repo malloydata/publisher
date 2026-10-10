@@ -2,21 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import ScheduleIcon from "@mui/icons-material/Schedule";
-import {
-   Alert,
-   Box,
-   Button,
-   Dialog,
-   DialogActions,
-   DialogContent,
-   DialogContentText,
-   DialogTitle,
-   TextField,
-   Tooltip,
-   Typography,
-} from "@mui/material";
+import { Alert, Button, TextField } from "@mui/material";
 import { useState } from "react";
 import { MONO_FONT_FAMILY } from "../styles";
+import { AppDialog } from "../AppDialog";
+import { SecondaryButton } from "../buttons";
 import { describeCron, formatNextRun } from "./cron";
 
 type SetScheduleDialogProps = {
@@ -59,104 +49,73 @@ export default function SetScheduleDialog({
       }
    };
 
-   const button = (
-      <span>
-         <Button
-            variant="outlined"
-            size="small"
-            startIcon={<ScheduleIcon />}
-            onClick={handleOpen}
-            disabled={disabled}
-            aria-label={currentSchedule ? "Edit schedule" : "Set schedule"}
-         >
-            {currentSchedule ? "Edit schedule" : "Set schedule"}
-         </Button>
-      </span>
-   );
-
    return (
       <>
-         {disabled && disabledReason ? (
-            <Tooltip title={disabledReason}>{button}</Tooltip>
-         ) : (
-            button
-         )}
+         <SecondaryButton
+            label="Schedule"
+            icon={<ScheduleIcon />}
+            onClick={handleOpen}
+            disabled={disabled}
+            {...(disabledReason ? { disabledReason } : {})}
+            ariaHasPopup="dialog"
+            // The label is the noun, like every other control on this row; the
+            // accessible name keeps the verb, and says which verb it is.
+            ariaLabel={currentSchedule ? "Edit schedule" : "Set schedule"}
+         />
 
-         <Dialog
+         <AppDialog
             open={open}
             onClose={handleClose}
-            maxWidth="xs"
-            fullWidth
-            aria-labelledby="set-schedule-title"
-         >
-            <DialogTitle id="set-schedule-title">
-               {currentSchedule ? "Edit schedule" : "Set schedule"}
-            </DialogTitle>
-            <DialogContent>
-               <DialogContentText sx={{ mb: 2 }}>
-                  The publisher rebuilds the materializations in this package on
-                  this cadence. Enter a 5-field UNIX cron, evaluated in UTC. In
-                  a hosted deployment, the change takes effect on your next
-                  publish.
-               </DialogContentText>
-               <TextField
-                  autoFocus
-                  fullWidth
-                  label="Cron expression"
-                  value={expr}
-                  onChange={(event) => setExpr(event.target.value)}
-                  error={expr.trim() !== "" && !info.valid}
-                  slotProps={{
-                     htmlInput: { style: { fontFamily: MONO_FONT_FAMILY } },
-                  }}
-               />
-               <Box sx={{ mt: 1.5, minHeight: 48 }}>
-                  {info.valid ? (
-                     <>
-                        <Typography variant="body2">
-                           {info.description}
-                        </Typography>
-                        <Typography variant="body2" color="text.secondary">
-                           Next run: {formatNextRun(info.nextRun)}
-                        </Typography>
-                     </>
-                  ) : (
-                     <Typography variant="body2" color="error">
-                        {info.error}
-                     </Typography>
-                  )}
-               </Box>
-               <Alert severity="info" sx={{ mt: 2 }}>
-                  A schedule runs only on version-scoped packages, so saving one
-                  sets <code>scope: version</code> for this package.
-               </Alert>
-            </DialogContent>
-            <DialogActions sx={{ justifyContent: "space-between", px: 3 }}>
-               <Box>
+            title={currentSchedule ? "Edit schedule" : "Set schedule"}
+            description="The publisher rebuilds this package's materializations on this cadence: a 5-field UNIX cron, in UTC. In a hosted deployment the change takes effect on your next publish."
+            actions={
+               <>
                   {currentSchedule && (
                      <Button
                         color="error"
                         loading={isSubmitting}
                         onClick={() => submit(null)}
+                        // The destructive option sits away from the pair that
+                        // confirms and cancels.
+                        sx={{ mr: "auto" }}
                      >
                         Clear schedule
                      </Button>
                   )}
-               </Box>
-               <Box>
                   <Button onClick={handleClose}>Cancel</Button>
                   <Button
                      variant="contained"
                      loading={isSubmitting}
                      disabled={!info.valid}
                      onClick={() => submit(expr.trim())}
-                     sx={{ ml: 1 }}
                   >
-                     Save
+                     Save schedule
                   </Button>
-               </Box>
-            </DialogActions>
-         </Dialog>
+               </>
+            }
+         >
+            <TextField
+               autoFocus
+               fullWidth
+               size="small"
+               label="Cron expression"
+               value={expr}
+               onChange={(event) => setExpr(event.target.value)}
+               error={expr.trim() !== "" && !info.valid}
+               helperText={
+                  info.valid
+                     ? `${info.description} · next run ${formatNextRun(info.nextRun)}`
+                     : info.error
+               }
+               slotProps={{
+                  htmlInput: { style: { fontFamily: MONO_FONT_FAMILY } },
+               }}
+            />
+            <Alert severity="info">
+               A schedule runs only on version-scoped packages, so saving one
+               sets <code>scope: version</code> for this package.
+            </Alert>
+         </AppDialog>
       </>
    );
 }
