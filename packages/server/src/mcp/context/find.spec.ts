@@ -65,8 +65,8 @@ describe("find", () => {
       expect(top(r, 4)).toEqual([
          "dimension:flights@travel.malloy:start_date",
          "dimension:races@reports.malloy:start_date",
-         "dimension:orders_public@shop.malloy:start_date",
          "dimension:orders@shop.malloy:start_date",
+         "dimension:orders_public@shop.malloy:start_date",
       ]);
       expect(r.candidates.length).toBe(30);
       expect(r.candidates[0].ranks).toEqual({ close: 1, keyword: 1 });
@@ -86,7 +86,7 @@ describe("find", () => {
          (c) => c.key === "dimension:cities@travel.malloy:city",
       )!;
       expect(r.candidates.indexOf(city)).toBe(5);
-      expect(city.ranks).toEqual({ close: 24, value: 1 });
+      expect(city.ranks).toEqual({ close: 25, value: 1 });
       expect(city.valueScore).toBe(1);
    });
 
