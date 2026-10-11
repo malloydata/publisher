@@ -165,9 +165,11 @@ whichever report renders it. `to=self` is unchanged.
 **Bare-name targets are deprecated, not broken.** A target with no `/` (`to=overview`) is first
 read as a path from the package root, like any other target: if `overview.malloy` is a report, it
 resolves, with no warning. Only when nothing is at that path does the deprecated fallback apply,
-because `to=overview` used to name a basename: it resolves when exactly one report in the package
-has that basename, and the package reports `drill-target-by-name` (§8) with the path to write.
-When no report or more than one has that basename, the target is unresolved and reported, naming
+because `to=overview` used to name a dashboard's basename: it resolves to the one grid report with
+that basename, or failing that to the one report of either layout with it, and the package reports `drill-target-by-name` (§8) with the path to write.
+Grid first because a notebook was always free to share a dashboard's basename (storefront ships
+`dashboards/overview.malloy` beside `notebooks/overview.malloy`), and bare names only ever named
+the dashboard. Otherwise the target is unresolved and reported, naming
 the candidates. The release that ends the deprecation drops the fallback, leaving only the path
 reading. The path form is accepted from the first release, so a package can migrate before the
 deprecation ends and lose nothing.
@@ -355,8 +357,9 @@ map, and the `compile_model` description's statement of the kind rule becomes th
 - **Every existing URL and REST route answers.** Path routes cover every file already in the two
   directories; the old routes are deprecated aliases (§4, §9).
 - **Every existing `# drill { to=<name> }` keeps working during the deprecation**, because names
-  are unique in every package today (the folder rule guarantees it), so §3's unique-match rule
-  resolves all of them, each with a `drill-target-by-name` warning.
+  are unique among dashboards in every package today (the folder rule guarantees it), and §3's
+  fallback tries the grid reports first, so it resolves every one of them to the same dashboard,
+  even where a notebook shares the basename, each with a `drill-target-by-name` warning.
 - **A model with an artifact tag outside the two directories becomes a report.** Today the tag
   means nothing there. Nothing in the repo has one; `report-on-surface` states it whenever it
   removes something from the surface. It needs a release note.

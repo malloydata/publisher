@@ -722,10 +722,11 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   name goes into the destination's URL exactly as the tag spells it, the destination binds only the
   parameters it declares, and the click lands on an unfiltered page with nothing erroring.
 
-**Bare-name targets are deprecated.** A target that is not a report's path but matches exactly one report's
-basename (`to=overview` for a report at `sales/overview.malloy`) still resolves during a deprecation
-window, and the package reports `drill-target-by-name` with the path to write. When no report or more than
-one has that basename, the target is unresolved and the warning names the candidates. A later release
+**Bare-name targets are deprecated.** A target with no `/` is read as a path from the package root first.
+When no report is there, a deprecated fallback reads it as a basename (`to=overview` for a report at
+`sales/overview.malloy`) during a deprecation window: it resolves to the one grid report with that basename,
+or else the one report of either layout with it, and the package reports `drill-target-by-name` with the
+path to write. Otherwise the target is unresolved and the warning names the candidates. A later release
 reads every target as a path, so write paths now.
 
 **The rows behind a value.** On a tile layout every grouped value is clickable. A value whose dimension
@@ -854,6 +855,8 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 - **The tag and the header.** An artifact tag that does not parse (`notebook-artifact-unparsed`), a
   statement or tag above it, prose the reader cannot place, and a cell report that will not open, each as an
   `error` naming the line and the fix.
+- **The layout.** `layout=` and `kind=` that disagree (`report-layout-conflict`, error; `layout=` wins), and
+  a `layout=` other than `grid` or `linear` (`report-layout-unknown`, error).
 - **Deprecations.** `kind=` in the tag (`report-kind-deprecated`, info, with the `layout=` to write); a
   query-level `# artifact` (`query-artifact-deprecated`, with the rewrite); a tileless tag with no `layout=`
   (`report-layout-implicit`).

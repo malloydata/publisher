@@ -3704,10 +3704,12 @@ components:
             does not resolve, a `# drill` naming a destination that is not a
             report, and a tile, single query or filter suggest that reads a
             source the surface does not export, so it won't load. A `# drill`
-            that names a report by its basename rather than its path still
-            resolves when exactly one report has that basename, and is reported
-            as `drill-target-by-name` (`warn`) with the path to write; with
-            none or several it is unresolved (`error`), naming the candidates.
+            with no `/` is read as a path from the package root first; when no
+            report is there it falls back, during the deprecation, to the one
+            grid report with that basename or else the one report of either
+            layout with it, and is reported as `drill-target-by-name` (`warn`)
+            with the path to write; otherwise it is unresolved (`error`),
+            naming the candidates.
             Curation findings: a root `index.malloy` carrying an artifact tag,
             which is ignored (`index-is-not-a-report`, `error`); a report that
             `index.malloy` imports or `explores` lists (`report-on-surface`,
