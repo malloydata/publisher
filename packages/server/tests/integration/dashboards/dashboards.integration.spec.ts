@@ -4,8 +4,8 @@
 /// <reference types="bun-types" />
 
 /**
- * E2E coverage for dashboard discovery: the `/dashboards` list and
- * `/dashboards/{name}` manifest endpoints, against a real package whose
+ * E2E coverage for dashboard discovery: the grid reports in the `/reports`
+ * list and the `/reports/{path}` manifest, against a real package whose
  * `dashboards/` directory exercises each form — a single-query dashboard, one
  * relying on the doc-comment title fallback with `autorun=false` and a
  * filter-literal starting value, a composite (`## artifact { tiles=… }`), and a
@@ -79,6 +79,7 @@ const conventionFixtureDir = path.resolve(
 
 interface DashboardItem {
    resource?: string;
+   layout?: string;
    packageName?: string;
    name?: string;
    path?: string;
@@ -107,6 +108,10 @@ interface DashboardManifest extends DashboardItem {
    givens?: GivenSpec[];
 }
 
+/** The grid reports in a `/reports` listing: what `/dashboards` used to list. */
+const gridOnly = (reports: DashboardItem[]) =>
+   reports.filter((r) => r.layout === "grid");
+
 describe("Dashboard discovery (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
@@ -115,7 +120,7 @@ describe("Dashboard discovery (E2E)", () => {
       `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`;
 
    const getManifest = async (name: string): Promise<DashboardManifest> => {
-      const res = await fetch(apiUrl(`/dashboards/${name}`));
+      const res = await fetch(apiUrl(`/reports/dashboards/${name}.malloy`));
       expect(res.status).toBe(200);
       return (await res.json()) as DashboardManifest;
    };
@@ -180,12 +185,12 @@ describe("Dashboard discovery (E2E)", () => {
    // ── the list endpoint ────────────────────────────────────────────
 
    it("lists exactly the artifact-tagged files, skipping shared includes", async () => {
-      const res = await fetch(apiUrl("/dashboards"));
+      const res = await fetch(apiUrl("/reports"));
       expect(res.status).toBe(200);
       const body = (await res.json()) as unknown;
       expect(Array.isArray(body)).toBe(true);
 
-      const dashboards = body as DashboardItem[];
+      const dashboards = gridOnly(body as DashboardItem[]);
       // The exact set: `_shared.malloy` carries no artifact tag, so it is an
       // include and must not appear.
       expect(dashboards.map((d) => d.name).sort()).toEqual([
@@ -205,14 +210,14 @@ describe("Dashboard discovery (E2E)", () => {
          description: "Order health at a glance.",
       });
       expect(overview?.resource).toBe(
-         `/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/dashboards/overview`,
+         `/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}/reports/dashboards/overview.malloy`,
       );
       expect(overview?.error).toBeUndefined();
    });
 
-   it("lists an empty array for a package with no dashboards/ directory", async () => {
+   it("lists an empty array for a package with no reports", async () => {
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${NO_DASHBOARDS_PACKAGE}/dashboards`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${NO_DASHBOARDS_PACKAGE}/reports`,
       );
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual([]);
@@ -220,7 +225,7 @@ describe("Dashboard discovery (E2E)", () => {
 
    it("404s an unknown package", async () => {
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/no-such-pkg/dashboards`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/no-such-pkg/reports`,
       );
       expect(res.status).toBe(404);
    });
@@ -230,7 +235,7 @@ describe("Dashboard discovery (E2E)", () => {
       // rejects it outright, and 501 is what the spec documents for that — the
       // caller asked for a feature the server does not have, which is not an
       // internal failure.
-      for (const sub of ["/dashboards", "/dashboards/overview"]) {
+      for (const sub of ["/reports", "/reports/dashboards/overview.malloy"]) {
          const res = await fetch(apiUrl(`${sub}?versionId=v1`));
          expect(res.status).toBe(501);
          expect(((await res.json()) as { message?: string }).message).toContain(
@@ -371,14 +376,18 @@ describe("Dashboard discovery (E2E)", () => {
    });
 
    it("404s an unknown slug, and a dashboards/ file that is only an include", async () => {
-      expect((await fetch(apiUrl("/dashboards/nope"))).status).toBe(404);
+      expect(
+         (await fetch(apiUrl("/reports/dashboards/nope.malloy"))).status,
+      ).toBe(404);
       // `_shared.malloy` compiles as a model but is not a dashboard.
-      expect((await fetch(apiUrl("/dashboards/_shared"))).status).toBe(404);
+      expect(
+         (await fetch(apiUrl("/reports/dashboards/_shared.malloy"))).status,
+      ).toBe(404);
    });
 
    it("400s a malformed environment name", async () => {
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/bad%20name/packages/${PACKAGE_NAME}/dashboards`,
+         `${baseUrl}/api/v0/environments/bad%20name/packages/${PACKAGE_NAME}/reports`,
       );
       expect(res.status).toBe(400);
    });
@@ -742,9 +751,9 @@ describe("Dashboard discovery (E2E)", () => {
             );
             const reload = await fetch(`${listUrl}?reload=true`);
             expect(reload.status).toBe(424);
-            const res = await fetch(`${listUrl}/dashboards`);
+            const res = await fetch(`${listUrl}/reports`);
             expect(res.status).toBe(200);
-            const dashboards = (await res.json()) as DashboardItem[];
+            const dashboards = gridOnly((await res.json()) as DashboardItem[]);
             // Unchanged, and above all no `_shared`.
             expect(dashboards.map((d) => d.name).sort()).toEqual([
                "a#b",
@@ -761,14 +770,14 @@ describe("Dashboard discovery (E2E)", () => {
 
       /**
        * A name outside the documented pattern is SERVED and only noted. The
-       * route is a plain Express param, so `GET .../dashboards/v1.2` resolves;
+       * report path is a plain wildcard, so `GET .../reports/dashboards/v1.2.malloy` resolves;
        * measured, not assumed. Withholding it broke working dashboards for any
        * team that versions a filename, and then made the drill lint call a real
        * dashboard "not a dashboard in this package".
        */
       it("serves a dashboard whose name is outside the documented pattern", async () => {
          const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/dashboards/v1.2`,
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/reports/dashboards/v1.2.malloy`,
          );
          expect(res.status).toBe(200);
          expect((await res.json()) as { name?: string }).toMatchObject({
@@ -779,19 +788,19 @@ describe("Dashboard discovery (E2E)", () => {
       /**
        * The published link must be FOLLOWABLE. A name is a filename basename,
        * so it can carry a `#`, which opens a URL fragment: published raw,
-       * `.../dashboards/a#b` makes a client ask for `.../dashboards/a` and get
+       * `.../reports/dashboards/a#b.malloy` makes a client ask for `.../reports/dashboards/a` and get
        * a 404. Serving the dashboard was the right call; publishing its name
        * unencoded was not, and the old code hid that by withholding it.
        */
       it("publishes a followable URL for a name that is hostile in one", async () => {
          const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/dashboards`,
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/reports`,
          );
          const hash = ((await res.json()) as DashboardItem[]).find(
             (d) => d.name === "a#b",
          );
-         expect(hash?.resource).toContain("/dashboards/a%23b");
-         expect(hash?.resource).not.toContain("/dashboards/a#b");
+         expect(hash?.resource).toContain("/dashboards/a%23b.malloy");
+         expect(hash?.resource).not.toContain("a#b");
 
          // And following exactly what was published resolves.
          const followed = await fetch(`${baseUrl}${hash?.resource ?? ""}`);
@@ -809,12 +818,12 @@ describe("Dashboard discovery (E2E)", () => {
        */
       it("publishes a followable URL for a name containing a percent", async () => {
          const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/dashboards`,
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/reports`,
          );
          const pct = ((await res.json()) as DashboardItem[]).find(
             (d) => d.name === "p%q",
          );
-         expect(pct?.resource).toContain("/dashboards/p%25q");
+         expect(pct?.resource).toContain("/dashboards/p%25q.malloy");
          const followed = await fetch(`${baseUrl}${pct?.resource ?? ""}`);
          expect(followed.status).toBe(200);
          expect((await followed.json()) as { name?: string }).toMatchObject({
@@ -844,19 +853,23 @@ describe("Dashboard discovery (E2E)", () => {
        * Expected to go red when the middleware is fixed to return 400, which is
        * the point of writing it down.
        */
-      it("answers a raw, undecodable name exactly as its neighbours do", async () => {
-         const raw = (suffix: string) =>
-            fetch(
-               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/${suffix}/p%q`,
-            );
-         const onDashboards = await raw("dashboards");
-         expect(onDashboards.status).toBe(500);
-         const body = await onDashboards.text();
-         for (const neighbour of ["models", "notebooks"]) {
-            const other = await raw(neighbour);
-            expect(other.status).toBe(onDashboards.status);
-            expect(await other.text()).toBe(body);
-         }
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // the `…/dashboards` / `…/notebooks` routes (see RELEASE_NOTES deprecations).
+      describe("deprecated: the …/dashboards and …/notebooks routes", () => {
+         it("answers a raw, undecodable name exactly as its neighbours do", async () => {
+            const raw = (suffix: string) =>
+               fetch(
+                  `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/${suffix}/p%q`,
+               );
+            const onDashboards = await raw("dashboards");
+            expect(onDashboards.status).toBe(500);
+            const body = await onDashboards.text();
+            for (const neighbour of ["models", "notebooks"]) {
+               const other = await raw(neighbour);
+               expect(other.status).toBe(onDashboards.status);
+               expect(await other.text()).toBe(body);
+            }
+         });
       });
 
       it("notes the unconventional name without refusing to serve it", async () => {
@@ -879,10 +892,10 @@ describe("Dashboard discovery (E2E)", () => {
          // The lint is advisory: a bad tile costs you that tile, not the
          // dashboard or the package.
          const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/dashboards`,
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${LINT_PACKAGE}/reports`,
          );
          expect(res.status).toBe(200);
-         const dashboards = (await res.json()) as DashboardItem[];
+         const dashboards = gridOnly((await res.json()) as DashboardItem[]);
          expect(dashboards.map((d) => d.name).sort()).toEqual([
             "a#b",
             "broken",
@@ -1084,9 +1097,9 @@ describe("Dashboard discovery (E2E)", () => {
             // `explores` lists it, so it is on the surface and stays a model
             // (query-artifact-ignored). `composite` is listed too, but carries a
             // model-level `## artifact`, which always makes a report.
-            const res = await fetch(curatedUrl("/dashboards"));
+            const res = await fetch(curatedUrl("/reports"));
             expect(res.status).toBe(200);
-            const dashboards = (await res.json()) as DashboardItem[];
+            const dashboards = gridOnly((await res.json()) as DashboardItem[]);
             expect(dashboards.map((d) => d.name).sort()).toEqual([
                "composite",
                "unlisted",
@@ -1103,7 +1116,9 @@ describe("Dashboard discovery (E2E)", () => {
          });
 
          it("serves and runs a dashboard explores does not list, because it reads a published source", async () => {
-            const manifest = await fetch(curatedUrl("/dashboards/unlisted"));
+            const manifest = await fetch(
+               curatedUrl("/reports/dashboards/unlisted.malloy"),
+            );
             expect(manifest.status).toBe(200);
             expect(((await manifest.json()) as DashboardManifest).query).toBe(
                "unlisted",
@@ -1116,9 +1131,10 @@ describe("Dashboard discovery (E2E)", () => {
          });
 
          it("keeps a query-level dashboard that explores lists a model, still runnable, and says why", async () => {
-            expect((await fetch(curatedUrl("/dashboards/listed"))).status).toBe(
-               404,
-            );
+            expect(
+               (await fetch(curatedUrl("/reports/dashboards/listed.malloy")))
+                  .status,
+            ).toBe(404);
             const res = await post(
                curatedUrl("/models/dashboards/listed.malloy/query"),
                { queryName: "listed", compactJson: true },
@@ -1158,7 +1174,7 @@ describe("Dashboard discovery (E2E)", () => {
                );
                // Still listed: the surface limits what it reads, not whether it shows.
                const listed = (await (
-                  await fetch(curatedUrl("/dashboards"))
+                  await fetch(curatedUrl("/reports"))
                ).json()) as DashboardItem[];
                expect(listed.map((d) => d.name)).toContain("unlisted");
             } finally {
@@ -1232,8 +1248,8 @@ describe("Dashboard discovery (E2E)", () => {
 
       describe("when index.malloy is the surface", () => {
          it("lists every dashboard", async () => {
-            const res = await fetch(conventionUrl("/dashboards"));
-            const dashboards = (await res.json()) as DashboardItem[];
+            const res = await fetch(conventionUrl("/reports"));
+            const dashboards = gridOnly((await res.json()) as DashboardItem[]);
             expect(dashboards.map((d) => d.name).sort()).toEqual([
                "hidden",
                "overview",

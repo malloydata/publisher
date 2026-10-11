@@ -4,10 +4,11 @@
 /// <reference types="bun-types" />
 
 /**
- * Served notebooks (`notebooks/*.malloy` with a model-level `## artifact` note)
- * through the real server: the notebook GET, running cells, the reader's
- * refusal, and, on a package with a surface, the same governed cell path a
- * `.malloynb` runs through.
+ * Linear reports written as `run:` cells (`notebooks/*.malloy` with a
+ * model-level `## artifact` note) through the real server: the report GET,
+ * running cells through `POST …/models/{path}/query` with each cell's text,
+ * the reader's refusal, and, on a package with a surface, the same governed
+ * path a `.malloynb` cell runs through.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -130,7 +131,43 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       const res = await fetch(url);
       return { status: res.status, body: (await res.json()) as T };
    };
-   const runCell = (
+   /** A report's cells, off `GET …/reports/{path}`. */
+   const getCells = async (
+      pkg: string,
+      report: string,
+   ): Promise<{
+      status: number;
+      body: { format?: string; modelInfo?: string; notebookCells?: Cell[] };
+   }> => {
+      const { status, body } = await getJson<{
+         notebook?: {
+            format?: string;
+            modelInfo?: string;
+            notebookCells?: Cell[];
+         };
+      }>(pkgUrl(pkg, `/reports/${report}`));
+      return { status, body: body.notebook ?? {} };
+   };
+   /** Run one cell the way a viewer does: its text through the query route. */
+   const runCell = async (
+      pkg: string,
+      report: string,
+      index: number,
+      params: { givens?: Record<string, unknown> } = {},
+   ): Promise<{ status: number; body: Cell & { message?: string } }> => {
+      const cell = (await getCells(pkg, report)).body.notebookCells?.[index];
+      const res = await fetch(pkgUrl(pkg, `/models/${report}/query`), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ query: cell?.text, givens: params.givens }),
+      });
+      return {
+         status: res.status,
+         body: { ...cell, ...((await res.json()) as { result?: string }) },
+      };
+   };
+   /** The deprecated per-cell route, for the tests that pin it. */
+   const runCellRoute = (
       pkg: string,
       notebook: string,
       index: number,
@@ -221,10 +258,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
 
       for (const [notebook, kinds] of Object.entries(KINDS)) {
          it(`serves ${notebook} as a malloy-format notebook with its cells`, async () => {
-            const { status, body } = await getJson<{
-               format?: string;
-               notebookCells?: Cell[];
-            }>(pkgUrl(PLAIN, `/notebooks/${notebook}`));
+            const { status, body } = await getCells(PLAIN, notebook);
             expect(status).toBe(200);
             expect(body.format).toBe("malloy");
             expect(body.notebookCells?.map((cell) => cell.kind)).toEqual(kinds);
@@ -237,8 +271,9 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       }
 
       it("serves a cell's own (markdown) prose beside its exact text", async () => {
-         const { body } = await getJson<{ notebookCells?: Cell[] }>(
-            pkgUrl(PLAIN, "/notebooks/notebooks/attached_prose.malloy"),
+         const { body } = await getCells(
+            PLAIN,
+            "notebooks/attached_prose.malloy",
          );
          expect(body.notebookCells?.map((cell) => cell.markdown)).toEqual([
             undefined,
@@ -262,9 +297,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       });
 
       it("serves a query cell's #\" caption as its own field", async () => {
-         const { body } = await getJson<{ notebookCells?: Cell[] }>(
-            pkgUrl(PLAIN, "/notebooks/notebooks/tagged_runs.malloy"),
-         );
+         const { body } = await getCells(PLAIN, "notebooks/tagged_runs.malloy");
          expect(body.notebookCells?.map((cell) => cell.caption)).toEqual([
             undefined,
             "Revenue for each month.",
@@ -299,36 +332,45 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          ]);
       });
 
-      it("answers a definition cell with its text and kind and no result", async () => {
-         const { status, body } = await runCell(
-            PLAIN,
-            "notebooks/named_runs.malloy",
-            1,
-         );
-         expect(status).toBe(200);
-         expect(body).toMatchObject({
-            type: "code",
-            kind: "definition",
-            text: "query: q is orders -> kpis",
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
+      describe("deprecated: the …/notebooks routes", () => {
+         it("answers a definition cell with its text and kind and no result", async () => {
+            const { status, body } = await runCellRoute(
+               PLAIN,
+               "notebooks/named_runs.malloy",
+               1,
+            );
+            expect(status).toBe(200);
+            expect(body).toMatchObject({
+               type: "code",
+               kind: "definition",
+               text: "query: q is orders -> kpis",
+            });
+            expect(body.result).toBeUndefined();
          });
-         expect(body.result).toBeUndefined();
       });
 
       describe("a notebook the reader refuses", () => {
          it("lists with the error, naming the line", async () => {
             const { body } = await getJson<{ path: string; error?: string }[]>(
-               pkgUrl(PLAIN, "/notebooks"),
+               pkgUrl(PLAIN, "/reports"),
             );
             expect(body.find((nb) => nb.path === REFUSED)?.error).toContain(
                "Line 7:",
             );
          });
 
-         it("fails the notebook GET and a cell run as a notebook that did not compile does", async () => {
-            expect(
-               (await getJson(pkgUrl(PLAIN, `/notebooks/${REFUSED}`))).status,
-            ).toBe(424);
-            expect((await runCell(PLAIN, REFUSED, 0)).status).toBe(424);
+         // DEPRECATED FEATURE COVERAGE — delete together with
+         // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
+         describe("deprecated: the …/notebooks routes", () => {
+            it("fails the notebook GET and a cell run as a notebook that did not compile does", async () => {
+               expect(
+                  (await getJson(pkgUrl(PLAIN, `/notebooks/${REFUSED}`)))
+                     .status,
+               ).toBe(424);
+               expect((await runCellRoute(PLAIN, REFUSED, 0)).status).toBe(424);
+            });
          });
 
          it("is a package warning of severity error", async () => {
@@ -440,9 +482,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
    describe("a package with a surface", () => {
       /** The column names the notebook GET's model info describes for its runs. */
       const describedRuns = async (notebook: string) => {
-         const { status, body } = await getJson<{ modelInfo?: string }>(
-            pkgUrl(SURFACE, `/notebooks/${notebook}`),
-         );
+         const { status, body } = await getCells(SURFACE, notebook);
          expect(status).toBe(200);
          const info = JSON.parse(body.modelInfo ?? "{}") as {
             anonymous_queries?: { schema?: { fields?: { name: string }[] } }[];
@@ -463,9 +503,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       });
 
       it("describes only the named queries over readable sources in the notebook GET's model info", async () => {
-         const { body } = await getJson<{ modelInfo?: string }>(
-            pkgUrl(SURFACE, `/notebooks/${CELLS}`),
-         );
+         const { body } = await getCells(SURFACE, CELLS);
          const info = JSON.parse(body.modelInfo ?? "{}") as {
             entries?: { name?: string }[];
          };
@@ -509,10 +547,10 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       // `#(filter)` / `filter_params` (see RELEASE_NOTES deprecations).
       describe("deprecated: #(filter)", () => {
          it("rebuilds a cell with the source's #(filter) values", async () => {
-            const unfiltered = await runCell(SURFACE, CELLS, 8);
+            const unfiltered = await runCellRoute(SURFACE, CELLS, 8);
             expect(unfiltered.status).toBe(200);
             expect(rowsOf(unfiltered.body.result)).toEqual([{ n: 6 }]);
-            const filtered = await runCell(SURFACE, CELLS, 8, {
+            const filtered = await runCellRoute(SURFACE, CELLS, 8, {
                filterParams: { region: "EU" },
             });
             expect(filtered.status).toBe(200);
@@ -539,9 +577,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
 
       it("refuses a cell over its own named query over a hidden source, and withholds its queryInfo", async () => {
          expect((await runCell(SURFACE, CELLS, 11)).status).toBe(404);
-         const { body } = await getJson<{ notebookCells?: Cell[] }>(
-            pkgUrl(SURFACE, `/notebooks/${CELLS}`),
-         );
+         const { body } = await getCells(SURFACE, CELLS);
          expect(body.notebookCells?.[11]).toMatchObject({
             kind: "query",
             text: "run: hidden_q",
@@ -551,26 +587,30 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(body.notebookCells?.[5].queryInfo).toBeDefined();
       });
 
-      it("answers 403 on a locked cell without the role, and runs it with the role", async () => {
-         expect((await runCell(SURFACE, CELLS, 13)).status).toBe(403);
-         expect(
-            (
-               await runCell(SURFACE, CELLS, 13, {
-                  givens: { ROLES: ["viewer"] },
-               })
-            ).status,
-         ).toBe(403);
-         const allowed = await runCell(SURFACE, CELLS, 13, {
-            givens: { ROLES: ["admin"] },
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // the `…/notebooks` routes (see RELEASE_NOTES deprecations).
+      describe("deprecated: the …/notebooks routes", () => {
+         it("answers 403 on a locked cell without the role, and runs it with the role", async () => {
+            expect((await runCellRoute(SURFACE, CELLS, 13)).status).toBe(403);
+            expect(
+               (
+                  await runCellRoute(SURFACE, CELLS, 13, {
+                     givens: { ROLES: ["viewer"] },
+                  })
+               ).status,
+            ).toBe(403);
+            const allowed = await runCellRoute(SURFACE, CELLS, 13, {
+               givens: { ROLES: ["admin"] },
+            });
+            expect(allowed.status).toBe(200);
+            expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
+            expect(
+               await harness.collectCounter(
+                  "publisher_notebook_cell_executions_total",
+                  { format: "malloy", kind: "query", outcome: "denied" },
+               ),
+            ).toBeGreaterThanOrEqual(2);
          });
-         expect(allowed.status).toBe(200);
-         expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
-         expect(
-            await harness.collectCounter(
-               "publisher_notebook_cell_executions_total",
-               { format: "malloy", kind: "query", outcome: "denied" },
-            ),
-         ).toBeGreaterThanOrEqual(2);
       });
    });
 });

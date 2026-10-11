@@ -72,7 +72,7 @@ describe("PUT model source: dashboards", () => {
    /** A dashboard's title as the package currently serves it. */
    const titleOf = async (name: string): Promise<string> => {
       const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/dashboards/${name}`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports/dashboards/${name}.malloy`,
       );
       expect(res.status).toBe(200);
       return ((await res.json()) as { title?: string }).title ?? "";
@@ -170,7 +170,7 @@ describe("PUT model source: dashboards", () => {
       // The point of reloading in place: the dashboard is discoverable and
       // running without anyone restarting or reloading the package.
       const listed = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/dashboards`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
       );
       expect(listed.status).toBe(200);
       const names = ((await listed.json()) as Array<{ name?: string }>).map(
@@ -280,7 +280,7 @@ query: broken is orders -> { aggregate: no_such_measure }
 
       // Nothing was written, so the package has no such dashboard to serve.
       const listed = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/dashboards`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
       );
       const names = ((await listed.json()) as Array<{ name?: string }>).map(
          (d) => d.name,
@@ -401,21 +401,21 @@ query: broken is orders -> { aggregate: no_such_measure }
       expect(await sourceOf("notebooks/string_tag.malloy")).toBeUndefined();
    });
 
-   /** A tile-layout document of the given kind, which compiles against the fixture's `orders`. */
-   const layoutSource = (kind: string, title: string) =>
-      `##! experimental.givens\n## artifact { kind=${kind} title="${title}" tiles=["orders -> totals"] }\nimport { orders } from '../orders.malloy'\n`;
+   /** A tile-layout report of the given layout, which compiles against the fixture's `orders`. */
+   const layoutSource = (layout: "grid" | "linear", title: string) =>
+      `##! experimental.givens\n## artifact { layout=${layout} title="${title}" tiles=["orders -> totals"] }\nimport { orders } from '../orders.malloy'\n`;
 
    const dashboardPaths = async (): Promise<string[]> => {
       const listed = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/dashboards`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
       );
-      return ((await listed.json()) as Array<{ path: string }>).map(
-         (d) => d.path,
-      );
+      return ((await listed.json()) as Array<{ path: string; layout: string }>)
+         .filter((d) => d.layout === "grid")
+         .map((d) => d.path);
    };
 
    describe("a slug another file already holds", () => {
-      const held = layoutSource("dashboard", "Holder");
+      const held = layoutSource("grid", "Holder");
       let before: string[];
 
       beforeAll(async () => {
@@ -428,7 +428,7 @@ query: broken is orders -> { aggregate: no_such_measure }
       // path, so two may share a basename and both are served.
       it("writes a notebooks/ file that declares layout=grid, and serves both", async () => {
          const res = await put("notebooks/dup.malloy", {
-            source: layoutSource("dashboard", "Same name"),
+            source: layoutSource("grid", "Same name"),
          });
          expect(res.status).toBe(201);
          expect(await dashboardPaths()).toEqual(
@@ -437,8 +437,8 @@ query: broken is orders -> { aggregate: no_such_measure }
       });
 
       it("flips a report of a held basename between layouts", async () => {
-         const grid = layoutSource("dashboard", "Same name");
-         const linear = layoutSource("notebook", "Same name");
+         const grid = layoutSource("grid", "Same name");
+         const linear = layoutSource("linear", "Same name");
          const res = await put("notebooks/dup.malloy", {
             source: linear,
             expectedHash: hashOf(grid),
@@ -454,18 +454,18 @@ query: broken is orders -> { aggregate: no_such_measure }
       });
 
       it("still re-saves the holder, and flips a notebook of an unheld slug to a dashboard and back", async () => {
-         const resaved = layoutSource("dashboard", "Holder again");
+         const resaved = layoutSource("grid", "Holder again");
          const resave = await put("dashboards/dup.malloy", {
             source: resaved,
             expectedHash: hashOf(held),
          });
          expect(resave.status).toBe(200);
 
-         const notebook = layoutSource("notebook", "Flip me");
+         const notebook = layoutSource("linear", "Flip me");
          expect(
             (await put("notebooks/flip.malloy", { source: notebook })).status,
          ).toBe(201);
-         const asDashboard = layoutSource("dashboard", "Flip me");
+         const asDashboard = layoutSource("grid", "Flip me");
          const flipped = await put("notebooks/flip.malloy", {
             source: asDashboard,
             expectedHash: hashOf(notebook),
@@ -482,18 +482,21 @@ query: broken is orders -> { aggregate: no_such_measure }
 
       it("serves a notebook written into dashboards/ as a notebook, not a dashboard", async () => {
          const res = await put("dashboards/as_notebook.malloy", {
-            source: layoutSource("notebook", "Misfiled"),
+            source: layoutSource("linear", "Misfiled"),
          });
          expect(res.status).toBe(201);
          expect(await dashboardPaths()).not.toContain(
             "dashboards/as_notebook.malloy",
          );
-         const listed = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/notebooks`,
-         );
-         expect(JSON.stringify(await listed.json())).toContain(
-            "dashboards/as_notebook.malloy",
-         );
+         const listed = (await (
+            await fetch(
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
+            )
+         ).json()) as Array<{ path: string; layout: string }>;
+         expect(
+            listed.find((r) => r.path === "dashboards/as_notebook.malloy")
+               ?.layout,
+         ).toBe("linear");
       });
    });
 
@@ -517,7 +520,7 @@ query: broken is orders -> { aggregate: no_such_measure }
          const res = await put(`notebooks/${name}.malloy`, { source });
          expect(res.status).toBe(201);
          const listed = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/notebooks`,
+            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
          );
          expect(JSON.stringify(await listed.json())).toContain(
             `notebooks/${name}.malloy`,
@@ -720,12 +723,10 @@ describe("PUT model source: notebooks written by the notebook builder", () => {
          });
          expect(saved.status).toBe(200);
 
-         const notebook = (await (
-            await fetch(pkgUrl(PLAIN, `/notebooks/${modelPath}`))
-         ).json()) as {
-            dashboard?: { tiles?: Array<{ kind: string; query?: string }> };
-         };
-         const tiles = notebook.dashboard?.tiles ?? [];
+         const report = (await (
+            await fetch(pkgUrl(PLAIN, `/reports/${modelPath}`))
+         ).json()) as { tiles?: Array<{ kind: string; query?: string }> };
+         const tiles = report.tiles ?? [];
          expect(tiles).toHaveLength(converted.tiles);
          for (const tile of tiles.filter((t) => t.kind === "query")) {
             const ran = await fetch(`${modelsUrl(modelPath)}/query`, {
@@ -749,7 +750,9 @@ describe("PUT model source: notebooks written by the notebook builder", () => {
    }
 
    it("serves a dashboard's text tiles over HTTP, with their markdown", async () => {
-      const res = await fetch(pkgUrl(PLAIN, "/dashboards/text_tiles"));
+      const res = await fetch(
+         pkgUrl(PLAIN, "/reports/dashboards/text_tiles.malloy"),
+      );
       expect(res.status).toBe(200);
       const manifest = (await res.json()) as {
          tiles?: Array<{

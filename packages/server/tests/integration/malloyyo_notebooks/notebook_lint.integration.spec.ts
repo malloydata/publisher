@@ -188,7 +188,9 @@ describe("notebook lint through the real server (E2E)", () => {
       it("serves the alias's width and, on a conflict, the canonical one", async () => {
          const width = async (name: string) =>
             (
-               (await (await fetch(pkgUrl(`/dashboards/${name}`))).json()) as {
+               (await (
+                  await fetch(pkgUrl(`/reports/dashboards/${name}.malloy`))
+               ).json()) as {
                   dashboardColumns?: number;
                }
             ).dashboardColumns;
