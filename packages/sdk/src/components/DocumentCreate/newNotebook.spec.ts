@@ -8,13 +8,7 @@ import {
    readDashboardDocument,
    readFailed,
 } from "../DashboardBuilder/readDocument";
-import {
-   documentPathFor,
-   documentPathForTitle,
-   reportPathFor,
-   reportPathForTitle,
-   slugFor,
-} from "./documentPath";
+import { reportPathFor, reportPathForTitle, slugFor } from "./documentPath";
 import { newDocumentProblem } from "./guards";
 import { newNotebookSource, newReportSource } from "./newNotebook";
 
@@ -222,42 +216,14 @@ describe("report paths", () => {
       expect(reportPathFor("a-b", "")).toBe("a-b.malloy");
    });
 });
-
-describe("the deprecated document paths keep their 0.9 meaning", () => {
-   it("documentPathFor(kind, slug) is the kind's folder", () => {
-      expect(documentPathFor("dashboard", "sales")).toBe(
-         "dashboards/sales.malloy",
-      );
-      expect(documentPathFor("notebook", "sales")).toBe(
-         "notebooks/sales.malloy",
-      );
-   });
-
-   it("documentPathForTitle(kind, title, suffix) is the kind's folder", () => {
-      expect(documentPathForTitle("dashboard", "Sales")).toBe(
-         "dashboards/sales.malloy",
-      );
-      expect(documentPathForTitle("notebook", "Sales", 3)).toBe(
-         "notebooks/sales-3.malloy",
-      );
-      expect(documentPathForTitle("notebook", "***")).toBe(
-         "notebooks/untitled.malloy",
-      );
-   });
-});
-
 describe("the builder entry", () => {
-   it("exports both the deprecated and the new path helpers", async () => {
-      const builder = await import("../../builder-entry");
-      expect(builder.documentPathFor("dashboard", "x")).toBe(
-         "dashboards/x.malloy",
+   it("exports the report path helpers, and no longer the kind-folder ones", async () => {
+      const builder: Record<string, unknown> = await import(
+         "../../builder-entry"
       );
-      expect(builder.reportPathFor("x")).toBe("x.malloy");
-      expect(builder.documentPathForTitle("notebook", "X")).toBe(
-         "notebooks/x.malloy",
-      );
-      expect(builder.reportPathForTitle("X", 2, "team")).toBe(
-         "team/x-2.malloy",
-      );
+      expect(typeof builder.reportPathFor).toBe("function");
+      expect(typeof builder.reportPathForTitle).toBe("function");
+      expect(builder.documentPathFor).toBeUndefined();
+      expect(builder.documentPathForTitle).toBeUndefined();
    });
 });

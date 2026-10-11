@@ -11,8 +11,6 @@ export {
    type CreateTarget,
 } from "./createDocument";
 export {
-   documentPathFor,
-   documentPathForTitle,
    locatorFor,
    newDashboardSource,
    normalizeDirectory,

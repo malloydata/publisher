@@ -70,8 +70,6 @@ export type {
 export {
    createDocument,
    createRoute,
-   documentPathFor,
-   documentPathForTitle,
    locatorFor,
    MAX_SLUG_ATTEMPTS,
    newDashboardSource,
