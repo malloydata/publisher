@@ -111,6 +111,14 @@ export type DashboardEditorProps = (
    onExit?: () => void;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
+   /**
+    * Whether the toolbar offers the Linear / Grid layout switch. Default
+    * true. A host that ties a report's layout to where it keeps the file
+    * (every grid report under `dashboards/`, say) passes false, so an author
+    * cannot change a layout the host files by. A document held as text never
+    * gets the switch.
+    */
+   allowLayoutChange?: boolean;
 };
 
 /**
@@ -141,6 +149,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       kind = "dashboard",
       path,
       textSource,
+      allowLayoutChange,
    } = props;
    const notebook = kind === "notebook";
    const textHeld = textSource !== undefined;
@@ -431,6 +440,9 @@ export function DashboardEditor(props: DashboardEditorProps) {
                onSave={save}
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
+               {...(allowLayoutChange !== undefined
+                  ? { allowLayoutChange }
+                  : {})}
                savesTo={savesTo}
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}

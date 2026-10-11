@@ -1083,6 +1083,24 @@ class ApiDocumentStorage implements DocumentStorage {
 }
 ```
 
+### Hosts that file reports by layout
+
+The builder (`DashboardEditor` / `DashboardBuilder` from `@malloy-publisher/sdk/builder`) reads a report's
+layout from its text alone, never from where the file lives, in the same order the server uses, first match
+wins:
+
+1. `layout=` in the model-level `## artifact` tag: `grid` or `linear`.
+2. Otherwise the deprecated `kind=`: `dashboard` is grid, `notebook` is linear.
+3. Otherwise grid when the tag lists `tiles` (an empty list counts) or a `dashboard { … }` grid tag sits beside it.
+4. Otherwise linear.
+
+A file that writes `layout=` never depends on steps 2 to 4, and the builder and `createDocument` always
+write it. The toolbar's Linear / Grid switch rewrites `layout=` and nothing else, so a host that ties a
+report's layout to where it keeps the file (every grid report under `dashboards/`, every linear one under
+`notebooks/`) passes `allowLayoutChange={false}` to hide the switch; otherwise an author can turn a file
+into the other layout without it moving. Default `true`. A document held as text (`textSource`) never
+gets the switch.
+
 ### DocumentStorageProvider
 
 ```tsx

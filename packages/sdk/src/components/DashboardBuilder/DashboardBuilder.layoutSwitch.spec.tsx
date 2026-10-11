@@ -56,6 +56,23 @@ describe("the layout switch", () => {
       expect(button("Grid layout").getAttribute("aria-pressed")).toBe("false");
    });
 
+   it("is not offered when the host turns it off with allowLayoutChange={false}", async () => {
+      render(
+         <DashboardBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={() => {}}
+            allowLayoutChange={false}
+         />,
+      );
+      expect(
+         screen.queryByRole("button", { name: "Grid layout", hidden: true }),
+      ).toBeNull();
+      expect(
+         screen.queryByRole("button", { name: "Linear layout", hidden: true }),
+      ).toBeNull();
+   });
+
    it("is not offered for a document held as text, whose layout is the host's record", async () => {
       await mount(LINEAR, () => {}, true);
       expect(

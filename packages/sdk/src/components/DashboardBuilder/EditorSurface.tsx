@@ -58,6 +58,7 @@ export function EditorSurface({
    onSave,
    onDirtyChange,
    onExit,
+   allowLayoutChange,
    onEvent,
    savesTo,
    saveLabel,
@@ -83,6 +84,7 @@ export function EditorSurface({
    onSave?: (source: string) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
    onExit?: () => void;
+   allowLayoutChange?: boolean;
    onEvent?: (event: BuilderEvent) => void;
    savesTo: SavesTo;
    saveLabel?: string;
@@ -470,6 +472,7 @@ export function EditorSurface({
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
+            {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
             {...(opened.conversion ? { conversion: opened.conversion } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}

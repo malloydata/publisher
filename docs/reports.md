@@ -1073,7 +1073,9 @@ the surface with the complete embedding story.
 
 `<DashboardEditor>` is the builder, from `@malloy-publisher/sdk/builder` (the main entry stays free of the
 Malloy parser): the same editor the Console's `/edit` route mounts, keyed by the report's `path`, with a
-layout switch, plus `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`, and a
+layout switch (hidden with `allowLayoutChange={false}`, for a host that files reports by layout and so
+cannot let an author change it; the editor reads a file's layout by [Which layout](#which-layout), never by
+its folder), plus `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`, and a
 `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the package cannot
 be written (see the SDK README's [Document Storage](../packages/sdk/README.md#document-storage) section).
 

@@ -192,6 +192,14 @@ export interface DashboardBuilderProps {
    toolbar?: ReactNode;
    /** Leave the builder, opted into: draws Close, which asks first when edits are unsaved. */
    onExit?: () => void;
+   /**
+    * Whether the toolbar offers the Linear / Grid layout switch. Default
+    * true. A host that ties a report's layout to where it keeps the file
+    * (every grid report under `dashboards/`, say) passes false, so an author
+    * cannot change a layout the host files by. A document held as text never
+    * gets the switch.
+    */
+   allowLayoutChange?: boolean;
 }
 
 export function DashboardBuilder({
@@ -201,6 +209,7 @@ export function DashboardBuilder({
    onChange,
    onDirtyChange,
    onExit,
+   allowLayoutChange = true,
    renderTile,
    controls,
    givens,
@@ -373,9 +382,9 @@ export function DashboardBuilder({
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
-         {...(visibleSources === undefined
+         {...(visibleSources === undefined && allowLayoutChange
             ? {
-                 // A text-held document's layout is the host's record, so only a file gets the switch.
+                 // A text-held document's layout is the host's record, so only a file gets the switch, and only when the host allows it.
                  layout: notebook ? ("linear" as const) : ("grid" as const),
                  onLayoutChange: (next: "grid" | "linear") =>
                     editor.update((draft) => {
