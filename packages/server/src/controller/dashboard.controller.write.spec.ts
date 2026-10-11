@@ -72,6 +72,9 @@ function harness(
    };
    const loaded = {
       isWritableReport: () => options.loadedReport ?? true,
+      // A file the load did not read as a report is replaceable only when its
+      // own compiled notes carry `## artifact` (a tag that does not parse).
+      getModel: () => ({ carriesNotebookArtifactNote: () => false }),
    };
    const environment = {
       getPackage: sinon.stub().resolves(pkg),

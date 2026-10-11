@@ -31,6 +31,10 @@ const grid = (title: string, importPath: string) =>
    `## artifact { layout=grid title="${title}" tiles=["orders -> by_brand"] }\n` +
    `import { orders } from "${importPath}"\n`;
 
+const BROKEN_TAG =
+   `## artifact { layout=grid title="Broken" tiles: ["orders -> by_brand"] }\n` +
+   `import { orders } from "orders.malloy"\n`;
+
 describe("PUT model source: reports anywhere (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
@@ -73,6 +77,10 @@ describe("PUT model source: reports anywhere (E2E)", () => {
          path.join(location, "legacy.malloynb"),
          ">>>markdown\n# Legacy\n",
       );
+      // A report whose own tag does not parse (`tiles:` is not tag syntax):
+      // it compiles, so discovery does not classify it, yet it is the
+      // author's report to fix.
+      await fs.writeFile(path.join(location, "broken_tag.malloy"), BROKEN_TAG);
       const created = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -162,6 +170,37 @@ describe("PUT model source: reports anywhere (E2E)", () => {
       });
       expect(res.status).toBe(400);
       expect(fsSync.readFileSync(served(modelPath), "utf8")).toBe(before);
+   });
+
+   it.each([
+      ["a model", "orders.malloy", "orders.malloy"],
+      ["an untagged file", "shared/helpers.malloy", "../orders.malloy"],
+   ])(
+      "answers a create onto %s with 409, so a create tries the next name",
+      async (_name, modelPath, importPath) => {
+         // A create-only write (no expectedHash) onto any existing file is a
+         // conflict: the path is taken. createDocument retries on 409 only.
+         const before = fsSync.readFileSync(served(modelPath), "utf8");
+         const source =
+            modelPath === "orders.malloy"
+               ? // Self-contained: importing itself would not compile.
+                 `## artifact { layout=grid tiles=["s -> v"] }\n` +
+                 `source: s is duckdb.sql("select 1 as x") extend { view: v is { select: x } }\n`
+               : grid("Clobber", importPath);
+         const res = await put(modelPath, { source });
+         expect(res.status).toBe(409);
+         expect(fsSync.readFileSync(served(modelPath), "utf8")).toBe(before);
+      },
+   );
+
+   it("replaces a report whose own artifact tag does not parse, so the fix can be saved", async () => {
+      expect((await reportsByPath())["broken_tag.malloy"]).toBeUndefined();
+      const res = await put("broken_tag.malloy", {
+         source: grid("Fixed", "orders.malloy"),
+         expectedHash: hashOf(BROKEN_TAG),
+      });
+      expect(res.status).toBe(200);
+      expect((await reportsByPath())["broken_tag.malloy"]).toBe("grid");
    });
 
    it("refuses to create a report under public/", async () => {

@@ -40,20 +40,23 @@ type ApiModelSourceWriteResult =
 
 /**
  * Whether the file now at `modelPath` is one the write path may replace: a
- * `.malloy` the loaded package reads as a report (served, or a grid report
- * with no tiles yet), whose on-disk text, which may postdate the load, still
- * carries an artifact tag. A model, an untagged file, a `.malloynb`, the root
- * `index.malloy` and anything in `public/` never qualify.
+ * `.malloy` whose on-disk text, which may postdate the load, carries an
+ * artifact tag, and which the loaded package reads as a report (served, or a
+ * grid report with no tiles yet) or which claims to be one by its own
+ * `## artifact` note even though that tag does not parse. The last is still
+ * the author's report, and saving the fix is how it gets served again. A
+ * model, an untagged file, a `.malloy` whose only artifact tag is on a query,
+ * a `.malloynb`, the root `index.malloy` and anything in `public/` never
+ * qualify (the last three are refused by path before this runs).
  */
 function currentIsAReport(
    current: string,
    loaded: Package | undefined,
    modelPath: string,
 ): boolean {
-   return (
-      loaded?.isWritableReport(modelPath) === true &&
-      textClaimsToBeAReport(current)
-   );
+   if (!textClaimsToBeAReport(current)) return false;
+   if (loaded?.isWritableReport(modelPath)) return true;
+   return loaded?.getModel(modelPath)?.carriesNotebookArtifactNote() === true;
 }
 
 /**
@@ -311,6 +314,17 @@ export class DashboardController {
          modelPath,
          body.source,
          (current, loaded) => {
+            // A create needs the path free. Any file there, report or not,
+            // is a conflict, so a caller choosing a name can try the next.
+            if (body.expectedHash === undefined) {
+               if (current !== undefined)
+                  throw new WriteConflictError(
+                     `\`${modelPath}\` already exists in the package, so nothing ` +
+                        `was written. Choose another path, or, to replace a report, ` +
+                        `send the \`expectedHash\` of the text you opened.`,
+                  );
+               return;
+            }
             // The incoming text's tag is not enough: a tagged write must not
             // turn an existing model into a report. Only a file the package
             // reads as a report is replaced, wherever it lives.
@@ -323,14 +337,6 @@ export class DashboardController {
                      `it is a model (or a file other models import), so it was ` +
                      `not overwritten.`,
                );
-            if (body.expectedHash === undefined) {
-               if (current !== undefined)
-                  throw new WriteConflictError(
-                     `\`${modelPath}\` already exists in the package. Send the ` +
-                        `\`expectedHash\` of the text you opened to replace it.`,
-                  );
-               return;
-            }
             const currentHash =
                current === undefined ? undefined : contentHashOf(current);
             if (currentHash !== body.expectedHash)
