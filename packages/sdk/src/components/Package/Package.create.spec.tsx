@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Creating a dashboard or notebook from the package page: who is offered it,
- * where the file goes, where the reader lands, and what is fetched for it.
+ * Creating a report from the package page: who is offered it, where the file
+ * goes (the package root, whatever the layout), where the reader lands, and
+ * what is fetched for it.
  */
 import {
    cleanup,
@@ -31,25 +32,31 @@ import type { OpenDocumentRequest } from "./Package";
 
 const listModels = mock((_env: string, _pkg: string, _version?: string) =>
    Promise.resolve({
-      data: [{ path: "storefront.malloy" }, { path: "dashboards/old.malloy" }],
+      data: [
+         { path: "storefront.malloy" },
+         { path: "old.malloy" },
+         // A model in a directory named like the old folders is still a model.
+         { path: "dashboards/shared.malloy" },
+      ],
    }),
 );
-const listDashboards = mock((_env: string, _pkg: string, _version?: string) =>
+const listReports = mock((_env: string, _pkg: string, _version?: string) =>
    Promise.resolve({
-      data: [{ name: "old", path: "dashboards/old.malloy" }],
+      data: [{ name: "old", path: "old.malloy", layout: "grid" }],
    }),
 );
-const listNotebooks = mock((_env: string, _pkg: string, _version?: string) =>
-   Promise.resolve({ data: [] }),
-);
-const getModel = mock((_env: string, _pkg: string, _path: string) =>
+const getModel = mock((_env: string, _pkg: string, path: string) =>
    Promise.resolve({
       data: {
-         modelPath: "storefront.malloy",
+         modelPath: path,
          modelInfo: JSON.stringify({
             entries: [{ kind: "source", name: "order_items" }],
          }),
-         sources: [{ name: "order_items", views: [{ name: "by_category" }] }],
+         // Only the model the tests start from offers a view.
+         sources:
+            path === "storefront.malloy"
+               ? [{ name: "order_items", views: [{ name: "by_category" }] }]
+               : [],
       },
    }),
 );
@@ -62,11 +69,10 @@ const context: Record<string, unknown> = { mutable: true };
 mockServerProvider(
    {
       packages: { getPackage: pending },
-      notebooks: { listNotebooks },
+      reports: { listReports, getReport: pending },
       models: { listModels, getModel, updateModelSource },
       databases: { listDatabases: () => Promise.resolve({ data: [] }) },
       dataApps: { listDataApps: () => Promise.resolve({ data: [] }) },
-      dashboards: { listDashboards },
       materializations: {
          listMaterializations: () => Promise.resolve({ data: [] }),
       },
@@ -135,14 +141,14 @@ function mount(
 }
 
 const settled = () => screen.findByText("old");
+const NEW = { name: "New report" } as const;
 
 beforeEach(() => {
    clearCache();
    context.mutable = true;
    for (const fn of [
       listModels,
-      listDashboards,
-      listNotebooks,
+      listReports,
       getModel,
       updateModelSource,
       onClickPackageFile,
@@ -151,67 +157,53 @@ beforeEach(() => {
 });
 
 describe("who is offered New", () => {
-   it("a writable package with no host storage", async () => {
+   it("a writable package with no host storage, as one New report action", async () => {
       mount();
       await settled();
-      expect(screen.getByRole("button", { name: "New" })).toBeDefined();
-      // One create entry, on the Artifacts heading row.
-      expect(
-         screen.queryByRole("button", { name: "Add dashboard" }),
-      ).toBeNull();
-      expect(screen.queryByRole("button", { name: "Add notebook" })).toBeNull();
+      expect(screen.getAllByRole("button", NEW)).toHaveLength(1);
+      // One create entry, and no per-kind menu.
+      expect(screen.queryByRole("button", { name: "New" })).toBeNull();
+      expect(screen.queryByRole("menuitem")).toBeNull();
    });
 
    it("no one when the server takes no writes and nothing authoritative keeps documents", async () => {
       context.mutable = false;
       mount();
       await settled();
-      expect(screen.queryByRole("button", { name: "New" })).toBeNull();
-      expect(
-         screen.queryByRole("button", { name: "Add dashboard" }),
-      ).toBeNull();
-      expect(screen.queryByRole("button", { name: "Add notebook" })).toBeNull();
+      expect(screen.queryByRole("button", NEW)).toBeNull();
    });
 
    it("not a browser workspace beside a server that takes no writes", async () => {
       context.mutable = false;
       mount(fakeStorage([BROWSER]).storage);
       await settled();
-      await waitFor(() =>
-         expect(screen.queryByRole("button", { name: "New" })).toBeNull(),
-      );
-      expect(screen.queryByRole("button", { name: "Add notebook" })).toBeNull();
+      await waitFor(() => expect(screen.queryByRole("button", NEW)).toBeNull());
    });
 
    it("the Console's browser workspace beside a writable server, written to the package", async () => {
       mount(fakeStorage([BROWSER]).storage);
       await settled();
       await waitFor(() =>
-         expect(screen.getByRole("button", { name: "New" })).toBeDefined(),
+         expect(screen.getAllByRole("button", NEW)).toHaveLength(1),
       );
    });
 
-   it("an empty list's row offers New, and no one when New is not offered", async () => {
-      listDashboards.mockImplementationOnce(() =>
-         Promise.resolve({ data: [] }),
-      );
+   it("an empty list's row offers New report, and no one when New is not offered", async () => {
+      listReports.mockImplementationOnce(() => Promise.resolve({ data: [] }));
       mount();
-      await screen.findByText("No artifacts yet");
-      expect(
-         screen.getByRole("button", { name: "New artifact" }),
-      ).toBeDefined();
+      await screen.findByText("No reports yet");
+      // The heading's action and the empty row's.
+      expect(screen.getAllByRole("button", NEW)).toHaveLength(2);
       cleanup();
       clearCache();
       context.mutable = false;
-      listDashboards.mockImplementationOnce(() =>
-         Promise.resolve({ data: [] }),
-      );
+      listReports.mockImplementationOnce(() => Promise.resolve({ data: [] }));
       mount();
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(screen.queryByRole("button", { name: "New artifact" })).toBeNull();
+      expect(screen.queryByRole("button", NEW)).toBeNull();
    });
 
-   it("no New menu below 600px, where the editors step aside", async () => {
+   it("no New report below 600px, where the editors step aside", async () => {
       const was = window.matchMedia;
       window.matchMedia = ((query: string) => ({
          matches: query.includes("max-width"),
@@ -227,17 +219,15 @@ describe("who is offered New", () => {
          mount();
          await settled();
          await new Promise((resolve) => setTimeout(resolve, 20));
-         expect(screen.queryByRole("button", { name: "New" })).toBeNull();
+         expect(screen.queryByRole("button", NEW)).toBeNull();
          cleanup();
          clearCache();
-         listDashboards.mockImplementationOnce(() =>
+         listReports.mockImplementationOnce(() =>
             Promise.resolve({ data: [] }),
          );
          mount();
-         await screen.findByText("No artifacts yet");
-         expect(
-            screen.queryByRole("button", { name: "New artifact" }),
-         ).toBeNull();
+         await screen.findByText("No reports yet");
+         expect(screen.queryByRole("button", NEW)).toBeNull();
       } finally {
          window.matchMedia = was;
       }
@@ -248,68 +238,68 @@ describe("who is offered New", () => {
       mount();
       await settled();
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(screen.queryByRole("button", { name: "New" })).toBeNull();
+      expect(screen.queryByRole("button", NEW)).toBeNull();
    });
 
    it("nothing while the host's workspaces are still being listed, and nothing when they cannot be", async () => {
       mount(fakeStorage(new Error("backend down")).storage);
       await settled();
       await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(screen.queryByRole("button", { name: "New" })).toBeNull();
+      expect(screen.queryByRole("button", NEW)).toBeNull();
    });
 });
 
-const openNew = async (kind: "Dashboard" | "Notebook") => {
-   fireEvent.click(await screen.findByRole("button", { name: "New" }));
-   fireEvent.click(await screen.findByRole("menuitem", { name: kind }));
+const openNew = async (layout: "linear" | "grid" = "linear") => {
+   fireEvent.click((await screen.findAllByRole("button", NEW))[0]);
    await waitFor(() =>
-      expect(screen.getByLabelText(`${kind} title`)).toHaveProperty(
+      expect(screen.getByLabelText("Report title")).toHaveProperty(
          "value",
          "by category",
       ),
    );
+   if (layout === "grid") {
+      fireEvent.mouseDown(screen.getByRole("combobox", { name: /Layout/ }));
+      fireEvent.click(screen.getByRole("option", { name: /^Grid/ }));
+   }
 };
 
 describe("creating", () => {
-   it("fetches nothing for the dialog until it is opened, then one model each", async () => {
+   it("fetches nothing for the dialog until it is opened, then one model each, never a report", async () => {
       mount();
       await settled();
       expect(getModel).not.toHaveBeenCalled();
-      await openNew("Dashboard");
-      expect(getModel).toHaveBeenCalledTimes(1);
-      // dashboards/ files are not models to start from.
-      expect(getModel.mock.calls[0][2]).toBe("storefront.malloy");
+      await openNew();
+      // The listed report is not a model to start from; a model in dashboards/ is.
+      expect(getModel.mock.calls.map((call) => call[2]).sort()).toEqual([
+         "dashboards/shared.malloy",
+         "storefront.malloy",
+      ]);
    });
 
-   it("opens the New menu from the empty row, then the dialog on the kind picked", async () => {
-      listDashboards.mockImplementationOnce(() =>
-         Promise.resolve({ data: [] }),
-      );
+   it("opens the dialog from the empty row, on linear by default", async () => {
+      listReports.mockImplementationOnce(() => Promise.resolve({ data: [] }));
       mount();
-      fireEvent.click(
-         await screen.findByRole("button", { name: "New artifact" }),
-      );
-      fireEvent.click(
-         await screen.findByRole("menuitem", { name: "Notebook" }),
-      );
+      fireEvent.click((await screen.findAllByRole("button", NEW))[1]);
       await waitFor(() =>
-         expect(screen.getByLabelText("Notebook title")).toBeDefined(),
+         expect(screen.getByLabelText("Report title")).toBeDefined(),
       );
+      expect(
+         screen.getByRole("combobox", { name: /Layout/ }).textContent,
+      ).toMatch(/^Linear/);
    });
 
-   it("writes a dashboard into the package, refreshes the listings, and opens its editor", async () => {
+   it("writes a linear report at the package root, refreshes the listings, and opens its editor", async () => {
       mount();
       await settled();
-      await openNew("Dashboard");
+      await openNew();
       const before = {
-         dashboards: listDashboards.mock.calls.length,
-         notebooks: listNotebooks.mock.calls.length,
+         reports: listReports.mock.calls.length,
          models: listModels.mock.calls.length,
       };
-      fireEvent.click(screen.getByRole("button", { name: "Create dashboard" }));
+      fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/dashboards/by-category/edit",
+            "/env/pkg/by-category/edit",
          ),
       );
       const [, , path, body] = updateModelSource.mock.calls[0] as unknown as [
@@ -318,25 +308,46 @@ describe("creating", () => {
          string,
          { source: string },
       ];
-      expect(path).toBe("dashboards/by-category.malloy");
-      expect(body.source).toContain(
-         'tiles=["order_items_tiles -> by_category_tile"]',
-      );
+      expect(path).toBe("by-category.malloy");
+      expect(body.source).toContain("layout=linear");
+      expect(body.source).not.toContain("kind=notebook");
       await waitFor(() => {
-         expect(listDashboards).toHaveBeenCalledTimes(before.dashboards + 1);
-         expect(listNotebooks).toHaveBeenCalledTimes(before.notebooks + 1);
+         expect(listReports).toHaveBeenCalledTimes(before.reports + 1);
          expect(listModels).toHaveBeenCalledTimes(before.models + 1);
       });
    });
 
-   it("hands the new document to the host's onOpenDocument, which owns the route", async () => {
+   it("writes a grid report at the package root too: the layout never picks a directory", async () => {
+      mount();
+      await settled();
+      await openNew("grid");
+      fireEvent.click(screen.getByRole("button", { name: "Create report" }));
+      await waitFor(() =>
+         expect(onClickPackageFile).toHaveBeenCalledWith(
+            "/env/pkg/by-category/edit",
+         ),
+      );
+      const [, , path, body] = updateModelSource.mock.calls[0] as unknown as [
+         string,
+         string,
+         string,
+         { source: string },
+      ];
+      expect(path).toBe("by-category.malloy");
+      expect(body.source).toContain("layout=grid");
+      expect(body.source).toContain('from "storefront.malloy"');
+   });
+
+   it("hands the new report to the host's onOpenDocument by path, which owns the route", async () => {
       const onOpenDocument = mock((_request: OpenDocumentRequest) => {});
       mount(undefined, onOpenDocument);
       await settled();
-      await openNew("Dashboard");
-      fireEvent.click(screen.getByRole("button", { name: "Create dashboard" }));
+      await openNew("grid");
+      fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onOpenDocument).toHaveBeenCalledWith({
+            path: "by-category.malloy",
+            layout: "grid",
             kind: "dashboard",
             slug: "by-category",
             mode: "edit",
@@ -345,48 +356,52 @@ describe("creating", () => {
       expect(onClickPackageFile).not.toHaveBeenCalled();
    });
 
-   it("writes a notebook into the package and opens its editor", async () => {
+   it("writes at a location the author types, with its import relative to it", async () => {
       mount();
       await settled();
-      await openNew("Notebook");
-      fireEvent.click(screen.getByRole("button", { name: "Create notebook" }));
+      await openNew();
+      fireEvent.change(screen.getByLabelText("Location"), {
+         target: { value: "sales/q3" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/notebooks/by-category/edit",
+            "/env/pkg/sales/q3/edit",
          ),
       );
-      expect(updateModelSource.mock.calls[0][2]).toBe(
-         "notebooks/by-category.malloy",
-      );
+      const [, , path, body] = updateModelSource.mock.calls[0] as unknown as [
+         string,
+         string,
+         string,
+         { source: string },
+      ];
+      expect(path).toBe("sales/q3.malloy");
+      expect(body.source).toContain('from "../storefront.malloy"');
    });
 
-   it("a dashboard that is already there is not written over", async () => {
+   it("a report that is already there is not written over", async () => {
       mount();
       await settled();
-      await openNew("Dashboard");
-      fireEvent.change(screen.getByLabelText("Dashboard title"), {
+      await openNew();
+      fireEvent.change(screen.getByLabelText("Report title"), {
          target: { value: "Old" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Create dashboard" }));
+      fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
-         expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/dashboards/old-2/edit",
-         ),
+         expect(onClickPackageFile).toHaveBeenCalledWith("/env/pkg/old-2/edit"),
       );
-      expect(updateModelSource.mock.calls[0][2]).toBe(
-         "dashboards/old-2.malloy",
-      );
+      expect(updateModelSource.mock.calls[0][2]).toBe("old-2.malloy");
    });
 
-   it("an authoritative host's document goes to its store, never the package", async () => {
+   it("an authoritative host's report goes to its store, never the package", async () => {
       const { storage, saved } = fakeStorage([BROWSER, RECORD]);
       mount(storage);
       await settled();
-      await openNew("Notebook");
-      fireEvent.click(screen.getByRole("button", { name: "Create notebook" }));
+      await openNew();
+      fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/notebooks/by-category/edit",
+            "/env/pkg/by-category/edit",
          ),
       );
       expect(updateModelSource).not.toHaveBeenCalled();
@@ -394,7 +409,7 @@ describe("creating", () => {
          {
             workspace: "record",
             type: "notebook",
-            path: "env/pkg/notebooks/by-category.malloy",
+            path: "env/pkg/by-category.malloy",
          },
       ]);
    });

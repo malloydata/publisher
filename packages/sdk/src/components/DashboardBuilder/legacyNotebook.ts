@@ -469,7 +469,7 @@ export async function readNotebookSource(
    if (artifactAt < 0)
       return refuse(
          0,
-         "this file has no ## artifact note, so it is not a notebook the builder can edit. Fix: add `## artifact { kind=notebook }` after the ##! line.",
+         "this file has no ## artifact note, so it is not a notebook the builder can edit. Fix: add `## artifact { layout=linear }` after the ##! line.",
       );
    const above = items.findIndex(
       (item, index) => index < artifactAt && item.kind === "statement",
@@ -1057,8 +1057,16 @@ export async function convertLegacyNotebook(
       entries.length === 0
          ? "\n  tiles=[]\n"
          : `\n  tiles=[\n${entries.map((e) => `    ${e}`).join(",\n")}\n  ]\n`;
-   const rewritten = `${artifact.text
+   // A tile list with no stated layout reads as grid, so the converted tag says
+   // `layout=linear` outright, in place of any `kind=` or `layout=` it had.
+   const head = artifact.text
       .slice(0, close)
+      .replace(
+         /[ \t]*\b(?:kind|layout)\s*=\s*(?:"(?:[^"\\]|\\.)*"|[^\s}]+)/g,
+         "",
+      )
+      .replace(/\bartifact\s*\{/, (open) => `${open} layout=linear`);
+   const rewritten = `${head
       .trimEnd()
       .replace(/^##(?!\|)/, "##|")}${entryList}${artifact.text.slice(close)}`;
    headerLines.splice(

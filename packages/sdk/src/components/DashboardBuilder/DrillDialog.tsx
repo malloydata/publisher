@@ -98,7 +98,7 @@ export function DrillDialog({
 
    const destinations = [SELF, ...dashboards.filter((d) => d !== SELF)];
    const labelFor = (destination: string) =>
-      destination === SELF ? "This dashboard" : destination;
+      destination === SELF ? "This report" : destination;
 
    const apply = () => {
       if (!source) return;
@@ -121,7 +121,7 @@ export function DrillDialog({
          open={open}
          onClose={onClose}
          title="Drill"
-         description="A cell in a column that groups by one of these dimensions becomes a link. Clicking it writes the value into a control — here, or on the dashboard it opens."
+         description="A cell in a column that groups by one of these dimensions becomes a link. Clicking it writes the value into a control — here, or on the report it opens."
          actions={
             <>
                <Button onClick={onClose}>Cancel</Button>

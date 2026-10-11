@@ -164,13 +164,23 @@ describe("readDashboardDocument: text tiles and kind", () => {
       expect(result.legacyNotebook).toBe(true);
    });
 
-   it("still refuses a dashboard with no tiles list, without the legacy mark", async () => {
+   it("still refuses a grid report with no tiles list, without the legacy mark", async () => {
+      for (const tag of [`layout=grid title="D"`, `kind=dashboard title="D"`]) {
+         const result = await readDashboardDocument(
+            `## artifact { ${tag} }\nimport { a } from "../m.malloy"\n`,
+         );
+         if (!readFailed(result)) throw new Error("expected a refusal");
+         expect(result.legacyNotebook).toBeUndefined();
+         expect(result.reason).toContain("tiles");
+      }
+   });
+
+   it("reads a tag with no layout and no tiles as a linear report in the cell format", async () => {
       const result = await readDashboardDocument(
          `## artifact { title="D" }\nimport { a } from "../m.malloy"\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.legacyNotebook).toBeUndefined();
-      expect(result.reason).toContain("tiles");
+      expect(result.legacyNotebook).toBe(true);
    });
 
    it("reads an empty tiles list on a notebook as a layout notebook with no tiles", async () => {
@@ -602,7 +612,7 @@ describe("spliceDashboardDocument: switching kind", () => {
       expect(reason).toContain("kind");
    });
 
-   it("turns a dashboard into a notebook in place: kind added, width cleared", async () => {
+   it("turns a grid report linear in place: layout written, width cleared", async () => {
       const { out, document } = await writes(
          DASHBOARD,
          (d) => {
@@ -612,9 +622,10 @@ describe("spliceDashboardDocument: switching kind", () => {
          { changeKind: true },
       );
       expect(out).toContain(
-         '## artifact { title="D" tiles=["a_tiles -> x"] kind=notebook }',
+         '## artifact { title="D" tiles=["a_tiles -> x"] layout=linear }',
       );
       expect(out).not.toContain("dashboard {");
+      expect(out).not.toContain("kind=notebook");
       expect(document.kind).toBe("notebook");
       expect(document.columns).toBeUndefined();
       expect(out.slice(out.indexOf("\n"))).toBe(
@@ -622,7 +633,7 @@ describe("spliceDashboardDocument: switching kind", () => {
       );
    });
 
-   it("turns a notebook back into a dashboard: kind removed, width written", async () => {
+   it("turns a linear report back into a grid: the legacy kind= becomes layout=grid, width written", async () => {
       const { out, document } = await writes(
          NOTEBOOK,
          (d) => {
@@ -632,80 +643,74 @@ describe("spliceDashboardDocument: switching kind", () => {
          { changeKind: true },
       );
       expect(out).not.toContain("kind=notebook");
+      expect(out).not.toContain("kind=dashboard");
+      expect(out).toContain("layout=grid");
       expect(out).toContain("kind=text");
       expect(out).toContain("dashboard { columns=12 }");
       expect(document.kind).toBeUndefined();
       expect(document.columns).toBe(12);
    });
 
-   it("tags a dashboard kind=dashboard under notebooks/, where an untagged file reads as a notebook, and drops the tag again for a notebook", async () => {
-      const flip = (source: string, kind: "dashboard" | "notebook") =>
-         writes(
-            source,
-            (d) => {
-               d.kind = kind;
-               if (kind === "notebook") delete d.columns;
-            },
-            { changeKind: true, modelPath: "notebooks/n.malloy" },
-         );
-      const asDashboard = await flip(NOTEBOOK, "dashboard");
-      expect(asDashboard.out).toContain("kind=dashboard");
-      expect(asDashboard.out).not.toContain("kind=notebook");
-      expect(asDashboard.document.kind).toBeUndefined();
-      const back = await flip(asDashboard.out, "notebook");
-      expect(back.out).toContain("kind=notebook");
-      expect(back.out).not.toContain("kind=dashboard");
-      expect(back.document.kind).toBe("notebook");
+   it("writes layout= both ways wherever the file lives, and never kind=", async () => {
+      for (const options of [
+         {},
+         { modelPath: "notebooks/n.malloy" },
+         { modelPath: "dashboards/n.malloy" },
+         { modelPath: "sales/q3/n.malloy" },
+         { modelPath: "dashboards/n.malloy", explicitKind: true },
+      ]) {
+         const flip = (source: string, kind: "dashboard" | "notebook") =>
+            writes(
+               source,
+               (d) => {
+                  d.kind = kind;
+                  if (kind === "notebook") delete d.columns;
+               },
+               { changeKind: true, ...options },
+            );
+         const asGrid = await flip(NOTEBOOK, "dashboard");
+         expect(asGrid.out).toContain("layout=grid");
+         expect(asGrid.out).not.toMatch(/kind=(dashboard|notebook)/);
+         expect(asGrid.document.kind).toBeUndefined();
+         const back = await flip(asGrid.out, "notebook");
+         expect(back.out).toContain("layout=linear");
+         expect(back.out).not.toContain("layout=grid");
+         expect(back.out).not.toMatch(/kind=(dashboard|notebook)/);
+         expect(back.document.kind).toBe("notebook");
+      }
    });
 
-   it("tags a dashboard kind=dashboard when the document has no path, as in text-source mode", async () => {
+   it("switches only the layout property: the rest of the tag and file stay byte for byte", async () => {
+      const source = NOTEBOOK.replace("kind=notebook", "layout=linear");
       const { out } = await writes(
-         NOTEBOOK,
+         source,
          (d) => {
             d.kind = "dashboard";
          },
          { changeKind: true },
       );
-      expect(out).toContain("kind=dashboard");
-   });
-
-   it("writes the kind both ways in text mode, even under dashboards/, so the compile and the saved file agree", async () => {
-      const options = {
-         changeKind: true,
-         modelPath: "dashboards/n.malloy",
-         explicitKind: true,
-      };
-      const asDashboard = await writes(
-         NOTEBOOK,
-         (d) => {
-            d.kind = "dashboard";
-         },
-         options,
-      );
-      expect(asDashboard.out).toContain("kind=dashboard");
-      expect(asDashboard.out).not.toContain("kind=notebook");
+      expect(out).toBe(source.replace("layout=linear", "layout=grid"));
       const back = await writes(
-         asDashboard.out,
+         out,
          (d) => {
             d.kind = "notebook";
-            delete d.columns;
          },
-         options,
+         { changeKind: true },
       );
-      expect(back.out).toContain("kind=notebook");
-      expect(back.out).not.toContain("kind=dashboard");
+      expect(back.out).toBe(source);
    });
 
-   it("leaves a dashboard under dashboards/ untagged", async () => {
-      const { out } = await writes(
-         NOTEBOOK,
-         (d) => {
-            d.kind = "dashboard";
-         },
-         { changeKind: true, modelPath: "dashboards/n.malloy" },
-      );
-      expect(out).not.toContain("kind=dashboard");
-      expect(out).not.toContain("kind=notebook");
+   it("turns a legacy kind= into layout= when it edits the tag anyway, and leaves an untouched tag alone", async () => {
+      const retitled = await writes(NOTEBOOK, (d) => {
+         d.title = "Renamed";
+      });
+      expect(retitled.out).toContain("layout=linear");
+      expect(retitled.out).not.toContain("kind=notebook");
+      expect(retitled.document.kind).toBe("notebook");
+      const untouched = await writes(NOTEBOOK, (d) => {
+         text(d, "intro").markdown = "Edited.";
+      });
+      expect(untouched.out).toContain("kind=notebook");
    });
 
    it("does not take a text tile's kind=text for the document's", async () => {
@@ -718,7 +723,7 @@ describe("spliceDashboardDocument: switching kind", () => {
          { changeKind: true },
       );
       expect(out).toContain("a { kind=text }");
-      expect(out).toContain("kind=notebook");
+      expect(out).toContain("layout=linear");
       expect(document.kind).toBe("notebook");
       const back = await writes(
          out,
@@ -728,17 +733,19 @@ describe("spliceDashboardDocument: switching kind", () => {
          { changeKind: true },
       );
       expect(back.out).toContain("a { kind=text }");
-      expect(back.out).not.toContain("kind=notebook");
+      expect(back.out).toContain("layout=grid");
+      expect(back.out).not.toContain("layout=linear");
    });
 
-   it("refuses to switch to a notebook with the width still set, and never writes a notebook's width", async () => {
+   it("keeps the width through a switch to linear, and never writes a linear report's width", async () => {
+      // The switch rewrites `layout=` and nothing else, so the file's own width stays as written.
       const result = await spliceDashboardDocument(
          DASHBOARD,
          { ...(await openDocument(DASHBOARD)), kind: "notebook" },
          { changeKind: true },
       );
-      if (!spliceFailed(result)) throw new Error("expected a refusal");
-      expect(result.reason).toContain("one column");
+      if (spliceFailed(result)) throw new Error(result.reason);
+      expect(result.source).toContain("layout=linear");
       const reason = await refused(NOTEBOOK, (d) => {
          d.columns = 6;
       });

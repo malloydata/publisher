@@ -19,8 +19,9 @@ import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
+import { useReportListing } from "../Package/useDocumentLocation";
 import { useServer } from "../ServerProvider";
-import { buildCatalog, isDashboardModel, type PackageCatalog } from "./catalog";
+import { buildCatalog, isReportModel, type PackageCatalog } from "./catalog";
 import { DashboardBuilder } from "./DashboardBuilder";
 import type { DashboardDocument, DocumentKind, QueryTile } from "./document";
 import type { SavesTo } from "./documentSession";
@@ -51,7 +52,6 @@ export function EditorSurface({
    environmentName,
    packageName,
    modelPath,
-   slug,
    versionId,
    opened,
    replaces,
@@ -70,6 +70,7 @@ export function EditorSurface({
    environmentName: string;
    packageName: string;
    modelPath: string;
+   /** A display label; the editor keys on `modelPath`. */
    slug: string;
    versionId?: string;
    opened: {
@@ -107,37 +108,30 @@ export function EditorSurface({
          "dashboard-editor-manifest",
          environmentName,
          packageName,
-         slug,
+         modelPath,
          versionId,
-         kind,
       ],
-      // A layout notebook's manifest rides on its notebook read; one in the cell format has only the tag's starting values until it is saved.
+      // One read for either layout, by path. A report in the cell format has only the tag's starting values until it is saved.
       queryFn: async (): Promise<DashboardManifest> => {
-         if (!notebook)
-            return (
-               await apiClients.dashboards.getDashboard(
-                  environmentName,
-                  packageName,
-                  slug,
-                  versionId,
-               )
-            ).data;
          const read = (
-            await apiClients.notebooks.getNotebook(
+            await apiClients.reports.getReport(
                environmentName,
                packageName,
                modelPath,
                versionId,
             )
          ).data;
-         return (
-            read.dashboard ?? {
-               ...(read.startingGivens
-                  ? { startingGivens: read.startingGivens }
+         if (read.notebook)
+            return {
+               ...(read.notebook.startingGivens
+                  ? { startingGivens: read.notebook.startingGivens }
                   : {}),
-               ...(read.autorun === undefined ? {} : { autorun: read.autorun }),
-            }
-         );
+               ...(read.notebook.autorun === undefined
+                  ? {}
+                  : { autorun: read.notebook.autorun }),
+            };
+         const { notebook: _cells, ...manifest } = read;
+         return manifest as DashboardManifest;
       },
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
@@ -185,25 +179,24 @@ export function EditorSurface({
       [manifest],
    );
 
-   // The package's other dashboards, by slug: where a clicked cell can go.
-   const { data: dashboardList } = useQueryWithApiError({
-      // Shares the listing the page's location lookup already fetches.
-      queryKey: ["dashboards", environmentName, packageName, versionId],
-      staleTime: 60_000,
-      queryFn: () =>
-         apiClients.dashboards.listDashboards(
-            environmentName,
-            packageName,
-            versionId,
-         ),
-      enabled: !notebook,
-   });
+   // The package's reports: the catalog leaves them out, and every OTHER one
+   // is where a clicked cell can go.
+   const { reports: reportList, settled: reportsSettled } = useReportListing(
+      environmentName,
+      packageName,
+      versionId,
+   );
    const otherDashboards = useMemo(
       () =>
-         (dashboardList?.data ?? [])
-            .map((d) => d.name)
-            .filter((name): name is string => !!name && name !== slug),
-      [dashboardList, slug],
+         reportList
+            .map((r) => r.path)
+            .filter(
+               (path): path is string =>
+                  !!path && path !== modelPath && path.endsWith(".malloy"),
+            )
+            // A drill names a report by its path without `.malloy`.
+            .map((path) => path.replace(/\.malloy$/, "")),
+      [reportList, modelPath],
    );
 
    // The catalog: every source the package publishes. A tile runs against
@@ -217,6 +210,11 @@ export function EditorSurface({
          versionId,
       ],
       queryFn: async () => {
+         // The reports, by path, so the catalog leaves them out whatever
+         // directory holds them: the listing above, not a second request for it.
+         const reportPaths = new Set(
+            reportList.flatMap((r) => (r.path ? [r.path] : [])),
+         );
          const listed = (
             await apiClients.models.listModels(
                environmentName,
@@ -224,12 +222,12 @@ export function EditorSurface({
                versionId,
             )
          ).data.filter(
-            // The catalog leaves dashboards out, and this file's own text is already fetched above.
+            // The catalog leaves reports out, this file's own text included.
             (m) =>
                m.path &&
                !m.error &&
-               !isDashboardModel(m.path) &&
-               !m.path.startsWith("notebooks/"),
+               m.path !== modelPath &&
+               !isReportModel(m.path, reportPaths),
          );
          // One model that fails to load (a reload racing this fetch, say)
          // costs the catalog that model's sources, not every suggestion.
@@ -245,8 +243,9 @@ export function EditorSurface({
          );
          // Every published source: a tile on one the file cannot see yet
          // imports it as it is added.
-         return buildCatalog(models);
+         return buildCatalog(models, reportPaths);
       },
+      enabled: reportsSettled,
    });
 
    // A text-held document has no `import`, so only what its run model lists resolves for it.
@@ -323,13 +322,14 @@ export function EditorSurface({
       specs,
       loaded: isSuccess,
       startingValues: manifest?.startingGivens,
-      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${notebook ? "notebook/" : ""}${slug}/edit`,
+      // Keyed by path: two reports may share a basename.
+      documentKey: `${environmentName}/${packageName}/${versionId ?? ""}/${modelPath}/edit`,
       autorun: manifest?.autorun !== false,
       environmentName,
       packageName,
       modelPath: textSource ? runModelPath : manifest?.path,
       versionId,
-      documentName: slug,
+      documentName: modelPath,
       ...(preamble !== undefined ? { preamble } : {}),
       ...(hostGivens ? { hostGivens } : {}),
    });

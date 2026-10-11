@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { addTileToDocument } from "./addTileToDocument";
 import { openDocument, refused, spliced } from "./testing/fixtures";
 
 const SOURCE = `## artifact { title="Probe" tiles=["a -> by_cat"] } dashboard { columns=12 }
@@ -51,6 +52,32 @@ describe("spliceDashboardDocument: imports", () => {
          names: ["events"],
          from: "../ev.malloy",
       });
+   });
+
+   it("puts a new import above a new extension when the file ends on its import", async () => {
+      const blank = `## artifact { title="Blank" tiles=[] }\nimport { orders } from '../orders.malloy'\n`;
+      const out = await spliced(blank, (d) => {
+         addTileToDocument(
+            d,
+            {
+               base: "recent_orders",
+               modelPath: "dashboards/_shared.malloy",
+               exporters: ["dashboards/_shared.malloy"],
+               view: "totals",
+               colspan: 6,
+            },
+            {
+               modelPath: "dashboards/blank.malloy",
+               textHeld: false,
+               notebook: false,
+            },
+         );
+      });
+      const imported = out.indexOf(
+         'import { recent_orders } from "_shared.malloy"',
+      );
+      expect(imported).toBeGreaterThan(-1);
+      expect(imported).toBeLessThan(out.indexOf("source: recent_orders_tiles"));
    });
 
    it("takes a name off the statement", async () => {

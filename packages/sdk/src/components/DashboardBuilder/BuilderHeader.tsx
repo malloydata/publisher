@@ -17,7 +17,6 @@ import type { DashboardEditor } from "./useDashboardEditor";
  */
 export function BuilderHeader({
    editor,
-   notebook,
    documentSlug,
    chrome,
    actions,
@@ -25,7 +24,8 @@ export function BuilderHeader({
    selectDescription,
 }: {
    editor: DashboardEditor;
-   notebook: boolean;
+   /** Kept for callers; the title reads the same in either layout. */
+   notebook?: boolean;
    /** The name a reader's view titles an untitled document with. */
    documentSlug: string | undefined;
    chrome: TileChrome;
@@ -46,10 +46,9 @@ export function BuilderHeader({
                   value={editor.document.title}
                   placeholder={
                      // What a reader's view falls back to: the file's own name.
-                     documentSlug ??
-                     (notebook ? "Untitled notebook" : "Untitled dashboard")
+                     documentSlug ?? "Untitled report"
                   }
-                  ariaLabel={notebook ? "Notebook title" : "Dashboard title"}
+                  ariaLabel="Report title"
                   onCommit={(next) =>
                      editor.update((draft) => {
                         draft.title = next;

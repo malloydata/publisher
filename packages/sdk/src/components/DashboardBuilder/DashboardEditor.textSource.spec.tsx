@@ -85,9 +85,9 @@ const listModels = mock(
 mockServerProvider(
    {
       models: { compileModelSource, executeQueryModel, getModel, listModels },
-      dashboards: {
-         getDashboard: mock(() => pending()),
-         listDashboards: mock(() => Promise.resolve({ data: [] })),
+      reports: {
+         getReport: mock(() => pending()),
+         listReports: mock(() => Promise.resolve({ data: [] })),
       },
    },
    { mutable: true },

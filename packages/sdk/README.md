@@ -970,7 +970,7 @@ interface Workspace {
 interface DocumentLocator {
    workspace: string;
    type: DocumentType;
-   path: string; // as the backend spells it, e.g. "dashboards/overview.malloy"
+   path: string; // as the backend spells it, e.g. "<env>/<pkg>/sales/overview.malloy"
 }
 
 interface DocumentStorage {

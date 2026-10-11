@@ -29,7 +29,7 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
             : { modelPath: path, sources: [], sourceInfos: [] },
    }),
 );
-const getDashboard = mock(() =>
+const getReport = mock(() =>
    Promise.resolve({
       data: { path: "dashboards/overview.malloy", tiles: [], ...served },
    }),
@@ -41,9 +41,9 @@ mockServerProvider(
          executeQueryModel: mock(() => pending()),
          listModels: mock(() => Promise.resolve({ data: [] })),
       },
-      dashboards: {
-         getDashboard,
-         listDashboards: mock(() => Promise.resolve({ data: [] })),
+      reports: {
+         getReport,
+         listReports: mock(() => Promise.resolve({ data: [] })),
       },
    },
    { mutable: true },

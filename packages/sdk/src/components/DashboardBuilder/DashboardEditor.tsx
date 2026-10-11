@@ -12,6 +12,7 @@ import type { BuilderEvent } from "./telemetry";
 import { now } from "../../utils/clock";
 import { useOptionalDocumentStorage } from "../DocumentStorage";
 import { Loading } from "../Loading";
+import { documentSlug } from "../Package/documentLocation";
 import { useServer } from "../ServerProvider";
 import type { DocumentKind } from "./document";
 import {
@@ -46,7 +47,21 @@ export type DashboardEditorProps = (
    | {
         /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
         resourceUri: string;
-        /** The dashboard's slug, as listed by the dashboards endpoint. */
+        /**
+         * The report's package path, `sales/q3.malloy`: its identity, and what
+         * the editor is keyed by. Give this.
+         */
+        path: string;
+        /** A display label; default the path's basename. */
+        dashboard?: string;
+     }
+   | {
+        /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
+        resourceUri: string;
+        /**
+         * @deprecated Pass `path`. The report's basename, which opens
+         * `<kind>s/<name>.malloy` when no `path` is given.
+         */
         dashboard: string;
      }
    | {
@@ -67,15 +82,16 @@ export type DashboardEditorProps = (
     */
    onEvent?: (event: BuilderEvent) => void;
    /**
-    * What the document is to the host: its storage locator and event names.
-    * Default `dashboard`. A notebook is a dashboard with one column, and is
-    * read with the authoring flag and served through the notebook endpoint.
+    * The report's layout when it opened, in the legacy vocabulary
+    * (`dashboard` is grid, `notebook` linear): what a host's document store
+    * files its copy under, and which events it reports. Default `dashboard`.
+    * The file's own tag decides how it is drawn, and the layout switch in the
+    * toolbar changes that.
     */
    kind?: DocumentKind;
    /**
-    * The document's file within the package, when it is not where its kind
-    * puts a new one (`dashboards/<slug>.malloy`, `notebooks/<slug>.malloy`):
-    * the kind comes from the file's own tag, so a document may sit in either.
+    * The report's file within the package, wherever it lives: its identity.
+    * Without it, the deprecated name forms open `<kind>s/<name>.malloy`.
     */
    path?: string;
    /**
@@ -135,9 +151,10 @@ export function DashboardEditor(props: DashboardEditorProps) {
       versionId,
       namesBoth: uriNamesBoth,
    } = resolveEditorTarget(props);
-   const dashboardName =
-      "resourceUri" in props ? props.dashboard : props.dashboardName;
-   const noun = notebook ? "notebook" : "dashboard";
+   const named = "resourceUri" in props ? props.dashboard : props.dashboardName;
+   // The label the builder shows; the path is what it opens.
+   const dashboardName = named ?? documentSlug(path) ?? "";
+   const noun = "report";
    const refusedEvent = notebook
       ? ("notebook.open_refused" as const)
       : ("dashboard.open_refused" as const);
@@ -153,8 +170,10 @@ export function DashboardEditor(props: DashboardEditorProps) {
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
    const storage = useOptionalDocumentStorage()?.documentStorage;
-   const legacyFormat = notebook && /\.malloynb$/i.test(dashboardName);
    const modelPath = path ?? `${kind}s/${dashboardName}.malloy`;
+   const legacyFormat =
+      /\.malloynb$/i.test(modelPath) ||
+      (notebook && /\.malloynb$/i.test(dashboardName));
 
    // The file as the package has it. `sourceText` rides on the compiled model.
    const modelQuery = useQueryWithApiError({
@@ -362,8 +381,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
                      </Stack>
                   }
                >
-                  You have edits to this dashboard saved in this browser that
-                  the package does not have.
+                  You have edits to this report saved in this browser that the
+                  package does not have.
                </Alert>
             )}
          {held !== undefined && (
@@ -376,10 +395,10 @@ export function DashboardEditor(props: DashboardEditorProps) {
                }
             >
                {savesTo === "package"
-                  ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
+                  ? "This report changed since you opened it. Your edits are still here; loading the new version replaces them, and until you do, saving is refused."
                   : savesTo === "host"
-                    ? "This dashboard changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
-                    : "The package's copy of this dashboard changed since you opened it. Your edits are still here; loading the new version replaces them."}
+                    ? "This report changed since you opened it. Your edits are still here; loading the new version replaces them, and saving keeps yours and writes over it."
+                    : "The package's copy of this report changed since you opened it. Your edits are still here; loading the new version replaces them."}
             </Alert>
          )}
          {supersedeFailure !== undefined && (

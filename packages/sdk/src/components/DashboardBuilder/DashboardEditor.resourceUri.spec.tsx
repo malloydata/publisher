@@ -61,8 +61,8 @@ const getModel = mock(
                  },
       }),
 );
-const getDashboard = mock(
-   (_env: string, _pkg: string, _slug: string, _versionId?: string) =>
+const getReport = mock(
+   (_env: string, _pkg: string, _path: string, _versionId?: string) =>
       Promise.resolve({
          data: { path: "dashboards/overview.malloy", givens: [], tiles: [] },
       }),
@@ -70,8 +70,16 @@ const getDashboard = mock(
 const listModels = mock((_env: string, _pkg: string, _versionId?: string) =>
    Promise.resolve({ data: [{ path: "data_app.malloy" }] }),
 );
-const listDashboards = mock((_env: string, _pkg: string, _versionId?: string) =>
-   Promise.resolve({ data: [{ name: "overview" }] }),
+const listReports = mock((_env: string, _pkg: string, _versionId?: string) =>
+   Promise.resolve({
+      data: [
+         {
+            path: "dashboards/overview.malloy",
+            name: "overview",
+            layout: "grid",
+         },
+      ],
+   }),
 );
 const updateModelSource = mock(
    (_env: string, _pkg: string, path: string, body: { source: string }) =>
@@ -102,7 +110,7 @@ const serverContext = { mutable: false };
 mockServerProvider(
    {
       models: { getModel, executeQueryModel, updateModelSource, listModels },
-      dashboards: { getDashboard, listDashboards },
+      reports: { getReport, listReports },
    },
    serverContext,
 );
@@ -126,6 +134,14 @@ const mountByUri = (versionId?: string) =>
       { wrapper: serverWrapper },
    );
 
+const mountByPath = () =>
+   render(
+      <DocumentStorageProvider documentStorage={new BrowserDocumentStorage()}>
+         <DashboardEditor resourceUri={URI} path="dashboards/overview.malloy" />
+      </DocumentStorageProvider>,
+      { wrapper: serverWrapper },
+   );
+
 const mountLegacy = () =>
    render(
       <DocumentStorageProvider documentStorage={new BrowserDocumentStorage()}>
@@ -142,8 +158,8 @@ beforeEach(() => {
    clearCache();
    localStorage.clear();
    getModel.mockClear();
-   getDashboard.mockClear();
-   listDashboards.mockClear();
+   getReport.mockClear();
+   listReports.mockClear();
    listModels.mockClear();
    updateModelSource.mockClear();
    // Uncleared, a tile query from an earlier test carries into the next one's
@@ -152,7 +168,23 @@ beforeEach(() => {
    serverContext.mutable = false;
 });
 
-describe("the two prop forms", () => {
+describe("the prop forms", () => {
+   it("open the same report by path as by the deprecated name", async () => {
+      mountByPath();
+      expect(await screen.findByText("Storefront")).toBeDefined();
+      expect(
+         getModel.mock.calls.find(
+            (call) => call[2] === "dashboards/overview.malloy",
+         ),
+      ).toEqual(["env", "pkg", "dashboards/overview.malloy", undefined]);
+      // The manifest is read by path, not by the basename.
+      await waitFor(() =>
+         expect(getReport.mock.calls[0]?.[2]).toBe(
+            "dashboards/overview.malloy",
+         ),
+      );
+   });
+
    it("open the same dashboard", async () => {
       mountLegacy();
       expect(await screen.findByText("Storefront")).toBeDefined();
@@ -201,13 +233,13 @@ describe("versionId", () => {
       expect(
          getModel.mock.calls.find((call) => call[2] === "data_app.malloy"),
       ).toEqual(["env", "pkg", "data_app.malloy", "v7"]);
-      expect(getDashboard.mock.calls[0]).toEqual([
+      expect(getReport.mock.calls[0]).toEqual([
          "env",
          "pkg",
-         "overview",
+         "dashboards/overview.malloy",
          "v7",
       ]);
-      expect(listDashboards.mock.calls[0]).toEqual(["env", "pkg", "v7"]);
+      expect(listReports.mock.calls[0]).toEqual(["env", "pkg", "v7"]);
       expect(listModels.mock.calls[0]).toEqual(["env", "pkg", "v7"]);
 
       // The key too, appended last, never spliced in the middle of it: a
@@ -216,7 +248,7 @@ describe("versionId", () => {
       // screen.
       expect(cacheKeys("dashboard-editor-model")[0]).toContain('"v7"');
       expect(cacheKeys("dashboard-editor-manifest")[0]).toContain('"v7"');
-      expect(cacheKeys("dashboards")[0]).toContain('"v7"');
+      expect(cacheKeys("reports")[0]).toContain('"v7"');
       await waitFor(() =>
          expect(cacheKeys("dashboard-editor-catalog")[0]).toContain('"v7"'),
       );
@@ -339,7 +371,7 @@ describe("a malformed resourceUri", () => {
 
          expect(
             await screen.findByText(
-               /A dashboard resource URI must name an environment and a package/,
+               /A report resource URI must name an environment and a package/,
             ),
          ).toBeDefined();
       });

@@ -12,7 +12,7 @@ import {
 import { openDocument } from "./testing/fixtures";
 
 const BLOCK = `##! experimental.givens
-##| artifact { kind=notebook title="Review"
+##| artifact { layout=linear title="Review"
   tiles=[
     intro { kind=text },
     "a_tiles -> overview",
@@ -34,7 +34,7 @@ source: a_tiles is a extend {
 
 const SINGLE = BLOCK.replace(
    /##\| artifact[\s\S]*?\|##\n/,
-   `## artifact { kind=notebook title="Review" tiles=[intro { kind=text }, "a_tiles -> overview", "a_tiles -> detail"] }\n`,
+   `## artifact { layout=linear title="Review" tiles=[intro { kind=text }, "a_tiles -> overview", "a_tiles -> detail"] }\n`,
 );
 
 async function writes(
@@ -133,7 +133,7 @@ describe("the artifact tag written as a ##| block", () => {
          if (intro) intro.colspan = 6;
       });
       expect(out).toContain(`    intro { kind=text colspan=6 },\n`);
-      expect(out).toContain(`##| artifact { kind=notebook title="Review"\n`);
+      expect(out).toContain(`##| artifact { layout=linear title="Review"\n`);
    });
 
    it("patches the title where it is, without collapsing the lines", async () => {
@@ -141,7 +141,7 @@ describe("the artifact tag written as a ##| block", () => {
          d.title = "Renamed";
       });
       expect(out).toContain(
-         `##| artifact { kind=notebook title="Renamed"\n  tiles=[\n`,
+         `##| artifact { layout=linear title="Renamed"\n  tiles=[\n`,
       );
       expect(document.title).toBe("Renamed");
    });
@@ -156,7 +156,7 @@ describe("the artifact tag written as a ##| block", () => {
       expect(document.autorun).toBe(false);
    });
 
-   it("toggles the kind both ways, leaving the layout alone", async () => {
+   it("toggles the layout both ways in place, leaving the tiles alone", async () => {
       const asDashboard = await writes(
          BLOCK,
          (d) => {
@@ -166,7 +166,7 @@ describe("the artifact tag written as a ##| block", () => {
          { changeKind: true },
       );
       expect(asDashboard.out).toContain(
-         `##| artifact { title="Review"\n  tiles=[\n`,
+         `##| artifact { layout=grid title="Review"\n  tiles=[\n`,
       );
       expect(asDashboard.document.kind).toBeUndefined();
       expect(asDashboard.document.columns).toBe(12);
@@ -183,6 +183,7 @@ describe("the artifact tag written as a ##| block", () => {
       expect(back.document.columns).toBeUndefined();
       expect(back.out).not.toContain("dashboard {");
       expect(back.out).toContain(`\n  tiles=[\n    intro { kind=text },\n`);
+      expect(back.out).toBe(BLOCK);
    });
 
    it("adds, changes and removes starting givens inside the block", async () => {
@@ -228,7 +229,7 @@ describe("the artifact tag written as a ##| block", () => {
       expect(document.description).toBe("What this review covers.");
       expect(out).toContain(`##" What this review covers.\n`);
       expect(out).toContain(
-         `##| artifact { kind=notebook title="Review"\n  tiles=[\n`,
+         `##| artifact { layout=linear title="Review"\n  tiles=[\n`,
       );
       const cleared = await writes(out, (d) => {
          d.description = undefined;
@@ -242,7 +243,7 @@ describe("the artifact tag written as a ##| block", () => {
          d.title = "Renamed";
       });
       expect(out.split("\n")[1]).toBe(
-         `## artifact { kind=notebook title="Renamed" tiles=["a_tiles -> detail", "a_tiles -> overview", intro { kind=text }] }`,
+         `## artifact { layout=linear title="Renamed" tiles=["a_tiles -> detail", "a_tiles -> overview", intro { kind=text }] }`,
       );
    });
 });

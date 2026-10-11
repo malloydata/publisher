@@ -373,6 +373,17 @@ export function DashboardBuilder({
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
+         {...(visibleSources === undefined
+            ? {
+                 // A text-held document's layout is the host's record, so only a file gets the switch.
+                 layout: notebook ? ("linear" as const) : ("grid" as const),
+                 onLayoutChange: (next: "grid" | "linear") =>
+                    editor.update((draft) => {
+                       if (next === "linear") draft.kind = "notebook";
+                       else delete draft.kind;
+                    }),
+              }
+            : {})}
       />
    );
    return (
@@ -401,8 +412,8 @@ export function DashboardBuilder({
             >
                {editor.pendingOpen && (
                   <Alert severity="info">
-                     This notebook is in the cell format. Saving rewrites it as
-                     a layout notebook, and a named query run once becomes that
+                     This report is in the cell format. Saving rewrites it as a
+                     layout notebook, and a named query run once becomes that
                      tile&apos;s view.
                   </Alert>
                )}
@@ -431,8 +442,7 @@ export function DashboardBuilder({
                         }}
                      >
                         <Typography variant="body2">
-                           This {notebook ? "notebook" : "dashboard"} is not
-                           served until it has a tile.
+                           This report is not served until it has a tile.
                         </Typography>
                         {catalog && (
                            <Button

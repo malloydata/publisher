@@ -78,13 +78,22 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
                    },
         }),
 );
-const getDashboard = mock(() =>
+const getReport = mock(() =>
    Promise.resolve({
       data: { path: "dashboards/overview.malloy", givens: [], tiles: [] },
    }),
 );
-const listDashboards = mock(() =>
-   Promise.resolve({ data: [{ name: "overview" }, { name: "regions" }] }),
+const listReports = mock(() =>
+   Promise.resolve({
+      data: [
+         {
+            path: "dashboards/overview.malloy",
+            name: "overview",
+            layout: "grid",
+         },
+         { path: "regions.malloy", name: "regions", layout: "grid" },
+      ],
+   }),
 );
 const executeQueryModel = mock(() => pending());
 // What the package publishes: the catalog is built from these, not from
@@ -99,7 +108,7 @@ const serverContext: {
 mockServerProvider(
    {
       models: { getModel, executeQueryModel, listModels },
-      dashboards: { getDashboard, listDashboards },
+      reports: { getReport, listReports },
    },
    serverContext,
 );
@@ -139,7 +148,7 @@ beforeEach(() => {
    fetchFailure = undefined;
    serverContext.mutable = undefined;
    serverContext.isLoadingStatus = false;
-   getDashboard.mockClear();
+   getReport.mockClear();
 });
 
 describe("DashboardEditor", () => {
@@ -174,7 +183,7 @@ describe("DashboardEditor", () => {
             })
          ).length,
       ).toBe(2);
-      expect(getDashboard).not.toHaveBeenCalled();
+      expect(getReport).not.toHaveBeenCalled();
    });
 
    it("keeps the builder and its unsaved edit through a failed refetch", async () => {
@@ -242,6 +251,24 @@ describe("DashboardEditor", () => {
       ).toBeDefined();
    });
 
+   it("leaves the package's listed reports out of the catalog, wherever they live", async () => {
+      listModels.mockImplementationOnce(() =>
+         Promise.resolve({
+            data: [{ path: "data_app.malloy" }, { path: "regions.malloy" }],
+         }),
+      );
+      mount();
+      await waitFor(() =>
+         expect(
+            getModel.mock.calls.some((call) => call[2] === "data_app.malloy"),
+         ).toBe(true),
+      );
+      expect(listReports).toHaveBeenCalled();
+      expect(
+         getModel.mock.calls.some((call) => call[2] === "regions.malloy"),
+      ).toBe(false);
+   });
+
    it("saves an edit into the browser and marks it saved", async () => {
       const storage = mount();
       await screen.findByText("Storefront");
@@ -268,9 +295,7 @@ describe("DashboardEditor", () => {
       const onEvent = mock((_event: DashboardEvent) => {});
       mount(onEvent);
       expect(
-         await screen.findByText(
-            /edits to this dashboard saved in this browser/,
-         ),
+         await screen.findByText(/edits to this report saved in this browser/),
       ).toBeDefined();
       // Until the reader chooses, the package file is what is open.
       expect(await screen.findByText("Storefront")).toBeDefined();

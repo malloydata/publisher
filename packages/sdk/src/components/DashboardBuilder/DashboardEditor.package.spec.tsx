@@ -55,8 +55,8 @@ mockServerProvider(
          executeQueryModel: mock(() => pending()),
          updateModelSource,
       },
-      dashboards: {
-         getDashboard: mock(() =>
+      reports: {
+         getReport: mock(() =>
             Promise.resolve({
                data: {
                   path: "dashboards/overview.malloy",
@@ -65,8 +65,16 @@ mockServerProvider(
                },
             }),
          ),
-         listDashboards: mock(() =>
-            Promise.resolve({ data: [{ name: "overview" }] }),
+         listReports: mock(() =>
+            Promise.resolve({
+               data: [
+                  {
+                     path: "dashboards/overview.malloy",
+                     name: "overview",
+                     layout: "grid",
+                  },
+               ],
+            }),
          ),
       },
    },

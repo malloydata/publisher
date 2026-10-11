@@ -3,6 +3,7 @@
 
 import { annotationTextProblem } from "./annotationText";
 import { isBareName } from "../../utils/malloyText";
+import { newReportSource } from "../DocumentCreate/newNotebook";
 
 /**
  * A new dashboard file, the way the builder would have written it: the
@@ -46,30 +47,16 @@ export function newDashboardProblem({
    return annotationTextProblem("title", title);
 }
 
-export function newDashboardSource(dashboard: NewDashboard): string {
+/**
+ * A new grid report; see `newReportSource`, which writes both layouts from
+ * one template.
+ */
+export function newDashboardSource(
+   dashboard: NewDashboard,
+   /** The package path the report is written at; the import is relative to it. Default: the root. */
+   reportPath?: string,
+): string {
    const problem = newDashboardProblem(dashboard);
    if (problem) throw new Error(problem);
-   return writeNewDashboard(dashboard);
-}
-
-function writeNewDashboard({
-   title,
-   modelPath,
-   source,
-   view,
-}: NewDashboard): string {
-   const extension = `${source}_tiles`;
-   const tile = `${view}_tile`;
-   const quoted = `"${title.trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-   return [
-      "##! experimental.givens",
-      `## artifact { title=${quoted} tiles=["${extension} -> ${tile}"] } dashboard { columns=12 }`,
-      `import { ${source} } from "../${modelPath}"`,
-      "",
-      `source: ${extension} is ${source} extend {`,
-      "  # colspan=6",
-      `  view: ${tile} is ${view}`,
-      "}",
-      "",
-   ].join("\n");
+   return newReportSource(dashboard, "grid", reportPath);
 }

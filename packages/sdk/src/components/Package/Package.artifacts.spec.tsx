@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-/** The package page's one Artifacts list: dashboards and notebooks, named by one rule. */
+/** The package page's one Reports list: both layouts, named by one rule, opened by path. */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, mock } from "bun:test";
 import type { ReactNode } from "react";
@@ -17,23 +17,18 @@ import type {
 } from "../DocumentStorage/DocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
 
-let dashboards: { name: string; path: string; title?: string }[] = [];
-let notebooks: { path: string; title?: string }[] = [];
-const listDashboards = mock((_e: string, _p: string, _v?: string) =>
-   Promise.resolve({ data: dashboards }),
-);
-const listNotebooks = mock((_e: string, _p: string, _v?: string) =>
-   Promise.resolve({ data: notebooks }),
+let reports: { path: string; layout: string; title?: string }[] = [];
+const listReports = mock((_e: string, _p: string, _v?: string) =>
+   Promise.resolve({ data: reports }),
 );
 
 mockServerProvider(
    {
       packages: { getPackage: pending },
-      notebooks: { listNotebooks, getNotebook: pending },
+      reports: { listReports, getReport: pending },
       models: { listModels: () => Promise.resolve({ data: [] }) },
       databases: { listDatabases: () => Promise.resolve({ data: [] }) },
       dataApps: { listDataApps: () => Promise.resolve({ data: [] }) },
-      dashboards: { listDashboards },
       materializations: {
          listMaterializations: () => Promise.resolve({ data: [] }),
       },
@@ -65,52 +60,53 @@ function mount(storage?: DocumentStorage) {
    );
 }
 
-/** The artifact rows' text, top to bottom. */
+/** The report rows' text, top to bottom. */
 const rows = async () => {
-   await screen.findByRole("heading", { name: "Artifacts" });
-   const section = screen.getByRole("region", { name: "Artifacts" });
+   await screen.findByRole("heading", { name: "Reports" });
+   const section = screen.getByRole("region", { name: "Reports" });
    return Array.from(section.querySelectorAll('[role="button"]'))
       .map((row) => row.textContent ?? "")
-      .filter((text) => text !== "New");
+      .filter((text) => text !== "New report");
 };
 
 beforeEach(() => {
    clearCache();
-   dashboards = [];
-   notebooks = [];
+   reports = [];
    onClick.mockClear();
-   listDashboards.mockClear();
-   listNotebooks.mockClear();
+   listReports.mockClear();
 });
 afterEach(cleanup);
 
-it("lists a dashboard and a notebook in one section, ordered by what is shown", async () => {
-   dashboards = [
-      { name: "overview", path: "dashboards/overview.malloy", title: "Zebra" },
-   ];
-   notebooks = [
-      { path: "notebooks/tour.malloy", title: "Aardvark" },
-      { path: "notebooks/plain.malloy", title: "notebooks/plain.malloy" },
-   ];
-   mount();
-
-   expect(await rows()).toEqual(["Aardvark", "plain", "Zebra"]);
-   expect(screen.queryByRole("heading", { name: "Dashboards" })).toBeNull();
-   expect(screen.queryByRole("heading", { name: "Notebooks" })).toBeNull();
-});
-
-it("shows the folder only to tell two files with one slug apart, and opens each by its kind", async () => {
-   dashboards = [{ name: "story", path: "dashboards/story.malloy" }];
-   notebooks = [
-      { path: "notebooks/story.malloy" },
-      { path: "notebooks/solo.malloy" },
+it("lists both layouts in one section, each marked with its layout, ordered by what is shown", async () => {
+   reports = [
+      { path: "overview.malloy", layout: "grid", title: "Zebra" },
+      { path: "tour.malloy", layout: "linear", title: "Aardvark" },
+      { path: "plain.malloy", layout: "linear", title: "plain.malloy" },
    ];
    mount();
 
    expect(await rows()).toEqual([
-      "solo",
-      "story" + "dashboards/story.malloy",
-      "story" + "notebooks/story.malloy",
+      "Aardvarktour.malloylinear",
+      "plainlinear",
+      "Zebraoverview.malloygrid",
+   ]);
+   expect(screen.queryByRole("heading", { name: "Dashboards" })).toBeNull();
+   expect(screen.queryByRole("heading", { name: "Notebooks" })).toBeNull();
+   expect(screen.queryByRole("heading", { name: "Artifacts" })).toBeNull();
+});
+
+it("shows the path when two reports share a basename, and opens each by its own path", async () => {
+   reports = [
+      { path: "dashboards/story.malloy", layout: "grid" },
+      { path: "notebooks/story.malloy", layout: "linear" },
+      { path: "solo.malloy", layout: "linear" },
+   ];
+   mount();
+
+   expect(await rows()).toEqual([
+      "sololinear",
+      "story" + "dashboards/story.malloy" + "grid",
+      "story" + "notebooks/story.malloy" + "linear",
    ]);
    fireEvent.click(screen.getByText("dashboards/story.malloy"));
    fireEvent.click(screen.getByText("notebooks/story.malloy"));
@@ -120,53 +116,72 @@ it("shows the folder only to tell two files with one slug apart, and opens each 
    ]);
 });
 
-it("keeps a titled .malloynb's path as its secondary text", async () => {
-   notebooks = [{ path: "orders.malloynb", title: "Orders" }];
+it("opens a nested report at its path route, encoded segment by segment", async () => {
+   reports = [{ path: "sales/q 3.malloy", layout: "grid" }];
    mount();
 
-   expect(await rows()).toEqual(["Ordersorders.malloynb"]);
+   fireEvent.click(await screen.findByText("sales/q 3.malloy"));
+   expect(onClick.mock.calls[0][0]).toBe("/env/pkg/sales/q%203");
 });
 
-it("says so when either list fails, and still lists the other", async () => {
-   dashboards = [{ name: "overview", path: "dashboards/overview.malloy" }];
-   listNotebooks.mockImplementationOnce(() =>
+it("keeps a titled .malloynb's path as its secondary text", async () => {
+   reports = [{ path: "orders.malloynb", layout: "linear", title: "Orders" }];
+   mount();
+
+   expect(await rows()).toEqual(["Ordersorders.malloynblinear"]);
+});
+
+it("names an untitled .malloynb by its file, extension included, with no secondary text", async () => {
+   reports = [{ path: "orders.malloynb", layout: "linear" }];
+   mount();
+
+   expect(await rows()).toEqual(["orders.malloynblinear"]);
+});
+
+it("says so when the listing fails", async () => {
+   listReports.mockImplementationOnce(() =>
       Promise.reject({ response: { status: 501 } }),
    );
    mount();
 
    expect(
-      await screen.findByText(/Could not list some artifacts/),
+      await screen.findByText(/Could not list this package's reports/),
    ).toBeDefined();
-   expect(await rows()).toEqual(["overview"]);
 });
 
-it("treats a 404 on the notebooks list as none, without an error", async () => {
-   dashboards = [{ name: "overview", path: "dashboards/overview.malloy" }];
-   listNotebooks.mockImplementationOnce(() =>
+it("treats a 404 on the reports list as none, without an error", async () => {
+   listReports.mockImplementationOnce(() =>
       Promise.reject({ response: { status: 404 } }),
    );
    mount();
 
-   expect(await rows()).toEqual(["overview"]);
+   expect(await rows()).toEqual([]);
    expect(screen.queryByText(/Could not list/)).toBeNull();
 });
 
-it("lists host drafts of both kinds, each opening its own editor", async () => {
+it("lists host drafts by path whatever type they are filed as, each opening its editor", async () => {
    const draft = (
       type: "dashboard" | "notebook",
-      slug: string,
+      path: string,
    ): DocumentLocator => ({
       workspace: "browser",
       type,
-      path: `env/pkg/${type}s/${slug}.malloy`,
+      path: `env/pkg/${path}`,
    });
-   const stored = [draft("dashboard", "d-one"), draft("notebook", "n-one")];
+   const stored = [
+      draft("dashboard", "d-one.malloy"),
+      draft("notebook", "team/n-one.malloy"),
+      // Another package's draft is not this one's.
+      { workspace: "browser", type: "dashboard", path: "env/other/x.malloy" },
+   ] as DocumentLocator[];
    const storage: DocumentStorage = {
       listWorkspaces: async () => [
          { name: "browser", writeable: true, description: "This browser" },
       ],
       listDocuments: async (_workspace, type) =>
-         stored.filter((locator) => locator.type === type),
+         stored.filter(
+            (locator) => type === undefined || locator.type === type,
+         ),
       getDocument: async () => {
          throw new Error("absent");
       },
@@ -174,13 +189,14 @@ it("lists host drafts of both kinds, each opening its own editor", async () => {
       deleteDocument: async () => {},
       moveDocument: async () => {},
    };
-   dashboards = [{ name: "overview", path: "dashboards/overview.malloy" }];
+   reports = [{ path: "overview.malloy", layout: "grid" }];
    mount(storage);
 
-   fireEvent.click(await screen.findByText("d-one"));
-   fireEvent.click(await screen.findByText("n-one"));
+   fireEvent.click(await screen.findByText("d-one.malloy"));
+   fireEvent.click(await screen.findByText("team/n-one.malloy"));
+   expect(screen.queryByText("x.malloy")).toBeNull();
    expect(onClick.mock.calls.map((call) => call[0])).toEqual([
-      "/env/pkg/dashboards/d-one/edit",
-      "/env/pkg/notebooks/n-one/edit",
+      "/env/pkg/d-one/edit",
+      "/env/pkg/team/n-one/edit",
    ]);
 });

@@ -3,8 +3,8 @@
 
 import type { DashboardDocument, DashboardImport } from "./document";
 
-/** Where a document sits when the caller does not say: one folder below the package root. */
-const DEFAULT_DOCUMENT_PATH = "dashboards/document.malloy";
+/** Where a report sits when the caller does not say: the package root. */
+const DEFAULT_DOCUMENT_PATH = "document.malloy";
 
 /** The folder a package path sits in, with its trailing slash, or "" at the root. */
 const folderOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
@@ -21,7 +21,11 @@ const resolvedOf = (from: string, documentPath: string) =>
       `https://malloy.invalid/${folderOf(documentPath)}`,
    ).pathname.slice(1);
 
-/** How the document at `documentPath` names the model at `modelPath`. */
+/**
+ * How the report at `documentPath` names the model at `modelPath`: relative to
+ * the report's own folder, with no leading `./` (`"storefront.malloy"` beside
+ * it, `"../storefront.malloy"` from one folder down).
+ */
 export function importPathOf(modelPath: string, documentPath: string): string {
    const from = folderOf(documentPath).split("/").filter(Boolean);
    const to = modelPath.split("/");
@@ -33,7 +37,7 @@ export function importPathOf(modelPath: string, documentPath: string): string {
    )
       shared++;
    const up = from.length - shared;
-   return `${up === 0 ? "./" : "../".repeat(up)}${to.slice(shared).join("/")}`;
+   return `${"../".repeat(up)}${to.slice(shared).join("/")}`;
 }
 
 /**

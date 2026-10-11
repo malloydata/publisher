@@ -37,7 +37,7 @@ import {
 } from "../../utils/malloyText";
 
 /**
- * Read a `dashboards/*.malloy` file into a {@link DashboardDocument}.
+ * Read a report file (either layout, anywhere in the package) into a {@link DashboardDocument}.
  *
  * PURE: source text in, document out. No server, no schema, no connection.
  * `Malloy.parse` needs none of those — only `Malloy.compile` does — so this runs
@@ -281,12 +281,13 @@ const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
 /** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
 export async function readDashboardDocument(
    sourceText: string,
-   modelPath?: string,
-   /** A document the host keeps as text has no folder to take a kind from, so the layout decides. */
-   textHeld = false,
+   /** The file's path. Kept for callers; where a report lives never decides its layout. */
+   _modelPath?: string,
+   /** Kept for callers: text held by a host is read by the same rule as a file. */
+   _textHeld = false,
 ): Promise<ReadResult> {
    try {
-      return await readDocumentText(sourceText, modelPath, textHeld);
+      return await readDocumentText(sourceText);
    } catch (error) {
       return {
          ok: false,
@@ -295,11 +296,7 @@ export async function readDashboardDocument(
    }
 }
 
-async function readDocumentText(
-   sourceText: string,
-   modelPath: string | undefined,
-   textHeld: boolean,
-): Promise<ReadResult> {
+async function readDocumentText(sourceText: string): Promise<ReadResult> {
    const { parseAnnotation } = await loadMalloyTag();
    const lines = splitSourceLines(sourceText);
 
@@ -317,8 +314,7 @@ async function readDocumentText(
    if (artifactAt === undefined) {
       return {
          ok: false,
-         reason:
-            "No `## artifact { … }` tag, so this file is not a composite dashboard.",
+         reason: "No `## artifact { … }` tag, so this file is not a report.",
       };
    }
    if (!artifactLeads(artifactAt.text))
@@ -332,16 +328,20 @@ async function readDocumentText(
       tagAnnotation(artifactAt.text),
    ]);
    const artifactTag = tag?.tag("artifact");
+   // The server's layout rule (`resolveReportLayout`), first match wins:
+   // `layout=`, else the legacy `kind=`, else grid when the tag lists tiles or
+   // sits beside a `dashboard { … }` grid tag, else linear. Where the file
+   // lives never enters into it. `documentKindRule.json` holds the two sides
+   // together.
+   const tagLayout = artifactTag?.text("layout");
    const tagKind = artifactTag?.text("kind");
-   // The server's rule: a tag that names no kind takes the folder's, and submitted text has none, so tiles or a grid width make it a dashboard.
    const listsLayout =
       artifactTag?.has("tiles") === true || tag?.tag("dashboard") !== undefined;
-   const kind =
-      tagKind === "notebook" ||
-      (tagKind !== "dashboard" &&
-         (textHeld ? !listsLayout : modelPath?.startsWith("notebooks/")))
-         ? ("notebook" as const)
-         : undefined;
+   const linear =
+      tagLayout === "linear" ||
+      (tagLayout !== "grid" &&
+         (tagKind === "notebook" || (tagKind !== "dashboard" && !listsLayout)));
+   const kind = linear ? ("notebook" as const) : undefined;
    const list = readTileList(artifactAt.text);
    if (list === undefined) {
       if (tagErrors.length > 0)
@@ -355,7 +355,7 @@ async function readDocumentText(
             ok: false,
             legacyNotebook: true,
             reason:
-               "This notebook is in the cell format, with no `tiles=[…]` list.",
+               "This report is in the cell format, with no `tiles=[…]` list.",
          };
       return {
          ok: false,

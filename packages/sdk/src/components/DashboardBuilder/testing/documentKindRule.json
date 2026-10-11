@@ -1,5 +1,5 @@
 {
-   "about": "The kind of a document submitted as text, which has no folder to take one from: the tag's `kind` when it names one, else a dashboard when it lists tiles or sets a grid width, else a notebook. The server (submittedTextKind) and the SDK reader (readDashboardDocument with textHeld) each hold the rule, so each side's spec reads this file.",
+   "about": "A report's layout, read off its tags alone, wherever the file lives (docs/reports-design.md §2), first match wins: the tag's `layout=` (grid or linear), else the legacy `kind=` (dashboard is grid, notebook is linear), else grid when it lists tiles or sets a grid width, else linear. `kind` here is the layout in the legacy vocabulary: `dashboard` for grid, `notebook` for linear. The server (submittedTextKind, over resolveReportLayout) and the SDK reader (readDashboardDocument) each hold the rule, so each side's spec reads this file.",
    "cases": [
       {
          "name": "no kind and no layout is a notebook",
@@ -34,6 +34,46 @@
       {
          "name": "an explicit notebook wins over a tiles list",
          "source": "## artifact { kind=notebook tiles=[\"a -> v\"] }\n",
+         "kind": "notebook"
+      },
+      {
+         "name": "layout=grid with no tiles is a dashboard",
+         "source": "## artifact { layout=grid }\nrun: q -> { aggregate: c }\n",
+         "kind": "dashboard"
+      },
+      {
+         "name": "layout=linear wins over a tiles list",
+         "source": "## artifact { layout=linear tiles=[\"a -> v\"] }\n",
+         "kind": "notebook"
+      },
+      {
+         "name": "layout=linear wins over a grid width",
+         "source": "## artifact { layout=linear tiles=[\"a -> v\"] } dashboard { columns=12 }\n",
+         "kind": "notebook"
+      },
+      {
+         "name": "layout= wins over a disagreeing kind=dashboard",
+         "source": "## artifact { layout=linear kind=dashboard tiles=[\"a -> v\"] }\n",
+         "kind": "notebook"
+      },
+      {
+         "name": "layout= wins over a disagreeing kind=notebook",
+         "source": "## artifact { kind=notebook layout=grid }\nrun: q -> { aggregate: c }\n",
+         "kind": "dashboard"
+      },
+      {
+         "name": "an unknown layout value falls through to kind=",
+         "source": "## artifact { layout=wide kind=notebook tiles=[\"a -> v\"] }\n",
+         "kind": "notebook"
+      },
+      {
+         "name": "an unknown layout value falls through to the tiles list",
+         "source": "## artifact { layout=wide tiles=[\"a -> v\"] }\n",
+         "kind": "dashboard"
+      },
+      {
+         "name": "an unknown layout value with no tiles falls through to linear",
+         "source": "## artifact { layout=wide }\nrun: q -> { aggregate: c }\n",
          "kind": "notebook"
       }
    ]

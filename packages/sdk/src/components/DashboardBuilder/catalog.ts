@@ -196,12 +196,15 @@ export function filterableFields(
 }
 
 /**
- * A dashboard file is itself a model, so the endpoint lists it alongside the
- * real ones. Offering a dashboard's own tile views as things to put on a
- * dashboard would be circular, so they are left out.
+ * A report file is itself a model, so the models endpoint may list it beside
+ * the real ones. Offering a report's own tile views as things to put on a
+ * report would be circular, so they are left out, by the paths the package's
+ * report listing names: where a file lives never says whether it is a report.
  */
-export const isDashboardModel = (path: string | undefined) =>
-   (path ?? "").startsWith("dashboards/");
+export const isReportModel = (
+   path: string | undefined,
+   reportPaths: ReadonlySet<string>,
+) => path !== undefined && reportPaths.has(path);
 
 /**
  * The model's own path.
@@ -209,13 +212,17 @@ export const isDashboardModel = (path: string | undefined) =>
  * Two spellings, and the generated client only knows one: the models LIST
  * returns `path`, while a single model returns `modelPath`. Reading `path`
  * alone yields an empty string against the real server, which silently disables
- * the dashboard exclusion below and leaves a preview with nothing to run
+ * the report exclusion below and leaves a preview with nothing to run
  * against. Measured, not deduced from the type.
  */
 const pathOf = (model: CompiledModel): string =>
    (model as { modelPath?: string }).modelPath ?? model.path ?? "";
 
-export function buildCatalog(models: CompiledModel[]): PackageCatalog {
+export function buildCatalog(
+   models: CompiledModel[],
+   /** The package's report paths (`GET …/reports`), left out of the catalog. */
+   reportPaths: ReadonlySet<string> = new Set(),
+): PackageCatalog {
    const sources: CatalogSource[] = [];
    const seen = new Set<string>();
    const exporters = new Map<string, string[]>();
@@ -223,7 +230,7 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
    const listed = new Map<string, string[]>();
    for (const model of models) {
       const modelPath = pathOf(model);
-      if (isDashboardModel(modelPath)) continue;
+      if (isReportModel(modelPath, reportPaths)) continue;
       const names = exportedSources(model.modelInfo);
       exported.set(model, names);
       for (const { name } of model.sources ?? [])
@@ -234,7 +241,7 @@ export function buildCatalog(models: CompiledModel[]): PackageCatalog {
 
    for (const model of models) {
       const modelPath = pathOf(model);
-      if (isDashboardModel(modelPath)) continue;
+      if (isReportModel(modelPath, reportPaths)) continue;
       const fields = fieldsOf(model);
       const aggregates = aggregateViewsOf(model);
 

@@ -9,7 +9,7 @@ import { readForEditor } from "./readForEditor";
 import type { BuilderEvent } from "./telemetry";
 
 export const LEGACY_REFUSAL =
-   "a .malloynb notebook is read, not edited. Fix: rewrite it as a `.malloy` notebook under notebooks/ to edit it here.";
+   "a .malloynb notebook is read, not edited. Fix: rewrite it as a `.malloy` report to edit it here.";
 
 const WITHHELD_REFUSAL =
    "the server did not send this notebook's text, so there is nothing here to edit. Fix: edit the file in the package.";

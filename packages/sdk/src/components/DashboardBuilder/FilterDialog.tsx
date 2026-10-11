@@ -185,8 +185,7 @@ const unbindable = (tile: DashboardTile | undefined) =>
         }
       : {
            label: "From the model",
-           reason:
-              "Declared on its source, which this dashboard does not write.",
+           reason: "Declared on its source, which this report does not write.",
         };
 
 export function FilterDialog({
@@ -282,7 +281,7 @@ export function FilterDialog({
                   </Box>
                   {fromModel
                      ? " · declared in the model, so its label and options are set there"
-                     : " · declared in this dashboard"}
+                     : " · declared in this report"}
                </>
             ) : (
                "A filter on the page, and the tiles it filters."
@@ -338,7 +337,7 @@ export function FilterDialog({
                   }}
                   aria-label="Where the filter comes from"
                >
-                  <ToggleButton value="new">New in this dashboard</ToggleButton>
+                  <ToggleButton value="new">New in this report</ToggleButton>
                   <ToggleButton value="existing">From the model</ToggleButton>
                </ToggleButtonGroup>
             )}
