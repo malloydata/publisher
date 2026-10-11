@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import {
    documentRoute,
    documentSlug,
@@ -234,4 +236,48 @@ describe("locateDocument (deprecated)", () => {
          }),
       ).toBeUndefined();
    });
+});
+
+/** The SDK's column of the drill case table the server's `resolveDrillDestination` shares. */
+describe("resolveDrillTarget: the shared drill case table", () => {
+   type Answer = {
+      kind: string;
+      path?: string;
+      rewrite?: string;
+      candidates?: string[];
+   };
+   const { cases } = JSON.parse(
+      fs.readFileSync(
+         path.join(
+            import.meta.dir,
+            "../DashboardBuilder/testing/drillResolution.json",
+         ),
+         "utf8",
+      ),
+   ) as {
+      cases: {
+         name: string;
+         to: string;
+         reports: { path: string; layout: string; dropped?: boolean }[];
+         server: Answer;
+         sdk: Answer;
+         knownDifference?: string;
+      }[];
+   };
+   for (const testCase of cases) {
+      it(testCase.name, () => {
+         // The listing: a report dropped at discovery is not in it.
+         const listed = testCase.reports.filter((r) => !r.dropped);
+         const target = resolveDrillTarget(testCase.to, listed);
+         const answer: Answer =
+            target.kind === "unresolved"
+               ? { kind: target.kind, candidates: target.candidates }
+               : { kind: target.kind, path: target.report.path };
+         expect(answer).toEqual(testCase.sdk);
+         const { rewrite: _rewrite, ...comparable } = testCase.server;
+         expect(
+            JSON.stringify(comparable) !== JSON.stringify(testCase.sdk),
+         ).toBe(testCase.knownDifference !== undefined);
+      });
+   }
 });

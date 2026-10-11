@@ -14,13 +14,13 @@ import {
    matchesDocumentedDashboardName,
    lintDashboard,
    lintDrillTargets,
-   resolveDrillDestination,
    lintGivenTags,
    lintSelfDrills,
    isUnparsedDashboardTagFinding,
    lintUndiscoveredDashboard,
    motlyAnnotations,
    quoteFilterLiterals,
+   resolveDrillDestination,
    unwrapFilterLiteral,
    type DashboardGivenDeclaration,
    type DashboardModelFacts,
@@ -2889,4 +2889,50 @@ describe("service/dashboard kind", () => {
       expect(empty("notebook", "notebooks/new.malloy")?.tiles).toEqual([]);
       expect(empty("dashboard", "dashboards/new.malloy")).toBeUndefined();
    });
+});
+
+/** The server's column of the drill case table the SDK's `resolveDrillTarget` shares. */
+describe("resolveDrillDestination: the shared drill case table", () => {
+   type Answer = {
+      kind: string;
+      path?: string;
+      rewrite?: string;
+      candidates?: string[];
+   };
+   const { cases } = JSON.parse(
+      fs.readFileSync(
+         path.resolve(
+            __dirname,
+            "../../../sdk/src/components/DashboardBuilder/testing/drillResolution.json",
+         ),
+         "utf8",
+      ),
+   ) as {
+      cases: {
+         name: string;
+         to: string;
+         reports: { path: string; layout: string; dropped?: boolean }[];
+         server: Answer;
+         sdk: Answer;
+         knownDifference?: string;
+      }[];
+   };
+   for (const testCase of cases) {
+      it(testCase.name, () => {
+         // Discovery's sets: every report path, dropped or not, and the grid ones.
+         const reportPaths = new Set(testCase.reports.map((r) => r.path));
+         const gridReportPaths = new Set(
+            testCase.reports
+               .filter((r) => r.layout === "grid")
+               .map((r) => r.path),
+         );
+         expect(
+            resolveDrillDestination(testCase.to, reportPaths, gridReportPaths),
+         ).toEqual(testCase.server as never);
+         const { rewrite: _rewrite, ...comparable } = testCase.server;
+         expect(
+            JSON.stringify(comparable) !== JSON.stringify(testCase.sdk),
+         ).toBe(testCase.knownDifference !== undefined);
+      });
+   }
 });
