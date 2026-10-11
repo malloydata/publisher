@@ -16,6 +16,8 @@ export {
    locatorFor,
    newDashboardSource,
    normalizeDirectory,
+   reportPathFor,
+   reportPathForTitle,
    slugFor,
    slugOrFallback,
 } from "./documentPath";

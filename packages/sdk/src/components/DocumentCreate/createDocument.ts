@@ -15,9 +15,9 @@ import {
    type ReportLayout,
 } from "../Package/documentLocation";
 import {
-   documentPathForTitle,
    locatorFor,
    normalizeDirectory,
+   reportPathForTitle,
 } from "./documentPath";
 import type { DocumentCreatedEvent } from "./events";
 import { newDocumentProblem, type NewDocument } from "./guards";
@@ -145,7 +145,7 @@ export async function createDocument(
       options.path !== undefined
          ? [options.path]
          : Array.from({ length: MAX_SLUG_ATTEMPTS }, (_, i) =>
-              documentPathForTitle(document.title, i + 1, directory),
+              reportPathForTitle(document.title, i + 1, directory),
            );
    // The import is relative to where the report lands, so each candidate gets its own text.
    const sourceAt = (path: string) => newReportSource(document, layout, path);

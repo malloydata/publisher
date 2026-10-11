@@ -12,7 +12,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
    createDocument,
-   documentPathForTitle,
+   reportPathForTitle,
    MAX_SLUG_ATTEMPTS,
    newDocumentProblem,
    reportPathProblem,
@@ -161,7 +161,7 @@ export function NewDocumentDialog({
    const suggested = useMemo(() => {
       if (title.trim() === "") return undefined;
       for (let n = 1; n <= MAX_SLUG_ATTEMPTS; n++) {
-         const candidate = documentPathForTitle(title, n);
+         const candidate = reportPathForTitle(title, n);
          if (!target.existing?.includes(candidate)) return candidate;
       }
       return undefined;

@@ -79,6 +79,8 @@ export {
    newNotebookSource,
    newReportSource,
    normalizeDirectory,
+   reportPathFor,
+   reportPathForTitle,
    reportPathProblem,
    slugFor,
    slugOrFallback,

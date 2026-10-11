@@ -8,7 +8,13 @@ import {
    readDashboardDocument,
    readFailed,
 } from "../DashboardBuilder/readDocument";
-import { documentPathFor, documentPathForTitle, slugFor } from "./documentPath";
+import {
+   documentPathFor,
+   documentPathForTitle,
+   reportPathFor,
+   reportPathForTitle,
+   slugFor,
+} from "./documentPath";
 import { newDocumentProblem } from "./guards";
 import { newNotebookSource, newReportSource } from "./newNotebook";
 
@@ -187,7 +193,7 @@ describe("newDocumentProblem", () => {
    });
 });
 
-describe("document paths", () => {
+describe("report paths", () => {
    it("always satisfy the server's write shape", () => {
       let seed = 7;
       const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
@@ -199,8 +205,8 @@ describe("document paths", () => {
          for (let j = 0; j < length; j++)
             title += [...alphabet][next() % [...alphabet].length];
          for (const suffix of [1, 2, 19]) {
-            expect(documentPathForTitle(title, suffix)).toMatch(shape);
-            expect(documentPathForTitle(title, suffix, "team")).toMatch(
+            expect(reportPathForTitle(title, suffix)).toMatch(shape);
+            expect(reportPathForTitle(title, suffix, "team")).toMatch(
                /^team\/[^/]+\.malloy$/,
             );
          }
@@ -208,11 +214,50 @@ describe("document paths", () => {
    });
 
    it("spells suffixes -2, -3 at the package root, or in a directory asked for", () => {
-      expect(documentPathForTitle("Sales")).toBe("sales.malloy");
-      expect(documentPathForTitle("Sales", 3)).toBe("sales-3.malloy");
-      expect(documentPathForTitle("***")).toBe("untitled.malloy");
-      expect(documentPathFor(slugFor("A b"))).toBe("a-b.malloy");
-      expect(documentPathFor("a-b", "/team//q3/")).toBe("team/q3/a-b.malloy");
-      expect(documentPathFor("a-b", "")).toBe("a-b.malloy");
+      expect(reportPathForTitle("Sales")).toBe("sales.malloy");
+      expect(reportPathForTitle("Sales", 3)).toBe("sales-3.malloy");
+      expect(reportPathForTitle("***")).toBe("untitled.malloy");
+      expect(reportPathFor(slugFor("A b"))).toBe("a-b.malloy");
+      expect(reportPathFor("a-b", "/team//q3/")).toBe("team/q3/a-b.malloy");
+      expect(reportPathFor("a-b", "")).toBe("a-b.malloy");
+   });
+});
+
+describe("the deprecated document paths keep their 0.9 meaning", () => {
+   it("documentPathFor(kind, slug) is the kind's folder", () => {
+      expect(documentPathFor("dashboard", "sales")).toBe(
+         "dashboards/sales.malloy",
+      );
+      expect(documentPathFor("notebook", "sales")).toBe(
+         "notebooks/sales.malloy",
+      );
+   });
+
+   it("documentPathForTitle(kind, title, suffix) is the kind's folder", () => {
+      expect(documentPathForTitle("dashboard", "Sales")).toBe(
+         "dashboards/sales.malloy",
+      );
+      expect(documentPathForTitle("notebook", "Sales", 3)).toBe(
+         "notebooks/sales-3.malloy",
+      );
+      expect(documentPathForTitle("notebook", "***")).toBe(
+         "notebooks/untitled.malloy",
+      );
+   });
+});
+
+describe("the builder entry", () => {
+   it("exports both the deprecated and the new path helpers", async () => {
+      const builder = await import("../../builder-entry");
+      expect(builder.documentPathFor("dashboard", "x")).toBe(
+         "dashboards/x.malloy",
+      );
+      expect(builder.reportPathFor("x")).toBe("x.malloy");
+      expect(builder.documentPathForTitle("notebook", "X")).toBe(
+         "notebooks/x.malloy",
+      );
+      expect(builder.reportPathForTitle("X", 2, "team")).toBe(
+         "team/x-2.malloy",
+      );
    });
 });
