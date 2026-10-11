@@ -88,7 +88,10 @@ const ASSET_EXTENSIONS = new Set([
  * candidate). That covers a report anywhere whose name ends in an asset
  * extension (`sales/report.csv.malloy` publishes `sales/report.csv`), and
  * gives a package's own `public/dashboards/` and `public/notebooks/` files
- * back their `/<env>/<pkg>/dashboards/<file>` URLs.
+ * back their `/<env>/<pkg>/dashboards/<file>` URLs. The deprecated
+ * `dashboards/<name>` and `notebooks/<name>` links stay in the app only when
+ * a report is named `<name>` (the caller asks the package), which is what the
+ * Console's alias route resolves.
  *
  * `pages`, the pre-0.0.242 spelling of `data-apps`, was carried here for a while
  * so an old bookmark could reach the app and be redirected. That alias is gone:

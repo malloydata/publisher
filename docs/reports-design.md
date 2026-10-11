@@ -282,9 +282,11 @@ ahead of the report lookup.
 
 **`spa_fallback.ts`** drops `dashboards` and `notebooks` from `SPA_OWNED_SEGMENTS`. Before
 redirecting an asset-shaped path to the static route, it checks whether `<path>.malloy` is a served
-report (the fallback already confirms candidates against loaded state). That covers a report
-anywhere whose name ends in an asset extension, and gives back a package's own `public/dashboards/`
-and `public/notebooks/` files. `data-apps` stays: it is a Console viewer route.
+report (the fallback already confirms candidates against loaded state), and, for exactly
+`dashboards/<x>` or `notebooks/<x>`, whether a served report has the basename `<x>`, which is what
+the Console's alias resolves. That covers a report anywhere whose name ends in an asset extension,
+and its old by-name link, and gives back a package's own `public/dashboards/` and
+`public/notebooks/` files whenever no report has that name. `data-apps` stays: it is a Console viewer route.
 
 `DocumentModeButton` reads the resolved report. Telemetry and editor keys switch from slug to path.
 

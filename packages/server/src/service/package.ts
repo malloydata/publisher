@@ -3872,6 +3872,19 @@ export class Package {
       return this.reports.has(modelPath);
    }
 
+   /**
+    * Deprecated: whether any served report, of either layout, has the
+    * basename `name`. What the Console's `dashboards/<name>` and
+    * `notebooks/<name>` alias routes resolve (to the one report, or to a page
+    * naming the reports that share it), so the SPA fallback keeps those URLs
+    * in the app.
+    */
+   public hasReportNamed(name: string): boolean {
+      for (const report of this.reports.values())
+         if (report.name === name) return true;
+      return false;
+   }
+
    /** The layout of the report at `modelPath`, or undefined when it is not a served report. */
    public getReportLayout(modelPath: string): ReportLayout | undefined {
       return this.reports.get(modelPath)?.layout;

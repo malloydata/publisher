@@ -2384,7 +2384,14 @@ if (!isDevelopment) {
             .split("/")
             .map(decodeSegment)
             .join("/");
-         if (loadedPackage?.isServedReport(`${reportPath}.malloy`)) {
+         // The deprecated `dashboards/<name>` and `notebooks/<name>` links are
+         // the Console's alias for a report named `<name>` wherever it lives;
+         // only when one exists, so `public/dashboards/` files stay reachable.
+         const alias = /^(?:dashboards|notebooks)\/([^/]+)$/.exec(reportPath);
+         if (
+            loadedPackage?.isServedReport(`${reportPath}.malloy`) ||
+            (alias !== null && loadedPackage?.hasReportNamed(alias[1]))
+         ) {
             fallback = { kind: "spa" };
          } else if (!known) {
             // Null, not the names: a redirect candidate whose names did not

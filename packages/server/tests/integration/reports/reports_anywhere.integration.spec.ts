@@ -316,6 +316,24 @@ describe("Reports anywhere in a package (E2E)", () => {
          ).toBe(true);
       });
 
+      it.each(["dashboards", "notebooks"])(
+         "keeps the old %s/<name> link to a report whose name ends in an asset extension in the app",
+         async (segment) => {
+            // `sales/report.csv.malloy` is named `report.csv`; the deprecated
+            // by-name route reaches it through the Console's alias.
+            const res = await fetch(
+               `${baseUrl}/${ENV_NAME}/${PKG}/${segment}/report.csv`,
+               { redirect: "manual" },
+            );
+            expect(res.status).not.toBe(302);
+            const body = await res.text();
+            expect(body).not.toContain("Nothing is served at");
+            expect(
+               res.status === 200 || body.includes("SPA bundle isn't built"),
+            ).toBe(true);
+         },
+      );
+
       it("serves a package's own public/dashboards/ file again", async () => {
          const res = await fetch(
             `${baseUrl}/${ENV_NAME}/${PKG}/dashboards/export.csv`,
