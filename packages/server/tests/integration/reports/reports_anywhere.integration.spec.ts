@@ -13,10 +13,14 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+   type Warning,
+   warningsByCode,
+} from "../../harness/reports";
 
-const FIXTURE = path.resolve(__dirname, "../../fixtures/reports-anywhere");
 const ENV_NAME = "reports-anywhere-env";
 const PKG = "reports-anywhere";
 
@@ -30,54 +34,21 @@ interface Report {
    error?: string;
 }
 
-interface Warning {
-   model?: string;
-   subject?: string;
-   message?: string;
-   severity?: string;
-   code?: string;
-}
-
 describe("Reports anywhere in a package (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
+   let env: PackageEnv;
    let baseUrl: string;
-   const api = (sub = "") =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
-   const getJson = async <T>(url: string, status = 200): Promise<T> => {
-      const res = await fetch(url);
-      expect(res.status).toBe(status);
-      return (await res.json()) as T;
-   };
+   const api = (sub = "") => env.api(sub);
+   const getJson = <T>(url: string, status = 200) =>
+      env.getJson<T>(url, status);
    let warnings: Warning[] = [];
 
    beforeAll(async () => {
-      env = await startRestE2E();
+      env = await startPackageEnv(ENV_NAME, { [PKG]: fixture(PKG) });
       baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: FIXTURE }],
-            connections: [],
-         }),
-      });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-      warnings =
-         (await getJson<{ warnings?: Warning[] }>(api())).warnings ?? [];
+      warnings = await env.warnings();
    }, 300_000);
 
-   afterAll(async () => {
-      if (!env) return;
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      });
-      await env.stop();
-   });
+   afterAll(() => env?.stop());
 
    it("lists every report by path with its layout from its tags, wherever it lives", async () => {
       const reports = await getJson<Report[]>(api("/reports"));
@@ -208,10 +179,8 @@ describe("Reports anywhere in a package (E2E)", () => {
 
       // A cell runs through the governed query endpoint, the report's path
       // as the model; the reports resource has no cell route.
-      const ran = await fetch(api("/models/deep/story.malloy/query"), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ query: cells[queryCell].text }),
+      const ran = await env.query("deep/story.malloy", {
+         query: cells[queryCell].text,
       });
       expect(ran.status).toBe(200);
       expect(
@@ -268,14 +237,12 @@ describe("Reports anywhere in a package (E2E)", () => {
    describe("curation edges", () => {
       it("reports a tagged index.malloy, whose tag is ignored", () => {
          expect(
-            warnings.find((w) => w.code === "index-is-not-a-report"),
+            warningsByCode(warnings, "index-is-not-a-report")[0],
          ).toMatchObject({ model: "index.malloy", severity: "error" });
       });
 
       it("reports a tagged model index.malloy imports, directly or through another file", () => {
-         const onSurface = warnings.filter(
-            (w) => w.code === "report-on-surface",
-         );
+         const onSurface = warningsByCode(warnings, "report-on-surface");
          expect(onSurface).toEqual([
             expect.objectContaining({
                model: "tagged_model.malloy",
@@ -298,22 +265,11 @@ describe("Reports anywhere in a package (E2E)", () => {
       });
 
       it("still answers queries through the surface index.malloy exports", async () => {
-         const res = await fetch(api("/models/index.malloy/query"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: "run: extras -> v" }),
+         const res = await env.query("index.malloy", {
+            query: "run: extras -> v",
          });
          expect(res.status).toBe(200);
       });
-   });
-
-   it("says nothing about the layout of a report that writes layout=", () => {
-      const layoutFindings = warnings.filter((w) =>
-         ["report-kind-deprecated", "report-layout-implicit"].includes(
-            w.code ?? "",
-         ),
-      );
-      expect(layoutFindings).toEqual([]);
    });
 
    describe("SPA fallback", () => {

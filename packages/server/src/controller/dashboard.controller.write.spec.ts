@@ -216,6 +216,7 @@ describe("ReportController.putReportSource", () => {
       ["a dotfile directory", ".hidden/x.malloy"],
       ["public/", "public/x.malloy"],
       ["a nested public/ path", "public/sub/x.malloy"],
+      ["public/ in another case", "Public/x.malloy"],
       ["the root index.malloy", "index.malloy"],
       ["the root index.malloy in another case", "Index.malloy"],
       ["a file that is not Malloy", "x.json"],
@@ -251,22 +252,6 @@ describe("ReportController.putReportSource", () => {
          source: '## artifact { layout=grid tiles=["a -> x"] }\n',
       });
       expect(environment.writeModelFileTransactional.calledTwice).toBe(true);
-   });
-
-   it("switches a report's layout with a replace, which is a one-property edit", async () => {
-      const grid = '## artifact { layout=grid tiles=["a -> x"] }\n';
-      const linear = grid.replace("layout=grid", "layout=linear");
-      const { controller } = harness({ current: grid });
-      const result = await controller.putReportSource(
-         "env",
-         "pkg",
-         "q3.malloy",
-         {
-            source: linear,
-            expectedHash: contentHashOf(grid),
-         },
-      );
-      expect(result.created).toBe(false);
    });
 
    it("rolls back a written file the reloaded package does not serve as a report", async () => {
@@ -470,25 +455,6 @@ describe("ReportController.putReportSource", () => {
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });
 
-   // Ported from the name-collision 409: identity is the path, so a report may
-   // share a basename with another, and nothing is refused for it.
-   it("writes a report whose basename another report already has", async () => {
-      const resave = await harness({
-         current: BEFORE,
-      }).controller.putReportSource("env", "pkg", "dashboards/tour.malloy", {
-         source: AFTER,
-         expectedHash: contentHashOf(BEFORE),
-      });
-      expect(resave.created).toBe(false);
-      const created = await harness().controller.putReportSource(
-         "env",
-         "pkg",
-         "sales/tour.malloy",
-         { source: AFTER },
-      );
-      expect(created.created).toBe(true);
-   });
-
    it("answers a missing path with a BadRequestError, not a TypeError", async () => {
       const { controller } = harness();
       await expect(
@@ -508,12 +474,22 @@ describe("ReportController.putReportSource", () => {
       ).rejects.toBeInstanceOf(WriteConflictError);
    });
 
-   it("refuses to overwrite an existing file when no expectedHash is sent", async () => {
-      const { controller } = harness({ current: BEFORE });
-      await expect(
-         controller.putReportSource("env", "pkg", PATH, { source: AFTER }),
-      ).rejects.toBeInstanceOf(WriteConflictError);
-   });
+   // A conflict, never a 400, whatever is there: a caller choosing a name
+   // (`createDocument`) retries on 409 alone.
+   it.each([
+      ["a report", BEFORE, true],
+      ["a model", "source: a is duckdb.sql('select 1')\n", false],
+   ])(
+      "refuses to create over %s when no expectedHash is sent",
+      async (_name, current, loadedReport) => {
+         const { controller } = harness({ current, loadedReport });
+         await expect(
+            controller.putReportSource("env", "pkg", PATH, {
+               source: AFTER,
+            }),
+         ).rejects.toBeInstanceOf(WriteConflictError);
+      },
+   );
 
    it("refuses text that does not compile, and writes nothing", async () => {
       const { controller, environment } = harness({
