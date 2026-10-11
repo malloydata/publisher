@@ -226,7 +226,7 @@ Callers use this metadata to render input widgets without out-of-band knowledge 
 }
 ```
 
-**Execute a notebook cell** — `GET /api/v0/environments/:env/packages/:package/notebooks/:path/cells/:index`
+**Execute a report cell** — `GET /api/v0/environments/:env/packages/:package/reports/:path/cells/:index` (a cell of a report written as `run:` cells; `…/notebooks/:path/cells/:index` is a deprecated alias)
 
 Query parameter `givens` accepts URL-encoded JSON:
 

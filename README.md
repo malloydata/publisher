@@ -37,7 +37,7 @@ agent.
 
 Write down what your data means, in [Malloy](https://malloydata.dev): the sources, the joins, the
 measures, who may see what. The open-source Malloy [skills](skills/) ship alongside, so an agent can do
-the writing — build the model, then the dashboards, notebooks, and data apps on top of it.
+the writing — build the model, then the reports and data apps on top of it.
 
 Publisher serves that model to every surface — over MCP to Claude, Cursor, Codex, or an agent you
 build; over REST to applications and BI tools. Agents compose queries against the model instead of
@@ -49,8 +49,9 @@ but looks plausible — and the same question returns the same numbers tomorrow.
 - **Analyze** — Claude, Cursor, Codex, or an agent you build asks over MCP; unattended agents and
   applications use REST. Queries are Malloy, legible enough to review at a glance, and run against
   the model, never your raw tables.
-- **Surface** — dashboards declared in Malloy and built by dragging tiles if you like, notebooks,
-  and no-build HTML data apps, all shipped inside the package, plus the Console for browsing it all.
+- **Surface** — reports declared in Malloy, read top to bottom or laid out as a grid and built by
+  dragging tiles if you like, and no-build HTML data apps, all shipped inside the package, plus the
+  Console for browsing it all.
 - **Govern** — givens, `#(authorize)` and `#(access_filter)` decide who may query and who sees what; discovery curation
   decides what is even visible.
 - **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
@@ -187,18 +188,19 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 - **Ask in plain English.** An agent grounds itself with `get_context`, runs
   `execute_query`, and answers from the model, never from raw tables. Analysis skills teach it the
   pitfalls and how to write up a finding — [docs/ai-agents.md](docs/ai-agents.md).
-- **Work in notebooks.** Notebooks are `notebooks/*.malloy` files (a legacy `.malloynb` is read, not
-  authored); they live inside a package, mix prose and queries, and run on
-  the same governed endpoints — [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
+- **Write it up as a report.** A report is a `.malloy` file with an `## artifact` tag, anywhere in a
+  package; it mixes prose and queries and runs on the same governed endpoints. Pick a layout:
+  `linear` for a story read top to bottom, `grid` for a view scanned at a glance —
+  [docs/choosing-a-surface.md](docs/choosing-a-surface.md).
 - **Explore, no code.** Build and drill into queries visually with [Malloy Explorer](docs/explorer.md);
   every action generates valid Malloy, so metrics stay correct across joins.
 
 ### Surface
 
-- **Dashboards declared in Malloy.** A `dashboards/*.malloy` file _is_ the dashboard: filterable,
-  clickable, grid-laid-out, no code and no build step. Build it by dragging tiles around a grid in
-  the Console if you want the classic feel, or write the tags by hand — same file either way, and it
-  reviews like any other source file — [docs/dashboards.md](docs/dashboards.md).
+- **Reports declared in Malloy.** A tagged `.malloy` file _is_ the report: filterable, clickable,
+  laid out as a grid or top to bottom, no code and no build step. Build it by dragging tiles around
+  in the Console if you want the classic dashboard feel, or write the tags by hand — same file either
+  way, and it reviews like any other source file — [docs/reports.md](docs/reports.md).
 - **No-build HTML data apps.** Ship HTML, CSS, and JavaScript inside a package and Publisher hosts it
   against the model — [docs/html-data-apps.md](docs/html-data-apps.md).
 - **The Publisher Console.** Browse packages, models, and every artifact in the built-in web UI, with
@@ -244,8 +246,8 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 The fastest way to see all of the above is the [`examples/`](examples/) directory. Three are packages
 Publisher serves out of the box, and a fourth shows the SDK:
 
-- **[storefront](examples/storefront)** — the flagship ecommerce model: sources, joins, dashboards, a
-  notebook, and givens-driven filters. It is the package Quick start serves, and the one the SDK
+- **[storefront](examples/storefront)** — the flagship ecommerce model: sources, joins, reports in
+  both layouts, and givens-driven filters. It is the package Quick start serves, and the one the SDK
   example reads from.
 - **[governed-analytics](examples/governed-analytics)** — the whole governance story in one small
   package: givens, row-level access, and `#(access_filter)` source gates.
