@@ -9,6 +9,7 @@ import {
    DashboardNotFoundError,
    FrozenConfigError,
    WriteConflictError,
+   WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
 } from "../errors";
@@ -18,11 +19,10 @@ import {
    type DashboardWriteOutcome,
 } from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
-import { INDEX_MODEL_NAME, MODEL_FILE_SUFFIX } from "../constants";
 import {
    carriesArtifactTag,
-   isUnderPublicDir,
    readReportTagOfText,
+   reportWritePathProblem,
 } from "../service/report";
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
@@ -69,24 +69,9 @@ function currentIsAReport(
 function outcomeOf(error: Error): DashboardWriteOutcome {
    if (error instanceof WriteConflictError) return "conflict";
    if (error instanceof CompileRefusedError) return "compile_failed";
+   if (error instanceof WriteRollbackFailedError) return "rollback_failed";
    if (error instanceof WriteRolledBackError) return "rolled_back";
    return "refused";
-}
-
-/**
- * Where a report may be created: any `.malloy` path in the package outside
- * `public/` (served raw to anyone who can reach the server) other than the
- * root `index.malloy` (the surface, never a report). Where it lives otherwise
- * decides nothing.
- */
-function reportPathProblem(modelPath: string): string | undefined {
-   if (!modelPath.endsWith(MODEL_FILE_SUFFIX))
-      return `Only a report, a \`.malloy\` file, can be written here, not \`${modelPath}\`.`;
-   if (isUnderPublicDir(modelPath))
-      return `\`${modelPath}\` is in \`public/\`, which is served as raw static files, so a report cannot be written there.`;
-   if (modelPath === INDEX_MODEL_NAME)
-      return `\`${INDEX_MODEL_NAME}\` at the package root is the package's surface, never a report, so it cannot be written here.`;
-   return undefined;
 }
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
@@ -190,7 +175,7 @@ export class DashboardController {
          typeof modelPath === "string" &&
          typeof body?.source === "string" &&
          !this.environmentStore.publisherConfigIsFrozen &&
-         reportPathProblem(modelPath) === undefined
+         reportWritePathProblem(modelPath) === undefined
             ? readReportTagOfText(body.source)
             : undefined;
       const layout: ReportWriteLayout =
@@ -230,7 +215,7 @@ export class DashboardController {
          );
       }
       assertSafeRelativeModelPath(modelPath);
-      const pathProblem = reportPathProblem(modelPath);
+      const pathProblem = reportWritePathProblem(modelPath);
       if (pathProblem) throw new BadRequestError(pathProblem);
       if (typeof body?.source !== "string") {
          throw new BadRequestError(

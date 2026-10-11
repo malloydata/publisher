@@ -14,6 +14,7 @@ import {
    carriesArtifactTag,
    isReportEligiblePath,
    isUnderPublicDir,
+   reportWritePathProblem,
 } from "./report";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
@@ -45,6 +46,7 @@ import {
    PackageNotFoundError,
    ServiceUnavailableError,
    UnparseableTextError,
+   WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
    PackageAdmissionRefusedError,
@@ -2167,7 +2169,7 @@ export class Environment {
     * past the lexical check. A path through an existing file is refused before
     * anything is created.
     */
-   private async _prepareModelFileDirLocked(
+   private async _resolveModelFileDirLocked(
       packageRoot: string,
       target: string,
    ): Promise<string[]> {
@@ -2192,29 +2194,44 @@ export class Environment {
             );
          break;
       }
-      const [realRoot, realExisting] = await Promise.all([
+      const [realRoot, realExisting, realTarget] = await Promise.all([
          fs.promises.realpath(packageRoot),
          fs.promises.realpath(dir).catch(() => undefined),
+         // The file itself may be a link; where it leads is checked too.
+         missing.length > 0
+            ? undefined
+            : fs.promises.realpath(target).catch(() => undefined),
       ]);
-      if (
-         realExisting === undefined ||
-         (realExisting !== realRoot &&
-            !realExisting.startsWith(`${realRoot}${path.sep}`))
-      ) {
+      for (const real of [realExisting, realTarget]) {
+         if (real === undefined) continue;
+         if (real !== realRoot && !real.startsWith(`${realRoot}${path.sep}`)) {
+            throw new BadRequestError(
+               `Invalid model path: it resolves outside the package.`,
+            );
+         }
+         if (
+            isUnderPublicDir(
+               path.relative(realRoot, real).split(path.sep).join("/"),
+            )
+         ) {
+            throw new BadRequestError(
+               `Invalid model path: it resolves into \`public/\`, which is served ` +
+                  `as raw static files.`,
+            );
+         }
+      }
+      if (realExisting === undefined) {
          throw new BadRequestError(
             `Invalid model path: it resolves outside the package.`,
          );
       }
-      if (
-         isUnderPublicDir(
-            path.relative(realRoot, realExisting).split(path.sep).join("/"),
-         )
-      ) {
-         throw new BadRequestError(
-            `Invalid model path: it resolves into \`public/\`, which is served ` +
-               `as raw static files.`,
-         );
-      }
+      return missing;
+   }
+
+   /** Make the directories {@link _resolveModelFileDirLocked} found missing; returned deepest first, to take back. */
+   private async _createModelFileDirsLocked(
+      missing: readonly string[],
+   ): Promise<string[]> {
       // Shallowest first to create; returned deepest first to remove.
       const created: string[] = [];
       try {
@@ -2240,7 +2257,7 @@ export class Environment {
     * Put text at a model path, atomically: a sibling temporary file is renamed
     * over the target, so a reader never sees a half-written file and a crash
     * leaves either the old text or the new. The caller holds the package lock,
-    * and the directory exists: {@link _prepareModelFileDirLocked} made it for a
+    * and the directory exists: {@link _createModelFileDirsLocked} made it for a
     * new file, and a restore writes where the previous text was.
     */
    private async _writeModelFileLocked(
@@ -2277,7 +2294,14 @@ export class Environment {
     * both pass their precondition. `verify` runs against the reloaded package
     * and likewise refuses by throwing; a refusal puts the previous text back
     * (or removes the file, when it is new), reloads again, and raises
-    * {@link WriteRolledBackError}.
+    * {@link WriteRolledBackError}. When putting it back fails too, that is
+    * logged as an error and raised as {@link WriteRollbackFailedError}: the
+    * package may then serve the new text, so the caller must not read it as
+    * "nothing changed".
+    *
+    * Where the path really leads (through any link, into the package and out
+    * of `public/`) is settled before the file is read, so nothing outside the
+    * package is ever read through it.
     *
     * Anything that must NOT be under the lock — compiling above all — belongs
     * before this call: the lock is not reentrant, and compiling the proposed
@@ -2292,18 +2316,21 @@ export class Environment {
    ): Promise<{ previous: string | undefined; verified: T }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelPath);
+      const pathProblem = reportWritePathProblem(modelPath);
+      if (pathProblem) throw new BadRequestError(pathProblem);
       return this.withPackageLock(packageName, async () => {
          const target = safeJoinUnderRoot(
             this.environmentPath,
             packageName,
             modelPath,
          );
-         const previous = await this._readModelFileLocked(target);
-         check(previous, this.packages.get(packageName));
-         const createdDirs = await this._prepareModelFileDirLocked(
+         const missing = await this._resolveModelFileDirLocked(
             safeJoinUnderRoot(this.environmentPath, packageName),
             target,
          );
+         const previous = await this._readModelFileLocked(target);
+         check(previous, this.packages.get(packageName));
+         const createdDirs = await this._createModelFileDirsLocked(missing);
          try {
             await this._writeModelFileLocked(target, source);
          } catch (error) {
@@ -2324,16 +2351,30 @@ export class Environment {
             );
             return { previous, verified: await verify(reloaded) };
          } catch (error) {
-            if (previous !== undefined)
-               await this._writeModelFileLocked(target, previous);
-            else {
-               await fs.promises.rm(target, { force: true });
-               // The directories this create made, emptied by the removal.
-               await this._removeCreatedDirsLocked(createdDirs);
+            try {
+               if (previous !== undefined)
+                  await this._writeModelFileLocked(target, previous);
+               else {
+                  await fs.promises.rm(target, { force: true });
+                  // The directories this create made, emptied by the removal.
+                  await this._removeCreatedDirsLocked(createdDirs);
+               }
+               await this._loadOrGetPackageLocked(packageName, true);
+            } catch (restoreError) {
+               logger.error("Dashboard write rollback failed", {
+                  packageName,
+                  modelPath,
+                  error,
+                  restoreError,
+               });
+               throw new WriteRollbackFailedError(
+                  `The package did not reload with the new \`${modelPath}\`, ` +
+                     `and putting the previous text back failed too, so the ` +
+                     `package may be serving the new text or none. Reload the ` +
+                     `package, and check \`${modelPath}\`.`,
+                  { cause: restoreError },
+               );
             }
-            await this._loadOrGetPackageLocked(packageName, true).catch(
-               () => undefined,
-            );
             logger.warn("Dashboard write rolled back", {
                packageName,
                modelPath,

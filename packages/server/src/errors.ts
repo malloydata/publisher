@@ -513,6 +513,8 @@ export function internalErrorToHttpError(
       return httpError(409, error.message);
    } else if (error instanceof WriteConflictError) {
       return httpError(409, error.message);
+   } else if (error instanceof WriteRollbackFailedError) {
+      return httpError(500, error.message);
    } else if (error instanceof WriteRolledBackError) {
       logInternal("Dashboard write rolled back", error, "warn");
       return httpError(500, error.message);
@@ -1048,6 +1050,17 @@ export class WriteRolledBackError extends Error {
 }
 
 /** A refusal from a write's post-reload check, worded for the caller. */
+/**
+ * A write whose reload failed, and whose restore failed too: the package may
+ * serve the new text or none. 500, because only an operator can settle it.
+ */
+export class WriteRollbackFailedError extends Error {
+   constructor(message: string, options?: ErrorOptions) {
+      super(message, options);
+      this.name = "WriteRollbackFailedError";
+   }
+}
+
 export class WriteVerifyError extends Error {
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);

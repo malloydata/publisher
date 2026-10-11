@@ -55,6 +55,23 @@ export function isReportEligiblePath(modelPath: string): boolean {
    return modelPath !== INDEX_MODEL_NAME;
 }
 
+/**
+ * Why a report cannot be written at `modelPath` (already a safe relative
+ * path), or undefined when it can: a `.malloy` outside `public/` other than
+ * the root `index.malloy`, the surface. The root name is compared without
+ * case, like `public/`: on a case-insensitive file system `Index.malloy` IS
+ * the surface. The one rule for the write route and the write itself.
+ */
+export function reportWritePathProblem(modelPath: string): string | undefined {
+   if (!modelPath.endsWith(MODEL_FILE_SUFFIX))
+      return `Only a report, a \`.malloy\` file, can be written here, not \`${modelPath}\`.`;
+   if (isUnderPublicDir(modelPath))
+      return `\`${modelPath}\` is in \`public/\`, which is served as raw static files, so a report cannot be written there.`;
+   if (modelPath.replace(/^\.\//, "").toLowerCase() === INDEX_MODEL_NAME)
+      return `\`${INDEX_MODEL_NAME}\` at the package root is the package's surface, never a report, so it cannot be written here.`;
+   return undefined;
+}
+
 /** A report's display label: its basename without the extension. Never its identity. */
 export function reportName(modelPath: string): string {
    const basename = modelPath.slice(modelPath.lastIndexOf("/") + 1);

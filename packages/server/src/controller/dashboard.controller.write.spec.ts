@@ -201,6 +201,7 @@ describe("DashboardController.putDashboardSource", () => {
       ["public/", "public/x.malloy"],
       ["a nested public/ path", "public/sub/x.malloy"],
       ["the root index.malloy", "index.malloy"],
+      ["the root index.malloy in another case", "Index.malloy"],
       ["a file that is not Malloy", "x.json"],
    ])("refuses %s before compiling", async (_name, bad) => {
       const { controller, environment } = harness();

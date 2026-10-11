@@ -65,6 +65,8 @@ export type ReportWriteLayout = "grid" | "linear";
  *   or a notebook write over a file the package does not serve as one.
  * - `rolled_back` — it compiled and was written, the package would not reload
  *   with it, and the previous text was put back.
+ * - `rollback_failed` — as `rolled_back`, but putting the previous text back
+ *   failed too, so the package may serve the new text or none.
  */
 export type DashboardWriteOutcome =
    | "created"
@@ -72,11 +74,12 @@ export type DashboardWriteOutcome =
    | "conflict"
    | "compile_failed"
    | "refused"
-   | "rolled_back";
+   | "rolled_back"
+   | "rollback_failed";
 
 const writeCounter = lazyCounter(
    "publisher_dashboard_writes_total",
-   "Dashboard and notebook write attempts. Labels: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back'), layout ('grid'|'linear').",
+   "Dashboard and notebook write attempts. Labels: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back'|'rollback_failed'), layout ('grid'|'linear').",
 );
 
 const writeDuration = lazyHistogram(

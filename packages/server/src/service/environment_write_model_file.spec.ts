@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { BadRequestError, WriteVerifyError } from "../errors";
+import {
+   BadRequestError,
+   WriteRollbackFailedError,
+   WriteVerifyError,
+} from "../errors";
 import { Environment } from "./environment";
 
 /**
@@ -315,5 +319,134 @@ describe("Environment.writeModelFileTransactional", () => {
          }
          expect(fs.readdirSync(pkgPath("public"))).toEqual([]);
       });
+
+      it("refuses a directory that resolves outside the package before reading anything through it", async () => {
+         const outside = fs.mkdtempSync(
+            path.join(os.tmpdir(), "publisher-out-"),
+         );
+         try {
+            fs.writeFileSync(path.join(outside, "x.malloy"), "outside text");
+            fs.symlinkSync(outside, pkgPath("escape"));
+            for (const modelPath of [
+               "escape/x.malloy",
+               "escape/new/x.malloy",
+            ]) {
+               const seen: Array<string | undefined> = [];
+               const error = await environment
+                  .writeModelFileTransactional(
+                     PKG,
+                     modelPath,
+                     "text",
+                     (current) => {
+                        seen.push(current);
+                     },
+                     ok,
+                  )
+                  .then(
+                     () => undefined,
+                     (e: Error) => e,
+                  );
+               expect(error).toBeInstanceOf(BadRequestError);
+               expect(error?.message).toContain("outside the package");
+               // The check never saw the outside file's text.
+               expect(seen).toEqual([]);
+            }
+            expect(fs.readdirSync(outside)).toEqual(["x.malloy"]);
+            expect(
+               fs.readFileSync(path.join(outside, "x.malloy"), "utf8"),
+            ).toBe("outside text");
+            expect(reloads).toBe(0);
+         } finally {
+            fs.rmSync(outside, { recursive: true, force: true });
+         }
+      });
+
+      it("refuses a file that is a link out of the package before reading it", async () => {
+         const outside = fs.mkdtempSync(
+            path.join(os.tmpdir(), "publisher-out-"),
+         );
+         try {
+            fs.writeFileSync(
+               path.join(outside, "secret.malloy"),
+               "outside text",
+            );
+            fs.symlinkSync(
+               path.join(outside, "secret.malloy"),
+               pkgPath("link.malloy"),
+            );
+            const seen: Array<string | undefined> = [];
+            await expect(
+               environment.writeModelFileTransactional(
+                  PKG,
+                  "link.malloy",
+                  "text",
+                  (current) => {
+                     seen.push(current);
+                  },
+                  ok,
+               ),
+            ).rejects.toBeInstanceOf(BadRequestError);
+            expect(seen).toEqual([]);
+            expect(
+               fs.readFileSync(path.join(outside, "secret.malloy"), "utf8"),
+            ).toBe("outside text");
+         } finally {
+            fs.rmSync(outside, { recursive: true, force: true });
+         }
+      });
+   });
+
+   it.each(["index.malloy", "Index.malloy", "INDEX.malloy", "./index.malloy"])(
+      "refuses the root %s, the surface, whatever its case",
+      async (modelPath) => {
+         await expect(
+            environment.writeModelFileTransactional(
+               PKG,
+               modelPath,
+               "## artifact { layout=linear }\n",
+               () => undefined,
+               ok,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+         expect(fs.existsSync(path.join(root, PKG, modelPath))).toBe(false);
+      },
+   );
+
+   it("refuses a path that is not a safe relative model path, even from a caller that skipped the check", async () => {
+      for (const modelPath of ["../escape.malloy", "/abs.malloy"]) {
+         await expect(
+            environment.writeModelFileTransactional(
+               PKG,
+               modelPath,
+               "text",
+               () => undefined,
+               ok,
+            ),
+         ).rejects.toBeInstanceOf(BadRequestError);
+      }
+      expect(reloads).toBe(0);
+   });
+
+   it("says so, and logs it, when putting the previous text back fails too", async () => {
+      fs.writeFileSync(target(), "good");
+      (
+         environment as unknown as {
+            _loadOrGetPackageLocked: () => Promise<unknown>;
+         }
+      )._loadOrGetPackageLocked = async () => {
+         reloads += 1;
+         throw new Error("reload failed");
+      };
+      const error = await environment
+         .writeModelFileTransactional(PKG, FILE, "bad", () => undefined, ok)
+         .then(
+            () => undefined,
+            (e: Error) => e,
+         );
+      expect(error).toBeInstanceOf(WriteRollbackFailedError);
+      expect(error?.message).toContain("putting the previous text back failed");
+      // The restore itself was written; it is the reload of it that failed.
+      expect(read()).toBe("good");
+      expect(reloads).toBe(2);
    });
 });
