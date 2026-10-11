@@ -162,27 +162,29 @@ different directories, and neither shadows the other. The basename survives on t
 without `.malloy`, read from the package root, so a drill tag on a dimension means the same thing
 whichever report renders it. `to=self` is unchanged.
 
-**Bare-name targets are deprecated, not broken.** `to=overview` was a basename. For a deprecation
-period it still resolves when exactly one report in the package has that basename, and the package
-reports `drill-target-by-name` (§8) with the path to write. When no report or more than one has that
-basename, the target is unresolved and reported, naming the candidates. The release that ends the
-deprecation reads a bare name as a path at the package root, which is what `to=overview` already
-means for a file at `overview.malloy`. The path form is accepted from the first release, so a
-package can migrate before the deprecation ends and lose nothing.
+**Bare-name targets are deprecated, not broken.** A target with no `/` (`to=overview`) is first
+read as a path from the package root, like any other target: if `overview.malloy` is a report, it
+resolves, with no warning. Only when nothing is at that path does the deprecated fallback apply,
+because `to=overview` used to name a basename: it resolves when exactly one report in the package
+has that basename, and the package reports `drill-target-by-name` (§8) with the path to write.
+When no report or more than one has that basename, the target is unresolved and reported, naming
+the candidates. The release that ends the deprecation drops the fallback, leaving only the path
+reading. The path form is accepted from the first release, so a package can migrate before the
+deprecation ends and lose nothing.
 
 ### 4. REST API
 
 One resource replaces two.
 
-| Route                                              | Change                                                                                                                                                                                                      |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **new** `GET …/reports`                            | Every report in the package: `path`, `name` (label), `layout`, `title`, `description`, `editable` (false for `.malloynb` and `run:`-cell reports), and the load `error` for one that does not compile.      |
-| **new** `GET …/reports/{path}`                     | One report's manifest: today's `DashboardManifest` fields with `layout` in place of `kind`; for a `run:`-cell or `.malloynb` report, its cells, as `RawNotebook` returns them today.                        |
-| **new** `GET …/reports/{path}/cells/{i}`           | Runs a cell of a `run:`-cell report; today's `…/notebooks/{path}/cells/{i}` under the new resource.                                                                                                         |
-| `GET …/dashboards`, `GET …/dashboards/{name}`      | **Deprecated aliases.** The listing returns the grid reports; the item resolves a unique basename and answers 409 naming every match when it is ambiguous.                                                  |
-| `GET …/notebooks`, `…/notebooks/{path}`, `…/cells` | **Deprecated aliases** for the linear reports; already path-addressed.                                                                                                                                      |
-| `PUT …/models/{path}`                              | Any location; one rule for both layouts (§7).                                                                                                                                                               |
-| `GET …/models`                                     | Unchanged rule, by discovery: served reports are excluded under a curated surface, linear reports always (as served notebooks are today). Open to simplifying to "reports are never models" in a follow-up. |
+| Route                                              | Change                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **new** `GET …/reports`                            | Every report in the package: `path`, `name` (label), `layout`, `title`, `description`, `editable` (false for `.malloynb` and `run:`-cell reports), and the load `error` for one that does not compile.                                                                                                                                                 |
+| **new** `GET …/reports/{path}`                     | One report's manifest, where `{path}` is the package path including `.malloy` (or `.malloynb`), exactly as `GET …/reports` returns it, the convention `…/notebooks/{path}` already uses: today's `DashboardManifest` fields with `layout` in place of `kind`; for a `run:`-cell or `.malloynb` report, its cells, as `RawNotebook` returns them today. |
+| **new** `GET …/reports/{path}/cells/{i}`           | Runs a cell of a `run:`-cell report; today's `…/notebooks/{path}/cells/{i}` under the new resource.                                                                                                                                                                                                                                                    |
+| `GET …/dashboards`, `GET …/dashboards/{name}`      | **Deprecated aliases.** The listing returns the grid reports; the item resolves a unique basename and answers 409 naming every match when it is ambiguous.                                                                                                                                                                                             |
+| `GET …/notebooks`, `…/notebooks/{path}`, `…/cells` | **Deprecated aliases** for the linear reports; already path-addressed.                                                                                                                                                                                                                                                                                 |
+| `PUT …/models/{path}`                              | Any location; one rule for both layouts (§7).                                                                                                                                                                                                                                                                                                          |
+| `GET …/models`                                     | Unchanged rule, by discovery: served reports are excluded under a curated surface, linear reports always (as served notebooks are today). Open to simplifying to "reports are never models" in a follow-up.                                                                                                                                            |
 
 The deprecated routes are removed in the same later release as the bare-name drill targets
 (Delivery step 5). `api-doc.yaml` gains a `Report` and a `ReportManifest` schema, marks the old
