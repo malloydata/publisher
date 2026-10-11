@@ -27,7 +27,6 @@ mockServerProvider({
    reports: {
       listReports: () => Promise.resolve({ data: listed }),
       getReport,
-      executeReportCell: pending,
    },
    models: { listModels: pending },
    databases: { listDatabases: pending },

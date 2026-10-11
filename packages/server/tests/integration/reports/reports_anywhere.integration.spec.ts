@@ -170,7 +170,9 @@ describe("Reports anywhere in a package (E2E)", () => {
          layout: string;
          editable: boolean;
          tiles?: unknown;
-         notebook?: { notebookCells?: { type: string; kind?: string }[] };
+         notebook?: {
+            notebookCells?: { type: string; kind?: string; text: string }[];
+         };
       }>(api("/reports/deep/story.malloy"));
       expect(story.layout).toBe("linear");
       expect(story.editable).toBe(false);
@@ -179,11 +181,19 @@ describe("Reports anywhere in a package (E2E)", () => {
       const queryCell = cells.findIndex((c) => c.kind === "query");
       expect(queryCell).toBeGreaterThanOrEqual(0);
 
-      const ran = await fetch(
-         api(`/reports/deep/story.malloy/cells/${queryCell}`),
-      );
+      // A cell runs through the governed query endpoint, the report's path
+      // as the model; the reports resource has no cell route.
+      const ran = await fetch(api("/models/deep/story.malloy/query"), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ query: cells[queryCell].text }),
+      });
       expect(ran.status).toBe(200);
-      // The deprecated notebooks route answers the same cell.
+      expect(
+         (await fetch(api(`/reports/deep/story.malloy/cells/${queryCell}`)))
+            .status,
+      ).toBe(404);
+      // The deprecated notebooks route still answers the same cell.
       const old = await fetch(
          api(`/notebooks/deep/story.malloy/cells/${queryCell}`),
       );

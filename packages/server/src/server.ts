@@ -1906,14 +1906,14 @@ app.get(
 );
 
 /**
- * Run one cell of a linear report: the deprecated `…/notebooks/{path}/cells/{i}`
- * route and `…/reports/{path}/cells/{i}` are the same operation. Both take the
- * report's package path including its extension; `resolvePath` maps the
- * route's wildcard to the model path.
+ * Run one cell of a linear report by index: the deprecated
+ * `…/notebooks/{path}/cells/{i}`, kept for a `.malloynb` until the deprecated
+ * routes go. A `.malloy` report's cells run through
+ * `POST …/models/{path}/query` instead, which holds them to the same surface,
+ * `#(authorize)` and row-level gates
+ * (`tests/integration/reports/cell_query_parity.integration.spec.ts`).
  */
-function executeReportCellHandler(
-   resolvePath: (wildcard: string) => string,
-): express.RequestHandler {
+function executeReportCellHandler(): express.RequestHandler {
    return async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
@@ -1930,9 +1930,7 @@ function executeReportCellHandler(
          }
 
          // Express stores wildcard matches in params['0']
-         const notebookPath = resolvePath(
-            (req.params as Record<string, string>)["0"],
-         );
+         const notebookPath = (req.params as Record<string, string>)["0"];
 
          // Parse optional filter_params (JSON query string) and bypass_filters
          let filterParams: Record<string, string | string[]> | undefined;
@@ -1993,13 +1991,7 @@ function executeReportCellHandler(
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
    queryConcurrency(),
-   executeReportCellHandler((wildcard) => wildcard),
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports/*/cells/:cellIndex`,
-   queryConcurrency(),
-   executeReportCellHandler((wildcard) => wildcard),
+   executeReportCellHandler(),
 );
 
 app.get(

@@ -4,8 +4,9 @@
 /**
  * `Report` renders a report of either layout from `GET …/reports/{path}`: a
  * grid as a dashboard of carded tiles, a linear report as bare tiles top to
- * bottom, and a report written as `run:` cells cell by cell, through the
- * reports resource's own cell route.
+ * bottom, and a report written as `run:` cells cell by cell: a `.malloy`
+ * one through the governed query endpoint, a `.malloynb` through the
+ * deprecated notebooks cell route.
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -28,18 +29,19 @@ const getReport = mock(
       _options?: unknown,
    ) => Promise.resolve({ data: manifest }),
 );
-const executeReportCell = mock(
+const executeNotebookCell = mock(
    (
       _environmentName: string,
       _packageName: string,
       _path: string,
       _cellIndex: number,
       _versionId?: string,
+      _filterParams?: string,
+      _bypassFilters?: boolean,
       _givens?: string,
       _options?: unknown,
    ): Promise<never> => pending(),
 );
-const executeNotebookCell = mock((): Promise<never> => pending());
 const getNotebook = mock((): Promise<never> => pending());
 const executeQueryModel = mock(
    (
@@ -51,7 +53,7 @@ const executeQueryModel = mock(
 );
 
 mockServerProvider({
-   reports: { getReport, executeReportCell },
+   reports: { getReport },
    notebooks: { getNotebook, executeNotebookCell },
    models: { executeQueryModel, getModel: () => pending() },
 });
@@ -72,7 +74,6 @@ beforeEach(() => {
    clearCache();
    for (const fn of [
       getReport,
-      executeReportCell,
       executeNotebookCell,
       getNotebook,
       executeQueryModel,
@@ -161,7 +162,7 @@ describe("rendering by layout", () => {
       expect(container.querySelector('[data-chrome="card"]')).toBeNull();
    });
 
-   it("runs a run:-cell report's cells through the reports resource, never the notebooks one", async () => {
+   it("runs a .malloy run:-cell report's cells through the query endpoint, against the report itself", async () => {
       manifest = {
          path: "review.malloy",
          name: "review",
@@ -187,12 +188,47 @@ describe("rendering by layout", () => {
       );
 
       expect(await screen.findByText("Cell prose")).toBeTruthy();
-      await waitFor(() => expect(executeReportCell).toHaveBeenCalled());
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      // The report's path is the model and the cell's text the query, the
+      // governed path every grid tile takes.
       expect(
-         executeReportCell.mock.calls.map((call) => call.slice(0, 5)),
-      ).toEqual([["env", "pkg", "review.malloy", 1, "v4"]]);
+         executeQueryModel.mock.calls.map((call) => call.slice(0, 4)),
+      ).toEqual([
+         [
+            "env",
+            "pkg",
+            "review.malloy",
+            { query: "run: orders -> by_month", givens: {}, versionId: "v4" },
+         ],
+      ]);
       expect(executeNotebookCell).not.toHaveBeenCalled();
       // The cells came with the manifest; nothing reads them again.
       expect(getNotebook).not.toHaveBeenCalled();
+   });
+
+   it("runs a .malloynb's cells through the deprecated notebooks cell route", async () => {
+      manifest = {
+         path: "legacy.malloynb",
+         name: "legacy",
+         layout: "linear",
+         editable: false,
+         notebook: {
+            format: "malloynb",
+            notebookCells: [
+               { type: "markdown", text: "Legacy prose" },
+               { type: "code", text: "run: orders -> by_month" },
+            ],
+         },
+      } as ReportManifest;
+      render(<Report resourceUri={URI} path="legacy.malloynb" />, {
+         wrapper: serverWrapper,
+      });
+
+      expect(await screen.findByText("Legacy prose")).toBeTruthy();
+      await waitFor(() => expect(executeNotebookCell).toHaveBeenCalled());
+      expect(
+         executeNotebookCell.mock.calls.map((call) => call.slice(0, 4)),
+      ).toEqual([["env", "pkg", "legacy.malloynb", 1]]);
+      expect(executeQueryModel).not.toHaveBeenCalled();
    });
 });

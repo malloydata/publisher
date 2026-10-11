@@ -226,7 +226,7 @@ Callers use this metadata to render input widgets without out-of-band knowledge 
 }
 ```
 
-**Execute a report cell** — `GET /api/v0/environments/:env/packages/:package/reports/:path/cells/:index` (a cell of a report written as `run:` cells; `…/notebooks/:path/cells/:index` is a deprecated alias)
+**Execute a report cell** — a `.malloy` report's `run:` cell runs through the query endpoint above, its `text` as the `query` and the report's path as the model, with `givens` in the body. A legacy `.malloynb`'s cell runs at the deprecated `GET /api/v0/environments/:env/packages/:package/notebooks/:path/cells/:index`
 
 Query parameter `givens` accepts URL-encoded JSON:
 

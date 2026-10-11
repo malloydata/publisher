@@ -214,9 +214,14 @@ export default function Notebook(props: NotebookProps) {
 /**
  * A linear report written as `run:` cells, or a `.malloynb`: each cell run on
  * its own. `notebook` is the report's cells when the caller already holds
- * them (`Report` reads them off `GET …/reports/{path}`), and its cells then run
- * through `…/reports/{path}/cells/{i}`; without it, the cells are read from
- * the deprecated notebooks route, which runs them.
+ * them (`Report` reads them off `GET …/reports/{path}`). A held `.malloy`
+ * report's cells then run through the governed query endpoint the grid tiles
+ * use (`POST …/models/{path}/query`, the report's path as the model and the
+ * cell's text as the query), which holds a cell to the same surface,
+ * `#(authorize)` and row-level gates the cell route did; a held `.malloynb`'s
+ * through the deprecated `…/notebooks/{path}/cells/{i}`, which is the only
+ * route that runs one. Without `notebook`, the cells are read from the
+ * deprecated notebooks route, which runs them.
  */
 export function CellNotebook({
    resourceUri,
@@ -401,6 +406,8 @@ export function CellNotebook({
          setExecutionError(null);
 
          const givensParam = buildGivens(givensToApply);
+         // A held `.malloy` report runs each cell as a query against itself.
+         const viaQuery = held && notebook.format === "malloy";
 
          try {
             // Build execution tasks for code cells
@@ -423,32 +430,46 @@ export function CellNotebook({
                      // `required` filter, so a model that has one now fails
                      // here: visibly, via `error` below, rather than as the
                      // blank cell it used to be. See RELEASE_NOTES.
-                     const response = held
-                        ? await apiClients.reports.executeReportCell(
-                             environmentName,
-                             packageName,
-                             notebookPath,
-                             cellIndex,
-                             versionId,
-                             givensParam,
-                             { signal: controller.signal },
-                          )
-                        : await apiClients.notebooks.executeNotebookCell(
-                             environmentName,
-                             packageName,
-                             notebookPath,
-                             cellIndex,
-                             versionId,
-                             undefined,
-                             undefined,
-                             givensParam,
-                             { signal: controller.signal },
-                          );
+                     const executedCell = viaQuery
+                        ? {
+                             result: (
+                                await apiClients.models.executeQueryModel(
+                                   environmentName,
+                                   packageName,
+                                   notebookPath,
+                                   {
+                                      query: rawCell.text,
+                                      givens: givensToRequest(
+                                         givensToApply,
+                                         declaredTypes,
+                                      ),
+                                      versionId,
+                                   },
+                                   undefined,
+                                   { signal: controller.signal },
+                                )
+                             ).data.result,
+                             newSources: undefined,
+                          }
+                        : (
+                             await apiClients.notebooks.executeNotebookCell(
+                                environmentName,
+                                packageName,
+                                notebookPath,
+                                cellIndex,
+                                versionId,
+                                undefined,
+                                undefined,
+                                givensParam,
+                                { signal: controller.signal },
+                             )
+                          ).data;
 
                      if (runIdRef.current !== runId) return;
 
-                     const executedCell = response.data;
                      const result = executedCell.result;
+                     // A `.malloy` report's cells carry their sources on the
+                     // manifest; a run adds none.
                      const newSources =
                         rawCell.newSources || executedCell.newSources;
 
@@ -531,8 +552,9 @@ export function CellNotebook({
          notebookPath,
          versionId,
          held,
+         declaredTypes,
          apiClients.notebooks,
-         apiClients.reports,
+         apiClients.models,
       ],
    );
 

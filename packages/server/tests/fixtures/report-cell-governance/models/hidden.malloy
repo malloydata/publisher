@@ -1,0 +1,3 @@
+source: hidden is duckdb.table('data/orders.csv') extend {
+   measure: secret_total is sum(amount)
+}

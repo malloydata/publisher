@@ -495,7 +495,10 @@ The rules that make such a file read as cells:
 
 A query cell runs as a _restricted query_ against the already-compiled file, so an `import` inside a
 `run:` is rejected (`file imports are not permitted in a restricted query`); imports are file-wide and
-go at the top. `GET …/reports/{path}/cells/{i}` runs one cell.
+go at the top. To run one cell, send its `text` (from the manifest's cells) as the `query` to
+`POST …/models/{path}/query`, the report's path as the model, with `givens` in the body: the same governed
+endpoint a grid report's tiles use. A legacy `.malloynb`'s cells run at the deprecated
+`…/notebooks/{path}/cells/{i}`.
 
 **What the Console converts.** Saving a cell report in the builder turns each `run:` into a `view:` on a
 `<source>_tiles` extension appended to the file (a `query:` used by exactly one run is folded into its
@@ -903,11 +906,11 @@ message, and the entry clears on the next reload that compiles.
 | `/<env>/<pkg>/<path>/edit`                              | The same report in the builder                                                                                                         |
 | `GET /api/v0/environments/<env>/packages/<pkg>/reports` | Every report: `path`, `name` (label), `layout`, `title`, `description`, `editable`, and the load `error` for one that does not compile |
 | `GET …/reports/{path}`                                  | One report's manifest: title, `layout`, autorun, columns, controls, tiles; for a `run:`-cell or `.malloynb` report, its cells          |
-| `GET …/reports/{path}/cells/{i}`                        | Run one cell of a `run:`-cell report                                                                                                   |
 | `PUT …/models/{path}`                                   | Write a report into the package and reload; the builder's save ([The write path](#the-write-path))                                     |
 
 `{path}` is the `path` the listing returns. A report's tiles run through the ordinary query endpoint,
-`POST …/models/{path}/query`, against the report's own path, with `givens` in the request body. There is no
+`POST …/models/{path}/query`, against the report's own path, with `givens` in the request body, and so do
+the cells of a `.malloy` report written as `run:` cells (each cell's `text` as the `query`). There is no
 report-specific execution path, so authorization, row limits and query caps behave exactly as they do
 everywhere else. The manifest's two query fields take different request shapes: a single-query report's
 `query` is a NAME (`{"queryName": "<it>"}`), and a tile's `query` is an expression

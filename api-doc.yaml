@@ -2254,8 +2254,9 @@ paths:
       summary: Get Malloy notebook cells (deprecated; use get-report)
       description: |
         **DEPRECATED**: use get-report. Retrieves a linear report with its raw
-        cell contents (markdown and code). Cell execution should be done
-        separately via the execute-report-cell endpoint. A linear `.malloy`
+        cell contents (markdown and code). A `.malloy` report's cells run
+        through the model query endpoint (each cell's `text` as the query); a
+        `.malloynb`'s through execute-notebook-cell. A linear `.malloy`
         report, wherever it lives, answers here as well as a `.malloynb`.
         On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
@@ -2305,10 +2306,14 @@ paths:
         - notebooks
       operationId: execute-notebook-cell
       deprecated: true
-      summary: Execute a specific notebook cell (deprecated; use execute-report-cell)
+      summary: Execute a specific notebook cell (deprecated)
       description: |
-        **DEPRECATED**: use execute-report-cell, the same operation under the
-        `reports` resource. Executes a specific cell in a linear report by index.
+        **DEPRECATED**: removed with the other notebook routes. For a `.malloy`
+        report, run a cell through the model query endpoint instead: the
+        report's path as the model, the cell's `text` (from get-report) as
+        `query`, and `givens` in the body, which applies the same surface,
+        `#(authorize)` and row-level gates. A `.malloynb` has no other route.
+        Executes a specific cell in a linear report by index.
         For code cells, this compiles and runs the Malloy code, returning query
         results and any new sources defined. For markdown cells, this simply
         returns the cell content. A linear `.malloy` report, wherever it lives,
@@ -2502,8 +2507,10 @@ paths:
         `startingGivens`, `autorun`, `givens`): its tiles run through the model
         query endpoint with `givens`, using `path` as the model. A linear
         report written as `run:` cells, or a `.malloynb`, carries `notebook`
-        instead: its cells as get-notebook returned them, run through
-        execute-report-cell.
+        instead: its cells as get-notebook returned them. A `.malloy` report's
+        cells run through the model query endpoint, each cell's `text` as
+        `query` and `path` as the model; a `.malloynb`'s through the
+        deprecated execute-notebook-cell.
       parameters:
         - name: environmentName
           in: path
@@ -2548,87 +2555,6 @@ paths:
           $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/reports/{path}/cells/{cellIndex}:
-    get:
-      tags:
-        - reports
-      operationId: execute-report-cell
-      summary: Execute a cell of a report
-      description: |
-        Runs one cell of a linear report written as `run:` cells, or of a
-        `.malloynb`, by index: the operation execute-notebook-cell performs,
-        under the `reports` resource, with the same parameters, the same
-        surface rules and the same answer. For a code cell it compiles and runs
-        the Malloy code; for a markdown cell it returns the cell content.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            type: string
-        - name: path
-          in: path
-          description: The report's path within the package
-          required: true
-          schema:
-            type: string
-        - name: cellIndex
-          in: path
-          description: Index of the cell to execute (0-based)
-          required: true
-          schema:
-            type: integer
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
-        - name: givens
-          in: query
-          description:
-            A `GivenValues` object, JSON-encoded so it can travel in a query
-            string.
-          required: false
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Cell execution result
-          content:
-            "application/json":
-              schema:
-                $ref: "#/components/schemas/NotebookCellResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
-        "424":
-          $ref: "#/components/responses/ConnectionUnavailable"
-        "502":
-          $ref: "#/components/responses/DatabaseUnreachable"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-        "504":
-          $ref: "#/components/responses/GatewayTimeout"
 
   /environments/{environmentName}/packages/{packageName}/databases:
     get:
@@ -4915,8 +4841,10 @@ components:
             - $ref: "#/components/schemas/RawNotebook"
           description: >-
             For a linear report written as `run:` cells, or a `.malloynb`: its
-            cells and model, as get-notebook returned them. Run a cell with
-            execute-report-cell. Absent on a report written as tiles, and on a
+            cells and model, as get-notebook returned them. Run a `.malloy`
+            report's cell through the model query endpoint, its `text` as
+            `query`; a `.malloynb`'s with execute-notebook-cell. Absent on a
+            report written as tiles, and on a
             report that failed to compile.
 
     DataApp:
