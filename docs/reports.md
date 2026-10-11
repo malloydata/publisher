@@ -1087,7 +1087,10 @@ off against a pinned version rather than opening onto a compare-and-swap it can 
 The other exports of `@malloy-publisher/sdk/builder`: `NotebookEditor` (a deprecated wrapper over
 `DashboardEditor`), `createRoute` (whether a host can create reports: `"package"`, `"storage"`, or
 `undefined`), `useDocumentChoices` (the models and views the New dialog offers), `createDocument` (writes
-the new file), the template builders that produce a new report's starting text, and `locatorFor` (a created
+the new file at the package root unless given a `directory` or `path`, always with `layout=` in the tag, and
+returns its package path as `CreatedDocument.path`; a host store that files documents somewhere else
+implements `DocumentStorage.resolveDocumentPath` so the new file's imports are written for where it really
+lands), the template builders that produce a new report's starting text, and `locatorFor` (a created
 report's address in a host's own store, which is its path).
 
 <a id="documents-held-as-text"></a>

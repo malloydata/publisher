@@ -983,8 +983,20 @@ interface DocumentStorage {
    saveDocument(locator: DocumentLocator, content: string): Promise<void>;
    deleteDocument(locator: DocumentLocator): Promise<void>;
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
+   /** Optional: the package-relative path saveDocument(locator) really writes. */
+   resolveDocumentPath?(locator: DocumentLocator): string | Promise<string>;
 }
 ```
+
+**Creating a report into your store.** `createDocument` writes a new report at the **package root** by
+default (`sales.malloy`, not `dashboards/sales.malloy`), or in the `directory` or at the `path` the caller
+gives, and always writes `layout=grid` or `layout=linear` in the artifact tag. It asks your store for the
+locator `<env>/<pkg>/<path>` and renders the file's imports relative to `<path>`. A store that files
+documents somewhere else, for example every grid report under `dashboards/<basename>`, implements
+`resolveDocumentPath(locator)` and returns the package-relative path `saveDocument` will really write:
+`createDocument` calls it before rendering, writes the imports for that path, skips a name whose real path
+the package already has, and returns that path as `CreatedDocument.path`. A store without it is assumed to
+write at the path asked for, as before.
 
 `getDocument`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
 when the document is not there, and with anything else when the backend could not be

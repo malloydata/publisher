@@ -65,7 +65,13 @@ export interface CreatedDocument {
    /** The report's layout in the legacy vocabulary: what a host's store files it under. */
    kind: DocumentType;
    layout: ReportLayout;
-   /** Package-relative, e.g. `sales.malloy`: the report's identity. */
+   /**
+    * Package-relative, e.g. `sales.malloy`: the report's identity. At the
+    * package root unless a `directory` or `path` was given. On the storage
+    * route this is where the store says the file lands
+    * ({@link DocumentStorage.resolveDocumentPath}), which may differ from the
+    * path asked for.
+    */
    path: string;
    /** `sales` for `sales.malloy` or `team/sales.malloy`: a display label. */
    slug: string;
@@ -168,15 +174,23 @@ export async function createDocument(
          (await storage.listDocuments(workspace, kind)).map((l) => l.path),
       );
       let found: CreatedDocument | undefined;
-      for (const path of candidates) {
+      for (const requested of candidates) {
          const locator = locatorFor(
             kind,
             workspace.name,
             environmentName,
             packageName,
-            path,
+            requested,
          );
-         if (listed.has(locator.path) || inPackage.has(path)) continue;
+         // Where the file really lands: the text is rendered for that path, so its imports resolve there.
+         const path =
+            (await storage.resolveDocumentPath?.(locator)) ?? requested;
+         if (
+            listed.has(locator.path) ||
+            inPackage.has(requested) ||
+            inPackage.has(path)
+         )
+            continue;
          let present = true;
          try {
             await storage.getDocument(locator);

@@ -447,3 +447,66 @@ describe("reportPathProblem", () => {
       expect(reportPathProblem("x.malloynb")).toContain(".malloy");
    });
 });
+
+/**
+ * A host store that files documents by kind, as Credible's draft storage does:
+ * whatever path the locator asks for, the file lands in `dashboards/` or
+ * `notebooks/` under its basename.
+ */
+class RelocatingStorage extends FakeStorage {
+   readonly written = new Map<string, string>();
+   relocate = (locator: DocumentLocator) => {
+      const base = locator.path.slice(locator.path.lastIndexOf("/") + 1);
+      return `${locator.type === "dashboard" ? "dashboards" : "notebooks"}/${base}`;
+   };
+   resolveDocumentPath(locator: DocumentLocator) {
+      return this.relocate(locator);
+   }
+   async saveDocument(locator: DocumentLocator, content: string) {
+      await super.saveDocument(locator, content);
+      this.written.set(this.relocate(locator), content);
+   }
+}
+
+describe("createDocument into a store that chooses the file's place", () => {
+   it("writes the import for where the store puts the file, and returns that path", async () => {
+      const storage = new RelocatingStorage();
+      const created = await createDocument({
+         layout: "grid",
+         document: DOC,
+         target: target(storage),
+      });
+      expect(created.path).toBe("dashboards/sales.malloy");
+      expect(created.slug).toBe("sales");
+      const text = storage.written.get("dashboards/sales.malloy")!;
+      expect(text).toContain(
+         'import { order_items } from "../models/storefront.malloy"',
+      );
+   });
+
+   it("skips a name whose real place the package already has", async () => {
+      const storage = new RelocatingStorage();
+      const created = await createDocument({
+         layout: "linear",
+         document: DOC,
+         target: {
+            ...target(storage),
+            existing: ["notebooks/sales.malloy"],
+         },
+      });
+      expect(created.path).toBe("notebooks/sales-2.malloy");
+   });
+
+   it("falls back to the requested path for a store that says nothing", async () => {
+      const storage = new FakeStorage();
+      const created = await createDocument({
+         layout: "grid",
+         document: DOC,
+         target: target(storage),
+      });
+      expect(created.path).toBe("sales.malloy");
+      expect(storage.files.get("dashboard:env/pkg/sales.malloy")).toContain(
+         'from "models/storefront.malloy"',
+      );
+   });
+});

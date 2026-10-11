@@ -33,6 +33,8 @@ A report is identified by its **path**. Two reports may share a basename in diff
 
 **Writing.** `PUT …/models/{path}` (the builder's save) now creates a report at any `.malloy` path outside `public/` other than the root `index.malloy`, creating missing directories inside the package root only, and replaces only a file the package reads as a report. It still cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`. See `docs/security-posture.md`.
 
+**SDK.** `createDocument` (and the New report dialog) writes a new report at the package root by default, so `CreatedDocument.path` is `sales.malloy` where it was `dashboards/sales.malloy` or `notebooks/sales.malloy`, and the template always writes `layout=grid` or `layout=linear` in the tag. A host whose `DocumentStorage` files documents somewhere other than the path asked for (every grid report under `dashboards/`, say) implements the new optional `resolveDocumentPath(locator)`, returning the package-relative path `saveDocument` will really write: the new file's imports are rendered for that path and `CreatedDocument.path` is that path. A store without it is assumed to write where asked; on such a store that relocates files, a new report's imports would not resolve.
+
 **Deprecated, still working until a later release removes them:**
 
 - `GET …/dashboards` and `…/dashboards/{name}` (the grid reports) and `GET …/notebooks`, `…/notebooks/{path}` and `…/cells/{i}` (the linear reports). `…/dashboards/{name}` resolves a basename only when exactly one grid report has it, and answers 409 naming every match when several do. Move to `…/reports`.
