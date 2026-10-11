@@ -998,3 +998,54 @@ describe("the kind of a document held as text", () => {
          }
    });
 });
+
+/**
+ * This reader's column of the layout parity table the server's readers share
+ * (`report_layout_parity.spec.ts`). A failure to open is mapped to the layout
+ * the reader judged: the cell-format refusal is linear, the "no tiles list"
+ * one grid, and a file with no model-level tag is no report.
+ */
+describe("report layout parity: the SDK reader", () => {
+   const { layoutCases } = JSON.parse(
+      fs.readFileSync(
+         path.join(import.meta.dir, "testing/reportLayoutParity.json"),
+         "utf8",
+      ),
+   ) as {
+      layoutCases: {
+         name: string;
+         source: string;
+         compiled: string | null;
+         text: string | null;
+         lint: string | null;
+         sdk: string | null;
+         knownDifference?: string;
+      }[];
+   };
+
+   const sdkLayout = async (source: string) => {
+      const result = await readDashboardDocument(source);
+      if (!readFailed(result))
+         return result.document.kind === "notebook" ? "linear" : "grid";
+      if (result.legacyNotebook) return "linear";
+      if (/no `tiles=\[…\]` list the builder/.test(result.reason))
+         return "grid";
+      if (/^No `## artifact/.test(result.reason)) return null;
+      return "refused";
+   };
+
+   for (const testCase of layoutCases) {
+      it(testCase.name, async () => {
+         expect(await sdkLayout(testCase.source)).toBe(testCase.sdk);
+         const all = [
+            testCase.compiled,
+            testCase.text,
+            testCase.lint,
+            testCase.sdk,
+         ];
+         expect(new Set(all).size > 1).toBe(
+            testCase.knownDifference !== undefined,
+         );
+      });
+   }
+});

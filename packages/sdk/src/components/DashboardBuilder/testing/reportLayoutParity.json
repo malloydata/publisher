@@ -1,0 +1,192 @@
+{
+   "about": "The four readers of a report's layout must agree, and where they do not today the difference is pinned as `knownDifference` rather than fixed. `layoutCases`: `compiled` is the server's compiled-notes reader (`factsCarryArtifactTag`/`factsLayout` over a compiled model, the path discovery takes), `text` the raw-text reader (`textClaimsToBeAReport`/`layoutOfText`, for a file that did not compile and for text the write path is handed), `lint` the layout `lintNotebookText` lints the file as, and `sdk` the builder's reader (`readDashboardDocument`): `grid`, `linear`, `null` for not a report, or `refused` for a tag the SDK will not open. `queryTagCases` pin the three detectors of a deprecated query-level `# artifact`: `compiled` (`queryNotesCarryArtifact` over the file's own named queries), `text` (`QUERY_ARTIFACT_NOTE`, read as `layoutFactsOfText(…).queryTag`) and `lint` (whether `lintNotebookText` reads the file, which has no model-level tag, as a report). The server's spec reads the server columns (report_layout_parity.spec.ts) and the SDK's spec the `sdk` column (readDocument.spec.ts); each also fails when a case's readers differ and it carries no `knownDifference`.",
+   "layoutCases": [
+      {
+         "name": "`layout=grid` with tiles is grid",
+         "source": "## artifact { layout=grid tiles=[\"s -> v\"] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "grid"
+      },
+      {
+         "name": "`layout=linear` with no tiles is linear",
+         "source": "## artifact { layout=linear }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
+         "compiled": "linear",
+         "text": "linear",
+         "lint": "linear",
+         "sdk": "linear"
+      },
+      {
+         "name": "the legacy `kind=dashboard` is grid",
+         "source": "## artifact { kind=dashboard tiles=[\"s -> v\"] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "grid"
+      },
+      {
+         "name": "the legacy `kind=notebook` is linear",
+         "source": "## artifact { kind=notebook }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
+         "compiled": "linear",
+         "text": "linear",
+         "lint": "linear",
+         "sdk": "linear"
+      },
+      {
+         "name": "a tag naming no layout and listing no tiles is linear by default",
+         "source": "## artifact { }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
+         "compiled": "linear",
+         "text": "linear",
+         "lint": "linear",
+         "sdk": "linear"
+      },
+      {
+         "name": "a tiles list with no layout is grid",
+         "source": "## artifact { tiles=[\"s -> v\"] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "grid"
+      },
+      {
+         "name": "a `dashboard { … }` grid tag on the artifact line is grid",
+         "source": "## artifact { } dashboard { columns=6 }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "grid"
+      },
+      {
+         "name": "a `## dashboard { … }` grid tag on its own line, with no layout, kind or tiles",
+         "source": "## artifact { title=\"x\" }\n## dashboard { columns=6 }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "linear",
+         "lint": "grid",
+         "sdk": "linear",
+         "knownDifference": "The compiled reader and the lint read every model-level note, so the separate grid tag makes it grid; the text reader and the SDK read only the artifact tag's own note, so it is linear. Pinned: a refactor that unifies the readers must keep both answers."
+      },
+      {
+         "name": "`layout=linear` wins over a tiles list",
+         "source": "## artifact { layout=linear tiles=[\"s -> v\"] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "linear",
+         "text": "linear",
+         "lint": "linear",
+         "sdk": "linear"
+      },
+      {
+         "name": "`layout=grid` wins over a disagreeing `kind=notebook`",
+         "source": "## artifact { layout=grid kind=notebook }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "grid"
+      },
+      {
+         "name": "an unknown `layout=` falls through to the tiles list",
+         "source": "## artifact { layout=wide tiles=[\"s -> v\"] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "grid"
+      },
+      {
+         "name": "a `##|` block tag is read like a one-line tag",
+         "source": "##| artifact { layout=grid tiles=[\"s -> v\"] }\n|##\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "grid"
+      },
+      {
+         "name": "a model-level tag that does not parse",
+         "source": "## artifact { layout=grid tiles=[ }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": null,
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "refused",
+         "knownDifference": "Compiled, an unparsable tag carries no `artifact` property, so the file is not a report (discovery leaves it to the lint to explain). The text reader and the lint read `layout=` and `tiles=` off the spelling, so it is grid. The SDK reader refuses to open it."
+      },
+      {
+         "name": "a query-level `# artifact` on a named query, with no model-level tag (deprecated)",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# artifact\nquery: q is s -> v\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": null,
+         "knownDifference": "The SDK reader opens only a file with a model-level `## artifact`, so a query-level report is not one to it."
+      },
+      {
+         "name": "a model-level tag naming no layout beside a query-level `# artifact`",
+         "source": "## artifact { }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# artifact\nquery: q is s -> v\n",
+         "compiled": "grid",
+         "text": "grid",
+         "lint": "grid",
+         "sdk": "linear",
+         "knownDifference": "The server's readers apply rule 2 (a query-level tag is grid); the SDK reader does not read query-level tags, so the model-level tag alone is linear by default."
+      },
+      {
+         "name": "a file with no artifact tag is no report",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": null,
+         "text": null,
+         "lint": null,
+         "sdk": null
+      }
+   ],
+   "queryTagCases": [
+      {
+         "name": "`# artifact` on a named query",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# artifact\nquery: q is s -> v\n",
+         "compiled": true,
+         "text": true,
+         "lint": true
+      },
+      {
+         "name": "`# artifact { … }` with properties on a named query",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# artifact { title=\"x\" }\nquery: q is s -> v\n",
+         "compiled": true,
+         "text": true,
+         "lint": true
+      },
+      {
+         "name": "`# artifact` on a `run:` statement",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# artifact\nrun: s -> v\n",
+         "compiled": false,
+         "text": true,
+         "lint": true,
+         "knownDifference": "Compiled, only a named query's notes are read, so a tag on `run:` is no query-level tag; the text test and the lint read any `#` line."
+      },
+      {
+         "name": "`# artifact` on a `source:` statement",
+         "source": "# artifact\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "compiled": false,
+         "text": true,
+         "lint": true,
+         "knownDifference": "Compiled, only a named query's notes are read; the text test and the lint read any `#` line."
+      },
+      {
+         "name": "`artifact` after another property on the line (`# title=x artifact`)",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# title=x artifact\nquery: q is s -> v\n",
+         "compiled": true,
+         "text": true,
+         "lint": false,
+         "knownDifference": "The lint's test is `/^#\\s*artifact\\b/`, so it needs `artifact` first on the line; the compiled tag and the text test read it anywhere."
+      },
+      {
+         "name": "`#artifact` with no space after the `#`",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n#artifact\nquery: q is s -> v\n",
+         "compiled": false,
+         "text": false,
+         "lint": true,
+         "knownDifference": "Malloy does not read `#artifact` as an `artifact` tag and neither does the text test, which needs whitespace after the sigil; the lint's `/^#\\s*artifact\\b/` allows none."
+      },
+      {
+         "name": "a quoted `\"artifact\"` is a string, not the tag",
+         "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# \"artifact\"\nquery: q is s -> v\n",
+         "compiled": false,
+         "text": false,
+         "lint": false
+      }
+   ]
+}
