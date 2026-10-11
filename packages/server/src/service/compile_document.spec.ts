@@ -601,9 +601,8 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
    describe("a tile over a name the viewer cannot confirm", () => {
       beforeEach(async () => {
-         await install(
-            {
-               "index.malloy": `##! experimental.givens
+         await install({
+            "index.malloy": `##! experimental.givens
 given:
   ROLE :: string
 source: customers is duckdb.sql("select 1 as id") extend {
@@ -621,9 +620,7 @@ source: locked_hidden is duckdb.sql("select 1 as id") extend {
 }
 export { customers }
 `,
-            },
-            { explores: ["index.malloy"] },
-         );
+         });
       });
 
       const refusal = async (
@@ -746,9 +743,8 @@ export { customers }
 
    describe("query boundary", () => {
       beforeEach(async () => {
-         await install(
-            {
-               "index.malloy": `source: helper is duckdb.sql("select 1 as id") extend {
+         await install({
+            "index.malloy": `source: helper is duckdb.sql("select 1 as id") extend {
   measure: c is count()
   view: hv is { aggregate: c }
 }
@@ -758,9 +754,7 @@ source: customers is duckdb.sql("select 1 as id") extend {
 }
 export { customers }
 `,
-            },
-            { explores: ["index.malloy"] },
-         );
+         });
       });
 
       it("refuses a document whose tile targets a source off the surface, so a compile that passes also runs", async () => {

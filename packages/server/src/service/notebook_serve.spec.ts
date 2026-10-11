@@ -568,13 +568,17 @@ describe("served notebooks (worker path)", () => {
       });
    });
 
-   it("flags a served notebook listed in explores, as it flags a .malloynb", async () => {
-      manifest({ explores: ["notebooks/nb.malloy"] });
-      write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
-      await withPackage(async (pkg) => {
-         expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
-            "notebooks/nb.malloy",
-         ]);
+   // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
+   // RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("flags a served notebook listed in explores, as it flags a .malloynb", async () => {
+         manifest({ explores: ["notebooks/nb.malloy"] });
+         write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
+         await withPackage(async (pkg) => {
+            expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
+               "notebooks/nb.malloy",
+            ]);
+         });
       });
    });
 

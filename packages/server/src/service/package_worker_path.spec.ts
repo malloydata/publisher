@@ -894,11 +894,6 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
    // manifest's own message.
    it.each([
       [
-         "a malformed explores",
-         JSON.stringify({ name: "pkg", explores: "index.malloy" }),
-         /Invalid "explores"/,
-      ],
-      [
          "an unknown scope",
          JSON.stringify({ name: "pkg", scope: "shared" }),
          /Invalid "scope"/,

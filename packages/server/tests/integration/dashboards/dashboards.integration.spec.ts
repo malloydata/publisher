@@ -1190,19 +1190,132 @@ describe("Dashboard discovery (E2E)", () => {
             .filter((m) => m.includes("won't load"))
             .sort();
 
-      it("lists every dashboard, including ones explores does not list", async () => {
-         // Not `listed`: its only tag is a query-level `# artifact` and
-         // `explores` lists it, so it is on the surface and stays a model
-         // (query-artifact-ignored). `composite` is listed too, but carries a
-         // model-level `## artifact`, which always makes a report.
-         const res = await fetch(curatedUrl("/dashboards"));
-         expect(res.status).toBe(200);
-         const dashboards = (await res.json()) as DashboardItem[];
-         expect(dashboards.map((d) => d.name).sort()).toEqual([
-            "composite",
-            "unlisted",
-            "w1.9",
-         ]);
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // `explores` and `queryableSources` (see RELEASE_NOTES deprecations).
+      describe("deprecated: explores and queryableSources", () => {
+         it("lists every dashboard, including ones explores does not list", async () => {
+            // Not `listed`: its only tag is a query-level `# artifact` and
+            // `explores` lists it, so it is on the surface and stays a model
+            // (query-artifact-ignored). `composite` is listed too, but carries a
+            // model-level `## artifact`, which always makes a report.
+            const res = await fetch(curatedUrl("/dashboards"));
+            expect(res.status).toBe(200);
+            const dashboards = (await res.json()) as DashboardItem[];
+            expect(dashboards.map((d) => d.name).sort()).toEqual([
+               "composite",
+               "unlisted",
+               "w1.9",
+            ]);
+         });
+
+         it("runs an import-only dashboard's tile, because the source's own file is listed", async () => {
+            const res = await post(
+               curatedUrl("/models/dashboards/composite.malloy/query"),
+               { query: "run: orders -> by_brand" },
+            );
+            expect(res.status).toBe(200);
+         });
+
+         it("serves and runs a dashboard explores does not list, because it reads a published source", async () => {
+            const manifest = await fetch(curatedUrl("/dashboards/unlisted"));
+            expect(manifest.status).toBe(200);
+            expect(((await manifest.json()) as DashboardManifest).query).toBe(
+               "unlisted",
+            );
+            const res = await post(
+               curatedUrl("/models/dashboards/unlisted.malloy/query"),
+               { queryName: "unlisted" },
+            );
+            expect(res.status).toBe(200);
+         });
+
+         it("keeps a query-level dashboard that explores lists a model, still runnable, and says why", async () => {
+            expect((await fetch(curatedUrl("/dashboards/listed"))).status).toBe(
+               404,
+            );
+            const res = await post(
+               curatedUrl("/models/dashboards/listed.malloy/query"),
+               { queryName: "listed", compactJson: true },
+            );
+            expect(res.status).toBe(200);
+            const ignored = (await warningsOf(curatedUrl(""))).filter(
+               (w) =>
+                  w.model === "dashboards/listed.malloy" &&
+                  (w as { code?: string }).code === "query-artifact-ignored",
+            );
+            expect(ignored).toHaveLength(1);
+            expect(ignored[0].message).toContain('"explores" lists it');
+         });
+
+         it("re-checks tile findings after a metadata PATCH changes the surface", async () => {
+            const pkgUrl = curatedUrl("");
+            expect(await wontLoad(pkgUrl)).toEqual([]);
+            try {
+               // Take orders.malloy off the surface: nothing listed exports
+               // orders. `listed.malloy` stays on it, a model, so the finding
+               // comes from a dashboard that is not listed.
+               const patch = await fetch(pkgUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                     name: CURATED_PACKAGE,
+                     explores: ["dashboards/listed.malloy"],
+                     queryableSources: "declared",
+                  }),
+               });
+               expect(patch.ok).toBe(true);
+               const after = await wontLoad(pkgUrl);
+               expect(after).toContain(
+                  `Dashboard unlisted reads orders, which no file "explores" lists ` +
+                     `exports, so it won't load. Fix: add orders to the export ` +
+                     `{ ... } in dashboards/listed.malloy.`,
+               );
+               // Still listed: the surface limits what it reads, not whether it shows.
+               const listed = (await (
+                  await fetch(curatedUrl("/dashboards"))
+               ).json()) as DashboardItem[];
+               expect(listed.map((d) => d.name)).toContain("unlisted");
+            } finally {
+               await fetch(pkgUrl, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                     name: CURATED_PACKAGE,
+                     explores: [
+                        "orders.malloy",
+                        "dashboards/listed.malloy",
+                        "dashboards/composite.malloy",
+                     ],
+                     queryableSources: "declared",
+                  }),
+               });
+               await fetch(curatedUrl("?reload=true"));
+            }
+         });
+
+         it("reports no dead drill at a dashboard explores does not list", async () => {
+            // `orders.malloy` carries `# drill { to=unlisted }`. The dashboard is
+            // served, so the click lands and nothing is said.
+            const messages = (await warningsOf(curatedUrl(""))).map(
+               (w) => w.message ?? "",
+            );
+            expect(
+               messages.filter(
+                  (m) =>
+                     m.includes("# drill") &&
+                     m.includes("unlisted") &&
+                     !m.includes("by name, which is deprecated"),
+               ),
+            ).toEqual([]);
+         });
+
+         it("runs an import-only dashboard's tiles when the boundary is inert", async () => {
+            const res = await post(
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN_PACKAGE}/models/dashboards/composite.malloy/query`,
+               { query: "run: orders -> by_brand", compactJson: true },
+            );
+            expect(res.status).toBe(200);
+         });
       });
 
       /**
@@ -1210,122 +1323,16 @@ describe("Dashboard discovery (E2E)", () => {
        * listed and exports `orders`, and this model resolves that name to the
        * very declaration it exported, so the tile runs.
        */
-      it("runs an import-only dashboard's tile, because the source's own file is listed", async () => {
-         const res = await post(
-            curatedUrl("/models/dashboards/composite.malloy/query"),
-            { query: "run: orders -> by_brand" },
-         );
-         expect(res.status).toBe(200);
-      });
-
-      it("serves and runs a dashboard explores does not list, because it reads a published source", async () => {
-         const manifest = await fetch(curatedUrl("/dashboards/unlisted"));
-         expect(manifest.status).toBe(200);
-         expect(((await manifest.json()) as DashboardManifest).query).toBe(
-            "unlisted",
-         );
-         const res = await post(
-            curatedUrl("/models/dashboards/unlisted.malloy/query"),
-            { queryName: "unlisted" },
-         );
-         expect(res.status).toBe(200);
-      });
-
-      it("keeps a query-level dashboard that explores lists a model, still runnable, and says why", async () => {
-         expect((await fetch(curatedUrl("/dashboards/listed"))).status).toBe(
-            404,
-         );
-         const res = await post(
-            curatedUrl("/models/dashboards/listed.malloy/query"),
-            { queryName: "listed", compactJson: true },
-         );
-         expect(res.status).toBe(200);
-         const ignored = (await warningsOf(curatedUrl(""))).filter(
-            (w) =>
-               w.model === "dashboards/listed.malloy" &&
-               (w as { code?: string }).code === "query-artifact-ignored",
-         );
-         expect(ignored).toHaveLength(1);
-         expect(ignored[0].message).toContain('"explores" lists it');
-      });
 
       /**
        * A metadata PATCH changes the surface without changing a file, so the
        * tile findings have to be re-checked then, not only at load.
        */
-      it("re-checks tile findings after a metadata PATCH changes the surface", async () => {
-         const pkgUrl = curatedUrl("");
-         expect(await wontLoad(pkgUrl)).toEqual([]);
-         try {
-            // Take orders.malloy off the surface: nothing listed exports
-            // orders. `listed.malloy` stays on it, a model, so the finding
-            // comes from a dashboard that is not listed.
-            const patch = await fetch(pkgUrl, {
-               method: "PATCH",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  name: CURATED_PACKAGE,
-                  explores: ["dashboards/listed.malloy"],
-                  queryableSources: "declared",
-               }),
-            });
-            expect(patch.ok).toBe(true);
-            const after = await wontLoad(pkgUrl);
-            expect(after).toContain(
-               `Dashboard unlisted reads orders, which no file "explores" lists ` +
-                  `exports, so it won't load. Fix: add orders to the export ` +
-                  `{ ... } in dashboards/listed.malloy.`,
-            );
-            // Still listed: the surface limits what it reads, not whether it shows.
-            const listed = (await (
-               await fetch(curatedUrl("/dashboards"))
-            ).json()) as DashboardItem[];
-            expect(listed.map((d) => d.name)).toContain("unlisted");
-         } finally {
-            await fetch(pkgUrl, {
-               method: "PATCH",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  name: CURATED_PACKAGE,
-                  explores: [
-                     "orders.malloy",
-                     "dashboards/listed.malloy",
-                     "dashboards/composite.malloy",
-                  ],
-                  queryableSources: "declared",
-               }),
-            });
-            await fetch(curatedUrl("?reload=true"));
-         }
-      });
-
-      it("reports no dead drill at a dashboard explores does not list", async () => {
-         // `orders.malloy` carries `# drill { to=unlisted }`. The dashboard is
-         // served, so the click lands and nothing is said.
-         const messages = (await warningsOf(curatedUrl(""))).map(
-            (w) => w.message ?? "",
-         );
-         expect(
-            messages.filter(
-               (m) =>
-                  m.includes("# drill") &&
-                  m.includes("unlisted") &&
-                  !m.includes("by name, which is deprecated"),
-            ),
-         ).toEqual([]);
-      });
 
       /**
        * `queryableSources: "all"` decouples the axes: nothing is refused, so an
        * import-only dashboard's tiles run regardless of any export closure.
        */
-      it("runs an import-only dashboard's tiles when the boundary is inert", async () => {
-         const res = await post(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${OPEN_PACKAGE}/models/dashboards/composite.malloy/query`,
-            { query: "run: orders -> by_brand", compactJson: true },
-         );
-         expect(res.status).toBe(200);
-      });
 
       it("serves an unconventionally named dashboard and says only that", async () => {
          const mine = (await warningsOf(curatedUrl(""))).filter(

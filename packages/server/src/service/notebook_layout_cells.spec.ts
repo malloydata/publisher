@@ -23,9 +23,11 @@ const INDEX = `source: customers is duckdb.sql("select 1 as id") extend {
 }
 `;
 
-const LAYOUT = `## artifact { kind=notebook tiles=["customers -> v", "helper -> hv"] }
+// The surface file is the root index.malloy when the package is curated.
+const layout = (surface: string) =>
+   `## artifact { kind=notebook tiles=["customers -> v", "helper -> hv"] }
 import "../base.malloy"
-import "../surface.malloy"
+import "../${surface}"
 `;
 
 async function cellsOf(curated: boolean) {
@@ -42,15 +44,16 @@ async function cellsOf(curated: boolean) {
    try {
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({
-            name: "pkg",
-            ...(curated && { explores: ["surface.malloy"] }),
-         }),
+         JSON.stringify({ name: "pkg" }),
       );
+      const surface = curated ? "index.malloy" : "surface.malloy";
       fs.mkdirSync(path.join(dir, "notebooks"));
       fs.writeFileSync(path.join(dir, "base.malloy"), BASE);
-      fs.writeFileSync(path.join(dir, "surface.malloy"), INDEX);
-      fs.writeFileSync(path.join(dir, "notebooks/layout.malloy"), LAYOUT);
+      fs.writeFileSync(path.join(dir, surface), INDEX);
+      fs.writeFileSync(
+         path.join(dir, "notebooks/layout.malloy"),
+         layout(surface),
+      );
       const pkg = await Package.create("env", "pkg", dir, malloyConfig);
       const raw = await pkg.getModel("notebooks/layout.malloy")?.getNotebook();
       return (raw?.notebookCells ?? []).filter((c) => c.kind === "query");

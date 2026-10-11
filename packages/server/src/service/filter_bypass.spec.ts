@@ -497,7 +497,7 @@ describe("alias/extend/chain of a protected source is enforced (not restricted)"
 // the opposite failure direction from the query boundary's identical
 // exact-match miss, which 404s — so a statement smuggled through either field
 // reads the protected source with NO filter clause at all. Nothing here
-// depends on `explores`: `Model.create` leaves the boundary inert, which is
+// depends on a curated surface: `Model.create` leaves the boundary inert, which is
 // exactly the default deployment shape.
 // ===========================================================================
 

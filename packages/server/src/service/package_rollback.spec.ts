@@ -23,7 +23,9 @@ import { Environment } from "./environment";
  *
  * Both run against a real `Environment` + real `Package.create` over temp dirs.
  */
-describe("explores-validation rollback (real Environment)", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
+// RELEASE_NOTES deprecations).
+describe("deprecated: explores — validation rollback (real Environment)", () => {
    let rootDir: string;
    let envPath: string;
 

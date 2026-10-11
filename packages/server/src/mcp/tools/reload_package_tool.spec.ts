@@ -245,15 +245,19 @@ describe("reload_package tool", () => {
       expect(parsed.location).toBeUndefined();
    });
 
-   it("surfaces exploresWarnings (a mistyped explores entry is not swallowed)", async () => {
-      const exploresWarnings = [
-         "explore 'ordrs' does not resolve to a model in this package",
-      ];
-      const handler = captureHandler(
-         storeReturning({ name: "ecommerce", exploresWarnings }),
-      );
-      const parsed = parse(await handler(args));
-      expect(parsed.status).toBe("reloaded");
-      expect(parsed.exploresWarnings).toEqual(exploresWarnings);
+   // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
+   // RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("surfaces exploresWarnings (a mistyped explores entry is not swallowed)", async () => {
+         const exploresWarnings = [
+            "explore 'ordrs' does not resolve to a model in this package",
+         ];
+         const handler = captureHandler(
+            storeReturning({ name: "ecommerce", exploresWarnings }),
+         );
+         const parsed = parse(await handler(args));
+         expect(parsed.status).toBe("reloaded");
+         expect(parsed.exploresWarnings).toEqual(exploresWarnings);
+      });
    });
 });
