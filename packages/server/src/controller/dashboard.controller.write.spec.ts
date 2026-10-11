@@ -42,10 +42,14 @@ function harness(
       current?: string;
       problems?: Array<{ severity: string; message: string }>;
       reloadCompiles?: boolean;
-      /** Whether the reloaded package serves the file as the document it was written as. */
+      /** Whether the reloaded package serves the written file as a report. */
       served?: boolean;
-      /** The compiled model the package held for the path before the write, and the file holding the slug. */
-      loaded?: { note: boolean; holder?: string };
+      /**
+       * Whether the package loaded before the write reads the file now at the
+       * path as a report (`Package.isWritableReport`). Defaults to true: a
+       * replace in these tests is over a report unless the test says not.
+       */
+      loadedReport?: boolean;
       /** The `##` notes the reloaded model carries, as dashboard facts. */
       reloadedNotes?: string[];
    } = {},
@@ -61,20 +65,13 @@ function harness(
             queries: [],
          },
    };
-   let written = "";
-   const served = options.served ?? true;
    const pkg = {
       getModel: sinon.stub().returns(model),
-      getDashboard: () => (served ? { path: written } : undefined),
-      isServedNotebook: () => served,
+      isServedReport: () => options.served ?? true,
+      isWritableReport: () => options.reloadedNotes !== undefined,
    };
-   const loaded = options.loaded && {
-      getModel: () => ({
-         getModelDef: () => ({}),
-         carriesNotebookArtifactNote: () => options.loaded?.note,
-      }),
-      getDashboard: () =>
-         options.loaded?.holder ? { path: options.loaded.holder } : undefined,
+   const loaded = {
+      isWritableReport: () => options.loadedReport ?? true,
    };
    const environment = {
       getPackage: sinon.stub().resolves(pkg),
@@ -86,12 +83,11 @@ function harness(
          .callsFake(
             async (
                _pkg: string,
-               path: string,
+               _path: string,
                _source: string,
                check: (current: string | undefined, loaded: unknown) => void,
                verify: (reloaded: unknown) => Promise<unknown>,
             ) => {
-               written = path;
                check(options.current, loaded);
                try {
                   return {
@@ -173,22 +169,45 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.getPackage.called).toBe(false);
    });
 
-   it("writes only a dashboard file at the top of dashboards/", async () => {
+   // Ported from "writes only a dashboard file at the top of dashboards/": a
+   // report may be created anywhere (`docs/reports-design.md` §7), at the root
+   // and at any depth, so those are acceptances now.
+   it.each([
+      "storefront.malloy",
+      "q3.malloy",
+      "dashboards/deep/x.malloy",
+      "notebooks/nested/x.malloy",
+      "sales/2026/q3.malloy",
+      "sales/index.malloy",
+   ])("creates a report at %s", async (good) => {
       const { controller, environment } = harness();
-      for (const bad of [
-         "storefront.malloy",
-         "dashboards/deep/x.malloy",
-         "dashboards/x.malloynb",
-         "../dashboards/x.malloy",
-      ]) {
-         await expect(
-            controller.putDashboardSource("env", "pkg", bad, { source: AFTER }),
-         ).rejects.toBeInstanceOf(BadRequestError);
-      }
+      const result = await controller.putDashboardSource("env", "pkg", good, {
+         source: AFTER,
+      });
+      expect(result).toMatchObject({ path: good, created: true });
+      expect(environment.writeModelFileTransactional.firstCall.args[1]).toBe(
+         good,
+      );
+   });
+
+   it.each([
+      ["a .malloynb", "dashboards/x.malloynb"],
+      ["a path that climbs out", "../dashboards/x.malloy"],
+      ["a dotfile directory", ".hidden/x.malloy"],
+      ["public/", "public/x.malloy"],
+      ["a nested public/ path", "public/sub/x.malloy"],
+      ["the root index.malloy", "index.malloy"],
+      ["a file that is not Malloy", "x.json"],
+   ])("refuses %s before compiling", async (_name, bad) => {
+      const { controller, environment } = harness();
+      await expect(
+         controller.putDashboardSource("env", "pkg", bad, { source: AFTER }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(environment.compileSource.called).toBe(false);
       expect(environment.writeModelFileTransactional.called).toBe(false);
    });
 
-   it("writes a tagged notebook at the top of notebooks/ through the same compile-first flow", async () => {
+   it("writes a linear report through the same compile-first flow", async () => {
       const { controller, environment } = harness();
       const result = await controller.putDashboardSource(
          "env",
@@ -202,25 +221,35 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
    });
 
-   it("takes the kind from the tag, so a notebook can be written into dashboards/ and a dashboard into notebooks/", async () => {
+   it("takes the layout from the tag, so either layout can be written into either folder", async () => {
       const { controller, environment } = harness();
       await controller.putDashboardSource("env", "pkg", PATH, {
          source: NOTEBOOK,
       });
       await controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
-         source: "## artifact { kind=dashboard }\n",
+         source: '## artifact { layout=grid tiles=["a -> x"] }\n',
       });
       expect(environment.writeModelFileTransactional.calledTwice).toBe(true);
    });
 
-   it("serves a written file as the kind its tag names: a notebook in dashboards/ is checked as a notebook", async () => {
-      const { controller, pkg } = harness();
-      pkg.getDashboard = () => undefined;
-      pkg.isServedNotebook = () => true;
-      await controller.putDashboardSource("env", "pkg", PATH, {
-         source: NOTEBOOK,
-      });
-      pkg.isServedNotebook = () => false;
+   it("switches a report's layout with a replace, which is a one-property edit", async () => {
+      const grid = '## artifact { layout=grid tiles=["a -> x"] }\n';
+      const linear = grid.replace("layout=grid", "layout=linear");
+      const { controller } = harness({ current: grid });
+      const result = await controller.putDashboardSource(
+         "env",
+         "pkg",
+         "q3.malloy",
+         {
+            source: linear,
+            expectedHash: contentHashOf(grid),
+         },
+      );
+      expect(result.created).toBe(false);
+   });
+
+   it("rolls back a written file the reloaded package does not serve as a report", async () => {
+      const { controller } = harness({ served: false });
       await expect(
          controller.putDashboardSource("env", "pkg", PATH, {
             source: NOTEBOOK,
@@ -228,16 +257,16 @@ describe("DashboardController.putDashboardSource", () => {
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });
 
-   it("lets a notebooks/ file whose artifact follows another property through the pre-write check", async () => {
+   it("lets a file whose artifact follows another property through the pre-write check", async () => {
       const { controller, environment } = harness();
       await controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
          source:
-            '## dashboard { columns=2 } artifact { kind=notebook tiles=["s -> v"] }\n',
+            '## dashboard { columns=2 } artifact { layout=linear tiles=["s -> v"] }\n',
       });
       expect(environment.compileSource.called).toBe(true);
    });
 
-   it("refuses a notebooks/ file whose only artifact is a string value, before compiling", async () => {
+   it("refuses a file whose only artifact is a string value, before compiling", async () => {
       const { controller, environment } = harness();
       await expect(
          controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
@@ -247,44 +276,28 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.compileSource.called).toBe(false);
    });
 
-   it("still refuses an untagged notebooks/ file whatever the kind would have been", async () => {
-      const { controller, environment } = harness();
-      await expect(
-         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
-            source: "source: a is duckdb.sql('select 1')\n",
-         }),
-      ).rejects.toBeInstanceOf(BadRequestError);
-      expect(environment.writeModelFileTransactional.called).toBe(false);
-   });
+   it.each([
+      ["notebooks/", NOTEBOOK_PATH],
+      ["dashboards/", PATH],
+      ["the root", "q3.malloy"],
+      ["a nested directory", "sales/q3.malloy"],
+   ])(
+      "refuses an untagged file in %s, which is a model, before compiling",
+      async (_where, at) => {
+         const { controller, environment } = harness();
+         const error = await controller
+            .putDashboardSource("env", "pkg", at, {
+               source: "source: a is duckdb.sql('select 1')\n",
+            })
+            .catch((e) => e);
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect(error.message).toContain("not a report");
+         expect(environment.compileSource.called).toBe(false);
+         expect(environment.writeModelFileTransactional.called).toBe(false);
+      },
+   );
 
-   it("refuses an untagged notebooks/ file, which is a shared include, before compiling", async () => {
-      const { controller, environment } = harness();
-      const error = await controller
-         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
-            source: "##(markdown) Hello\n",
-         })
-         .catch((e) => e);
-      expect(error).toBeInstanceOf(BadRequestError);
-      expect(error.message).toContain("dashboards/<slug>.malloy");
-      expect(error.message).toContain("notebooks/<slug>.malloy");
-      expect(environment.compileSource.called).toBe(false);
-      expect(environment.writeModelFileTransactional.called).toBe(false);
-   });
-
-   it("refuses an untagged dashboards/ file with 400 before compiling", async () => {
-      const { controller, environment } = harness();
-      const error = await controller
-         .putDashboardSource("env", "pkg", PATH, {
-            source: "source: a is duckdb.sql('select 1')\n",
-         })
-         .catch((e) => e);
-      expect(error).toBeInstanceOf(BadRequestError);
-      expect(error.message).toContain("not a dashboard");
-      expect(environment.compileSource.called).toBe(false);
-      expect(environment.writeModelFileTransactional.called).toBe(false);
-   });
-
-   it("lets a dashboards/ file tagged at the query level through the pre-write check", async () => {
+   it("lets a file tagged at the query level (deprecated) through the pre-write check", async () => {
       const { controller, environment } = harness();
       await controller.putDashboardSource("env", "pkg", PATH, {
          source: '# artifact { title="T" }\nrun: a -> x\n',
@@ -292,7 +305,7 @@ describe("DashboardController.putDashboardSource", () => {
       expect(environment.compileSource.called).toBe(true);
    });
 
-   // Each of these compiles to a served dashboard: `artifact` need not be the line's first property.
+   // Each of these compiles to a served report: `artifact` need not be the line's first property.
    it.each([
       [
          "a model-level line",
@@ -326,7 +339,7 @@ describe("DashboardController.putDashboardSource", () => {
       ],
       ["a property path", "## dashboard.artifact { }\n"],
    ])(
-      "refuses a dashboards/ file whose only artifact is in %s with 400",
+      "refuses a file whose only artifact is in %s with 400",
       async (_name, source) => {
          const { controller, environment } = harness();
          const error = await controller
@@ -337,26 +350,41 @@ describe("DashboardController.putDashboardSource", () => {
       },
    );
 
-   it("refuses a tagged write over an existing untagged file, a shared include", async () => {
-      const include = "##(markdown) shared\n";
-      const { controller, environment } = harness({ current: include });
+   // Replace only what the package reads as a report, wherever it lives.
+   it.each([
+      ["a model", "source: a is duckdb.sql('select 1')\n", "orders.malloy"],
+      [
+         "an untagged file in notebooks/",
+         "##(markdown) shared\n",
+         NOTEBOOK_PATH,
+      ],
+      [
+         "an untagged file in dashboards/",
+         "source: s is duckdb.sql('select 1')\n",
+         PATH,
+      ],
+   ])("refuses a tagged write over %s", async (_name, existing, at) => {
+      const { controller, environment } = harness({
+         current: existing,
+         loadedReport: false,
+      });
       const error = await controller
-         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         .putDashboardSource("env", "pkg", at, {
             source: NOTEBOOK,
-            expectedHash: contentHashOf(include),
+            expectedHash: contentHashOf(existing),
          })
          .catch((e) => e);
       expect(error).toBeInstanceOf(BadRequestError);
-      expect(error.message).toContain("shared include");
+      expect(error.message).toContain("is not a report");
       expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
    });
 
-   it("refuses a tagged write over an include whose only tag is inside a block comment, as discovery reads it", async () => {
+   it("refuses a tagged write over a file whose only tag is inside a block comment, as discovery reads it", async () => {
       const include =
          "/*\n## artifact { kind=notebook }\n*/\nsource: s is duckdb.sql('select 1')\n";
       const { controller } = harness({
          current: include,
-         loaded: { note: false },
+         loadedReport: false,
       });
       const error = await controller
          .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
@@ -365,27 +393,32 @@ describe("DashboardController.putDashboardSource", () => {
          })
          .catch((e) => e);
       expect(error).toBeInstanceOf(BadRequestError);
-      expect(error.message).toContain("shared include");
+      expect(error.message).toContain("is not a report");
    });
 
-   it("replaces an existing notebook the loaded package serves", async () => {
-      const { controller } = harness({
-         current: NOTEBOOK,
-         loaded: { note: true },
-      });
-      const result = await controller.putDashboardSource(
-         "env",
-         "pkg",
-         NOTEBOOK_PATH,
-         {
+   it("refuses a write over a report whose file lost its tag since the load", async () => {
+      const untagged = "source: s is duckdb.sql('select 1')\n";
+      const { controller } = harness({ current: untagged });
+      await expect(
+         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+            source: NOTEBOOK,
+            expectedHash: contentHashOf(untagged),
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+   });
+
+   it("replaces an existing report the loaded package serves, of either layout, anywhere", async () => {
+      for (const at of [NOTEBOOK_PATH, PATH, "q3.malloy", "a/b/c.malloy"]) {
+         const { controller } = harness({ current: NOTEBOOK });
+         const result = await controller.putDashboardSource("env", "pkg", at, {
             source: NOTEBOOK.replace("Hello", "Hi"),
             expectedHash: contentHashOf(NOTEBOOK),
-         },
-      );
-      expect(result.created).toBe(false);
+         });
+         expect(result.created).toBe(false);
+      }
    });
 
-   it("rolls back a notebook write whose tag is commented out, so the package does not serve it", async () => {
+   it("rolls back a write whose tag is commented out, so the package does not serve it", async () => {
       const { controller } = harness({ served: false });
       await expect(
          controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
@@ -395,82 +428,43 @@ describe("DashboardController.putDashboardSource", () => {
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });
 
-   it("rolls back a dashboard write the reloaded package does not serve", async () => {
-      const { controller } = harness({ served: false });
-      await expect(
-         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
-      ).rejects.toBeInstanceOf(WriteRolledBackError);
-   });
-
-   it("accepts a tile-less dashboard, which has no manifest, when the reloaded model carries the artifact tag", async () => {
-      const { controller, pkg } = harness({
-         reloadedNotes: ["## artifact { kind=dashboard tiles=[] }"],
+   it("accepts a tile-less grid report, which has no manifest, when the reloaded model carries the artifact tag", async () => {
+      const { controller } = harness({
+         served: false,
+         reloadedNotes: ["## artifact { layout=grid tiles=[] }"],
       });
-      pkg.getDashboard = () => undefined;
       const result = await controller.putDashboardSource("env", "pkg", PATH, {
-         source: "## artifact { kind=dashboard tiles=[] }\n",
+         source: "## artifact { layout=grid tiles=[] }\n",
       });
       expect(result.created).toBe(true);
    });
 
-   it("rolls back a tile-less dashboard whose reloaded model carries no artifact tag", async () => {
-      const { controller, pkg } = harness({ reloadedNotes: [] });
-      pkg.getDashboard = () => undefined;
+   it("rolls back a tile-less grid report whose reloaded model carries no artifact tag", async () => {
+      const { controller } = harness({ served: false, reloadedNotes: [] });
       await expect(
          controller.putDashboardSource("env", "pkg", PATH, {
-            source: "/*\n## artifact { kind=dashboard tiles=[] }\n*/\n",
+            source: "/*\n## artifact { layout=grid tiles=[] }\n*/\n",
          }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });
 
-   it("rolls back a tagged tile-less dashboard whose slug another file holds", async () => {
-      const { controller, pkg } = harness({
-         reloadedNotes: ["## artifact { kind=dashboard tiles=[] }"],
-      });
-      pkg.getDashboard = () => ({ path: "dashboards/other.malloy" });
-      await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
-            source: "## artifact { kind=dashboard tiles=[] }\n",
-         }),
-      ).rejects.toBeInstanceOf(WriteRolledBackError);
-   });
-
-   it("refuses a dashboard whose slug another file already holds, before writing", async () => {
-      const { controller, environment } = harness({
-         current: NOTEBOOK,
-         loaded: { note: true, holder: "dashboards/tour.malloy" },
-      });
-      const error = await controller
-         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
-            source: "## artifact { kind=dashboard }\n",
-            expectedHash: contentHashOf(NOTEBOOK),
-         })
-         .catch((e) => e);
-      expect(error).toBeInstanceOf(WriteConflictError);
-      expect(error.message).toContain("dashboards/tour.malloy");
-      expect(error.message).toContain("already holds the dashboard name");
-      expect(environment.writeModelFileTransactional.calledOnce).toBe(true);
-   });
-
-   it("lets the file that holds the slug be re-saved, and a notebook share a slug with a dashboard", async () => {
-      const held = { note: true, holder: "dashboards/tour.malloy" };
+   // Ported from the name-collision 409: identity is the path, so a report may
+   // share a basename with another, and nothing is refused for it.
+   it("writes a report whose basename another report already has", async () => {
       const resave = await harness({
          current: BEFORE,
-         loaded: held,
       }).controller.putDashboardSource("env", "pkg", "dashboards/tour.malloy", {
          source: AFTER,
          expectedHash: contentHashOf(BEFORE),
       });
       expect(resave.created).toBe(false);
-      // A notebook is keyed by path, so it never contends for the dashboard name.
-      const notebook = await harness({
-         current: NOTEBOOK,
-         loaded: held,
-      }).controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
-         source: NOTEBOOK.replace("Hello", "Hi"),
-         expectedHash: contentHashOf(NOTEBOOK),
-      });
-      expect(notebook.created).toBe(false);
+      const created = await harness().controller.putDashboardSource(
+         "env",
+         "pkg",
+         "sales/tour.malloy",
+         { source: AFTER },
+      );
+      expect(created.created).toBe(true);
    });
 
    it("answers a missing path with a BadRequestError, not a TypeError", async () => {
@@ -482,20 +476,8 @@ describe("DashboardController.putDashboardSource", () => {
       ).rejects.toBeInstanceOf(BadRequestError);
    });
 
-   it("refuses a nested notebook path and a .malloynb", async () => {
-      const { controller, environment } = harness();
-      for (const bad of ["notebooks/nested/x.malloy", "notebooks/x.malloynb"]) {
-         await expect(
-            controller.putDashboardSource("env", "pkg", bad, {
-               source: NOTEBOOK,
-            }),
-         ).rejects.toBeInstanceOf(BadRequestError);
-      }
-      expect(environment.writeModelFileTransactional.called).toBe(false);
-   });
-
    it("refuses, without merging, when the file changed since it was opened", async () => {
-      const { controller } = harness({ current: "changed" });
+      const { controller } = harness({ current: "## artifact { } changed" });
       await expect(
          controller.putDashboardSource("env", "pkg", PATH, {
             source: AFTER,
@@ -628,7 +610,7 @@ describe("putDashboardSource: what it reports", () => {
    });
 
    it("reports a stale hash as a conflict", async () => {
-      const { controller } = harness({ current: "changed" });
+      const { controller } = harness({ current: "## artifact { } changed" });
       await expect(
          controller.putDashboardSource("env", "pkg", PATH, {
             source: AFTER,

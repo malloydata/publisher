@@ -47,6 +47,15 @@ const OPEN_PACKAGE = "dashboards-open";
 const CONVENTION_PACKAGE = "dashboards-convention";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
+
+/** The report change's deprecation notes, which these fixtures draw on purpose. */
+const DEPRECATION_CODES = new Set([
+   "drill-target-by-name",
+   "report-kind-deprecated",
+   "query-artifact-deprecated",
+   "report-layout-implicit",
+   "report-on-surface",
+]);
 const noDashboardsFixtureDir = path.resolve(
    __dirname,
    "../../fixtures/html-data-apps-nopublic",
@@ -800,10 +809,17 @@ describe("Dashboard discovery (E2E)", () => {
          // The fixture keeps `.malloynb` notebooks, each of which the package
          // reports as a deprecated format (`legacyFormatWarnings`, keyed by the
          // notebook's path); none of the rest is a dashboard lint finding.
-         const warnings: Array<{ model?: string }> =
+         // Nor are the deprecation notes the report change added: the
+         // fixture's query-level `# artifact` tags and its bare-name drills
+         // still work, and say which spelling to write.
+         const warnings: Array<{ model?: string; code?: string }> =
             await packageWarnings(PACKAGE_NAME);
          expect(
-            warnings.filter((w) => !w.model?.endsWith(".malloynb")),
+            warnings.filter(
+               (w) =>
+                  !w.model?.endsWith(".malloynb") &&
+                  !DEPRECATION_CODES.has(w.code ?? ""),
+            ),
          ).toEqual([]);
       });
 
@@ -967,9 +983,9 @@ describe("Dashboard discovery (E2E)", () => {
             ),
          );
          // And the drill pointing at it resolves, because it is real and
-         // reachable, so there is no finding about it.
+         // reachable: the only thing said is that the bare name is deprecated.
          expect(messages).not.toContainEqual(
-            expect.stringContaining('targets "v1.2"'),
+            expect.stringContaining('targets "v1.2", which is not'),
          );
       });
 
@@ -1001,8 +1017,12 @@ describe("Dashboard discovery (E2E)", () => {
             warnings.find((w) => (w.message ?? "").includes(needle));
          const malformed = find("treated as a shared include");
          const missingView = find('no view "missing_view"');
-         const drillWarnings = warnings.filter((w) =>
-            (w.message ?? "").includes("# drill"),
+         // The deprecated bare-name drills that resolve are set aside; they
+         // have their own coverage (`tests/integration/reports`).
+         const drillWarnings = warnings.filter(
+            (w) =>
+               (w.message ?? "").includes("# drill") &&
+               (w as { code?: string }).code !== "drill-target-by-name",
          );
 
          expect(messages).toContainEqual(
@@ -1066,10 +1086,13 @@ describe("Dashboard discovery (E2E)", () => {
          expect(messages).not.toContainEqual(
             expect.stringContaining("by_brand + { limit: 2 }"),
          );
-         // `# drill { to=["overview"] }` resolves, so it is silent.
-         expect(messages).not.toContainEqual(
-            expect.stringContaining("orders.brand_name"),
-         );
+         // `# drill { to=["overview"] }` resolves, so it says only that the
+         // bare name is deprecated.
+         expect(
+            warnings
+               .filter((w) => (w.message ?? "").includes("orders.brand_name"))
+               .map((w) => (w as { code?: string }).code),
+         ).toEqual(["drill-target-by-name"]);
 
          // The silent case: a tag that does not parse is discarded whole, so the
          // file quietly stops being a dashboard.
@@ -1271,7 +1294,14 @@ describe("Dashboard discovery (E2E)", () => {
          const messages = (await warningsOf(curatedUrl(""))).map(
             (w) => w.message ?? "",
          );
-         expect(messages.filter((m) => m.includes("unlisted"))).toEqual([]);
+         expect(
+            messages.filter(
+               (m) =>
+                  m.includes("# drill") &&
+                  m.includes("unlisted") &&
+                  !m.includes("by name, which is deprecated"),
+            ),
+         ).toEqual([]);
       });
 
       /**
@@ -1287,8 +1317,10 @@ describe("Dashboard discovery (E2E)", () => {
       });
 
       it("serves an unconventionally named dashboard and says only that", async () => {
-         const mine = (await warningsOf(curatedUrl(""))).filter((w) =>
-            (w.model ?? "").includes("w1.9"),
+         const mine = (await warningsOf(curatedUrl(""))).filter(
+            (w) =>
+               (w.model ?? "").includes("w1.9") &&
+               !DEPRECATION_CODES.has((w as { code?: string }).code ?? ""),
          );
          expect(mine).toHaveLength(1);
          expect(mine[0]?.message ?? "").toContain("is served, but");

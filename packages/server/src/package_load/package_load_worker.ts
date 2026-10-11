@@ -79,8 +79,10 @@ import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
    installRecordPath,
+   normalizeModelPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
+import { isReportEligiblePath, textClaimsToBeAReport } from "../service/report";
 import {
    recordAuthorizeAdmitAllGate,
    recordRowLevelGateRejected,
@@ -481,6 +483,37 @@ async function readInstallRecord(
    }
 }
 
+/**
+ * Which `explores` entries are reports, by the report rule's text test
+ * (`report.ts`): the same test discovery applies to a file it has no compiled
+ * tags for. Read here, before the compile, because the manifest is resolved
+ * first. Only the declared entries are read. Never throws.
+ */
+async function declaredReportPaths(
+   packagePath: string,
+   declared: unknown,
+   modelPaths: readonly string[],
+): Promise<Set<string>> {
+   const reports = new Set<string>();
+   if (!Array.isArray(declared)) return reports;
+   const known = new Set(modelPaths);
+   for (const entry of declared) {
+      if (typeof entry !== "string") continue;
+      const modelPath = normalizeModelPath(entry);
+      if (!known.has(modelPath) || !isReportEligiblePath(modelPath)) continue;
+      try {
+         const text = await fs.promises.readFile(
+            path.join(packagePath, modelPath),
+            "utf8",
+         );
+         if (textClaimsToBeAReport(text)) reports.add(modelPath);
+      } catch {
+         // Unreadable: not a report as far as the advice goes.
+      }
+   }
+   return reports;
+}
+
 async function readPackageMetadata(
    packagePath: string,
    modelPaths: readonly string[],
@@ -548,6 +581,11 @@ async function readPackageMetadata(
       declaredExplores: parsed.explores,
       declaredQueryableSources: parsed.queryableSources,
       modelPaths,
+      reportPaths: await declaredReportPaths(
+         packagePath,
+         parsed.explores,
+         modelPaths,
+      ),
    });
    const manifestWarnings = [
       ...scope.warnings,

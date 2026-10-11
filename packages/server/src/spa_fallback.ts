@@ -78,35 +78,24 @@ const ASSET_EXTENSIONS = new Set([
  * Third segments that belong to the app rather than to a package's `public/`
  * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
  * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
- * embedded data app viewer, `dashboards/<slug>` is the dashboard viewer, and
- * `notebooks/<slug>` is the served-notebook viewer.
+ * embedded data app viewer.
  *
- * `dashboards` is here because a slug is a FILENAME with its `.malloy` suffix
- * removed, so `dashboards/report.csv.malloy` publishes the slug `report.csv`,
- * which ends in an asset extension through no choice of the reader's. Without
- * this entry that dashboard is listed on the package page, served by the API,
- * and reachable by in-app navigation, but a deep link or a refresh 302s to the
- * static route and answers 404. Measured before adding it.
- *
- * `notebooks` is here for the same reason (`notebooks/report.csv.malloy`
- * publishes the slug `report.csv`) and carries the same cost for a package's
- * own `public/notebooks/` directory.
- *
- * The cost, worth stating: a package
- * that ships a `public/dashboards/` directory can no longer address those files
- * as `/<env>/<pkg>/dashboards/<file>`, since that shape now opens the dashboard
- * viewer, which reports that the package has no dashboard by that name.
- * `data-apps` has a viewer one
- * segment down that catches its own collision; this route has no equivalent, so
- * those files are reachable only on the static URL
- * `/environments/<env>/packages/<pkg>/dashboards/<file>`.
+ * `dashboards` and `notebooks` were here while a report's route depended on
+ * its folder. A report now lives anywhere and its route is its path without
+ * `.malloy` (`docs/reports-design.md` §9), so a whole segment is the wrong
+ * tool: the caller asks the loaded package instead whether
+ * `<path>.malloy` is a served report (see `reportPath` on the redirect
+ * candidate). That covers a report anywhere whose name ends in an asset
+ * extension (`sales/report.csv.malloy` publishes `sales/report.csv`), and
+ * gives a package's own `public/dashboards/` and `public/notebooks/` files
+ * back their `/<env>/<pkg>/dashboards/<file>` URLs.
  *
  * `pages`, the pre-0.0.242 spelling of `data-apps`, was carried here for a while
  * so an old bookmark could reach the app and be redirected. That alias is gone:
  * a `pages/...` path is an ordinary path into the package's `public/` directory
  * again.
  */
-const SPA_OWNED_SEGMENTS = new Set(["dashboards", "data-apps", "notebooks"]);
+const SPA_OWNED_SEGMENTS = new Set(["data-apps"]);
 
 export type SpaFallbackAction =
    /** Serve the app shell, as before. */
@@ -122,6 +111,12 @@ export type SpaFallbackAction =
         location: string;
         environmentName: string;
         packageName: string;
+        /**
+         * The path after the package name, still percent-encoded: the caller
+         * serves the app shell instead when `<reportPath>.malloy` is a report
+         * the package serves, since that is the report's own route.
+         */
+        reportPath: string;
      }
    /**
     * A file request nothing served. `path` is safe to echo back.
@@ -206,6 +201,7 @@ export function classifySpaFallback(
       });
       if (!alreadyStaticForm && !traverses) {
          const [environmentName, packageName, ...rest] = segments;
+         const reportPath = rest.join("/");
          // A reader who knows the files live in `public/` guesses that segment,
          // but the static route joins the request path onto `<pkg>/public`, so
          // passing it through would resolve to `public/public/<file>` and 404.
@@ -222,6 +218,7 @@ export function classifySpaFallback(
             )}`,
             environmentName,
             packageName,
+            reportPath,
          };
       }
    }

@@ -49,28 +49,32 @@ describe("classifySpaFallback", () => {
          });
       });
 
-      it("keeps a dashboard whose slug ends in an asset extension", () => {
-         // A slug is a FILENAME with `.malloy` removed, so
-         // `dashboards/report.csv.malloy` publishes the slug `report.csv`
-         // through no choice of the reader's. Measured before this entry
-         // existed: that dashboard was listed on the package page, served by
-         // the API, and reachable by in-app navigation, while a deep link or a
-         // refresh 302d to the static route and answered 404.
+      // `dashboards/` and `notebooks/` mean nothing any more: a report's
+      // route is its path without `.malloy`, at any depth. Whether an
+      // asset-shaped path is a report is the loaded package's answer, so the
+      // classifier hands back a redirect CANDIDATE with the path, and the
+      // caller (server.ts) serves the app when `<reportPath>.malloy` is a
+      // served report. A package's own `public/dashboards/` file is a redirect
+      // again.
+      it("leaves `dashboards/` and `notebooks/` to the caller's report check", () => {
          expect(classify("/examples/storefront/dashboards/report.csv")).toEqual(
             {
-               kind: "spa",
+               kind: "redirect",
+               location:
+                  "/environments/examples/packages/storefront/dashboards/report.csv",
+               environmentName: "examples",
+               packageName: "storefront",
+               reportPath: "dashboards/report.csv",
             },
          );
-         // The ordinary shape reaches the app without needing this set at all,
-         // asserted so a regression that removes the entry is distinguishable
-         // from one that breaks the whole route.
+         expect(classify("/examples/storefront/sales/q3/report.csv").kind).toBe(
+            "redirect",
+         );
+         // The ordinary shape reaches the app with no check at all.
          expect(classify("/examples/storefront/dashboards/overview")).toEqual({
             kind: "spa",
          });
-      });
-
-      it("keeps a served notebook whose slug ends in an asset extension", () => {
-         expect(classify("/examples/storefront/notebooks/report.csv")).toEqual({
+         expect(classify("/examples/storefront/sales/q3")).toEqual({
             kind: "spa",
          });
       });
@@ -105,6 +109,7 @@ describe("classifySpaFallback", () => {
             location: "/environments/examples/packages/storefront/index.html",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "index.html",
          });
       });
 
@@ -115,6 +120,7 @@ describe("classifySpaFallback", () => {
                "/environments/examples/packages/storefront/assets/app.js",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "assets/app.js",
          });
       });
 
@@ -129,6 +135,7 @@ describe("classifySpaFallback", () => {
             location: "/environments/examples/packages/storefront/index.html",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "public/index.html",
          });
       });
 
@@ -139,6 +146,7 @@ describe("classifySpaFallback", () => {
             location: "/environments/examples/packages/storefront/public.html",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "public.html",
          });
       });
 

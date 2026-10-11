@@ -8,11 +8,9 @@ import {
    buildDashboardManifest,
    normalizeTileExpression,
    queryTiles,
-   dashboardSlug,
    docCommentText,
    docCommentTitleAndDescription,
    filterPublisherOwnedRenderLogs,
-   isDashboardModelPath,
    matchesDocumentedDashboardName,
    lintDashboard,
    lintDrillTargets,
@@ -26,6 +24,7 @@ import {
    type DashboardGivenDeclaration,
    type DashboardModelFacts,
 } from "./dashboard";
+import { isReportEligiblePath, reportName } from "./report";
 
 /** A facts bundle with everything empty, for tests to override a slice of. */
 function facts(
@@ -56,25 +55,37 @@ function given(
 
 const build = (f: DashboardModelFacts) => buildDashboardManifest(f);
 
-describe("service/dashboard path helpers", () => {
-   it("accepts a .malloy directly inside dashboards/", () => {
-      expect(isDashboardModelPath("dashboards/overview.malloy")).toBe(true);
+// Ported from the folder-pinning path helpers: where a report lives carries no
+// meaning, so what was a rejection of a nested or out-of-folder path is now an
+// acceptance at any depth (`docs/reports-design.md` §1, §3).
+describe("service/report path helpers", () => {
+   it("accepts a .malloy inside dashboards/", () => {
+      expect(isReportEligiblePath("dashboards/overview.malloy")).toBe(true);
    });
 
-   it("rejects nested subdirectories, so slugs cannot collide", () => {
-      expect(isDashboardModelPath("dashboards/sales/overview.malloy")).toBe(
-         false,
+   it("accepts nested subdirectories: identity is the path, so two basenames cannot collide", () => {
+      expect(isReportEligiblePath("dashboards/sales/overview.malloy")).toBe(
+         true,
       );
+      expect(isReportEligiblePath("a/b/c/overview.malloy")).toBe(true);
    });
 
-   it("rejects notebooks, other directories, and the package root", () => {
-      expect(isDashboardModelPath("dashboards/overview.malloynb")).toBe(false);
-      expect(isDashboardModelPath("reports/overview.malloy")).toBe(false);
-      expect(isDashboardModelPath("overview.malloy")).toBe(false);
+   it("accepts other directories, the package root, and a .malloynb", () => {
+      expect(isReportEligiblePath("dashboards/overview.malloynb")).toBe(true);
+      expect(isReportEligiblePath("reports/overview.malloy")).toBe(true);
+      expect(isReportEligiblePath("overview.malloy")).toBe(true);
    });
 
-   it("derives the slug from the basename", () => {
-      expect(dashboardSlug("dashboards/overview.malloy")).toBe("overview");
+   it("rejects public/, the root index.malloy, and other files", () => {
+      expect(isReportEligiblePath("public/overview.malloy")).toBe(false);
+      expect(isReportEligiblePath("index.malloy")).toBe(false);
+      expect(isReportEligiblePath("sales/index.malloy")).toBe(true);
+      expect(isReportEligiblePath("overview.json")).toBe(false);
+   });
+
+   it("derives the display name from the basename", () => {
+      expect(reportName("dashboards/overview.malloy")).toBe("overview");
+      expect(reportName("a/b/overview.malloynb")).toBe("overview");
    });
 });
 
@@ -168,8 +179,9 @@ describe("service/dashboard title and description together", () => {
 });
 
 describe("service/dashboard render-log filtering", () => {
-   const DASH = "dashboards/overview.malloy";
-   const PLAIN = "storefront.malloy";
+   // Whether the query ran against a served report (`Package.isServedReport`).
+   const DASH = true;
+   const PLAIN = false;
 
    // Publisher's tags share the `#` namespace with the renderer's, which reports
    // anything it didn't consume — so without this filter every dashboard query
@@ -189,9 +201,7 @@ describe("service/dashboard render-log filtering", () => {
       const kind = [
          { message: "Unknown render tag 'artifact.kind' on field 'root'" },
       ];
-      expect(
-         filterPublisherOwnedRenderLogs(kind, "notebooks/n.malloy"),
-      ).toEqual([]);
+      expect(filterPublisherOwnedRenderLogs(kind, true)).toEqual([]);
       expect(filterPublisherOwnedRenderLogs(kind, DASH)).toEqual([]);
    });
 
@@ -1651,6 +1661,46 @@ describe("service/dashboard lint", () => {
          expect(messages).toHaveLength(1);
          expect(messages[0].subject).toBe("orders.brand");
       });
+
+      // §3: a report is addressed by its path, of either layout.
+      const reports = new Set([
+         "overview.malloy",
+         "sales/q3.malloy",
+         "sales/summary.malloy",
+         "finance/summary.malloy",
+         "notebooks/story.malloy",
+      ]);
+      const lint = (to: string) =>
+         lintDrillTargets([facts({ drills: [drill("brand", [to])] })], reports);
+
+      it("resolves a path target, nested or at the root, with nothing said", () => {
+         expect(lint("sales/q3")).toEqual([]);
+         expect(lint("notebooks/story")).toEqual([]);
+         expect(lint("overview")).toEqual([]);
+      });
+
+      it("resolves a bare name one report has, and says which path to write", () => {
+         const [finding] = lint("q3");
+         expect(finding).toMatchObject({
+            code: "drill-target-by-name",
+            severity: "warn",
+         });
+         expect(finding.message).toContain('to="sales/q3"');
+      });
+
+      it("leaves a bare name several reports have unresolved, naming them", () => {
+         const [finding] = lint("summary");
+         expect(finding.severity).toBe("error");
+         expect(finding.code).toBeUndefined();
+         expect(finding.message).toContain("finance/summary.malloy");
+         expect(finding.message).toContain("sales/summary.malloy");
+      });
+
+      it("never resolves a path target by its basename", () => {
+         const [finding] = lint("elsewhere/q3");
+         expect(finding.severity).toBe("error");
+         expect(finding.message).toContain("not a report in this package");
+      });
    });
 
    describe("self drills", () => {
@@ -1866,9 +1916,7 @@ describe("service/dashboard name matches the documented pattern", () => {
    // generated from the spec will accept, so a mismatch is advisory only.
    it("reports a name outside the documented pattern", () => {
       expect(
-         matchesDocumentedDashboardName(
-            dashboardSlug("dashboards/v1.2.malloy"),
-         ),
+         matchesDocumentedDashboardName(reportName("dashboards/v1.2.malloy")),
       ).toBe(false);
       expect(matchesDocumentedDashboardName("has space")).toBe(false);
       expect(matchesDocumentedDashboardName("has/slash")).toBe(false);
@@ -2694,20 +2742,38 @@ describe("service/dashboard kind", () => {
       ).toBe("notebook");
    });
 
-   it("falls back to the folder when the tag names no kind", () => {
+   // Retired: the folder used to decide a kindless tag. Now the tags alone do
+   // (`report.ts`, §2), so a tiled tag is grid wherever the file is.
+   it("never falls back to the folder: a kindless tag that lists tiles is grid anywhere", () => {
       const untagged =
          '## artifact { tiles=["orders -> kpis"] } dashboard { columns=6 }\n';
-      expect(
+      for (const modelPath of [
+         "notebooks/tour.malloy",
+         "dashboards/tour.malloy",
+         "tour.malloy",
+         "a/b/tour.malloy",
+      ]) {
+         const manifest = build(
+            facts({ modelPath, modelAnnotations: [untagged] }),
+         );
+         expect(manifest?.layout).toBe("grid");
+         expect(manifest?.kind).toBe("dashboard");
+      }
+   });
+
+   it("reads layout= over kind=, and kind= when layout= is absent", () => {
+      const withProps = (props: string) =>
          build(
             facts({
-               modelPath: "notebooks/tour.malloy",
-               modelAnnotations: [untagged],
+               modelAnnotations: [
+                  `## artifact { ${props} tiles=["orders -> kpis"] }\n`,
+               ],
             }),
-         )?.kind,
-      ).toBe("notebook");
-      expect(build(facts({ modelAnnotations: [untagged] }))?.kind).toBe(
-         "dashboard",
-      );
+         )?.layout;
+      expect(withProps("layout=linear")).toBe("linear");
+      expect(withProps("layout=grid kind=notebook")).toBe("grid");
+      expect(withProps("kind=notebook")).toBe("linear");
+      expect(withProps("layout=wide")).toBe("grid");
    });
 
    it("lays a notebook out in one column, whatever the file asks for", () => {

@@ -861,7 +861,7 @@ export { pub2, pub3 }`,
             `import "orders.malloy"\nexport { ordrs }`,
          );
          await pkg.reloadAllModels({});
-         expect(pkg.isServedNotebook("notebooks/nb.malloy")).toBe(true);
+         expect(pkg.getReportLayout("notebooks/nb.malloy")).toBe("linear");
          expect(pkg.listDashboards().map((d) => d.path)).toEqual([
             "dashboards/d.malloy",
          ]);

@@ -18,11 +18,13 @@ describe("service/package_manifest", () => {
          declaredExplores: unknown,
          modelPaths: readonly string[],
          declaredQueryableSources?: unknown,
+         reportPaths?: ReadonlySet<string>,
       ) =>
          resolveExplores({
             declaredExplores,
             declaredQueryableSources,
             modelPaths,
+            reportPaths,
          });
 
       it("defaults the surface to a root index.malloy when no explores is declared", () => {
@@ -77,36 +79,51 @@ describe("service/package_manifest", () => {
                `customers.malloy and exports the sources you want to publish, ` +
                `then delete "explores".`,
          ]);
-         // index.malloy and dashboards need no replacement: the file is the
-         // surface and every dashboard is served.
+         // index.malloy and reports need no replacement: the file is the
+         // surface and every report is served. A report is known by the
+         // report rule (the worker reads its tag), not by its folder.
          const alreadyPublished =
             `"explores" in publisher.json is deprecated. index.malloy already ` +
             `publishes the same thing. Fix: delete "explores".`;
          expect(
             resolve(
-               ["index.malloy", "dashboards/overview.malloy"],
-               ["index.malloy", "dashboards/overview.malloy"],
+               ["index.malloy", "sales/overview.malloy"],
+               ["index.malloy", "sales/overview.malloy"],
+               undefined,
+               new Set(["sales/overview.malloy"]),
             ).warnings,
          ).toEqual([alreadyPublished]);
+         // An untagged file under dashboards/ is a model like any other.
+         expect(
+            resolve(
+               ["index.malloy", "dashboards/overview.malloy"],
+               ["index.malloy", "dashboards/overview.malloy"],
+            ).warnings[0],
+         ).toContain("import dashboards/overview.malloy into index.malloy");
          expect(
             resolve(["index.malloy"], ["index.malloy", "orders.malloy"])
                .warnings,
          ).toEqual([alreadyPublished]);
-         // Only dashboards listed, index.malloy on disk but left out.
+         // Only reports listed, index.malloy on disk but left out.
+         const report = new Set(["dashboards/overview.malloy"]);
          expect(
             resolve(
                ["dashboards/overview.malloy"],
                ["index.malloy", "dashboards/overview.malloy"],
+               undefined,
+               report,
             ).warnings[0],
          ).toBe(
             `"explores" in publisher.json is deprecated. Fix: delete ` +
                `"explores", so index.malloy decides what is published.`,
          );
-         // Only dashboards listed, and no index.malloy at all.
+         // Only reports listed, and no index.malloy at all.
          expect(
             resolve(
                ["dashboards/overview.malloy"],
                ["dashboards/overview.malloy"],
+               undefined,
+               report,
             ).warnings,
          ).toEqual([
             `"explores" in publisher.json is deprecated. Fix: add an ` +

@@ -115,7 +115,7 @@ describe("warnings for content on a deprecated format", () => {
          code: "deprecated-malloynb-notebook",
          severity: "warn",
          message:
-            "README.malloynb is a .malloynb notebook, a deprecated format. Convert it to a .malloy notebook under notebooks/.",
+            "README.malloynb is a .malloynb notebook, a deprecated format. Convert it to a .malloy report.",
       });
 
       const filters = filterWarnings(found);

@@ -9,12 +9,8 @@ import type {
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { compileDocument, type CompiledDocument } from "./compile_document";
-import {
-   claimsToBeANotebook,
-   isNotebookModelPath,
-   notebookReaderProblem,
-} from "./notebook";
-import { isDashboardModelPath } from "./dashboard";
+import { claimsToBeANotebook, notebookReaderProblem } from "./notebook";
+import { isReportEligiblePath } from "./report";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -1049,10 +1045,11 @@ export class Environment {
                }
             };
             // The findings a reload would add on the main thread after this
-            // same worker compile: render tags and the dashboard, given and
-            // drill lints. Read before the notebook lint below, which drops its
-            // copy of a finding only when the dashboard lint reported it too.
-            const { renderTagWarnings, dashboardWarnings } =
+            // same worker compile: render tags and the report, given and
+            // drill lints. Read before the per-file text lint below, which
+            // drops its copy of a finding only when the report lint reported
+            // it too.
+            const { renderTagWarnings, reportWarnings } =
                await Package.lintWorkerOutcome(
                   this.environmentName,
                   packageName,
@@ -1104,9 +1101,11 @@ export class Environment {
                   }
                }
                // A file that did not compile carries no text back, so it is read as saved (or as replaced).
+               // Any file that can be a report; the lint says nothing about a
+               // file with no artifact tag, wherever it lives.
                const lintText = !(
-                  isNotebookModelPath(compiled.modelPath) ||
-                  isDashboardModelPath(compiled.modelPath)
+                  compiled.modelPath.endsWith(".malloy") &&
+                  isReportEligiblePath(compiled.modelPath)
                )
                   ? undefined
                   : (compiled.modelSourceText ??
@@ -1131,7 +1130,7 @@ export class Environment {
                            !reportedByDashboardLint(
                               problem,
                               compiled.modelPath,
-                              dashboardWarnings,
+                              reportWarnings,
                            ),
                      ),
                      compiled.modelPath,
@@ -1156,8 +1155,11 @@ export class Environment {
             for (const warning of renderTagWarnings) {
                collect([asProblem(warning, "render-tag")], warning.model);
             }
-            for (const warning of dashboardWarnings) {
-               collect([asProblem(warning, "dashboard-lint")], warning.model);
+            for (const warning of reportWarnings) {
+               collect(
+                  [asProblem(warning, warning.code ?? "dashboard-lint")],
+                  warning.model,
+               );
             }
             if (
                source !== undefined &&
@@ -2137,6 +2139,55 @@ export class Environment {
    }
 
    /**
+    * Create the directories a new model file needs, inside the package root
+    * only, and return the ones it created, deepest first, so a rollback can
+    * take them back. The caller holds the package lock.
+    *
+    * The target path is already confined lexically (`safeJoinUnderRoot`), but
+    * a directory in the package can be a symlink to somewhere else, and
+    * `mkdir -p` and the write would follow it. So the nearest directory that
+    * already exists is resolved and must lie inside the resolved package root:
+    * a write the package could not have read back is refused rather than made.
+    */
+   private async _prepareModelFileDirLocked(
+      packageRoot: string,
+      target: string,
+   ): Promise<string[]> {
+      const missing: string[] = [];
+      let dir = path.dirname(target);
+      while (
+         dir.startsWith(packageRoot) &&
+         !(await fs.promises
+            .stat(dir)
+            .then((st) => st.isDirectory())
+            .catch(() => false))
+      ) {
+         missing.push(dir);
+         dir = path.dirname(dir);
+      }
+      const [realRoot, realExisting] = await Promise.all([
+         fs.promises.realpath(packageRoot),
+         fs.promises.realpath(dir).catch(() => undefined),
+      ]);
+      if (
+         realExisting === undefined ||
+         (realExisting !== realRoot &&
+            !realExisting.startsWith(`${realRoot}${path.sep}`))
+      ) {
+         throw new BadRequestError(
+            `Invalid model path: it resolves outside the package.`,
+         );
+      }
+      // Shallowest first to create; returned deepest first to remove.
+      for (const created of [...missing].reverse()) {
+         await fs.promises.mkdir(created).catch((error) => {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+         });
+      }
+      return missing;
+   }
+
+   /**
     * Put text at a model path, atomically: a sibling temporary file is renamed
     * over the target, so a reader never sees a half-written file and a crash
     * leaves either the old text or the new. The caller holds the package lock.
@@ -2194,6 +2245,10 @@ export class Environment {
          );
          const previous = await this._readModelFileLocked(target);
          check(previous, this.packages.get(packageName));
+         const createdDirs = await this._prepareModelFileDirLocked(
+            safeJoinUnderRoot(this.environmentPath, packageName),
+            target,
+         );
          await this._writeModelFileLocked(target, source);
          try {
             // The locked form, because this whole callback already holds the
@@ -2206,7 +2261,13 @@ export class Environment {
          } catch (error) {
             if (previous !== undefined)
                await this._writeModelFileLocked(target, previous);
-            else await fs.promises.rm(target, { force: true });
+            else {
+               await fs.promises.rm(target, { force: true });
+               // The directories this create made, emptied by the removal.
+               for (const dir of createdDirs) {
+                  await fs.promises.rmdir(dir).catch(() => undefined);
+               }
+            }
             await this._loadOrGetPackageLocked(packageName, true).catch(
                () => undefined,
             );
@@ -3657,7 +3718,7 @@ export class Environment {
          // The surface may have changed with no file changing, so the tile
          // findings are re-checked against it. (A manifest rebind above
          // reloads, which re-discovers and re-lints on its own.)
-         await _package.relintDashboards();
+         await _package.relintReports();
       }
 
       return _package.getPackageMetadata();

@@ -8,49 +8,16 @@ import {
    type LogMessage,
    type ModelDef,
 } from "@malloydata/malloy";
-import { MODEL_FILE_SUFFIX } from "../constants";
 import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
 import { closesBlock } from "./query_text";
 import { docCommentText, motlyTag, tagText } from "./motly";
-
-/** The package-relative directory a served notebook must live in. */
-export const NOTEBOOKS_DIR = "notebooks";
-
-/**
- * True for a package-relative path that notebook discovery considers: a
- * `.malloy` directly inside the top-level `notebooks/` directory. Only the
- * candidate filter; the file is a notebook only if it carries a model-level
- * `## artifact` note.
- */
-export function isNotebookModelPath(modelPath: string): boolean {
-   if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-   const segments = modelPath.split("/");
-   return segments.length === 2 && segments[0] === NOTEBOOKS_DIR;
-}
-
-/** The package-relative directory a dashboard is created in. */
-export const DASHBOARDS_DIR = "dashboards";
-
-/** True for a `.malloy` directly inside `dashboards/` or `notebooks/`: where a document may live. */
-export function isDocumentModelPath(modelPath: string): boolean {
-   if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-   const segments = modelPath.split("/");
-   return (
-      segments.length === 2 &&
-      (segments[0] === NOTEBOOKS_DIR || segments[0] === DASHBOARDS_DIR)
-   );
-}
+import {
+   isReportEligiblePath,
+   layoutFactsOfNotes,
+   resolveReportLayout,
+} from "./report";
 
 export type DocumentKind = "dashboard" | "notebook";
-
-/** The kind an artifact tag declares; the folder decides only when the tag names none. */
-export function documentKind(
-   modelPath: string,
-   tagKind: string | undefined,
-): DocumentKind {
-   if (tagKind === "notebook" || tagKind === "dashboard") return tagKind;
-   return isNotebookModelPath(modelPath) ? "notebook" : "dashboard";
-}
 
 /** A text test, which a `RegExp` is too. */
 export interface LineTest {
@@ -1081,9 +1048,10 @@ export function readMarkdownBlocks(
 }
 
 /**
- * The compile problem for a served notebook the reader would refuse, so a
- * compile check (an agent's, or the builder's save gate) fails on a notebook
- * that would not open. Undefined for anything that is not a served notebook.
+ * The compile problem for a linear report the reader would refuse, so a
+ * compile check (an agent's, or the builder's save gate) fails on a report
+ * that would not open. Undefined for anything that is not a linear report
+ * (`report.ts`), wherever the file lives.
  */
 export function notebookReaderProblem(
    modelPath: string,
@@ -1091,10 +1059,17 @@ export function notebookReaderProblem(
    modelDef: ModelDef,
    url: string,
 ): LogMessage | undefined {
-   if (!isDocumentModelPath(modelPath)) return undefined;
+   if (!isReportEligiblePath(modelPath)) return undefined;
    const notes = ownModelNoteObjects(modelDef);
    if (artifactNoteLine(notes) === undefined) return undefined;
-   if (documentKind(modelPath, artifactKindOfNotes(notes)) !== "notebook")
+   if (
+      resolveReportLayout(
+         layoutFactsOfNotes(
+            notes.map((note) => note.text),
+            ownQueryNotes(modelDef),
+         ),
+      ).layout !== "linear"
+   )
       return undefined;
    const parse = parseNotebookText(text);
    const error = isNotebookReaderError(parse)
@@ -1114,4 +1089,19 @@ export function notebookReaderProblem(
          },
       },
    };
+}
+
+/** The notes of each named query this file declares itself, for the layout rule. */
+function ownQueryNotes(modelDef: ModelDef): string[][] {
+   return Object.values(modelDef.contents).flatMap((obj) =>
+      obj.type === "query" &&
+      (obj.location?.url === undefined || obj.location.url === modelDef.modelID)
+         ? [
+              [
+                 ...(obj.annotations?.blockNotes ?? []),
+                 ...(obj.annotations?.notes ?? []),
+              ].map((note) => note.text),
+           ]
+         : [],
+   );
 }

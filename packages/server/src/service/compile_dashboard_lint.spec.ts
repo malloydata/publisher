@@ -93,9 +93,15 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
 
    it("does not report a drill that resolves, even to an oddly named file", async () => {
       // `v1.2` is served despite its name, so its drill is not dangling. This
-      // is the one the naming advisory must not leak into.
+      // is the one the naming advisory must not leak into. A bare name is the
+      // deprecated form, so it says which path to write, and nothing worse.
       const joined = (await messages()).join("\n");
-      expect(joined).not.toContain('targets "v1.2"');
+      expect(joined).not.toContain(
+         'targets "v1.2", which is not a report in this package',
+      );
+      expect(joined).toContain(
+         '# drill on orders.unconventional_target targets "v1.2" by name, which is deprecated: a report is addressed by its path. Fix: write to="dashboards/v1.2".',
+      );
    });
 
    it("reports a suggest naming a query nothing defines", async () => {
@@ -139,7 +145,9 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
       );
       const joined = problems.map((p) => p.message).join("\n");
 
-      expect(joined).not.toContain('targets "no_such_dashboard"');
+      expect(joined).not.toContain(
+         'targets "no_such_dashboard", which is not a report',
+      );
       // The control: the other dangling drill is still reported.
       expect(joined).toContain('targets "ghost"');
    });
@@ -266,9 +274,24 @@ describe("compile_model, package scope: curation findings", () => {
       const { problems } = await compilePackage("dashboards-convention");
 
       // The fixture's artifact tags are well formed, so these are the only
-      // findings of any kind. A malformed tag would add an "Unknown render
-      // tag" on the dashboard.
-      expect(summarize(problems)).toEqual(SAVED_REFUSALS);
+      // findings of any kind apart from the query-level form's deprecation. A
+      // malformed tag would add an "Unknown render tag" on the dashboard.
+      expect(
+         summarize(
+            problems.filter(
+               (p) =>
+                  (p as { code?: string }).code !== "query-artifact-deprecated",
+            ),
+         ),
+      ).toEqual(SAVED_REFUSALS);
+      expect(
+         problems
+            .filter(
+               (p) =>
+                  (p as { code?: string }).code === "query-artifact-deprecated",
+            )
+            .map((p) => p.model),
+      ).toEqual(["dashboards/hidden.malloy", "dashboards/overview.malloy"]);
    });
 
    it("reports a render-tag finding from the what-if text, under its own code", async () => {
@@ -310,10 +333,10 @@ describe("compile_model, package scope: curation findings", () => {
    it("says the findings are unknown when the dashboard checks throw", async () => {
       await install("dashboards-convention");
       const proto = Package.prototype as unknown as {
-         discoverDashboards: () => Promise<void>;
+         discoverReports: () => Promise<void>;
       };
       spies.push(
-         spyOn(proto, "discoverDashboards").mockRejectedValue(
+         spyOn(proto, "discoverReports").mockRejectedValue(
             new Error("simulated lint failure"),
          ),
       );
@@ -324,9 +347,9 @@ describe("compile_model, package scope: curation findings", () => {
             code: "dashboard-lint",
             severity: "warn",
             message:
-               "The dashboard checks did not run, so their findings are " +
+               "The report checks did not run, so their findings are " +
                "unknown rather than clean. Reload the package to see them. " +
-               'The cause is in the server log under "Dashboard lint failed ' +
+               'The cause is in the server log under "Report lint failed ' +
                'during compile".',
          } as (typeof result.problems)[number],
       ]);
