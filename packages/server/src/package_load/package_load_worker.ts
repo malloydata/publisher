@@ -989,7 +989,11 @@ async function compileNotebookModel(
    const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
-   const parse = MalloySQLParser.parse(fileContents, modelPath);
+   // The cell parser splits on "\n" alone; see Model's .malloynb load.
+   const parse = MalloySQLParser.parse(
+      fileContents.replace(/\r\n/g, "\n"),
+      modelPath,
+   );
 
    // Build the extendModel chain synchronously so per-cell materializers
    // line up with statement order. Matches the in-process flow in

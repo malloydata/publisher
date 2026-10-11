@@ -9818,7 +9818,12 @@ export class Model {
       }
 
       try {
-         parse = MalloySQLParser.parse(fileContents, modelPath);
+         // The cell parser splits on "\n" alone, so a CRLF file (any Windows
+         // checkout) would leave each cell's text starting with a stray line break.
+         parse = MalloySQLParser.parse(
+            fileContents.replace(/\r\n/g, "\n"),
+            modelPath,
+         );
       } catch {
          throw new Error("Could not parse model: " + modelPath);
       }

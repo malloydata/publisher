@@ -346,6 +346,28 @@ describe("served notebooks (worker path)", () => {
       });
    });
 
+   it("reads a CRLF .malloynb into the same cells as an LF one", async () => {
+      manifest();
+      const cells = [
+         ">>>markdown",
+         "## Totals",
+         ">>>malloy",
+         BASE.trim(),
+         "run: base -> { aggregate: n is count() }",
+      ];
+      write("lf.malloynb", cells.join("\n"));
+      write("crlf.malloynb", cells.join("\r\n"));
+      await withPackage(async (pkg) => {
+         const textOf = async (p: string) =>
+            (await pkg.getReport(p))?.notebook?.notebookCells?.map(
+               (c) => c.text,
+            );
+         const lf = await textOf("lf.malloynb");
+         expect(lf?.[0]).toBe("## Totals");
+         expect(await textOf("crlf.malloynb")).toEqual(lf);
+      });
+   });
+
    it("serves a notebook whose artifact property follows another property", async () => {
       manifest();
       write(
