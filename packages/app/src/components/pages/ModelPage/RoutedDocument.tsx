@@ -4,61 +4,131 @@
 import {
    Loading,
    LOADING_COPY,
-   useDocumentLocation,
+   locateReport,
+   locateReportByName,
+   MONO_FONT_FAMILY,
+   reportRoute,
+   useReportListing,
 } from "@malloy-publisher/sdk";
+import { Box, Typography } from "@mui/material";
+import { Link as RouterLink, Navigate, useLocation } from "react-router-dom";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
-import DashboardPage from "../DashboardPage/DashboardPage";
-import NotebookPage from "../NotebookPage/NotebookPage";
+import ReportPage from "../ReportPage/ReportPage";
+
+/** `dashboards/<name>` or `notebooks/<name>`: the deprecated by-name routes, and the layout each preferred. */
+const ALIAS = /^(dashboards|notebooks)\/([^/]+)$/;
 
 /**
- * A `dashboards/<slug>` or `notebooks/<slug>` route, opened as what the package
- * lists the document as: the artifact tag decides the kind and the file's folder
- * is only where it happens to live. A document no listing has opens as the route says.
+ * A route with no model extension, opened as the report at that path: the
+ * route is the report's package path without `.malloy`, so `sales/q3` is
+ * `sales/q3.malloy`. The package's listing decides; no directory name does.
+ *
+ * When no report is at that path and the route is exactly `dashboards/<x>` or
+ * `notebooks/<x>`, it is an old link: the basename `<x>` is looked up (a grid
+ * report preferred for `dashboards/`, a linear one for `notebooks/`) and the
+ * reader redirected to the report's own route. That is a compatibility alias
+ * only, and nothing new generates it. An ambiguous name says which reports
+ * share it rather than picking one.
  */
 export default function RoutedDocument({
    environmentName,
    packageName,
-   routeKind,
-   slug,
+   routePath,
    edit,
+   notFound,
 }: {
    environmentName: string;
    packageName: string;
-   routeKind: "dashboard" | "notebook";
-   slug: string;
+   /** The route's path under the package, without `/edit`. */
+   routePath: string;
    edit: boolean;
+   /** What to draw when nothing is at this route. */
+   notFound: React.ReactNode;
 }) {
-   const { location, settled } = useDocumentLocation(
-      environmentName,
-      packageName,
-      routeKind,
-      slug,
-   );
+   const { reports, settled } = useReportListing(environmentName, packageName);
+   const { search } = useLocation();
    if (!settled) return <Loading text={LOADING_COPY.opening()} />;
-   const kind = location?.kind ?? routeKind;
+
+   const path = `${routePath}.malloy`;
+   const report = locateReport(path, reports);
+   if (report) {
+      if (edit)
+         return (
+            <DashboardEditPage
+               environmentName={environmentName}
+               packageName={packageName}
+               path={report.path}
+               kind={report.kind}
+            />
+         );
+      return (
+         <ReportPage
+            environmentName={environmentName}
+            packageName={packageName}
+            path={report.path}
+            editable={report.editable}
+         />
+      );
+   }
+
+   const alias = ALIAS.exec(routePath);
+   if (alias) {
+      const lookup = locateReportByName(
+         alias[2],
+         reports,
+         alias[1] === "dashboards" ? "grid" : "linear",
+      );
+      if ("found" in lookup)
+         return (
+            <Navigate
+               replace
+               to={`${reportRoute(environmentName, packageName, lookup.found.path)}${edit ? "/edit" : ""}${search}`}
+            />
+         );
+      if ("ambiguous" in lookup)
+         return (
+            <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+               <Typography variant="h6" sx={{ fontWeight: "fontWeightMedium" }}>
+                  More than one report is named {alias[2]}
+               </Typography>
+               <Typography
+                  variant="body2"
+                  color="text.secondary"
+                  sx={{ mt: 1 }}
+               >
+                  This is an old link, which names a report by its file name
+                  alone. Open one by its path:
+               </Typography>
+               <Box component="ul" sx={{ mt: 1 }}>
+                  {lookup.ambiguous.map((candidate) => (
+                     <li key={candidate}>
+                        <RouterLink
+                           to={reportRoute(
+                              environmentName,
+                              packageName,
+                              candidate,
+                           )}
+                           style={{ fontFamily: MONO_FONT_FAMILY }}
+                        >
+                           {candidate}
+                        </RouterLink>
+                     </li>
+                  ))}
+               </Box>
+            </Box>
+         );
+   }
+
+   // Not listed, but asked for in the builder: a draft the host keeps, or a
+   // file the package has not served yet. The editor says which.
    if (edit)
       return (
          <DashboardEditPage
             environmentName={environmentName}
             packageName={packageName}
-            dashboardName={slug}
-            kind={kind}
-            {...(location ? { path: location.path } : {})}
+            path={path}
+            kind="dashboard"
          />
       );
-   if (kind === "dashboard")
-      return (
-         <DashboardPage
-            environmentName={environmentName}
-            packageName={packageName}
-            dashboardName={slug}
-         />
-      );
-   return (
-      <NotebookPage
-         environmentName={environmentName}
-         packageName={packageName}
-         notebookPath={location?.path ?? `notebooks/${slug}.malloy`}
-      />
-   );
+   return <>{notFound}</>;
 }

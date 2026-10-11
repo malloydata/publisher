@@ -8,7 +8,7 @@ import { tmpName } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
- * The dashboard viewer, end to end in a browser: the Artifacts section on the
+ * The dashboard viewer, end to end in a browser: the Reports section on the
  * package page, the control row the manifest's given specs produce, URL-carried
  * filter state, Apply mode, and the composite tile grid.
  *
@@ -70,7 +70,7 @@ test.describe("package-dashboards", () => {
       await openPackage(page, env, PKG);
 
       await expect(
-         page.getByRole("heading", { name: "Artifacts", level: 6 }),
+         page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(
          page.getByRole("heading", { name: "Dashboards", exact: true }),
@@ -79,7 +79,10 @@ test.describe("package-dashboards", () => {
          page.getByRole("heading", { name: "Notebooks", exact: true }),
       ).toHaveCount(0);
       // One list: a dashboard row and a notebook row, each once, by name.
-      const artifacts = page.getByRole("region", { name: "Artifacts" });
+      const artifacts = page.getByRole("region", {
+         name: "Reports",
+         exact: true,
+      });
       await expect(
          artifacts.getByRole("button", { name: /Business Overview/ }),
       ).toHaveCount(1);
@@ -87,16 +90,21 @@ test.describe("package-dashboards", () => {
          artifacts.getByRole("button", { name: /Orders in a window/ }),
       ).toHaveCount(1);
       await expect(
-         artifacts.getByRole("button", { name: "New", exact: true }),
+         artifacts.getByRole("button", { name: "New report", exact: true }),
       ).toBeVisible();
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),
       ).toBeVisible();
 
-      // A dashboard belongs in the Dashboards section, not a second time under
-      // Semantic Models where clicking it would open the Explorer instead.
+      // A report belongs in the Reports section, not a second time under
+      // Semantic Models where clicking it would open the Explorer instead. (Its
+      // row in Reports shows the path, so the check is scoped to the models.)
+      const models = page.getByRole("region", { name: "Semantic Models" });
       await expect(
-         page.getByRole("button", { name: /dashboards\/overview\.malloy/ }),
+         models.getByRole("button", { name: /dashboards\/_shared\.malloy/ }),
+      ).toBeVisible();
+      await expect(
+         models.getByRole("button", { name: /dashboards\/overview\.malloy/ }),
       ).toHaveCount(0);
       // An untagged include in dashboards/ is not a dashboard and stays a model.
       await expect(
@@ -117,7 +125,7 @@ test.describe("package-dashboards", () => {
       await openPackage(page, env, PKG);
 
       await expect(
-         page.getByRole("heading", { name: "Artifacts", level: 6 }),
+         page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
       ).toBeVisible({ timeout: 60_000 });
 
       // An explicit `## title=`, and a title read from the first markdown
@@ -143,7 +151,7 @@ test.describe("package-dashboards", () => {
       await openEnvironment(page, env);
       await openPackage(page, env, PKG);
       await expect(
-         page.getByRole("heading", { name: "Artifacts", level: 6 }),
+         page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
       ).toBeVisible({ timeout: 60_000 });
 
       // Polled rather than snapshotted once: the rows arrive after the section
@@ -366,9 +374,7 @@ test.describe("package-dashboards", () => {
       await expect(page.getByRole("option")).toHaveCount(offered);
    });
 
-   test("a composite dashboard renders one panel per tile", async ({
-      page,
-   }) => {
+   test("a not a report renders one panel per tile", async ({ page }) => {
       await openDashboard(page, "combined");
 
       await expect(page.getByRole("heading", { name: "Combined" })).toBeVisible(
@@ -679,9 +685,7 @@ test.describe("package-dashboards", () => {
       );
 
       // `self` never leaves the page; it sets the control instead.
-      await page
-         .getByRole("menuitem", { name: "Filter this dashboard" })
-         .click();
+      await page.getByRole("menuitem", { name: "Filter this report" }).click();
       await expect(page).toHaveURL(/[?&]REGION=EU/);
       const region = page.locator(".MuiAutocomplete-root", {
          has: page.getByRole("combobox", { name: "Region" }),
@@ -869,9 +873,7 @@ test.describe("package-dashboards", () => {
          .click({ timeout: 60_000 });
       // The surface names itself: a notebook filtering itself is not "this
       // dashboard", though the tag it came from is the same one.
-      await page
-         .getByRole("menuitem", { name: "Filter this notebook" })
-         .click();
+      await page.getByRole("menuitem", { name: "Filter this report" }).click();
 
       // Filtering in place is a URL change, not a navigation: still the
       // notebook, now with the given set.

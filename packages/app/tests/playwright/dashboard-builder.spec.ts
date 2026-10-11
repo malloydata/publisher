@@ -86,7 +86,7 @@ test.describe("dashboard-builder", () => {
 
       // The title is edited where it is shown.
       await page.getByRole("heading", { level: 5 }).getByRole("button").click();
-      const title = page.getByLabel("Dashboard title");
+      const title = page.getByLabel("Report title");
       await title.fill("Tiled, edited");
       await title.press("Enter");
       await expect(
@@ -108,7 +108,7 @@ test.describe("dashboard-builder", () => {
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
       await expect(
-         page.getByText(/edits to this dashboard saved in this browser/),
+         page.getByText(/edits to this report saved in this browser/),
       ).toHaveCount(0);
    });
 

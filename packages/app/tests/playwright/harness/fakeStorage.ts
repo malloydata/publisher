@@ -17,6 +17,7 @@ import {
 export class FakeStorage implements DocumentStorage {
    readonly documents = new Map<string, string>();
    readonly saves: Array<{ locator: DocumentLocator; content: string }> = [];
+   private readonly types = new Map<string, DocumentType>();
 
    constructor(readonly workspace: Workspace) {}
 
@@ -28,16 +29,17 @@ export class FakeStorage implements DocumentStorage {
       _workspace: Workspace,
       type?: DocumentType,
    ): Promise<DocumentLocator[]> {
-      const prefix = type ? `${type}s/` : "";
+      // A document's type is what it was saved as; a seeded one, which has
+      // none, answers to either. Never read off the path: a report lives
+      // anywhere in its package.
       return [...this.documents.keys()]
-         .filter((path) =>
-            path.split("/").slice(2).join("/").startsWith(prefix),
-         )
+         .filter((path) => {
+            const saved = this.types.get(path);
+            return !type || !saved || saved === type;
+         })
          .map((path) => ({
             workspace: this.workspace.name,
-            type:
-               type ??
-               (path.includes("/dashboards/") ? "dashboard" : "notebook"),
+            type: this.types.get(path) ?? type ?? "notebook",
             path,
          }));
    }
@@ -54,12 +56,14 @@ export class FakeStorage implements DocumentStorage {
       content: string,
    ): Promise<void> {
       this.documents.set(locator.path, content);
+      this.types.set(locator.path, locator.type);
       this.saves.push({ locator, content });
    }
 
    async deleteDocument(locator: DocumentLocator): Promise<void> {
       if (!this.documents.delete(locator.path))
          throw new DocumentNotFoundError(`No document at ${locator.path}`);
+      this.types.delete(locator.path);
    }
 
    async moveDocument(

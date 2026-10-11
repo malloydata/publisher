@@ -2,55 +2,64 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   Dashboard,
    encodeResourceUri,
+   Report,
    useGivenUrlParams,
    useNarrowScreen,
+   useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import { useEffect, useMemo } from "react";
 import { logDashboardEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
-export interface DashboardPageProps {
+export interface ReportPageProps {
    environmentName: string;
    packageName: string;
-   /** The dashboard's slug: `overview`, not `dashboards/overview.malloy`. */
-   dashboardName: string;
+   /** The report's package path, `sales/q3.malloy` (or a legacy `.malloynb`). */
+   path: string;
+   /** Whether the builder opens it, so its chunk is worth warming. Default true for a `.malloy`. */
+   editable?: boolean;
 }
 
 /**
- * The Console's host for the SDK `Dashboard`.
+ * The Console's host for the SDK `Report`, either layout.
  *
- * Everything the component externalizes on purpose lands here: the URL sync that
- * makes a filtered dashboard a shareable link, and the drill navigation that
- * turns a slug and a seeded given into a route. The component itself reads
- * nothing from the router.
+ * Everything the component externalizes on purpose lands here: the URL sync
+ * that makes a filtered report a shareable link, the drill navigation that
+ * turns a target and a seeded given into a route, and in-app routing of the
+ * links in a linear report's prose. The component itself reads nothing from
+ * the router.
  */
-export default function DashboardPage({
+export default function ReportPage({
    environmentName,
    packageName,
-   dashboardName,
-}: DashboardPageProps) {
+   path,
+   editable = path.endsWith(".malloy"),
+}: ReportPageProps) {
    // Control values ride in the query string, so a link reproduces the view;
-   // a drill pushes a route. Both are shared with NotebookPage.
+   // a drill pushes a route.
    const { params: givens, onGivensChange } = useGivenUrlParams();
    const onNavigate = useDrillNavigate(environmentName, packageName);
+   const onLinkNavigate = useRouterClickHandler();
+   // Keyed by path: two reports may share a basename.
    const onEvent = useMemo(
-      () => logDashboardEvent({ environmentName, packageName, dashboardName }),
-      [environmentName, packageName, dashboardName],
+      () =>
+         logDashboardEvent({
+            environmentName,
+            packageName,
+            dashboardName: path,
+         }),
+      [environmentName, packageName, path],
    );
 
    // The builder is a lazy chunk carrying the Malloy parser, so the first Edit
-   // (in the header) used to sit on a spinner while it downloaded. Fetch it as soon as a
-   // dashboard is on screen: by the time anyone reaches for Edit it is usually
-   // already here, and the switch is then a re-render rather than a page that
-   // empties and refills. Idle time, and the browser caches the module, so a
-   // reader who never edits pays one background request.
-   // Below 600px the editor steps aside, so there is nothing to warm.
+   // used to sit on a spinner while it downloaded. Fetch it while idle as soon
+   // as an editable report is on screen, so Edit is a re-render. Below 600px
+   // the editor steps aside, so there is nothing to warm.
    const narrow = useNarrowScreen();
    useEffect(() => {
-      if (narrow) return;
+      if (!editable || narrow) return;
       const warm = () => void import("@malloy-publisher/sdk/builder");
       const idle = window.requestIdleCallback;
       if (idle) {
@@ -59,16 +68,17 @@ export default function DashboardPage({
       }
       const timer = setTimeout(warm, 1500);
       return () => clearTimeout(timer);
-   }, [narrow]);
+   }, [editable, narrow]);
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         <Dashboard
+         <Report
             resourceUri={encodeResourceUri({ environmentName, packageName })}
-            dashboard={dashboardName}
+            path={path}
             givens={givens}
             onGivensChange={onGivensChange}
             onNavigate={onNavigate}
+            onLinkNavigate={onLinkNavigate}
             onEvent={onEvent}
             maxResultSize={1024 * 1024}
          />

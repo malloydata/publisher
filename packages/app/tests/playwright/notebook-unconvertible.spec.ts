@@ -46,7 +46,7 @@ test.describe("an unconvertible notebook", () => {
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/inline-extend/edit`);
       const refusal = page.getByRole("alert");
       await expect(refusal).toContainText(
-         "This notebook cannot be opened in the builder",
+         "This report cannot be opened in the builder",
          { timeout: 60_000 },
       );
       await expect(refusal).toContainText("extends its source inline");
