@@ -1,0 +1,432 @@
+<!--
+Copyright (c) Credible Data Inc.
+SPDX-License-Identifier: MIT
+-->
+
+# Design: reports, anywhere in a package
+
+**Status: draft, 2026-10-10. Nothing here is built.** Decisions taken so far are under
+[Decisions](#decisions). There are no open questions.
+
+## Goal
+
+Publisher has two document types today, the Malloyyo **dashboard** and the **notebook**, with
+separate folders, listings, routes, viewers, docs, and skills. They are already nearly the same
+thing: both are a `.malloy` file whose `## artifact` tag lists tiles, and the notebook skill says so
+outright, "a notebook is a dashboard with one column". This design makes that official and removes
+what is left of the split:
+
+1. **There is one document type, the report.** A report is a `.malloy` file carrying an artifact
+   tag. It has a **layout**: **linear**, rendered top to bottom like a notebook, or **grid**,
+   rendered as a two-dimensional grid of tiles. Layout is the only difference. Everything else
+   (filters and givens, autorun, text tiles, drill, the builder, curation, the write path, lint) is
+   one feature set that applies to both.
+2. **A report can live anywhere in the package.** Where a file lives carries no meaning:
+   `dashboards/` and `notebooks/` are not required, not a default, and not a convention. They become
+   ordinary directory names. Tags alone decide whether a file is a report and which layout it has.
+
+Existing packages keep working: every file in a `dashboards/` or `notebooks/` directory today is
+classified the same way by its tags alone (checked against every example and fixture in this repo,
+§Compatibility), and every URL and REST route that answers today still answers, the old ones as
+deprecated aliases.
+
+## Decisions
+
+| Question                                                  | Decision                                                                                                                                                                                                                                                                                                                                   |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Are dashboards and notebooks different things?            | No. Both are **reports**; a report's **layout** is linear or grid, and that is the only difference (§1, §2).                                                                                                                                                                                                                               |
+| Do `dashboards/` and `notebooks/` mean anything?          | No. Not a requirement, a default, or a convention (§1, §12).                                                                                                                                                                                                                                                                               |
+| Where does the create dialog put a new report by default? | The package root (§10).                                                                                                                                                                                                                                                                                                                    |
+| Propose the change to Malloyyo upstream first?            | No. Publisher diverges: a report outside `dashboards/`, a path drill target, or the new vocabulary does not carry over to Malloyyo. Recorded in `malloyyo-dashboards-design.md`'s drift section.                                                                                                                                           |
+| How is a report identified?                               | By its package path, only. The basename is a display label; `# drill` targets a path, and bare-name targets are deprecated (§3).                                                                                                                                                                                                           |
+| How does the tag name a report's layout?                  | `layout=grid` / `layout=linear`. `kind=dashboard` / `kind=notebook` is still read, as grid / linear, and reported by `report-kind-deprecated` with the `layout=` to write; the builder and templates write only `layout=` (§2, §8).                                                                                                        |
+| What happens to the query-level `# artifact` form?        | Deprecated, then dropped. Served everywhere with a `query-artifact-deprecated` warning carrying the rewrite until Delivery step 5, the same release that ends bare-name drill targets and the old dashboard and notebook endpoints; after that only `## artifact` makes a report ([The query-level form](#the-query-level-artifact-form)). |
+
+## Vocabulary
+
+| Old                                               | New                                                                  |
+| ------------------------------------------------- | -------------------------------------------------------------------- |
+| dashboard, notebook, document                     | **report**                                                           |
+| a dashboard (2-D tiles)                           | a report with **grid** layout                                        |
+| a notebook (tiles top to bottom, or `run:` cells) | a report with **linear** layout                                      |
+| `kind=dashboard` / `kind=notebook` in the tag     | `layout=grid` / `layout=linear` (`kind=` still read, with a warning) |
+| `GET …/dashboards`, `…/notebooks`                 | `GET …/reports`, `GET …/reports/{path}` (§4)                         |
+| skills `malloy-dashboards`, `malloy-notebooks`    | one skill, `malloy-reports` (§12)                                    |
+
+User-facing text, docs, skills, API descriptions, and new code use "report". Existing code
+identifiers (`DashboardManifest`, `discoverDashboards`, lint codes such as
+`notebook-tile-layout-ignored`) are renamed only where this change touches them anyway; a
+repository-wide identifier rename is not part of it. Legacy `.malloynb` files and `run:`-cell
+notebooks are linear reports in this vocabulary, and stay read-only and deprecated as today.
+
+## Where the split lives today
+
+| Where                                                                                                                                                                        | What it decides today                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notebook.ts`: `NOTEBOOKS_DIR`, `DASHBOARDS_DIR`, `isNotebookModelPath`, `isDocumentModelPath`, `documentKind`                                                               | A candidate is a `.malloy` exactly one level under `notebooks/` or `dashboards/`. A kindless tag takes its folder's kind.                                                                             |
+| `dashboard.ts`: `isDashboardModelPath`, `dashboardSlug`                                                                                                                      | Same rule for `dashboards/`. Nesting is excluded because `dashboards/a/x.malloy` and `dashboards/b/x.malloy` would collide on one URL and one `# drill`.                                              |
+| `package.ts`: `classifyDocument`, `discoverDashboards`, `dashboards` / `layoutNotebooks` / `notebookFileText`                                                                | Two discovery outputs and two text maps. An untagged file is a shared include under `notebooks/` and a dashboard candidate under `dashboards/`. A second dashboard with a taken basename is shadowed. |
+| `dashboard.controller.ts`: `DASHBOARD_FILE`                                                                                                                                  | `PUT` accepts `^(dashboards\|notebooks)/[^/]+\.malloy$` only, with a separate untagged-file gate per folder and a 409 for a taken basename.                                                           |
+| `notebook_lint.ts`, `notebook.ts` (`notebookReaderProblem`), `environment.ts` (lint text), `dashboard.ts` (render-log filter), `package_manifest.ts` (`exploresDeprecation`) | Lint runs only for candidates, split into a notebook lint and a dashboard lint that de-duplicate against each other; `notebook-other-folder` tells an author to move a file to its kind's folder.     |
+| `server.ts`, `api-doc.yaml`                                                                                                                                                  | Two resources: `…/dashboards` (by basename) and `…/notebooks` (by path), with different schemas (`Dashboard`, `DashboardManifest`, `Notebook`, `RawNotebook`).                                        |
+| `spa_fallback.ts`: `SPA_OWNED_SEGMENTS`                                                                                                                                      | `dashboards/` and `notebooks/` always reach the Console, at the cost of a package's own `public/dashboards/` files.                                                                                   |
+| SDK `documentLocation.ts`, `catalog.ts`, `readDocument.ts`, `spliceDocument.ts`, `createDocument.ts`, `documentPath.ts`, `newDashboard.ts`, `newNotebook.ts`, `Package.tsx`  | Slug from path by regex; kind inferred from folder; new files go to `<kind>s/<slug>.malloy`; templates import `"../<model>"`; two package-page sections; drafts keyed by `<kind>s/<slug>`.            |
+| Console `ModelPage.tsx`, `RoutedDocument.tsx`, `DashboardPage`, `NotebookPage`, `DocumentModeButton.tsx`, `useDrillNavigate.ts`, `drill/resolveDrill.ts`                     | Two route shapes and two pages; drill targets a basename and always navigates to `/dashboards/<slug>`.                                                                                                |
+| Docs, skills, `AGENTS.md`                                                                                                                                                    | Two skills, two reference pages (`docs/dashboards.md` and the notebook sections), and `docs/choosing-a-surface.md` presenting them as separate surfaces.                                              |
+
+Two pieces of precedent make this smaller than it looks:
+
+- **Most of the server already keys on discovery, not paths.** The query boundary asks
+  `isServedDashboard` and `isServedNotebook`, which read discovery's maps, and `listModels` drops
+  served reports by the same maps.
+- **A tile-layout notebook is already built as a dashboard manifest with one column**
+  (`buildDashboardManifest` returns `kind: "notebook"`; `RawNotebook.dashboard` carries it), and
+  the builder (`DashboardEditor`) already edits both with a `kind` prop.
+
+## Design
+
+### 1. What makes a file a report
+
+A file is a **report** when all of these hold:
+
+- it is a `.malloy` file in the package, outside `public/`. The loader compiles every `.malloy`
+  file, `public/` included (`filterModelPaths` in `package_load_worker.ts`), but `public/` is also
+  served as raw static files to anyone who can reach the server, so a report there would be
+  readable two ways under different rules. Discovery skips it and the write path refuses it (§7).
+  This is about what Publisher does with `public/`, not a location rule for reports;
+- it carries an artifact tag: a model-level `## artifact`, or a query-level `# artifact` on a
+  `query:`, deprecated and removed in Delivery step 5 ([The query-level form](#the-query-level-artifact-form)). For a file that does not compile, the existing text heuristics
+  (`claimsToBeANotebook`, `claimsToBeADashboard`, merged into one) read the tag off the source as
+  they do today;
+- it is not the package's root `index.malloy` (§6).
+
+A legacy `.malloynb` is also a report (linear, read-only), as it is a notebook today, wherever it is.
+
+Everything else is an ordinary model, which a report may import. There is no "candidate" or
+"shared include" state tied to a directory any more.
+
+The path predicates and the `NOTEBOOKS_DIR` / `DASHBOARDS_DIR` constants are deleted, and
+discovery produces **one** map of reports keyed by path, each carrying its layout, in place of
+`dashboards`, `layoutNotebooks`, `dashboardFileText`, and `notebookFileText`. `isServedDashboard`
+and `isServedNotebook` collapse into `isServedReport`; every caller already wants "is this a
+report", not which kind.
+
+### 2. Which layout a report has
+
+In order, first match wins:
+
+1. `layout=` in the tag (or the legacy `kind=`, read as `dashboard` → grid, `notebook` → linear).
+2. A query-level `# artifact` is **grid** (Malloyyo's form, one rendered query laid out by its own
+   `# dashboard` tag).
+3. A model-level `## artifact` that lists `tiles` or carries a `dashboard {…}` grid tag is
+   **grid**.
+4. Anything else is **linear**: a `run:`-cell report, a tag with no tiles, or a `.malloynb`.
+
+Steps 3 and 4 are the rule `compile_model` already applies to submitted text, which has no
+folder (`api-doc.yaml`, the `compile` endpoint and `CompiledDocument`); this makes it the only
+rule. A tempting alternative, "grid only when the file states a grid width or a tile span", was
+checked and rejected: seven kindless dashboards in the fixtures list tiles with no width or span at
+all (the grid's default width applies), and that rule would turn them linear. So a **linear report
+that lists tiles must say so**, with `layout=linear` (or today's `kind=notebook`). Every such file
+in the repo already does, because the `notebooks/` folder default never applied to the builder's
+output, which always wrote `kind=notebook`.
+
+The builder and the create templates **always write `layout=`**, so a file never depends on steps
+2–4 after its first save, and `spliceDocument.ts` drops its `dashboards/` special case. Changing a
+report's layout in the builder is a one-property edit, not a conversion between document types.
+
+**What layout changes, and what it does not.** Layout decides how tiles are placed: linear renders
+them one column wide, top to bottom, and ignores `colspan` / `break` (today's
+`notebook-tile-layout-ignored` warning stays); grid places them by `columns`, `colspan`, and
+`break`. Nothing else depends on layout. In particular, every feature one kind has today and the
+other lacks becomes available to both, as part of this change or as a listed follow-up:
+
+| Feature                                               | Today                                 | Reports                                   |
+| ----------------------------------------------------- | ------------------------------------- | ----------------------------------------- |
+| Filter bar from givens, URL-synced, Apply / `autorun` | both                                  | both                                      |
+| Text tiles                                            | both                                  | both                                      |
+| `# drill` click-through                               | both render it; target is a dashboard | target is any report (§3)                 |
+| Opened in the builder                                 | both (`DashboardEditor` with `kind`)  | one editor, with a layout switch          |
+| `run:` cells, definitions in the file                 | notebook only                         | linear only, because cells are sequential |
+| Package-page section, viewer page, route              | separate per kind                     | one each (§9, §10)                        |
+
+### 3. Identity: the path, only
+
+**The package path is a report's identity, and nothing else is.** Everything that must pick one
+report keys on `path`: the editor, drafts, the package-page rows, Console routes (§9),
+`GET …/reports/{path}` (§4), `# drill`, and telemetry. Two reports may share a basename in
+different directories, and neither shadows the other. The basename survives on the listing as a
+**display label only**. Discovery's shadowing and the write path's name-collision 409 are removed.
+
+**`# drill` targets a report by path, of either layout.** `to="sales/overview"` is the package path
+without `.malloy`, read from the package root, so a drill tag on a dimension means the same thing
+whichever report renders it. `to=self` is unchanged.
+
+**Bare-name targets are deprecated, not broken.** `to=overview` was a basename. For a deprecation
+period it still resolves when exactly one report in the package has that basename, and the package
+reports `drill-target-by-name` (§8) with the path to write. When no report or more than one has that
+basename, the target is unresolved and reported, naming the candidates. The release that ends the
+deprecation reads a bare name as a path at the package root, which is what `to=overview` already
+means for a file at `overview.malloy`. The path form is accepted from the first release, so a
+package can migrate before the deprecation ends and lose nothing.
+
+### 4. REST API
+
+One resource replaces two.
+
+| Route                                              | Change                                                                                                                                                                                                      |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **new** `GET …/reports`                            | Every report in the package: `path`, `name` (label), `layout`, `title`, `description`, `editable` (false for `.malloynb` and `run:`-cell reports), and the load `error` for one that does not compile.      |
+| **new** `GET …/reports/{path}`                     | One report's manifest: today's `DashboardManifest` fields with `layout` in place of `kind`; for a `run:`-cell or `.malloynb` report, its cells, as `RawNotebook` returns them today.                        |
+| **new** `GET …/reports/{path}/cells/{i}`           | Runs a cell of a `run:`-cell report; today's `…/notebooks/{path}/cells/{i}` under the new resource.                                                                                                         |
+| `GET …/dashboards`, `GET …/dashboards/{name}`      | **Deprecated aliases.** The listing returns the grid reports; the item resolves a unique basename and answers 409 naming every match when it is ambiguous.                                                  |
+| `GET …/notebooks`, `…/notebooks/{path}`, `…/cells` | **Deprecated aliases** for the linear reports; already path-addressed.                                                                                                                                      |
+| `PUT …/models/{path}`                              | Any location; one rule for both layouts (§7).                                                                                                                                                               |
+| `GET …/models`                                     | Unchanged rule, by discovery: served reports are excluded under a curated surface, linear reports always (as served notebooks are today). Open to simplifying to "reports are never models" in a follow-up. |
+
+The deprecated routes are removed in the same later release as the bare-name drill targets
+(Delivery step 5). `api-doc.yaml` gains a `Report` and a `ReportManifest` schema, marks the old
+schemas and routes deprecated, rewrites every description that states the folder rule or the
+dashboard/notebook split, and the clients are regenerated.
+
+### 5. Imports
+
+An untagged `.malloy` file is a model like any other, wherever it lives, and any report may import
+it. A report's imports are relative to its own location, as Malloy imports always are, so moving a
+report between directories means updating its import paths. The builder computes them with the
+existing `importPathOf`, which already handles any depth.
+
+### 6. Curation and the query boundary
+
+A report reads the surface; it never adds to it. That is already enforced by discovery's maps, not
+by paths, so it carries over unchanged. Two edges need stating because reports anywhere make them
+reachable:
+
+- **`index.malloy` at the package root is never a report.** It _is_ the surface. If it carries an
+  artifact tag, the tag is ignored and the package reports an `error` finding, rather than the
+  surface silently vanishing.
+- **A model that `index.malloy` imports, or that `explores` lists, and that is also tagged as a
+  report** is served as a report and contributes nothing to the surface, exactly as a tagged file in
+  `dashboards/` that `explores` lists does today. With reports anywhere this is how an author could
+  empty their own surface by tagging a model, so it gets a `warning` finding naming the importer.
+
+`exploresDeprecation` in `package_manifest.ts` recognizes dashboards and notebooks "by path alone";
+it switches to discovery's map.
+
+### 7. The write path
+
+`PUT …/models/{path}` (the builder's save) today accepts two path shapes, and
+`docs/security-posture.md` names that confinement as part of what makes the endpoint safe. The new
+rule replaces the confinement with an equivalent guarantee rather than dropping it:
+
+- **Create** is allowed at any `.malloy` path in the package that does not exist yet, under
+  `assertSafeRelativeModelPath` as today, outside `public/`, never at the root `index.malloy`. The
+  text must carry an artifact tag (§1). Today's two per-folder gates become this one rule.
+- **Replace** is allowed only for a file the package currently serves as an editable report. Today
+  that check exists only for `notebooks/`; it becomes the rule everywhere. So the endpoint still
+  cannot overwrite a model, an untagged file, a `.malloynb`, or `index.malloy`, wherever they live.
+- The name-collision 409 is removed (§3). Everything else is unchanged: `frozenConfig` 403,
+  compile-first at `scope: "file"`, `expectedHash` 409 and create-if-absent 409, atomic write under
+  the package lock, the post-reload verify (now "the file is a served report"), and the rollback.
+
+The endpoint can add files in more places, but can modify only what it could already modify: served
+reports. An attacker who can reach it can already register a package (the existing argument in
+`security-posture.md`), so creating a file in a new directory opens no door that was shut.
+`security-posture.md` is rewritten to state the new guarantee. Missing directories are created on
+create, inside the package root only.
+
+### 8. Lint
+
+The notebook lint and the dashboard lint become **one report lint**. Today they run separately and
+de-duplicate against each other (`relintDashboards` runs first so the notebook lint can drop its
+copy of a shared finding); with one report map there is one pass per report, plus the
+layout-specific checks (grid: `columns`, `colspan`; linear: `notebook-tile-layout-ignored`,
+`run:`-cell readability).
+
+| Finding                                       | Change                                                                                                                                                                                                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notebook-other-folder`                       | **Retired.** It tells an author to move a file to its kind's folder.                                                                                                                                                                                          |
+| `notebook-kind-missing`                       | **Replaced** by `report-layout-implicit`.                                                                                                                                                                                                                     |
+| the shadowed-dashboard finding                | **Retired.** Two reports may share a basename (§3).                                                                                                                                                                                                           |
+| drill-target lint                             | Resolves `to=` as a path to a report of either layout. A bare name follows §3's deprecation rule; an unresolved or ambiguous one names the candidate paths.                                                                                                   |
+| **new** `drill-target-by-name` (warning)      | A `# drill { to=<name> }` that resolved by basename. Gives the exact path to write.                                                                                                                                                                           |
+| **new** `report-kind-deprecated` (info)       | A tag that uses `kind=`. Read as before (`dashboard` → grid, `notebook` → linear); gives the `layout=` to write. A tag carrying both is read by `layout=`, and is an error when they disagree.                                                                |
+| **new** `report-layout-implicit` (warning)    | A model-level `## artifact` with no `layout=`/`kind=` and no tiles, read as linear by §2 step 4. In `dashboards/` that shape is an unserved empty dashboard today, so this is the one file that changes meaning; none exists in the repo. Fix: add `layout=`. |
+| **new** `report-on-surface` (warning)         | §6's imported-or-listed report.                                                                                                                                                                                                                               |
+| **new** `index-is-not-a-report` (error)       | §6's tagged root `index.malloy`.                                                                                                                                                                                                                              |
+| **new** `query-artifact-deprecated` (warning) | A query-level `# artifact`. Still served, as grid, until Delivery step 5. Gives the `## artifact { layout=grid … tiles=["<query>"] }` rewrite for that file.                                                                                                  |
+
+The lint, `notebookReaderProblem`, the lint-text read in `environment.ts`, and the package-warning
+scope all switch from the path predicates to discovery's report map.
+
+### 9. Console
+
+**Routes.** A report's route is its package path with `.malloy` removed: `/<env>/<pkg>/sales/q3`
+for `sales/q3.malloy`, with `/edit` for the builder. `<path>.malloy` keeps opening the Model view.
+Every existing URL keeps working, because a file at `dashboards/overview.malloy` already lives at
+`/<env>/<pkg>/dashboards/overview`.
+
+**One page.** `DashboardPage` and `NotebookPage` merge into a `ReportPage` that fetches
+`GET …/reports/{path}` and renders by layout. `ModelPage` stops deciding "is this a report?" by
+prefix: for a splat with no `.malloy` / `.malloynb` extension it asks the report listing for
+`<splat>.malloy`. If there is none and the splat is exactly `dashboards/<x>` or `notebooks/<x>`, it
+tries the basename `<x>` under §3's deprecation rule and redirects to the report's path route. That
+is a **compatibility alias only**; nothing new generates it. `data-apps/<file>` keeps its branch,
+ahead of the report lookup.
+
+**Drill** navigates to the target report's path route.
+
+**`spa_fallback.ts`** drops `dashboards` and `notebooks` from `SPA_OWNED_SEGMENTS`. Before
+redirecting an asset-shaped path to the static route, it checks whether `<path>.malloy` is a served
+report (the fallback already confirms candidates against loaded state). That covers a report
+anywhere whose name ends in an asset extension, and gives back a package's own `public/dashboards/`
+and `public/notebooks/` files. `data-apps` stays: it is a Console viewer route.
+
+`DocumentModeButton` reads the resolved report. Telemetry and editor keys switch from slug to path.
+
+### 10. SDK
+
+- **One component.** A new `Report` export renders a report by layout from `GET …/reports/{path}`.
+  `Dashboard` and `Notebook` stay exported as thin wrappers over it, because Credible's app imports
+  both today; they are deprecated, not removed, until Credible has moved.
+- **Location resolution** (`documentLocation.ts`, `useDocumentLocation.ts`): one listing, resolved
+  by exact path. The basename lookup survives only behind the compatibility alias and reports
+  ambiguity rather than taking the first match.
+- **Package page** (`Package.tsx`): the Dashboards and Notebooks sections merge into one **Reports**
+  section, each row marked with its layout and opened by path; README detection becomes "a report at
+  the package root whose basename is `README`", replacing the `notebooks/readme.malloy` check; the
+  new-report model picker excludes listed report paths instead of two prefixes.
+- **Builder** (`catalog.ts`, `EditorSurface.tsx`, `DashboardEditor`): one editor, keyed by `path`,
+  with a layout switch that rewrites `layout=` and nothing else. Reports are excluded from the
+  source catalog by the listed paths, not by prefix. The drill editor writes path targets.
+- **Create** (`DocumentCreate/*`, `newDashboard.ts`, `newNotebook.ts`): one **New report** action
+  that asks for a title and a layout, defaulting to linear, and writes `<slug>.malloy` at the
+  **package root**; the author can type a different location. No `dashboards/` or `notebooks/`
+  directory is ever created. The two templates merge into one that differs only in `layout=` and
+  the grid tag, computes imports with `importPathOf` (at the root, `"<model>"`), and always writes
+  `layout=`. The collision check is by path only.
+- **Drafts and storage** (`DocumentStorage.ts`, `Package.tsx`): drafts key on the report path, which
+  `locatorFor` already builds; the `<kind>s/` prefix filter and the per-kind query keys go.
+- **Notebook prose links** (`Prose.tsx`) resolve relative to the report's own location, already
+  correct at any depth; the docs should say that moving a report changes what its relative links
+  mean.
+
+### 11. MCP
+
+No tool lists reports, and `get_context` indexes what `listModels` returns, so it already follows
+discovery. Two small changes: the render-log suppression in `execute_query` switches to the report
+map, and the `compile_model` description's statement of the kind rule becomes the layout rule
+(§2), with `CompiledDocument` carrying `layout`.
+
+### 12. Docs, skills, and examples
+
+- **Docs.** `docs/dashboards.md` and the notebook material merge into `docs/reports.md`: one
+  reference with a section per layout. `docs/choosing-a-surface.md` stops presenting dashboards
+  and notebooks as separate surfaces; the choice becomes report (and which layout) vs data app.
+  Every statement of the folder rule is removed, not softened, and examples sit at the package
+  root with path drill targets. Also affected: `docs/discovery-and-access.md`,
+  `docs/security-posture.md`, `docs/api-overview.md`, `docs/console.md`, `docs/ai-agents.md`,
+  `docs/README.md`, `README.md`, and `AGENTS.md`.
+- **Skills.** `malloy-dashboards` and `malloy-notebooks` merge into **`malloy-reports`**, with a
+  short "which layout" section and per-layout references. `malloy-analysis-report` already speaks
+  of reports and points at it. `malloy-publish`, `malloy-charts`, and the `malloy-review` structure
+  rubric (which exempts a tagged report of either layout wherever it lives) are updated. Skill text
+  tells an agent to write a report at the package root unless the author asks otherwise. The
+  skills text is bundled into the server and the scaffolder, so it ships with the behavior.
+- **History.** `docs/malloyyo-dashboards-design.md` and `docs/dashboard-builder-plan.md` get a
+  pointer to this page rather than a rewrite; the Malloyyo drift section records the divergence.
+- **Examples.** The `storefront` package moves its reports to the package root, writes `layout=`,
+  and rewrites its `# drill` tags to paths, so the reference package teaches the new model. The
+  test fixtures stay where they are, to pin compatibility.
+
+## Compatibility
+
+- **Every existing file classifies the same.** Checked against every `.malloy` under a
+  `dashboards/` or `notebooks/` directory in `examples/` and `packages/server/tests/fixtures/`:
+  each states `kind=` (read as a layout), or is a kindless query-level `# artifact` (grid by §2 step
+  2, a dashboard today), or is a kindless model-level tag in `dashboards/` that lists tiles (grid by
+  step 3, a dashboard today), or is a kindless model-level tag in `notebooks/` with no tiles (linear
+  by step 4, a notebook today). The untagged `dashboards/_shared.malloy` stays a model. The one
+  shape that would change, a kindless, tileless model-level tag in `dashboards/`, occurs nowhere
+  and is linted (§8). Before implementation this check becomes a test (Test plan) rather than a
+  claim.
+- **Every existing URL and REST route answers.** Path routes cover every file already in the two
+  directories; the old routes are deprecated aliases (§4, §9).
+- **Every existing `# drill { to=<name> }` keeps working during the deprecation**, because names
+  are unique in every package today (the folder rule guarantees it), so §3's unique-match rule
+  resolves all of them, each with a `drill-target-by-name` warning.
+- **A model with an artifact tag outside the two directories becomes a report.** Today the tag
+  means nothing there. Nothing in the repo has one; `report-on-surface` states it whenever it
+  removes something from the surface. It needs a release note.
+- **Malloyyo** reads dashboards only from `dashboards/`, by bare names, with `kind=`. Reports
+  elsewhere, path drill targets, and `layout=` work in Publisher and not in Malloyyo. Decided.
+- **SDK consumers** keep `Dashboard`, `Notebook`, and the old client calls through the deprecation;
+  they will not open a report outside the two directories by path until they upgrade.
+
+## Delivery
+
+Each step is shippable alone and leaves the system consistent.
+
+1. **Server: one report model.** The report rule (§1), layout resolution (§2), path identity and
+   the drill deprecation (§3), one report map and one lint (§8), the curation edges (§6),
+   `GET …/reports` and `…/reports/{path}`, the deprecated aliases, and the `api-doc.yaml` rewrite.
+2. **Console and SDK reading.** `Report`, `ReportPage`, one package-page section, path routes, the
+   alias, drill by path, and the SPA fallback (§9, §10 minus create).
+3. **Write path, builder, and create.** §7, the one editor with its layout switch, New report at
+   the root, and drafts by path, with the `security-posture.md` rewrite in the same pull request.
+4. **Docs, skills, and storefront.** §12, plus the release note announcing the deprecations.
+5. **Later release: end the deprecations.** Bare drill names read as root paths; the
+   `…/dashboards` and `…/notebooks` routes, the name alias, and the
+   query-level `# artifact` go; `Dashboard` and `Notebook` SDK exports go once Credible has moved.
+
+## Test plan
+
+- Port the folder-pinning tests rather than delete them: nested-path rejections become acceptance
+  tests at any depth, the shadowing and name-collision tests become "two reports share a basename
+  and both are served", and the retired findings' tests are replaced by the new ones'.
+- **A classification test** that loads `dashboards-test`, `dashboards-curated`, `dashboards-lint`,
+  `dashboards-convention`, `notebooks-lint`, `notebooks-malloyyo`, `notebooks-malloyyo-surface`,
+  and `storefront` and asserts that every report's layout equals its kind today, and that manifests
+  and drill resolution are unchanged apart from the new deprecation warnings.
+- A fixture package with reports at the root and two levels deep, a grid report in `notebooks/`
+  and a linear one in `dashboards/`, two reports with the same basename, drills by path and by a
+  unique and an ambiguous bare name, drill from a grid report to a linear one, a tagged model that
+  `index.malloy` imports, a tagged `index.malloy`, and a report under `public/`.
+- Write-path tests: create at the root and nested; switch a report's layout; refuse replacing a
+  model, an untagged file, a `.malloynb`, and `index.malloy`; refuse `public/`.
+- SPA fallback: `public/dashboards/x.csv` is served statically again; `sales/report.csv.malloy`
+  reaches the Console.
+- Console e2e (Playwright): one Reports section; open, edit, switch layout, and drill a nested
+  report; New report lands at the root; an old `/dashboards/<name>` link redirects.
+
+## The query-level artifact form
+
+`# artifact` on a `query:` is Malloyyo's original dashboard form: one rendered Malloy query, laid
+out by its own `# dashboard` tag. Publisher already treats it as legacy (`docs/dashboards.md`: "do
+not author new ones; the tiles form is the only authored one"); the builder cannot open it, and the
+create flow never writes it. Its properties (`title`, `givens`, `autorun`, `kind`) are a strict
+subset of the model-level tag's, and a tile can be a bare model-level named query, so every
+query-level report has a mechanical rewrite:
+
+```malloy
+// before
+# artifact { title="Overview" givens { REGION=f'US' } }
+query: overview is orders -> { … }
+
+// after
+## artifact { layout=grid title="Overview" givens { REGION=f'US' } tiles=["overview"] } dashboard { columns=12 }
+query: overview is orders -> { … }
+```
+
+**Decided: deprecate it, then drop it.** In this change it is still served everywhere, as grid,
+with a `query-artifact-deprecated` warning carrying the rewrite above. Delivery step 5, the same
+release that ends bare-name drill targets and removes the old dashboard and notebook endpoints,
+stops recognizing it, so only `## artifact` makes a report. The cost, accepted: every package using
+the form (14 fixture files here, and any Malloyyo repo Publisher serves) must migrate within the
+window, and Publisher stops serving Malloyyo's original form.
+
+The alternative, keeping it and recognizing it everywhere, was rejected because any model anywhere
+would become a report by carrying one tag on one query, which takes it out of the model list under a
+curated surface and stops it contributing to that surface. Restricting it to `dashboards/` instead
+would make that directory meaningful again. Dropping it removes the accidental-report case and
+leaves one report grammar, which is what the reports unification asks for.
