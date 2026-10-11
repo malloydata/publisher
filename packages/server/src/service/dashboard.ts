@@ -1840,7 +1840,7 @@ export function drillPathOf(reportPath: string): string {
 export function resolveDrillDestination(
    destination: string,
    reportPaths: ReadonlySet<string>,
-   gridReportPaths: ReadonlySet<string> = new Set(),
+   gridReportPaths: ReadonlySet<string>,
 ): DrillResolution {
    if (destination === "self") return { kind: "self" };
    if (!isDrillTargetPath(destination))
@@ -1878,7 +1878,7 @@ export function resolveDrillDestination(
 export function lintDrillTargets(
    facts: readonly DashboardModelFacts[],
    reportPaths: ReadonlySet<string>,
-   gridReportPaths: ReadonlySet<string> = new Set(),
+   gridReportPaths: ReadonlySet<string>,
 ): (DashboardLintFinding & { code?: string })[] {
    const findings = new Map<string, DashboardLintFinding & { code?: string }>();
    for (const file of facts) {

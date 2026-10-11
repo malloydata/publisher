@@ -34,7 +34,7 @@ import {
 export type ReportLayout = "grid" | "linear";
 
 /** The package directory Publisher serves as raw static files; never a report's home. */
-export const PUBLIC_DIR = "public";
+const PUBLIC_DIR = "public";
 
 /**
  * True for a path inside the package's `public/` directory. The first segment
@@ -110,13 +110,11 @@ export interface ReportLayoutFacts {
 }
 
 /** Which rule decided a layout, for the lint's fix-its. */
-export type LayoutDecidedBy = "layout" | "kind" | "query" | "tiles" | "default";
+type LayoutDecidedBy = "layout" | "kind" | "query" | "tiles" | "default";
 
 export interface ResolvedReportLayout {
    layout: ReportLayout;
    decidedBy: LayoutDecidedBy;
-   /** Set when `layout=` and `kind=` both name a layout and disagree; `layout=` wins. */
-   conflict?: { layout: ReportLayout; kind: ReportLayout };
 }
 
 /**
@@ -135,16 +133,7 @@ export function resolveReportLayout(
 ): ResolvedReportLayout {
    const byLayout = facts.modelTag ? parseLayoutValue(facts.layout) : undefined;
    const byKind = facts.modelTag ? layoutOfKind(facts.kind) : undefined;
-   if (byLayout) {
-      return {
-         layout: byLayout,
-         decidedBy: "layout",
-         ...(byKind &&
-            byKind !== byLayout && {
-               conflict: { layout: byLayout, kind: byKind },
-            }),
-      };
-   }
+   if (byLayout) return { layout: byLayout, decidedBy: "layout" };
    if (byKind) return { layout: byKind, decidedBy: "kind" };
    if (facts.queryTag) return { layout: "grid", decidedBy: "query" };
    if (facts.modelTag && (facts.tiles || facts.gridTag))
@@ -153,7 +142,7 @@ export function resolveReportLayout(
 }
 
 /** The layout facts of a parsed model-level tag (all own `##` notes) and the queries' tags. */
-export function layoutFactsOfTags(
+function layoutFactsOfTags(
    modelTag: Tag | undefined,
    queryTagged: boolean,
 ): ReportLayoutFacts {
@@ -188,7 +177,7 @@ export function queryNotesCarryArtifact(notes: readonly string[]): boolean {
  * A single-`#` tag line (a query-level `# artifact`), as the generous text test
  * reads it: an `artifact` property anywhere outside a quoted string.
  */
-export const QUERY_ARTIFACT_NOTE: LineTest = {
+const QUERY_ARTIFACT_NOTE: LineTest = {
    test(text: string): boolean {
       return /^#(?!#)/.test(text) && ANY_ARTIFACT_NOTE.test(text);
    },

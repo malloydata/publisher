@@ -26,16 +26,25 @@ import { Model } from "./model";
 import { Package } from "./package";
 import {
    ANY_ARTIFACT_NOTE,
-   artifactKindInText,
    artifactNoteLine,
+   artifactTagText,
    claimsToBeANotebook,
    docNotesAboveArtifact,
    hasArtifactLineOutsideBlocks,
    isArtifactNoteText,
 } from "./notebook";
+import { motlyTag, tagText } from "./motly";
 import { isReportEligiblePath, layoutOfText } from "./report";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+
+/** The `kind` of the artifact tag `artifactTagText` finds, as Malloy's tag parser reads it. */
+const artifactKindInText = (source: string): string | undefined => {
+   const line = artifactTagText(source);
+   return line === undefined
+      ? undefined
+      : tagText(motlyTag([line])?.tag("artifact"), "kind");
+};
 
 const note = (text: string, line: number) => ({
    text,

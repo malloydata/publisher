@@ -136,7 +136,6 @@ import {
 } from "./dashboard";
 import { isReportEligiblePath } from "./report";
 import {
-   artifactKindOfNotes,
    docNotesAboveArtifact,
    isArtifactNoteText,
    isNotebookReaderError,
@@ -5857,14 +5856,6 @@ export class Model {
       if (!isReportEligiblePath(this.modelPath)) return false;
       const facts = this.getDashboardModelFacts();
       return facts !== undefined && factsCarryArtifactTag(facts);
-   }
-
-   /** The `kind` the model's own `## artifact` note declares, if any. */
-   public artifactKind(): string | undefined {
-      return (
-         this.modelDef &&
-         artifactKindOfNotes(ownModelNoteObjects(this.modelDef))
-      );
    }
 
    private isDashboard(): boolean {

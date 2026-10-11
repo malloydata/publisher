@@ -1667,6 +1667,7 @@ describe("service/dashboard lint", () => {
                }),
             ],
             new Set(["overview"]),
+            new Set(),
          ).map((f) => f.message);
          expect(messages).toEqual([
             expect.stringContaining('targets "gone"'),
@@ -1689,6 +1690,7 @@ describe("service/dashboard lint", () => {
                }),
             ],
             new Set(),
+            new Set(),
          );
          expect(messages).toHaveLength(1);
          expect(messages[0].subject).toBe("orders.brand");
@@ -1703,7 +1705,11 @@ describe("service/dashboard lint", () => {
          "notebooks/story.malloy",
       ]);
       const lint = (to: string) =>
-         lintDrillTargets([facts({ drills: [drill("brand", [to])] })], reports);
+         lintDrillTargets(
+            [facts({ drills: [drill("brand", [to])] })],
+            reports,
+            new Set(),
+         );
 
       it("treats a target that is not a plain package path as unresolved", () => {
          for (const to of [
@@ -1715,7 +1721,7 @@ describe("service/dashboard lint", () => {
             "sales//q3",
             "..",
          ]) {
-            expect(resolveDrillDestination(to, reports)).toEqual({
+            expect(resolveDrillDestination(to, reports, new Set())).toEqual({
                kind: "unresolved",
                candidates: [],
                malformed: true,

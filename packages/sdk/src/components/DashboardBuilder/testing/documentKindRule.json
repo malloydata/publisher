@@ -1,5 +1,5 @@
 {
-   "about": "A report's layout, read off its tags alone, wherever the file lives (docs/reports-design.md §2), first match wins: the tag's `layout=` (grid or linear), else the legacy `kind=` (dashboard is grid, notebook is linear), else grid when it lists tiles or sets a grid width, else linear. `kind` here is the layout in the legacy vocabulary: `dashboard` for grid, `notebook` for linear. The server (submittedTextKind, over resolveReportLayout) and the SDK reader (readDashboardDocument) each hold the rule, so each side's spec reads this file.",
+   "about": "A report's layout, read off its tags alone, wherever the file lives (docs/reports-design.md §2), first match wins: the tag's `layout=` (grid or linear), else the legacy `kind=` (dashboard is grid, notebook is linear), else grid when it lists tiles or sets a grid width, else linear. `kind` here is the layout in the legacy vocabulary: `dashboard` for grid, `notebook` for linear. The server (layoutOfText, over resolveReportLayout) and the SDK reader (readDashboardDocument) each hold the rule, so each side's spec reads this file.",
    "cases": [
       {
          "name": "no kind and no layout is a notebook",

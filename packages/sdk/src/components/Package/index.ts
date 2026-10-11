@@ -6,8 +6,6 @@ export {
    documentRoute,
    documentSlug,
    isDrillTargetPath,
-   kindOfLayout,
-   layoutOfKind,
    locateDocument,
    locateReport,
    locateReportByName,
@@ -23,12 +21,8 @@ export {
    type NameLookup,
    type ReportLayout,
 } from "./documentLocation";
-export {
-   reportsQueryKey,
-   useDocumentLocation,
-   useReportListing,
-} from "./useDocumentLocation";
-export { findDraftType, useDraftType } from "./useDraftType";
+export { useDocumentLocation, useReportListing } from "./useDocumentLocation";
+export { useDraftType } from "./useDraftType";
 export {
    NewDocumentDialog,
    type NewDocumentDialogProps,

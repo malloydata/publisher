@@ -1912,9 +1912,14 @@ app.get(
  * `POST …/models/{path}/query` instead, which holds them to the same surface,
  * `#(authorize)` and row-level gates
  * (`tests/integration/reports/cell_query_parity.integration.spec.ts`).
+ *
+ * The cell route must come BEFORE the general get routes, so the wildcard
+ * does not swallow `/cells/{i}`.
  */
-function executeReportCellHandler(): express.RequestHandler {
-   return async (req, res) => {
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
+   queryConcurrency(),
+   async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
          return;
@@ -1983,15 +1988,7 @@ function executeReportCellHandler(): express.RequestHandler {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);
       }
-   };
-}
-
-// The cell routes must come BEFORE the general get routes, so the wildcard
-// does not swallow `/cells/{i}`.
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
-   queryConcurrency(),
-   executeReportCellHandler(),
+   },
 );
 
 app.get(

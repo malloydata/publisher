@@ -2229,13 +2229,14 @@ export class Environment {
    /**
     * Put text at a model path, atomically: a sibling temporary file is renamed
     * over the target, so a reader never sees a half-written file and a crash
-    * leaves either the old text or the new. The caller holds the package lock.
+    * leaves either the old text or the new. The caller holds the package lock,
+    * and the directory exists: {@link _prepareModelFileDirLocked} made it for a
+    * new file, and a restore writes where the previous text was.
     */
    private async _writeModelFileLocked(
       target: string,
       source: string,
    ): Promise<void> {
-      await fs.promises.mkdir(path.dirname(target), { recursive: true });
       const temporary = `${target}.${crypto.randomUUID()}.tmp`;
       try {
          await fs.promises.writeFile(temporary, source, "utf8");

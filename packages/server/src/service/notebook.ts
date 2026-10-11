@@ -10,7 +10,7 @@ import {
 } from "@malloydata/malloy";
 import { ownModelNoteObjects, type AnnotationNote } from "./annotations";
 import { closesBlock } from "./query_text";
-import { docCommentText, motlyTag, tagText } from "./motly";
+import { docCommentText } from "./motly";
 import {
    isReportEligiblePath,
    layoutFactsOfNotes,
@@ -273,16 +273,6 @@ function lexedArtifactNote(
    return undefined;
 }
 
-/** The `kind` of the artifact tag among a file's own notes. */
-export function artifactKindOfNotes(
-   notes: readonly AnnotationNote[],
-): string | undefined {
-   const tag = motlyTag(
-      notes.map((note) => note.text).filter(isArtifactNoteText),
-   );
-   return tagText(tag?.tag("artifact"), "kind");
-}
-
 export function claimsToBeANotebook(source: string): boolean {
    return hasArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
 }
@@ -290,14 +280,6 @@ export function claimsToBeANotebook(source: string): boolean {
 /** A file's artifact tag as written, a `## artifact` line or a `##|` block, read off its text. */
 export function artifactTagText(source: string): string | undefined {
    return findArtifactLineOutsideBlocks(source, ARTIFACT_NOTE);
-}
-
-/** The `kind` of a file's `## artifact` line, read off its text for a file that did not compile. */
-export function artifactKindInText(source: string): string | undefined {
-   const line = artifactTagText(source);
-   return line === undefined
-      ? undefined
-      : tagText(motlyTag([line])?.tag("artifact"), "kind");
 }
 
 /* ------------------------------------------------------------------ */

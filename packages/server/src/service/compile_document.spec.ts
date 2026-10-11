@@ -21,10 +21,10 @@ import {
 import {
    blankSpans,
    compileDocument,
-   submittedTextKind,
    type CompiledDocument,
 } from "./compile_document";
 import type { DocumentKind, NotebookCellSpan } from "./notebook";
+import { kindOfLayout, layoutOfText } from "./report";
 import type { DashboardQueryTileSpec } from "./dashboard";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
 
@@ -908,8 +908,8 @@ source: t is duckdb.sql("select 1 as a") extend {
    });
 });
 
-describe("submittedTextKind", () => {
-   // One case table for this rule and the SDK reader's, whose spec reads the same file.
+describe("the layout of submitted text", () => {
+   // One case table for the server's text rule (`layoutOfText`) and the SDK reader, whose spec reads the same file.
    const { cases } = JSON.parse(
       fsSync.readFileSync(
          path.resolve(
@@ -921,7 +921,7 @@ describe("submittedTextKind", () => {
    ) as { cases: { name: string; source: string; kind: string }[] };
    for (const { name, source, kind } of cases) {
       it(`${name}: ${kind}`, () => {
-         expect(submittedTextKind(source)).toBe(kind as DocumentKind);
+         expect(kindOfLayout(layoutOfText(source))).toBe(kind as DocumentKind);
       });
    }
 });

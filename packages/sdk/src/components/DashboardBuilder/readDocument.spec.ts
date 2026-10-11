@@ -964,7 +964,7 @@ describe("the kind of a document held as text", () => {
       ),
    ) as { cases: { name: string; source: string; kind: string }[] };
 
-   // One case table for this reader and the server's `submittedTextKind`, whose spec reads the same file.
+   // One case table for this reader and the server's `layoutOfText`, whose spec reads the same file.
    for (const { name, source, kind } of cases) {
       it(`${name}: ${kind}`, async () => {
          const result = await readDashboardDocument(source, undefined, true);

@@ -30,14 +30,13 @@ import {
 import {
    cellOffsets,
    claimsToBeANotebook,
-   type DocumentKind,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
    type NotebookCellSpan,
 } from "./notebook";
 import { extractSourcesFromModelDef } from "./source_extraction";
-import { kindOfLayout, layoutOfText, type ReportLayout } from "./report";
+import { kindOfLayout, type ReportLayout } from "./report";
 
 /**
  * Compile of a document: caller-submitted text that carries a model-level
@@ -126,16 +125,6 @@ export function blankSpans(
       }
    }
    return units.join("");
-}
-
-/** The layout submitted text has, by the one report rule (`report.ts`, §2): its tag's `layout=`, else its `kind=`, else grid when it lists tiles or sets a grid width, else linear. */
-export function submittedTextLayout(source: string): ReportLayout {
-   return layoutOfText(source);
-}
-
-/** {@link submittedTextLayout} in the old vocabulary. The SDK reader applies the same rule to a document held as text; `documentKindRule.json` holds the two together. */
-export function submittedTextKind(source: string): DocumentKind {
-   return kindOfLayout(submittedTextLayout(source));
 }
 
 /** The names a definition statement declares itself: `source: a is …` or `query: q is …`, never a field inside it. */
