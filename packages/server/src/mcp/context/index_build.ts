@@ -5,8 +5,8 @@
  * Stage 0 of find, connect, judge: build everything the request-time stages
  * search, once per package load.
  *
- *   catalog -> doc parts -> derived text -> questions -> vectors -> keyword
- *   index -> value index
+ *   catalog -> doc parts -> derived text -> value index -> questions ->
+ *   vectors -> keyword index
  *
  * The build runs in the same process-wide queue as the shipped embedding
  * sync (one provider, one rate limit) and its result is held per Package
@@ -47,7 +47,11 @@ import {
 } from "./doc_parts";
 import { KeywordIndex } from "./keyword";
 import {
-   DEFAULT_QUESTIONS_INSTRUCTIONS,
+   promptShowsValues,
+   questionsInstructions,
+} from "../../prompts/questions";
+import {
+   QUESTION_LINE_MAX_VALUES,
    QUESTIONS_PER_NODE,
    resolveQuestions,
    wantsQuestions,
@@ -120,6 +124,41 @@ export interface FcjLlm {
    maxCallsPerSync: number;
    docPartsInstructions?: string;
    questionsInstructions?: string;
+}
+
+/**
+ * The values each dimension's question line shows (the `values` wording): the
+ * list its doc gives, then its most frequent stored values, distinct, at most
+ * QUESTION_LINE_MAX_VALUES. Dimensions with neither are absent.
+ */
+export function questionLineValues(
+   index: ValueIndex,
+   parts: ReadonlyMap<string, DocParts>,
+): Map<string, string[]> {
+   const stored = new Map<string, Array<{ value: string; count: number }>>();
+   for (const v of index.values) {
+      if (v.origin !== "data") continue;
+      const list = stored.get(v.dimension) ?? [];
+      list.push({ value: v.value, count: v.count });
+      stored.set(v.dimension, list);
+   }
+   const out = new Map<string, string[]>();
+   for (const key of new Set([...parts.keys(), ...stored.keys()])) {
+      const fromData = (stored.get(key) ?? [])
+         .sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : 1))
+         .map((v) => v.value);
+      const seen = new Set<string>();
+      const list: string[] = [];
+      for (const v of [...(parts.get(key)?.values ?? []), ...fromData]) {
+         const k = v.trim().toLowerCase();
+         if (!k || seen.has(k)) continue;
+         seen.add(k);
+         list.push(v.trim());
+         if (list.length >= QUESTION_LINE_MAX_VALUES) break;
+      }
+      if (list.length > 0) out.set(key, list);
+   }
+   return out;
 }
 
 /** The text a node's `values` facet embeds, from the list its doc gives. */
@@ -208,7 +247,42 @@ export async function buildFcjIndex(args: {
       derived.set(node.key, derivedText(node, textCtx));
    }
 
+   // Value index. Before the questions, because the `values` wording shows a
+   // field's stored values on its line.
+   let values = new ValueIndex([]);
+   let valueReport: FcjBuildReport["values"] = {
+      skipped: "retrieval.fcj.values is false",
+   };
+   if (settings.values) {
+      const built = await buildValueIndex({
+         catalog,
+         parts,
+         cap: settings.valueCap,
+         db,
+         ...(args.valueRead
+            ? {
+                 read: {
+                    environmentStore: args.valueRead.environmentStore,
+                    environmentName,
+                    packageName,
+                    ...(args.valueRead.fetcher
+                       ? { fetcher: args.valueRead.fetcher }
+                       : {}),
+                 },
+              }
+            : {}),
+         ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
+      });
+      values = built.index;
+      valueReport = built.report;
+   }
+
    // Questions.
+   const perNode = settings.questionsPerNode ?? QUESTIONS_PER_NODE;
+   const variant = settings.questionsPrompt ?? "questions";
+   const lineValues = promptShowsValues(variant)
+      ? questionLineValues(values, parts)
+      : undefined;
    const questions = new Map<string, string[]>();
    const qLlm = llmFor(settings.questions);
    const questionNodes = searched.filter(wantsQuestions);
@@ -230,12 +304,18 @@ export async function buildFcjIndex(args: {
       const run = await resolveQuestions({
          nodes: questionNodes,
          derivedOf: (n) => derived.get(n.key) ?? "",
+         ...(lineValues
+            ? { valuesOf: (n: CatalogNode) => lineValues.get(n.key) ?? [] }
+            : {}),
+         perNode,
          db,
          environmentName,
          packageName,
          chat: qLlm.chat,
+         // A package prompt file wins over the variant setting.
          instructions:
-            qLlm.questionsInstructions ?? DEFAULT_QUESTIONS_INSTRUCTIONS,
+            qLlm.questionsInstructions ??
+            questionsInstructions(variant, perNode),
          concurrency: qLlm.concurrency,
          budget,
          ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
@@ -262,7 +342,7 @@ export async function buildFcjIndex(args: {
          text: derived.get(node.key)!,
       });
       (questions.get(node.key) ?? [])
-         .slice(0, QUESTIONS_PER_NODE)
+         .slice(0, perNode)
          .forEach((q, i) =>
             rows.push({ node: node.key, facet: `q${i + 1}`, text: q }),
          );
@@ -305,35 +385,6 @@ export async function buildFcjIndex(args: {
          charsEmbedded: out.charsEmbedded,
          dims: out.dims,
       };
-   }
-
-   // Value index.
-   let values = new ValueIndex([]);
-   let valueReport: FcjBuildReport["values"] = {
-      skipped: "retrieval.fcj.values is false",
-   };
-   if (settings.values) {
-      const built = await buildValueIndex({
-         catalog,
-         parts,
-         cap: settings.valueCap,
-         db,
-         ...(args.valueRead
-            ? {
-                 read: {
-                    environmentStore: args.valueRead.environmentStore,
-                    environmentName,
-                    packageName,
-                    ...(args.valueRead.fetcher
-                       ? { fetcher: args.valueRead.fetcher }
-                       : {}),
-                 },
-              }
-            : {}),
-         ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
-      });
-      values = built.index;
-      valueReport = built.report;
    }
 
    // Keyword index, over the same texts.

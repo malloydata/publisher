@@ -16,6 +16,11 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
+import {
+   DEFAULT_QUESTIONS_PER_NODE,
+   QUESTIONS_PROMPTS,
+   type QuestionsPrompt,
+} from "../prompts/questions";
 
 export const PACKAGE_REPRESENTATIONS = ["single", "facets"] as const;
 export type PackageRepresentation = (typeof PACKAGE_REPRESENTATIONS)[number];
@@ -154,6 +159,15 @@ export interface FcjSettings {
    connect: FcjConnect;
    /** With `connect: "list"`: find-stage candidates per target the judge sees. */
    listTopK: number;
+   /**
+    * PROVISIONAL, `questions` by default. Which wording of prompts/questions.ts
+    * writes the index-time rows of a field: questions a person asks, the
+    * search phrases an agent types, or questions that use the field's values.
+    * A package prompt file (`retrieval.prompts.questions`) wins over it.
+    */
+   questionsPrompt: QuestionsPrompt;
+   /** PROVISIONAL, 3 by default. Index-time rows written per field and view. */
+   questionsPerNode: number;
 }
 
 export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
@@ -177,6 +191,8 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    collapseCopies: false,
    connect: "clusters",
    listTopK: 15,
+   questionsPrompt: "questions",
+   questionsPerNode: DEFAULT_QUESTIONS_PER_NODE,
 };
 
 export interface PackageRetrievalSettings {
@@ -467,6 +483,17 @@ function fcjConnect(obj: Record<string, unknown>): FcjConnect {
    return value as FcjConnect;
 }
 
+function fcjQuestionsPrompt(obj: Record<string, unknown>): QuestionsPrompt {
+   const value = obj.questionsPrompt ?? DEFAULT_FCJ_SETTINGS.questionsPrompt;
+   if (!(QUESTIONS_PROMPTS as readonly unknown[]).includes(value)) {
+      fail(
+         `Invalid publisher.json retrieval.fcj.questionsPrompt: expected one of ${QUESTIONS_PROMPTS.join(", ")}, got ${describe(obj.questionsPrompt)}. ` +
+            `Fix: "questionsPrompt": "questions" (what a person asks), "phrases" (what an agent types as a search target) or "values" (questions that filter by the field's values).`,
+      );
+   }
+   return value as QuestionsPrompt;
+}
+
 function parseFcj(raw: unknown): FcjSettings {
    const obj = objectBlock(
       raw,
@@ -497,6 +524,8 @@ function parseFcj(raw: unknown): FcjSettings {
       collapseCopies: fcjBoolean(obj, "collapseCopies"),
       connect: fcjConnect(obj),
       listTopK: int("listTopK", 1, 500),
+      questionsPrompt: fcjQuestionsPrompt(obj),
+      questionsPerNode: int("questionsPerNode", 1, 8),
    };
 }
 
