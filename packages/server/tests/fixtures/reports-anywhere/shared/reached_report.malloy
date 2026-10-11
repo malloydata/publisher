@@ -1,0 +1,4 @@
+## artifact { layout=grid tiles=["reached -> v"] }
+source: reached is duckdb.sql("select 1 as x") extend {
+   view: v is { select: x }
+}

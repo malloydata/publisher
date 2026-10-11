@@ -92,6 +92,7 @@ describe("Reports anywhere in a package (E2E)", () => {
          "sales/2026/q3.malloy": "grid",
          "sales/report.csv.malloy": "grid",
          "sales/summary.malloy": "grid",
+         "shared/reached_report.malloy": "grid",
          "tagged_model.malloy": "grid",
       });
       // Path order, and the basename is only a label.
@@ -271,14 +272,22 @@ describe("Reports anywhere in a package (E2E)", () => {
          ).toMatchObject({ model: "index.malloy", severity: "error" });
       });
 
-      it("reports a tagged model index.malloy imports", () => {
-         expect(warnings.filter((w) => w.code === "report-on-surface")).toEqual(
-            [
-               expect.objectContaining({
-                  model: "tagged_model.malloy",
-                  severity: "warn",
-               }),
-            ],
+      it("reports a tagged model index.malloy imports, directly or through another file", () => {
+         const onSurface = warnings.filter(
+            (w) => w.code === "report-on-surface",
+         );
+         expect(onSurface).toEqual([
+            expect.objectContaining({
+               model: "tagged_model.malloy",
+               severity: "warn",
+            }),
+            expect.objectContaining({
+               model: "shared/reached_report.malloy",
+               severity: "warn",
+            }),
+         ]);
+         expect(onSurface[1].message).toContain(
+            "surface_hop.malloy, which index.malloy reaches, imports it",
          );
       });
 

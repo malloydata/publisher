@@ -23,10 +23,8 @@ import {
    type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
-import {
-   MalloySQLParser,
-   MalloySQLStatementType,
-} from "@malloydata/malloy-sql";
+import { MalloySQLStatementType } from "@malloydata/malloy-sql";
+import { parseMalloynb } from "./deprecated/malloynb";
 import { DataStyles } from "@malloydata/render";
 import { publisherMeter } from "../telemetry";
 import {
@@ -9796,12 +9794,7 @@ export class Model {
       }
 
       try {
-         // The cell parser splits on "\n" alone, so a CRLF file (any Windows
-         // checkout) would leave each cell's text starting with a stray line break.
-         parse = MalloySQLParser.parse(
-            fileContents.replace(/\r\n/g, "\n"),
-            modelPath,
-         );
+         parse = parseMalloynb(fileContents, modelPath);
       } catch {
          throw new Error("Could not parse model: " + modelPath);
       }

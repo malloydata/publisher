@@ -1,7 +1,9 @@
 // The surface. Its artifact tag is ignored (index-is-not-a-report), and it
-// imports a tagged model, which is served as a report (report-on-surface).
+// imports a tagged model, which is served as a report (report-on-surface), and
+// reaches another through an untagged model it imports.
 ## artifact { layout=grid tiles=["orders -> by_brand"] }
 import { orders } from "orders.malloy"
 import { extras } from "tagged_model.malloy"
+import { hop } from "surface_hop.malloy"
 
 export { orders, extras }

@@ -34,7 +34,6 @@ import {
 } from "./package_retrieval";
 import {
    API_PREFIX,
-   GIVENS_DOCS_URL,
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -108,6 +107,14 @@ import {
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import { CELLS_UNREADABLE } from "./notebook";
+import { deprecatedFormatWarnings } from "./deprecated/lints";
+import { isMalloynbPath } from "./deprecated/malloynb";
+import {
+   EXPLORES_IMPORTER,
+   exploresSurfaceFiles,
+   exploresSurfaceFix,
+   reportListedInExploresMessage,
+} from "./deprecated/explores";
 import { lintNotebookText, reportedByDashboardLint } from "./notebook_lint";
 import {
    buildDashboardManifest,
@@ -201,16 +208,9 @@ interface ReportDiscovery {
    readerWarnings: ApiPackageWarning[];
 }
 
-/** {@link Package.surfaceImporters}'s importer for a file `explores` lists. */
-const EXPLORES_IMPORTER = "explores";
-
 export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 
-/** `PackageWarning.code` of a `.malloynb` notebook's deprecated-format warning. */
-export const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
-/** `PackageWarning.code` of a source's deprecated `#(filter)` annotations warning. */
-export const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -1643,7 +1643,7 @@ export class Package {
          // declaring `#(filter)` annotations. Both still load and run, so this
          // is advisory; it rides the API so a client can say so on the package
          // rather than leave it to the server log.
-         ...this.legacyFormatWarnings(),
+         ...deprecatedFormatWarnings(this.models),
          // The whole surface failed to compile, so every model in the package
          // is refused by name. Rides the API for the same reason as the line
          // above, and more urgently: the 404s it causes name models that are
@@ -2647,43 +2647,6 @@ export class Package {
    }
 
    /**
-    * One warning per `.malloynb` notebook, and one per source a file declares
-    * deprecated `#(filter)` annotations on, naming that file (`model`) and the
-    * source (`subject`). A source that only inherits a filter (an `extend`) or
-    * arrives by import is not reported: the fix is in the declaring file, which
-    * is reported once (`Model.declaredFilterSourceNames`). Hidden models are
-    * reported too: a filter there is still deprecated syntax to migrate.
-    */
-   public legacyFormatWarnings(): ApiPackageWarning[] {
-      const notebooks: ApiPackageWarning[] = [];
-      const filters: ApiPackageWarning[] = [];
-      for (const [modelPath, model] of this.models) {
-         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
-            notebooks.push({
-               model: modelPath,
-               code: DEPRECATED_MALLOYNB_NOTEBOOK,
-               severity: "warn",
-               message:
-                  `${modelPath} is a .malloynb notebook, a deprecated format. ` +
-                  `Convert it to a .malloy report.`,
-            });
-         }
-         for (const name of model.declaredFilterSourceNames()) {
-            filters.push({
-               model: modelPath,
-               subject: name,
-               code: DEPRECATED_FILTER_ANNOTATION,
-               severity: "warn",
-               message:
-                  `Source ${name} uses deprecated #(filter) annotations. Replace them ` +
-                  `with given: runtime parameters (see ${GIVENS_DOCS_URL}).`,
-            });
-         }
-      }
-      return [...notebooks, ...filters];
-   }
-
-   /**
     * One message when every model on this package's surface failed to compile.
     *
     * The curated surface is the union of what the listed models export, so a
@@ -3248,7 +3211,7 @@ export class Package {
             });
          }
 
-         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         if (isMalloynbPath(modelPath)) {
             if (isReportEligiblePath(modelPath)) {
                const name = reportName(modelPath);
                files.set(modelPath, {
@@ -3384,7 +3347,7 @@ export class Package {
    ): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of models) {
-         if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
+         if (isMalloynbPath(modelPath)) {
             recordNotebookDiscovery(
                "malloynb",
                model.getCompilationError() ? "broken" : "ok",
@@ -3459,28 +3422,18 @@ export class Package {
    ): Promise<ApiPackageWarning[]> {
       const model = this.models.get(modelPath);
       if (!model || !this.queryBoundaryActive()) return [];
-      const surfaceIsIndex = this.surfaceIsIndexModel();
-      const listedModel = (this.packageMetadata.explores ?? []).find(
-         (entry) =>
-            entry.endsWith(MODEL_FILE_SUFFIX) && !this.isServedReport(entry),
-      );
-      const unexported = surfaceIsIndex
-         ? `which ${INDEX_MODEL_NAME} doesn't export`
-         : `which no file "explores" lists exports`;
-      // Under a written `explores` the fix goes through a file it lists. When
-      // it lists only reports, no listed file can export anything, and the
-      // working fix is to let index.malloy be the surface.
       // `source` is absent when the query route's refusal would not name it
       // (a gated model), and then neither does the warning.
-      const fixFor = (source: string | undefined) => {
-         const name = source ?? "the source it reads";
-         return surfaceIsIndex
-            ? `Fix: add ${name} to the export { ... } in ${INDEX_MODEL_NAME}.`
-            : listedModel
-              ? `Fix: add ${name} to the export { ... } in ${listedModel}.`
-              : `Fix: delete "explores" from publisher.json and add ${name} ` +
-                `to the export { ... } in ${INDEX_MODEL_NAME}.`;
-      };
+      const { unexported, fixFor } = this.surfaceIsIndexModel()
+         ? {
+              unexported: `which ${INDEX_MODEL_NAME} doesn't export`,
+              fixFor: (source: string | undefined) =>
+                 `Fix: add ${source ?? "the source it reads"} to the ` +
+                 `export { ... } in ${INDEX_MODEL_NAME}.`,
+           }
+         : exploresSurfaceFix(this.packageMetadata.explores, (entry) =>
+              this.isServedReport(entry),
+           );
       const checks: {
          request: { queryName?: string; query?: string };
          describe: (source: string) => string;
@@ -3727,9 +3680,8 @@ export class Package {
             if (next) queue.push([modelPath, next]);
          }
       }
-      for (const entry of this.packageMetadata.explores ?? []) {
-         if (entry !== INDEX_MODEL_NAME && !importers.has(entry))
-            importers.set(entry, EXPLORES_IMPORTER);
+      for (const entry of exploresSurfaceFiles(this.packageMetadata.explores)) {
+         if (!importers.has(entry)) importers.set(entry, EXPLORES_IMPORTER);
       }
       return importers;
    }
@@ -3763,11 +3715,7 @@ export class Package {
             code: "report-on-surface",
             message:
                importer === EXPLORES_IMPORTER
-                  ? `${modelPath} is listed in "explores" but is a report (it ` +
-                    `carries an artifact tag), so it adds nothing to the ` +
-                    `surface: a report reads the surface and never adds to it. ` +
-                    `Fix: remove it from "explores", or remove its artifact tag ` +
-                    `if it is meant to be a model.`
+                  ? reportListedInExploresMessage(modelPath)
                   : `${modelPath} is a report (it carries an artifact tag), and ` +
                     `${importer === INDEX_MODEL_NAME ? INDEX_MODEL_NAME : `${importer}, which ${INDEX_MODEL_NAME} reaches,`} ` +
                     `imports it. A report is not a model: it is not listed as ` +

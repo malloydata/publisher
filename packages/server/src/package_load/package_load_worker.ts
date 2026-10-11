@@ -65,10 +65,8 @@ import {
    type TableSourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
-import {
-   MalloySQLParser,
-   MalloySQLStatementType,
-} from "@malloydata/malloy-sql";
+import { MalloySQLStatementType } from "@malloydata/malloy-sql";
+import { parseMalloynb } from "../service/deprecated/malloynb";
 import * as fs from "fs";
 import * as path from "path";
 import { parentPort, threadId } from "node:worker_threads";
@@ -990,11 +988,7 @@ async function compileNotebookModel(
    const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
-   // The cell parser splits on "\n" alone; see Model's .malloynb load.
-   const parse = MalloySQLParser.parse(
-      fileContents.replace(/\r\n/g, "\n"),
-      modelPath,
-   );
+   const parse = parseMalloynb(fileContents, modelPath);
 
    // Build the extendModel chain synchronously so per-cell materializers
    // line up with statement order. Matches the in-process flow in
