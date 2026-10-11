@@ -80,9 +80,9 @@ storefront/
 What makes a file a report:
 
 - **It is a `.malloy` file outside `public/`** (a legacy `.malloynb` is a linear report too, read-only).
-- **It carries an artifact tag**, a model-level `## artifact { … }`. The query-level `# artifact` on a
-  `query:` still makes a report during a deprecation window; see
-  [The single-query form](#a-dashboard-from-one-query).
+- **It carries an artifact tag**, a model-level `## artifact { … }` that parses and does not set `kind=`.
+  A `# artifact` on a `query:` or a `view:` is not read; see
+  [One query as the page](#a-dashboard-from-one-query).
 - **It is not the package's root `index.malloy`.** That file _is_ the surface. A tag on it is ignored
   and reported as an error (`index-is-not-a-report`), rather than the surface silently vanishing.
 
@@ -115,7 +115,7 @@ is the thing being compiled.
 | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `## artifact { … }`                                               | Makes the file a report. Model-level; the header above it holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description   |
 | `layout=grid` / `layout=linear`                                   | The layout. **Always write it**: see [Which layout](#which-layout)                                                                                            |
-| `kind=dashboard` / `kind=notebook`                                | Deprecated spelling of `layout=grid` / `layout=linear`, still read, and reported (`report-kind-deprecated`) with the `layout=` to write                       |
+| `kind=…`                                                          | No longer read. A tag that sets it is not a report, and the package says so (`report-kind-removed`, error) with the `layout=` to write                        |
 | `title="…"`                                                       | The report's title. Without one, the title falls back to the description, then to an opening markdown heading, then to the basename                           |
 | `tiles=[…]`                                                       | The tiles, in order. A query tile is a quoted `"source -> view"`; a text tile is `name { kind=text }`. See [Tiles](#tiles)                                    |
 | `givens { NAME=value }`                                           | Starting control values, not a redeclaration. See [Apply, starting values, and the URL](#apply)                                                               |
@@ -150,15 +150,15 @@ one-line tag does, and the builder keeps whichever form the file has.
 
 In order, first match wins:
 
-1. `layout=` in the tag (or the deprecated `kind=`, read as `dashboard` → grid, `notebook` → linear). A
-   tag carrying both is read by `layout=`, and is an error when they disagree.
-2. A query-level `# artifact` on a `query:` is grid.
-3. A model-level `## artifact` that lists `tiles` or carries a `dashboard { … }` grid tag is grid.
-4. Anything else is linear: a report of `run:` cells, a tag with no tiles, or a `.malloynb`.
+1. `layout=grid` or `layout=linear` in the tag.
+2. A tag that lists `tiles` (an empty list counts), or a model-level `dashboard { … }` grid tag on any `##`
+   line of the file, is grid.
+3. Anything else is linear: a report of `run:` cells, a tag with no tiles, or a `.malloynb`.
 
-So **a linear report that lists tiles must say `layout=linear`**, or step 3 reads it as grid. Write
+So **a linear report that lists tiles must say `layout=linear`**, or step 2 reads it as grid. Write
 `layout=` on every report, which is what the builder and the create dialog always do, and a file never
-depends on steps 2 to 4. A model-level tag with no `layout=` and no tiles is read as linear and reported
+depends on steps 2 and 3. The rule reads the file's model-level notes, the same way whether the file is
+compiled, failed to compile, or is text handed to the compile check or the save. A model-level tag with no `layout=` and no tiles is read as linear and reported
 (`report-layout-implicit`) so you can say which you meant.
 
 What layout changes is how tiles are placed, and nothing else. Linear renders them one column wide, top
@@ -648,7 +648,7 @@ still looks like a picker but says "Could not load the options for this control"
 In a package that [curates its surface](discovery-and-access.md), resolving is not enough. A package
 curates when its root holds an `index.malloy` (every scaffolded package does), or when its
 `publisher.json` has a legacy `explores` list. Every report is listed and served whatever the surface is,
-but its tiles, its single query, and each `suggest` may read only sources on the surface. A report reads
+but its tiles and each `suggest` may read only sources on the surface. A report reads
 the surface; it never adds to it, so its own `export { … }` and named queries publish nothing. Export what
 the controls and tiles read from `index.malloy`:
 
@@ -728,19 +728,15 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
   name goes into the destination's URL exactly as the tag spells it, the destination binds only the
   parameters it declares, and the click lands on an unfiltered page with nothing erroring.
 
-**Bare-name targets are deprecated.** A target with no `/` is read as a path from the package root first.
-When no report is there, a deprecated fallback reads it as a basename (`to=overview` for a report at
-`sales/overview.malloy`) during a deprecation window: it resolves to the one grid report with that basename,
-or else the one report of either layout with it, and the package reports `drill-target-by-name` with the
-path to write. Otherwise the target is unresolved and the warning names the candidates. A later release
-reads every target as a path, so write paths now.
+**A target is always a path from the package root.** A bare name is a root file: `to=overview` is
+`overview.malloy`, never a report called `overview` elsewhere. Write `to="sales/overview"` for
+`sales/overview.malloy`.
 
 **The rows behind a value.** On a tile layout every grouped value is clickable. A value whose dimension
 carries a `# drill` does what the tag says. A value with no drill opens the rows behind it: Malloy's
 `drill:` through the tile's view
 (`run: <source> -> { drill: <view>.<field> = <value>; select: *; limit: 200 }`), so the tile's own `where:`
-and the applied controls both hold. This is not available on the single-query form, whose one result names
-no tile.
+and the applied controls both hold.
 
 Declaring it on the dimension is what makes it work everywhere: any result that groups by that dimension
 is clickable, in a grid tile and in a linear report's tile or cell alike, with no per-report wiring. So when
@@ -772,22 +768,24 @@ destination's own givens. Click it and look.
 
 <a id="a-dashboard-from-one-query"></a>
 
-## The single-query form, and `# dashboard` layout
+## One query as the page, and `# dashboard` layout
 
 Everything the grid reads off a tile's view comes from `@malloydata/render`'s `# dashboard` grammar, which
 lays out ONE Malloy result: top-level `aggregate:` measures become KPI cards and each `nest:` becomes a
 tile, placed by the same `columns`, `colspan` and `break`. A `# dashboard` view renders that way anywhere,
 in a tile of either layout or in a cell, and the same view looks the same in each.
 
-An older package may carry a **query-level `# artifact`** on a `query:`, whose one result is the whole page:
+One query whose single result is the whole page is a report with that query as its one tile: a model-level
+`## artifact` naming the query, and the query's own `# dashboard` laying out its result:
 
 ```malloy
 ##! experimental.givens
 import { order_items, products } from "storefront.malloy"
 import "givens.malloy"
 
-#" Revenue and margin at a glance.
-# artifact { title="Business Overview" } dashboard { columns=12 }
+##" Revenue and margin at a glance.
+## artifact { layout=grid title="Business Overview" tiles=["overview"] }
+# dashboard { columns=12 }
 query: overview is order_items -> {
   where: category ~ $CATEGORY
   aggregate:
@@ -805,44 +803,20 @@ query: overview is order_items -> {
 }
 ```
 
-**This form is deprecated.** It is still served, as a grid report, with a `query-artifact-deprecated`
-warning, until the release that also ends bare-name drill targets; after that only `## artifact` makes a
-report. Do not author one.
+A `# artifact` on the `query:` itself (the older single-query form) is not read: the file is an
+ordinary model. Move the tag to model level as above, the same properties plus `layout=grid` and
+`tiles=["<query>"]`.
 
-It never takes a file off the curated surface. On a file that the root `index.malloy` imports (directly
-or through other files) or that `explores` lists, the tag is ignored, whether or not the file declares
-sources of its own: the file stays an ordinary model that keeps publishing what it declares, and the
-package reports `query-artifact-ignored` (`warn`) naming the importer or `explores`. If you meant a
-report, put it in a file of its own that imports the model, with the `## artifact` below. A query-level
-dashboard file listed in `explores` (as older advice had it) is therefore a model now. Every query-level report has a mechanical rewrite, since a tile can be a
-model-level named query:
-
-```malloy
-// before
-# artifact { title="Overview" givens { REGION=f'US' } }
-query: overview is orders -> { … }
-
-// after
-## artifact { layout=grid title="Overview" givens { REGION=f'US' } tiles=["overview"] } dashboard { columns=12 }
-query: overview is orders -> { … }
-```
-
-What to know while one still exists:
-
-- **It cannot span sources**, and a guessed field inside it fails the whole package load, where a bad tile
-  in `tiles=[…]` fails alone.
+- **A `# dashboard` query cannot span sources**, where separate tiles can.
 - **A KPI row is authored differently.** On a `# dashboard` query a top-level `aggregate:` measure _is_ the
   card; a nested `# big_value` view renders embedded, each measure a full-width bar inside one tile.
-- **`# artifact` is read off a `query:`, not a `view:`.** A view carrying the tag is not discovered, and the
-  package warning says so.
-- **Without `columns=` there is no grid at all**: cards flow side by side at their natural widths and every
-  colspan is ignored. And a `f'…'` literal in a `givens { … }` block that shares a line with `# dashboard`
-  drops every `# colspan` and `# break`, rendering one plain nested table; put `# dashboard` on its own
-  line. To tell the two apart, run the page's query (`{"queryName": "<the manifest's query>"}`) and read
-  `renderLogs`: `Unknown render tag 'colspan'` means the renderer never saw a `# dashboard` tag;
-  `Ignored # colspan … only applies in columns mode` means it saw the tag but no count. Neither reaches the
-  package warnings.
-- `# dashboard { gap=N table { max_height=N | none } }` are options only this form reads.
+- **Without `columns=` there is no grid inside it**: cards flow side by side at their natural widths and
+  every colspan is ignored. And a `f'…'` literal in a `givens { … }` block that shares a line with
+  `# dashboard` drops every `# colspan` and `# break`, rendering one plain nested table; put `# dashboard`
+  on its own line. To tell the two apart, run the tile and read `renderLogs`: `Unknown render tag 'colspan'`
+  means the renderer never saw a `# dashboard` tag; `Ignored # colspan … only applies in columns mode`
+  means it saw the tag but no count. Neither reaches the package warnings.
+- `# dashboard { gap=N table { max_height=N | none } }` are options only a `# dashboard` query reads.
 
 <a id="what-publisher-checks-at-load"></a>
 
@@ -853,9 +827,8 @@ findings as package warnings, visible on the package page and in the server log.
 that are otherwise silent: a control that never appears, a click that goes nowhere.
 
 - **Drill targets.** A `# drill { to=… }` that names no report in the package; a `# drill` with no
-  destination; a `to=self` whose given no model in the package declares. A target that resolved by basename
-  is `drill-target-by-name`, with the path to write. The drill checks read every model in the package, not
-  just reports.
+  destination; a target that is not a plain path from the package root; a `to=self` whose given no model
+  in the package declares. The drill checks read every model in the package, not just reports.
 - **Controls.** A given whose `suggest` names a source, query or dimension the file cannot see, or a
   `suggest` in a form that cannot fetch options at all.
 - **Tiles and layout.** A tile that does not resolve to a real view; on a grid, a non-positive `columns`, a
@@ -868,14 +841,12 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 - **The tag and the header.** An artifact tag that does not parse (`notebook-artifact-unparsed`), a
   statement or tag above it, prose the reader cannot place, and a cell report that will not open, each as an
   `error` naming the line and the fix.
-- **The layout.** `layout=` and `kind=` that disagree (`report-layout-conflict`, error; `layout=` wins), and
-  a `layout=` other than `grid` or `linear` (`report-layout-unknown`, error).
-- **Deprecations.** `kind=` in the tag (`report-kind-deprecated`, warn, with the `layout=` to write); a
-  query-level `# artifact` (`query-artifact-deprecated`, with the rewrite), or one that is ignored because
-  its file is on the surface (`query-artifact-ignored`); a tileless tag with no `layout=`
-  (`report-layout-implicit`).
-- **The surface.** A tagged root `index.malloy` (`index-is-not-a-report`, error); a report that
-  `index.malloy` imports or `explores` lists (`report-on-surface`); and a tile, single query or `suggest` that
+- **The layout.** A `layout=` other than `grid` or `linear` (`report-layout-unknown`, error); a tag that
+  sets `kind=`, which is no longer read and makes no report (`report-kind-removed`, error, with the
+  `layout=` to write); a tileless tag with no `layout=` (`report-layout-implicit`).
+- **The surface.** A tagged root `index.malloy` (`index-is-not-a-report`, error); a report on the surface,
+  one that `index.malloy` imports, directly or through other files, or that `explores` lists
+  (`report-on-surface`); and a tile or `suggest` that
   reads a source the surface does not publish, for example:
 
   ```
@@ -915,9 +886,8 @@ message, and the entry clears on the next reload that compiles.
 `POST …/models/{path}/query`, against the report's own path, with `givens` in the request body, and so do
 the cells of a `.malloy` report written as `run:` cells (each cell's `text` as the `query`). There is no
 report-specific execution path, so authorization, row limits and query caps behave exactly as they do
-everywhere else. The manifest's two query fields take different request shapes: a single-query report's
-`query` is a NAME (`{"queryName": "<it>"}`), and a tile's `query` is an expression
-(`{"query": "run: <it>"}`). Skip `kind` `text` tiles, which have nothing to run.
+everywhere else. A tile's `query` is an expression, so send it as `{"query": "run: <it>"}`. Skip `kind`
+`text` tiles, which have nothing to run.
 [ai-agents.md](ai-agents.md) has the REST playbook.
 
 **Deprecated aliases.** `GET …/dashboards` and `GET …/dashboards/{name}` answer with the grid reports, the
