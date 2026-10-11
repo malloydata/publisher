@@ -333,7 +333,6 @@ describe("served notebooks (worker path)", () => {
          `## artifact { kind=notebook }\n${BASE}`,
       );
       write("notebooks/untagged.malloy", BASE);
-      write("notebooks/nested.malloynb", ">>>markdown\n# x");
       await withPackage(async (pkg) => {
          expect(pkg.getReportLayout("notebooks/tagged.malloy")).toBe("linear");
          expect(pkg.isServedReport("notebooks/untagged.malloy")).toBe(false);

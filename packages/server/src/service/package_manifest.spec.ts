@@ -36,7 +36,7 @@ describe("service/package_manifest", () => {
       it("says nothing about the recommended shape: a root index.malloy and no keys", () => {
          for (const paths of [
             ["index.malloy", "orders.malloy"],
-            ["index.malloy", "report.malloynb"],
+            ["index.malloy", "report.malloy"],
             ["index.malloy"],
          ]) {
             expect(resolve(undefined, paths).warnings).toEqual([]);

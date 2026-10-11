@@ -205,15 +205,21 @@ describe("DashboardEditor as a notebook", () => {
       expect(getModel.mock.calls[0][2]).toBe("dashboards/tour.malloy");
    });
 
-   it("refuses a .malloynb notebook without fetching it", async () => {
-      const onEvent = mock((_event: BuilderEvent) => {});
-      mount({ dashboardName: "old.malloynb" }, onEvent);
-      expect(
-         await screen.findByText(/a \.malloynb notebook is read, not edited/),
-      ).toBeDefined();
-      expect(getModel).not.toHaveBeenCalled();
-      expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "notebook.open_refused",
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("refuses a .malloynb notebook without fetching it", async () => {
+         const onEvent = mock((_event: BuilderEvent) => {});
+         mount({ dashboardName: "old.malloynb" }, onEvent);
+         expect(
+            await screen.findByText(
+               /a \.malloynb notebook is read, not edited/,
+            ),
+         ).toBeDefined();
+         expect(getModel).not.toHaveBeenCalled();
+         expect(onEvent.mock.calls[0][0]).toMatchObject({
+            type: "notebook.open_refused",
+         });
       });
    });
 

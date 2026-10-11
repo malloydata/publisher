@@ -123,7 +123,9 @@ function notebookCell(cell: unknown): { count: number; sql: string } {
    return { count, sql: parsed.sql ?? "" };
 }
 
-describe("a notebook cell that imports a gated source and runs it in the SAME cell", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+describe("deprecated: .malloynb — a notebook cell that imports a gated source and runs it in the SAME cell", () => {
    // The blocking regression. There is no earlier code cell to graft
    // against, so the cell's own scope is the graft target and the bind goes
    // through `_loadQueryFromQueryDef` — which never recompiles, so it never
@@ -187,7 +189,9 @@ run: gated -> { aggregate: c }
    });
 });
 
-describe("the graft never escapes the request that made it", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+describe("deprecated: .malloynb — the graft never escapes the request that made it", () => {
    it("gives two callers with different givens their own row sets from the SAME cell", async () => {
       // `cell.runnable` is memoized across requests. Grafting the cell's
       // queryDef IN PLACE would poison that cache: whoever queried first

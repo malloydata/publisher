@@ -565,78 +565,56 @@ describe("Dashboard discovery (E2E)", () => {
       expect(await unsurfaced.text()).toContain("unknown given");
    });
 
-   // ── the notebook surface, which shares all of the above ──────────
+   // The same parameter contract on a linear report is pinned in
+   // reports/linear_reports.integration.spec.ts.
 
    /**
-    * A notebook and a dashboard are two presentations of one machine, so the
-    * facts a control row is built from have to reach both. These pin the
-    * notebook half: the control contract on `Source.givens`, the `autorun`
-    * flag, and a value surviving the shared codec on the notebook-cell path.
+    * `default` has to be usable AS a default. A filter given is declared as
+    * the literal `f'Nike'` and the query endpoint takes the body `Nike`, so
+    * publishing the literal made this a field that silently matches zero rows
+    * when a client substitutes it, with no error to search for.
+    *
+    * Both halves in one test: the filter given must be unwrapped, and the
+    * plain string whose default READS like a literal must not be, because
+    * only a filter-typed given carries the wrapper.
     */
-   describe("a notebook gets the same parameter contract", () => {
-      const notebookUrl = (sub: string) =>
-         apiUrl(`/notebooks/orders-since.malloynb${sub}`);
+   it("publishes a default the query endpoint accepts, unwrapped only for filter givens", async () => {
+      const manifest = await getManifest("overview");
+      const byName = Object.fromEntries(
+         (manifest.givens ?? []).map((g) => [g.name, g]),
+      );
+      expect(byName["BRAND"]?.default).toBe("Nike");
 
-      it("carries each given's control contract on the notebook's sources", async () => {
-         const res = await fetch(notebookUrl(""));
-         expect(res.status).toBe(200);
-         const body = (await res.json()) as {
-            autorun?: boolean;
-            sources?: { givens?: GivenSpec[] }[];
-         };
-
-         const givens = new Map(
-            (body.sources ?? [])
-               .flatMap((source) => source.givens ?? [])
-               .map((given) => [given.name, given]),
-         );
-
-         // The same presentation the dashboard manifest reports, because it is
-         // read off the declaration rather than off either surface.
-         expect(givens.get("BRAND")).toMatchObject({
-            label: "Brand",
-            control: "select",
-            suggest: { source: "orders", dimension: "brand" },
-         });
-         expect(givens.get("MIN_AMOUNT")).toMatchObject({
-            rangeMin: 0,
-            rangeMax: 500,
-         });
-         expect(givens.get("SINCE")).toMatchObject({
-            type: "date",
-            label: "Ordered since",
-         });
+      // And it round-trips: the advertised default actually runs and matches.
+      const res = await fetch(apiUrl(`/models/${manifest.path}/query`), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({
+            queryName: manifest.query,
+            givens: { BRAND: byName["BRAND"]?.default },
+            compactJson: true,
+         }),
       });
+      expect(res.status).toBe(200);
+      const rows = JSON.parse(
+         ((await res.json()) as { result: string }).result,
+      ) as unknown[];
+      expect(rows.length).toBeGreaterThan(0);
+   });
 
-      it("reports autorun=false from the file-level tag", async () => {
-         const batched = (await (await fetch(notebookUrl(""))).json()) as {
-            autorun?: boolean;
-         };
-         expect(batched.autorun).toBe(false);
-
-         // And an untagged notebook defaults to running on every change.
-         const plain = (await (
-            await fetch(apiUrl("/notebooks/brands.malloynb"))
-         ).json()) as { autorun?: boolean };
-         expect(plain.autorun).toBe(true);
-      });
-
-      // Both surfaces encode a Date through the SDK's `givensToRequest`, and
-      // nothing in the SDK can check that the server reads what it sends, so
-      // the wire form is pinned from this side. It matters because the three
-      // time types take three spellings and each rejects the other two.
-      const runSince = async (since: string) =>
-         fetch(
-            notebookUrl(
-               `/cells/3?givens=${encodeURIComponent(
-                  JSON.stringify({ SINCE: since }),
-               )}`,
-            ),
-         );
-
-      it("reads a date given in the bare form the shared codec sends", async () => {
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations). The `.malloy`
+   // form of each is in reports/linear_reports.integration.spec.ts.
+   describe("deprecated: .malloynb notebooks", () => {
+      it("reads a date given in the bare form on a .malloynb cell", async () => {
          const countSince = async (since: string) => {
-            const res = await runSince(since);
+            const res = await fetch(
+               apiUrl(
+                  `/notebooks/orders-since.malloynb/cells/3?givens=${encodeURIComponent(
+                     JSON.stringify({ SINCE: since }),
+                  )}`,
+               ),
+            );
             expect(res.status).toBe(200);
             const body = (await res.json()) as { result?: string };
             const cell = JSON.parse(body.result ?? "{}") as {
@@ -648,132 +626,40 @@ describe("Dashboard discovery (E2E)", () => {
             };
             return cell.data?.array_value?.[0]?.record_value?.[0]?.number_value;
          };
-
          // Six orders in the fixture; two are ordered on or after 2024-03-01.
          expect(await countSince("2024-01-01")).toBe(6);
          expect(await countSince("2024-03-01")).toBe(2);
       });
 
-      /**
-       * The manifest says `startingGivens` is "in the shape the query endpoint
-       * accepts", so the value it publishes must survive being sent straight
-       * back. A MOTLY date literal arrives as a `Date` and `Tag.text()` renders
-       * one with `toISOString()`, which is exactly the spelling the next test
-       * proves is refused. The fixture writes the literal form deliberately;
-       * quoting it, as it used to, dodged the path entirely.
-       */
-      /**
-       * `default` has to be usable AS a default. A filter given is declared as
-       * the literal `f'Nike'` and the query endpoint takes the body `Nike`, so
-       * publishing the literal made this a field that silently matches zero rows
-       * when a client substitutes it, with no error to search for.
-       *
-       * Both halves in one test: the filter given must be unwrapped, and the
-       * plain string whose default READS like a literal must not be, because
-       * only a filter-typed given carries the wrapper.
-       */
-      it("publishes a default the query endpoint accepts, unwrapped only for filter givens", async () => {
-         const manifest = await getManifest("overview");
-         const byName = Object.fromEntries(
-            (manifest.givens ?? []).map((g) => [g.name, g]),
-         );
-         expect(byName["BRAND"]?.default).toBe("Nike");
-
-         // And it round-trips: the advertised default actually runs and matches.
-         const res = await fetch(apiUrl(`/models/${manifest.path}/query`), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-               queryName: manifest.query,
-               givens: { BRAND: byName["BRAND"]?.default },
-               compactJson: true,
-            }),
-         });
-         expect(res.status).toBe(200);
-         const rows = JSON.parse(
-            ((await res.json()) as { result: string }).result,
-         ) as unknown[];
-         expect(rows.length).toBeGreaterThan(0);
-      });
-
-      it("publishes a date starting given the query endpoint will accept", async () => {
-         const res = await fetch(apiUrl("/notebooks/orders-start.malloynb"));
-         expect(res.status).toBe(200);
-         const nb = (await res.json()) as {
-            startingGivens?: Record<string, string>;
+      it("titles a .malloynb from title=, then its doc comment, then its first heading", async () => {
+         const listNotebooks = async (packageName: string) => {
+            const res = await fetch(
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${packageName}/reports`,
+            );
+            expect(res.status).toBe(200);
+            return (await res.json()) as {
+               path?: string;
+               title?: string;
+               description?: string;
+            }[];
          };
-         expect(nb.startingGivens?.SINCE).toBe("2024-03-01");
-         // And it round-trips: the published value runs.
-         const run = await runSince(nb.startingGivens?.SINCE ?? "");
-         expect(run.status).toBe(200);
-      });
-
-      it("rejects a full ISO timestamp for a date given", async () => {
-         // The reason `givensToRequest` needs the declared type at all: a
-         // blanket toISOString() lands here, not on a result.
-         const res = await runSince("2024-03-01T00:00:00.000Z");
-         expect(res.status).toBe(400);
-         const body = (await res.json()) as { message?: string };
-         expect(body.message).toContain("YYYY-MM-DD");
-      });
-   });
-
-   /**
-    * A notebook row in a package listing carries a human title, resolved the
-    * way a dashboard's is plus the notebook-only heading step. Asserted on the
-    * served response rather than the resolver, because the point of the feature
-    * is that a listing stops showing filenames.
-    */
-   describe("notebook titles in a package listing", () => {
-      const listNotebooks = async (
-         packageName: string,
-      ): Promise<{ path?: string; title?: string; description?: string }[]> => {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${packageName}/notebooks`,
-         );
-         expect(res.status).toBe(200);
-         return (await res.json()) as {
-            path?: string;
-            title?: string;
-            description?: string;
-         }[];
-      };
-
-      it("prefers an explicit ## title= over everything below it", async () => {
-         const notebooks = await listNotebooks(PACKAGE_NAME);
-         const since = notebooks.find(
-            (n) => n.path === "orders-since.malloynb",
-         );
-         expect(since).toMatchObject({
+         const mine = await listNotebooks(PACKAGE_NAME);
+         expect(
+            mine.find((n) => n.path === "orders-since.malloynb"),
+         ).toMatchObject({
             title: "Orders in a window",
             description: "Order counts from a date the reader picks.",
          });
-      });
-
-      it("falls back to the first markdown heading, so an untagged notebook still has a title", async () => {
-         const notebooks = await listNotebooks(PACKAGE_NAME);
-         const brands = notebooks.find((n) => n.path === "brands.malloynb");
+         const brands = mine.find((n) => n.path === "brands.malloynb");
          expect(brands?.title).toBe("Brands");
-         // Nothing to describe it: the heading is a title, not a doc comment.
          expect(brands?.description).toBeUndefined();
-      });
-
-      it("takes the doc comment ahead of the heading", async () => {
-         const notebooks = await listNotebooks(LINT_PACKAGE);
-         const shipping = notebooks.find((n) => n.path === "shipping.malloynb");
-         // A title is one line and a description is not. `docCommentText` joins
-         // a multi-line comment with newlines on purpose, since that route
-         // carries markdown, so the title takes only the first line; using the
-         // whole comment put an embedded newline into a single-line field.
-         //
-         // And the description is the REST of the comment, not all of it. It
-         // used to repeat the line the title had already taken, which published
-         // the same words twice on any surface rendering both.
+         const shipping = (await listNotebooks(LINT_PACKAGE)).find(
+            (n) => n.path === "shipping.malloynb",
+         );
          expect(shipping).toMatchObject({
             title: "Carrier volumes",
             description: "Shipments per carrier, refreshed nightly.",
          });
-         expect(shipping?.title ?? "").not.toContain("\n");
       });
    });
 

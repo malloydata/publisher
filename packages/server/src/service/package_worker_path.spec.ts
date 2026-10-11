@@ -239,27 +239,241 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
       }
    });
 
-   it("validates and surfaces a `#(authorize) true` admit-all gate through the worker — the notebook branch's load-assert copy stays in step with Model.create", async () => {
-      writeManifest();
-      fs.writeFileSync(
-         path.join(tempDir, "gated.malloynb"),
-         `>>>malloy
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("validates and surfaces a `#(authorize) true` admit-all gate through the worker — the notebook branch's load-assert copy stays in step with Model.create", async () => {
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "gated.malloynb"),
+            `>>>malloy
 #(authorize) true
 source: gated is duckdb.sql("select 1 as id") extend {}`,
-      );
+         );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("gated.malloynb");
-         // The worker's notebook branch compiled the admit-all probe (no
-         // throw) and surfaced the effective expression — proves the
-         // notebook's own `assertAuthorizeGrammarValid` call agrees with
-         // Model.create's on `true`.
-         expect(model!.getAuthorize("gated")).toEqual(["true"]);
-      } finally {
-         await duckdb.close();
-      }
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const model = pkg.getModel("gated.malloynb");
+            // The worker's notebook branch compiled the admit-all probe (no
+            // throw) and surfaced the effective expression — proves the
+            // notebook's own `assertAuthorizeGrammarValid` call agrees with
+            // Model.create's on `true`.
+            expect(model!.getAuthorize("gated")).toEqual(["true"]);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("validates a valid #(authorize) source in a .malloynb notebook through the worker", async () => {
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "gated.malloynb"),
+            `>>>markdown
+# Gated notebook
+
+>>>malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'analyst' = $ROLE
+source: gated is duckdb.sql("select 1 as id") extend {}`,
+         );
+
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const model = pkg.getModel("gated.malloynb");
+            // compileNotebookModel ran authorize validation (no throw) and
+            // surfaced the gate — the notebook compile path was previously
+            // unexercised by tests.
+            expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("rejects a .malloynb notebook whose #(authorize) references an unknown given", async () => {
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "badgate.malloynb"),
+            `>>>malloy
+##! experimental.givens
+
+given:
+  ROLE :: string
+
+#(authorize) 'x' = $NOPE
+source: gated is duckdb.sql("select 1 as id") extend {}`,
+         );
+
+         const { ModelCompilationError } = await import("../errors");
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            await expect(
+               Package.create("env", "pkg", tempDir, malloyConfig),
+            ).rejects.toBeInstanceOf(ModelCompilationError);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("a notebook cell hydrated from the worker's cellModelDef receives only its own scope's givens", async () => {
+         // Here a cell's modelDef comes from the worker's cellModelDef, not a live compile.
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "nb.malloynb"),
+            `>>>markdown
+# Notes
+>>>malloy
+source: plain is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
+  measure: c is count()
+}
+run: plain -> { aggregate: c }
+>>>malloy
+##! experimental.givens
+
+given:
+  GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: gated is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
+  measure: c is count()
+}
+run: gated -> { aggregate: c }`,
+         );
+
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const model = pkg.getModel("nb.malloynb");
+
+            const preImport = await model!.executeNotebookCell(
+               1,
+               undefined,
+               false,
+               { GROUPS: [1] },
+            );
+            const preImportRows = JSON.parse(preImport.result!) as {
+               data?: {
+                  array_value?: Array<{
+                     record_value?: Array<{ number_value?: number }>;
+                  }>;
+               };
+            };
+            expect(
+               preImportRows.data?.array_value?.[0]?.record_value?.[0]
+                  ?.number_value,
+            ).toBe(4);
+
+            const postImport = await model!.executeNotebookCell(
+               2,
+               undefined,
+               false,
+               { GROUPS: [1] },
+            );
+            const postImportRows = JSON.parse(postImport.result!) as {
+               data?: {
+                  array_value?: Array<{
+                     record_value?: Array<{ number_value?: number }>;
+                  }>;
+               };
+            };
+            const count =
+               postImportRows.data?.array_value?.[0]?.record_value?.[0]
+                  ?.number_value;
+            expect(count).toBe(2);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("400s a worker-hydrated notebook cell reading an off-surface gate given", async () => {
+         writeOffSurfaceGivenPackage();
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const err = await pkg
+               .getModel("og_nb.malloynb")!
+               .executeNotebookCell(0, undefined, false, { HIDE: "a" })
+               .catch((e: unknown) => e);
+            expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("logs a warning for a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "bad_render.malloynb"),
+            `>>>malloy
+source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+         );
+
+         const warnSpy = spyOn(logger, "warn");
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            expect(pkg.getModelPaths()).toEqual(["bad_render.malloynb"]);
+            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
+            expect(
+               warnings.some(
+                  (m) =>
+                     m.includes("Render tag findings on") &&
+                     m.includes("[error]"),
+               ),
+            ).toBe(true);
+            // The notebook finding also rides the package response (not just logs).
+            const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
+            expect(
+               responseWarnings.some(
+                  (w) =>
+                     w.model === "bad_render.malloynb" &&
+                     w.severity === "error",
+               ),
+            ).toBe(true);
+         } finally {
+            warnSpy.mockRestore();
+            await duckdb.close();
+         }
+      });
    });
 
    it("splits #(authorize) and #(access_filter) into separate wire fields through the worker", async () => {
@@ -324,131 +538,6 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          await expect(
             Package.create("env", "pkg", tempDir, malloyConfig),
          ).rejects.toBeInstanceOf(ModelCompilationError);
-      } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("validates a valid #(authorize) source in a .malloynb notebook through the worker", async () => {
-      writeManifest();
-      fs.writeFileSync(
-         path.join(tempDir, "gated.malloynb"),
-         `>>>markdown
-# Gated notebook
-
->>>malloy
-##! experimental.givens
-
-given:
-  ROLE :: string
-
-#(authorize) 'analyst' = $ROLE
-source: gated is duckdb.sql("select 1 as id") extend {}`,
-      );
-
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("gated.malloynb");
-         // compileNotebookModel ran authorize validation (no throw) and
-         // surfaced the gate — the notebook compile path was previously
-         // unexercised by tests.
-         expect(model!.getAuthorize("gated")).toEqual(["'analyst' = $ROLE"]);
-      } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("rejects a .malloynb notebook whose #(authorize) references an unknown given", async () => {
-      writeManifest();
-      fs.writeFileSync(
-         path.join(tempDir, "badgate.malloynb"),
-         `>>>malloy
-##! experimental.givens
-
-given:
-  ROLE :: string
-
-#(authorize) 'x' = $NOPE
-source: gated is duckdb.sql("select 1 as id") extend {}`,
-      );
-
-      const { ModelCompilationError } = await import("../errors");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         await expect(
-            Package.create("env", "pkg", tempDir, malloyConfig),
-         ).rejects.toBeInstanceOf(ModelCompilationError);
-      } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("a notebook cell hydrated from the worker's cellModelDef receives only its own scope's givens", async () => {
-      // Here a cell's modelDef comes from the worker's cellModelDef, not a live compile.
-      writeManifest();
-      fs.writeFileSync(
-         path.join(tempDir, "nb.malloynb"),
-         `>>>markdown
-# Notes
->>>malloy
-source: plain is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
-  measure: c is count()
-}
-run: plain -> { aggregate: c }
->>>malloy
-##! experimental.givens
-
-given:
-  GROUPS :: number[]
-
-#(access_filter) org_id in $GROUPS
-source: gated is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t(id, org_id)") extend {
-  measure: c is count()
-}
-run: gated -> { aggregate: c }`,
-      );
-
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const model = pkg.getModel("nb.malloynb");
-
-         const preImport = await model!.executeNotebookCell(
-            1,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
-         const preImportRows = JSON.parse(preImport.result!) as {
-            data?: {
-               array_value?: Array<{
-                  record_value?: Array<{ number_value?: number }>;
-               }>;
-            };
-         };
-         expect(
-            preImportRows.data?.array_value?.[0]?.record_value?.[0]
-               ?.number_value,
-         ).toBe(4);
-
-         const postImport = await model!.executeNotebookCell(
-            2,
-            undefined,
-            false,
-            { GROUPS: [1] },
-         );
-         const postImportRows = JSON.parse(postImport.result!) as {
-            data?: {
-               array_value?: Array<{
-                  record_value?: Array<{ number_value?: number }>;
-               }>;
-            };
-         };
-         const count =
-            postImportRows.data?.array_value?.[0]?.record_value?.[0]
-               ?.number_value;
-         expect(count).toBe(2);
       } finally {
          await duckdb.close();
       }
@@ -522,21 +611,6 @@ run: mid_ungated -> { aggregate: c }`,
                undefined,
                { HIDE: "a" },
             )
-            .catch((e: unknown) => e);
-         expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
-      } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("400s a worker-hydrated notebook cell reading an off-surface gate given", async () => {
-      writeOffSurfaceGivenPackage();
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const err = await pkg
-            .getModel("og_nb.malloynb")!
-            .executeNotebookCell(0, undefined, false, { HIDE: "a" })
             .catch((e: unknown) => e);
          expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
       } finally {
@@ -693,49 +767,6 @@ run: mid_ungated -> { aggregate: c }`,
                   m.includes("Render tag findings on") &&
                   m.includes("[error]") &&
                   m.includes("card"),
-            ),
-         ).toBe(true);
-      } finally {
-         warnSpy.mockRestore();
-         await duckdb.close();
-      }
-   });
-
-   it("logs a warning for a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
-      writeManifest();
-      fs.writeFileSync(
-         path.join(tempDir, "bad_render.malloynb"),
-         `>>>malloy
-source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
-  measure: total is a.sum()
-  # big_value { sparkline=trend }
-  view: card is {
-    aggregate: total
-    nest:
-      # line_chart { size=spark }
-      trend is { group_by: a; aggregate: total }
-  }
-}`,
-      );
-
-      const warnSpy = spyOn(logger, "warn");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         expect(pkg.getModelPaths()).toEqual(["bad_render.malloynb"]);
-         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
-         expect(
-            warnings.some(
-               (m) =>
-                  m.includes("Render tag findings on") && m.includes("[error]"),
-            ),
-         ).toBe(true);
-         // The notebook finding also rides the package response (not just logs).
-         const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
-         expect(
-            responseWarnings.some(
-               (w) =>
-                  w.model === "bad_render.malloynb" && w.severity === "error",
             ),
          ).toBe(true);
       } finally {

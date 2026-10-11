@@ -2729,7 +2729,9 @@ function firstCellResultValue(resultJson: string): unknown {
    );
 }
 
-describe("row-level authorize — notebook cells", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+describe("deprecated: .malloynb — row-level authorize — notebook cells", () => {
    it("CRITICAL — a cell that declares its own source under a row-level gate AND runs it returns correctly filtered rows", async () => {
       const duckdb = await newDuckdb();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));

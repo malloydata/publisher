@@ -123,8 +123,8 @@ source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
 export { customers }`,
       );
       fs.writeFileSync(
-         path.join(tempDir, "report.malloynb"),
-         `>>>markdown\n# Sales Report\nA report that is always public.`,
+         path.join(tempDir, "report.malloy"),
+         `## artifact { layout=linear title="Sales Report" }\n`,
       );
    }
 
@@ -132,7 +132,7 @@ export { customers }`,
       return (await pkg.listModels()).map((m) => m.path as string).sort();
    }
 
-   it("a root index.malloy hides non-entry models, curates exports, keeps join-through, lists notebooks", async () => {
+   it("a root index.malloy hides non-entry models, curates exports, keeps join-through, lists reports", async () => {
       writeManifest(); // no manifest keys: index.malloy is the surface
       writeLayeredModels();
 
@@ -159,9 +159,9 @@ export { customers }`,
             .getQueryResults("customers", "v", undefined);
          expect(result.data).toBeDefined();
 
-         // Notebooks are always public regardless of the surface.
+         // Reports are always public regardless of the surface.
          expect((await pkg.listNotebooks()).map((n) => n.path)).toEqual([
-            "report.malloynb",
+            "report.malloy",
          ]);
 
          // The derived entry always resolves, so it can never be an invalid
@@ -1115,30 +1115,6 @@ export { pub2, pub3 }`,
                   `publisher.json: file not found in the package. Fix: list a ` +
                   `.malloy file relative to the package root ` +
                   `(e.g. "index.malloy").`,
-            );
-         } finally {
-            await duckdb.close();
-         }
-      });
-
-      it("flags a notebook listed as an explore; valid entries still resolve", async () => {
-         writeManifest({ explores: ["index.malloy", "report.malloynb"] });
-         writeLayeredModels();
-
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
-         try {
-            const pkg = await Package.create(
-               "env",
-               "pkg",
-               tempDir,
-               malloyConfig,
-            );
-            expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
-            expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
-               "report.malloynb",
-            ]);
-            expect(pkg.formatInvalidExplores()).toMatch(
-               /report\.malloynb.*notebooks are always listed/s,
             );
          } finally {
             await duckdb.close();

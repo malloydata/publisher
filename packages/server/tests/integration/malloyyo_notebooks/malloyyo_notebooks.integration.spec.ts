@@ -473,14 +473,18 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(info.entries?.map((e) => e.name)).toEqual(["own_cells_query"]);
       });
 
-      it("applies the cells' surface filter to a .malloynb GET's model info", async () => {
-         expect(
-            (await describedRuns("notebooks/legacy.malloynb")).modelInfo,
-         ).not.toContain("secret_total");
-         // Positive control: a last cell over a curated source is still described.
-         const open = await describedRuns("notebooks/legacy_open.malloynb");
-         expect(open.columns).toEqual(["order_count"]);
-         expect(open.modelInfo).not.toContain("secret_total");
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+      describe("deprecated: .malloynb notebooks", () => {
+         it("applies the cells' surface filter to a .malloynb GET's model info", async () => {
+            expect(
+               (await describedRuns("notebooks/legacy.malloynb")).modelInfo,
+            ).not.toContain("secret_total");
+            // Positive control: a last cell over a curated source is still described.
+            const open = await describedRuns("notebooks/legacy_open.malloynb");
+            expect(open.columns).toEqual(["order_count"]);
+            expect(open.modelInfo).not.toContain("secret_total");
+         });
       });
 
       it("runs a cell over a curated source", async () => {

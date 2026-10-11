@@ -1229,10 +1229,13 @@ source: filtered_parent is duckdb.table('orgtable') extend {
       });
    });
 
-   it("serves for the notebook-cell equivalent", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
-         {
-            "nb.malloynb": `>>>malloy
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("serves for the notebook-cell equivalent", async () => {
+         const { model, duckdb, dir } = await createModelWithFiles(
+            {
+               "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1246,19 +1249,20 @@ source: gated_parent is duckdb.table('orgtable') extend {
 >>>malloy
 run: gated_parent extend { where: id = 1 } -> { aggregate: n is count() }
 `,
-         },
-         "nb.malloynb",
-      );
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.executeNotebookCell(1, {}, false, {
-            GROUPS: [1],
-         });
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(1);
-      } finally {
-         await cleanup(duckdb, dir);
-      }
+            },
+            "nb.malloynb",
+         );
+         try {
+            expect(compilationErrorOf(model)).toBeUndefined();
+            const result = await model.executeNotebookCell(1, {}, false, {
+               GROUPS: [1],
+            });
+            expect(result.result).toBeDefined();
+            expect(firstCellResultValue(result.result!)).toBe(1);
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      });
    });
 });
 

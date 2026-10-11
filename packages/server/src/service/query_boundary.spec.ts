@@ -21,7 +21,7 @@
  * filters use; an unresolvable target fails closed.
  *
  * This is the *what* axis; `#(authorize)` (the *who* axis) is orthogonal and
- * tested in explore_visibility.spec.ts / the authorize specs. Notebooks are
+ * tested in explore_visibility.spec.ts / the authorize specs. Reports are
  * always public and never gated.
  */
 import {
@@ -138,10 +138,6 @@ source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
   view: v is { aggregate: total }
 }
 export { customers }`,
-      );
-      fs.writeFileSync(
-         path.join(tempDir, "report.malloynb"),
-         `>>>markdown\n# Report\nAlways public.`,
       );
    }
 
@@ -1144,115 +1140,133 @@ export { \`customer-orders\` }`,
       }
    });
 
-   it("declared: text sent to a notebook path reaches only the package surface", async () => {
-      // A notebook is always listed, but it is not a way around the surface:
-      // query text a caller sends to its path, and its own saved cells, are
-      // held to the surface like any other file's.
-      writeManifest();
-      writeLayeredModels();
-      fs.writeFileSync(
-         path.join(tempDir, "report.malloynb"),
-         `>>>malloy\nimport "index.malloy"\nimport "base.malloy"\n` +
-            `>>>malloy\nrun: base_source -> v\n` +
-            `>>>malloy\nsource: mine is customers extend { where: id > 0 }\n` +
-            `>>>malloy\nrun: mine -> v\n` +
-            `>>>malloy\nrun: customers -> v`,
-      );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const notebook = pkg.getModel("report.malloynb")!;
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("declared: text sent to a notebook path reaches only the package surface", async () => {
+         // A notebook is always listed, but it is not a way around the surface:
+         // query text a caller sends to its path, and its own saved cells, are
+         // held to the surface like any other file's.
+         writeManifest();
+         writeLayeredModels();
+         fs.writeFileSync(
+            path.join(tempDir, "report.malloynb"),
+            `>>>malloy\nimport "index.malloy"\nimport "base.malloy"\n` +
+               `>>>malloy\nrun: base_source -> v\n` +
+               `>>>malloy\nsource: mine is customers extend { where: id > 0 }\n` +
+               `>>>malloy\nrun: mine -> v\n` +
+               `>>>malloy\nrun: customers -> v`,
+         );
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const notebook = pkg.getModel("report.malloynb")!;
 
-         // base.malloy is not listed, and it exports everything, so the
-         // notebook's import can see base_source. Seeing it is not admission.
-         await expect(
-            notebook.getQueryResults(
+            // base.malloy is not listed, and it exports everything, so the
+            // notebook's import can see base_source. Seeing it is not admission.
+            await expect(
+               notebook.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: base_source -> v",
+               ),
+            ).rejects.toThrow(NotQueryableError);
+            await expect(
+               notebook.getQueryResults("base_source", "v", undefined),
+            ).rejects.toThrow(NotQueryableError);
+
+            // What the surface publishes answers through the notebook path too.
+            const published = await notebook.getQueryResults(
                undefined,
                undefined,
-               "run: base_source -> v",
-            ),
-         ).rejects.toThrow(NotQueryableError);
-         await expect(
-            notebook.getQueryResults("base_source", "v", undefined),
-         ).rejects.toThrow(NotQueryableError);
+               "run: customers -> v",
+            );
+            expect(published.result.data).toBeDefined();
 
-         // What the surface publishes answers through the notebook path too.
-         const published = await notebook.getQueryResults(
-            undefined,
-            undefined,
-            "run: customers -> v",
-         );
-         expect(published.result.data).toBeDefined();
+            // The author's own cell is held to the surface too: it reads
+            // base_source, which the surface does not publish.
+            await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
+               NotQueryableError,
+            );
+            // A cell over what the surface publishes runs, and so does one over a
+            // source an EARLIER cell derives from it.
+            expect(
+               (await notebook.executeNotebookCell(4)).result,
+            ).toBeDefined();
+            expect(
+               (await notebook.executeNotebookCell(3)).result,
+            ).toBeDefined();
 
-         // The author's own cell is held to the surface too: it reads
-         // base_source, which the surface does not publish.
-         await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
-            NotQueryableError,
-         );
-         // A cell over what the surface publishes runs, and so does one over a
-         // source an EARLIER cell derives from it.
-         expect((await notebook.executeNotebookCell(4)).result).toBeDefined();
-         expect((await notebook.executeNotebookCell(3)).result).toBeDefined();
+            // And the notebook does not show what it may not read: the import
+            // cell's newSources and the notebook's sources leave base_source out.
+            const raw = await notebook.getNotebook();
+            const shown = JSON.stringify(raw);
+            expect(shown).not.toContain('"base_source"');
+            expect(
+               (raw.sources ?? []).map((source) => source.name).sort(),
+            ).toEqual(["customers", "mine"]);
+            // Nor a refused cell's queryInfo, whose schema lists the columns its
+            // query returns. The cells that run keep theirs.
+            const queryInfo = (raw.notebookCells ?? []).map(
+               (cell) => cell.queryInfo !== undefined,
+            );
+            expect(queryInfo).toEqual([false, false, false, true, true]);
+         } finally {
+            await duckdb.close();
+         }
+      });
 
-         // And the notebook does not show what it may not read: the import
-         // cell's newSources and the notebook's sources leave base_source out.
-         const raw = await notebook.getNotebook();
-         const shown = JSON.stringify(raw);
-         expect(shown).not.toContain('"base_source"');
-         expect(
-            (raw.sources ?? []).map((source) => source.name).sort(),
-         ).toEqual(["customers", "mine"]);
-         // Nor a refused cell's queryInfo, whose schema lists the columns its
-         // query returns. The cells that run keep theirs.
-         const queryInfo = (raw.notebookCells ?? []).map(
-            (cell) => cell.queryInfo !== undefined,
+      it("declared: a notebook cell over a hidden gated source answers 404, not 403", async () => {
+         // The surface check runs before the authorize gate, so a cell cannot
+         // learn that a hidden source exists from which refusal it gets. And a
+         // cell's own source over a raw table has no published base, so it is
+         // refused too.
+         writeManifest();
+         writeLayeredModels();
+         const base = path.join(tempDir, "base.malloy");
+         fs.writeFileSync(
+            base,
+            fs.readFileSync(base, "utf8") +
+               `\n#(authorize) false\nsource: base_locked is duckdb.sql("select 1 as id")\n`,
          );
-         expect(queryInfo).toEqual([false, false, false, true, true]);
-      } finally {
-         await duckdb.close();
-      }
-   });
-
-   it("declared: a notebook cell over a hidden gated source answers 404, not 403", async () => {
-      // The surface check runs before the authorize gate, so a cell cannot
-      // learn that a hidden source exists from which refusal it gets. And a
-      // cell's own source over a raw table has no published base, so it is
-      // refused too.
-      writeManifest();
-      writeLayeredModels();
-      const base = path.join(tempDir, "base.malloy");
-      fs.writeFileSync(
-         base,
-         fs.readFileSync(base, "utf8") +
-            `\n#(authorize) false\nsource: base_locked is duckdb.sql("select 1 as id")\n`,
-      );
-      fs.writeFileSync(
-         path.join(tempDir, "report.malloynb"),
-         `>>>malloy\nimport "base.malloy"\n` +
-            `>>>malloy\nrun: base_locked -> { aggregate: c is count() }\n` +
-            `>>>malloy\nsource: raw is duckdb.sql("select 1 as id")\n` +
-            `>>>malloy\nrun: raw -> { aggregate: c is count() }`,
-      );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      try {
-         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         const notebook = pkg.getModel("report.malloynb")!;
-         await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
-            NotQueryableError,
+         fs.writeFileSync(
+            path.join(tempDir, "report.malloynb"),
+            `>>>malloy\nimport "base.malloy"\n` +
+               `>>>malloy\nrun: base_locked -> { aggregate: c is count() }\n` +
+               `>>>malloy\nsource: raw is duckdb.sql("select 1 as id")\n` +
+               `>>>malloy\nrun: raw -> { aggregate: c is count() }`,
          );
-         await expect(notebook.executeNotebookCell(3)).rejects.toThrow(
-            NotQueryableError,
-         );
-      } finally {
-         await duckdb.close();
-      }
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const notebook = pkg.getModel("report.malloynb")!;
+            await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
+               NotQueryableError,
+            );
+            await expect(notebook.executeNotebookCell(3)).rejects.toThrow(
+               NotQueryableError,
+            );
+         } finally {
+            await duckdb.close();
+         }
+      });
    });
 
    // The pre-compile gate refuses ad-hoc text only for a name the model
    // declares, while a name that does not exist reaches the compiled backstop.
    // Where a gate exists the two must read identically, or the difference tells
    // a caller which hidden names are real. Checked on a .malloy path (helper is
-   // declared in index.malloy, not exported) and on a notebook path
+   // declared in index.malloy, not exported) and on a report path
    // (base_source is visible to it through an import).
    const refusal = async (model: Model, query: string) => {
       try {
@@ -1265,17 +1279,17 @@ export { \`customer-orders\` }`,
    };
    const adHocPaths = [
       ["index.malloy", "helper"],
-      ["report.malloynb", "base_source"],
+      ["report.malloy", "base_source"],
    ] as const;
    const INDEX_SURFACE =
       `It is not on this package's published surface, "index.malloy": only ` +
       `what that file exports is queryable, and only through it.`;
    // What the fix says depends on where the refused name is: a surface file
-   // that already sees it only has to export it; a notebook exports nothing,
+   // that already sees it only has to export it; a report exports nothing,
    // so the name has to be exported from index.malloy.
    const adHocFix: Record<(typeof adHocPaths)[number][0], string> = {
       "index.malloy": `Fix: name the source in the export { ... } of "index.malloy".`,
-      "report.malloynb":
+      "report.malloy":
          `Fix: name the source in the export { ... } of "index.malloy", ` +
          `importing the file that declares it if needed, and address the ` +
          `query to "index.malloy".`,
@@ -1317,8 +1331,8 @@ source: locked is duckdb.sql("select 1 as id") extend {
             `\n#(authorize) false\nsource: base_locked is duckdb.sql("select 1 as id")\n`,
       );
       fs.writeFileSync(
-         path.join(tempDir, "report.malloynb"),
-         `>>>malloy\nimport "index.malloy"\nimport "base.malloy"`,
+         path.join(tempDir, "report.malloy"),
+         `## artifact { layout=linear }\nimport "index.malloy"\nimport "base.malloy"\n`,
       );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
@@ -1380,8 +1394,8 @@ source: locked is duckdb.sql("select 1 as id") extend {
       writeManifest();
       writeLayeredModels();
       fs.writeFileSync(
-         path.join(tempDir, "report.malloynb"),
-         `>>>malloy\nimport "index.malloy"\nimport "base.malloy"`,
+         path.join(tempDir, "report.malloy"),
+         `## artifact { layout=linear }\nimport "index.malloy"\nimport "base.malloy"\n`,
       );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {

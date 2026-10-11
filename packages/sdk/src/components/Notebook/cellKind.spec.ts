@@ -10,9 +10,13 @@ import {
 } from "./cellKind";
 
 describe("cellRuns", () => {
-   it("runs a .malloynb code cell and skips its markdown", () => {
-      expect(cellRuns({ type: "code" })).toBe(true);
-      expect(cellRuns({ type: "markdown" })).toBe(false);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("runs a .malloynb code cell and skips its markdown", () => {
+         expect(cellRuns({ type: "code" })).toBe(true);
+         expect(cellRuns({ type: "markdown" })).toBe(false);
+      });
    });
 
    it("runs only a query cell of a served notebook", () => {
@@ -142,10 +146,14 @@ describe("stripProse", () => {
       ).toBe("run: q\n#(markdown) x");
    });
 
-   it("without ranges, drops a .malloynb ##! line exactly as the released code did", () => {
-      expect(stripProse({ text: "##! experimental.parameters\nrun: q" })).toBe(
-         "run: q",
-      );
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("without ranges, drops a .malloynb ##! line exactly as the released code did", () => {
+         expect(
+            stripProse({ text: "##! experimental.parameters\nrun: q" }),
+         ).toBe("run: q");
+      });
    });
 
    it("without ranges, leaves (markdown) lines alone", () => {

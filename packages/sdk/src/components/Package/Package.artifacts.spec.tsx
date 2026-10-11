@@ -3,7 +3,7 @@
 
 /** The package page's one Reports list: both layouts, named by one rule, opened by path. */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { ReactNode } from "react";
 import {
    clearCache,
@@ -124,18 +124,24 @@ it("opens a nested report at its path route, encoded segment by segment", async 
    expect(onClick.mock.calls[0][0]).toBe("/env/pkg/sales/q%203");
 });
 
-it("keeps a titled .malloynb's path as its secondary text", async () => {
-   reports = [{ path: "orders.malloynb", layout: "linear", title: "Orders" }];
-   mount();
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+describe("deprecated: .malloynb notebooks", () => {
+   it("keeps a titled .malloynb's path as its secondary text", async () => {
+      reports = [
+         { path: "orders.malloynb", layout: "linear", title: "Orders" },
+      ];
+      mount();
 
-   expect(await rows()).toEqual(["Ordersorders.malloynblinear"]);
-});
+      expect(await rows()).toEqual(["Ordersorders.malloynblinear"]);
+   });
 
-it("names an untitled .malloynb by its file, extension included, with no secondary text", async () => {
-   reports = [{ path: "orders.malloynb", layout: "linear" }];
-   mount();
+   it("names an untitled .malloynb by its file, extension included, with no secondary text", async () => {
+      reports = [{ path: "orders.malloynb", layout: "linear" }];
+      mount();
 
-   expect(await rows()).toEqual(["orders.malloynblinear"]);
+      expect(await rows()).toEqual(["orders.malloynblinear"]);
+   });
 });
 
 it("says so when the listing fails", async () => {

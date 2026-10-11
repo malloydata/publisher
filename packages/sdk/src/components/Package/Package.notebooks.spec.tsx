@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /** How the package page opens a report, and which one it pins as the README. */
-import { beforeEach, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
    clearCache,
@@ -106,15 +106,22 @@ it("does not pin a README below the package root", async () => {
    expect(getReport).not.toHaveBeenCalled();
 });
 
-it("pins the root README.malloynb over a root README.malloy when both exist", async () => {
-   listed = [
-      { path: "README.malloy", layout: "linear" },
-      { path: "README.malloynb", layout: "linear" },
-   ];
-   render(<Package resourceUri="publisher://environments/env/packages/pkg" />, {
-      wrapper: serverWrapper,
-   });
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+describe("deprecated: .malloynb notebooks", () => {
+   it("pins the root README.malloynb over a root README.malloy when both exist", async () => {
+      listed = [
+         { path: "README.malloy", layout: "linear" },
+         { path: "README.malloynb", layout: "linear" },
+      ];
+      render(
+         <Package resourceUri="publisher://environments/env/packages/pkg" />,
+         {
+            wrapper: serverWrapper,
+         },
+      );
 
-   await waitFor(() => expect(getReport).toHaveBeenCalled());
-   expect(getReport.mock.calls[0][2]).toBe("README.malloynb");
+      await waitFor(() => expect(getReport).toHaveBeenCalled());
+      expect(getReport.mock.calls[0][2]).toBe("README.malloynb");
+   });
 });

@@ -1277,12 +1277,15 @@ source: \`gated-source\` is duckdb.table('customers') extend {
       expect(String(err!.message)).not.toContain("no_such_field");
    });
 
-   it("gates a notebook cell that runs a NAMED QUERY targeting a gated source", async () => {
-      // `run: secret` has no `->`, so source resolution must come from the
-      // compiled query, not a text regex — otherwise the gate is bypassed.
-      await writeModel(
-         "rt_nb.malloynb",
-         `>>>malloy
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("gates a notebook cell that runs a NAMED QUERY targeting a gated source", async () => {
+         // `run: secret` has no `->`, so source resolution must come from the
+         // compiled query, not a text regex — otherwise the gate is bypassed.
+         await writeModel(
+            "rt_nb.malloynb",
+            `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1297,22 +1300,88 @@ query: secret is gated -> { aggregate: c }
 >>>malloy
 run: secret
 `,
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "rt_nb.malloynb",
-         getConnections(),
-      );
-      // Cell 1 is `run: secret` — the lock refuses a mismatched given.
-      await expect(
-         model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
-      // ...and allowed when the gate passes.
-      const ok = await model.executeNotebookCell(1, undefined, false, {
-         ROLE: "analyst",
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "rt_nb.malloynb",
+            getConnections(),
+         );
+         // Cell 1 is `run: secret` — the lock refuses a mismatched given.
+         await expect(
+            model.executeNotebookCell(1, undefined, false, { ROLE: "intern" }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+         // ...and allowed when the gate passes.
+         const ok = await model.executeNotebookCell(1, undefined, false, {
+            ROLE: "analyst",
+         });
+         expect(ok.result).toBeDefined();
       });
-      expect(ok.result).toBeDefined();
+
+      // Q21's third door, pinned deliberately. The guard covers REQUEST text; a
+      // notebook cell is PACKAGE content and is intentionally left unguarded (it
+      // also compiles unrestricted, via `loadQuery` rather than
+      // `loadRestrictedQuery`). The asymmetry is structural, not an oversight:
+      // `executeNotebookCell` takes a cell INDEX and no query text, so a caller
+      // cannot author a cell — only choose one the package author already wrote.
+      // The bytes below are byte-for-byte the first attack shape in the describe
+      // above; through the notebook channel they are the author's own curated
+      // extension and must still run. Do not "fix" this by extending the guard to
+      // notebook cells: that would break authors declaring gates in notebooks.
+      it("does NOT reject an authorize annotation in a NOTEBOOK cell (author content, not request text)", async () => {
+         await writeModel(
+            "rt_nb_authorize.malloynb",
+            `>>>malloy
+${LOCKED_BASE}
+>>>malloy
+#(authorize) 'analyst' = $ROLE
+source: mine is base_locked extend {
+  measure: cc is count()
+}
+run: mine -> { aggregate: cc }
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "rt_nb_authorize.malloynb",
+            getConnections(),
+         );
+         // Not rejected as forged caller policy — the author's gate is honored, so
+         // it grants on the satisfying given...
+         const ok = await model.executeNotebookCell(1, undefined, false, {
+            ROLE: "analyst",
+         });
+         expect(ok.result).toBeDefined();
+         // ...and still DENIES on a non-satisfying one. The cell's gate is
+         // really enforced, not merely tolerated — this is a gate, not a hole.
+         await expect(
+            model.executeNotebookCell(1, undefined, false, { ROLE: "nobody" }),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+
+      it("does not gate a notebook cell whose run target merely JOINS a locked base", async () => {
+         // The notebook path uses the same entry-point rule as every other path:
+         // `secret_join`'s entry point is `joiner`, which is ungated.
+         await writeModel(
+            "rt_locked_join.malloynb",
+            `>>>malloy
+${LOCKED_BASE}
+query: secret_join is joiner -> { aggregate: c }
+
+>>>malloy
+run: secret_join
+`,
+         );
+         const model = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "rt_locked_join.malloynb",
+            getConnections(),
+         );
+         const ok = await model.executeNotebookCell(1, undefined, false, {});
+         expect(ok.result).toBeDefined();
+      });
    });
 
    const LOCKED_BASE = `##! experimental.givens
@@ -1710,48 +1779,6 @@ source: ext_tagged is base_locked extend {}
       expect(result.data).toBeDefined();
    });
 
-   // Q21's third door, pinned deliberately. The guard covers REQUEST text; a
-   // notebook cell is PACKAGE content and is intentionally left unguarded (it
-   // also compiles unrestricted, via `loadQuery` rather than
-   // `loadRestrictedQuery`). The asymmetry is structural, not an oversight:
-   // `executeNotebookCell` takes a cell INDEX and no query text, so a caller
-   // cannot author a cell — only choose one the package author already wrote.
-   // The bytes below are byte-for-byte the first attack shape in the describe
-   // above; through the notebook channel they are the author's own curated
-   // extension and must still run. Do not "fix" this by extending the guard to
-   // notebook cells: that would break authors declaring gates in notebooks.
-   it("does NOT reject an authorize annotation in a NOTEBOOK cell (author content, not request text)", async () => {
-      await writeModel(
-         "rt_nb_authorize.malloynb",
-         `>>>malloy
-${LOCKED_BASE}
->>>malloy
-#(authorize) 'analyst' = $ROLE
-source: mine is base_locked extend {
-  measure: cc is count()
-}
-run: mine -> { aggregate: cc }
-`,
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "rt_nb_authorize.malloynb",
-         getConnections(),
-      );
-      // Not rejected as forged caller policy — the author's gate is honored, so
-      // it grants on the satisfying given...
-      const ok = await model.executeNotebookCell(1, undefined, false, {
-         ROLE: "analyst",
-      });
-      expect(ok.result).toBeDefined();
-      // ...and still DENIES on a non-satisfying one. The cell's gate is
-      // really enforced, not merely tolerated — this is a gate, not a hole.
-      await expect(
-         model.executeNotebookCell(1, undefined, false, { ROLE: "nobody" }),
-      ).rejects.toBeInstanceOf(AccessDeniedError);
-   });
-
    it("allows a query joining only an inline duckdb.table(...) source (no annotations to gate)", async () => {
       await writeModel("rt_locked.malloy", LOCKED_BASE);
       const { result } = await runGated(
@@ -1760,29 +1787,6 @@ run: mine -> { aggregate: cc }
          {},
       );
       expect(result.data).toBeDefined();
-   });
-
-   it("does not gate a notebook cell whose run target merely JOINS a locked base", async () => {
-      // The notebook path uses the same entry-point rule as every other path:
-      // `secret_join`'s entry point is `joiner`, which is ungated.
-      await writeModel(
-         "rt_locked_join.malloynb",
-         `>>>malloy
-${LOCKED_BASE}
-query: secret_join is joiner -> { aggregate: c }
-
->>>malloy
-run: secret_join
-`,
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "rt_locked_join.malloynb",
-         getConnections(),
-      );
-      const ok = await model.executeNotebookCell(1, undefined, false, {});
-      expect(ok.result).toBeDefined();
    });
 });
 

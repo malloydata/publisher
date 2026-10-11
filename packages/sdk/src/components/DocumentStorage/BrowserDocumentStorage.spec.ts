@@ -14,7 +14,7 @@ const dashboard: DocumentLocator = {
 const notebook: DocumentLocator = {
    workspace: "Local",
    type: "notebook",
-   path: "tour.malloynb",
+   path: "tour.malloy",
 };
 
 describe("BrowserDocumentStorage", () => {
