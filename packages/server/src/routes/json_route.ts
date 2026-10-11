@@ -15,10 +15,14 @@ export function setVersionIdError(res: express.Response): void {
 
 /**
  * A read route answered with JSON: a `versionId` is refused (501), the
- * handler's value is the 200 body, and a throw is logged and mapped to its
- * status by {@link internalErrorToHttpError}. The handler may answer itself
- * and return `undefined` (a 400 for a malformed parameter), in which case
- * nothing more is sent.
+ * handler's value is the 200 body, and a throw is mapped to its status by
+ * {@link internalErrorToHttpError}. The handler may answer itself and return
+ * `undefined` (a 400 for a malformed parameter), in which case nothing more is
+ * sent.
+ *
+ * A 4xx is the caller's (a report that does not exist, an ambiguous name), so
+ * it is logged once at `warn` with its message, never at `error`. A 5xx is
+ * left to the mapping, which logs an internal fault once, with its stack.
  */
 export function jsonRoute(
    handler: (
@@ -35,8 +39,15 @@ export function jsonRoute(
          const result = await handler(req, res);
          if (!res.headersSent) res.status(200).json(result);
       } catch (error) {
-         logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
+         if (status < 500) {
+            logger.warn("Request refused", {
+               path: req.path,
+               packageName: req.params.packageName,
+               status,
+               error: (error as Error).message,
+            });
+         }
          res.status(status).json(json);
       }
    };

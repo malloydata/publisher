@@ -33,7 +33,7 @@ const logged = (
    warn.mock.calls.some(
       ([text, meta]) =>
          text === message &&
-         (meta as { modelPath?: string } | undefined)?.modelPath === modelPath,
+         (meta as { model?: string } | undefined)?.model === modelPath,
    );
 
 const BASE = `source: s is duckdb.sql("select 1 as x") extend {

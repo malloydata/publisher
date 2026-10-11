@@ -7,10 +7,12 @@ import {
    BadRequestError,
    CompileRefusedError,
    FrozenConfigError,
+   PackageNotFoundError,
    WriteConflictError,
+   WriteRollbackFailedError,
    WriteRolledBackError,
 } from "../errors";
-import { resetDashboardWriteMetricsForTest } from "../dashboard_write_metrics";
+import { resetReportMetricsForTest } from "../report_metrics";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -43,6 +45,10 @@ function harness(
       current?: string;
       problems?: Array<{ severity: string; message: string }>;
       reloadCompiles?: boolean;
+      /** Whether putting the previous text back fails too, after a failed reload. */
+      restoreFails?: boolean;
+      /** Whether the package does not exist. */
+      noPackage?: boolean;
       /** Whether the reloaded package serves the written file as a report. */
       served?: boolean;
       /**
@@ -78,7 +84,9 @@ function harness(
       isWritableReport: () => options.loadedReport ?? true,
    };
    const environment = {
-      getPackage: sinon.stub().resolves(pkg),
+      getPackage: options.noPackage
+         ? sinon.stub().rejects(new PackageNotFoundError("no package"))
+         : sinon.stub().resolves(pkg),
       compileSource: sinon
          .stub()
          .resolves({ problems: options.problems ?? [] }),
@@ -99,6 +107,10 @@ function harness(
                      verified: await verify(pkg),
                   };
                } catch {
+                  if (options.restoreFails)
+                     throw new WriteRollbackFailedError(
+                        "The previous text could not be put back.",
+                     );
                   throw new WriteRolledBackError(
                      "The package did not reload with the new file, so the " +
                         "previous text was put back and nothing changed.",
@@ -545,17 +557,17 @@ describe("putDashboardSource: what it reports", () => {
 
    beforeEach(async () => {
       metrics = await startMetricsHarness();
-      resetDashboardWriteMetricsForTest();
+      resetReportMetricsForTest();
    });
 
    afterEach(async () => {
-      resetDashboardWriteMetricsForTest();
+      resetReportMetricsForTest();
       await metrics.shutdown();
       sinon.restore();
    });
 
    const outcomeCount = (outcome: string) =>
-      metrics.collectCounter("publisher_dashboard_writes_total", { outcome });
+      metrics.collectCounter("publisher_report_writes_total", { outcome });
 
    it("reports a create and a replace apart", async () => {
       await harness().controller.putDashboardSource("env", "pkg", PATH, {
@@ -583,7 +595,7 @@ describe("putDashboardSource: what it reports", () => {
          source: AFTER,
       });
       const count = (layout: string) =>
-         metrics.collectCounter("publisher_dashboard_writes_total", {
+         metrics.collectCounter("publisher_report_writes_total", {
             outcome: "created",
             layout,
          });
@@ -596,7 +608,7 @@ describe("putDashboardSource: what it reports", () => {
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
       expect(
-         await metrics.collectCounter("publisher_dashboard_writes_total", {
+         await metrics.collectCounter("publisher_report_writes_total", {
             outcome: "refused",
             layout: "grid",
          }),
@@ -676,5 +688,102 @@ describe("putDashboardSource: what it reports", () => {
       ).rejects.toBeInstanceOf(FrozenConfigError);
       expect(await outcomeCount("refused")).toBe(1);
       expect(environment.getPackage.called).toBe(false);
+   });
+
+   it("reports a rollback that could not be undone apart from one that was", async () => {
+      const { controller } = harness({
+         current: BEFORE,
+         reloadCompiles: false,
+         restoreFails: true,
+      });
+      await expect(
+         controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf(BEFORE),
+         }),
+      ).rejects.toBeInstanceOf(WriteRollbackFailedError);
+      expect(await outcomeCount("rollback_failed")).toBe(1);
+      expect(await outcomeCount("rolled_back")).toBe(0);
+      expect(
+         await metrics.collectCounter("publisher_report_writes_total", {
+            outcome: "rollback_failed",
+            reason: "reload_failed",
+         }),
+      ).toBe(1);
+   });
+
+   /**
+    * `refused` is the alert; `reason` is what the person answering it reads
+    * next. Each refusal the write path raises is counted under its own reason,
+    * so a spike of `untagged` (a client sending models) reads differently
+    * from one of `not_a_report` (a client aiming at the wrong file).
+    */
+   it("labels each refusal with why it was refused", async () => {
+      const reasonCount = (outcome: string, reason: string) =>
+         metrics.collectCounter("publisher_report_writes_total", {
+            outcome,
+            reason,
+         });
+
+      await harness({ frozen: true })
+         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .catch(() => undefined);
+      await harness()
+         .controller.putDashboardSource("env", "pkg", "../escape.malloy", {
+            source: AFTER,
+         })
+         .catch(() => undefined);
+      await harness()
+         .controller.putDashboardSource("env", "pkg", "index.malloy", {
+            source: AFTER,
+         })
+         .catch(() => undefined);
+      await harness()
+         .controller.putDashboardSource("env", "pkg", PATH, {} as never)
+         .catch(() => undefined);
+      await harness()
+         .controller.putDashboardSource("env", "pkg", PATH, {
+            source: "source: s is t",
+         })
+         .catch(() => undefined);
+      await harness({ current: "source: s is t", loadedReport: false })
+         .controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+            expectedHash: contentHashOf("source: s is t"),
+         })
+         .catch(() => undefined);
+      await harness({ noPackage: true })
+         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .catch(() => undefined);
+      await harness({ current: BEFORE })
+         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .catch(() => undefined);
+      await harness({
+         problems: [{ severity: "error", message: "'x' is not defined" }],
+      })
+         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .catch(() => undefined);
+
+      expect(await reasonCount("refused", "frozen_config")).toBe(1);
+      expect(await reasonCount("refused", "invalid_path")).toBe(2);
+      expect(await reasonCount("refused", "missing_source")).toBe(1);
+      expect(await reasonCount("refused", "untagged")).toBe(1);
+      expect(await reasonCount("refused", "not_a_report")).toBe(1);
+      expect(await reasonCount("refused", "not_found")).toBe(1);
+      expect(await reasonCount("conflict", "conflict")).toBe(1);
+      expect(await reasonCount("compile_failed", "compile_failed")).toBe(1);
+      expect(await outcomeCount("refused")).toBe(7);
+   });
+
+   it("labels a write that landed with no reason", async () => {
+      await harness().controller.putDashboardSource("env", "pkg", PATH, {
+         source: AFTER,
+      });
+      expect(
+         await metrics.collectCounter("publisher_report_writes_total", {
+            outcome: "created",
+            reason: "none",
+         }),
+      ).toBe(1);
    });
 });

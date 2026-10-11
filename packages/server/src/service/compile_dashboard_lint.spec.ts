@@ -25,7 +25,7 @@ import { logger } from "../logger";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
-import { resetNotebookMetricsForTest } from "../notebook_metrics";
+import { resetReportMetricsForTest } from "../report_metrics";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -431,8 +431,9 @@ describe("compile_model, package scope: curation findings", () => {
 
 /**
  * The compile runs the load's discovery over a package nothing serves. The
- * notebook discovery counter means "a served package was discovered", so a
- * compile, which agents call in a loop, must leave it alone.
+ * discovery counters mean "a served package was discovered", so a compile,
+ * which agents call in a loop, must leave them alone; only its duration is
+ * recorded, under its own `during`.
  */
 describe("compile_model, package scope: telemetry", () => {
    let rootDir: string;
@@ -440,16 +441,16 @@ describe("compile_model, package scope: telemetry", () => {
 
    beforeEach(async () => {
       harness = await startMetricsHarness();
-      resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
    });
 
    afterEach(async () => {
-      resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
       await harness.shutdown();
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
-   it("does not count a package-scope compile as a notebook discovery", async () => {
+   it("does not count a package-scope compile as a discovery", async () => {
       rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-nbmetric-"));
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
@@ -464,9 +465,16 @@ describe("compile_model, package scope: telemetry", () => {
          );
       });
       const count = () =>
-         harness.collectCounter("publisher_notebook_discovery_total", {
-            format: "malloy",
+         harness.collectCounter("publisher_reports_discovered_total", {
+            layout: "linear",
          });
+      const timed = async (during: string) =>
+         (
+            await harness.collectHistogram(
+               "publisher_report_discovery_duration_ms",
+               { during },
+            )
+         ).count;
       const afterLoad = await count();
       // The control: loading the package did count, so the harness sees it.
       expect(afterLoad).toBeGreaterThan(0);
@@ -481,6 +489,8 @@ describe("compile_model, package scope: telemetry", () => {
       );
 
       expect(await count()).toBe(afterLoad);
+      expect(await timed("compile")).toBe(1);
+      expect(await timed("load")).toBeGreaterThan(0);
    });
 });
 

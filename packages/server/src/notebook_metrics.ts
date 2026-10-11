@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Telemetry for notebooks, both formats: whether discovery could read a
- * notebook's cells, and how running a cell ends.
- *
- * A served notebook the reader refuses still compiles and serves as a model, so
- * nothing else says it stopped opening; the discovery counter is what shows a
- * Malloy upgrade or an authoring pattern breaking the reader.
+ * DEPRECATED: telemetry for the notebook cell route
+ * (`GET …/notebooks/{path}/cells/{i}`), which `routes/deprecated.ts` keeps for
+ * `.malloynb` notebooks: how running a cell ends, and how long it takes. A
+ * `.malloy` report's cells run through `POST …/models/{path}/query` and are
+ * measured as queries. Whether a report's cells could be read at all is the
+ * `notebook-cells-unreadable` finding, counted with the other report findings
+ * (`report_metrics.ts`). This module goes with the route.
  *
  * Instruments are created lazily for the same reason as
  * {@link ./query_cap_metrics}: one created before `setGlobalMeterProvider`
@@ -43,15 +44,8 @@ function lazyHistogram(
       }));
 }
 
-/** `malloynb` is the legacy cell format; `malloy` is a served `notebooks/*.malloy`. */
+/** `malloynb` is the legacy cell format; `malloy` is a linear `.malloy` report the route also runs. */
 export type NotebookFormat = "malloynb" | "malloy";
-
-/**
- * - `ok` — its cells were read.
- * - `refused` — it compiled, and the reader refused its cells.
- * - `broken` — it did not compile, so it has no cells to read.
- */
-export type NotebookDiscoveryOutcome = "ok" | "refused" | "broken";
 
 /**
  * `code` is a `.malloynb` code cell, which carries no finer kind; `none` is a
@@ -78,11 +72,6 @@ export type NotebookCellExecutionOutcome =
    | "bad_request"
    | "error";
 
-const discoveryCounter = lazyCounter(
-   "publisher_notebook_discovery_total",
-   "Notebooks read at package discovery, once per discovery pass; a reload counts again. Labels: format ('malloynb'|'malloy'), outcome ('ok'|'refused'|'broken').",
-);
-
 const cellExecutionCounter = lazyCounter(
    "publisher_notebook_cell_executions_total",
    "Notebook cell runs. Labels: format ('malloynb'|'malloy'), kind ('markdown'|'query'|'definition'|'code'|'none'), outcome ('ok'|'denied'|'not_queryable'|'bad_request'|'error').",
@@ -95,14 +84,6 @@ const cellExecutionDuration = lazyHistogram(
    // The HTTP request histogram's set, since a cell run is one request.
    REQUEST_DURATION_BUCKETS_MS,
 );
-
-/** One notebook was read (or not) by a discovery pass. */
-export function recordNotebookDiscovery(
-   format: NotebookFormat,
-   outcome: NotebookDiscoveryOutcome,
-): void {
-   discoveryCounter().add(1, { format, outcome });
-}
 
 /** One cell run finished, however it finished. */
 export function recordNotebookCellExecution(

@@ -48,7 +48,14 @@ import {
 } from "../errors";
 import { applyExtensionSessionSettings } from "./connection";
 import { formatDuration, logger } from "../logger";
-import { recordNotebookDiscovery } from "../notebook_metrics";
+import {
+   recordReportDiscovery,
+   recordReportDiscoveryDuration,
+   summarizeReportDiscovery,
+   UNCODED_REPORT_FINDING,
+   type ReportDiscoveryDuring,
+   type ReportFileStatus,
+} from "../report_metrics";
 import {
    recordBuildPlanComputeDuration,
    recordBuildPlanComputeFailed,
@@ -183,8 +190,8 @@ interface ServedReport {
  *
  * Every status but `served` is explained by the lint. A `.malloy` of any
  * status is still the builder's to save (see {@link Package.isWritableReport}).
+ * The type is {@link ReportFileStatus}, which the discovery metrics label by.
  */
-type ReportFileStatus = "served" | "tileless" | "invalid" | "dropped";
 
 interface ReportFile {
    status: ReportFileStatus;
@@ -1078,7 +1085,7 @@ export class Package {
          malloyConfig,
       );
       try {
-         await pkg.discoverReports({ dryRun: true });
+         await pkg.discoverReports("compile");
       } catch (err) {
          // Discovery is meant never to throw, but a fault in it must not
          // reject the whole compile, and a missing list reads exactly like a
@@ -1270,7 +1277,7 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
-      await pkg.discoverReports();
+      await pkg.discoverReports("load");
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       pkg.retrievalSettings =
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
@@ -2946,7 +2953,9 @@ export class Package {
       // is, and install both in one synchronous step below: a query must never
       // see the new models with the previous reports (or the reverse), whose
       // entry points and surface flags differ.
-      const discovery = await this.discoverReportsIn(nextModels);
+      const discoveryStarted = performance.now();
+      const discovery = await this.discoverReportsIn(nextModels, "reload");
+      const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
@@ -2976,7 +2985,13 @@ export class Package {
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // The tile lint asks the query boundary about each tile, so it runs once
       // the refreshed surface is installed.
-      await this.relintReports({ log: true, textLint: true });
+      const lintStarted = performance.now();
+      await this.relintReports({ textLint: true });
+      this.reportDiscovered(
+         "reload",
+         discovery,
+         discoveryMs + performance.now() - lintStarted,
+      );
       // Remember what we just bound so /compile can route identically and
       // /status can report the binding. An empty map reverts to live (unbound).
       // Retains the full freshness entries so the serve-path gate can evaluate
@@ -3145,22 +3160,61 @@ export class Package {
     * set. Never throws: a package whose reports can't be read still serves its
     * models.
     *
-    * `dryRun` is for the throwaway package {@link lintWorkerOutcome} builds:
-    * it skips reading cells and the per-file text lint (the package-scope
-    * compile reports those itself, with positions), the discovery metric, and
-    * the per-finding log lines, so a compile neither counts nor logs as a
-    * load. A check that throws is a server fault, not a finding, so it is
-    * still logged, marked `during: "compile"` so it does not read as a load.
+    * `compile` is the dry run on the throwaway package
+    * {@link lintWorkerOutcome} builds: it skips reading cells and the per-file
+    * text lint (the package-scope compile reports those itself, with
+    * positions), and is timed but neither counted nor logged as a load (see
+    * {@link reportDiscovered}). A check that throws is a server fault, not a
+    * finding, so it is still logged, marked `during: "compile"`.
     */
    private async discoverReports(
-      options: { dryRun?: boolean } = {},
+      during: Exclude<ReportDiscoveryDuring, "reload">,
    ): Promise<void> {
-      const discovery = await this.discoverReportsIn(this.models, options);
+      const started = performance.now();
+      const discovery = await this.discoverReportsIn(this.models, during);
       this.installReports(discovery);
-      await this.relintReports({
-         log: !options.dryRun,
-         textLint: !options.dryRun,
+      await this.relintReports({ textLint: during !== "compile" });
+      this.reportDiscovered(during, discovery, performance.now() - started);
+   }
+
+   /**
+    * Report what one discovery pass found. Every pass is timed. A load or
+    * reload also counts its files, reports and findings, logs one `info`
+    * summary and a `debug` line per finding (the findings themselves ride the
+    * package's `warnings`). A compile's dry run is a what-if, so it stops at
+    * the timing.
+    */
+   private reportDiscovered(
+      during: ReportDiscoveryDuring,
+      discovery: ReportDiscovery,
+      durationMs: number,
+   ): void {
+      recordReportDiscoveryDuration(during, durationMs);
+      if (during === "compile") return;
+      const findings = [...this.reportWarnings, ...discovery.readerWarnings];
+      const summary = summarizeReportDiscovery(
+         Array.from(discovery.files.values(), ({ status, report }) => ({
+            status,
+            layout: report?.layout,
+         })),
+         findings,
+      );
+      recordReportDiscovery(summary);
+      logger.info("Report discovery", {
+         packageName: this.packageName,
+         during,
+         durationMs: Math.round(durationMs),
+         ...summary,
       });
+      for (const finding of findings) {
+         logger.debug("Report lint finding", {
+            packageName: this.packageName,
+            model: finding.model,
+            code: finding.code ?? UNCODED_REPORT_FINDING,
+            severity: finding.severity,
+            message: finding.message,
+         });
+      }
    }
 
    /**
@@ -3173,13 +3227,12 @@ export class Package {
     *
     * Reads `models` only, never the package's installed state, so a reload can
     * discover against the models it has not swapped in yet. Reads each linear
-    * report's cells into its model, unless `dryRun`.
+    * report's cells into its model, unless `during` is `compile`.
     */
    private async discoverReportsIn(
       models: ReadonlyMap<string, Model>,
-      options: { dryRun?: boolean } = {},
+      during: ReportDiscoveryDuring,
    ): Promise<ReportDiscovery> {
-      const during = options.dryRun ? { during: "compile" } : {};
       const files = new Map<string, ReportFile>();
       // Every model, not just the reports, because `# drill` is declared on a
       // model dimension: a tag in a package with no reports at all is exactly
@@ -3189,8 +3242,8 @@ export class Package {
       const dropped = (modelPath: string, why: string): ReportFile => {
          logger.warn(why, {
             packageName: this.packageName,
-            ...during,
-            modelPath,
+            during,
+            model: modelPath,
          });
          return { status: "dropped", name: reportName(modelPath) };
       };
@@ -3205,8 +3258,8 @@ export class Package {
          } catch (err) {
             logger.warn("Reading a model's report facts failed", {
                packageName: this.packageName,
-               ...during,
-               modelPath,
+               during,
+               model: modelPath,
                error: errMessage(err),
             });
          }
@@ -3254,8 +3307,8 @@ export class Package {
          } catch (err) {
             logger.warn("Report discovery failed", {
                packageName: this.packageName,
-               ...during,
-               modelPath,
+               during,
+               model: modelPath,
                error: errMessage(err),
             });
             // The tag is readable (it was read off the same facts); it was the
@@ -3309,9 +3362,8 @@ export class Package {
          // still a report, reading the surface directly.
          report.text = (await this.readModelText(model, report.path)) ?? "";
       }
-      const readerWarnings = options.dryRun
-         ? []
-         : this.attachNotebookCells(models, files);
+      const readerWarnings =
+         during === "compile" ? [] : this.attachNotebookCells(models, files);
       return { files, allFacts, indexTagged, readerWarnings };
    }
 
@@ -3336,10 +3388,10 @@ export class Package {
    }
 
    /**
-    * Read every linear `.malloy` report's cells and count every linear report,
-    * both formats. A reader refusal is the report's error; it is returned as a
-    * finding and logged, because the model still compiles and nothing else
-    * would say so.
+    * Read every linear `.malloy` report's cells. A reader refusal is the
+    * report's error, returned as a finding: the model still compiles, so
+    * nothing else would say so. It is counted and logged with the other
+    * findings (see {@link reportDiscovered}).
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3347,25 +3399,11 @@ export class Package {
    ): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
       for (const [modelPath, model] of models) {
-         if (isMalloynbPath(modelPath)) {
-            recordNotebookDiscovery(
-               "malloynb",
-               model.getCompilationError() ? "broken" : "ok",
-            );
-            continue;
-         }
          const report = files.get(modelPath)?.report;
          if (report?.layout !== "linear" || report.text === undefined) continue;
          const outcome = model.attachServedNotebookCells(report.text);
-         recordNotebookDiscovery("malloy", outcome);
          const refusal = model.getNotebookReaderRefusal();
          if (outcome !== "refused" || !refusal) continue;
-         logger.warn("Notebook cells could not be read", {
-            packageName: this.packageName,
-            modelPath,
-            line: refusal.line,
-            detail: refusal.message,
-         });
          warnings.push({
             model: modelPath,
             message: refusal.message,
@@ -3385,7 +3423,7 @@ export class Package {
     * any file, so the tile findings stay true to what is served.
     */
    public async relintReports(
-      options: { log?: boolean; textLint?: boolean } = {},
+      options: { textLint?: boolean } = {},
    ): Promise<void> {
       const discovery = this.discovery;
       if (!discovery) return;
@@ -3395,14 +3433,6 @@ export class Package {
          discovery,
          this.lintIncludesText,
       );
-      if (options.log === false) return;
-      for (const warning of this.reportWarnings) {
-         logger.warn("Report lint", {
-            packageName: this.packageName,
-            model: warning.model,
-            detail: warning.message,
-         });
-      }
    }
 
    /**

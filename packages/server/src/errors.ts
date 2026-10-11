@@ -516,7 +516,7 @@ export function internalErrorToHttpError(
    } else if (error instanceof WriteRollbackFailedError) {
       return httpError(500, error.message);
    } else if (error instanceof WriteRolledBackError) {
-      logInternal("Dashboard write rolled back", error, "warn");
+      // Logged once, where the rollback happened, with the cause.
       return httpError(500, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);

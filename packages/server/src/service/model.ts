@@ -143,7 +143,6 @@ import {
 } from "./notebook";
 import {
    recordNotebookCellExecution,
-   type NotebookDiscoveryOutcome,
    type NotebookFormat,
 } from "../notebook_metrics";
 import {
@@ -6288,9 +6287,11 @@ export class Model {
    /**
     * Read a served notebook's cells out of `text`, the text this model compiled,
     * and attach them. A reader refusal becomes this notebook's error and leaves
-    * it with no cells; the model itself keeps serving.
+    * it with no cells; the model itself keeps serving. `ok` when its cells were
+    * read, `refused` when the reader refused them, `broken` when it did not
+    * compile and so has none.
     */
-   public attachServedNotebookCells(text: string): NotebookDiscoveryOutcome {
+   public attachServedNotebookCells(text: string): "ok" | "refused" | "broken" {
       this.notebookReaderRefusal = undefined;
       this.notebookAnnotations = undefined;
       this.notebookLayout = undefined;

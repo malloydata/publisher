@@ -96,6 +96,7 @@ import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { resolveSpaFallback, type LoadedRoutes } from "./spa_fallback";
+import { timeReportRead } from "./report_metrics";
 import { isLegacyReportAlias } from "./service/legacy_report_views";
 import { registerDeprecatedRoutes } from "./routes/deprecated";
 import {
@@ -1811,20 +1812,18 @@ app.put(
          res.status(result.created ? 201 : 200).json(result);
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
-         // A refused write is the endpoint working: a stale hash, a dashboard
-         // that does not compile, a path that is not a dashboard. Logging all
-         // of those at `error` made the level meaningless on this route and
-         // buried the one case that is genuinely wrong — a write that compiled,
-         // landed, and could not be reloaded.
-         const detail = {
-            environmentName: req.params.environmentName,
-            packageName: req.params.packageName,
-            modelPath: (req.params as Record<string, string>)["0"],
-            status,
-            error,
-         };
-         if (status >= 500) logger.error("Dashboard write failed", detail);
-         else logger.warn("Dashboard write refused", detail);
+         // A refused write is the endpoint working: a stale hash, a report
+         // that does not compile, a path that is not a report. It is logged at
+         // `warn`, so `error` keeps meaning a fault. A 5xx is already logged
+         // once: a rollback where it happened, anything else by the mapping.
+         if (status < 500) {
+            logger.warn("Report write refused", {
+               packageName: req.params.packageName,
+               model: (req.params as Record<string, string>)["0"],
+               status,
+               error: (error as Error).message,
+            });
+         }
          res.status(status).json(json);
       }
    },
@@ -1832,6 +1831,7 @@ app.put(
 
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports`,
+   timeReportRead("list"),
    jsonRoute((req) =>
       dashboardController.listReports(
          req.params.environmentName,
@@ -1842,6 +1842,7 @@ app.get(
 
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports/*`,
+   timeReportRead("get"),
    jsonRoute((req) =>
       dashboardController.getReport(
          req.params.environmentName,

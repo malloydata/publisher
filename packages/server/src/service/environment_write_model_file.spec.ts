@@ -1,15 +1,17 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import {
    BadRequestError,
+   internalErrorToHttpError,
    WriteRollbackFailedError,
    WriteVerifyError,
 } from "../errors";
+import { logger } from "../logger";
 import { Environment } from "./environment";
 
 /**
@@ -58,6 +60,14 @@ beforeEach(() => {
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
 const ok = async () => undefined;
+
+/**
+ * The log lines a spy saw about a write or its rollback, by either name the
+ * error mapping or this service gives them; other tests in the process log
+ * through the same logger.
+ */
+const writeLines = (spy: { mock: { calls: unknown[][] } }) =>
+   spy.mock.calls.filter(([text]) => /write|rolled back/i.test(String(text)));
 
 describe("Environment.writeModelFileTransactional", () => {
    it("writes a new file and reports that nothing was there", async () => {
@@ -127,6 +137,43 @@ describe("Environment.writeModelFileTransactional", () => {
       expect(read()).toBe("good");
       // Once for the write, once to put the package back on the old text.
       expect(reloads).toBe(2);
+   });
+
+   /**
+    * One rollback, one line: it is logged where it happened, with the cause,
+    * and nowhere else, so a count of these lines is a count of rollbacks.
+    */
+   it("logs a rollback once, at warn, and the error mapping adds nothing", async () => {
+      fs.writeFileSync(target(), "good");
+      const warn = spyOn(logger, "warn");
+      const error = spyOn(logger, "error");
+      try {
+         const rolledBack = await environment
+            .writeModelFileTransactional(
+               PKG,
+               FILE,
+               "bad",
+               () => undefined,
+               async () => {
+                  throw new Error("did not reload");
+               },
+            )
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         expect(internalErrorToHttpError(rolledBack!).status).toBe(500);
+         expect(writeLines(warn)).toEqual([
+            [
+               "Report write rolled back",
+               { packageName: PKG, model: FILE, error: "did not reload" },
+            ],
+         ]);
+         expect(writeLines(error)).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         error.mockRestore();
+      }
    });
 
    it("removes the file when verify refuses a newly created one", async () => {
@@ -435,14 +482,36 @@ describe("Environment.writeModelFileTransactional", () => {
          }
       )._loadOrGetPackageLocked = async () => {
          reloads += 1;
-         throw new Error("reload failed");
+         throw new Error(reloads === 1 ? "reload failed" : "restore failed");
       };
-      const error = await environment
-         .writeModelFileTransactional(PKG, FILE, "bad", () => undefined, ok)
-         .then(
-            () => undefined,
-            (e: Error) => e,
-         );
+      const warn = spyOn(logger, "warn");
+      const logError = spyOn(logger, "error");
+      let error: Error | undefined;
+      try {
+         error = await environment
+            .writeModelFileTransactional(PKG, FILE, "bad", () => undefined, ok)
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         internalErrorToHttpError(error!);
+         // Once, at error, with both causes; never also as a rollback.
+         expect(writeLines(logError)).toEqual([
+            [
+               "Report write rollback failed",
+               {
+                  packageName: PKG,
+                  model: FILE,
+                  error: "reload failed",
+                  restoreError: "restore failed",
+               },
+            ],
+         ]);
+         expect(writeLines(warn)).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         logError.mockRestore();
+      }
       expect(error).toBeInstanceOf(WriteRollbackFailedError);
       expect(error?.message).toContain("putting the previous text back failed");
       // The restore itself was written; it is the reload of it that failed.

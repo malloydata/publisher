@@ -12,6 +12,7 @@ import * as os from "os";
 import * as path from "path";
 import { ModelCompilationError } from "../errors";
 import { resetNotebookMetricsForTest } from "../notebook_metrics";
+import { resetReportMetricsForTest } from "../report_metrics";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -63,6 +64,7 @@ describe("served notebook cells", () => {
    beforeAll(async () => {
       harness = await startMetricsHarness();
       resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
       process.env.PACKAGE_LOAD_WORKERS = "1";
       pool = new PackageLoadPool(1);
       await __setPackageLoadPoolForTests(pool);
@@ -91,6 +93,7 @@ describe("served notebook cells", () => {
       else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
       fs.rmSync(tempDir, { recursive: true, force: true });
       resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
       await harness.shutdown();
    });
 
@@ -307,20 +310,22 @@ describe("served notebook cells", () => {
       });
    });
 
-   it("counts each served notebook at discovery by outcome", async () => {
-      const served = fs.readdirSync(path.join(tempDir, "notebooks")).length;
+   it("counts a notebook whose cells were refused as a finding at discovery", async () => {
       expect(
-         await harness.collectCounter("publisher_notebook_discovery_total", {
-            format: "malloy",
-            outcome: "refused",
+         await harness.collectCounter("publisher_report_lint_findings_total", {
+            code: "notebook-cells-unreadable",
+            severity: "error",
          }),
       ).toBe(1);
+      // Still a served report: the refusal costs it its cells, not its listing.
       expect(
-         await harness.collectCounter("publisher_notebook_discovery_total", {
-            format: "malloy",
-            outcome: "ok",
+         await harness.collectCounter("publisher_reports_discovered_total", {
+            layout: "linear",
          }),
-      ).toBe(served - 1);
+      ).toBe(
+         pkg.listReports().filter((report) => report.layout === "linear")
+            .length,
+      );
    });
 
    it("counts a cell run by format, kind and outcome", async () => {

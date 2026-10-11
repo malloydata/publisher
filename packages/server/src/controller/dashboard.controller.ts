@@ -7,17 +7,20 @@ import {
    BadRequestError,
    CompileRefusedError,
    DashboardNotFoundError,
+   EnvironmentNotFoundError,
    FrozenConfigError,
+   PackageNotFoundError,
    WriteConflictError,
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
 } from "../errors";
 import {
-   recordDashboardWrite,
-   type ReportWriteLayout,
-   type DashboardWriteOutcome,
-} from "../dashboard_write_metrics";
+   recordReportWrite,
+   type ReportLayout,
+   type ReportWriteOutcome,
+   type ReportWriteReason,
+} from "../report_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
 import {
    carriesArtifactTag,
@@ -57,21 +60,51 @@ function currentIsAReport(
 }
 
 /**
- * Which outcome an error from the write path represents.
+ * A 400 the write path raises itself, carrying the `reason` it is counted
+ * under. Still a BadRequestError, so the status and the body are unchanged.
+ */
+class ReportWriteRefusedError extends BadRequestError {
+   constructor(
+      readonly reason: ReportWriteReason,
+      message: string,
+   ) {
+      super(message);
+   }
+}
+
+/**
+ * Which outcome, and why, an error from the write path represents.
  *
  * Read from the error's TYPE rather than decided at each throw site, so a
  * branch added later is classified by what it raises instead of being silently
- * counted as something else — or forgotten. The three named types are the
- * three refusals worth telling apart; everything else, from a frozen config to
- * a 404 to something genuinely unexpected, shares one bucket because it shares
- * the only fact an operator needs from it: nothing was written.
+ * counted as something else — or forgotten. Every refusal shares the outcome
+ * `refused`, the only fact an alert needs (nothing was written); `reason`
+ * tells them apart for whoever follows it up.
  */
-function outcomeOf(error: Error): DashboardWriteOutcome {
-   if (error instanceof WriteConflictError) return "conflict";
-   if (error instanceof CompileRefusedError) return "compile_failed";
-   if (error instanceof WriteRollbackFailedError) return "rollback_failed";
-   if (error instanceof WriteRolledBackError) return "rolled_back";
-   return "refused";
+function outcomeOf(error: Error): {
+   outcome: ReportWriteOutcome;
+   reason: ReportWriteReason;
+} {
+   if (error instanceof WriteConflictError)
+      return { outcome: "conflict", reason: "conflict" };
+   if (error instanceof CompileRefusedError)
+      return { outcome: "compile_failed", reason: "compile_failed" };
+   if (error instanceof WriteRollbackFailedError)
+      return { outcome: "rollback_failed", reason: "reload_failed" };
+   if (error instanceof WriteRolledBackError)
+      return { outcome: "rolled_back", reason: "reload_failed" };
+   const reason: ReportWriteReason =
+      error instanceof ReportWriteRefusedError
+         ? error.reason
+         : error instanceof FrozenConfigError
+           ? "frozen_config"
+           : error instanceof EnvironmentNotFoundError ||
+               error instanceof PackageNotFoundError
+             ? "not_found"
+             : error instanceof BadRequestError
+               ? "bad_request"
+               : "other";
+   return { outcome: "refused", reason };
 }
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
@@ -178,7 +211,7 @@ export class DashboardController {
          reportWritePathProblem(modelPath) === undefined
             ? readReportTagOfText(body.source)
             : undefined;
-      const layout: ReportWriteLayout =
+      const layout: ReportLayout =
          tag?.status === "report" ? tag.layout : "grid";
       try {
          const result = await this.writeDashboardSource(
@@ -187,18 +220,16 @@ export class DashboardController {
             modelPath,
             body,
          );
-         recordDashboardWrite(
+         recordReportWrite(
             result.created ? "created" : "replaced",
+            "none",
             Date.now() - startedAt,
             layout,
          );
          return result;
       } catch (error) {
-         recordDashboardWrite(
-            outcomeOf(error as Error),
-            Date.now() - startedAt,
-            layout,
-         );
+         const { outcome, reason } = outcomeOf(error as Error);
+         recordReportWrite(outcome, reason, Date.now() - startedAt, layout);
          throw error;
       }
    }
@@ -214,11 +245,20 @@ export class DashboardController {
             'Cannot write a report: publisher.config.json has "frozenConfig": true.',
          );
       }
-      assertSafeRelativeModelPath(modelPath);
+      try {
+         assertSafeRelativeModelPath(modelPath);
+      } catch (error) {
+         throw new ReportWriteRefusedError(
+            "invalid_path",
+            (error as Error).message,
+         );
+      }
       const pathProblem = reportWritePathProblem(modelPath);
-      if (pathProblem) throw new BadRequestError(pathProblem);
+      if (pathProblem)
+         throw new ReportWriteRefusedError("invalid_path", pathProblem);
       if (typeof body?.source !== "string") {
-         throw new BadRequestError(
+         throw new ReportWriteRefusedError(
+            "missing_source",
             "The request body needs a `source`: the whole file's Malloy text.",
          );
       }
@@ -226,7 +266,8 @@ export class DashboardController {
       // report. A tag that does not parse, or that sets `kind=`, passes here so
       // the compile below refuses it with the lint's fix.
       if (!carriesArtifactTag(body.source)) {
-         throw new BadRequestError(
+         throw new ReportWriteRefusedError(
+            "untagged",
             `\`${modelPath}\` has no artifact tag (\`## artifact { layout=grid … }\` ` +
                `or \`## artifact { layout=linear … }\`), so it is not a report. ` +
                `Only a report can be written here.`,
@@ -283,7 +324,8 @@ export class DashboardController {
                current !== undefined &&
                !currentIsAReport(current, loaded, modelPath)
             )
-               throw new BadRequestError(
+               throw new ReportWriteRefusedError(
+                  "not_a_report",
                   `\`${modelPath}\` exists in the package and is not a report: ` +
                      `it is a model (or a file other models import), so it was ` +
                      `not overwritten.`,

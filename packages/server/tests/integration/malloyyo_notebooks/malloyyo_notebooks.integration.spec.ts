@@ -16,6 +16,7 @@ import * as fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { resetNotebookMetricsForTest } from "../../../src/notebook_metrics";
+import { resetReportMetricsForTest } from "../../../src/report_metrics";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -191,6 +192,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       // After the server is imported, so its meter provider is the one replaced.
       harness = await startMetricsHarness();
       resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
       const res = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
@@ -228,6 +230,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          }
       }
       resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
       await harness?.shutdown();
       await env?.stop();
       env = null;
@@ -468,11 +471,11 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
             ]);
          });
 
-         it("is counted at discovery as refused", async () => {
+         it("is counted at discovery as an unreadable-cells finding", async () => {
             expect(
                await harness.collectCounter(
-                  "publisher_notebook_discovery_total",
-                  { format: "malloy", outcome: "refused" },
+                  "publisher_report_lint_findings_total",
+                  { code: "notebook-cells-unreadable", severity: "error" },
                ),
             ).toBeGreaterThan(0);
          });

@@ -80,7 +80,8 @@ import {
    safeJoinUnderRoot,
 } from "../path_safety";
 import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
-import { URL_READER } from "../utils";
+import { errMessage, URL_READER } from "../utils";
+import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
    buildEnvironmentMalloyConfig,
@@ -1169,7 +1170,7 @@ export class Environment {
             }
             for (const warning of reportWarnings) {
                collect(
-                  [asProblem(warning, warning.code ?? "dashboard-lint")],
+                  [asProblem(warning, warning.code ?? UNCODED_REPORT_FINDING)],
                   warning.model,
                );
             }
@@ -2361,11 +2362,13 @@ export class Environment {
                }
                await this._loadOrGetPackageLocked(packageName, true);
             } catch (restoreError) {
-               logger.error("Dashboard write rollback failed", {
+               // The one log line for this write: the route and the error
+               // mapping leave both rollback outcomes to this method.
+               logger.error("Report write rollback failed", {
                   packageName,
-                  modelPath,
-                  error,
-                  restoreError,
+                  model: modelPath,
+                  error: errMessage(error),
+                  restoreError: errMessage(restoreError),
                });
                throw new WriteRollbackFailedError(
                   `The package did not reload with the new \`${modelPath}\`, ` +
@@ -2375,10 +2378,10 @@ export class Environment {
                   { cause: restoreError },
                );
             }
-            logger.warn("Dashboard write rolled back", {
+            logger.warn("Report write rolled back", {
                packageName,
-               modelPath,
-               error,
+               model: modelPath,
+               error: errMessage(error),
             });
             // Only a refusal worded for the caller is echoed; anything else can carry a server path.
             const reason =
