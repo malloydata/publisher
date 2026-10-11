@@ -2456,7 +2456,6 @@ describe("resolveDrillDestination: the shared drill case table", () => {
          reports: { path: string; layout: string; dropped?: boolean }[];
          server: Answer;
          sdk?: Answer;
-         sdkPending?: boolean;
          knownDifference?: string;
       }[];
    };
@@ -2469,8 +2468,7 @@ describe("resolveDrillDestination: the shared drill case table", () => {
          );
          // A case says why the SDK answers otherwise, or the SDK must agree.
          expect(testCase.sdk !== undefined).toBe(
-            testCase.sdkPending === true ||
-               testCase.knownDifference !== undefined,
+            testCase.knownDifference !== undefined,
          );
       });
    }

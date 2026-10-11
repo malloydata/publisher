@@ -3,7 +3,6 @@
 
 import { annotationTextProblem } from "../DashboardBuilder/annotationText";
 import { isBareName } from "../../utils/malloyText";
-import type { DocumentType } from "../DocumentStorage";
 
 export const malloyName = (name: string) =>
    isBareName(name) ? name : `\`${name}\``;
@@ -17,11 +16,8 @@ export interface NewDocument {
    view: string;
 }
 
-/** Why `input` cannot be written into a new report, or undefined when it can. `kind` is the report's legacy layout name, and no longer changes the answer. */
-export function newDocumentProblem(
-   _kind: DocumentType,
-   input: NewDocument,
-): string | undefined {
+/** Why `input` cannot be written into a new report, of either layout, or undefined when it can. */
+export function newDocumentProblem(input: NewDocument): string | undefined {
    const { title, modelPath, source, view } = input;
    if (title.trim() === "") return "A title cannot be empty.";
    const textProblem = annotationTextProblem("title", title);

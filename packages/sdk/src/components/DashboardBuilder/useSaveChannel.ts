@@ -10,7 +10,6 @@ import {
    type SetStateAction,
 } from "react";
 import { modelResultsKey } from "../../hooks/useQueryResult";
-import { encodeResourceUri } from "../../utils/formatting";
 import {
    isDocumentNotFound,
    type DocumentStorage,
@@ -18,7 +17,8 @@ import {
 } from "../DocumentStorage";
 import { locatorFor } from "../DocumentCreate/documentPath";
 import type { useServer } from "../ServerProvider";
-import type { DocumentKind } from "../Package/documentLocation";
+import type { ReportLayout } from "../Package/documentLocation";
+import { invalidateReportQueries } from "../Package/reportQueries";
 import {
    expectedHashFor,
    saveTarget,
@@ -35,7 +35,7 @@ import type { OpenedDocument } from "./useOpenedDocument";
 export function useSaveChannel({
    storage,
    workspace,
-   kind,
+   layout,
    notebook,
    environmentName,
    packageName,
@@ -60,7 +60,9 @@ export function useSaveChannel({
 }: {
    storage: DocumentStorage | undefined;
    workspace: Workspace | undefined;
-   kind: DocumentKind;
+   /** The layout the report opened with: what a save records until the document says otherwise. */
+   layout: ReportLayout;
+   /** The report opened linear: its record is read back only from an authoritative store. */
    notebook: boolean;
    environmentName: string;
    packageName: string;
@@ -87,25 +89,31 @@ export function useSaveChannel({
    packageBaseRef: MutableRefObject<string | undefined>;
    fetchedAtRef: MutableRefObject<number>;
 }) {
-   const locator =
-      workspace === undefined
-         ? undefined
-         : locatorFor(
-              kind,
-              workspace.name,
-              environmentName,
-              packageName,
-              modelPath,
-           );
+   // The document's address in the host's store; a save records the layout the document has then.
+   const locatorAt = useCallback(
+      (at: ReportLayout) =>
+         workspace === undefined
+            ? undefined
+            : locatorFor(
+                 at,
+                 workspace.name,
+                 environmentName,
+                 packageName,
+                 modelPath,
+              ),
+      [workspace, environmentName, packageName, modelPath],
+   );
+   const locator = locatorAt(layout);
    // Into the host's store: the record when the host says so, and otherwise a
    // copy kept beside the package.
    const saveToStorage = useCallback(
-      async (source: string) => {
-         if (!storage || !locator)
+      async (source: string, saved: ReportLayout = layout) => {
+         const at = locatorAt(saved);
+         if (!storage || !at)
             throw new Error(
                "This host keeps no documents, so there is nowhere to save.",
             );
-         await storage.saveDocument(locator, source);
+         await storage.saveDocument(at, source);
          // The builder keeps its history and its text; what it holds is now
          // this, not the text it was opened with.
          setOpened((previous) => previous && { ...previous, source });
@@ -120,7 +128,8 @@ export function useSaveChannel({
       },
       [
          storage,
-         locator,
+         locatorAt,
+         layout,
          authoritative,
          resume,
          setOpened,
@@ -202,24 +211,14 @@ export function useSaveChannel({
                   }),
                },
                { queryKey: ["dashboard-editor-manifest"] },
-               // The report viewer and listing, and the deprecated ones beside them: a layout switch moves a report from one old listing to the other.
-               { queryKey: ["report"] },
-               { queryKey: ["reports"] },
-               { queryKey: ["dashboards"] },
-               { queryKey: ["notebooks"] },
-               { queryKey: ["dashboard"] },
-               // The deprecated notebook viewer keys its read on the resource URI.
-               {
-                  queryKey: [
-                     encodeResourceUri({
-                        environmentName,
-                        packageName,
-                        modelPath,
-                     }),
-                  ],
-               },
             ],
          });
+         invalidateReportQueries(
+            queryClient,
+            environmentName,
+            packageName,
+            modelPath,
+         );
       },
       [
          apiClients,
@@ -257,7 +256,9 @@ export function useSaveChannel({
          (!notebook || authoritative),
       readFailed: readFailure !== undefined,
    });
-   const save =
+   const save:
+      | ((source: string, layout?: ReportLayout) => Promise<void>)
+      | undefined =
       writer === "storage"
          ? saveToStorage
          : writer === "package"

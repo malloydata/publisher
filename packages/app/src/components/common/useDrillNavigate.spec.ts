@@ -36,14 +36,12 @@ describe("useDrillNavigate", () => {
       );
    });
 
-   it("lands a deprecated bare name on the report it resolves to", () => {
+   it("lands a bare name on the report at the root", () => {
       reports = [
+         { path: "overview.malloy", layout: "linear" },
          { path: "dashboards/overview.malloy", layout: "grid" },
-         { path: "notebooks/overview.malloy", layout: "linear" },
       ];
-      expect(drill("env", "pkg", "overview")).toBe(
-         "/env/pkg/dashboards/overview",
-      );
+      expect(drill("env", "pkg", "overview")).toBe("/env/pkg/overview");
    });
 
    it("encodes the environment, the package and each path segment", () => {
@@ -66,14 +64,12 @@ describe("useDrillNavigate", () => {
       );
    });
 
-   it("sends an unresolved bare name to the deprecated dashboards/<name> alias", () => {
-      expect(drill("env", "pkg", "absent")).toBe("/env/pkg/dashboards/absent");
+   it("sends an unresolved bare name to its root path, never to a by-name alias", () => {
+      expect(drill("env", "pkg", "absent")).toBe("/env/pkg/absent");
       reports = [
-         { path: "a/overview.malloy", layout: "grid" },
-         { path: "b/overview.malloy", layout: "grid" },
+         { path: "dashboards/overview.malloy", layout: "grid" },
+         { path: "notebooks/overview.malloy", layout: "linear" },
       ];
-      expect(drill("env", "pkg", "overview")).toBe(
-         "/env/pkg/dashboards/overview",
-      );
+      expect(drill("env", "pkg", "overview")).toBe("/env/pkg/overview");
    });
 });

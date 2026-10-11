@@ -8,7 +8,7 @@ import {
    type Workspace,
 } from "../DocumentStorage";
 import { locatorFor } from "../DocumentCreate/documentPath";
-import type { DocumentKind } from "../Package/documentLocation";
+import type { ReportLayout } from "../Package/documentLocation";
 import { chooseWorkspace, storageErrorMessage } from "./documentSession";
 
 /**
@@ -20,14 +20,16 @@ import { chooseWorkspace, storageErrorMessage } from "./documentSession";
  */
 export function useHostCopy({
    storage,
-   kind,
+   layout,
    notebook,
    environmentName,
    packageName,
    modelPath,
 }: {
    storage: DocumentStorage | undefined;
-   kind: DocumentKind;
+   /** The layout the report opened with; a read finds the copy at its path whatever its layout. */
+   layout: ReportLayout;
+   /** The report opened linear: only an authoritative store's copy of it is read. */
    notebook: boolean;
    environmentName: string;
    packageName: string;
@@ -65,7 +67,7 @@ export function useHostCopy({
                const text = await storage
                   .getDocument(
                      locatorFor(
-                        kind,
+                        layout,
                         chosen.name,
                         environmentName,
                         packageName,
@@ -90,7 +92,7 @@ export function useHostCopy({
       return () => {
          stale = true;
       };
-   }, [storage, kind, notebook, environmentName, packageName, modelPath]);
+   }, [storage, layout, notebook, environmentName, packageName, modelPath]);
 
    return {
       workspace,

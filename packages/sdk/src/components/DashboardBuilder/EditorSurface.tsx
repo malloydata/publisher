@@ -23,7 +23,7 @@ import { useReportListing } from "../Package/useDocumentLocation";
 import { useServer } from "../ServerProvider";
 import { buildCatalog, isReportModel, type PackageCatalog } from "./catalog";
 import { DashboardBuilder } from "./DashboardBuilder";
-import type { DocumentKind } from "../Package/documentLocation";
+import type { ReportLayout } from "../Package/documentLocation";
 import type { DashboardDocument, QueryTile } from "./document";
 import type { SavesTo } from "./documentSession";
 import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
@@ -48,7 +48,6 @@ const NO_MANIFEST: DashboardManifest = {};
 
 export function EditorSurface({
    textSource,
-   kind,
    modelGivens,
    environmentName,
    packageName,
@@ -66,7 +65,6 @@ export function EditorSurface({
    note,
 }: {
    textSource?: TextSourceOptions;
-   kind: DocumentKind;
    /** The model's own givens, for a cell-format notebook whose manifest the server cannot build until it is saved. */
    modelGivens?: Given[];
    environmentName: string;
@@ -82,7 +80,8 @@ export function EditorSurface({
       generation: number;
    };
    replaces?: string;
-   onSave?: (source: string) => Promise<void>;
+   /** Save the text, with the layout the document has as it is saved. */
+   onSave?: (source: string, layout: ReportLayout) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
    onExit?: () => void;
    allowLayoutChange?: boolean;
@@ -92,7 +91,6 @@ export function EditorSurface({
    note: string;
 }) {
    const { apiClients } = useServer();
-   const notebook = kind === "notebook";
 
    // The server serves a dashboard only once the package file has a tile, so
    // an empty start becomes servable when a save puts the first one there.
@@ -133,8 +131,7 @@ export function EditorSurface({
                   ? {}
                   : { autorun: read.notebook.autorun }),
             };
-         const { notebook: _cells, ...manifest } = read;
-         return manifest as DashboardManifest;
+         return read;
       },
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
@@ -280,18 +277,16 @@ export function EditorSurface({
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);
    // Only a package write can make the package serve it; a copy in the host's store does not.
+   // The layout the document has as it is saved goes with it, so a store records the one a switch left.
    const saveThenServe = useMemo<SaveHandler<DashboardDocument> | undefined>(
       () =>
-         onSave && savesTo === "package"
-            ? async (
-                 source: string,
-                 context: SaveContext<DashboardDocument>,
-              ) => {
-                 await onSave(source);
-                 // An undone first save writes back a file with no tile, which the server stops serving.
-                 setServed(context.document.tiles.length > 0);
-              }
-            : onSave,
+         onSave &&
+         (async (source: string, context: SaveContext<DashboardDocument>) => {
+            await onSave(source, context.document.layout);
+            // An undone first save writes back a file with no tile, which the server stops serving.
+            if (savesTo === "package")
+               setServed(context.document.tiles.length > 0);
+         }),
       [onSave, savesTo],
    );
    const modelSpecs = useMemo(
@@ -480,8 +475,11 @@ export function EditorSurface({
             {...(onEvent ? { onEvent } : {})}
             controls={
                isSuccess ? (
-                  // The reader's control layout for the kind: a notebook's panel, a dashboard's bar.
-                  <GivensPanel {...panel} layout={notebook ? "panel" : "bar"} />
+                  // The reader's control layout for the document as it stands: a linear report's panel, a grid's bar.
+                  <GivensPanel
+                     {...panel}
+                     layout={doc.layout === "linear" ? "panel" : "bar"}
+                  />
                ) : undefined
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}

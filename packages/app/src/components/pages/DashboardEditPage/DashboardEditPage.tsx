@@ -7,6 +7,7 @@ import {
    Loading,
    LOADING_COPY,
    NarrowEditGate,
+   type ReportLayout,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
@@ -34,8 +35,8 @@ export interface DashboardEditPageProps {
    packageName: string;
    /** The report's package path, `sales/q3.malloy`: what the editor is keyed by. */
    path: string;
-   /** The layout the report opened with, in the legacy vocabulary; default `dashboard` (grid). */
-   kind?: "dashboard" | "notebook";
+   /** The layout the report opens with, from the listing or the host's draft; default grid. */
+   layout?: ReportLayout;
 }
 
 /**
@@ -47,23 +48,28 @@ export default function DashboardEditPage({
    environmentName,
    packageName,
    path,
-   kind = "dashboard",
+   layout = "grid",
 }: DashboardEditPageProps) {
    const guard = useLeaveGuard();
-   // Telemetry keys on the path: two reports may share a basename.
+   // Telemetry keys on the path: two reports may share a basename. Each event
+   // goes to the sink its own name belongs to, so after a layout switch the
+   // builder's events follow the report's new layout.
    const onEvent = useMemo(() => {
-      if (kind === "dashboard")
-         return logDashboardEvent({
-            environmentName,
-            packageName,
-            dashboardName: path,
-         }) as (event: DashboardEvent | NotebookEvent) => void;
-      return logNotebookEvent({
+      const dashboard = logDashboardEvent({
+         environmentName,
+         packageName,
+         dashboardName: path,
+      });
+      const notebook = logNotebookEvent({
          environmentName,
          packageName,
          notebookName: path,
-      }) as (event: DashboardEvent | NotebookEvent) => void;
-   }, [kind, environmentName, packageName, path]);
+      });
+      return (event: DashboardEvent | NotebookEvent) =>
+         event.type.startsWith("notebook.")
+            ? notebook(event as NotebookEvent)
+            : dashboard(event as DashboardEvent);
+   }, [environmentName, packageName, path]);
    return (
       // The reader's page width and edges, the same for either layout, so the
       // margins do not move between modes.
@@ -80,7 +86,7 @@ export default function DashboardEditPage({
                      packageName,
                   })}
                   path={path}
-                  kind={kind}
+                  layout={layout}
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />

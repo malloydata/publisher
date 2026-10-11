@@ -348,7 +348,6 @@ describe("creating", () => {
          expect(onOpenDocument).toHaveBeenCalledWith({
             path: "by-category.malloy",
             layout: "grid",
-            kind: "dashboard",
             slug: "by-category",
             mode: "edit",
          }),
@@ -408,7 +407,7 @@ describe("creating", () => {
       expect(saved).toEqual([
          {
             workspace: "record",
-            type: "notebook",
+            type: "linear",
             path: "env/pkg/by-category.malloy",
          },
       ]);

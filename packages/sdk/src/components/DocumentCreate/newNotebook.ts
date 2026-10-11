@@ -25,10 +25,7 @@ export function newReportSource(
    /** The package path the report is written at; the import is relative to it. Default: the root. */
    reportPath: string = ROOT_REPORT_PATH,
 ): string {
-   const problem = newDocumentProblem(
-      layout === "grid" ? "dashboard" : "notebook",
-      input,
-   );
+   const problem = newDocumentProblem(input);
    if (problem) throw new Error(problem);
    const { modelPath, source, view } = input;
    const title = input.title.trim();

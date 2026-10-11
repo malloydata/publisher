@@ -19,7 +19,7 @@ let listing: {
    isError: boolean;
    refetch: () => void;
 };
-let draft: { type: "dashboard" | "notebook" | undefined; settled: boolean };
+let draft: { layout: "grid" | "linear" | undefined; settled: boolean };
 const draftCalls: unknown[][] = [];
 const refetch = mock(() => {});
 
@@ -27,14 +27,14 @@ const sdk = await import("@malloy-publisher/sdk");
 mock.module("@malloy-publisher/sdk", () => ({
    ...sdk,
    useReportListing: () => listing,
-   useDraftType: (...args: unknown[]) => {
+   useDraftLayout: (...args: unknown[]) => {
       draftCalls.push(args);
       return draft;
    },
 }));
 mock.module("../DashboardEditPage/DashboardEditPage", () => ({
-   default: (props: { path: string; kind: string }) => (
-      <div data-testid="editor">{`edit ${props.path} as ${props.kind}`}</div>
+   default: (props: { path: string; layout: string }) => (
+      <div data-testid="editor">{`edit ${props.path} as ${props.layout}`}</div>
    ),
 }));
 mock.module("../ReportPage/ReportPage", () => ({
@@ -79,7 +79,7 @@ function mount(routePath: string, edit = false, search = "") {
 
 beforeEach(() => {
    listing = { reports: [], settled: true, isError: false, refetch };
-   draft = { type: undefined, settled: true };
+   draft = { layout: undefined, settled: true };
    draftCalls.length = 0;
    refetch.mockClear();
 });
@@ -95,11 +95,11 @@ describe("RoutedDocument", () => {
       );
    });
 
-   it("opens a listed path's /edit in the builder with the listed layout's kind", () => {
+   it("opens a listed path's ?edit in the builder with the listed layout", () => {
       listing.reports = [{ path: "story.malloy", layout: "linear" }];
       mount("story", true);
       expect(screen.getByTestId("editor").textContent).toBe(
-         "edit story.malloy as notebook",
+         "edit story.malloy as linear",
       );
       // A listed report is not looked up as a draft.
       expect(draftCalls.at(-1)).toEqual(["env", "pkg", "story.malloy", false]);
@@ -181,8 +181,8 @@ describe("RoutedDocument", () => {
       expect(screen.getByTestId("not-found"));
    });
 
-   it("opens an unlisted /edit as the host's draft, under the type it was filed as", () => {
-      draft = { type: "notebook", settled: true };
+   it("opens an unlisted ?edit as the host's draft, with the layout its store recorded", () => {
+      draft = { layout: "linear", settled: true };
       mount("drafts/new", true);
       expect(draftCalls.at(-1)).toEqual([
          "env",
@@ -191,25 +191,25 @@ describe("RoutedDocument", () => {
          true,
       ]);
       expect(screen.getByTestId("editor").textContent).toBe(
-         "edit drafts/new.malloy as notebook",
+         "edit drafts/new.malloy as linear",
       );
    });
 
-   it("opens an unlisted /edit with no draft as a grid report", () => {
+   it("opens an unlisted ?edit with no draft as a grid report", () => {
       mount("drafts/new", true);
       expect(screen.getByTestId("editor").textContent).toBe(
-         "edit drafts/new.malloy as dashboard",
+         "edit drafts/new.malloy as grid",
       );
    });
 
    it("waits for the host's answer before opening an unlisted /edit", () => {
-      draft = { type: undefined, settled: false };
+      draft = { layout: undefined, settled: false };
       mount("drafts/new", true);
       expect(screen.queryByTestId("editor")).toBeNull();
    });
 
    it("does not open an unlisted path for reading", () => {
-      draft = { type: "notebook", settled: true };
+      draft = { layout: "linear", settled: true };
       mount("drafts/new");
       expect(screen.getByTestId("not-found"));
       expect(screen.queryByTestId("editor")).toBeNull();

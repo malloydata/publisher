@@ -29,9 +29,9 @@ export class FakeStorage implements DocumentStorage {
       _workspace: Workspace,
       type?: DocumentType,
    ): Promise<DocumentLocator[]> {
-      // A document's type is what it was saved as; a seeded one, which has
-      // none, answers to either. Never read off the path: a report lives
-      // anywhere in its package.
+      // A document's layout is what its last save recorded; a seeded one,
+      // which has none, answers to either. Never read off the path: a report
+      // lives anywhere in its package.
       return [...this.documents.keys()]
          .filter((path) => {
             const saved = this.types.get(path);
@@ -39,18 +39,15 @@ export class FakeStorage implements DocumentStorage {
          })
          .map((path) => ({
             workspace: this.workspace.name,
-            type: this.types.get(path) ?? type ?? "notebook",
+            type: this.types.get(path) ?? type ?? "linear",
             path,
          }));
    }
 
    async getDocument(locator: DocumentLocator): Promise<string> {
-      // Keyed by type as well as path, as a real backend may be: a document
-      // saved as one type is not found under the other. A seeded one, which
-      // has no type, answers to either.
+      // Keyed by path alone, as the contract says: the layout is metadata.
       const content = this.documents.get(locator.path);
-      const saved = this.types.get(locator.path);
-      if (content === undefined || (saved && saved !== locator.type))
+      if (content === undefined)
          throw new DocumentNotFoundError(`No document at ${locator.path}`);
       return content;
    }
@@ -76,7 +73,9 @@ export class FakeStorage implements DocumentStorage {
    ): Promise<void> {
       const content = await this.getDocument(from);
       this.documents.delete(from.path);
+      this.types.delete(from.path);
       this.documents.set(to.path, content);
+      this.types.set(to.path, to.type);
    }
 }
 

@@ -1,5 +1,5 @@
 {
-   "about": "Where a `# drill { to=… }` lands (docs/reports-design.md §3): `to=` is a package path from the root, with or without `.malloy`, and a bare name is a root file. `reports` is the package's reports; the server resolves against every path, a report `dropped` because it could not be read included, and the SDK's `resolveDrillTarget` against the listing, which omits a dropped one. `server` is the server's answer (`resolveDrillDestination`; it also marks a target that is not a plain package path `malformed`, which the comparison leaves out). The SDK's answer must equal it, compared by `kind` and `path`, except where a case carries `sdk`: under `sdkPending` the SDK still reads the removed basename fallback and `sdk` is what it answers until it follows the server; under `knownDifference` the two differ by design.",
+   "about": "Where a `# drill { to=… }` lands (docs/reports-design.md §3): `to=` is a package path from the root, with or without `.malloy`, and a bare name is a root file. `reports` is the package's reports; the server resolves against every path, a report `dropped` because it could not be read included, and the SDK's `resolveDrillTarget` against the listing, which omits a dropped one. `server` is the server's answer (`resolveDrillDestination`; it also marks a target that is not a plain package path `malformed`, which the comparison leaves out). The SDK's answer must equal it, compared by `kind` and `path`, except where a case carries `sdk` with a `knownDifference` saying why the two differ by design.",
    "cases": [
       {
          "name": "a path from the package root",
@@ -76,12 +76,7 @@
          ],
          "server": {
             "kind": "unresolved"
-         },
-         "sdk": {
-            "kind": "name",
-            "path": "dashboards/overview.malloy"
-         },
-         "sdkPending": true
+         }
       },
       {
          "name": "a bare name is a root file: the one report elsewhere with that basename is not looked up",
@@ -94,12 +89,7 @@
          ],
          "server": {
             "kind": "unresolved"
-         },
-         "sdk": {
-            "kind": "name",
-            "path": "notebooks/story.malloy"
-         },
-         "sdkPending": true
+         }
       },
       {
          "name": "a bare name adds .malloy, never .malloynb",
@@ -112,12 +102,7 @@
          ],
          "server": {
             "kind": "unresolved"
-         },
-         "sdk": {
-            "kind": "name",
-            "path": "story.malloynb"
-         },
-         "sdkPending": true
+         }
       },
       {
          "name": "a bare name two grid reports elsewhere have resolves to neither",
@@ -232,12 +217,7 @@
          ],
          "server": {
             "kind": "unresolved"
-         },
-         "sdk": {
-            "kind": "name",
-            "path": "a/overview.malloy"
-         },
-         "sdkPending": true
+         }
       },
       {
          "name": "a leading ./ is not a package path",

@@ -6,14 +6,9 @@ import {
    isDocumentNotFound,
    type DocumentLocator,
    type DocumentStorage,
-   type DocumentType,
    type Workspace,
 } from "../DocumentStorage/DocumentStorage";
-import {
-   kindOfLayout,
-   layoutOfKind,
-   type ReportLayout,
-} from "../Package/documentLocation";
+import type { ReportLayout } from "../Package/documentLocation";
 import {
    locatorFor,
    normalizeDirectory,
@@ -62,8 +57,6 @@ export type CreateTarget =
      };
 
 export interface CreatedDocument {
-   /** The report's layout in the legacy vocabulary: what a host's store files it under. */
-   kind: DocumentType;
    layout: ReportLayout;
    /**
     * Package-relative, e.g. `sales.malloy`: the report's identity. At the
@@ -80,10 +73,8 @@ export interface CreatedDocument {
 }
 
 export interface CreateDocumentOptions {
-   /** The report's layout. Default: `kind`'s, else linear. */
+   /** The report's layout. Default linear. */
    layout?: ReportLayout;
-   /** @deprecated Pass `layout`. `dashboard` is grid, `notebook` linear. */
-   kind?: DocumentType;
    /**
     * Exactly where to write it, package-relative with `.malloy`. A path that is
     * taken is refused rather than renamed. Absent, the title's slug is used at
@@ -130,10 +121,8 @@ export async function createDocument(
    options: CreateDocumentOptions,
 ): Promise<CreatedDocument> {
    const { document, target, onCreated, onEvent } = options;
-   const layout: ReportLayout =
-      options.layout ?? (options.kind ? layoutOfKind(options.kind) : "linear");
-   const kind = kindOfLayout(layout);
-   const problem = newDocumentProblem(kind, document);
+   const layout: ReportLayout = options.layout ?? "linear";
+   const problem = newDocumentProblem(document);
    if (problem) throw new Error(problem);
    const directory = normalizeDirectory(options.directory);
    // The one path asked for, or the title's slug and its numbered variants. Taken is by path, and only by path.
@@ -169,17 +158,17 @@ export async function createDocument(
          }
       }
       if (path === undefined) throw noFreeName(document.title, options.path);
-      created = { kind, layout, path, slug: slugOf(path) };
+      created = { layout, path, slug: slugOf(path) };
    } else {
       const { storage, workspace, environmentName, packageName } = target;
       const inPackage = new Set(target.existing);
       const listed = new Set(
-         (await storage.listDocuments(workspace, kind)).map((l) => l.path),
+         (await storage.listDocuments(workspace)).map((l) => l.path),
       );
       let found: CreatedDocument | undefined;
       for (const requested of candidates) {
          const locator = locatorFor(
-            kind,
+            layout,
             workspace.name,
             environmentName,
             packageName,
@@ -203,7 +192,7 @@ export async function createDocument(
             present = false;
          }
          if (!present) {
-            found = { kind, layout, path, slug: slugOf(path), locator };
+            found = { layout, path, slug: slugOf(path), locator };
             break;
          }
       }
@@ -213,7 +202,7 @@ export async function createDocument(
    }
 
    onEvent?.({
-      type: `${kind}.created`,
+      type: layout === "linear" ? "notebook.created" : "dashboard.created",
       where: target.route === "package" ? "package" : "host",
    });
    onCreated?.(created);

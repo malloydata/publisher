@@ -146,10 +146,9 @@ describe("newReportSource", () => {
 
 describe("newDocumentProblem", () => {
    it("takes a name either layout back-quotes", () => {
-      for (const kind of ["dashboard", "notebook"] as const)
-         expect(
-            newDocumentProblem(kind, { ...INPUT, source: "order items" }),
-         ).toBeUndefined();
+      expect(
+         newDocumentProblem({ ...INPUT, source: "order items" }),
+      ).toBeUndefined();
    });
 
    it("back-quotes a source named like a keyword", () => {
@@ -161,9 +160,7 @@ describe("newDocumentProblem", () => {
       expect(text).toContain("import { `source` }");
       expect(text).toContain("view: is_tile is `is`");
       expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, source: "date" }),
-      ).toBeUndefined();
+      expect(newDocumentProblem({ ...INPUT, source: "date" })).toBeUndefined();
    });
 
    it("trims the title once, for the tag and the heading", () => {
@@ -173,17 +170,17 @@ describe("newDocumentProblem", () => {
    });
 
    it("refuses names that cannot be written", () => {
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, view: "a`b" }),
-      ).toMatch(/view name/);
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, modelPath: 'a".malloy' }),
-      ).toMatch(/model path/);
-      expect(newDocumentProblem("dashboard", INPUT)).toBeUndefined();
+      expect(newDocumentProblem({ ...INPUT, view: "a`b" })).toMatch(
+         /view name/,
+      );
+      expect(newDocumentProblem({ ...INPUT, modelPath: 'a".malloy' })).toMatch(
+         /model path/,
+      );
+      expect(newDocumentProblem(INPUT)).toBeUndefined();
       // Both layouts write the tag as a `##|` block, which `|##` would close.
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, title: "a |## b" }),
-      ).toMatch(/\|##/);
+      expect(newDocumentProblem({ ...INPUT, title: "a |## b" })).toMatch(
+         /\|##/,
+      );
    });
 });
 

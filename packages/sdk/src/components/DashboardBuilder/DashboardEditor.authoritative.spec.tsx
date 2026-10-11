@@ -175,7 +175,7 @@ class FakeStorage implements DocumentStorage {
    ): Promise<DocumentLocator[]> {
       return [...this.documents.keys()].map((path) => ({
          workspace: this.workspace.name,
-         type: "dashboard" as const,
+         type: "grid" as const,
          path,
       }));
    }

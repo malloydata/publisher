@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { ReportLayout } from "../Package/documentLocation";
+
 /**
  * Where authored documents are kept, as an interface the host hands the SDK.
  *
@@ -12,12 +14,12 @@
  * {@link DocumentStorage} through {@link DocumentStorageProvider} and calls it,
  * and never touches a backend itself.
  *
- * A document is a string. The interface does not know whether it is a
- * report file, a `.malloynb`, or something else; the
- * {@link DocumentLocator.type} says what kind it is so a backend can keep the
- * kinds apart (a database column, a directory, a key prefix) and a listing can
- * ask for one kind. Everything else a backend may know about a document, who
- * changed it and when, who may see it, stays with the backend.
+ * A document is a string, addressed by its workspace and its path: one path is
+ * one document. The {@link DocumentLocator.type} is metadata beside it, the
+ * report's layout, which a backend keeps (a column, a field) so a listing can
+ * say which layout each document is without reading it, and filter by one.
+ * Everything else a backend may know about a document, who changed it and
+ * when, who may see it, stays with the backend.
  *
  * A host hands the SDK ONE storage and keeps handing it the same one. What a
  * storage says about its workspaces decides how the editor routes a save, and
@@ -53,12 +55,12 @@ export const isDocumentNotFound = (error: unknown): boolean =>
    (error instanceof Error && error.name === "DocumentNotFoundError");
 
 /**
- * The kinds of document the SDK authors: a report, filed by its layout in the
- * legacy vocabulary. A `dashboard` is a grid report, a `notebook` a linear
- * one, wherever in the package the file lives; its path, not its type, is
- * its identity.
+ * The layout of a report the SDK authors, as a store records it beside the
+ * document: `grid` or `linear`. Metadata, not identity: a report's path is
+ * its identity wherever in the package the file lives, and a layout switch
+ * changes this and nothing else.
  */
-export type DocumentType = "dashboard" | "notebook";
+export type DocumentType = ReportLayout;
 
 /** A place documents live, as the backend presents it to a reader. */
 export interface Workspace {
@@ -94,15 +96,19 @@ export interface Workspace {
    authoritative?: boolean;
 }
 
-/** One document's address: which workspace, which kind, and its path there. */
+/**
+ * One document's address, `workspace` and `path`, and its layout.
+ *
+ * The SDK spells `path` as `<environment>/<package>/<package path>`
+ * (`draftKey`), and a store keys a document by it: a read, a delete or a move
+ * finds the document at `path` whatever `type` says, and a save records
+ * `type` as the document's layout, replacing what it was.
+ */
 export interface DocumentLocator {
    workspace: string;
+   /** The report's layout, which a save records and a listing reports. */
    type: DocumentType;
-   /**
-    * The document's path within the workspace, spelled the way the backend
-    * spells it. For a repo-backed store that is the file path relative to the
-    * package (`sales/overview.malloy`); a database store may use a slug.
-    */
+   /** The document's identity within the workspace. */
    path: string;
 }
 
@@ -110,21 +116,22 @@ export interface DocumentStorage {
    /** The workspaces this reader can see; only the writeable ones when asked. */
    listWorkspaces(writeableOnly: boolean): Promise<Workspace[]>;
 
-   /** Every document in a workspace, or only those of one kind. */
+   /** Every document in a workspace, or only those of one layout, each with the layout its last save recorded. */
    listDocuments(
       workspace: Workspace,
       type?: DocumentType,
    ): Promise<DocumentLocator[]>;
 
    /**
-    * The document's content. Rejects with a {@link DocumentNotFoundError} when
-    * there is no document there, and with anything else when the backend could
-    * not be asked.
+    * The content of the document at `locator.path`, whatever its layout.
+    * Rejects with a {@link DocumentNotFoundError} when there is no document
+    * there, and with anything else when the backend could not be asked.
     */
    getDocument(locator: DocumentLocator): Promise<string>;
 
    /**
-    * Write the content, creating the document or replacing it.
+    * Write the content at `locator.path`, creating the document or replacing
+    * it, and record `locator.type` as its layout.
     *
     * There is no expected-version slot, so this is last writer wins and a
     * caller cannot tell that it overwrote someone. A backend that has to stop
@@ -133,7 +140,7 @@ export interface DocumentStorage {
    saveDocument(locator: DocumentLocator, content: string): Promise<void>;
 
    /**
-    * Remove the document. Rejects with a {@link DocumentNotFoundError} when
+    * Remove the document at `locator.path`. Rejects with a {@link DocumentNotFoundError} when
     * there is no document there, and with anything else when the backend could
     * not be asked — a caller must not read the second as the first and report
     * the document gone.
@@ -141,8 +148,9 @@ export interface DocumentStorage {
    deleteDocument(locator: DocumentLocator): Promise<void>;
 
    /**
-    * Rename or relocate a document, keeping its content. Rejects with a
-    * {@link DocumentNotFoundError} when `from` is missing.
+    * Rename or relocate a document, keeping its content, and record `to.type`
+    * as its layout. Rejects with a {@link DocumentNotFoundError} when nothing
+    * is at `from.path`.
     */
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
 

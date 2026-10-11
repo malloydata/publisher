@@ -27,9 +27,9 @@ describe("documentPath", () => {
       );
    });
 
-   it("encodes each path segment, but not the environment or package", () => {
+   it("encodes every segment, the environment and package included, as every report route does", () => {
       expect(documentPath("my env", "my pkg", "a b/c#d.malloy", "view")).toBe(
-         "/my env/my pkg/a%20b/c%23d",
+         "/my%20env/my%20pkg/a%20b/c%23d",
       );
    });
 });

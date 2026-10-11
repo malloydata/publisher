@@ -118,7 +118,7 @@ const { DashboardEditor } = await import("./DashboardEditor");
 
 const DRAFT = {
    workspace: "Local",
-   type: "dashboard" as const,
+   type: "grid" as const,
    path: "env/pkg/dashboards/overview.malloy",
 };
 

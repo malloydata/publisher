@@ -8,10 +8,10 @@
  * so a change to any of them is a change to that contract and must be made
  * here on purpose.
  *
- * Today a locator is `{ workspace, type, path }` where `type` is the report's
- * layout in the legacy vocabulary (`dashboard` grid, `notebook` linear) and
- * `path` is `<environment>/<package>/<package path>`. The type is part of the
- * key: the same path under two types is two documents.
+ * A locator is `{ workspace, type, path }`: `path` is
+ * `<environment>/<package>/<package path>` and is the document's identity,
+ * and `type` is the report's layout (`grid` or `linear`), metadata a save
+ * records and a listing reports. One path is one document whatever its layout.
  */
 import {
    act,
@@ -33,7 +33,7 @@ import {
 import { createDocument } from "../DocumentCreate/createDocument";
 import { useHostCopy } from "../DashboardBuilder/useHostCopy";
 import { useSaveChannel } from "../DashboardBuilder/useSaveChannel";
-import { findDraftType } from "../Package/useDraftType";
+import { findDraftLayout } from "../Package/useDraftLayout";
 import { BrowserDocumentStorage } from "./BrowserDocumentStorage";
 import {
    DocumentNotFoundError,
@@ -88,12 +88,7 @@ function recordingStorage(
 ) {
    const calls: Call[] = [];
    const find = (l: DocumentLocator) =>
-      documents.find(
-         (d) =>
-            d.workspace === l.workspace &&
-            d.type === l.type &&
-            d.path === l.path,
-      );
+      documents.find((d) => d.workspace === l.workspace && d.path === l.path);
    const storage: DocumentStorage = {
       listWorkspaces: async (writeableOnly) => {
          calls.push(["listWorkspaces", writeableOnly]);
@@ -135,7 +130,7 @@ const locator = (
 ): DocumentLocator => ({ workspace, type, path });
 
 describe("DocumentStorage contract: create", () => {
-   it("lists the workspace by type, reads the candidate, then saves it, each at `<env>/<pkg>/<path>` under the layout's type", async () => {
+   it("lists the workspace, reads the candidate, then saves it at `<env>/<pkg>/<path>`, recording the layout", async () => {
       const { storage, calls } = recordingStorage([RECORD]);
       await createDocument({
          layout: "grid",
@@ -154,19 +149,19 @@ describe("DocumentStorage contract: create", () => {
             packageName: "pkg",
          },
       });
-      const at = locator("record", "dashboard", "env/pkg/sales/q3.malloy");
+      const at = locator("record", "grid", "env/pkg/sales/q3.malloy");
       expect(
          calls.map(([method, ...args]) =>
             method === "saveDocument" ? [method, args[0]] : [method, ...args],
          ),
       ).toEqual([
-         ["listDocuments", "record", "dashboard"],
+         ["listDocuments", "record", undefined],
          ["getDocument", at],
          ["saveDocument", at],
       ]);
    });
 
-   it("files a linear report under `notebook`", async () => {
+   it("records a linear report's layout", async () => {
       const { storage, calls } = recordingStorage([RECORD]);
       await createDocument({
          layout: "linear",
@@ -185,24 +180,24 @@ describe("DocumentStorage contract: create", () => {
             packageName: "pkg",
          },
       });
-      expect(calls[0]).toEqual(["listDocuments", "record", "notebook"]);
+      expect(calls[0]).toEqual(["listDocuments", "record", undefined]);
       expect(calls.at(-1)?.[1]).toEqual(
-         locator("record", "notebook", "env/pkg/story.malloy"),
+         locator("record", "linear", "env/pkg/story.malloy"),
       );
    });
 });
 
-describe("DocumentStorage contract: find a draft's type", () => {
-   it("lists every workspace, then the chosen one's documents of every type, matching on the path alone", async () => {
+describe("DocumentStorage contract: find a draft's layout", () => {
+   it("lists every workspace, then the chosen one's documents of every layout, matching on the path alone and reading the layout it recorded", async () => {
       const { storage, calls } = recordingStorage(
          [SCRATCH, RECORD],
          [
-            locator("record", "notebook", "env/pkg/story.malloy"),
-            locator("scratch", "dashboard", "env/pkg/story.malloy"),
+            locator("record", "linear", "env/pkg/story.malloy"),
+            locator("scratch", "grid", "env/pkg/story.malloy"),
          ],
       );
-      expect(await findDraftType(storage, "env", "pkg", "story.malloy")).toBe(
-         "notebook",
+      expect(await findDraftLayout(storage, "env", "pkg", "story.malloy")).toBe(
+         "linear",
       );
       expect(calls).toEqual([
          ["listWorkspaces", false],
@@ -212,64 +207,62 @@ describe("DocumentStorage contract: find a draft's type", () => {
 });
 
 describe("DocumentStorage contract: open (the host's copy)", () => {
-   const open = (
-      storage: DocumentStorage,
-      kind: "dashboard" | "notebook",
-      notebook: boolean,
-   ) =>
+   const open = (storage: DocumentStorage, layout: DocumentType) =>
       renderHook(() =>
          useHostCopy({
             storage,
-            kind,
-            notebook,
+            layout,
+            notebook: layout === "linear",
             environmentName: "env",
             packageName: "pkg",
             modelPath: "sales/q3.malloy",
          }),
       );
 
-   it("reads the copy at `<env>/<pkg>/<path>` under the opened kind", async () => {
+   it("reads the copy at `<env>/<pkg>/<path>`, with the layout it opened with", async () => {
       const { storage, calls } = recordingStorage(
          [RECORD],
          [
             {
-               ...locator("record", "dashboard", "env/pkg/sales/q3.malloy"),
+               ...locator("record", "grid", "env/pkg/sales/q3.malloy"),
                content: "saved",
             },
          ],
       );
-      const { result } = open(storage, "dashboard", false);
+      const { result } = open(storage, "grid");
       await waitFor(() => expect(result.current.draftChecked).toBe(true));
       expect(result.current.draft).toBe("saved");
       expect(calls).toEqual([
          ["listWorkspaces", false],
-         [
-            "getDocument",
-            locator("record", "dashboard", "env/pkg/sales/q3.malloy"),
-         ],
+         ["getDocument", locator("record", "grid", "env/pkg/sales/q3.malloy")],
       ]);
    });
 
-   it("does not find a copy filed under the other type", async () => {
+   it("finds the copy at its path whatever layout it recorded", async () => {
       const { storage } = recordingStorage(
          [RECORD],
-         [locator("record", "notebook", "env/pkg/sales/q3.malloy")],
+         [
+            {
+               ...locator("record", "linear", "env/pkg/sales/q3.malloy"),
+               content: "saved linear",
+            },
+         ],
       );
-      const { result } = open(storage, "dashboard", false);
+      const { result } = open(storage, "grid");
       await waitFor(() => expect(result.current.draftChecked).toBe(true));
-      expect(result.current.draft).toBeUndefined();
+      expect(result.current.draft).toBe("saved linear");
    });
 
    it("reads a notebook's copy only from an authoritative workspace", async () => {
       const { storage, calls } = recordingStorage([SCRATCH]);
-      const { result } = open(storage, "notebook", true);
+      const { result } = open(storage, "linear");
       await waitFor(() => expect(result.current.draftChecked).toBe(true));
       expect(calls).toEqual([["listWorkspaces", false]]);
    });
 });
 
 describe("DocumentStorage contract: save", () => {
-   it("saves to `<env>/<pkg>/<path>` under the opened kind", async () => {
+   it("saves to `<env>/<pkg>/<path>`, recording the layout the document has, or the one it opened with", async () => {
       const { storage, calls } = recordingStorage([RECORD]);
       const noop = () => {};
       const ref = { current: undefined };
@@ -277,7 +270,7 @@ describe("DocumentStorage contract: save", () => {
          useSaveChannel({
             storage,
             workspace: RECORD,
-            kind: "notebook",
+            layout: "linear",
             notebook: true,
             environmentName: "env",
             packageName: "pkg",
@@ -303,11 +296,17 @@ describe("DocumentStorage contract: save", () => {
       );
       expect(result.current.writer).toBe("storage");
       await act(() => result.current.save!("the text"));
+      await act(() => result.current.save!("switched", "grid"));
       expect(calls).toEqual([
          [
             "saveDocument",
-            locator("record", "notebook", "env/pkg/story.malloy"),
+            locator("record", "linear", "env/pkg/story.malloy"),
             "the text",
+         ],
+         [
+            "saveDocument",
+            locator("record", "grid", "env/pkg/story.malloy"),
+            "switched",
          ],
       ]);
    });
@@ -334,11 +333,11 @@ describe("DocumentStorage contract: list and remove (the package page's drafts)"
          },
       );
 
-   it("lists each writeable workspace's documents of every type, and removes a draft by the locator it was listed under", async () => {
-      const listed = locator("scratch", "notebook", "env/pkg/team/n.malloy");
+   it("lists each writeable workspace's documents of every layout, and removes a draft by the locator it was listed under", async () => {
+      const listed = locator("scratch", "linear", "env/pkg/team/n.malloy");
       const { storage, calls } = recordingStorage(
          [RECORD, SCRATCH, READ_ONLY],
-         [listed, locator("scratch", "dashboard", "env/other/x.malloy")],
+         [listed, locator("scratch", "grid", "env/other/x.malloy")],
       );
       mount(storage);
       fireEvent.click(
@@ -366,22 +365,15 @@ describe("DocumentStorage contract: list and remove (the package page's drafts)"
 describe("DocumentStorage contract: the browser store", () => {
    beforeEach(() => localStorage.clear());
 
-   it("keys a document by its type and path, so one path under two types is two documents", async () => {
+   it("keys a document by its path, so a save under another layout replaces it and records that layout", async () => {
       const storage = new BrowserDocumentStorage();
-      const asGrid = locator("Local", "dashboard", "env/pkg/x.malloy");
-      const asLinear = locator("Local", "notebook", "env/pkg/x.malloy");
+      const asGrid = locator("Local", "grid", "env/pkg/x.malloy");
+      const asLinear = locator("Local", "linear", "env/pkg/x.malloy");
       await storage.saveDocument(asGrid, "grid text");
       await storage.saveDocument(asLinear, "linear text");
-      expect(await storage.getDocument(asGrid)).toBe("grid text");
-      expect(await storage.getDocument(asLinear)).toBe("linear text");
+      expect(await storage.getDocument(asGrid)).toBe("linear text");
       const [workspace] = await storage.listWorkspaces(false);
-      expect(
-         (await storage.listDocuments(workspace)).sort((a, b) =>
-            a.type.localeCompare(b.type),
-         ),
-      ).toEqual([asGrid, asLinear]);
-      expect(await storage.listDocuments(workspace, "notebook")).toEqual([
-         asLinear,
-      ]);
+      expect(await storage.listDocuments(workspace)).toEqual([asLinear]);
+      expect(await storage.listDocuments(workspace, "grid")).toEqual([]);
    });
 });

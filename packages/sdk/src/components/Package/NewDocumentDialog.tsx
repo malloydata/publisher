@@ -22,9 +22,9 @@ import {
    type DocumentCreatedEvent,
 } from "../DocumentCreate";
 import { canRetryRequest } from "../DocumentCreate/canRetry";
-import type { DocumentType } from "../DocumentStorage/DocumentStorage";
 import { AppDialog } from "../AppDialog";
-import { layoutOfKind, type ReportLayout } from "./documentLocation";
+import { layoutOfKind, type DocumentKind } from "../legacy/kindAdapter";
+import type { ReportLayout } from "./documentLocation";
 
 const LAYOUT_LABEL: Record<ReportLayout, string> = {
    linear: "Linear: read top to bottom",
@@ -36,7 +36,7 @@ export interface NewDocumentDialogProps {
    /** Which layout the dialog opens on. Default linear. */
    layout?: ReportLayout;
    /** @deprecated Pass `layout`: `dashboard` is grid, `notebook` linear. */
-   kind?: DocumentType;
+   kind?: DocumentKind;
    /** Whether the reader may switch the layout. Default true. */
    allowLayoutChange?: boolean;
    /** @deprecated Pass `allowLayoutChange`. */
@@ -185,7 +185,7 @@ export function NewDocumentDialog({
    const problem =
       chosen === undefined
          ? undefined
-         : newDocumentProblem(layout === "grid" ? "dashboard" : "notebook", {
+         : newDocumentProblem({
               title,
               modelPath,
               source: chosen.source,

@@ -5,11 +5,8 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
-   documentRoute,
    documentSlug,
-   locateDocument,
    locateReport,
-   locateReportByName,
    reportEditRoute,
    reportRoute,
    reportRoutePath,
@@ -59,9 +56,9 @@ describe("reportRoute", () => {
       expect(reportRoutePath("old.malloynb")).toBe("old.malloynb");
    });
 
-   it("leaves the deprecated folder route as it was", () => {
-      expect(documentRoute("env", "pkg", "notebook", "a#b")).toBe(
-         "/env/pkg/notebooks/a%23b",
+   it("encodes the environment and package too, so no caller encodes again", () => {
+      expect(reportRoute("my env", "a#b", "q3.malloy")).toBe(
+         "/my%20env/a%23b/q3",
       );
    });
 });
@@ -76,7 +73,6 @@ const REPORTS = [
 describe("locateReport", () => {
    it("matches the exact path only", () => {
       expect(locateReport("sales/q3.malloy", REPORTS)).toEqual({
-         kind: "notebook",
          layout: "linear",
          path: "sales/q3.malloy",
          editable: false,
@@ -91,49 +87,6 @@ describe("locateReport", () => {
             { path: "notebooks/x.malloy", layout: "grid" },
          ])?.layout,
       ).toBe("grid");
-   });
-});
-
-describe("locateReportByName", () => {
-   const pair = [
-      { path: "dashboards/overview.malloy", layout: "grid" },
-      { path: "notebooks/overview.malloy", layout: "linear" },
-   ];
-
-   it("prefers the one grid report a dashboard and a notebook share the name with", () => {
-      expect(locateReportByName("overview", pair)).toEqual({
-         found: {
-            kind: "dashboard",
-            layout: "grid",
-            path: "dashboards/overview.malloy",
-            editable: true,
-         },
-      });
-   });
-
-   it("prefers linear for the notebooks alias", () => {
-      const found = locateReportByName("overview", pair, "linear");
-      expect("found" in found && found.found.path).toBe(
-         "notebooks/overview.malloy",
-      );
-   });
-
-   it("takes a unique report of the other layout when none of the preferred one has it", () => {
-      const found = locateReportByName("q3", REPORTS, "grid");
-      expect("found" in found && found.found.path).toBe("sales/q3.malloy");
-   });
-
-   it("reports ambiguity, naming the paths sorted, rather than taking the first", () => {
-      expect(
-         locateReportByName("overview", [
-            { path: "z/overview.malloy", layout: "grid" },
-            { path: "a/overview.malloy", layout: "grid" },
-         ]),
-      ).toEqual({ ambiguous: ["a/overview.malloy", "z/overview.malloy"] });
-   });
-
-   it("says when nothing has the name", () => {
-      expect(locateReportByName("absent", REPORTS)).toEqual({ missing: true });
    });
 });
 
@@ -159,7 +112,6 @@ describe("resolveDrillTarget", () => {
       ]) {
          expect(resolveDrillTarget(to, REPORTS)).toEqual({
             kind: "unresolved",
-            candidates: [],
          });
       }
    });
@@ -170,71 +122,16 @@ describe("resolveDrillTarget", () => {
       expect("report" in target && target.report.path).toBe("overview.malloy");
    });
 
-   it("falls back to a basename only when nothing is at the root path, preferring grid", () => {
-      const target = resolveDrillTarget("overview", REPORTS.slice(1));
-      expect(target.kind).toBe("name");
-      expect("report" in target && target.report.path).toBe(
-         "dashboards/overview.malloy",
-      );
+   it("reads a bare name as a root file only: a report elsewhere with that basename is not looked up", () => {
+      expect(resolveDrillTarget("overview", REPORTS.slice(1))).toEqual({
+         kind: "unresolved",
+      });
    });
 
-   it("never falls back for a target with a /", () => {
+   it("is unresolved for a path nothing is at", () => {
       expect(resolveDrillTarget("x/q3", REPORTS)).toEqual({
          kind: "unresolved",
-         candidates: [],
       });
-   });
-
-   it("names the candidates when the basename is ambiguous", () => {
-      expect(
-         resolveDrillTarget("overview", [
-            { path: "a/overview.malloy", layout: "linear" },
-            { path: "b/overview.malloy", layout: "linear" },
-         ]),
-      ).toEqual({
-         kind: "unresolved",
-         candidates: ["a/overview.malloy", "b/overview.malloy"],
-      });
-   });
-
-   it("is unresolved with no candidates when nothing has the name", () => {
-      expect(resolveDrillTarget("absent", REPORTS)).toEqual({
-         kind: "unresolved",
-         candidates: [],
-      });
-   });
-});
-
-describe("locateDocument (deprecated)", () => {
-   it("finds a report by the name a folder route carries, preferring the route's layout", () => {
-      const pair = [
-         { path: "dashboards/story.malloy", layout: "grid" },
-         { path: "notebooks/story.malloy", layout: "linear" },
-      ];
-      expect(
-         locateDocument({ kind: "notebook", slug: "story", reports: pair })
-            ?.path,
-      ).toBe("notebooks/story.malloy");
-      expect(
-         locateDocument({ kind: "dashboard", slug: "story", reports: pair })
-            ?.path,
-      ).toBe("dashboards/story.malloy");
-   });
-
-   it("is undefined for a name no listing has, or one it cannot tell apart", () => {
-      expect(
-         locateDocument({ kind: "dashboard", slug: "x", reports: REPORTS }),
-      ).toBeUndefined();
-      expect(
-         locateDocument({
-            kind: "dashboard",
-            slug: "x",
-            reports: [
-               { path: "a/x.malloy", layout: "linear" },
-               { path: "b/x.malloy", layout: "linear" },
-            ],
-         }),
-      ).toBeUndefined();
    });
 });
 
@@ -255,8 +152,8 @@ describe("resolveDrillTarget: the shared drill case table", () => {
          to: string;
          reports: { path: string; layout: string; dropped?: boolean }[];
          server: Answer;
+         /** What the SDK answers where it differs from the server by design; `knownDifference` says why. */
          sdk?: Answer;
-         sdkPending?: boolean;
          knownDifference?: string;
       }[];
    };
@@ -270,6 +167,9 @@ describe("resolveDrillTarget: the shared drill case table", () => {
                ? { kind: target.kind }
                : { kind: target.kind, path: target.report.path };
          const { malformed: _malformed, ...server } = testCase.server;
+         expect(testCase.sdk === undefined).toBe(
+            testCase.knownDifference === undefined,
+         );
          expect(answer).toEqual(testCase.sdk ?? server);
       });
    }

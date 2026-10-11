@@ -127,7 +127,7 @@ mockServerProvider(
 );
 
 const { DashboardEditor } = await import("./DashboardEditor");
-const { NotebookEditor } = await import("./NotebookEditor");
+const { NotebookEditor } = await import("../legacy/NotebookEditor");
 
 const button = (name: string | RegExp) =>
    screen.getByRole("button", { name, hidden: true });
@@ -288,13 +288,14 @@ describe("DashboardEditor as a notebook: the host's record", () => {
          return this.record;
       }
       async saveDocument(locator: DocumentLocator, content: string) {
+         this.types.push(locator.type);
          this.saved.set(locator.path, content);
       }
       async deleteDocument(): Promise<void> {}
       async moveDocument(): Promise<void> {}
    }
 
-   it("reads and writes it under the notebook type", async () => {
+   it("reads it with the linear layout the deprecated kind names, and records that layout on a save", async () => {
       const store = new Store(LAYOUT.replace("Hello.", "From the record."));
       render(
          <DocumentStorageProvider documentStorage={store}>
@@ -308,10 +309,11 @@ describe("DashboardEditor as a notebook: the host's record", () => {
          { wrapper: serverWrapper },
       );
       expect(await screen.findByText("From the record.")).toBeDefined();
-      expect(store.types).toEqual(["notebook"]);
+      expect(store.types).toEqual(["linear"]);
       editInline("Tour", "Report title", "Tour, again");
       fireEvent.click(button("Save"));
       await waitFor(() => expect(store.saved.size).toBe(1));
+      expect(store.types).toEqual(["linear", "linear"]);
       expect(store.saved.get("env/pkg/notebooks/tour.malloy")).toContain(
          'title="Tour, again"',
       );

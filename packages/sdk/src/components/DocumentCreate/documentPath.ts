@@ -44,15 +44,26 @@ export function reportPathForTitle(
    return reportPathFor(suffix > 1 ? `${slug}-${suffix}` : slug, directory);
 }
 
-/** The storage key for a document's copy, which is its package path; the Console's editors and `createDocument` mint it the same way. */
+/**
+ * A report's identity in a host's store: `<environment>/<package>/<path>`.
+ * Every reader and writer of a store mints it here, and `draftKey(env, pkg,
+ * "")` is the prefix every report of one package shares.
+ */
+export const draftKey = (
+   environmentName: string,
+   packageName: string,
+   path: string,
+) => `${environmentName}/${packageName}/${path}`;
+
+/** A report's address in a store, its {@link draftKey}, with the layout a save records. */
 export const locatorFor = (
-   kind: DocumentType,
+   layout: DocumentType,
    workspace: string,
    environmentName: string,
    packageName: string,
    path: string,
 ): DocumentLocator => ({
    workspace,
-   type: kind,
-   path: `${environmentName}/${packageName}/${path}`,
+   type: layout,
+   path: draftKey(environmentName, packageName, path),
 });

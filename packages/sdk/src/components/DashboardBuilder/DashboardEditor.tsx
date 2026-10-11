@@ -14,7 +14,12 @@ import { useOptionalDocumentStorage } from "../DocumentStorage";
 import { Loading } from "../Loading";
 import { documentSlug } from "../Package/documentLocation";
 import { useServer } from "../ServerProvider";
-import type { DocumentKind } from "../Package/documentLocation";
+import {
+   layoutOfKind,
+   legacyNamedPath,
+   type DocumentKind,
+} from "../legacy/kindAdapter";
+import type { ReportLayout } from "../Package/documentLocation";
 import {
    resolveEditorTarget,
    saveCaption,
@@ -60,7 +65,8 @@ export type DashboardEditorProps = (
         resourceUri: string;
         /**
          * @deprecated Pass `path`. The report's basename, which opens
-         * `<kind>s/<name>.malloy` when no `path` is given.
+         * `<kind>s/<name>.malloy` (`dashboards/` unless `kind` says
+         * `notebook`) when no `path` is given.
          */
         dashboard: string;
      }
@@ -82,12 +88,16 @@ export type DashboardEditorProps = (
     */
    onEvent?: (event: BuilderEvent) => void;
    /**
-    * The report's layout when it opened, in the legacy vocabulary
-    * (`dashboard` is grid, `notebook` linear): what a host's document store
-    * files its copy under, and which events it reports. Default `dashboard`.
-    * The file's own tag decides how it is drawn, and the layout switch in the
-    * toolbar changes that.
+    * The report's layout as the host knows it before the text is read: from
+    * the package's listing, or for a draft the layout its store recorded.
+    * Default `grid`. It decides what is read when the editor opens (a linear
+    * report's copy is read back only from an authoritative store) and is what
+    * a save records until the text says otherwise; once open, the document's
+    * own tag decides how it is drawn, what a save records and which events it
+    * reports, and the layout switch changes that.
     */
+   layout?: ReportLayout;
+   /** @deprecated Pass `layout`: `dashboard` is grid, `notebook` linear. */
    kind?: DocumentKind;
    /**
     * The report's file within the package, wherever it lives: its identity.
@@ -146,12 +156,14 @@ export function DashboardEditor(props: DashboardEditorProps) {
       onEvent,
       onDirtyChange,
       onExit,
-      kind = "dashboard",
+      kind,
       path,
       textSource,
       allowLayoutChange,
    } = props;
-   const notebook = kind === "notebook";
+   const layout: ReportLayout =
+      props.layout ?? (kind ? layoutOfKind(kind) : "grid");
+   const notebook = layout === "linear";
    const textHeld = textSource !== undefined;
    // Degraded, not thrown, on a bad URI: a throw in a render body takes the host's whole tree down.
    const {
@@ -179,7 +191,8 @@ export function DashboardEditor(props: DashboardEditorProps) {
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
    const storage = useOptionalDocumentStorage()?.documentStorage;
-   const modelPath = path ?? `${kind}s/${dashboardName}.malloy`;
+   const modelPath =
+      path ?? legacyNamedPath(kind ?? "dashboard", dashboardName);
    const legacyFormat =
       /\.malloynb$/i.test(modelPath) ||
       (notebook && /\.malloynb$/i.test(dashboardName));
@@ -219,7 +232,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
       readFailure,
    } = useHostCopy({
       storage,
-      kind,
+      layout,
       notebook,
       environmentName,
       packageName,
@@ -270,7 +283,7 @@ export function DashboardEditor(props: DashboardEditorProps) {
    } = useSaveChannel({
       storage,
       workspace,
-      kind,
+      layout,
       notebook,
       environmentName,
       packageName,
@@ -420,7 +433,6 @@ export function DashboardEditor(props: DashboardEditorProps) {
          {opened && (
             <EditorSurface
                key={opened.generation}
-               kind={kind}
                environmentName={environmentName}
                packageName={packageName}
                modelPath={modelPath}
