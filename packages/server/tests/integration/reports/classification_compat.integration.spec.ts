@@ -101,6 +101,22 @@ const without = <T extends Record<string, unknown>>(
    return copy;
 };
 
+/**
+ * The baseline was captured from an LF checkout. A Windows checkout gives the
+ * fixtures CRLF line endings, and cell and prose text is the file's own text,
+ * so line endings are normalized before comparing.
+ */
+const lf = (value: unknown): unknown =>
+   typeof value === "string"
+      ? value.replace(/\r\n/g, "\n")
+      : Array.isArray(value)
+        ? value.map(lf)
+        : value && typeof value === "object"
+          ? Object.fromEntries(
+               Object.entries(value).map(([k, v]) => [k, lf(v)]),
+            )
+          : value;
+
 describe("Report classification compatibility (E2E)", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
@@ -164,7 +180,7 @@ describe("Report classification compatibility (E2E)", () => {
             const dashboards = await get<Record<string, unknown>[]>(
                api(pkg, "/dashboards"),
             );
-            expect(dashboards.map((d) => without(d, "resource"))).toEqual(
+            expect(lf(dashboards.map((d) => without(d, "resource")))).toEqual(
                was.dashboards,
             );
             for (const [name, manifest] of Object.entries(was.manifests)) {
@@ -172,14 +188,14 @@ describe("Report classification compatibility (E2E)", () => {
                   api(pkg, `/dashboards/${encodeURIComponent(name)}`),
                );
                expect(now.layout).toBe("grid");
-               expect(without(now, "resource", "layout")).toEqual(manifest);
+               expect(lf(without(now, "resource", "layout"))).toEqual(manifest);
             }
             const notebooks = await get<Record<string, unknown>[]>(
                api(pkg, "/notebooks"),
             );
-            expect(notebooks.map((n) => without(n, "environmentName"))).toEqual(
-               was.notebooks,
-            );
+            expect(
+               lf(notebooks.map((n) => without(n, "environmentName"))),
+            ).toEqual(was.notebooks);
             for (const [notebookPath, body] of Object.entries(
                was.notebookBodies,
             )) {
@@ -195,22 +211,26 @@ describe("Report classification compatibility (E2E)", () => {
                   expect(now.dashboard?.layout).toBe("linear");
                }
                expect(
-                  now.dashboard
-                     ? without(now.dashboard, "resource", "layout")
-                     : null,
+                  lf(
+                     now.dashboard
+                        ? without(now.dashboard, "resource", "layout")
+                        : null,
+                  ),
                ).toEqual(body.dashboard);
                expect(
-                  (now.notebookCells ?? []).map((cell) =>
-                     without(cell, "newSources", "queryInfo"),
+                  lf(
+                     (now.notebookCells ?? []).map((cell) =>
+                        without(cell, "newSources", "queryInfo"),
+                     ),
                   ),
                ).toEqual(body.notebookCells);
             }
             const models = await get<Record<string, unknown>[]>(
                api(pkg, "/models"),
             );
-            expect(models.map((m) => without(m, "environmentName"))).toEqual(
-               was.models,
-            );
+            expect(
+               lf(models.map((m) => without(m, "environmentName"))),
+            ).toEqual(was.models);
          });
 
          it("keeps every finding but the retired ones, and adds only report findings", async () => {
