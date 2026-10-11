@@ -253,24 +253,28 @@ describe("Reports anywhere in a package (E2E)", () => {
          );
       });
 
-      it("resolves a bare name one report has, warning with the path to write", () => {
-         const finding = drillFindings().find(
-            (w) => w.subject === "orders.region_name",
-         );
-         expect(finding).toMatchObject({
-            code: "drill-target-by-name",
-            severity: "warn",
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // bare-name `# drill` targets (see RELEASE_NOTES deprecations).
+      describe("deprecated: bare-name # drill targets", () => {
+         it("resolves a bare name one report has, warning with the path to write", () => {
+            const finding = drillFindings().find(
+               (w) => w.subject === "orders.region_name",
+            );
+            expect(finding).toMatchObject({
+               code: "drill-target-by-name",
+               severity: "warn",
+            });
+            expect(finding?.message).toContain('to="deep/story"');
          });
-         expect(finding?.message).toContain('to="deep/story"');
-      });
 
-      it("leaves a bare name two reports have unresolved, naming both", () => {
-         const finding = drillFindings().find(
-            (w) => w.subject === "orders.brand_upper",
-         );
-         expect(finding?.severity).toBe("error");
-         expect(finding?.message).toContain("finance/summary.malloy");
-         expect(finding?.message).toContain("sales/summary.malloy");
+         it("leaves a bare name two reports have unresolved, naming both", () => {
+            const finding = drillFindings().find(
+               (w) => w.subject === "orders.brand_upper",
+            );
+            expect(finding?.severity).toBe("error");
+            expect(finding?.message).toContain("finance/summary.malloy");
+            expect(finding?.message).toContain("sales/summary.malloy");
+         });
       });
    });
 
