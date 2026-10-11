@@ -305,9 +305,11 @@ and its old by-name link, and gives back a package's own `public/dashboards/` an
 
 ### 10. SDK
 
-- **One component.** A new `Report` export renders a report by layout from `GET …/reports/{path}`.
-  `Dashboard` and `Notebook` stay exported as thin wrappers over it, because Credible's app imports
-  both today; they are deprecated, not removed, until Credible has moved.
+- **One component.** A new `Report` export renders a `.malloy` report by layout from
+  `GET …/reports/{path}`. `Dashboard` and `Notebook` stay exported as thin wrappers over the same
+  renderers (`components/legacy/`), because Credible's app imports both today; they are deprecated,
+  not removed, until Credible has moved. A `.malloynb` is `Notebook`'s to render, through the
+  deprecated notebook routes, so `Report` imports nothing deprecated.
 - **Location resolution** (`documentLocation.ts`, `useDocumentLocation.ts`): one listing, resolved
   by exact path. The basename lookup survives only behind the compatibility alias and reports
   ambiguity rather than taking the first match.

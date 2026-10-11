@@ -975,9 +975,11 @@ browser instead, keyed by the report's path, and the package page lists those dr
 
 ## Rendering one in your own React app
 
-`@malloy-publisher/sdk` exports a `Report` component that renders a report of either layout from
-`GET …/reports/{path}`. `<Dashboard>` and `<Notebook>` stay exported as deprecated thin wrappers over it, so
-an existing integration keeps working. The Console is one consumer of these components rather than their
+`@malloy-publisher/sdk` exports a `Report` component that renders a `.malloy` report of either layout from
+`GET …/reports/{path}`, running every tile and `run:` cell through the query endpoint. `<Dashboard>` and
+`<Notebook>` stay exported as deprecated wrappers over the same renderers, so an existing integration keeps
+working, and `<Notebook>` is the one that renders a legacy `.malloynb`: its cells run only through the
+deprecated notebook routes, which `Report` never calls. The Console is one consumer of these components rather than their
 home: they take props instead of reading a router, so the host decides what a drill and a filter change
 mean.
 

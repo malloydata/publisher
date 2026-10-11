@@ -66,7 +66,7 @@ export type {
 export {
    NotebookEditor,
    type NotebookEditorProps,
-} from "./components/DashboardBuilder/NotebookEditor";
+} from "./components/legacy/NotebookEditor";
 export type {
    BuilderEvent,
    NotebookEvent,

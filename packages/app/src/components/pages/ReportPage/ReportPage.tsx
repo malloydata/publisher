@@ -3,6 +3,7 @@
 
 import {
    encodeResourceUri,
+   Notebook,
    Report,
    useGivenUrlParams,
    useNarrowScreen,
@@ -72,16 +73,32 @@ export default function ReportPage({
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         <Report
-            resourceUri={encodeResourceUri({ environmentName, packageName })}
-            path={path}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onNavigate={onNavigate}
-            onLinkNavigate={onLinkNavigate}
-            onEvent={onEvent}
-            maxResultSize={1024 * 1024}
-         />
+         {/* A legacy `.malloynb` runs only through the deprecated notebook routes, which `Notebook` reads. */}
+         {path.endsWith(".malloynb") ? (
+            <Notebook
+               resourceUri={encodeResourceUri({
+                  environmentName,
+                  packageName,
+                  modelPath: path,
+               })}
+               givens={givens}
+               onGivensChange={onGivensChange}
+               onNavigate={onLinkNavigate}
+               onDrillNavigate={onNavigate}
+               maxResultSize={1024 * 1024}
+            />
+         ) : (
+            <Report
+               resourceUri={encodeResourceUri({ environmentName, packageName })}
+               path={path}
+               givens={givens}
+               onGivensChange={onGivensChange}
+               onNavigate={onNavigate}
+               onLinkNavigate={onLinkNavigate}
+               onEvent={onEvent}
+               maxResultSize={1024 * 1024}
+            />
+         )}
       </Box>
    );
 }

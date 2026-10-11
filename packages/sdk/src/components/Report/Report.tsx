@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert } from "@mui/material";
-import type { DashboardManifest, ReportManifest } from "../../client";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -12,15 +11,18 @@ import type { DashboardEventHandler } from "../Dashboard/telemetry";
 import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
-import { CellNotebook, LinearReport } from "../Notebook/Notebook";
 import { useServer } from "../ServerProvider";
+import { CellReport } from "./CellReport";
+import { LinearReport } from "./LinearReport";
 
 export interface ReportProps {
    /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
    resourceUri: string;
    /**
-    * The report's package path, including `.malloy` (or `.malloynb`), exactly
-    * as `GET …/reports` lists it: `sales/q3.malloy`. Its identity.
+    * The report's package path, including `.malloy`, exactly as
+    * `GET …/reports` lists it: `sales/q3.malloy`. Its identity. A `.malloynb`
+    * the listing also has is rendered by the deprecated `Notebook`, which runs
+    * its cells through the only routes that can.
     */
    path: string;
    /**
@@ -41,9 +43,10 @@ export interface ReportProps {
    ) => void;
    /**
     * Where to go when a `# drill` cell is clicked. `target.dashboard` is the
-    * tag's `to=` as written: a package path without `.malloy` (or, deprecated,
-    * a bare name), for the host to resolve against `GET …/reports`. Without
-    * it, drilling to another report is inert: `to=self` still filters in place.
+    * tag's `to=` as written: a package path from the root, without `.malloy`,
+    * for the host to resolve against `GET …/reports` (`resolveDrillTarget`).
+    * Without it, drilling to another report is inert: `to=self` still filters
+    * in place.
     */
    onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
    /**
@@ -60,19 +63,10 @@ export interface ReportProps {
    chrome?: TileChrome;
 }
 
-/** A report manifest as the dashboard renderer reads it: the same fields, with the legacy `kind`. */
-const asDashboardManifest = (manifest: ReportManifest): DashboardManifest => {
-   const { notebook: _cells, ...rest } = manifest;
-   return {
-      ...rest,
-      kind: manifest.layout === "linear" ? "notebook" : "dashboard",
-   } as DashboardManifest;
-};
-
 /**
  * A report of either layout, from `GET …/reports/{path}`: a grid drawn as a
  * dashboard, a linear report top to bottom, and a linear report written as
- * `run:` cells (or a `.malloynb`) cell by cell.
+ * `run:` cells cell by cell, each through the governed query endpoint.
  *
  * Host-agnostic, like `Dashboard`: it takes props rather than reading a
  * router, and hands navigation and URL state back to whoever mounted it.
@@ -138,9 +132,17 @@ export function Report({
       return <Loading text={LOADING_COPY.opening("report")} />;
    }
 
+   if (manifest.notebook?.format === "malloynb") {
+      return (
+         <Alert severity="info">
+            {path} is a .malloynb notebook, which Report does not run: render it
+            with Notebook.
+         </Alert>
+      );
+   }
    if (manifest.notebook) {
       return (
-         <CellNotebook
+         <CellReport
             resourceUri={encodeResourceUri({
                environmentName,
                packageName,
@@ -159,7 +161,7 @@ export function Report({
    if (manifest.layout === "linear") {
       return (
          <LinearReport
-            manifest={asDashboardManifest(manifest)}
+            manifest={manifest}
             environmentName={environmentName}
             packageName={packageName}
             versionId={versionId}
@@ -173,7 +175,7 @@ export function Report({
    }
    return (
       <DashboardView
-         manifest={asDashboardManifest(manifest)}
+         manifest={manifest}
          environmentName={environmentName}
          packageName={packageName}
          versionId={versionId}

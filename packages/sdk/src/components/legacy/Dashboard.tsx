@@ -8,14 +8,9 @@ import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
-import { DashboardView } from "./DashboardView";
-import type { DashboardEventHandler } from "./telemetry";
-import type { TileChrome } from "./TileCard";
-
-// The grid rule moved to `DashboardGrid`, which the builder shares.
-// Re-exported so existing importers of it are unaffected.
-export { DEFAULT_COLUMNS, tileGridColumn } from "./DashboardGrid";
-export { DashboardProse } from "./DashboardView";
+import { DashboardView } from "../Dashboard/DashboardView";
+import type { DashboardEventHandler } from "../Dashboard/telemetry";
+import type { TileChrome } from "../Dashboard/TileCard";
 
 export interface DashboardProps {
    /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */

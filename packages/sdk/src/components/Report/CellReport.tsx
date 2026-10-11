@@ -2,28 +2,26 @@
 // SPDX-License-Identifier: MIT
 
 import "@malloydata/malloy-explorer/styles.css";
-import { Box, Stack, Typography } from "@mui/material";
+import { Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { planRun } from "./runPlan";
-import { DashboardManifest, RawNotebook } from "../../client";
-import { GivenValue } from "../../hooks/givenValue";
+import type { NotebookCell as RawCell, RawNotebook } from "../../client";
+import type { GivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useModelGivens } from "../../hooks/useModelGivens";
 import { GIVEN_SETTLE_MS } from "../../hooks/useSettled";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay } from "../ApiErrorDisplay";
+import { ApiErrorDisplay, type ApiError } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
-import { DashboardProse, DashboardView } from "../Dashboard/DashboardView";
 import type { DrillNavigation } from "../drill";
 import { GivensPanel } from "../given";
 import { givensToParams, givensToRequest } from "../given/paramCodec";
 import { Loading, LOADING_COPY } from "../Loading";
+import { cellRuns } from "../Notebook/cellKind";
+import { NotebookCell } from "../Notebook/NotebookCell";
+import { planRun } from "../Notebook/runPlan";
+import type { EnhancedNotebookCell } from "../Notebook/types";
 import { useServer } from "../ServerProvider";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
-import { cellRuns } from "./cellKind";
-import { NotebookCell } from "./NotebookCell";
-import { EnhancedNotebookCell } from "./types";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
@@ -45,13 +43,28 @@ function cellErrorMessage(error: unknown): string {
    return "The server did not say why.";
 }
 
-export interface NotebookProps {
+/** What one cell's run is handed: the cell, its index, the values to run it with, and the signal that cancels it. */
+export interface CellRun {
+   cell: RawCell;
+   index: number;
+   givens: ReadonlyMap<string, GivenValue>;
+   declaredTypes: ReadonlyMap<string, string | undefined>;
+   signal: AbortSignal;
+}
+
+/** Runs one cell. Stable across renders: a new runner re-runs every cell. */
+export type CellRunner = (
+   run: CellRun,
+) => Promise<{ result?: string; newSources?: string[] }>;
+
+export interface CellReportProps {
+   /** `publisher://…/models/<path>`: the report, and the model its cells run against. */
    resourceUri: string;
    maxResultSize?: number;
    /**
     * Parameter values from the host, typically its URL query parameters: the
-    * same contract `Dashboard` takes, so a link into a filtered notebook works
-    * the way a link into a filtered dashboard does.
+    * same contract `Report` takes, so a link into a filtered report works the
+    * way a link into a filtered grid does.
     */
    givens?: Record<string, string>;
    /**
@@ -62,197 +75,69 @@ export interface NotebookProps {
     * That is every committed change. Under `## autorun=false` a change is
     * committed on Apply, so reports are batched; otherwise every change is
     * committed and typing in a text control reports per keystroke. It does NOT
-    * run per keystroke: a changed value waits
-    * `GIVEN_SETTLE_MS` before anything is dispatched, so a burst of typing
-    * produces one run. A run that does start supersedes and aborts the one
-    * before it. The REPORTS are still per keystroke, so a host doing something
-    * expensive per call should debounce.
+    * run per keystroke: a changed value waits `GIVEN_SETTLE_MS` before
+    * anything is dispatched, so a burst of typing produces one run. A run that
+    * does start supersedes and aborts the one before it. The REPORTS are still
+    * per keystroke, so a host doing something expensive per call should
+    * debounce.
     *
-    * `managed` names every given this notebook declares, set or not. A host
+    * `managed` names every given this report declares, set or not. A host
     * writing to a shared query string needs it: `givens` alone says which
-    * parameters to write but not which to *remove*, and a host that guesses by
-    * removing everything it did not just receive deletes the unrelated
-    * parameters it has no business touching.
+    * parameters to write but not which to *remove*.
     */
    onGivensChange?: (
       givens: Record<string, string>,
       managed: readonly string[],
    ) => void;
    /**
-    * Optional SPA navigation handler for links inside the notebook. When
-    * omitted, in-notebook links fall back to plain absolute anchors, so no
-    * react-router context is required to render a notebook.
+    * Optional SPA navigation handler for links inside the cells. When omitted,
+    * links fall back to plain absolute anchors, so no react-router context is
+    * required to render one.
     *
-    * It does NOT carry drill. A `# drill { to=self }` filters this notebook
+    * It does NOT carry drill. A `# drill { to=self }` filters this report
     * through `given:` state and needs no handler at all, and a drill naming a
-    * dashboard goes through {@link onDrillNavigate}, which takes a destination
+    * report goes through {@link onDrillNavigate}, which takes a destination
     * rather than a URL.
     */
    onNavigate?: (to: string, event?: NavigationClick) => void;
    /**
-    * Opens a `# drill { to=<dashboard> }` from a cell, seeded with the clicked
-    * value. Omitted on a host with no dashboard route, which leaves those
+    * Opens a `# drill { to=<report> }` from a cell, seeded with the clicked
+    * value. Omitted on a host with no report route, which leaves those
     * destinations inert AND unmarked rather than painting a dead link.
     */
    onDrillNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
 }
 
-/** The raw notebook, one cache entry per URI however many components ask. */
-function useNotebookQuery(resourceUri: string, enabled = true) {
-   const { apiClients } = useServer();
-   const {
-      environmentName,
-      packageName,
-      versionId,
-      modelPath: notebookPath,
-   } = parseResourceUri(resourceUri);
-   return useQueryWithApiError<RawNotebook>({
-      queryKey: [resourceUri],
-      queryFn: async () => {
-         const response = await apiClients.notebooks.getNotebook(
-            environmentName,
-            packageName,
-            notebookPath,
-            versionId,
-         );
-         return response.data;
-      },
-      enabled,
-   });
-}
-
 /**
- * A linear report written as tiles: a one-column dashboard, its prose drawn
- * bare above the tiles. Shared by {@link Notebook} and `Report`.
+ * Cells run one by one, the engine behind a report written as `run:` cells.
+ * Takes the cells (undefined while they load, `error` when they could not be
+ * read) and the runner that executes one; what reads the cells and what runs
+ * them is the caller's.
  */
-export function LinearReport({
-   manifest,
-   environmentName,
-   packageName,
-   versionId,
-   documentName,
-   givens,
-   onGivensChange,
-   onDrillNavigate,
-   maxResultSize,
-}: {
-   manifest: DashboardManifest;
-   environmentName: string;
-   packageName: string;
-   versionId: string | undefined;
-   documentName: string;
-   givens?: Record<string, string>;
-   onGivensChange?: NotebookProps["onGivensChange"];
-   onDrillNavigate?: NotebookProps["onDrillNavigate"];
-   maxResultSize?: number;
-}) {
-   const { title, description } = manifest;
-   return (
-      <CleanNotebookContainer>
-         <CleanNotebookSection>
-            {/* chrome="none" drops the view's own header, so the prose is drawn here. */}
-            {(title || description) && (
-               <Box sx={{ mb: 2 }}>
-                  <DashboardProse
-                     // A linear report's text tiles have no card; its description matches them.
-                     chrome="none"
-                     title={title ?? ""}
-                     {...(description ? { description } : {})}
-                  />
-               </Box>
-            )}
-            <DashboardView
-               manifest={manifest}
-               environmentName={environmentName}
-               packageName={packageName}
-               versionId={versionId}
-               documentName={documentName}
-               givens={givens}
-               onGivensChange={onGivensChange}
-               onNavigate={onDrillNavigate}
-               maxResultSize={maxResultSize}
-               chrome="none"
-               // A linear report's control panel, not a grid's bar.
-               controlsLayout="panel"
-            />
-         </CleanNotebookSection>
-      </CleanNotebookContainer>
-   );
-}
-
-/**
- * A notebook by its package path.
- *
- * @deprecated Render `Report` with the file's path instead: it reads
- * `GET …/reports/{path}` and renders either layout. Kept, as a thin wrapper
- * over the same renderers, for hosts that still mount it.
- */
-// Requires PackageProvider
-export default function Notebook(props: NotebookProps) {
-   const { data: notebook } = useNotebookQuery(props.resourceUri);
-   // A notebook written as a tile layout renders as a one-column dashboard.
-   if (notebook?.dashboard) {
-      const { environmentName, packageName, versionId, modelPath } =
-         parseResourceUri(props.resourceUri);
-      return (
-         <LinearReport
-            manifest={notebook.dashboard}
-            environmentName={environmentName}
-            packageName={packageName}
-            versionId={versionId}
-            documentName={modelPath}
-            givens={props.givens}
-            onGivensChange={props.onGivensChange}
-            onDrillNavigate={props.onDrillNavigate}
-            maxResultSize={props.maxResultSize}
-         />
-      );
-   }
-   return <CellNotebook {...props} />;
-}
-
-/**
- * A linear report written as `run:` cells, or a `.malloynb`: each cell run on
- * its own. `notebook` is the report's cells when the caller already holds
- * them (`Report` reads them off `GET …/reports/{path}`). A held `.malloy`
- * report's cells then run through the governed query endpoint the grid tiles
- * use (`POST …/models/{path}/query`, the report's path as the model and the
- * cell's text as the query), which holds a cell to the same surface,
- * `#(authorize)` and row-level gates the cell route did; a held `.malloynb`'s
- * through the deprecated `…/notebooks/{path}/cells/{i}`, which is the only
- * route that runs one. Without `notebook`, the cells are read from the
- * deprecated notebooks route, which runs them.
- */
-export function CellNotebook({
+export function CellRunnerView({
    resourceUri,
    maxResultSize = 0,
    givens,
    onGivensChange,
    onNavigate,
    onDrillNavigate,
-   notebook: heldNotebook,
-}: NotebookProps & { notebook?: RawNotebook }) {
-   const { apiClients } = useServer();
+   notebook,
+   error,
+   runCell,
+}: CellReportProps & {
+   notebook: RawNotebook | undefined;
+   /** Why the cells could not be read; the view says so in place of them. */
+   error?: ApiError | null;
+   runCell: CellRunner;
+}) {
    const {
       environmentName,
       packageName,
       versionId,
       modelPath: notebookPath,
    } = parseResourceUri(resourceUri);
-
-   // Fetch the raw notebook cells, unless the caller holds them.
-   const held = heldNotebook !== undefined;
-   const query = useNotebookQuery(resourceUri, !held);
-   // Held cells are handed over from the first render after mount, not on it,
-   // so the controls see the document ARRIVE as they do when this component
-   // fetches it: that arrival is what reports the file's starting values to
-   // the host's URL (`useGivensState` seeds its record from the first render).
-   const [mounted, setMounted] = useState(false);
-   useEffect(() => setMounted(true), []);
-   const notebook = held ? (mounted ? heldNotebook : undefined) : query.data;
-   const isSuccess = held ? mounted : query.isSuccess;
-   const isError = !held && query.isError;
-   const error = query.error;
+   const isSuccess = notebook !== undefined;
+   const isError = !isSuccess && !!error;
 
    // State to store executed cells with results
    const [enhancedCells, setEnhancedCells] = useState<EnhancedNotebookCell[]>(
@@ -263,18 +148,18 @@ export function CellNotebook({
    // `isExecuting`, which covers only a run actually in flight.
    const [runScheduled, setRunScheduled] = useState(false);
    // The document the last run belonged to, for abandoning its requests when
-   // the reader moves to another notebook without this component unmounting.
+   // the reader moves to another report without this component unmounting.
    const lastDocumentRef = useRef<string | undefined>(undefined);
    const [executionError, setExecutionError] = useState<Error | null>(null);
 
    // Model-level `given:` declarations, and the state behind their controls:
-   // the same hook the dashboard uses, so both surfaces get URL-addressable
+   // the same hook a grid uses, so both layouts get URL-addressable
    // parameters, Apply batching and `to=self` drill from one implementation.
    const declaredGivens = useModelGivens(notebook);
    // A file-level `## autorun=false` arrives as `RawNotebook.autorun`, the same
-   // field with the same default a dashboard's `# artifact { autorun=false }`
-   // produces. Batching matters more here than on a dashboard: one control
-   // change re-runs every cell in the document.
+   // field with the same default a grid's `# artifact { autorun=false }`
+   // produces. Batching matters more here than on a grid: one control change
+   // re-runs every cell in the document.
    const autorun = notebook?.autorun !== false;
    const controls = useDocumentControls({
       specs: declaredGivens,
@@ -287,7 +172,7 @@ export function CellNotebook({
       autorun,
       environmentName,
       packageName,
-      // A notebook's model path is the notebook itself: `suggest` queries run
+      // The report's model path is the report itself: `suggest` queries run
       // against the same model the cells do.
       modelPath: notebookPath,
       versionId,
@@ -300,13 +185,8 @@ export function CellNotebook({
       onSelf: onDrillSelf,
    } = controls;
 
-   /**
-    * The `givens` query param for the notebook-cell GET: the same map the
-    * dashboard's POST body carries, JSON-encoded because this endpoint takes it
-    * in the URL. Built by the shared codec so a given is encoded identically
-    * whichever surface runs it.
-    */
-   const buildGivens = useCallback(
+   /** The run key's encoding of a set of values: the request body the cells are sent, so values that encode identically do not re-run. */
+   const encodeGivens = useCallback(
       (values: Map<string, GivenValue>): string | undefined => {
          const request = givensToRequest(values, declaredTypes);
          return Object.keys(request).length > 0
@@ -316,7 +196,7 @@ export function CellNotebook({
       [declaredTypes],
    );
 
-   // For a cell's "Data Sources" dialog: the notebook's current values, so
+   // For a cell's "Data Sources" dialog: the report's current values, so
    // exploring from a cell starts from what the reader is looking at rather
    // than the model's bare defaults.
    const cellStartingGivens = useMemo(
@@ -343,7 +223,7 @@ export function CellNotebook({
    >(undefined);
 
    // Cancel whatever is in flight when this component goes away, so navigating
-   // off a twelve-cell notebook does not leave twelve requests to complete and be
+   // off a twelve-cell report does not leave twelve requests to complete and be
    // thrown away.
    //
    // Its OWN effect, with an empty dependency list, and that is the whole point:
@@ -352,23 +232,15 @@ export function CellNotebook({
    // identity with identical content, so the cleanup fired and aborted the run
    // the control change had just started, while the run effect's `runKey` guard
    // saw an unchanged key and refused to start a replacement. Every cell was left
-   // blank, with no result, no error and no spinner, until a reload. Measured on
-   // `governed-analytics/orders.malloynb`: 4 rendered results before a control
-   // change, 0 after.
+   // blank, with no result, no error and no spinner, until a reload.
    useEffect(
       () => () => {
          inFlightRef.current?.abort();
          // Forget which run was last started, so a component that comes back
-         // runs again instead of trusting a key whose run was just cancelled.
-         // The case it is reasoned from, and NOT one I could reproduce: React's
-         // StrictMode mounts, cleans up, and mounts again in development, and
-         // refs survive that. A first mount that already had the notebook
-         // cached would start a run, this cleanup would abort it, and the
-         // second mount would see an unchanged `runKey` and decline to start a
-         // replacement. I could not get a browser into that state, so treat the
-         // reset as belt-and-braces rather than a measured fix. It is right on
-         // its own terms either way: a key that says "this run happened" must
-         // not outlive the run being cancelled.
+         // runs again instead of trusting a key whose run was just cancelled
+         // (React's StrictMode mounts, cleans up, and mounts again, and refs
+         // survive that). A key that says "this run happened" must not outlive
+         // the run being cancelled.
          lastRunRef.current = null;
          clearTimeout(pendingRunRef.current?.timer);
          pendingRunRef.current = undefined;
@@ -382,35 +254,22 @@ export function CellNotebook({
          const runId = ++runIdRef.current;
 
          // Cancel the run this one supersedes rather than just ignoring its
-         // results. Discarding results alone keeps the requests in flight, so
-         // three quick control changes on a twelve-cell notebook put three full
-         // runs on the server and use the answers from one. `origin/main`
-         // refused to start a second run at all, which was the wrong trade,
-         // it dropped the newest values, but it did bound the load, and
-         // nothing replaced that bound.
+         // results: discarding results alone keeps the requests in flight, so
+         // three quick control changes on a twelve-cell report put three full
+         // runs on the server and use the answers from one.
          inFlightRef.current?.abort();
          const controller = new AbortController();
          inFlightRef.current = controller;
 
-         // Rebuilt from the notebook being run, never carried over from the
-         // previous render's cells. Reusing them kept the OLD document's
-         // `text` and `type` while the new document's results were written in
-         // on top, so navigating between two notebooks rendered one's prose
-         // with the other's charts, and a shorter second notebook left the
-         // first one's trailing cells on screen. Nothing worth preserving
-         // survived that branch anyway: `result` and `error` were cleared, and
-         // `newSources` is re-derived from the raw cell below.
+         // Rebuilt from the report being run, never carried over from the
+         // previous render's cells, which would keep the OLD document's text
+         // under the new document's results.
          setEnhancedCells(notebook.notebookCells.map((cell) => ({ ...cell })));
 
          setIsExecuting(true);
          setExecutionError(null);
 
-         const givensParam = buildGivens(givensToApply);
-         // A held `.malloy` report runs each cell as a query against itself.
-         const viaQuery = held && notebook.format === "malloy";
-
          try {
-            // Build execution tasks for code cells
             const executionTasks: Array<() => Promise<void>> = [];
 
             for (let i = 0; i < notebook.notebookCells.length; i++) {
@@ -419,51 +278,17 @@ export function CellNotebook({
                // Prose and definitions have nothing to run.
                if (!cellRuns(rawCell)) continue;
 
-               // Capture cell index for closure
                const cellIndex = i;
 
                const executeCell = async () => {
                   try {
-                     // `filterParams` and `bypassFilters` go over as undefined:
-                     // the `#(filter)` panel this component used to render is
-                     // gone, replaced by `given:`. The server still enforces a
-                     // `required` filter, so a model that has one now fails
-                     // here: visibly, via `error` below, rather than as the
-                     // blank cell it used to be. See RELEASE_NOTES.
-                     const executedCell = viaQuery
-                        ? {
-                             result: (
-                                await apiClients.models.executeQueryModel(
-                                   environmentName,
-                                   packageName,
-                                   notebookPath,
-                                   {
-                                      query: rawCell.text,
-                                      givens: givensToRequest(
-                                         givensToApply,
-                                         declaredTypes,
-                                      ),
-                                      versionId,
-                                   },
-                                   undefined,
-                                   { signal: controller.signal },
-                                )
-                             ).data.result,
-                             newSources: undefined,
-                          }
-                        : (
-                             await apiClients.notebooks.executeNotebookCell(
-                                environmentName,
-                                packageName,
-                                notebookPath,
-                                cellIndex,
-                                versionId,
-                                undefined,
-                                undefined,
-                                givensParam,
-                                { signal: controller.signal },
-                             )
-                          ).data;
+                     const executedCell = await runCell({
+                        cell: rawCell,
+                        index: cellIndex,
+                        givens: givensToApply,
+                        declaredTypes,
+                        signal: controller.signal,
+                     });
 
                      if (runIdRef.current !== runId) return;
 
@@ -473,7 +298,6 @@ export function CellNotebook({
                      const newSources =
                         rawCell.newSources || executedCell.newSources;
 
-                     // Update state incrementally
                      setEnhancedCells((prev) => {
                         const next = [...prev];
                         if (!next[cellIndex]) {
@@ -530,7 +354,6 @@ export function CellNotebook({
                }
             }
 
-            // Wait for remaining tasks to complete
             await Promise.all(executing);
          } catch (error) {
             if (controller.signal.aborted || runIdRef.current !== runId) return;
@@ -543,37 +366,22 @@ export function CellNotebook({
             }
          }
       },
-      [
-         isSuccess,
-         notebook,
-         buildGivens,
-         environmentName,
-         packageName,
-         notebookPath,
-         versionId,
-         held,
-         declaredTypes,
-         apiClients.notebooks,
-         apiClients.models,
-      ],
+      [isSuccess, notebook, declaredTypes, runCell],
    );
 
    // Run the cells on load, and again whenever the applied parameters change.
    // Applied, not draft: under `## autorun=false` the cells wait for Apply.
    //
    // One effect covers both, keyed on exactly what would go over the wire plus
-   // which notebook it is. Keying on the encoded givens means a change that
+   // which report it is. Keying on the encoded givens means a change that
    // encodes identically does not re-run, and a link carrying parameters runs
    // once with them rather than running bare and running again when they land.
    // A run already in flight is superseded rather than waited on, which the
    // generation guard in `executeCells` makes safe.
    //
-   // The notebook's own identity is part of that key. Its content can change
-   // under an open tab: a package reload, and react-query hands over a new
-   // object only when the content actually differs, so identity is exactly the
-   // "has this document changed" signal. Keying on `resourceUri` alone silently
-   // dropped that: a reloaded notebook kept rendering the previous run's
-   // results forever, because the URI and the givens were unchanged.
+   // The cells' own identity is part of that key: a package reload hands over
+   // a new object only when the content actually differs, so identity is
+   // exactly the "has this document changed" signal.
    const notebookGenRef = useRef(0);
    const seenNotebookRef = useRef<RawNotebook | undefined>(undefined);
    if (seenNotebookRef.current !== notebook) {
@@ -584,13 +392,11 @@ export function CellNotebook({
 
    useEffect(() => {
       const documentKey = `${resourceUri}|${notebookGen}`;
-      const runKey = `${documentKey}|${buildGivens(applied) ?? ""}`;
+      const runKey = `${documentKey}|${encodeGivens(applied) ?? ""}`;
 
-      // Abandon the previous notebook's requests when the document changes.
+      // Abandon the previous report's requests when the document changes.
       // The abort-on-unmount effect does not cover this: navigating from one
-      // notebook to another REUSES this component, so nothing unmounts and a
-      // twelve-cell notebook left twelve requests running against a document
-      // the reader had already left.
+      // report to another REUSES this component, so nothing unmounts.
       if (
          lastDocumentRef.current !== undefined &&
          lastDocumentRef.current !== documentKey
@@ -626,11 +432,8 @@ export function CellNotebook({
          start();
          return;
       }
-      // Flagged while the settle timer runs, so the cells say a run is coming.
-      // Without it the window was invisible: `isExecuting` is false until the
-      // timer fires, so a changed control sat above the PREVIOUS values with
-      // nothing on screen to say they were stale, and a reader who kept typing
-      // kept extending the window.
+      // Flagged while the settle timer runs, so the cells say a run is coming;
+      // `isExecuting` is false until the timer fires.
       setRunScheduled(true);
       pendingRunRef.current = {
          key: runKey,
@@ -642,13 +445,13 @@ export function CellNotebook({
       notebookGen,
       resourceUri,
       applied,
-      buildGivens,
+      encodeGivens,
       executeCells,
    ]);
 
    const shownCells =
       enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
-   // A served notebook can open with definition cells; a .malloynb keeps the icon on its first cell.
+   // A served report can open with definition cells; a .malloynb keeps the icon on its first cell.
    const copyLinkIndex =
       notebook?.format === "malloy"
          ? shownCells.findIndex((cell) => cell.type === "markdown")
@@ -661,12 +464,10 @@ export function CellNotebook({
                {/* Parameters panel: the controls for `given:` declarations */}
                <GivensPanel {...controls.panel} />
 
-               {/* Loading State */}
                {!isSuccess && !isError && (
                   <Loading text={LOADING_COPY.opening("report")} />
                )}
 
-               {/* Notebook Cells */}
                {isSuccess &&
                   shownCells.map((cell, index) => (
                      <NotebookCell
@@ -692,17 +493,16 @@ export function CellNotebook({
                      />
                   ))}
 
-               {/* Error States */}
-               {isError && error.status === 404 && (
+               {isError && error?.status === 404 && (
                   <Typography variant="body2" sx={{ color: "text.secondary" }}>
                      <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
                      not found.
                   </Typography>
                )}
 
-               {isError && error.status !== 404 && (
+               {isError && error?.status !== 404 && (
                   <ApiErrorDisplay
-                     error={error}
+                     error={error as ApiError}
                      context={`${environmentName} > ${packageName} > ${notebookPath}`}
                   />
                )}
@@ -720,5 +520,54 @@ export function CellNotebook({
             </Stack>
          </CleanNotebookSection>
       </CleanNotebookContainer>
+   );
+}
+
+/**
+ * A `.malloy` report written as `run:` cells, whose cells the caller already
+ * holds (`Report` reads them off `GET …/reports/{path}`). Each runs through
+ * the governed query endpoint the grid tiles use
+ * (`POST …/models/{path}/query`, the report's path as the model and the cell's
+ * text as the query), which holds a cell to the same surface, `#(authorize)`
+ * and row-level gates a tile is held to.
+ */
+export function CellReport({
+   notebook: held,
+   ...props
+}: CellReportProps & { notebook: RawNotebook }) {
+   const { apiClients } = useServer();
+   const { environmentName, packageName, versionId, modelPath } =
+      parseResourceUri(props.resourceUri);
+   // Handed over from the first render after mount, not on it, so the
+   // controls see the document ARRIVE as they do when it is fetched: that
+   // arrival is what reports the file's starting values to the host's URL
+   // (`useGivensState` seeds its record from the first render).
+   const [mounted, setMounted] = useState(false);
+   useEffect(() => setMounted(true), []);
+   const runCell = useCallback<CellRunner>(
+      async ({ cell, givens, declaredTypes, signal }) => ({
+         result: (
+            await apiClients.models.executeQueryModel(
+               environmentName,
+               packageName,
+               modelPath,
+               {
+                  query: cell.text,
+                  givens: givensToRequest(givens, declaredTypes),
+                  versionId,
+               },
+               undefined,
+               { signal },
+            )
+         ).data.result,
+      }),
+      [apiClients.models, environmentName, packageName, modelPath, versionId],
+   );
+   return (
+      <CellRunnerView
+         {...props}
+         notebook={mounted ? held : undefined}
+         runCell={runCell}
+      />
    );
 }

@@ -1,7 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DashboardEditor, type DashboardEditorProps } from "./DashboardEditor";
+import {
+   DashboardEditor,
+   type DashboardEditorProps,
+} from "../DashboardBuilder/DashboardEditor";
 
 /** The props a host passed the notebook editor before notebooks opened in the one builder. */
 export type NotebookEditorProps = (
