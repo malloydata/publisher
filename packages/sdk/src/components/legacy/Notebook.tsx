@@ -6,7 +6,7 @@ import type { CellReportProps } from "../Report/CellReport";
 import { LinearReport } from "../Report/LinearReport";
 import { MalloynbCells, useNotebookQuery } from "./MalloynbCells";
 
-export type NotebookProps = CellReportProps;
+type NotebookProps = CellReportProps;
 
 /**
  * A notebook by its package path, read through the deprecated

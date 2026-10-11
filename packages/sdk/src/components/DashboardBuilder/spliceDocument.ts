@@ -154,10 +154,9 @@ function applyEdits(source: string, edits: Edit[]): string {
    // the rewrite lands in the middle of what was just inserted.
    //
    // Two insertions at one point keep the order they were planned in: the
-   // later one is applied first, so the earlier lands in front of it. Without
-   // that, an import added after a file's last line (a file that ends on its
-   // import) landed BELOW the source extension written at the same point, and
-   // the extension read a source not yet imported.
+   // later one is applied first, so the earlier lands in front of it, and an
+   // import added at a file's end stays ABOVE a source extension written at
+   // the same point.
    const planned = edits.map((edit, index) => ({ edit, index }));
    for (const { edit } of planned.sort(
       (a, b) =>
@@ -1994,8 +1993,8 @@ function planStageFilters(
       if (trailing && trailing.start >= anchor) anchor = trailing.end;
    }
    // A comma only ever follows another `where:`. Malloy rejects one after a
-   // `limit:` -- the writer used to emit `{ limit: 5, where: … }` and that is
-   // a parse error -- while a space parses after every statement form. A
+   // `limit:` (`{ limit: 5, where: … }` is a parse error), while a space
+   // parses after every statement form. A
    // one-line `where:` whose own span already ends at the separator needs none
    // added, or the file gains a `,,`.
    const lead =

@@ -213,7 +213,7 @@ export const isReportModel = (
  * returns `path`, while a single model returns `modelPath`. Reading `path`
  * alone yields an empty string against the real server, which silently disables
  * the report exclusion below and leaves a preview with nothing to run
- * against. Measured, not deduced from the type.
+ * against.
  */
 const pathOf = (model: CompiledModel): string =>
    (model as { modelPath?: string }).modelPath ?? model.path ?? "";

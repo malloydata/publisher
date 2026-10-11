@@ -21,9 +21,9 @@ import LegacyAliasRoute from "./LegacyAliasRoute";
  * `sales/q3.malloy`. The package's listing decides; no directory name does.
  *
  * `?edit` on the route opens the report in the builder. A legacy route ending
- * in `/edit` (`sales/q3/edit`, the old edit route) is checked as a path FIRST:
- * when `sales/q3/edit.malloy` is a report it opens, and only when it is not
- * does the route redirect to `sales/q3?edit`.
+ * in `/edit` (`sales/q3/edit`) is checked as a path FIRST: when
+ * `sales/q3/edit.malloy` is a report it opens, and only when it is not does
+ * the route redirect to `sales/q3?edit`.
  *
  * When no report is at that path, an old by-name link is redirected by
  * `LegacyAliasRoute`, and otherwise `?edit` opens the host's draft at the path.
@@ -107,7 +107,7 @@ export default function RoutedDocument({
       );
    }
 
-   // The old edit route, `<path>/edit`: no report has this path (checked
+   // The legacy edit route, `<path>/edit`: no report has this path (checked
    // above), so it is a link to edit `<path>`.
    const legacyEdit = edit ? undefined : legacyEditBase(routePath);
    if (legacyEdit !== undefined)

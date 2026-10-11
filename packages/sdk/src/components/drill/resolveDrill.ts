@@ -160,13 +160,10 @@ export function drillGivenName(field: DrillField): string {
 export interface DrillNavigation {
    /**
     * The destination report, as the tag's `to=` names it: a package path
-    * without `.malloy` (`sales/overview`), or a deprecated bare name. Resolve
-    * it with `resolveDrillTarget` against `GET …/reports`. Named `dashboard`
-    * for the hosts that already read it.
-    *
-    * A change since reports: this used to be a dashboard's slug, a single
-    * segment. It may now contain `/`, so a host that put it into a URL as one
-    * segment (`/dashboards/${dashboard}`) must resolve it instead.
+    * without `.malloy` (`sales/overview`); a bare name is a file at the root.
+    * It may contain `/`, so resolve it with `resolveDrillTarget` against
+    * `GET …/reports` rather than using it as one URL segment. Named
+    * `dashboard` for the hosts that already read it.
     */
    dashboard: string;
    /**

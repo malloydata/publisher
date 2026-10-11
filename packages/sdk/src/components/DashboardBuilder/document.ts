@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The dashboard builder's working representation of a `dashboards/*.malloy`
- * file.
+ * The builder's working representation of a report file.
  *
  * This is an editing PROJECTION, not a complete representation of the file, and
  * the distinction is load-bearing. The builder writes changes by SPLICING the

@@ -316,10 +316,10 @@ export default function Package({
    )?.path;
 
    // The models list is FILTERED by the report listing, so every section waits
-   // for it: gated on anything less, a listing that resolved after the models
-   // call showed a report under Models and then took it away. A
-   // FAILURE cannot hang the page, since the query turns a 404 or a transport
-   // failure into an empty list; the cost is one parallel request's latency.
+   // for it: gated on anything less, a late listing would show a report under
+   // Models and then take it away. A failure cannot hang the page, since the
+   // query turns a 404 or a transport failure into an empty list; the cost is
+   // one parallel request's latency.
    const isLoading = !reportListing.settled;
 
    if (pkgQuery.isError) {

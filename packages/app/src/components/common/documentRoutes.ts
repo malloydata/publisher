@@ -13,10 +13,10 @@ import {
  * goes through here, so the breadcrumb, the header's Edit/View, the package
  * page and the router agree on it.
  *
- * A trailing `/edit` segment was the edit route before, and stays a legacy
- * alias: the router redirects `<path>/edit` to `<path>?edit` only when no
- * report is at `<path>/edit.malloy` (see `RoutedDocument`), because a
- * segment is also a path.
+ * A trailing `/edit` segment is a legacy alias: the router redirects
+ * `<path>/edit` to `<path>?edit` only when no report is at
+ * `<path>/edit.malloy` (see `RoutedDocument`), because a segment is also a
+ * path.
  */
 const LEGACY_EDIT_SEGMENT = "/edit";
 

@@ -51,8 +51,8 @@ export function MalloynbCells(props: CellReportProps) {
       async ({ index, givens, declaredTypes, signal }) => {
          const request = givensToRequest(givens, declaredTypes);
          // `filterParams` and `bypassFilters` go over as undefined: `given:`
-         // replaced the `#(filter)` panel, and a `required` filter the server
-         // still enforces now fails the cell visibly rather than blankly.
+         // takes the `#(filter)` panel's place, and a `required` filter the
+         // server enforces fails the cell visibly rather than blankly.
          return (
             await apiClients.notebooks.executeNotebookCell(
                environmentName,

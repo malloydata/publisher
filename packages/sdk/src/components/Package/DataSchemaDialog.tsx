@@ -71,8 +71,7 @@ export function columnTypeIcon(type: string | undefined): SvgIconComponent {
  *
  * The name is mono because it exists verbatim in the file and is what a reader
  * would type into a model; the type is sans and quieter because it describes
- * the column rather than naming it. A list of these says what a two-column
- * "Column | Type" table said, with less furniture.
+ * the column rather than naming it.
  */
 function ColumnRow({ column }: { column: Column }) {
    const Icon = columnTypeIcon(column.type);

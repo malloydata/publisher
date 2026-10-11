@@ -44,7 +44,7 @@ function cellErrorMessage(error: unknown): string {
 }
 
 /** What one cell's run is handed: the cell, its index, the values to run it with, and the signal that cancels it. */
-export interface CellRun {
+interface CellRun {
    cell: RawCell;
    index: number;
    givens: ReadonlyMap<string, GivenValue>;
@@ -157,7 +157,7 @@ export function CellRunnerView({
    // parameters, Apply batching and `to=self` drill from one implementation.
    const declaredGivens = useModelGivens(notebook);
    // A file-level `## autorun=false` arrives as `RawNotebook.autorun`, the same
-   // field with the same default a grid's `# artifact { autorun=false }`
+   // field with the same default a grid's `## artifact { autorun=false }`
    // produces. Batching matters more here than on a grid: one control change
    // re-runs every cell in the document.
    const autorun = notebook?.autorun !== false;
@@ -226,13 +226,11 @@ export function CellRunnerView({
    // off a twelve-cell report does not leave twelve requests to complete and be
    // thrown away.
    //
-   // Its OWN effect, with an empty dependency list, and that is the whole point:
-   // as the run effect's cleanup this ran on every dependency change instead. The
-   // host echoes each reported parameter back, which gives `applied` a new
-   // identity with identical content, so the cleanup fired and aborted the run
-   // the control change had just started, while the run effect's `runKey` guard
-   // saw an unchanged key and refused to start a replacement. Every cell was left
-   // blank, with no result, no error and no spinner, until a reload.
+   // Its OWN effect, with an empty dependency list, not the run effect's
+   // cleanup: the host echoes each reported parameter back, giving `applied` a
+   // new identity with identical content. A cleanup on that change would abort
+   // the run the control change just started, while the `runKey` guard sees an
+   // unchanged key and starts no replacement, leaving every cell blank.
    useEffect(
       () => () => {
          inFlightRef.current?.abort();

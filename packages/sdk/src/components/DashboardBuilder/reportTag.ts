@@ -19,8 +19,7 @@ import { parseTagLines } from "./tagParse";
  *
  * - `none`: no model-level `## artifact` note, so not a report.
  * - `unparsed`: an artifact note the tag parser rejects, so not a report.
- * - `kind-removed`: the tag sets `kind=`, which is no longer read, so not a
- *   report.
+ * - `kind-removed`: the tag sets the removed `kind=`, so not a report.
  * - `report`: a report, with its layout.
  */
 export type ReportTag =

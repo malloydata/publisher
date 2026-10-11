@@ -157,9 +157,9 @@ export interface DocumentStorage {
    /**
     * Optional. The package-relative path at which {@link saveDocument} will
     * put the file for `locator`, for a store that files a document somewhere
-    * other than the package path the SDK asked for (a store that keeps every
-    * grid report in `dashboards/`, say). `createDocument` asks before it
-    * renders a new report, so the report's imports are written relative to
+    * other than the package path the SDK asked for (one that files a report
+    * by its layout, say). `createDocument` asks before it renders a new
+    * report, so the report's imports are written relative to
     * where the file really lands, and returns that path as the report's
     * `path`. Left out, the SDK assumes the requested package path: the
     * locator's `path` minus its `<environment>/<package>/` prefix.

@@ -123,10 +123,9 @@ export type DashboardEditorProps = (
    textSource?: TextSourceOptions;
    /**
     * Whether the toolbar offers the Linear / Grid layout switch. Default
-    * true. A host that ties a report's layout to where it keeps the file
-    * (every grid report under `dashboards/`, say) passes false, so an author
-    * cannot change a layout the host files by. A document held as text never
-    * gets the switch.
+    * true. A host that files a report by its layout passes false, so an
+    * author cannot change a layout the host files by. A document held as text
+    * never gets the switch.
     */
    allowLayoutChange?: boolean;
 };

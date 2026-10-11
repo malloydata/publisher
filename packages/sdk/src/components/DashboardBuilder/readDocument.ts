@@ -162,9 +162,8 @@ function chartField(tags: Array<{ text: string }>): {
  * is exactly `field <op> $GIVEN`.
  *
  * A clause that is anything else — a compound predicate, a literal comparison
- * — is not a binding and is left exactly as written. That is a STRUCTURAL
- * test now, so the isolation heuristics this used to need are gone along with
- * the shapes that defeated them.
+ * — is not a binding and is left exactly as written. The test is structural,
+ * read off the tree, not a text heuristic.
  */
 function filtersOf(
    stage: TreeStage | undefined,

@@ -61,9 +61,9 @@ function ModelPage() {
    // standalone Publisher URL and resizes via the publisher.js postMessage
    // protocol.
    //
-   // The cost, stated the way `spa_fallback.ts` states its own: the route
-   // drops `.malloy`, so a report at `report.malloy.malloy` has the route
-   // `report.malloy`, which opens the Model view of `report.malloy` instead.
+   // The cost: the route drops `.malloy`, so a report at
+   // `report.malloy.malloy` has the route `report.malloy`, which opens the
+   // Model view of `report.malloy` instead.
    // Unhandled deliberately: that URL is genuinely ambiguous, and guessing
    // would break the far commoner "view the Malloy" path.
    if (
@@ -158,9 +158,8 @@ function ModelPage() {
 /**
  * This route is `/:environmentName/:packageName/*`, so it matches any path
  * under a package, and everything that is not a model, report, or data app
- * arrives here. Naming the file's type was the wrong diagnosis: the path is
- * usually what is wrong, and blaming the file sent a reader looking for a
- * problem in a file that was fine. Say what was served and what does serve it.
+ * arrives here. The path is usually what is wrong, not the file, so say what
+ * was served and what does serve it.
  */
 function NothingToOpen({
    packageName,
