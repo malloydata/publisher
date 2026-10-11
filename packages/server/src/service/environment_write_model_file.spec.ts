@@ -8,6 +8,7 @@ import path from "path";
 import {
    BadRequestError,
    internalErrorToHttpError,
+   InvalidModelPathError,
    WriteRollbackFailedError,
    WriteVerifyError,
 } from "../errors";
@@ -393,7 +394,8 @@ describe("Environment.writeModelFileTransactional", () => {
                      () => undefined,
                      (e: Error) => e,
                   );
-               expect(error).toBeInstanceOf(BadRequestError);
+               // Typed, so the write metric counts it as `invalid_path`.
+               expect(error).toBeInstanceOf(InvalidModelPathError);
                expect(error?.message).toContain("outside the package");
                // The check never saw the outside file's text.
                expect(seen).toEqual([]);

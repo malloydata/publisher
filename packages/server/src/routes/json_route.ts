@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import type express from "express";
-import { internalErrorToHttpError, NotImplementedError } from "../errors";
+import {
+   internalErrorToHttpError,
+   logInternalFailure,
+   NotImplementedError,
+} from "../errors";
 import { logger } from "../logger";
 
 /** Answer a request that names a version, which this server does not keep. */
@@ -22,7 +26,9 @@ export function setVersionIdError(res: express.Response): void {
  *
  * A 4xx is the caller's (a report that does not exist, an ambiguous name), so
  * it is logged once at `warn` with its message, never at `error`. A 5xx is
- * left to the mapping, which logs an internal fault once, with its stack.
+ * logged once at `error`: by the mapping when it logs that class itself, here
+ * otherwise (a 503 or 504, say). A 501 is a feature this server lacks, not a
+ * fault, so it is not logged.
  */
 export function jsonRoute(
    handler: (
@@ -39,7 +45,10 @@ export function jsonRoute(
          const result = await handler(req, res);
          if (!res.headersSent) res.status(200).json(result);
       } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
+         let logged = false;
+         const { json, status } = internalErrorToHttpError(error as Error, {
+            onLogged: () => (logged = true),
+         });
          if (status < 500) {
             logger.warn("Request refused", {
                path: req.path,
@@ -47,6 +56,8 @@ export function jsonRoute(
                status,
                error: (error as Error).message,
             });
+         } else if (!logged && status !== 501) {
+            logInternalFailure("Request failed", error as Error);
          }
          res.status(status).json(json);
       }

@@ -7,6 +7,7 @@ import {
    BadRequestError,
    CompileRefusedError,
    FrozenConfigError,
+   InvalidModelPathError,
    PackageNotFoundError,
    WriteConflictError,
    WriteRollbackFailedError,
@@ -59,6 +60,8 @@ function harness(
       loadedReport?: boolean;
       /** The `##` notes the reloaded model carries, as dashboard facts. */
       reloadedNotes?: string[];
+      /** A refusal the environment raises once the lock is held (a link leading outside). */
+      writeRefusal?: Error;
    } = {},
 ) {
    const model = {
@@ -100,6 +103,7 @@ function harness(
                check: (current: string | undefined, loaded: unknown) => void,
                verify: (reloaded: unknown) => Promise<unknown>,
             ) => {
+               if (options.writeRefusal) throw options.writeRefusal;
                check(options.current, loaded);
                try {
                   return {
@@ -773,6 +777,25 @@ describe("putDashboardSource: what it reports", () => {
       expect(await reasonCount("conflict", "conflict")).toBe(1);
       expect(await reasonCount("compile_failed", "compile_failed")).toBe(1);
       expect(await outcomeCount("refused")).toBe(7);
+   });
+
+   it("labels a path the environment refuses as invalid_path, not bad_request", async () => {
+      await expect(
+         harness({
+            writeRefusal: new InvalidModelPathError(
+               "Invalid model path: it resolves outside the package.",
+            ),
+         }).controller.putDashboardSource("env", "pkg", PATH, {
+            source: AFTER,
+         }),
+      ).rejects.toBeInstanceOf(BadRequestError);
+      const reasonCount = (reason: string) =>
+         metrics.collectCounter("publisher_report_writes_total", {
+            outcome: "refused",
+            reason,
+         });
+      expect(await reasonCount("invalid_path")).toBe(1);
+      expect(await reasonCount("bad_request")).toBe(0);
    });
 
    it("labels a write that landed with no reason", async () => {

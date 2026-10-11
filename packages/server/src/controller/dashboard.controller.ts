@@ -9,6 +9,7 @@ import {
    DashboardNotFoundError,
    EnvironmentNotFoundError,
    FrozenConfigError,
+   InvalidModelPathError,
    PackageNotFoundError,
    WriteConflictError,
    WriteRollbackFailedError,
@@ -96,14 +97,16 @@ function outcomeOf(error: Error): {
    const reason: ReportWriteReason =
       error instanceof ReportWriteRefusedError
          ? error.reason
-         : error instanceof FrozenConfigError
-           ? "frozen_config"
-           : error instanceof EnvironmentNotFoundError ||
-               error instanceof PackageNotFoundError
-             ? "not_found"
-             : error instanceof BadRequestError
-               ? "bad_request"
-               : "other";
+         : error instanceof InvalidModelPathError
+           ? "invalid_path"
+           : error instanceof FrozenConfigError
+             ? "frozen_config"
+             : error instanceof EnvironmentNotFoundError ||
+                 error instanceof PackageNotFoundError
+               ? "not_found"
+               : error instanceof BadRequestError
+                 ? "bad_request"
+                 : "other";
    return { outcome: "refused", reason };
 }
 

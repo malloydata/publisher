@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import express from "express";
 import request from "supertest";
 import { resetDeprecatedUsageMetricsForTest } from "./deprecated_usage_metrics";
-import { EnvironmentNotFoundError } from "./errors";
+import { EnvironmentNotFoundError, ServiceUnavailableError } from "./errors";
 import {
    recordDeprecatedFilterUsage,
    setFilterDeprecationHeaders,
@@ -51,13 +51,14 @@ describe("publisher_deprecated_usage_total", () => {
    });
 
    describe("the legacy routes", () => {
-      /** The routes over a store with no environments: every call is a 404. */
-      const app = () => {
+      /** The routes over a store with no environments: by default every call is a 404. */
+      const app = (
+         fail: (name: string) => Error = (name) =>
+            new EnvironmentNotFoundError(`Environment ${name} does not exist`),
+      ) => {
          const store = {
             getEnvironment: async (name: string) => {
-               throw new EnvironmentNotFoundError(
-                  `Environment ${name} does not exist`,
-               );
+               throw fail(name);
             },
          } as unknown as EnvironmentStore;
          const server = express();
@@ -114,6 +115,33 @@ describe("publisher_deprecated_usage_total", () => {
             expect(about(error.mock.calls as unknown[][])).toEqual([]);
          } finally {
             warn.mockRestore();
+            error.mockRestore();
+         }
+      });
+
+      it("logs a 5xx once, at error, whether or not the mapping logs that class", async () => {
+         const error = spyOn(logger, "error");
+         try {
+            // 503: a class the mapping answers without logging.
+            const busy = await request(
+               app(() => new ServiceUnavailableError("busy-503-marker")),
+            ).get(`${pkg}/notebooks/tour.malloynb/cells/0`);
+            expect(busy.status).toBe(503);
+            // 500: a class the mapping logs itself, with its stack.
+            const fault = await request(
+               app(() => new Error("fault-500-marker")),
+            ).get(`${pkg}/dashboards/sales`);
+            expect(fault.status).toBe(500);
+
+            const mentioning = (marker: string) =>
+               (error.mock.calls as unknown[][]).filter((args) =>
+                  JSON.stringify(args).includes(marker),
+               );
+            expect(mentioning("busy-503-marker").map(([text]) => text)).toEqual(
+               ["Request failed"],
+            );
+            expect(mentioning("fault-500-marker")).toHaveLength(1);
+         } finally {
             error.mockRestore();
          }
       });

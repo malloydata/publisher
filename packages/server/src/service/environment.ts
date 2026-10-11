@@ -40,6 +40,7 @@ import {
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
+   InvalidModelPathError,
    ModelCompilationError,
    NotQueryableError,
    PackageManifestError,
@@ -2189,7 +2190,7 @@ export class Environment {
             continue;
          }
          if (!stat.isDirectory())
-            throw new BadRequestError(
+            throw new InvalidModelPathError(
                `Invalid model path: \`${path.relative(packageRoot, dir).split(path.sep).join("/")}\` ` +
                   `is a file in the package, not a directory.`,
             );
@@ -2206,7 +2207,7 @@ export class Environment {
       for (const real of [realExisting, realTarget]) {
          if (real === undefined) continue;
          if (real !== realRoot && !real.startsWith(`${realRoot}${path.sep}`)) {
-            throw new BadRequestError(
+            throw new InvalidModelPathError(
                `Invalid model path: it resolves outside the package.`,
             );
          }
@@ -2215,14 +2216,14 @@ export class Environment {
                path.relative(realRoot, real).split(path.sep).join("/"),
             )
          ) {
-            throw new BadRequestError(
+            throw new InvalidModelPathError(
                `Invalid model path: it resolves into \`public/\`, which is served ` +
                   `as raw static files.`,
             );
          }
       }
       if (realExisting === undefined) {
-         throw new BadRequestError(
+         throw new InvalidModelPathError(
             `Invalid model path: it resolves outside the package.`,
          );
       }
@@ -2318,7 +2319,7 @@ export class Environment {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelPath);
       const pathProblem = reportWritePathProblem(modelPath);
-      if (pathProblem) throw new BadRequestError(pathProblem);
+      if (pathProblem) throw new InvalidModelPathError(pathProblem);
       return this.withPackageLock(packageName, async () => {
          const target = safeJoinUnderRoot(
             this.environmentPath,
