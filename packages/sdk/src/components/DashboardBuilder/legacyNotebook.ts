@@ -1058,13 +1058,10 @@ export async function convertLegacyNotebook(
          ? "\n  tiles=[]\n"
          : `\n  tiles=[\n${entries.map((e) => `    ${e}`).join(",\n")}\n  ]\n`;
    // A tile list with no stated layout reads as grid, so the converted tag says
-   // `layout=linear` outright, in place of any `kind=` or `layout=` it had.
+   // `layout=linear` outright, in place of any `layout=` it had.
    const head = artifact.text
       .slice(0, close)
-      .replace(
-         /[ \t]*\b(?:kind|layout)\s*=\s*(?:"(?:[^"\\]|\\.)*"|[^\s}]+)/g,
-         "",
-      )
+      .replace(/[ \t]*\blayout\s*=\s*(?:"(?:[^"\\]|\\.)*"|[^\s}]+)/g, "")
       .replace(/\bartifact\s*\{/, (open) => `${open} layout=linear`);
    const rewritten = `${head
       .trimEnd()

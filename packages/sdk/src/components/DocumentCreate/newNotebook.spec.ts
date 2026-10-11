@@ -40,7 +40,7 @@ describe("newNotebookSource", () => {
       const result = await readDashboardDocument(text);
       if (readFailed(result)) throw new Error(result.reason);
       const { document } = result;
-      expect(document.kind).toBe("notebook");
+      expect(document.layout).toBe("linear");
       expect(
          document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
       ).toEqual(["text", "query"]);
@@ -114,7 +114,7 @@ describe("newReportSource", () => {
    it("reads back by its tag: grid as a dashboard, linear as a notebook", async () => {
       const grid = await readDashboardDocument(newReportSource(INPUT, "grid"));
       if (readFailed(grid)) throw new Error(grid.reason);
-      expect(grid.document.kind).toBeUndefined();
+      expect(grid.document.layout).toBe("grid");
       expect(grid.document.columns).toBe(12);
       expect(
          grid.document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
@@ -123,7 +123,7 @@ describe("newReportSource", () => {
          newReportSource(INPUT, "linear"),
       );
       if (readFailed(linear)) throw new Error(linear.reason);
-      expect(linear.document.kind).toBe("notebook");
+      expect(linear.document.layout).toBe("linear");
    });
 
    it("reads the same wherever the file would sit", async () => {
@@ -133,13 +133,13 @@ describe("newReportSource", () => {
             path,
          );
          if (readFailed(grid)) throw new Error(grid.reason);
-         expect(grid.document.kind).toBeUndefined();
+         expect(grid.document.layout).toBe("grid");
          const linear = await readDashboardDocument(
             newReportSource(INPUT, "linear"),
             path,
          );
          if (readFailed(linear)) throw new Error(linear.reason);
-         expect(linear.document.kind).toBe("notebook");
+         expect(linear.document.layout).toBe("linear");
       }
    });
 });

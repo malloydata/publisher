@@ -97,9 +97,7 @@ async function addTile(
       },
       { modelPath: DOCUMENT, textHeld, notebook: false },
    );
-   const result = await spliceDashboardDocument(text, document, {
-      modelPath: DOCUMENT,
-   });
+   const result = await spliceDashboardDocument(text, document);
    if (spliceFailed(result)) throw new Error(result.reason);
    return result.source;
 }

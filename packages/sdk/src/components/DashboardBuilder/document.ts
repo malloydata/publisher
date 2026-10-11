@@ -21,6 +21,7 @@
  * opening it half-understood. See {@link readDashboardDocument}.
  */
 
+import type { ReportLayout } from "../Package/documentLocation";
 import type { ChartState } from "./chartLine";
 
 /** One `import` line. The file needs both forms, and for different reasons. */
@@ -237,12 +238,9 @@ export interface DashboardDimension {
    expression: string;
 }
 
-/** Which surface the file is: a notebook is the same file with one column. */
-export type DocumentKind = "dashboard" | "notebook";
-
 export interface DashboardDocument {
-   /** `## artifact { kind=… }`; the reader leaves it out for a dashboard. */
-   kind?: DocumentKind;
+   /** The report's layout, as its tag decides it: a linear report is the same file drawn as one column. */
+   layout: ReportLayout;
    title: string;
    /** The narrative header, as markdown. Emitted as `##"` lines. */
    description?: string;

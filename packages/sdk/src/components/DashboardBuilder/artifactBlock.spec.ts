@@ -40,11 +40,10 @@ const SINGLE = BLOCK.replace(
 async function writes(
    source: string,
    edit: (document: DashboardDocument) => void,
-   options?: { changeKind?: boolean },
 ): Promise<{ out: string; document: DashboardDocument }> {
    const next = structuredClone(await openDocument(source));
    edit(next);
-   const result = await spliceDashboardDocument(source, next, options);
+   const result = await spliceDashboardDocument(source, next);
    if (spliceFailed(result)) throw new Error(result.reason);
    expect(await syntaxErrors(result.source)).toEqual([]);
    return { out: result.source, document: await openDocument(result.source) };
@@ -67,7 +66,7 @@ describe("the artifact tag written as a ##| block", () => {
       const block = await openDocument(BLOCK);
       const single = await openDocument(SINGLE);
       expect(block).toEqual(single);
-      expect(block.kind).toBe("notebook");
+      expect(block.layout).toBe("linear");
       expect(block.title).toBe("Review");
       expect(block.tiles.map((t) => t.name)).toEqual([
          "intro",
@@ -157,29 +156,21 @@ describe("the artifact tag written as a ##| block", () => {
    });
 
    it("toggles the layout both ways in place, leaving the tiles alone", async () => {
-      const asDashboard = await writes(
-         BLOCK,
-         (d) => {
-            d.kind = undefined;
-            d.columns = 12;
-         },
-         { changeKind: true },
-      );
+      const asDashboard = await writes(BLOCK, (d) => {
+         d.layout = "grid";
+         d.columns = 12;
+      });
       expect(asDashboard.out).toContain(
          `##| artifact { layout=grid title="Review"\n  tiles=[\n`,
       );
-      expect(asDashboard.document.kind).toBeUndefined();
+      expect(asDashboard.document.layout).toBe("grid");
       expect(asDashboard.document.columns).toBe(12);
       expect(asDashboard.out).toContain("dashboard { columns=12 }");
-      const back = await writes(
-         asDashboard.out,
-         (d) => {
-            d.kind = "notebook";
-            d.columns = undefined;
-         },
-         { changeKind: true },
-      );
-      expect(back.document.kind).toBe("notebook");
+      const back = await writes(asDashboard.out, (d) => {
+         d.layout = "linear";
+         d.columns = undefined;
+      });
+      expect(back.document.layout).toBe("linear");
       expect(back.document.columns).toBeUndefined();
       expect(back.out).not.toContain("dashboard {");
       expect(back.out).toContain(`\n  tiles=[\n    intro { kind=text },\n`);

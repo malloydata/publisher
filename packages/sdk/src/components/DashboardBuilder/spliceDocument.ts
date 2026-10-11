@@ -14,7 +14,6 @@ import type {
    DashboardDrill,
    DashboardSource,
    DashboardTile,
-   DocumentKind,
    QueryTile,
    TextTile,
 } from "./document";
@@ -231,9 +230,6 @@ const MODELLED_GIVEN_TAG_KEYS: ReadonlySet<string> = new Set([
    "range_max",
 ]);
 
-const kindOf = (document: DashboardDocument): DocumentKind =>
-   document.kind ?? "dashboard";
-
 /**
  * A given's tag line, composed from its control contract. One line, in the
  * order `givens.malloy` writes them, so a file the builder wrote reads like one
@@ -349,10 +345,6 @@ interface SpliceContext extends TileMembership {
    current: DashboardDocument;
    next: DashboardDocument;
    edits: Edit[];
-   /** The file's package path, when known. */
-   modelPath?: string;
-   /** @deprecated Unused: a layout switch always writes `layout=`. */
-   explicitKind?: boolean;
 }
 
 /**
@@ -362,16 +354,8 @@ interface SpliceContext extends TileMembership {
 function checkShape(
    current: DashboardDocument,
    next: DashboardDocument,
-   changeKind: boolean,
    visibleSources: readonly string[] | undefined,
 ): SpliceFailure | TileMembership {
-   if (kindOf(current) !== kindOf(next) && !changeKind) {
-      return {
-         ok: false,
-         reason:
-            "The document's kind is not changed by an ordinary edit; switch it with the explicit kind change.",
-      };
-   }
    // Tiles ADDED and REMOVED, by identity. A removed tile's declaration goes,
    // with its `#` tags; a `//` comment above it stays, because the file cannot
    // say whether it belonged to the tile, the row or the page, and a comment
@@ -703,7 +687,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
    // — the package fails to compile otherwise — and a property
    // the file spells its own way keeps that spelling when it did not change.
    if (
-      kindOf(current) !== kindOf(next) ||
+      current.layout !== next.layout ||
       current.title !== next.title ||
       current.autorun !== next.autorun ||
       current.columns !== next.columns ||
@@ -723,14 +707,8 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          (edit) => edit.start === extent.start && edit.end === extent.end,
       );
       let line = already ? already.text.replace(/\n$/, "") : tag.text;
-      // The builder writes `layout=`, never `kind=`. A layout switch rewrites
-      // `layout=` and nothing else, and whenever the builder edits this tag a
-      // legacy `kind=` becomes the `layout=` it means. Depth-aware, since a
-      // text tile's own `kind=text` sits inside the tag.
-      const withoutKind = removeArtifactProperty(line, "kind");
-      const writeLayout =
-         kindOf(current) !== kindOf(next) || withoutKind !== line;
-      line = withoutKind;
+      // A layout switch rewrites `layout=` and nothing else.
+      const writeLayout = current.layout !== next.layout;
       // The artifact tag's braces: everything up to the matching `}`.
       const open = line.indexOf("artifact");
       const braceOpen = line.indexOf("{", open);
@@ -773,8 +751,7 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
             );
          else inner = append(`${key}=${value}`);
       };
-      if (writeLayout)
-         setProperty("layout", kindOf(next) === "notebook" ? "linear" : "grid");
+      if (writeLayout) setProperty("layout", next.layout);
       if (current.title !== next.title)
          setProperty("title", next.title ? quoted(next.title) : undefined);
       if (current.autorun !== next.autorun)
@@ -1688,7 +1665,7 @@ function unwritable(
    // A width the file already states is kept as written, a layout switch
    // included: the switch rewrites `layout=` and nothing else.
    if (
-      kindOf(next) === "notebook" &&
+      next.layout === "linear" &&
       next.columns !== undefined &&
       next.columns !== current.columns
    )
@@ -2090,12 +2067,6 @@ function planReferenceFilters(
 }
 
 export interface SpliceOptions {
-   /** Lets `requested.kind` differ from the file's: the layout switch, the one edit that turns a grid report linear or back. */
-   changeKind?: boolean;
-   /** The file's path within the package. Where a report lives never decides its layout; kept for callers. */
-   modelPath?: string;
-   /** @deprecated A switch always writes `layout=` now; kept for callers. */
-   explicitKind?: boolean;
    /** The sources a document held as text sees without an `import`: its run model's. */
    visibleSources?: readonly string[];
 }
@@ -2123,7 +2094,7 @@ async function spliceLines(
    requested: DashboardDocument,
    options: SpliceOptions,
 ): Promise<SpliceResult> {
-   const before = await readDashboardDocument(sourceText, options.modelPath);
+   const before = await readDashboardDocument(sourceText);
    if (readFailed(before)) {
       return {
          ok: false,
@@ -2132,12 +2103,7 @@ async function spliceLines(
    }
    const current = before.document;
    const next = keepUnstatedCharts(current, requested);
-   const shape = checkShape(
-      current,
-      next,
-      options.changeKind === true,
-      options.visibleSources,
-   );
+   const shape = checkShape(current, next, options.visibleSources);
    if ("reason" in shape) return shape;
    const problem = unwritable(current, next);
    if (problem) return { ok: false, reason: problem };
@@ -2169,10 +2135,6 @@ async function spliceLines(
       current,
       next,
       edits,
-      ...(options.modelPath !== undefined
-         ? { modelPath: options.modelPath }
-         : {}),
-      ...(options.explicitKind ? { explicitKind: true } : {}),
    };
 
    // Each concern plans its own edits against the file as it stands; the
@@ -2201,7 +2163,7 @@ async function spliceLines(
    // normalises its shape asks for no change, gets no edits, and would be told
    // its save did not produce what it asked for.
    const comparable = (document: DashboardDocument): DashboardDocument => {
-      const { drills, localGivens, kind, description, ...rest } = document;
+      const { drills, localGivens, description, ...rest } = document;
       const tiles = document.tiles.map((tile) => {
          if (isTextTile(tile)) return tile;
          if (tile.filters?.length) return withoutDefaultChart(tile);
@@ -2213,7 +2175,6 @@ async function spliceLines(
          ...(description === undefined
             ? {}
             : { description: trimDescription(description) }),
-         ...(kind === "notebook" ? { kind } : {}),
          tiles,
          ...(drills?.length
             ? {
@@ -2274,7 +2235,7 @@ async function spliceLines(
    // The second gate. Read back what was actually written and compare it
    // against what was asked for. Comments survived because they were never
    // rewritten; correctness is established here rather than assumed.
-   const after = await readDashboardDocument(spliced, options.modelPath);
+   const after = await readDashboardDocument(spliced);
    if (readFailed(after)) {
       return {
          ok: false,

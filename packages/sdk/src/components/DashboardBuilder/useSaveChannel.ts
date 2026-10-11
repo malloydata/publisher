@@ -18,7 +18,7 @@ import {
 } from "../DocumentStorage";
 import { locatorFor } from "../DocumentCreate/documentPath";
 import type { useServer } from "../ServerProvider";
-import type { DocumentKind } from "./document";
+import type { DocumentKind } from "../Package/documentLocation";
 import {
    expectedHashFor,
    saveTarget,

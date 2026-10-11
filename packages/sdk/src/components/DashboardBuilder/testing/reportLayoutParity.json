@@ -1,5 +1,5 @@
 {
-   "about": "What a file is as a report (docs/reports-design.md §1, §2), one answer per case: `expected` is `grid`, `linear`, or `null` for no report. The server's one tag reader must give it for the compiled file, for the same text read uncompiled, and as the layout `lintNotebookText` lints the file as (report_layout_parity.spec.ts). The SDK's builder reader gives it too (readDocument.spec.ts), except on a case marked `sdkPending`, where `sdk` is what the SDK still answers (`refused` for a tag it will not open) until it reads the same rule; flip such a case by deleting `sdk` and `sdkPending` once the SDK agrees.",
+   "about": "What a file is as a report (docs/reports-design.md §1, §2), one answer per case: `expected` is `grid`, `linear`, or `null` for no report. The server's one tag reader must give it for the compiled file, for the same text read uncompiled, and as the layout `lintNotebookText` lints the file as (report_layout_parity.spec.ts). The SDK's tag reader gives it too, and the builder opens any case it can open with that layout (readDocument.spec.ts).",
    "cases": [
       {
          "name": "`layout=grid` with tiles is grid",
@@ -34,9 +34,7 @@
       {
          "name": "a `## dashboard { … }` grid tag on its own line is grid",
          "source": "## artifact { title=\"x\" }\n## dashboard { columns=6 }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
-         "expected": "grid",
-         "sdk": "linear",
-         "sdkPending": true
+         "expected": "grid"
       },
       {
          "name": "`layout=linear` wins over a tiles list",
@@ -49,6 +47,26 @@
          "expected": "grid"
       },
       {
+         "name": "a tiles list of only a text tile is grid",
+         "source": "## artifact { tiles=[ intro { kind=text } ] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n##|(markdown) intro\nHi.\n|##\n",
+         "expected": "grid"
+      },
+      {
+         "name": "`layout=grid` with no tiles is grid",
+         "source": "## artifact { layout=grid }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
+         "expected": "grid"
+      },
+      {
+         "name": "`layout=linear` wins over a grid width",
+         "source": "## artifact { layout=linear tiles=[\"s -> v\"] } dashboard { columns=12 }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "expected": "linear"
+      },
+      {
+         "name": "an unknown `layout=` with no tiles falls through to linear",
+         "source": "## artifact { layout=wide }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
+         "expected": "linear"
+      },
+      {
          "name": "a `##|` block tag is read like a one-line tag",
          "source": "##| artifact { layout=grid tiles=[\"s -> v\"] }\n|##\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
          "expected": "grid"
@@ -56,37 +74,27 @@
       {
          "name": "a tag after another property on its line",
          "source": "## title=\"x\" artifact { layout=grid tiles=[\"s -> v\"] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
-         "expected": "grid",
-         "sdk": "refused",
-         "sdkPending": true
+         "expected": "grid"
       },
       {
          "name": "`kind=dashboard` is no longer read: no report",
          "source": "## artifact { kind=dashboard tiles=[\"s -> v\"] }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
-         "expected": null,
-         "sdk": "grid",
-         "sdkPending": true
+         "expected": null
       },
       {
          "name": "`kind=notebook` is no longer read: no report",
          "source": "## artifact { kind=notebook }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
-         "expected": null,
-         "sdk": "linear",
-         "sdkPending": true
+         "expected": null
       },
       {
          "name": "`kind=` beside `layout=` still makes no report",
          "source": "## artifact { layout=grid kind=notebook }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
-         "expected": null,
-         "sdk": "grid",
-         "sdkPending": true
+         "expected": null
       },
       {
          "name": "a model-level tag that does not parse is no report",
          "source": "## artifact { layout=grid tiles=[ }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
-         "expected": null,
-         "sdk": "refused",
-         "sdkPending": true
+         "expected": null
       },
       {
          "name": "a query-level `# artifact` on a named query is no report",

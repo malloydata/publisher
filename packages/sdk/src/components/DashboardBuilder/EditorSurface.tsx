@@ -23,7 +23,8 @@ import { useReportListing } from "../Package/useDocumentLocation";
 import { useServer } from "../ServerProvider";
 import { buildCatalog, isReportModel, type PackageCatalog } from "./catalog";
 import { DashboardBuilder } from "./DashboardBuilder";
-import type { DashboardDocument, DocumentKind, QueryTile } from "./document";
+import type { DocumentKind } from "../Package/documentLocation";
+import type { DashboardDocument, QueryTile } from "./document";
 import type { SavesTo } from "./documentSession";
 import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
 import type { TextSourceOptions } from "./DashboardEditor";
@@ -488,9 +489,7 @@ export function EditorSurface({
             {...(saveLabel ? { saveLabel } : {})}
             {...(replaces !== undefined ? { replaces } : {})}
             modelPath={modelPath}
-            {...(textSource
-               ? { explicitKind: true, visibleSources: runSources }
-               : {})}
+            {...(textSource ? { visibleSources: runSources } : {})}
          />
          <Box sx={{ px: 0.5 }}>
             <Typography variant="caption" sx={{ opacity: 0.7 }}>

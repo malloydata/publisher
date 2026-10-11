@@ -1586,6 +1586,7 @@ describe("spliceDashboardDocument: what it refuses", () => {
 
    it("refuses to edit a file that will not open", async () => {
       const r = await spliceDashboardDocument("not malloy at all", {
+         layout: "grid",
          title: "x",
          imports: [],
          sources: [],

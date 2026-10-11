@@ -14,7 +14,7 @@ import { useOptionalDocumentStorage } from "../DocumentStorage";
 import { Loading } from "../Loading";
 import { documentSlug } from "../Package/documentLocation";
 import { useServer } from "../ServerProvider";
-import type { DocumentKind } from "./document";
+import type { DocumentKind } from "../Package/documentLocation";
 import {
    resolveEditorTarget,
    saveCaption,

@@ -36,7 +36,7 @@ describe("a new dashboard", () => {
       expect(document.sources).toEqual([
          { name: "order_items_tiles", base: "order_items" },
       ]);
-      expect(document.kind).toBeUndefined();
+      expect(document.layout).toBe("grid");
       expect(document.columns).toBe(12);
       expect(document.tiles.map((tile) => tile.name)).toEqual([
          "intro",

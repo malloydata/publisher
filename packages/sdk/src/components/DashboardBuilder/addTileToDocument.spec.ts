@@ -7,6 +7,7 @@ import { addTileToDocument, type AddTileContext } from "./addTileToDocument";
 import type { DashboardDocument } from "./document";
 
 const document = (): DashboardDocument => ({
+   layout: "grid",
    title: "X",
    imports: [{ kind: "all", from: "../b.malloy" }],
    sources: [],

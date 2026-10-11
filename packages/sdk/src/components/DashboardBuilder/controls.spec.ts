@@ -21,6 +21,7 @@ import type { DashboardDocument } from "./document";
 import { queryTile } from "./testing/fixtures";
 
 const doc = (): DashboardDocument => ({
+   layout: "grid",
    title: "T",
    imports: [{ kind: "names", names: ["order_items"], from: "../m.malloy" }],
    sources: [{ name: "a", base: "order_items" }],

@@ -45,6 +45,11 @@ export {
    readFailed,
    type ReadResult,
 } from "./components/DashboardBuilder/readDocument";
+// What a report's text is, by the server's rule, for a host that files a document by its layout.
+export {
+   readReportTagOfText,
+   type ReportTag,
+} from "./components/DashboardBuilder/reportTag";
 export {
    spliceDashboardDocument,
    spliceFailed,

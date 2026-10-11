@@ -30,7 +30,7 @@ describe("readForEditor", () => {
       expect(result.conversion?.to).toContain(
          "tiles=[\n    text_1 { kind=text }",
       );
-      expect(result.document.kind).toBe("notebook");
+      expect(result.document.layout).toBe("linear");
       expect(result.document.tiles).toHaveLength(7);
    });
 
@@ -47,59 +47,49 @@ describe("readForEditor", () => {
       expect(result.ok).toBe(false);
    });
 
-   describe("a report's layout is its tags', wherever the file lives", () => {
+   // The reader takes no path: a report's layout is its tag's, wherever it lives.
+   describe("a report's layout is its tags'", () => {
       const LAYOUT = `## artifact { title="D" tiles=["a -> x"] }\nsource: a is b extend {\n  view: x is v\n}\n`;
-      const PLACES = [
-         undefined,
-         "d.malloy",
-         "notebooks/d.malloy",
-         "dashboards/d.malloy",
-         "sales/q3/d.malloy",
-      ];
 
-      it("opens a tile list with no layout as a grid, in any directory", async () => {
-         for (const where of PLACES) {
-            const result = await readForEditor(LAYOUT, where);
-            expect([where, result.ok && result.document.kind]).toEqual([
-               where,
-               undefined,
-            ]);
-         }
+      it("opens a tile list with no layout as a grid", async () => {
+         const result = await readForEditor(LAYOUT);
+         expect(result.ok && result.document.layout).toBe("grid");
       });
 
-      it("opens it linear wherever layout=linear (or the legacy kind=notebook) says so", async () => {
-         for (const tag of ["layout=linear", "kind=notebook"])
-            for (const where of PLACES) {
-               const result = await readForEditor(
-                  LAYOUT.replace("{ title", `{ ${tag} title`),
-                  where,
-               );
-               expect([where, result.ok && result.document.kind]).toEqual([
-                  where,
-                  "notebook",
-               ]);
-            }
+      it("opens it linear when layout=linear says so", async () => {
+         const result = await readForEditor(
+            LAYOUT.replace("{ title", "{ layout=linear title"),
+         );
+         expect(result.ok && result.document.layout).toBe("linear");
       });
 
-      it("converts a cell-format file with no layout rather than refusing it, in any directory", async () => {
+      it("refuses a tag that sets the removed kind=, naming the layout= to write", async () => {
+         const result = await readForEditor(
+            LAYOUT.replace("{ title", "{ kind=notebook title"),
+         );
+         expect(result.ok).toBe(false);
+         expect(result.ok === false && result.reason).toContain(
+            "`kind=notebook` is no longer read",
+         );
+         expect(result.ok === false && result.reason).toContain(
+            "`layout=grid` or `layout=linear`",
+         );
+      });
+
+      it("converts a cell-format file with no layout rather than refusing it", async () => {
          const layoutless = LEGACY.replace("layout=linear ", "");
          expect(layoutless).not.toBe(LEGACY);
-         for (const where of PLACES) {
-            const result = await readForEditor(layoutless, where);
-            if (result.ok === false) throw new Error(result.reason);
-            expect(result.conversion?.from).toBe(layoutless);
-         }
+         const result = await readForEditor(layoutless);
+         if (result.ok === false) throw new Error(result.reason);
+         expect(result.conversion?.from).toBe(layoutless);
       });
 
-      // KNOWN BUG, not yet fixed in source: the converter keeps the tag as
-      // written and adds `tiles=[…]`, so a cell report with no `layout=` (linear
-      // by the default rule) converts to a tile list with no `layout=`, which
-      // reads as GRID. The converter must write `layout=linear`.
+      // A tile list with no `layout=` reads as grid, so the converter writes `layout=linear`.
       it("converts a cell-format file with no layout into a LINEAR report", async () => {
          const layoutless = LEGACY.replace("layout=linear ", "");
-         const result = await readForEditor(layoutless, "x.malloy");
+         const result = await readForEditor(layoutless);
          if (result.ok === false) throw new Error(result.reason);
-         expect(result.document.kind).toBe("notebook");
+         expect(result.document.layout).toBe("linear");
          expect(result.conversion?.to).toContain("layout=linear");
       });
    });

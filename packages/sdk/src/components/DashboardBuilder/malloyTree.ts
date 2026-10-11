@@ -176,6 +176,8 @@ export interface ParsedMalloy {
    givens: TreeGiven[];
    /** The closed floating `(markdown)` / `(text)` blocks, in file order. */
    textBlocks: TreeTextBlock[];
+   /** The file's own model-level notes (`##` lines and `##|` blocks), as written; a report's tag is read from these. */
+   modelNotes: string[];
    /** The comment token on `line`, if the line ends with one. */
    trailingComment(line: number): Span | undefined;
    /**
@@ -297,6 +299,28 @@ function lineStartsOf(text: string): number[] {
    const out = [0];
    for (let i = 0; i < text.length; i++) if (text[i] === "\n") out.push(i + 1);
    return out;
+}
+
+/**
+ * The model-level notes of a parse: each top-level statement's own
+ * `docAnnotations`, as written, a `##|` block without its closer. The
+ * server's `modelNotesOfParse` reads the same notes, so a report's tag is
+ * read from the same text on both sides.
+ */
+export function readModelNotes(r: Reader, root: Ctx): string[] {
+   const notes: string[] = [];
+   for (let i = 0; i < (root.childCount ?? 0); i++) {
+      const child = root.getChild(i);
+      if (!isRule(child)) continue;
+      const group = call(child, "docAnnotations");
+      if (!group) continue;
+      for (const note of callAll(group, "docAnnotation")) {
+         const text = r.text_(note);
+         if (text !== undefined)
+            notes.push(text.replace(/\r?\n\|##[^\n]*\n?$/, ""));
+      }
+   }
+   return notes;
 }
 
 /* ------------------------------------------------------------------ */
@@ -833,6 +857,7 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
          sources,
          givens: readGivens(r, root),
          textBlocks: readTextBlocks(r, tokenStream),
+         modelNotes: readModelNotes(r, root),
          trailingComment: (line) => comments.trailing.get(line),
          comments: comments.all,
          commentLine: (line) => comments.lines.has(line),

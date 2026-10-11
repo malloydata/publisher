@@ -16,6 +16,7 @@ import type {
 } from "./document";
 import { isTextTile } from "./document";
 import { loadMalloyTag } from "./loadMalloy";
+import { kindRemovedReason, readReportTag } from "./reportTag";
 import { parseTagLines } from "./tagParse";
 import {
    parseMalloy,
@@ -66,7 +67,7 @@ export interface ReadFailure {
    reason: string;
    /** 1-based, for a message that can point at the line. */
    line?: number;
-   /** The file is a `kind=notebook` in the run-cell format, which `convertLegacyNotebook` turns into a layout notebook. */
+   /** The file is a linear report in the run-cell format, which `convertLegacyNotebook` turns into a tile layout. */
    legacyNotebook?: true;
 }
 
@@ -310,13 +311,28 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
    const parsed = parse.parsed;
 
    const description = descriptionNotes(lines).text;
-   const artifactAt = locateArtifactTag(lines);
-   if (artifactAt === undefined) {
+   // What the file is, by the server's rule over the same model-level notes.
+   const reportTag = readReportTag(parsed.modelNotes, parseAnnotation as never);
+   if (reportTag.status === "none")
       return {
          ok: false,
          reason: "No `## artifact { … }` tag, so this file is not a report.",
       };
-   }
+   if (reportTag.status === "unparsed")
+      return {
+         ok: false,
+         reason: `The \`## artifact\` tag does not parse${reportTag.errors[0] ? `: ${reportTag.errors[0]}` : "."}`,
+      };
+   if (reportTag.status === "kind-removed")
+      return { ok: false, reason: kindRemovedReason(reportTag.kind) };
+   const layout = reportTag.layout;
+
+   const artifactAt = locateArtifactTag(lines);
+   if (artifactAt === undefined)
+      return {
+         ok: false,
+         reason: "No `## artifact { … }` tag, so this file is not a report.",
+      };
    if (!artifactLeads(artifactAt.text))
       return {
          ok: false,
@@ -328,20 +344,6 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
       tagAnnotation(artifactAt.text),
    ]);
    const artifactTag = tag?.tag("artifact");
-   // The server's layout rule (`resolveReportLayout`), first match wins:
-   // `layout=`, else the legacy `kind=`, else grid when the tag lists tiles or
-   // sits beside a `dashboard { … }` grid tag, else linear. Where the file
-   // lives never enters into it. `documentKindRule.json` holds the two sides
-   // together.
-   const tagLayout = artifactTag?.text("layout");
-   const tagKind = artifactTag?.text("kind");
-   const listsLayout =
-      artifactTag?.has("tiles") === true || tag?.tag("dashboard") !== undefined;
-   const linear =
-      tagLayout === "linear" ||
-      (tagLayout !== "grid" &&
-         (tagKind === "notebook" || (tagKind !== "dashboard" && !listsLayout)));
-   const kind = linear ? ("notebook" as const) : undefined;
    const list = readTileList(artifactAt.text);
    if (list === undefined) {
       if (tagErrors.length > 0)
@@ -349,8 +351,8 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             ok: false,
             reason: `The \`## artifact\` tag does not parse: ${tagErrors[0]}`,
          };
-      // A notebook is told from a layout one by whether it lists tiles at all.
-      if (kind === "notebook")
+      // A linear report is told from a tile layout by whether it lists tiles at all.
+      if (layout === "linear")
          return {
             ok: false,
             legacyNotebook: true,
@@ -558,7 +560,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
    return {
       ok: true,
       document: {
-         ...(kind ? { kind } : {}),
+         layout,
          title: artifactTag?.text("title") ?? "",
          ...(description ? { description } : {}),
          ...(columnsTag === undefined ? {} : { columns: columnsTag }),

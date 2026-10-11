@@ -21,7 +21,7 @@ import { whatMoved } from "./__test__/inventory";
 
 const NOTEBOOK = `##! experimental.givens
 ##" A review.
-## artifact { kind=notebook title="Review" tiles=[intro { kind=text }, "a_tiles -> cell_1", outro { kind=text colspan=6 break }] }
+## artifact { layout=linear title="Review" tiles=[intro { kind=text }, "a_tiles -> cell_1", outro { kind=text colspan=6 break }] }
 import { a } from "../m.malloy"
 
 ##|(markdown) intro
@@ -59,15 +59,10 @@ const text = (document: DashboardDocument, name: string): TextTile => {
 async function writes(
    source: string,
    edit: (document: DashboardDocument) => void,
-   options?: {
-      changeKind?: boolean;
-      modelPath?: string;
-      explicitKind?: boolean;
-   },
 ): Promise<{ out: string; document: DashboardDocument }> {
    const next = structuredClone(await openDocument(source));
    edit(next);
-   const result = await spliceDashboardDocument(source, next, options);
+   const result = await spliceDashboardDocument(source, next);
    if (spliceFailed(result)) throw new Error(result.reason);
    expect(await syntaxErrors(result.source)).toEqual([]);
    return { out: result.source, document: await openDocument(result.source) };
@@ -104,10 +99,10 @@ describe("readTileList", () => {
    });
 });
 
-describe("readDashboardDocument: text tiles and kind", () => {
-   it("reads a layout notebook: kind, text tiles in order, their blocks and list properties", async () => {
+describe("readDashboardDocument: text tiles and layout", () => {
+   it("reads a linear report: its layout, text tiles in order, their blocks and list properties", async () => {
       const document = await openDocument(NOTEBOOK);
-      expect(document.kind).toBe("notebook");
+      expect(document.layout).toBe("linear");
       expect(document.title).toBe("Review");
       expect(
          document.tiles.map((t) => `${t.kind ?? "query"}:${t.name}`),
@@ -129,8 +124,8 @@ describe("readDashboardDocument: text tiles and kind", () => {
       expect(query?.source).toBe("a_tiles");
    });
 
-   it("leaves kind out for a dashboard", async () => {
-      expect((await openDocument(DASHBOARD)).kind).toBeUndefined();
+   it("reads a tag that lists tiles as grid", async () => {
+      expect((await openDocument(DASHBOARD)).layout).toBe("grid");
    });
 
    it("reads a listed text tile whose block is missing as empty prose", async () => {
@@ -158,21 +153,19 @@ describe("readDashboardDocument: text tiles and kind", () => {
 
    it("marks a notebook with no tiles list as the cell format", async () => {
       const result = await readDashboardDocument(
-         `## artifact { kind=notebook title="Old" }\nimport { a } from "../m.malloy"\n\nrun: a -> v\n`,
+         `## artifact { layout=linear title="Old" }\nimport { a } from "../m.malloy"\n\nrun: a -> v\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
       expect(result.legacyNotebook).toBe(true);
    });
 
    it("still refuses a grid report with no tiles list, without the legacy mark", async () => {
-      for (const tag of [`layout=grid title="D"`, `kind=dashboard title="D"`]) {
-         const result = await readDashboardDocument(
-            `## artifact { ${tag} }\nimport { a } from "../m.malloy"\n`,
-         );
-         if (!readFailed(result)) throw new Error("expected a refusal");
-         expect(result.legacyNotebook).toBeUndefined();
-         expect(result.reason).toContain("tiles");
-      }
+      const result = await readDashboardDocument(
+         `## artifact { layout=grid title="D" }\nimport { a } from "../m.malloy"\n`,
+      );
+      if (!readFailed(result)) throw new Error("expected a refusal");
+      expect(result.legacyNotebook).toBeUndefined();
+      expect(result.reason).toContain("tiles");
    });
 
    it("reads a tag with no layout and no tiles as a linear report in the cell format", async () => {
@@ -185,10 +178,10 @@ describe("readDashboardDocument: text tiles and kind", () => {
 
    it("reads an empty tiles list on a notebook as a layout notebook with no tiles", async () => {
       const document = await openDocument(
-         `## artifact { kind=notebook title="E" tiles=[] }\n`,
+         `## artifact { layout=linear title="E" tiles=[] }\n`,
       );
       expect(document.tiles).toEqual([]);
-      expect(document.kind).toBe("notebook");
+      expect(document.layout).toBe("linear");
    });
 
    it("refuses an entry that is neither quoted nor kind=text", async () => {
@@ -298,7 +291,7 @@ describe("spliceDashboardDocument: text tiles", () => {
       expect(out).toContain(
          "\n\n##|(markdown) lead\nLead.\n|##\n\nsource: a_tiles is a extend",
       );
-      expect(document.kind).toBeUndefined();
+      expect(document.layout).toBe("grid");
       expect(text(document, "lead").markdown).toBe("Lead.");
    });
 
@@ -361,7 +354,7 @@ describe("spliceDashboardDocument: text tiles", () => {
       expect(afterLast.out).toContain(
          "Bye.\n|##\n\n##|(markdown) coda\nEnd.\n|##\n",
       );
-      const bare = `## artifact { kind=notebook tiles=[] }\nimport { a } from "../m.malloy"\n`;
+      const bare = `## artifact { layout=linear tiles=[] }\nimport { a } from "../m.malloy"\n`;
       const none = await writes(bare, (d) => {
          d.tiles.push({ kind: "text", name: "solo", markdown: "Only." });
       });
@@ -531,7 +524,7 @@ describe("spliceDashboardDocument: text tiles", () => {
 describe("spliceDashboardDocument: text edits move nothing else", () => {
    const RICH = `// the page
 ##! experimental.givens
-## artifact { kind=notebook title="Rich" tiles=[intro { kind=text }, "a_tiles -> cell_1", "a_tiles -> cell_2"] }
+## artifact { layout=linear title="Rich" tiles=[intro { kind=text }, "a_tiles -> cell_1", "a_tiles -> cell_2"] }
 import { a } from "../m.malloy"
 
 // about the intro
@@ -604,136 +597,58 @@ source: a_tiles is a extend {
    });
 });
 
-// DEPRECATED FEATURE COVERAGE — delete together with
-// `kind=` in an artifact tag (see RELEASE_NOTES deprecations).
-describe("deprecated: kind= — spliceDashboardDocument: switching kind", () => {
-   it("refuses a kind change unless it is asked for", async () => {
-      const reason = await refused(DASHBOARD, (d) => {
-         d.kind = "notebook";
-      });
-      expect(reason).toContain("kind");
-   });
-
+describe("spliceDashboardDocument: switching layout", () => {
    it("turns a grid report linear in place: layout written, width cleared", async () => {
-      const { out, document } = await writes(
-         DASHBOARD,
-         (d) => {
-            d.kind = "notebook";
-            delete d.columns;
-         },
-         { changeKind: true },
-      );
+      const { out, document } = await writes(DASHBOARD, (d) => {
+         d.layout = "linear";
+         delete d.columns;
+      });
       expect(out).toContain(
          '## artifact { title="D" tiles=["a_tiles -> x"] layout=linear }',
       );
       expect(out).not.toContain("dashboard {");
-      expect(out).not.toContain("kind=notebook");
-      expect(document.kind).toBe("notebook");
+      expect(document.layout).toBe("linear");
       expect(document.columns).toBeUndefined();
       expect(out.slice(out.indexOf("\n"))).toBe(
          DASHBOARD.slice(DASHBOARD.indexOf("\n")),
       );
    });
 
-   it("turns a linear report back into a grid: the legacy kind= becomes layout=grid, width written", async () => {
-      const { out, document } = await writes(
-         NOTEBOOK,
-         (d) => {
-            d.kind = "dashboard";
-            d.columns = 12;
-         },
-         { changeKind: true },
-      );
-      expect(out).not.toContain("kind=notebook");
-      expect(out).not.toContain("kind=dashboard");
+   it("turns a linear report back into a grid: layout=grid, width written", async () => {
+      const { out, document } = await writes(NOTEBOOK, (d) => {
+         d.layout = "grid";
+         d.columns = 12;
+      });
       expect(out).toContain("layout=grid");
+      expect(out).not.toContain("layout=linear");
       expect(out).toContain("kind=text");
       expect(out).toContain("dashboard { columns=12 }");
-      expect(document.kind).toBeUndefined();
+      expect(document.layout).toBe("grid");
       expect(document.columns).toBe(12);
    });
 
-   it("writes layout= both ways wherever the file lives, and never kind=", async () => {
-      for (const options of [
-         {},
-         { modelPath: "notebooks/n.malloy" },
-         { modelPath: "dashboards/n.malloy" },
-         { modelPath: "sales/q3/n.malloy" },
-         { modelPath: "dashboards/n.malloy", explicitKind: true },
-      ]) {
-         const flip = (source: string, kind: "dashboard" | "notebook") =>
-            writes(
-               source,
-               (d) => {
-                  d.kind = kind;
-                  if (kind === "notebook") delete d.columns;
-               },
-               { changeKind: true, ...options },
-            );
-         const asGrid = await flip(NOTEBOOK, "dashboard");
-         expect(asGrid.out).toContain("layout=grid");
-         expect(asGrid.out).not.toMatch(/kind=(dashboard|notebook)/);
-         expect(asGrid.document.kind).toBeUndefined();
-         const back = await flip(asGrid.out, "notebook");
-         expect(back.out).toContain("layout=linear");
-         expect(back.out).not.toContain("layout=grid");
-         expect(back.out).not.toMatch(/kind=(dashboard|notebook)/);
-         expect(back.document.kind).toBe("notebook");
-      }
-   });
-
    it("switches only the layout property: the rest of the tag and file stay byte for byte", async () => {
-      const source = NOTEBOOK.replace("kind=notebook", "layout=linear");
-      const { out } = await writes(
-         source,
-         (d) => {
-            d.kind = "dashboard";
-         },
-         { changeKind: true },
-      );
-      expect(out).toBe(source.replace("layout=linear", "layout=grid"));
-      const back = await writes(
-         out,
-         (d) => {
-            d.kind = "notebook";
-         },
-         { changeKind: true },
-      );
-      expect(back.out).toBe(source);
+      const { out } = await writes(NOTEBOOK, (d) => {
+         d.layout = "grid";
+      });
+      expect(out).toBe(NOTEBOOK.replace("layout=linear", "layout=grid"));
+      const back = await writes(out, (d) => {
+         d.layout = "linear";
+      });
+      expect(back.out).toBe(NOTEBOOK);
    });
 
-   it("turns a legacy kind= into layout= when it edits the tag anyway, and leaves an untouched tag alone", async () => {
-      const retitled = await writes(NOTEBOOK, (d) => {
-         d.title = "Renamed";
-      });
-      expect(retitled.out).toContain("layout=linear");
-      expect(retitled.out).not.toContain("kind=notebook");
-      expect(retitled.document.kind).toBe("notebook");
-      const untouched = await writes(NOTEBOOK, (d) => {
-         text(d, "intro").markdown = "Edited.";
-      });
-      expect(untouched.out).toContain("kind=notebook");
-   });
-
-   it("does not take a text tile's kind=text for the document's", async () => {
+   it("does not take a text tile's kind=text for the document's layout", async () => {
       const source = `## artifact { tiles=[a { kind=text }] title="T" }\n\n##|(markdown) a\nx\n|##\n`;
-      const { out, document } = await writes(
-         source,
-         (d) => {
-            d.kind = "notebook";
-         },
-         { changeKind: true },
-      );
+      const { out, document } = await writes(source, (d) => {
+         d.layout = "linear";
+      });
       expect(out).toContain("a { kind=text }");
       expect(out).toContain("layout=linear");
-      expect(document.kind).toBe("notebook");
-      const back = await writes(
-         out,
-         (d) => {
-            d.kind = "dashboard";
-         },
-         { changeKind: true },
-      );
+      expect(document.layout).toBe("linear");
+      const back = await writes(out, (d) => {
+         d.layout = "grid";
+      });
       expect(back.out).toContain("a { kind=text }");
       expect(back.out).toContain("layout=grid");
       expect(back.out).not.toContain("layout=linear");
@@ -741,11 +656,10 @@ describe("deprecated: kind= — spliceDashboardDocument: switching kind", () => 
 
    it("keeps the width through a switch to linear, and never writes a linear report's width", async () => {
       // The switch rewrites `layout=` and nothing else, so the file's own width stays as written.
-      const result = await spliceDashboardDocument(
-         DASHBOARD,
-         { ...(await openDocument(DASHBOARD)), kind: "notebook" },
-         { changeKind: true },
-      );
+      const result = await spliceDashboardDocument(DASHBOARD, {
+         ...(await openDocument(DASHBOARD)),
+         layout: "linear",
+      });
       if (spliceFailed(result)) throw new Error(result.reason);
       expect(result.source).toContain("layout=linear");
       const reason = await refused(NOTEBOOK, (d) => {

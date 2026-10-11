@@ -7,6 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
 import { readForEditor } from "./readForEditor";
+import { readReportTagOfText } from "./reportTag";
 import { parseMalloy, parseRefused } from "./malloyTree";
 import { queryTile } from "./testing/fixtures";
 import { tileKey } from "./document";
@@ -864,7 +865,6 @@ describe("a tag whose artifact property is not the first", () => {
    it("is refused, not converted, for a cell-format notebook", async () => {
       const open = await readForEditor(
          `##! experimental.givens\n## dashboard { columns=2 } artifact { layout=linear title="T" }\nrun: a -> by_cat`,
-         "notebooks/n.malloy",
       );
       expect(open.ok === false && open.reason).toContain(
          "`artifact { … }` first",
@@ -962,25 +962,7 @@ describe("the compiler stays lazy", () => {
    });
 });
 
-describe("the kind of a document held as text", () => {
-   const { cases } = JSON.parse(
-      fs.readFileSync(
-         path.join(import.meta.dir, "testing/documentKindRule.json"),
-         "utf8",
-      ),
-   ) as { cases: { name: string; source: string; kind: string }[] };
-
-   // One case table for this reader and the server's `layoutOfText`, whose spec reads the same file.
-   for (const { name, source, kind } of cases) {
-      it(`${name}: ${kind}`, async () => {
-         const result = await readDashboardDocument(source, undefined, true);
-         const notebook = readFailed(result)
-            ? result.legacyNotebook === true
-            : result.document.kind === "notebook";
-         expect(notebook).toBe(kind === "notebook");
-      });
-   }
-
+describe("the layout of a report", () => {
    it("reads the same layout wherever the file lives: the folder no longer matters", async () => {
       const cases = [
          ["## artifact { }\nrun: q -> { aggregate: c }\n", true],
@@ -999,7 +981,7 @@ describe("the kind of a document held as text", () => {
             const result = await readDashboardDocument(source, where);
             const isLinear = readFailed(result)
                ? result.legacyNotebook === true
-               : result.document.kind === "notebook";
+               : result.document.layout === "linear";
             expect([where, isLinear]).toEqual([where, linear]);
          }
    });
@@ -1007,11 +989,9 @@ describe("the kind of a document held as text", () => {
 
 /**
  * The layout parity table the server's one reader is held to
- * (`report_layout_parity.spec.ts`). A failure to open is mapped to the layout
- * the reader judged: the cell-format refusal is linear, the "no tiles list"
- * one grid, and a file with no model-level tag is no report. A case marked
- * `sdkPending` pins what this reader still answers (`sdk`) where it differs
- * from the server; it is flipped once this reader follows the same rule.
+ * (`report_layout_parity.spec.ts`): the SDK's tag reader gives the same
+ * answer on every case, and the builder opens a file it can open with that
+ * layout.
  */
 describe("report layout parity: the SDK reader", () => {
    const { cases } = JSON.parse(
@@ -1023,29 +1003,19 @@ describe("report layout parity: the SDK reader", () => {
       cases: {
          name: string;
          source: string;
-         expected: string | null;
-         sdk?: string | null;
-         sdkPending?: boolean;
+         expected: "grid" | "linear" | null;
       }[];
-   };
-
-   const sdkLayout = async (source: string) => {
-      const result = await readDashboardDocument(source);
-      if (!readFailed(result))
-         return result.document.kind === "notebook" ? "linear" : "grid";
-      if (result.legacyNotebook) return "linear";
-      if (/no `tiles=\[…\]` list the builder/.test(result.reason))
-         return "grid";
-      if (/^No `## artifact/.test(result.reason)) return null;
-      return "refused";
    };
 
    for (const testCase of cases) {
       it(testCase.name, async () => {
-         expect(testCase.sdkPending === true).toBe(testCase.sdk !== undefined);
-         expect(await sdkLayout(testCase.source)).toBe(
-            testCase.sdkPending ? testCase.sdk : testCase.expected,
+         const tag = await readReportTagOfText(testCase.source);
+         expect(tag.status === "report" ? tag.layout : null).toBe(
+            testCase.expected,
          );
+         const read = await readDashboardDocument(testCase.source);
+         if (!readFailed(read))
+            expect(read.document.layout).toBe(testCase.expected);
       });
    }
 });

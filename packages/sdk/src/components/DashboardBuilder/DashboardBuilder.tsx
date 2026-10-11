@@ -6,6 +6,7 @@ import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { DEFAULT_COLUMNS, nudgedSpan } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
+import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
 import type { BuilderEvent } from "./telemetry";
 import type { BuilderGiven } from "./controls";
@@ -143,7 +144,7 @@ export interface DashboardBuilderProps {
     * go. Absent, a drill can only filter this dashboard.
     */
    dashboards?: string[];
-   /** Saves and refusals, for the host to log; see `DashboardEvent`. A notebook-kind document reports `NotebookEvent`s instead. */
+   /** Saves and refusals, for the host to log; see `DashboardEvent`. A linear report reports `NotebookEvent`s instead. */
    onEvent?: (event: BuilderEvent) => void;
    /**
     * The document is a conversion of a cell-format notebook: `from` is the text
@@ -173,10 +174,8 @@ export interface DashboardBuilderProps {
    saveLabel?: string;
    /** The file a save overwrites when `source` is a draft of it, so Undo save restores that file rather than the draft. */
    replaces?: string;
-   /** The document's file within the package, so a kind switch tags what its folder would otherwise misread. */
+   /** The document's file within the package: the name an untitled document is shown under, and what a new tile is written beside. */
    modelPath?: string;
-   /** The document is held as text, which the server reads by its tags rather than its folder: the tag always carries `kind=`. */
-   explicitKind?: boolean;
    /** Set for a document held as text: the sources it sees without an `import`. A tile on one of them adds no import. */
    visibleSources?: readonly string[];
    /**
@@ -222,7 +221,6 @@ export function DashboardBuilder({
    saveLabel,
    replaces,
    modelPath,
-   explicitKind,
    visibleSources,
    addFilterDisabledReason,
 }: DashboardBuilderProps) {
@@ -232,8 +230,6 @@ export function DashboardBuilder({
       ...(onSave ? { onSave } : {}),
       ...(conversion ? { conversion } : {}),
       ...(replaces !== undefined ? { replaces } : {}),
-      ...(modelPath !== undefined ? { modelPath } : {}),
-      ...(explicitKind ? { explicitKind } : {}),
       ...(visibleSources ? { visibleSources } : {}),
    });
    const gridBox = useRef<HTMLDivElement>(null);
@@ -247,8 +243,8 @@ export function DashboardBuilder({
       flash,
       stepEditor,
    } = useBuilderSelection({ editor, gridBox });
-   // A notebook is one column whatever the file says, and the builder never writes its width.
-   const notebook = editor.document.kind === "notebook";
+   // A linear report is one column whatever the file says, and the builder never writes its width.
+   const notebook = editor.document.layout === "linear";
    const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
    // The reader's tile chrome for this document: cards on a dashboard, bare
    // flow on a notebook. Every tile, text block and the description take it,
@@ -385,11 +381,10 @@ export function DashboardBuilder({
          {...(visibleSources === undefined && allowLayoutChange
             ? {
                  // A text-held document's layout is the host's record, so only a file gets the switch, and only when the host allows it.
-                 layout: notebook ? ("linear" as const) : ("grid" as const),
-                 onLayoutChange: (next: "grid" | "linear") =>
+                 layout: editor.document.layout,
+                 onLayoutChange: (next: ReportLayout) =>
                     editor.update((draft) => {
-                       if (next === "linear") draft.kind = "notebook";
-                       else delete draft.kind;
+                       draft.layout = next;
                     }),
               }
             : {})}

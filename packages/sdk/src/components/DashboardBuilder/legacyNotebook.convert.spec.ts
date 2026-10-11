@@ -90,7 +90,7 @@ describe("convertLegacyNotebook: the storefront category review", () => {
       expect(await syntaxErrors(converted)).toEqual([]);
 
       const doc = await document(converted);
-      expect(doc.kind).toBe("notebook");
+      expect(doc.layout).toBe("linear");
       expect(doc.title).toBe("Category review");
       expect(doc.description).toContain("One category at a time");
       expect(
@@ -515,7 +515,7 @@ describe("convertLegacyNotebook: shapes", () => {
       const converted = await convert(HEAD);
       const doc = await document(converted);
       expect(doc.tiles).toEqual([]);
-      expect(doc.kind).toBe("notebook");
+      expect(doc.layout).toBe("linear");
    });
 
    it("carries the tags above a consumed query onto the view it becomes, and names the view from its label", async () => {

@@ -19,6 +19,7 @@ const tile = (
 });
 
 const document: DashboardDocument = {
+   layout: "grid",
    title: "Overview",
    imports: [],
    sources: [{ name: "overview", base: "order_items" }],

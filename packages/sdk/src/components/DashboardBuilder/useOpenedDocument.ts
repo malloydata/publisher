@@ -174,7 +174,7 @@ export function useOpenedDocument({
       let stale = false;
       const packageAtOpen = packageNowRef.current;
       const latestAtOpen = latestRef.current;
-      void readForEditor(opening, modelPath, textHeld)
+      void readForEditor(opening)
          .then((result) => {
             if (stale) return;
             if (result.ok === false) {
@@ -204,7 +204,7 @@ export function useOpenedDocument({
                generation: (previous?.generation ?? 0) + 1,
             }));
             onEventRef.current?.(
-               notebook || result.document.kind === "notebook"
+               notebook || result.document.layout === "linear"
                   ? {
                        type: "notebook.opened",
                        from:

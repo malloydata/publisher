@@ -8,7 +8,7 @@ import {
    type Workspace,
 } from "../DocumentStorage";
 import { locatorFor } from "../DocumentCreate/documentPath";
-import type { DocumentKind } from "./document";
+import type { DocumentKind } from "../Package/documentLocation";
 import { chooseWorkspace, storageErrorMessage } from "./documentSession";
 
 /**
