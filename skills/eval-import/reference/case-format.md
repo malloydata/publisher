@@ -19,6 +19,7 @@ On the case:
 | `source` | how it arrived: the filename, or the log query | say `unknown` rather than guessing a provenance |
 | `golden` | see the classification table in `SKILL.md` | absent. A case with no golden is legitimate |
 | `expectedEntities` | almost never present | leave it out. Guessing which fields an answer needs invents a retrieval expectation nobody stated, and it scores as a retrieval miss forever. The one exception is a key you derived yourself (`SKILL.md`, Deriving a key yourself): then you are not guessing, you are recording what you used |
+| `searchTargets` | almost never present | leave it out on arrival, for the same reason. Propose it only when you derive a key yourself (`SKILL.md`, Proposing search targets) |
 
 `expectedEntities` is the one most worth leaving empty. A wrong `required` id
 cannot be delivered by any run, so it reads as a model failure on every case

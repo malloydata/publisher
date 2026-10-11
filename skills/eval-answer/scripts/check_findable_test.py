@@ -115,6 +115,52 @@ class Findable(unittest.TestCase):
                                case("q2", ["measure:flights:gone"])])
         self.assertIn("q1, q2", f[0])
 
+    def test_a_golden_search_targets_ids_are_checked_too(self):
+        # An id under a search target that names nothing scores a miss on that
+        # target every run, the same defect as one in the case's own list.
+        c = {"qid": "q", "searchTargets": [
+            {"target_type": "measure", "search_text": "flight count",
+             "expectedEntities": {"required": ["measure:flights:gone"]}}]}
+        f, _ = self.run_check([c])
+        self.assertEqual(len(f), 1)
+        self.assertIn("measure:flights:gone", f[0])
+
+
+class GoldenTargetsAsWritten(unittest.TestCase):
+    """Each golden target is sent with its own type and text."""
+
+    def setUp(self):
+        self._real = check_findable.get_context
+        check_findable.get_context = fake_get_context
+
+    def tearDown(self):
+        check_findable.get_context = self._real
+
+    def targets(self, *ts):
+        return check_findable.check_targets(
+            [{"qid": "q", "searchTargets": list(ts)}], "http://x/mcp", "e", "p")
+
+    def test_a_target_whose_own_search_finds_its_key_is_silent(self):
+        f, rows = self.targets(
+            {"target_type": "measure", "search_text": "flight count",
+             "expectedEntities": {"required": ["measure:flights:flight_count"]}})
+        self.assertEqual(f, [])
+        self.assertEqual(rows[0]["missing"], [])
+
+    def test_a_target_worded_unlike_the_model_is_a_finding(self):
+        # The entity exists and is findable by its own name; the golden's
+        # wording does not reach it, so no agent searching that way can.
+        f, _ = self.targets(
+            {"target_type": "measure", "search_text": "number of flights",
+             "expectedEntities": {"required": ["measure:flights:flight_count"]}})
+        self.assertEqual(len(f), 1)
+        self.assertIn("'number of flights' does not return "
+                      "measure:flights:flight_count", f[0])
+
+    def test_a_target_with_no_key_is_not_searched(self):
+        _, rows = self.targets({"target_type": "source", "search_text": "x"})
+        self.assertEqual(rows, [])
+
 
 class ServerCannotSearch(unittest.TestCase):
     """An `indexing` or `error` answer has no entities, and is not a miss."""

@@ -222,6 +222,37 @@ are the ones already stated rather than new ones:
 - What no query can settle is not a failure to derive. It is step 4's second
   kind, and those clauses score on day one.
 
+### Proposing search targets
+
+When you derive `expectedEntities`, also write the searches that find them, as
+`searchTargets` (`reference/ledger-schema.md` in `skill:eval-answer` has the
+shape). The answer key says what the answer needs; the targets say how a good
+agent breaks the question into `get_context` calls. With both, a run reports
+whether the agent asked for the right things separately from whether search
+returned them.
+
+- **One target per concept the question names**, in the request's own fields:
+  `target_type`, `search_text` in the question's words rather than the field's
+  name, and `example_values` only where a value is part of the question
+  (`"Cancelled"`, `"Returned"` for a net-of-returns filter).
+- **Key each target with the entities IT should return**, not the whole case's
+  list. A `dimension` target keyed to a measure can never be satisfied, because
+  `target_type` is a hard filter, and `import_cases.py` refuses it. Use a
+  `requiredAnyOf` group where the model offers two routes, as for the case.
+- **Do not add a target for a concept the answer does not need.** An extra
+  golden target scores every agent that skipped it as a decomposition miss.
+
+Then verify both halves against the served model:
+
+```
+python3 check_findable.py --set <set> --publisher <rest>
+```
+
+It checks every target's ids against the compiled model, and sends each target
+exactly as written. A target whose own search does not return its key is a
+finding: either the wording is unlike anything in the model's docs, or the docs
+do not say what the words ask. Fix one before any run is scored against it.
+
 ## Step 3: run their query, if they gave one
 
 Do it at import, before any run. It is the cheapest finding in the whole loop.
