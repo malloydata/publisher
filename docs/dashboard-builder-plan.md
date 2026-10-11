@@ -133,7 +133,7 @@ each against the code and the test that holds it: **sizing aids** (the tile's ri
 dragged or stepped with the arrow keys, column guides while dragging), **add / remove a tile** (from the package catalog, both through the
 diff), **filter declaration** (a control declared on the dashboard, written to
 the file), **filter-to-tile binding** (per-tile field and comparison, including
-untick), and **observability** (the `DashboardEvent` union and the Console's
+untick), and **observability** (the `ReportEvent` union and the Console's
 structured sink). The one thing the state of the art still has here is a quick
 layout that rewrites every tile at once, which was built and dropped by decision
 (§5).
@@ -319,7 +319,7 @@ change lands in the right place.
   draft, the catalog (built from the package's published models, limited to
   what the file imports), the live surface, export.
 - `../Dashboard/useDashboardControls.ts` — the control row, shared by the viewer
-  and the builder's live surface; `../Dashboard/telemetry.ts` — the events.
+  and the builder's live surface; `../Report/telemetry.ts` — the events.
 
 **Invariants** the suite pins: every dashboard in the repository opens and
 writes back byte-identical when nothing changed; a splice that does not read
@@ -334,11 +334,12 @@ Library) and on `DashboardEditor` against a mocked client and real browser
 storage; one Playwright spec on the Console's edit page. Lines covered:
 builder 97%, writer 92%, reader 96%, editor host 93%.
 
-**Telemetry**: the surfaces emit `DashboardEvent`s (`opened`, `open_refused`,
-`saved`, `save_refused`, `rows_shown`, `explored`), context-free;
-the Console adds environment, package and dashboard and logs one structured
-line per event under `[publisher.dashboard]`, `warn` on a refusal or a failed
-query. A deployment that wants metrics forwards from there; nothing server-side
+**Telemetry**: the surfaces emit `ReportEvent`s (`report.opened`,
+`report.load_failed`, `report.saved`, `report.save_refused`,
+`report.rows_shown`, `report.layout_changed` and the rest; the SDK README's
+Telemetry section lists them), each carrying the report's path and layout;
+the Console adds environment and package and logs one structured line per
+event under `[publisher.report]`, `warn` on a refusal or a failure. A deployment that wants metrics forwards from there; nothing server-side
 was added, by the no-API-change rule.
 
 ## 7. The notebook: a `.malloy` format, not `.malloynb`

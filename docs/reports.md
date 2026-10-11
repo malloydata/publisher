@@ -1048,7 +1048,8 @@ the surface with the complete embedding story.
 Malloy parser): the same editor the Console's `?edit` route mounts, keyed by the report's `path`, with a
 layout switch (hidden with `allowLayoutChange={false}`, for a host that files reports by layout and so
 cannot let an author change it; the editor reads a file's layout by [Which layout](#which-layout), never by
-its folder), plus `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`, and a
+its folder), plus `onEvent` (the `report.*` events; see the SDK README's
+[Telemetry](../packages/sdk/README.md#telemetry) section) and `onDirtyChange`. It needs the same `<ServerProvider>`, and a
 `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the package cannot
 be written (see the SDK README's [Document Storage](../packages/sdk/README.md#document-storage) section).
 

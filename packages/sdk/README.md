@@ -19,9 +19,10 @@ The Publisher SDK (`@malloy-publisher/sdk`) is a comprehensive React component l
 8. [Hooks](#hooks)
 9. [Utilities](#utilities)
 10.   [Document Storage](#document-storage)
-11.   [Styling](#styling)
-12.   [Building a Custom Data App](#building-a-custom-data-app)
-13.   [API Reference](#api-reference)
+11.   [Telemetry](#telemetry)
+12.   [Styling](#styling)
+13.   [Building a Custom Data App](#building-a-custom-data-app)
+14.   [API Reference](#api-reference)
 
 ---
 
@@ -1138,6 +1139,54 @@ function MyComponent() {
 ```
 
 ---
+
+## Telemetry
+
+The report surfaces report what happens on them through an `onEvent` prop, for the host to log or count:
+`Report` (every layout), `DashboardEditor` and `DashboardBuilder` from `@malloy-publisher/sdk/builder`,
+`NewDocumentDialog`, `Package` (for its New report dialog), and the deprecated `Dashboard`. Every event is a
+`ReportEvent`, named `report.*`, and carries the report's package `path` and its `layout`; the host knows the
+environment and package and adds them when it logs.
+
+| Event                      | Fields                                                                                | Emitted by                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `report.opened`            | `surface` (`view`/`edit`), `from` (`package`/`draft`/`record`), `tiles`, `durationMs` | `Report` once per report shown; the editor once per open                                         |
+| `report.load_failed`       | `surface`, `category`; `layout` only when known                                       | `Report`, the editor                                                                             |
+| `report.query_failed`      | `tile` (index; absent for the run as a whole), `category`                             | a grid or linear tile, a `run:` cell                                                             |
+| `report.rows_shown`        | `source`, `view`, `field`, `ok`, `durationMs`                                         | the rows behind a value, on a grid or linear report                                              |
+| `report.saved`             | `tiles`, `structural`, `where`, `workspace?`, `converted?`, `durationMs`              | the builder                                                                                      |
+| `report.save_refused`      | `reason`                                                                              | the builder                                                                                      |
+| `report.save_undone`       | `tiles`, `structural`, `where`, `workspace?`, `durationMs`                            | the builder (Undo save)                                                                          |
+| `report.save_undo_refused` | `reason`                                                                              | the builder                                                                                      |
+| `report.created`           | `where` (`package`/`host`), `durationMs`                                              | `createDocument`, so `NewDocumentDialog` and `Package`                                           |
+| `report.create_refused`    | `reason`                                                                              | `createDocument`                                                                                 |
+| `report.layout_changed`    | `from`, `to`                                                                          | the builder's Linear / Grid switch                                                               |
+| `report.drill`             | `to` (`self`/`report`), `outcome` (`resolved`/`unresolved`/`malformed`)               | `Report`: a `to=self` drill, or a drill to another report whose `onNavigate` returned an outcome |
+| `report.explored`          | `tile`                                                                                | reserved: nothing emits it yet                                                                   |
+
+`category` is a `ReportFailure` (`not_found`, `forbidden`, `invalid`, `unsupported`, `server`, `network`,
+`unknown`), never the error's message, which can carry a path or a value. A sink that throws is ignored, so
+telemetry never breaks a report. Inside a `Report`, a failed cell and a refused `to=self` drill are reported
+to `onEvent` instead of the browser console; with no `onEvent` they are still logged.
+
+```tsx
+import { Report, type ReportEvent } from "@malloy-publisher/sdk";
+
+const onEvent = (event: ReportEvent) =>
+   analytics.track(event.type, {
+      environment: "prod",
+      package: "sales",
+      ...event,
+   });
+
+<Report
+   resourceUri="publisher://environments/prod/packages/sales"
+   path="q3.malloy"
+   onEvent={onEvent}
+   // Return what the target resolved to and the drill is reported too.
+   onNavigate={(target) => (openReport(target) ? "resolved" : "unresolved")}
+/>;
+```
 
 ## Styling
 
