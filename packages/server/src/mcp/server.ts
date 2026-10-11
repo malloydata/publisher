@@ -20,7 +20,7 @@ import { registerGetAgentTool } from "./tools/get_agent_tool";
 import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
-import skillsBundle from "./skills/skills_bundle.json";
+import { BUNDLED_SKILLS } from "./skills/package_skills";
 import { SERVER_VERSION } from "../version";
 
 export const testServerInfo = {
@@ -29,14 +29,6 @@ export const testServerInfo = {
    displayName: "Malloy Publisher MCP Server",
    description: "Provides access to Malloy models and query execution via MCP.",
 };
-
-// Build-time bundle of the agent skills (see skills/build_skills_bundle.ts),
-// exposed as MCP prompts for the dual-channel delivery below.
-const AGENT_SKILLS = (
-   skillsBundle as {
-      skills: { name: string; description: string; body: string }[];
-   }
-).skills;
 
 // Orientation delivered to any connecting MCP client via the initialize
 // response (the on-the-wire analog of AGENTS.md), so an agent that reached the
@@ -55,7 +47,7 @@ Start with list_packages, which takes no arguments and names every environment a
 
 To build a model from a database rather than from an existing package, start with search_database_schema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
 
-Task-specific guidance is served two ways, over the same content. As prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness. And through get_skill, which additionally serves guides a PACKAGE ships about itself: call it with a package scope before answering questions against a package you have not worked in, because a package can document its own conventions and can replace a built-in guide with its own version for that package.
+Task-specific guidance is served two ways. As prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness. And through get_skill, which serves the same built-in guides plus any a PACKAGE ships about itself: call it with a package scope before answering questions against a package you have not worked in, because a package can document its own conventions and can replace a built-in guide with its own version for that package, which the prompts do not reflect.
 
 Results and any charts render in the Publisher web UI on the REST port (4000 by default).`;
 
@@ -77,7 +69,7 @@ export function initializeMcpServer(
    registerReloadPackageTool(mcpServer, environmentStore);
    registerSearchDatabaseSchemaTool(mcpServer, environmentStore);
    registerGetStatusTool(mcpServer, environmentStore);
-   registerGetSkillTool(mcpServer, environmentStore, AGENT_SKILLS);
+   registerGetSkillTool(mcpServer, environmentStore, BUNDLED_SKILLS);
    registerGetAgentTool(mcpServer, environmentStore);
 
    // Dual-channel: also expose each skill as an MCP prompt, so hosts that ingest
@@ -85,7 +77,7 @@ export function initializeMcpServer(
    // same guidance. Skill-aware hosts (Claude Code/Desktop) use the native skill
    // files. Note: MCP prompts are on-demand, so always-on "prevention" skills
    // become on-demand here; see docs/agent-skills/design-principles.md.
-   for (const skill of AGENT_SKILLS) {
+   for (const skill of BUNDLED_SKILLS) {
       mcpServer.prompt(skill.name, skill.description, () => ({
          messages: [
             {

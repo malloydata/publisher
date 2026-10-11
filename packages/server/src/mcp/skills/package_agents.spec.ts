@@ -9,6 +9,7 @@ import {
    PACKAGE_AGENT_SKILLS_MAX_BYTES,
    PACKAGE_AGENT_TEXT_MAX_BYTES,
    readPackageAgents,
+   summarizeAgentSkillFile,
 } from "./package_skills";
 
 describe("readPackageAgents", () => {
@@ -433,6 +434,52 @@ describe("readPackageAgents", () => {
          dropped({ analyst: entry });
       });
 
+      it("serves an agent whose skill has no description, flagged on the agent", () => {
+         write(
+            "agents/analyst/skills/quiet/SKILL.md",
+            "---\nname: quiet\n---\n\nbody\n",
+         );
+         const result = read({ analyst: analyst() });
+         expect(result.agents.has("analyst")).toBe(true);
+         expect(result.agents.get("analyst")!.warnings.join("\n")).toContain(
+            "no description",
+         );
+         expect(result.warnings.join("\n")).toContain("'quiet'");
+      });
+
+      it("serves an agent whose skill reference cannot be listed, flagged on the agent", () => {
+         write(
+            "agents/analyst/skills/odd/SKILL.md",
+            "---\nname: odd\ndescription: d\n---\n\nbody\n",
+         );
+         write("agents/analyst/skills/odd/reference", "not a directory");
+         const result = read({ analyst: analyst() });
+         expect(result.agents.has("analyst")).toBe(true);
+         expect(result.warnings.join("\n")).toContain("cannot be listed");
+      });
+
+      it("drops an agent whose skill name is not its directory name", () => {
+         write(
+            "agents/analyst/skills/other-dir/SKILL.md",
+            "---\nname: elsewhere\ndescription: d\n---\n\nbody\n",
+         );
+         expect(dropped({ analyst: analyst() })).toContain("'elsewhere'");
+      });
+
+      it("drops an agent whose skill directory is a link to a directory holding a publisher.json", () => {
+         write(
+            "shared/linked/SKILL.md",
+            "---\nname: linked\ndescription: d\n---\n\nbody\n",
+         );
+         write("shared/linked/publisher.json", "{}");
+         const entry = analyst();
+         fs.symlinkSync(
+            path.join(pkg, "shared/linked"),
+            path.join(pkg, "agents/analyst/skills/linked"),
+         );
+         expect(dropped({ analyst: entry })).toContain("nested publisher.json");
+      });
+
       it("serves an agent whose skills directory holds no skills, with a warning on the agent", () => {
          fs.mkdirSync(path.join(pkg, "agents/analyst/skills"), {
             recursive: true,
@@ -448,6 +495,33 @@ describe("readPackageAgents", () => {
          expect(result.agents.get("analyst")!.warnings).toHaveLength(1);
          expect(result.warnings[0]).toContain("holds no skills");
       });
+   });
+
+   it("summarizes a skill with its parsed name and description, not the quoted emission", () => {
+      write("agents/analyst/instructions.md", "i");
+      write(
+         "agents/analyst/skills/quoted/SKILL.md",
+         '---\nname: quoted\ndescription: Say "net" and use C:\\data\n---\n\nbody\n',
+      );
+      const agent = read({
+         analyst: {
+            description: "d",
+            instructions: "agents/analyst/instructions.md",
+            skills: ["agents/analyst/skills"],
+         },
+      }).agents.get("analyst")!;
+      const [file] = agent.skills;
+      expect(summarizeAgentSkillFile(file!, agent.skillMeta)).toEqual({
+         relative_filepath: "quoted/SKILL.md",
+         name: "quoted",
+         description: 'Say "net" and use C:\\data',
+         bytes: Buffer.byteLength(file!.file_contents),
+      });
+   });
+
+   it("drops an agent whose path uses a backslash", () => {
+      const entry = analyst({ skills: ["agents\\analyst\\skills"] });
+      expect(dropped({ analyst: entry })).toContain("backslash");
    });
 
    describe("definitionSha", () => {

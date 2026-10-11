@@ -47,7 +47,7 @@ const getSkillShape = {
             package: z.string().describe("Package name."),
          }),
       )
-      .max(1)
+      .length(1)
       .nullish()
       .describe(
          "Exactly one {environment, package}. Scopes the listing to the guides in force for that package. Omit for the built-in set.",

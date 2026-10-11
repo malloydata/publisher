@@ -442,13 +442,15 @@ export class Package {
    ): ApiAgent | undefined {
       const agent = this.packageAgents.get(name);
       if (!agent) return undefined;
-      const { definitionSha, ...definition } = agent;
+      const { definitionSha, skillMeta, ...definition } = agent;
       return {
          ...definition,
          skills:
             skills === "full"
                ? definition.skills
-               : definition.skills.map(summarizeAgentSkillFile),
+               : definition.skills.map((f) =>
+                    summarizeAgentSkillFile(f, skillMeta),
+                 ),
          source: this.agentSource(definitionSha),
       };
    }
@@ -1750,8 +1752,14 @@ export class Package {
          // Advisory like the rest: a bad markdown file must not cost the
          // package its models, and this is the only non-log signal that a
          // skill the author wrote is not being served.
-         ...this.packageSkillWarnings.map((message) => ({ message })),
-         ...this.packageAgentWarnings.map((message) => ({ message })),
+         ...this.packageSkillWarnings.map((message) => ({
+            message,
+            severity: "warn" as const,
+         })),
+         ...this.packageAgentWarnings.map((message) => ({
+            message,
+            severity: "warn" as const,
+         })),
          ...this.notebookWarnings,
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),

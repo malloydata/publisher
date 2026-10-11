@@ -97,6 +97,23 @@ describe("reload_package tool", () => {
       });
    });
 
+   it("reports sourceContentSha and servedRevision, the reload receipt", async () => {
+      const handler = captureHandler(
+         storeReturning({
+            name: "ecommerce",
+            sourceContentSha: "a".repeat(64),
+            servedRevision: "rev-1",
+         }),
+      );
+      expect(parse(await handler(args))).toEqual({
+         status: "reloaded",
+         mode: "in-place",
+         name: "ecommerce",
+         sourceContentSha: "a".repeat(64),
+         servedRevision: "rev-1",
+      });
+   });
+
    it("includes description and non-empty warnings", async () => {
       const warnings = [
          {

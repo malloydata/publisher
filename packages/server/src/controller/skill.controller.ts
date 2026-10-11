@@ -3,9 +3,8 @@
 
 import { components } from "../api";
 import { AgentNotFoundError, SkillNotFoundError } from "../errors";
-import skillsBundle from "../mcp/skills/skills_bundle.json";
 import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
-import { resolveSkills } from "../mcp/skills/package_skills";
+import { BUNDLED_SKILLS, resolveSkills } from "../mcp/skills/package_skills";
 import { EnvironmentStore } from "../service/environment_store";
 
 type ApiAgent = components["schemas"]["Agent"];
@@ -13,8 +12,6 @@ type ApiAgentSummary = components["schemas"]["AgentSummary"];
 type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
 type ApiSkill = components["schemas"]["Skill"];
 type ApiSkillSummary = components["schemas"]["SkillSummary"];
-
-const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
 
 /**
  * Read-only access to the agent skills in force for a package: the server's

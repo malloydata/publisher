@@ -2509,6 +2509,9 @@ function makeWarningsFor(ctx: PipelineContext) {
    };
 }
 
+/** Most description characters `skillsFor` attaches to one response, across every skill. */
+const SKILLS_DESCRIPTION_BUDGET = 4000;
+
 /**
  * Spread into a payload to attach `skills`: the guides this package ships about
  * itself, name and description only. Returns {} when it ships none, so most
@@ -2521,28 +2524,18 @@ function makeWarningsFor(ctx: PipelineContext) {
  * shape.
  */
 function skillsFor(ctx: PipelineContext) {
-   const { environmentName, packageName } = ctx.request;
-   let skills: Array<{ name: string; description: string }>;
-   try {
-      skills = ctx.pkgIndex.pkg
-         .listSkills()
-         // Reference entries are on-demand detail addressed by the parent's
-         // pointer, not something to choose from a list.
-         .filter((skill) => !skill.name.includes("/"))
-         .map((skill) => ({
-            name: skill.name,
-            description: skill.description,
-         }));
-   } catch (error) {
-      // An annotation on the response: failing to read it must not take
-      // discovery down with it.
-      logger.debug("[MCP Tool getContext] package skills lookup failed", {
-         environmentName,
-         packageName,
-         error: error instanceof Error ? error.message : String(error),
+   // Descriptions are author-written and ride every response, so their total is bounded.
+   let budget = SKILLS_DESCRIPTION_BUDGET;
+   const skills = ctx.pkgIndex.pkg
+      .listSkills()
+      // Reference entries are on-demand detail addressed by the parent's
+      // pointer, not something to choose from a list.
+      .filter((skill) => !skill.name.includes("/"))
+      .map((skill) => {
+         const description = skill.description.slice(0, budget);
+         budget -= description.length;
+         return { name: skill.name, description };
       });
-      return {};
-   }
    return skills.length > 0
       ? {
            skills,
