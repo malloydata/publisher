@@ -10,7 +10,7 @@ import {
    reportRoute,
    useReportListing,
 } from "@malloy-publisher/sdk";
-import { Box, Typography } from "@mui/material";
+import { Alert, Box, Button, Typography } from "@mui/material";
 import { Link as RouterLink, Navigate, useLocation } from "react-router-dom";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import ReportPage from "../ReportPage/ReportPage";
@@ -45,12 +45,37 @@ export default function RoutedDocument({
    /** What to draw when nothing is at this route. */
    notFound: React.ReactNode;
 }) {
-   const { reports, settled } = useReportListing(environmentName, packageName);
+   const { reports, settled, isError, refetch } = useReportListing(
+      environmentName,
+      packageName,
+   );
    const { search } = useLocation();
-   if (!settled) return <Loading text={LOADING_COPY.opening()} />;
-
    const path = `${routePath}.malloy`;
-   const report = locateReport(path, reports);
+   const report = settled ? locateReport(path, reports) : undefined;
+   if (!settled) return <Loading text={LOADING_COPY.opening()} />;
+   // A listing that failed says nothing about what is at this route, so it
+   // is not "nothing here": say so, and offer to ask again.
+   if (isError)
+      return (
+         <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+            <Alert
+               severity="warning"
+               action={
+                  <Button
+                     color="inherit"
+                     size="small"
+                     onClick={() => void refetch()}
+                  >
+                     Retry
+                  </Button>
+               }
+            >
+               Could not list this package&apos;s reports, so this page cannot
+               tell what is at {routePath}.
+            </Alert>
+         </Box>
+      );
+
    if (report) {
       if (edit)
          return (

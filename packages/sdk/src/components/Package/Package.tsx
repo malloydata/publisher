@@ -421,7 +421,18 @@ export default function Package({
                    older Publisher with no route, which genuinely has none. */}
                {reportsQuery.isError && (
                   <Box sx={{ mb: 4 }}>
-                     <Alert severity="warning">
+                     <Alert
+                        severity="warning"
+                        action={
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={() => void reportsQuery.refetch()}
+                           >
+                              Retry
+                           </Button>
+                        }
+                     >
                         Could not list this package&apos;s reports, so any it
                         has are missing from this page.
                      </Alert>

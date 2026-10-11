@@ -11,7 +11,7 @@
  * answers for the wrong version.
  */
 import { beforeEach, expect, it, mock } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -103,4 +103,24 @@ it("keeps showing no section at all for an older server with no route", async ()
 
    await waitFor(() => expect(listReports).toHaveBeenCalled());
    expect(screen.queryAllByText(/Could not list/)).toHaveLength(0);
+});
+
+it("says so when the reports listing gets no answer at all, and retries on request", async () => {
+   // A transport failure (no response) is not "no reports": reading it as an
+   // empty listing would be cached as an authoritative answer.
+   listReports.mockImplementationOnce(() =>
+      Promise.reject(new Error("Network Error")),
+   );
+   listReports.mockImplementationOnce(
+      () => Promise.resolve({ data: [] }) as Promise<never>,
+   );
+
+   render(packageAt(), { wrapper: serverWrapper });
+
+   expect(await screen.findByText(/Could not list/)).toBeDefined();
+   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+   await waitFor(() => expect(listReports).toHaveBeenCalledTimes(2));
+   await waitFor(() =>
+      expect(screen.queryAllByText(/Could not list/)).toHaveLength(0),
+   );
 });

@@ -18,8 +18,10 @@ export const reportsQueryKey = (
 
 /**
  * `GET …/reports`, as the array every reader of {@link reportsQueryKey} caches.
- * An older server with no such route (404), or no answer at all, is a package
- * with no reports to list rather than an error.
+ * An older server with no such route (404) is a package with no reports to
+ * list rather than an error. Anything else, including no answer at all, is
+ * raised: every reader caches this listing, and an empty one standing in for
+ * a failure would say "nothing here" about a package that has reports.
  */
 export async function fetchReportListing(
    apiClients: ApiClients,
@@ -38,7 +40,7 @@ export async function fetchReportListing(
    } catch (e) {
       const status = (e as { response?: { status?: number } })?.response
          ?.status;
-      if (status === 404 || status === undefined) return [];
+      if (status === 404) return [];
       throw e;
    }
 }
@@ -48,7 +50,8 @@ export async function fetchReportListing(
  *
  * `settled` is false until it has answered. An older server with no such
  * route answers 404, which reads as a package with no reports rather than an
- * error, so a host still renders.
+ * error, so a host still renders. Any other failure is `isError`, with
+ * `refetch` to try again: a caller shows it rather than an empty listing.
  */
 export function useReportListing(
    environmentName: string,
