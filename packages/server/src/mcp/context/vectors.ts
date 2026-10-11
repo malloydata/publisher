@@ -85,6 +85,14 @@ function parseVector(v: number[] | string): number[] {
    return JSON.parse(v) as number[];
 }
 
+/** An embedding failure in the vectors step, named with how far it got. */
+export class VectorSyncError extends Error {
+   constructor(message: string, cause: unknown) {
+      super(message, { cause });
+      this.name = "VectorSyncError";
+   }
+}
+
 export async function syncVectors(args: {
    db: DuckDBConnection;
    provider: EmbeddingModel;
@@ -154,13 +162,26 @@ export async function syncVectors(args: {
    for (let i = 0; i < toEmbed.length; i += batchSize) {
       if (args.shouldStop?.()) break;
       const batch = toEmbed.slice(i, i + batchSize);
-      const out = await provider.embedBatch(
-         batch.map(([, r]) => prefix + r.input),
-         EMBEDDING_BATCH_TIMEOUT_MS,
-         // The shipped sync's ladder: a 500 or a 429 from the vendor is retried with
-         // backoff, not a failed build.
-         DEFAULT_EMBEDDING_RETRY,
-      );
+      let out: number[][];
+      try {
+         out = await provider.embedBatch(
+            batch.map(([, r]) => prefix + r.input),
+            EMBEDDING_BATCH_TIMEOUT_MS,
+            // The shipped sync's ladder: a 500, a 429 or a timeout from the
+            // vendor is retried with backoff, not a failed build.
+            DEFAULT_EMBEDDING_RETRY,
+         );
+      } catch (error) {
+         throw new VectorSyncError(
+            `The vectors step failed after embedding ${embedded} of ${toEmbed.length} new rows ` +
+               `(${reused} reused): ${error instanceof Error ? error.message : String(error)}. ` +
+               `Each embedding request of up to ${batchSize} rows has a ${EMBEDDING_BATCH_TIMEOUT_MS} ms ` +
+               `deadline (EMBEDDING_BATCH_TIMEOUT_MS), and a timeout, a 429 or a 5xx is retried up to ` +
+               `${DEFAULT_EMBEDDING_RETRY.maxAttempts} attempts. The rows already embedded are stored, ` +
+               "so the next build embeds only the rest.",
+            error,
+         );
+      }
       const now = new Date().toISOString();
       const params: unknown[] = [];
       batch.forEach(([, r], j) => {
