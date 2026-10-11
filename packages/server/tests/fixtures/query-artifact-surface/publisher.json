@@ -1,0 +1,6 @@
+{
+   "name": "query-artifact-surface",
+   "version": "1.0.0",
+   "description": "Fixture for the query-level # artifact on and off the curated surface",
+   "explores": ["index.malloy", "listed.malloy", "queries_only.malloy"]
+}

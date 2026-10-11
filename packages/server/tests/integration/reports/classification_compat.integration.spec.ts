@@ -16,7 +16,8 @@
  * dashboard, linear for a notebook), that the deprecated routes answer exactly
  * what they answered (plus the new `layout` field), and that the warnings are
  * the same apart from the new report findings and the two retired folder
- * findings.
+ * findings, and apart from the deliberate changes in {@link DELIBERATE}, which
+ * are applied to the baseline (left as captured) before comparing.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -45,7 +46,43 @@ const NEW_CODES = new Set([
    "report-on-surface",
    "query-artifact-deprecated",
    "index-is-not-a-report",
+   "query-artifact-ignored",
 ]);
+
+/**
+ * Files whose classification changed on purpose, per package. A file whose
+ * only artifact tag is a query-level `# artifact` and that is on the curated
+ * surface (the root `index.malloy` imports it, or `explores` lists it) is a
+ * model, not a report, so the deprecated form cannot take what a model
+ * publishes off the surface (`docs/reports-design.md`, "The query-level
+ * artifact form"). Before, such a file in `dashboards/` was a dashboard.
+ *
+ * - `dashboards-curated`: `dashboards/listed.malloy` is listed in
+ *   `explores` (the shape older advice produced: list a dashboard file in
+ *   `explores`) and its only tag is `# artifact` on `query: listed`. It is
+ *   now a model, listed by `GET …/models`, and reported as
+ *   `query-artifact-ignored`.
+ */
+const DELIBERATE: Record<string, { becameModels: string[] }> = {
+   "dashboards-curated": { becameModels: ["dashboards/listed.malloy"] },
+};
+
+/** The baseline with the {@link DELIBERATE} changes applied. */
+function expectedFor(pkg: string, was: Baseline[string]): Baseline[string] {
+   const moved = new Set(DELIBERATE[pkg]?.becameModels ?? []);
+   if (moved.size === 0) return was;
+   return {
+      ...was,
+      dashboards: was.dashboards.filter((d) => !moved.has(d.path as string)),
+      manifests: Object.fromEntries(
+         Object.entries(was.manifests).filter(
+            ([, m]) => !moved.has(m.path as string),
+         ),
+      ),
+      // A finding about the file as a dashboard no longer applies to it.
+      warnings: was.warnings.filter((w) => !moved.has(w.model ?? "")),
+   };
+}
 
 /** Findings this change retires: they told an author to move a file to its kind's folder. */
 const RETIRED = [
@@ -162,7 +199,7 @@ describe("Report classification compatibility (E2E)", () => {
    for (const pkg of Object.keys(PACKAGES)) {
       describe(pkg, () => {
          it("gives every report the layout its kind had", async () => {
-            const was = expected[pkg];
+            const was = expectedFor(pkg, expected[pkg]);
             const reports = await get<{ path: string; layout: string }[]>(
                api(pkg, "/reports"),
             );
@@ -176,7 +213,7 @@ describe("Report classification compatibility (E2E)", () => {
          });
 
          it("answers the deprecated routes as before", async () => {
-            const was = expected[pkg];
+            const was = expectedFor(pkg, expected[pkg]);
             const dashboards = await get<Record<string, unknown>[]>(
                api(pkg, "/dashboards"),
             );
@@ -228,13 +265,21 @@ describe("Report classification compatibility (E2E)", () => {
             const models = await get<Record<string, unknown>[]>(
                api(pkg, "/models"),
             );
+            const moved = new Set(DELIBERATE[pkg]?.becameModels ?? []);
+            // A file that became a model is listed as one now.
+            for (const p of moved)
+               expect(models.map((m) => m.path)).toContain(p);
             expect(
-               lf(models.map((m) => without(m, "environmentName"))),
+               lf(
+                  models
+                     .filter((m) => !moved.has(m.path as string))
+                     .map((m) => without(m, "environmentName")),
+               ),
             ).toEqual(was.models);
          });
 
          it("keeps every finding but the retired ones, and adds only report findings", async () => {
-            const was = expected[pkg];
+            const was = expectedFor(pkg, expected[pkg]);
             const body = await get<{ warnings?: Warning[] }>(api(pkg));
             const now = body.warnings ?? [];
             const nowKeys = new Set(now.map(key));

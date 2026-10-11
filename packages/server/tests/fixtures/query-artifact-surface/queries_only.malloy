@@ -1,0 +1,6 @@
+// Listed in explores, and declares no source of its own (only a query): on
+// the surface all the same, so its query-level tag is ignored too.
+import { direct_src } from "models/direct.malloy"
+
+# artifact { title="Queries only" }
+query: queries_overview is direct_src -> v

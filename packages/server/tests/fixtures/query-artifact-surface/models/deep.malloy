@@ -1,0 +1,6 @@
+source: deep_src is duckdb.sql("select 2 as y") extend {
+   view: v is { select: y }
+}
+
+# artifact { title="Deep" }
+query: deep_overview is deep_src -> v

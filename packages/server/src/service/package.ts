@@ -150,6 +150,9 @@ type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 
+/** {@link Package.surfaceReasons}'s reason for a file `explores` lists. */
+const EXPLORES_REASON = "explores";
+
 /**
  * Where Malloyyo looks for a dashboard's custom component. The directory means
  * nothing to Publisher; it is named only to warn about an inert `.jsx` there.
@@ -3102,6 +3105,54 @@ export class Package {
       }
    }
 
+   /** Each `.malloy` / `.malloynb` in the package by the file URL an import names it with. */
+   private modelPathsByImportUrl(): Map<string, string> {
+      const byUrl = new Map<string, string>();
+      for (const modelPath of this.models.keys()) {
+         byUrl.set(
+            pathToFileURL(path.join(this.packagePath, modelPath)).toString(),
+            modelPath,
+         );
+      }
+      return byUrl;
+   }
+
+   /**
+    * What puts each file on the curated surface, for the query-level
+    * `# artifact` rule (`docs/reports-design.md` §1): the file that imports it
+    * on the way from the root `index.malloy`, directly or through other
+    * files, or `"explores"` for a file `explores` lists. A file absent here is
+    * off the surface.
+    */
+   private surfaceReasons(): Map<string, string> {
+      const reasons = new Map<string, string>();
+      const byUrl = this.modelPathsByImportUrl();
+      const index = this.models.get(INDEX_MODEL_NAME)?.getModelDef();
+      const queue: [string, ModelDef][] = index
+         ? [[INDEX_MODEL_NAME, index]]
+         : [];
+      while (queue.length > 0) {
+         const [importer, def] = queue.shift()!;
+         for (const imported of def.imports ?? []) {
+            const modelPath = byUrl.get(imported.importURL);
+            if (
+               !modelPath ||
+               modelPath === INDEX_MODEL_NAME ||
+               reasons.has(modelPath)
+            )
+               continue;
+            reasons.set(modelPath, importer);
+            const next = this.models.get(modelPath)?.getModelDef();
+            if (next) queue.push([modelPath, next]);
+         }
+      }
+      for (const entry of this.packageMetadata.explores ?? []) {
+         if (entry !== INDEX_MODEL_NAME && !reasons.has(entry))
+            reasons.set(entry, EXPLORES_REASON);
+      }
+      return reasons;
+   }
+
    /**
     * Whether a `.malloy` that can be a report is one (`report.ts`), and with
     * which layout. A compiled file is judged by its compiled tags: a parsed
@@ -3195,6 +3246,16 @@ export class Package {
          query: string;
          rewrite: string;
       }[] = [];
+      // On-surface files whose only artifact tag is a query-level one: the
+      // tag is ignored and the file stays a model, so it cannot quietly take
+      // what it publishes off the surface.
+      const queryArtifactIgnored: {
+         modelPath: string;
+         query?: string;
+         reason: string;
+         rewrite?: string;
+      }[] = [];
+      const surfaceReasons = this.surfaceReasons();
       let indexTagged = false;
       for (const modelPath of Array.from(this.models.keys()).sort()) {
          const model = this.models.get(modelPath);
@@ -3244,19 +3305,40 @@ export class Package {
             }
             continue;
          }
+         const artifactQuery =
+            classified.queryLevel && facts
+               ? ownQueries(facts).find((q) =>
+                    queryNotesCarryArtifact(q.annotations),
+                 )
+               : undefined;
+         const surfaceReason = classified.queryLevel
+            ? surfaceReasons.get(modelPath)
+            : undefined;
+         if (surfaceReason !== undefined) {
+            queryArtifactIgnored.push({
+               modelPath,
+               query: artifactQuery?.name,
+               reason: surfaceReason,
+               rewrite:
+                  artifactQuery &&
+                  queryArtifactRewrite(
+                     artifactQuery.name,
+                     artifactQuery.annotations,
+                  ),
+            });
+            continue;
+         }
          tagged.add(modelPath);
          const name = reportName(modelPath);
-         if (classified.queryLevel && facts) {
-            const query = ownQueries(facts).find((q) =>
-               queryNotesCarryArtifact(q.annotations),
-            );
-            if (query) {
-               queryLevel.push({
-                  modelPath,
-                  query: query.name,
-                  rewrite: queryArtifactRewrite(query.name, query.annotations),
-               });
-            }
+         if (artifactQuery) {
+            queryLevel.push({
+               modelPath,
+               query: artifactQuery.name,
+               rewrite: queryArtifactRewrite(
+                  artifactQuery.name,
+                  artifactQuery.annotations,
+               ),
+            });
          }
 
          if (classified.layout === "linear") {
@@ -3401,6 +3483,7 @@ export class Package {
          gridReportPaths,
          droppedByError,
          queryLevel,
+         queryArtifactIgnored,
          indexTagged,
       };
       this.readerWarnings = options.dryRun ? [] : this.attachNotebookCells();
@@ -3461,6 +3544,12 @@ export class Package {
          modelPath: string;
          query: string;
          rewrite: string;
+      }[];
+      queryArtifactIgnored: readonly {
+         modelPath: string;
+         query?: string;
+         reason: string;
+         rewrite?: string;
       }[];
       indexTagged: boolean;
    };
@@ -3768,13 +3857,7 @@ export class Package {
       const flagged = new Set<string>();
       const index = this.models.get(INDEX_MODEL_NAME)?.getModelDef();
       if (index) {
-         const byUrl = new Map<string, string>();
-         for (const modelPath of this.models.keys()) {
-            byUrl.set(
-               pathToFileURL(path.join(this.packagePath, modelPath)).toString(),
-               modelPath,
-            );
-         }
+         const byUrl = this.modelPathsByImportUrl();
          for (const imported of index.imports ?? []) {
             const modelPath = byUrl.get(imported.importURL);
             if (!modelPath || !this.isServedReport(modelPath)) continue;
@@ -3809,6 +3892,33 @@ export class Package {
                `the surface and never adds to it. Fix: remove it from ` +
                `"explores", or remove its artifact tag if it is meant to be a ` +
                `model.`,
+            severity: "warn",
+         });
+      }
+      for (const {
+         modelPath,
+         query,
+         reason,
+         rewrite,
+      } of inputs.queryArtifactIgnored) {
+         const onSurface =
+            reason === EXPLORES_REASON
+               ? `"explores" lists it`
+               : `${reason} imports it`;
+         warnings.push({
+            model: modelPath,
+            ...(query !== undefined && { subject: query }),
+            code: "query-artifact-ignored",
+            message:
+               `\`# artifact\` on ${query !== undefined ? `query ${query}` : "a query"} ` +
+               `is ignored: ${modelPath} is on the package's surface ` +
+               `(${onSurface}), so it stays a model that publishes what it ` +
+               `declares, not a report. Fix: remove \`# artifact\` from the ` +
+               `query; if ` +
+               `you meant a report, put it in its own file that imports ` +
+               `${modelPath}, with ` +
+               `\`${rewrite ?? '## artifact { layout=grid tiles=["<query>"] }'}\` ` +
+               `at the top.`,
             severity: "warn",
          });
       }

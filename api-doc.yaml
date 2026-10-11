@@ -3713,9 +3713,15 @@ components:
             Curation findings: a root `index.malloy` carrying an artifact tag,
             which is ignored (`index-is-not-a-report`, `error`); a report that
             `index.malloy` imports or `explores` lists (`report-on-surface`,
-            `warn`); and a report made by the deprecated query-level
+            `warn`); a report made by the deprecated query-level
             `# artifact` (`query-artifact-deprecated`, `warn`, with the
-            model-level tag to write instead). Two report findings are about
+            model-level tag to write instead); and a query-level `# artifact`
+            that is ignored because its file is on the surface (the root
+            `index.malloy` imports it, directly or through other files, or
+            `explores` lists it), whether or not it declares sources of its
+            own, so the file stays a model (`query-artifact-ignored`, `warn`,
+            naming the importer or `explores`, with the tag to put in a file
+            of its own if a report was meant). Two report findings are about
             Publisher rather than about the package: one when a file carrying
             an artifact tag could not be read and so is not served at all, and
             one when the lint stops early, in which case the list must be read
@@ -3863,8 +3869,8 @@ components:
                   report findings (`notebook-…`, `report-…`) and the report
                   curation and drill findings (`drill-target-by-name`,
                   `report-on-surface`, `index-is-not-a-report`,
-                  `query-artifact-deprecated`). The message wording may change; the
-                  code does not.
+                  `query-artifact-deprecated`, `query-artifact-ignored`). The
+                  message wording may change; the code does not.
               severity:
                 type: string
                 enum:

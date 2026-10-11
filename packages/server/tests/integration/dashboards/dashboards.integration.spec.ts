@@ -1191,12 +1191,15 @@ describe("Dashboard discovery (E2E)", () => {
             .sort();
 
       it("lists every dashboard, including ones explores does not list", async () => {
+         // Not `listed`: its only tag is a query-level `# artifact` and
+         // `explores` lists it, so it is on the surface and stays a model
+         // (query-artifact-ignored). `composite` is listed too, but carries a
+         // model-level `## artifact`, which always makes a report.
          const res = await fetch(curatedUrl("/dashboards"));
          expect(res.status).toBe(200);
          const dashboards = (await res.json()) as DashboardItem[];
          expect(dashboards.map((d) => d.name).sort()).toEqual([
             "composite",
-            "listed",
             "unlisted",
             "w1.9",
          ]);
@@ -1228,15 +1231,22 @@ describe("Dashboard discovery (E2E)", () => {
          expect(res.status).toBe(200);
       });
 
-      it("still runs a listed dashboard through the ordinary query endpoint", async () => {
-         const manifest = (await (
-            await fetch(curatedUrl("/dashboards/listed"))
-         ).json()) as DashboardManifest;
-         const res = await post(curatedUrl(`/models/${manifest.path}/query`), {
-            queryName: manifest.query,
-            compactJson: true,
-         });
+      it("keeps a query-level dashboard that explores lists a model, still runnable, and says why", async () => {
+         expect((await fetch(curatedUrl("/dashboards/listed"))).status).toBe(
+            404,
+         );
+         const res = await post(
+            curatedUrl("/models/dashboards/listed.malloy/query"),
+            { queryName: "listed", compactJson: true },
+         );
          expect(res.status).toBe(200);
+         const ignored = (await warningsOf(curatedUrl(""))).filter(
+            (w) =>
+               w.model === "dashboards/listed.malloy" &&
+               (w as { code?: string }).code === "query-artifact-ignored",
+         );
+         expect(ignored).toHaveLength(1);
+         expect(ignored[0].message).toContain('"explores" lists it');
       });
 
       /**
@@ -1247,7 +1257,9 @@ describe("Dashboard discovery (E2E)", () => {
          const pkgUrl = curatedUrl("");
          expect(await wontLoad(pkgUrl)).toEqual([]);
          try {
-            // Take orders.malloy off the surface: nothing listed exports orders.
+            // Take orders.malloy off the surface: nothing listed exports
+            // orders. `listed.malloy` stays on it, a model, so the finding
+            // comes from a dashboard that is not listed.
             const patch = await fetch(pkgUrl, {
                method: "PATCH",
                headers: { "Content-Type": "application/json" },
@@ -1260,16 +1272,15 @@ describe("Dashboard discovery (E2E)", () => {
             expect(patch.ok).toBe(true);
             const after = await wontLoad(pkgUrl);
             expect(after).toContain(
-               `Dashboard listed reads orders, which no file "explores" lists ` +
-                  `exports, so it won't load. Fix: delete "explores" from ` +
-                  `publisher.json and add orders to the export { ... } in ` +
-                  `index.malloy.`,
+               `Dashboard unlisted reads orders, which no file "explores" lists ` +
+                  `exports, so it won't load. Fix: add orders to the export ` +
+                  `{ ... } in dashboards/listed.malloy.`,
             );
             // Still listed: the surface limits what it reads, not whether it shows.
             const listed = (await (
                await fetch(curatedUrl("/dashboards"))
             ).json()) as DashboardItem[];
-            expect(listed.map((d) => d.name)).toContain("listed");
+            expect(listed.map((d) => d.name)).toContain("unlisted");
          } finally {
             await fetch(pkgUrl, {
                method: "PATCH",

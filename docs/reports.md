@@ -801,7 +801,14 @@ query: overview is order_items -> {
 
 **This form is deprecated.** It is still served, as a grid report, with a `query-artifact-deprecated`
 warning, until the release that also ends bare-name drill targets; after that only `## artifact` makes a
-report. Do not author one. Every query-level report has a mechanical rewrite, since a tile can be a
+report. Do not author one.
+
+It never takes a file off the curated surface. On a file that the root `index.malloy` imports (directly
+or through other files) or that `explores` lists, the tag is ignored, whether or not the file declares
+sources of its own: the file stays an ordinary model that keeps publishing what it declares, and the
+package reports `query-artifact-ignored` (`warn`) naming the importer or `explores`. If you meant a
+report, put it in a file of its own that imports the model, with the `## artifact` below. A query-level
+dashboard file listed in `explores` (as older advice had it) is therefore a model now. Every query-level report has a mechanical rewrite, since a tile can be a
 model-level named query:
 
 ```malloy
@@ -858,7 +865,8 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 - **The layout.** `layout=` and `kind=` that disagree (`report-layout-conflict`, error; `layout=` wins), and
   a `layout=` other than `grid` or `linear` (`report-layout-unknown`, error).
 - **Deprecations.** `kind=` in the tag (`report-kind-deprecated`, info, with the `layout=` to write); a
-  query-level `# artifact` (`query-artifact-deprecated`, with the rewrite); a tileless tag with no `layout=`
+  query-level `# artifact` (`query-artifact-deprecated`, with the rewrite), or one that is ignored because
+  its file is on the surface (`query-artifact-ignored`); a tileless tag with no `layout=`
   (`report-layout-implicit`).
 - **The surface.** A tagged root `index.malloy` (`index-is-not-a-report`, error); a report that
   `index.malloy` imports or `explores` lists (`report-on-surface`); and a tile, single query or `suggest` that
