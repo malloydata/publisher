@@ -31,11 +31,11 @@ Publisher serves a definition and never runs one. A client adopts an agent by fe
 
 Two things to know when upgrading. `Package` gains two read-only fields, `servedRevision` (minted per load) and `sourceContentSha` (a hash of the model files, package skill files, the `agents` object and every file an agent reads, so it moves on an edit to any of them; a `version` bump, data files and other manifest keys do not). `reload_package` returns both, and `sourceContentSha` unchanged after an edit to a hashed file means the edit never reached the served copy. And the MCP surface grows from eight tools to ten; a client that pins the tool list will see `get_skill` and `get_agent` as new. A package without `skills/` or `agents` behaves exactly as before, and an older Publisher serves a package that has them without the extras.
 
-## [Unreleased] — Packages report `.malloynb` notebooks and `#(filter)` sources as warnings
+## [0.9.7] — Packages report `.malloynb` notebooks and `#(filter)` sources as warnings
 
 A package's `warnings` (`GET …/packages/{package}`) now include one advisory entry per `.malloynb` notebook (`model` is its path) and one per source that declares deprecated `#(filter)` annotations (`subject` is the source name, reported once however many models import it). Both carry `severity: "warn"`. Nothing else changes: such packages still load and run. Migrating is covered in [Coming from `#(filter)`](docs/givens.md#coming-from-filter).
 
-## [Unreleased] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
+## [0.9.7] - A connection that cannot be used answers 502 or 424 with a reason, not 400 or 500
 
 When a query could not run because of its connection, Publisher answered as if the query were wrong (400 `Query execution failed: <driver text>`) or as if Publisher had a bug (500 on schema listing). The driver text could also name an internal host, port or user.
 
@@ -67,7 +67,7 @@ A failure that matches none of these keeps its old status. Not covered yet:
 - **BigQuery** on schema and table listing, the table lookup and `sqlSource`. Its SDK reports rejected credentials as a plain 401 error, and Malloy's driver returns table-lookup failures as text.
 - **Databricks**, and the **DuckDB family** (DuckLake, MotherDuck), whose errors carry no code. A catalog that is down still answers 400 on the query route.
 
-## [Unreleased] — `compile_model` at package scope reports dashboard and render-tag findings before you save
+## [0.9.7] — `compile_model` at package scope reports dashboard and render-tag findings before you save
 
 A tile naming a view that does not exist, a `# drill` pointing at no dashboard, a `suggest` naming a missing query, a tile reading a source the package's surface does not export, and an unknown render tag all compile cleanly. Until now only a package load reported them, so `compile_model` returned `success` and the problem showed up after saving and reloading.
 

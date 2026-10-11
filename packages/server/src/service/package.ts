@@ -163,6 +163,11 @@ type ApiAgent = components["schemas"]["Agent"];
 type ApiAgentSummary = components["schemas"]["AgentSummary"];
 type ApiAgentSource = components["schemas"]["AgentSource"];
 type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
+
+/** `PackageWarning.code` of a `.malloynb` notebook's deprecated-format warning. */
+export const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
+/** `PackageWarning.code` of a source's deprecated `#(filter)` annotations warning. */
+export const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -2798,6 +2803,7 @@ export class Package {
          if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
             notebooks.push({
                model: modelPath,
+               code: DEPRECATED_MALLOYNB_NOTEBOOK,
                severity: "warn",
                message:
                   `${modelPath} is a .malloynb notebook, a deprecated format. ` +
@@ -2808,6 +2814,7 @@ export class Package {
             filters.push({
                model: modelPath,
                subject: name,
+               code: DEPRECATED_FILTER_ANNOTATION,
                severity: "warn",
                message:
                   `Source ${name} uses deprecated #(filter) annotations. Replace them ` +
