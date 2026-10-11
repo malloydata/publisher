@@ -24,9 +24,9 @@ type ApiPackageWarning = NonNullable<
 >[number];
 
 /** `PackageWarning.code` of a `.malloynb` notebook's deprecated-format warning. */
-export const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
+const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
 /** `PackageWarning.code` of a source's deprecated `#(filter)` annotations warning. */
-export const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
+const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
 
 /** One deprecated format's warnings over a package's models. */
 type DeprecatedLint = (

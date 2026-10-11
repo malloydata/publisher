@@ -10,7 +10,7 @@ import {
 } from "./documentLocation";
 
 /** The query key of a package's report listing, so every reader shares one request and one invalidation. */
-export const reportsQueryKey = (
+const reportsQueryKey = (
    environmentName: string,
    packageName: string,
    versionId?: string,

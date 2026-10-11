@@ -190,7 +190,7 @@ export function withLegacyDocumentKind(
  * the Console's `dashboards/<name>` and `notebooks/<name>` alias routes
  * resolve, so the SPA fallback keeps those URLs in the app.
  */
-export function hasReportNamed(pkg: Package, name: string): boolean {
+function hasReportNamed(pkg: Package, name: string): boolean {
    return pkg.listReports().some((report) => report.name === name);
 }
 
