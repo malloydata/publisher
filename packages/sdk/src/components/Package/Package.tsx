@@ -173,7 +173,6 @@ export default function Package({
          ),
    });
 
-   // One listing for both layouts, by path.
    // One listing for both layouts, by path. Shares its cache entry with every
    // other reader of the listing, so the shape is the shared fetcher's.
    const reportsQuery = useQueryWithApiError({
