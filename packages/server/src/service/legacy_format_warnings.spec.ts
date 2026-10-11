@@ -112,6 +112,7 @@ describe("warnings for content on a deprecated format", () => {
       const notebook = found.filter((w) => w.model === "README.malloynb");
       expect(notebook).toHaveLength(1);
       expect(notebook[0]).toMatchObject({
+         code: "deprecated-malloynb-notebook",
          severity: "warn",
          message:
             "README.malloynb is a .malloynb notebook, a deprecated format. Convert it to a .malloy notebook under notebooks/.",
@@ -122,6 +123,7 @@ describe("warnings for content on a deprecated format", () => {
       expect(filters[0]).toMatchObject({
          model: "models/filtered.malloy",
          subject: "filtered",
+         code: "deprecated-filter-annotation",
          severity: "warn",
       });
       expect(filters[0].message).toContain(

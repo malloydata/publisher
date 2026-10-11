@@ -3591,6 +3591,17 @@ components:
               message:
                 type: string
                 description: A description of the problem.
+              code:
+                type: string
+                description: >-
+                  A stable identifier for the finding's family, for a client that
+                  acts on it rather than only showing it; absent for a family that
+                  has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
+                  notebook, the deprecated cell format (one per file, `model`
+                  naming it). `deprecated-filter-annotation`: a source declaring
+                  deprecated `#(filter)` annotations (one per declaring source,
+                  `model` naming its file and `subject` the source). The message
+                  wording may change; the code does not.
               severity:
                 type: string
                 enum:
