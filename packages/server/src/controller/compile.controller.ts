@@ -57,8 +57,8 @@ export class CompileController {
          status: hasErrors ? "error" : "success",
          problems: problems,
          ...(sql !== undefined && { sql }),
-         // `kind` is the deprecated name of the layout, which this route has
-         // answered with since documents were compiled.
+         // DEPRECATED: `document.kind`, the layout in the old vocabulary, which
+         // existing callers of this route read.
          ...(document !== undefined && {
             document: withLegacyDocumentKind(document),
          }),

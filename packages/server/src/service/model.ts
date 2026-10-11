@@ -861,15 +861,13 @@ export class Model {
        *  surface. Set by the Package, which knows whether the surface is an
        *  index.malloy or an explores list. See {@link notQueryable}. */
       offSurface?: OffSurfaceContext;
-      /** This file is a dashboard the package discovered. A dashboard is an
-       *  entry point, but like a notebook it admits nothing of its own: its
-       *  tiles read only the package surface. */
+      /** This file is a served grid report: an entry point that admits
+       *  nothing of its own, since its tiles read only the package surface. */
       dashboard?: boolean;
-      /** This file is a served notebook: a `.malloy` under `notebooks/` with a
-       *  model-level `## artifact` note. It keeps `modelType` "model" and, like
-       *  a `.malloynb`, admits nothing of its own. */
+      /** This file is a served linear report. It keeps `modelType` "model"
+       *  and, like a `.malloynb`, admits nothing of its own. */
       notebook?: boolean;
-      /** The dashboard's or served notebook's own compiled file text, so a
+      /** The served report's own compiled file text, so a
        *  source it declares on top of a surface source
        *  (`source: big is orders extend {...}`) can be proven to derive from
        *  it. Author text, not caller text. */
@@ -5134,16 +5132,12 @@ export class Model {
    }
 
    /**
-    * The facts dashboard discovery reads off this model, or undefined when the
+    * The facts report discovery reads off this model, or undefined when the
     * model failed to compile.
     *
-    * Deliberately uncurated HERE: `explores` curation shapes the *discovery*
-    * surface agents see, and these facts are the raw material the manifest is
-    * built from, so filtering them at this level would lose information the
-    * lint needs. The curation decision is made by the caller instead:
-    * `Package.discoverReports` withholds a report whose entry file is not
-    * a query entry point, because its manifest would advertise names the query
-    * boundary refuses. See `service/dashboard.ts`.
+    * Deliberately uncurated: `explores` curation shapes the discovery surface
+    * agents see, and these facts are the raw material the manifest and the
+    * lint are built from. See `service/dashboard.ts`.
     */
    public getDashboardModelFacts(): DashboardModelFacts | undefined {
       if (!this.modelDef) return undefined;
@@ -6445,7 +6439,7 @@ export class Model {
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy under notebooks/ with a ## artifact note.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy with a model-level ## artifact { layout=linear } tag.`,
          );
       }
    }

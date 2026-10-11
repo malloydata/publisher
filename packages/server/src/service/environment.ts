@@ -857,12 +857,11 @@ export class Environment {
                // Only the authorize gate (the *who* axis) applies to /compile.
                // The query boundary (`explores`/`queryableSources`, the *what*
                // axis) deliberately does NOT: compile is the authoring loop
-               // (validate -> save -> reload), and gating it made a curated
-               // package un-authorable — a QA session (HANDOFF CR-5) had every
-               // per-file compile 404 with "Query target is not queryable" the
-               // moment `queryableSources: "declared"` was set. The boundary is
-               // discovery curation, not access control (the skills say so
-               // outright); the accepted trade is that /compile can reveal a
+               // (validate -> save -> reload), and gating it would make a curated
+               // package un-authorable: every per-file compile would 404 once
+               // `queryableSources: "declared"` is set. The boundary is
+               // discovery curation, not access control; the accepted trade is
+               // that /compile can reveal a
                // non-exported source's schema (and, with includeSql, SQL) —
                // sources whose confidentiality matters are gated by
                // `#(authorize)`, which still applies here in full.
@@ -2149,27 +2148,24 @@ export class Environment {
       } catch (error) {
          const code = (error as NodeJS.ErrnoException).code;
          // ENOTDIR: a directory on the path is a file, so nothing is here;
-         // creating the directories says so (`_prepareModelFileDirLocked`).
+         // resolving the directories refuses it (`_resolveModelFileDirLocked`).
          if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          return undefined;
       }
    }
 
    /**
-    * Create the directories a new model file needs, inside the package root
-    * only, and return the ones it created, deepest first, so a rollback can
-    * take them back. The caller holds the package lock. On a failure part way
-    * through, the ones already made are removed before the error is raised.
+    * Settle where a write to `target` really leads, creating nothing, and
+    * return the directories it would need, deepest first. The caller holds the
+    * package lock.
     *
-    * The target path is already confined lexically (`safeJoinUnderRoot`), but
-    * a directory in the package can be a symlink to somewhere else, and
-    * `mkdir -p` and the write would follow it. So the nearest directory that
-    * already exists is resolved and must lie inside the resolved package root:
-    * a write the package could not have read back is refused rather than made.
-    * The resolved path must not be in `public/` either, which a symlink, or a
-    * differently cased name on a case-insensitive file system, would reach
-    * past the lexical check. A path through an existing file is refused before
-    * anything is created.
+    * The target is already confined lexically (`safeJoinUnderRoot`), but a
+    * directory in the package can be a symlink elsewhere, which `mkdir` and the
+    * write would follow. So the nearest existing directory (and the file, if it
+    * is a link) is resolved and must lie inside the resolved package root and
+    * outside `public/`, which a symlink or a differently cased name on a
+    * case-insensitive file system would otherwise reach. A path through an
+    * existing file is refused too.
     */
    private async _resolveModelFileDirLocked(
       packageRoot: string,

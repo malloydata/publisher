@@ -1060,7 +1060,6 @@ export class WriteRolledBackError extends Error {
    }
 }
 
-/** A refusal from a write's post-reload check, worded for the caller. */
 /**
  * A write whose reload failed, and whose restore failed too: the package may
  * serve the new text or none. 500, because only an operator can settle it.
@@ -1072,6 +1071,7 @@ export class WriteRollbackFailedError extends Error {
    }
 }
 
+/** A refusal from a write's post-reload check, worded for the caller. */
 export class WriteVerifyError extends Error {
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);

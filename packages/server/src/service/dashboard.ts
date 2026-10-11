@@ -299,13 +299,9 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
  * which is worth reporting because a name outside it has to be percent-encoded
  * by any caller assembling the URL by hand.
  *
- * It was a gate once, and both justifications given for it were wrong, which is
- * why the reasoning is written down. `dashboards/.malloy` (an empty name)
- * cannot occur: `listPackageFiles` enumerates with `ignoreDotfiles`, so a
- * leading-dot filename never becomes a model. And a dot mid-name does not break
- * routing, measured rather than argued, so withholding those broke working
- * dashboards for anyone who versions a filename. No traversal risk either way:
- * the lookup is a `Map` and never touches the filesystem.
+ * Not a gate: an empty name cannot occur (`listPackageFiles` ignores
+ * dotfiles, so `.malloy` never becomes a model), a dot mid-name does not break
+ * routing, and the lookup is a `Map`, so there is no traversal risk.
  */
 export function matchesDocumentedDashboardName(slug: string): boolean {
    return /^[a-zA-Z0-9_-]+$/.test(slug);
@@ -1454,10 +1450,10 @@ function describeParseFailure(message: string): string {
 }
 
 /**
- * Explain a `dashboards/*.malloy` that produced no dashboard.
+ * Explain a tagged `.malloy` that produced no grid report.
  *
  * A file with no artifact tag is a shared include and silent, as Malloyyo
- * treats it. But a file whose tag *failed to parse* is a dashboard that simply
+ * treats it. But a file whose tag *failed to parse* is a report that simply
  * vanished: MOTLY discards the whole tag on a syntax error, so the file falls
  * through to the include path and never appears in a listing or at a URL. That
  * is the least debuggable outcome in the whole feature, so it gets a finding.

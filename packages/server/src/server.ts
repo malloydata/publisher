@@ -2102,15 +2102,9 @@ if (!isDevelopment) {
          (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
       );
    // Deliberately the in-memory lists rather than `getEnvironment`, which
-   // resolves from storage (see `LoadedRoutes`). The cost is real and worth
-   // stating precisely: an environment OR package that is not loaded yet gets
-   // the 404 page instead of a redirect. That covers a cold start, and an
-   // environment resolved lazily by the static route (which loads its packages
-   // on demand, so they can be absent here while that URL serves them). In
-   // those cases the page names the canonical URL and following it does load
-   // them. The exception is a package that fails to compile: it is absent
-   // here, and the canonical URL answers 424, so there the page leads somewhere
-   // that reports the real problem rather than somewhere that works.
+   // resolves from storage (see `LoadedRoutes`). The cost: an environment or
+   // package not loaded yet (a cold start, a lazily loaded environment) gets
+   // the 404 page, which names the canonical URL that does load it.
    const loadedPackage = (environmentName: string, packageName: string) =>
       environmentStore
          .getLoadedEnvironments()

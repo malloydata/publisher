@@ -862,9 +862,9 @@ export function lintNotebookText(
  * the same file, in its own words: an `## artifact` tag that does not parse. A
  * caller that runs both lints drops this copy, so the file is reported once.
  *
- * Decided by what the dashboard lint actually reported, not by the folder. A
- * `dashboards/` file that did not compile, or whose tag makes it a notebook,
- * gets no dashboard finding, and the notebook lint's is then the only one.
+ * Decided by what the dashboard lint actually reported: a file that did not
+ * compile gets no dashboard finding, and the notebook lint's is then the only
+ * one.
  */
 export function reportedByDashboardLint(
    finding: { code?: string },

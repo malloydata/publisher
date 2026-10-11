@@ -11,14 +11,11 @@
  * firing across every package. A report that is dropped or tileless is still
  * a model that compiles and serves, so only these counters show it.
  *
- * The write path is the only endpoint that MUTATES a package's model files.
- * What it needs counted is what a log line does not answer: how often two
- * editors collide on one file, whether the compile gate is doing its job or
- * turning away every save, and how often a write compiles, lands, and then
- * fails to reload, which rolls the file back. That last one is rare by design,
- * so "rare" versus "started happening after the upgrade" is a question only a
- * counter answers. Its duration covers the whole endpoint, compile and reload
- * included, because that is what a caller waits on.
+ * The write path, the only endpoint that mutates a package's model files, is
+ * counted by outcome: how often editors collide, whether the compile gate turns
+ * away every save, and how often a landed write fails to reload and rolls back.
+ * Its duration covers compile and reload, because that is what a caller waits
+ * on.
  *
  * Labels are bounded enumerations only; never a package name or a path.
  *

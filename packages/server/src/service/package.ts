@@ -584,12 +584,10 @@ export class Package {
       const mode =
          this.packageMetadata.queryableSources === "all" ? "all" : "declared";
       // The PACKAGE-wide queryable surface: the union of every explores-listed
-      // model's export closure. The source-level gate used to consult only the
-      // requested model's own closure, which denied a source that IS declared
-      // queryable (its own file is listed in explores) whenever it was
-      // addressed through a model that imports it. A client that posts every
-      // query to one model path — the observed agent behavior (HANDOFF CR-5) —
-      // then loses every source but that file's own.
+      // model's export closure, not just the requested model's: a source
+      // declared queryable (its file is listed in explores) must stay
+      // queryable when addressed through a model that imports it, since agents
+      // commonly post every query to one model path.
       //
       // Each entry maps a name to the DEFINITION IDENTITIES exported under it,
       // never to the bare name. Keying on names alone would admit by collision:
@@ -1647,9 +1645,8 @@ export class Package {
          ...this.persistRefusalWarnings(),
          // A listed model whose curated surface is empty. Advisory (an
          // import-only file is legitimate and must not block a publish, so it
-         // stays out of exploresWarnings), but it must ride the API: the QA
-         // shape this closes was a package reporting exploresWarnings: none
-         // while listed files surfaced nothing (HANDOFF CR-5).
+         // stays out of exploresWarnings), but it must ride the API, or a
+         // package whose listed files surface nothing reports no warning.
          ...this.emptyDiscoveryWarnings(),
          // Content on a deprecated format: a `.malloynb` notebook, and a source
          // declaring `#(filter)` annotations. Both still load and run, so this

@@ -7,11 +7,10 @@
  * The catch-all exists so the single-page app can own its client-side routes:
  * any unmatched path returns `index.html` and React Router decides. The cost is
  * that a request for a *file* also gets `index.html`, with HTTP 200, and a 200
- * carrying HTML is indistinguishable from a working page. That has now misled a
- * reader three times: an unknown `/api/v0/...` answering 200 plus HTML, a
- * `/public/` segment that looked served, and `/<env>/<pkg>/index.html`, which
- * renders the app shell and then reports "Unrecognized file type: index.html",
- * a confident error about the wrong thing, since the path was what was wrong.
+ * carrying HTML is indistinguishable from a working page: an unknown
+ * `/api/v0/...` answering 200 plus HTML, or `/<env>/<pkg>/index.html` rendering
+ * the app shell and then "Unrecognized file type: index.html", a confident error
+ * about the wrong thing, since the path was what was wrong.
  *
  * So the shell is served only for paths that can plausibly BE app routes. A file
  * request gets a real answer instead:
@@ -42,7 +41,7 @@
  * most-used URLs.
  *
  * Also absent, and not an oversight: `yaml`/`yml`, `xml`, `md`, `wasm`,
- * `webmanifest`. Those fall through to the app, which now names the path and
+ * `webmanifest`. Those fall through to the app, which names the path and
  * links to the static URL, so the outcome is already reasonable and the list
  * stays short. `package-asset-urls.spec.ts` depends on `yaml` being absent to
  * exercise that app-side page, so adding it here breaks that test rather than
@@ -80,28 +79,19 @@ const ASSET_EXTENSIONS = new Set([
  * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
  * embedded data app viewer.
  *
- * `dashboards` and `notebooks` were here while a report's route depended on
- * its folder. A report now lives anywhere and its route is its path without
- * `.malloy` (`docs/reports-design.md` §9), so a whole segment is the wrong
- * tool: the caller asks the loaded package instead whether
- * `<path>.malloy` is a served report (see `reportPath` on the redirect
- * candidate). That covers a report anywhere whose name ends in an asset
- * extension (`sales/report.csv.malloy` publishes `sales/report.csv`), and
- * gives a package's own `public/dashboards/` and `public/notebooks/` files
- * back their `/<env>/<pkg>/dashboards/<file>` URLs. The deprecated
- * `dashboards/<name>` and `notebooks/<name>` links stay in the app only when
- * a report is named `<name>` (the caller asks the package), which is what the
- * Console's alias route resolves.
- *
- * `pages`, the pre-0.0.242 spelling of `data-apps`, was carried here for a while
- * so an old bookmark could reach the app and be redirected. That alias is gone:
- * a `pages/...` path is an ordinary path into the package's `public/` directory
- * again.
+ * A report is not a segment: its route is its path without `.malloy`
+ * (`docs/reports-design.md` §9), wherever it lives, so the caller asks the
+ * loaded package whether `<path>.malloy` is a served report (see `reportPath`
+ * on the redirect candidate). That keeps a report whose name ends in an asset
+ * extension (`sales/report.csv.malloy`) in the app, and a package's own
+ * `public/dashboards/<file>` reachable. The deprecated `dashboards/<name>` and
+ * `notebooks/<name>` alias links stay in the app only when a report is named
+ * `<name>`.
  */
 const SPA_OWNED_SEGMENTS = new Set(["data-apps"]);
 
 export type SpaFallbackAction =
-   /** Serve the app shell, as before. */
+   /** Serve the app shell. */
    | { kind: "spa" }
    /**
     * A package file addressed on the app route. A CANDIDATE only: the caller

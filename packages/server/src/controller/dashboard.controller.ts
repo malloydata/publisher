@@ -39,15 +39,11 @@ type ApiModelSourceWriteResult =
    components["schemas"]["ModelSourceWriteResult"];
 
 /**
- * Whether the file now at `modelPath` is one the write path may replace: a
- * `.malloy` whose on-disk text, which may postdate the load, carries a
- * model-level artifact tag, and which the loaded package reads as a report
- * (served, or a grid report with no tiles yet) or which claims to be one by
- * its own `## artifact` note even though that tag does not parse or sets the
- * removed `kind=`. The last is still the author's report, and saving the fix
- * is how it gets served again. A model, an untagged file, a `.malloynb`, the
- * root `index.malloy` and anything in `public/` never qualify (the last three
- * are refused by path before this runs).
+ * Whether the write path may replace the file now at `modelPath`: its on-disk
+ * text (which may postdate the load) carries a model-level artifact tag, and
+ * the loaded package reads it as a report — served, tileless, or tagged but
+ * invalid, since saving the fix is how an invalid one gets served again. A
+ * model or an untagged file never qualifies.
  */
 function currentIsAReport(
    current: string,
