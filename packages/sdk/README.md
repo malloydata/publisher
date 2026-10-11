@@ -949,8 +949,8 @@ store; a repo-backed host writes them to the package directory.
 ### DocumentStorage Interface
 
 ```tsx
-/** The kinds of document the SDK authors. */
-type DocumentType = "dashboard" | "notebook";
+/** A report's layout, recorded beside the document: metadata, not identity. */
+type DocumentType = "grid" | "linear";
 
 interface Workspace {
    name: string;
@@ -969,8 +969,10 @@ interface Workspace {
 
 interface DocumentLocator {
    workspace: string;
+   /** The report's layout: a save records it, a listing reports it. */
    type: DocumentType;
-   path: string; // as the backend spells it, e.g. "<env>/<pkg>/sales/overview.malloy"
+   /** The identity: "<env>/<pkg>/<package path>", e.g. "env/pkg/sales/overview.malloy". */
+   path: string;
 }
 
 interface DocumentStorage {
@@ -1006,13 +1008,24 @@ belief overwrites the copy that was actually there. Use `isDocumentNotFound(erro
 rather than `instanceof`, since the `es` and `cjs` builds carry their own copy of the
 class.
 
-A document is a string; the `type` on its locator says what kind so a backend can keep kinds apart
-and a listing can ask for one. Every method rejects when the document is not there, so a caller can
-tell "missing" from "empty".
+A document is a string, and **its path is its identity**: one path is one document. The `type` on
+its locator is the report's layout (`grid` or `linear`), metadata the store keeps beside the
+document. `saveDocument` and `moveDocument` record it (a layout switch saves the same path with the
+other layout, replacing the document), `listDocuments` reports it and may filter by it, and
+`getDocument` and `deleteDocument` find the document at `locator.path` whatever `type` says. Every
+method rejects when the document is not there, so a caller can tell "missing" from "empty".
+
+A store written against the earlier contract, which keyed a document by `type` and `path` together
+with `type` `"dashboard"` or `"notebook"`, keys by `path` alone and records the layout instead:
+`grid` for what was `dashboard`, `linear` for what was `notebook`.
 
 ### BrowserDocumentStorage
 
-The default: one workspace named `Local`, private to this browser and origin.
+The default: one workspace named `Local`, private to this browser and origin. A document is kept
+under `publisher:report:<path>` with its layout. A draft saved under the earlier type-keyed scheme
+(`publisher:document:<dashboard|notebook>:<path>`) is moved to its path the first time the store is
+used, so it is still found; where a document is already at that path, the older copy is left where
+it was rather than written over it.
 
 ```tsx
 import {
@@ -1029,8 +1042,8 @@ const storage = new BrowserDocumentStorage();
 
 ### A custom backend
 
-Implement the interface over whatever you have. For example, over a document API keyed by workspace,
-type and path:
+Implement the interface over whatever you have. For example, over a document API keyed by workspace
+and path, with the layout stored on the document:
 
 ```tsx
 class ApiDocumentStorage implements DocumentStorage {
@@ -1090,12 +1103,13 @@ layout from its text alone, never from where the file lives, in the same order t
 wins:
 
 1. `layout=` in the model-level `## artifact` tag: `grid` or `linear`.
-2. Otherwise the deprecated `kind=`: `dashboard` is grid, `notebook` is linear.
-3. Otherwise grid when the tag lists `tiles` (an empty list counts) or a `dashboard { … }` grid tag sits beside it.
-4. Otherwise linear.
+2. Otherwise grid when the tag lists `tiles` (an empty list counts) or the file carries a model-level `dashboard { … }` grid tag.
+3. Otherwise linear.
 
-A file that writes `layout=` never depends on steps 2 to 4, and the builder and `createDocument` always
-write it. The toolbar's Linear / Grid switch rewrites `layout=` and nothing else, so a host that ties a
+A tag that sets the removed `kind=` makes no report, and the builder refuses to open it, naming the
+`layout=` to write. A file that writes `layout=` never depends on steps 2 and 3, and the builder and
+`createDocument` always write it. `readReportTagOfText(text)` from `@malloy-publisher/sdk/builder` gives
+the same answer for any text, for a host that files a document by its layout. The toolbar's Linear / Grid switch rewrites `layout=` and nothing else, so a host that ties a
 report's layout to where it keeps the file (every grid report under `dashboards/`, every linear one under
 `notebooks/`) passes `allowLayoutChange={false}` to hide the switch; otherwise an author can turn a file
 into the other layout without it moving. Default `true`. A document held as text (`textSource`) never
@@ -1116,9 +1130,9 @@ import {
 // Inside a component:
 function MyComponent() {
    const { documentStorage } = useDocumentStorage();
-   const dashboards = await documentStorage.listDocuments(
+   const grids = await documentStorage.listDocuments(
       { name: "Local", writeable: true, description: "" },
-      "dashboard",
+      "grid",
    );
 }
 ```
@@ -1480,8 +1494,8 @@ function EnvironmentList() {
 | `QueryExplorerResult`    | Query builder result             |
 | `SourceAndPath`          | Source info with model path      |
 | `DocumentStorage`        | Document storage interface       |
-| `DocumentLocator`        | Workspace + type + path          |
-| `DocumentType`           | `"dashboard"` or `"notebook"`    |
+| `DocumentLocator`        | Workspace + path, with layout    |
+| `DocumentType`           | `"grid"` or `"linear"`           |
 | `Workspace`              | Workspace metadata               |
 | `ApiError`               | Standardized API error           |
 | `ModelExplorerProps`     | ModelExplorer props              |
