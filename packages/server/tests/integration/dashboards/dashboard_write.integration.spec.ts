@@ -333,12 +333,16 @@ query: broken is orders -> { aggregate: no_such_measure }
    });
 
    it("creates the notebook the SDK writes for a new one, create-only", async () => {
-      const source = newNotebookSource({
-         title: "Created by the SDK",
-         modelPath: "orders.malloy",
-         source: "orders",
-         view: "totals",
-      });
+      // The template writes its import relative to where the report goes.
+      const source = newNotebookSource(
+         {
+            title: "Created by the SDK",
+            modelPath: "orders.malloy",
+            source: "orders",
+            view: "totals",
+         },
+         "notebooks/sdk-created.malloy",
+      );
       const res = await put("notebooks/sdk-created.malloy", { source });
       expect(res.status).toBe(201);
       const again = await put("notebooks/sdk-created.malloy", { source });
