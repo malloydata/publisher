@@ -253,8 +253,8 @@ Revenue first, then the seasonal split.
 - **The block is `##|(markdown) name`.** The name is one bare word on the opener line, the body starts
   on the next line, and `|##` closes it at the opener's column. A heading goes inside the block,
   because a bare `## Heading` line is a model tag, not prose. Keep the parentheses: `##|markdown` draws
-  a malformed-route warning and `##| markdown` reads the prose as tags. Earlier spellings are still
-  read (`##|(text) name` is a text tile); write `(markdown)`.
+  a malformed-route warning and `##| markdown` reads the prose as tags. `##|(text) name` is also
+  read as a text tile; write `(markdown)`.
 - **The body is markdown**: headings, emphasis, lists, links and inline code.
 - **On a grid the entry reads `colspan` and `break`** and nothing else, the same two layout tags a query
   tile takes from its view. On a linear report both are ignored.
@@ -967,7 +967,7 @@ source file you can review in a pull request, and one an agent can write by hand
 
 **Save** (or Cmd/Ctrl+S) writes at once through `PUT …/models/{path}`, with no review step, and the builder
 stays open; the button reads a greyed **Saved** until the next edit, and its tooltip says where Save writes.
-The header button that read **Edit** now reads **View**: it returns to the read-only page and asks first
+While editing, the header button reads **View**: it returns to the read-only page and asks first
 when edits are unsaved. On a server that does not take writes (`frozenConfig`), Save keeps the edit in this
 browser instead, keyed by the report's path, and the package page lists those drafts.
 
@@ -988,7 +988,7 @@ near the root of your app. Add `versionId` to the URI and every request it makes
 each tile's query, and each control's suggest query. Publisher itself answers `501 Not Implemented` to a
 `versionId` on any route, so this is for a host that resolves versions at its own routing layer.
 
-The example below uses the `<Dashboard>` wrapper, whose props are stable today:
+The example below uses the deprecated `<Dashboard>` wrapper, whose props stay stable until it is removed:
 
 ```tsx
 import {
