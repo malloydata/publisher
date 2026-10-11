@@ -13,6 +13,10 @@
 import type { GivenValue } from "@malloydata/malloy";
 import type express from "express";
 import { LegacyReportController } from "../controller/legacy_report.controller";
+import {
+   recordDeprecatedUsage,
+   type DeprecatedFeature,
+} from "../deprecated_usage_metrics";
 import { setFilterDeprecationHeaders } from "../filter_deprecation";
 import { queryConcurrency } from "../query_concurrency";
 import { optionalBooleanParamOr400 } from "../route_params";
@@ -35,6 +39,17 @@ function jsonParam<T>(
    }
 }
 
+/** {@link jsonRoute}, counting each request as one use of `feature`. */
+function legacyRoute(
+   feature: DeprecatedFeature,
+   handler: Parameters<typeof jsonRoute>[0],
+): express.RequestHandler {
+   return jsonRoute((req, res) => {
+      recordDeprecatedUsage(feature);
+      return handler(req, res);
+   });
+}
+
 export function registerDeprecatedRoutes(
    app: express.Express,
    apiPrefix: string,
@@ -45,7 +60,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/dashboards`,
-      jsonRoute((req) =>
+      legacyRoute("dashboards_list", (req) =>
          controller.listDashboards(
             req.params.environmentName,
             req.params.packageName,
@@ -55,7 +70,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/dashboards/:dashboardName`,
-      jsonRoute((req) =>
+      legacyRoute("dashboard_get", (req) =>
          controller.getDashboard(
             req.params.environmentName,
             req.params.packageName,
@@ -66,7 +81,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/notebooks`,
-      jsonRoute((req) =>
+      legacyRoute("notebooks_list", (req) =>
          controller.listNotebooks(
             req.params.environmentName,
             req.params.packageName,
@@ -82,7 +97,7 @@ export function registerDeprecatedRoutes(
    app.get(
       `${pkg}/notebooks/*/cells/:cellIndex`,
       queryConcurrency(),
-      jsonRoute(async (req, res) => {
+      legacyRoute("notebook_cell", async (req, res) => {
          const cellIndex = parseInt(req.params.cellIndex, 10);
          if (isNaN(cellIndex)) {
             res.status(400).json({ error: "Invalid cell index" });
@@ -123,7 +138,7 @@ export function registerDeprecatedRoutes(
 
    app.get(
       `${pkg}/notebooks/*?`,
-      jsonRoute((req) =>
+      legacyRoute("notebook_get", (req) =>
          controller.getNotebook(
             req.params.environmentName,
             req.params.packageName,

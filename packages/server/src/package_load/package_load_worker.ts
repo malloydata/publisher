@@ -67,6 +67,10 @@ import {
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { MalloySQLStatementType } from "@malloydata/malloy-sql";
 import { parseMalloynb } from "../service/deprecated/malloynb";
+import {
+   declaredDeprecatedManifestKeys,
+   type DeprecatedManifestKey,
+} from "../service/deprecated/manifest_keys";
 import * as fs from "fs";
 import * as path from "path";
 import { parentPort, threadId } from "node:worker_threads";
@@ -526,6 +530,7 @@ async function readPackageMetadata(
    materialization?: PackageMaterializationConfig | null;
    scope?: PackageScope;
    manifestWarnings?: string[];
+   deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
@@ -628,6 +633,7 @@ async function readPackageMetadata(
       scope: scope.scope,
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
+      deprecatedManifestKeys: declaredDeprecatedManifestKeys(parsed),
       // How this package is searched and indexed. Validated here so a bad key
       // or an unreadable prompt file stops the load with a message naming it,
       // and read here so a prompt edit takes effect on reload.

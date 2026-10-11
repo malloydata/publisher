@@ -25,6 +25,7 @@ import { buildQueryEnvelope } from "../query_envelope";
 import { mintCorrelationId } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
+import { recordDeprecatedFilterUsage } from "../../filter_deprecation";
 
 /**
  * Malloy's two ways of saying a name is not in the model's namespace: a bare
@@ -285,6 +286,7 @@ export function registerExecuteQueryTool(
                        ),
                getQueryTimeoutMs(),
             );
+            recordDeprecatedFilterUsage({ filterParams });
 
             // Render-tag validation reads the FULL Malloy result: the tags live
             // in its schema annotations, which the flat rows do not carry. It

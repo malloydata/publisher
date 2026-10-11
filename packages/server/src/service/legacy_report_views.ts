@@ -19,6 +19,7 @@
 
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
+import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import { ConflictError } from "../errors";
 import type { CompiledDocument } from "./compile_document";
 import type { Package } from "./package";
@@ -201,5 +202,8 @@ export function hasReportNamed(pkg: Package, name: string): boolean {
  */
 export function isLegacyReportAlias(pkg: Package, routePath: string): boolean {
    const alias = /^(?:dashboards|notebooks)\/([^/]+)$/.exec(routePath);
-   return alias !== null && hasReportNamed(pkg, alias[1]);
+   const resolves = alias !== null && hasReportNamed(pkg, alias[1]);
+   // Counted only when it resolves: anything else is not the alias in use.
+   if (resolves) recordDeprecatedUsage("console_alias");
+   return resolves;
 }

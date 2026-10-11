@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { recordDeprecatedUsage } from "./deprecated_usage_metrics";
+
 /**
  * Minimal structural type the helper needs from an HTTP response. Kept
  * narrower than `express.Response` so tests can pass a tiny stub instead
@@ -8,6 +10,51 @@
  */
 export interface HeaderSetter {
    setHeader(name: string, value: string): unknown;
+}
+
+/** The legacy `#(filter)` request fields, as a query passed them. */
+interface FilterFields {
+   filterParams?: unknown;
+   bypassFilters?: unknown;
+}
+
+/**
+ * Which legacy fields a query actually used. `filterParams` is the *parsed*
+ * value (after JSON.parse for the GET notebook-cell path), so an empty `{}` is
+ * a no-op opt-out, not a use.
+ */
+function usedFilterFields(options: FilterFields): {
+   filterParams: boolean;
+   bypassFilters: boolean;
+} {
+   const { filterParams } = options;
+   return {
+      filterParams:
+         filterParams !== undefined &&
+         filterParams !== null &&
+         !(
+            typeof filterParams === "object" &&
+            !Array.isArray(filterParams) &&
+            Object.keys(filterParams as Record<string, unknown>).length === 0
+         ),
+      bypassFilters: options.bypassFilters !== undefined,
+   };
+}
+
+/**
+ * Count a query that used `filterParams` / `filter_params` or `bypassFilters`
+ * / `bypass_filters`. The REST routes count through
+ * {@link setFilterDeprecationHeaders}; MCP, which has no headers to set,
+ * calls this directly.
+ */
+export function recordDeprecatedFilterUsage(options: FilterFields): {
+   filterParams: boolean;
+   bypassFilters: boolean;
+} {
+   const used = usedFilterFields(options);
+   if (used.filterParams) recordDeprecatedUsage("filter_params");
+   if (used.bypassFilters) recordDeprecatedUsage("bypass_filters");
+   return used;
 }
 
 /**
@@ -18,24 +65,15 @@ export interface HeaderSetter {
  * whether the caller used the deprecated request fields) ships as a
  * one-time warn log in `Model`'s constructor — see service/model.ts.
  *
- * `filterParams` here is the *parsed* value (after JSON.parse for the GET
- * notebook-cell path), so an empty `{}` is treated as a no-op opt-out — the
- * header only fires when the caller actually supplied filter values.
+ * The header fires, and the use is counted, only when the caller actually
+ * supplied filter values (see {@link usedFilterFields}).
  */
 export const setFilterDeprecationHeaders = (
    res: HeaderSetter,
-   options: { filterParams?: unknown; bypassFilters?: unknown },
+   options: FilterFields,
 ): void => {
-   const hasFilterParams =
-      options.filterParams !== undefined &&
-      options.filterParams !== null &&
-      !(
-         typeof options.filterParams === "object" &&
-         !Array.isArray(options.filterParams) &&
-         Object.keys(options.filterParams as Record<string, unknown>).length ===
-            0
-      );
-   if (hasFilterParams || options.bypassFilters !== undefined) {
+   const used = recordDeprecatedFilterUsage(options);
+   if (used.filterParams || used.bypassFilters) {
       res.setHeader("Deprecation", "true");
       res.setHeader(
          "Link",

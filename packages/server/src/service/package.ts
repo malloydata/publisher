@@ -114,7 +114,11 @@ import {
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
 import { CELLS_UNREADABLE } from "./notebook";
-import { deprecatedFormatWarnings } from "./deprecated/lints";
+import {
+   deprecatedFormatWarnings,
+   recordDeprecatedFormatUsage,
+} from "./deprecated/lints";
+import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
 import {
    EXPLORES_IMPORTER,
@@ -1279,6 +1283,7 @@ export class Package {
       pkg.renderTagWarnings = renderTagWarnings;
       await pkg.discoverReports("load");
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+      pkg.recordDeprecatedUsage(outcome);
       pkg.retrievalSettings =
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // Install the per-query freshness resolver on the freshly-built models.
@@ -2981,6 +2986,7 @@ export class Package {
       await this.pushPreaggregateServeModels();
       this.renderTagWarnings = renderTagWarnings;
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
+      this.recordDeprecatedUsage(outcome);
       this.retrievalSettings =
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       // The tile lint asks the query boundary about each tile, so it runs once
@@ -3215,6 +3221,17 @@ export class Package {
             message: finding.message,
          });
       }
+   }
+
+   /**
+    * Count the deprecated features this package uses, once per load or
+    * reload: each seam counts its own (`service/deprecated/*`).
+    */
+   private recordDeprecatedUsage(outcome: LoadPackageOutcome): void {
+      recordDeprecatedFormatUsage(this.models);
+      recordDeprecatedManifestKeys(
+         outcome.packageMetadata.deprecatedManifestKeys,
+      );
    }
 
    /**

@@ -5,11 +5,17 @@
  * DEPRECATED: the package warnings that name a deprecated format, so an
  * author knows to move off it. Each is one entry of
  * {@link deprecatedFormatWarnings}, which the package spreads into its
- * warnings at one call site; removing a format is deleting its entry here.
+ * warnings at one call site, and each warning is also one use counted by
+ * {@link recordDeprecatedFormatUsage}; removing a format is deleting its entry
+ * here.
  */
 
 import { components } from "../../api";
 import { GIVENS_DOCS_URL } from "../../constants";
+import {
+   recordDeprecatedUsage,
+   type DeprecatedFeature,
+} from "../../deprecated_usage_metrics";
 import type { Model } from "../model";
 import { isMalloynbPath } from "./malloynb";
 
@@ -60,14 +66,31 @@ const filterAnnotations: DeprecatedLint = (models) =>
       })),
    );
 
-const DEPRECATED_LINTS: readonly DeprecatedLint[] = [
-   malloynbNotebooks,
-   filterAnnotations,
+const DEPRECATED_LINTS: readonly {
+   feature: DeprecatedFeature;
+   lint: DeprecatedLint;
+}[] = [
+   { feature: "malloynb", lint: malloynbNotebooks },
+   { feature: "filter_annotation", lint: filterAnnotations },
 ];
 
 /** Every deprecated format's warnings, in registry order. */
 export function deprecatedFormatWarnings(
    models: ReadonlyMap<string, Model>,
 ): ApiPackageWarning[] {
-   return DEPRECATED_LINTS.flatMap((lint) => lint(models));
+   return DEPRECATED_LINTS.flatMap(({ lint }) => lint(models));
+}
+
+/**
+ * Count each deprecated-format warning as one use of its feature: a
+ * `.malloynb` file, or a source declaring `#(filter)`. Called once per load
+ * or reload; the warnings themselves are computed per request, so they are
+ * not where to count.
+ */
+export function recordDeprecatedFormatUsage(
+   models: ReadonlyMap<string, Model>,
+): void {
+   for (const { feature, lint } of DEPRECATED_LINTS) {
+      recordDeprecatedUsage(feature, lint(models).length);
+   }
 }
