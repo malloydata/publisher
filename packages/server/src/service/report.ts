@@ -82,9 +82,7 @@ export function reportName(modelPath: string): string {
 }
 
 /** A `layout=` value, or undefined for anything else. */
-function parseLayoutValue(
-   value: string | undefined,
-): ReportLayout | undefined {
+function parseLayoutValue(value: string | undefined): ReportLayout | undefined {
    return value === "grid" || value === "linear" ? value : undefined;
 }
 
