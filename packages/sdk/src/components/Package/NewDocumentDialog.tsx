@@ -19,8 +19,8 @@ import {
    useDocumentChoices,
    type CreatedDocument,
    type CreateTarget,
-   type DocumentCreatedEvent,
 } from "../DocumentCreate";
+import type { ReportEventHandler } from "../Report/telemetry";
 import { canRetryRequest } from "../DocumentCreate/canRetry";
 import { AppDialog } from "../AppDialog";
 import { layoutOfKind, type DocumentKind } from "../legacy/kindAdapter";
@@ -58,7 +58,8 @@ export interface NewDocumentDialogProps {
    savedAs?: string;
    onClose: () => void;
    onCreated: (created: CreatedDocument) => void;
-   onEvent?: (event: DocumentCreatedEvent) => void;
+   /** `report.created` or `report.create_refused`; see `ReportEvent`. */
+   onEvent?: ReportEventHandler;
 }
 
 /**

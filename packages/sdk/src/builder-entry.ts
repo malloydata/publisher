@@ -60,18 +60,17 @@ export {
    type PackageCatalog,
 } from "./components/DashboardBuilder/catalog";
 export type {
-   DashboardEvent,
-   DashboardEventHandler,
-} from "./components/Dashboard/telemetry";
+   DrillOutcome,
+   ReportEvent,
+   ReportEventContext,
+   ReportEventHandler,
+   ReportFailure,
+   SavesTo,
+} from "./components/Report/telemetry";
 export {
    NotebookEditor,
    type NotebookEditorProps,
 } from "./components/legacy/NotebookEditor";
-export type {
-   BuilderEvent,
-   NotebookEvent,
-   NotebookEventHandler,
-} from "./components/DashboardBuilder/telemetry";
 export {
    createDocument,
    createRoute,
@@ -88,9 +87,6 @@ export {
    type CreatedDocument,
    type CreateDocumentOptions,
    type CreateTarget,
-   type DashboardCreatedEvent,
    type DocumentChoice,
-   type DocumentCreatedEvent,
    type NewDocument,
-   type NotebookCreatedEvent,
 } from "./components/DocumentCreate";

@@ -11,7 +11,7 @@ import {
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import { useEffect, useMemo } from "react";
-import { logDashboardEvent } from "../../../utils/consoleTelemetry";
+import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
 interface ReportPageProps {
@@ -43,15 +43,10 @@ export default function ReportPage({
    const { params: givens, onGivensChange } = useGivenUrlParams();
    const onNavigate = useDrillNavigate(environmentName, packageName);
    const onLinkNavigate = useRouterClickHandler();
-   // Keyed by path: two reports may share a basename.
+   // The event names the report by path; the sink adds where it is.
    const onEvent = useMemo(
-      () =>
-         logDashboardEvent({
-            environmentName,
-            packageName,
-            dashboardName: path,
-         }),
-      [environmentName, packageName, path],
+      () => logReportEvent({ environmentName, packageName }),
+      [environmentName, packageName],
    );
 
    // The builder is a lazy chunk carrying the Malloy parser. Fetch it while

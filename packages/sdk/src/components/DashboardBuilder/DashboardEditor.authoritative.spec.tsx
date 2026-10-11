@@ -27,7 +27,7 @@ import {
 } from "../DocumentStorage";
 import { BrowserDocumentStorage } from "../DocumentStorage/BrowserDocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
-import type { DashboardEvent } from "../Dashboard/telemetry";
+import type { ReportEvent } from "../Report/telemetry";
 
 /**
  * The editor against a host whose store is the record, and against the same
@@ -206,7 +206,7 @@ class FakeStorage implements DocumentStorage {
 const mount = (
    storage: DocumentStorage,
    onDirtyChange?: (dirty: boolean) => void,
-   onEvent?: (event: DashboardEvent) => void,
+   onEvent?: (event: ReportEvent) => void,
 ) =>
    render(
       <DocumentStorageProvider documentStorage={storage}>
@@ -274,7 +274,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
    it("opens the store's copy rather than the package file, and never offers to resume it", async () => {
       const storage = new FakeStorage(RECORD);
       storage.documents.set(PATH, withTitle("Recorded"));
-      const onEvent = mock((_event: DashboardEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       mount(storage, undefined, onEvent);
 
       expect(await screen.findByText("Recorded")).toBeDefined();
@@ -282,7 +282,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
       // Nothing is pending, so there is nothing to resume.
       expect(screen.queryByText(/edits to this report/)).toBeNull();
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "dashboard.opened",
+         type: "report.opened",
          from: "record",
       });
    });
@@ -356,14 +356,14 @@ describe("DashboardEditor, when the host's store is the record", () => {
       const storage = new FakeStorage(RECORD);
       storage.slow = true;
       storage.documents.set(PATH, withTitle("Recorded"));
-      const onEvent = mock((_event: DashboardEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       mount(storage, undefined, onEvent);
 
       expect(await screen.findByText("Recorded")).toBeDefined();
       await settle();
       const opens = onEvent.mock.calls
          .map((call) => call[0])
-         .filter((event) => event.type === "dashboard.opened");
+         .filter((event) => event.type === "report.opened");
       expect(opens).toHaveLength(1);
       expect(opens[0]).toMatchObject({ from: "record" });
    });

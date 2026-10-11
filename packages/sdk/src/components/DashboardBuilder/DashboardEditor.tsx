@@ -3,12 +3,17 @@
 
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Given } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
-import type { BuilderEvent } from "./telemetry";
+import {
+   failureCategory,
+   reportEmitter,
+   type ReportEvent,
+   type ReportEventHandler,
+} from "../Report/telemetry";
 import { now } from "../../utils/clock";
 import { useOptionalDocumentStorage } from "../DocumentStorage";
 import { Loading } from "../Loading";
@@ -83,10 +88,10 @@ export type DashboardEditorProps = (
      }
 ) & {
    /**
-    * What the editor does — opened, saved, refused — for the host to log or
-    * count; see `DashboardEvent`. A notebook reports `NotebookEvent`s instead.
+    * What the editor does — opened, failed to load, saved, refused, switched
+    * layout — for the host to log or count; see `ReportEvent`.
     */
-   onEvent?: (event: BuilderEvent) => void;
+   onEvent?: ReportEventHandler;
    /**
     * The report's layout as the host knows it before the text is read: from
     * the package's listing, or for a draft the layout its store recorded.
@@ -175,9 +180,6 @@ export function DashboardEditor(props: DashboardEditorProps) {
    // The label the builder shows; the path is what it opens.
    const dashboardName = named ?? documentSlug(path) ?? "";
    const noun = "report";
-   const refusedEvent = notebook
-      ? ("notebook.open_refused" as const)
-      : ("dashboard.open_refused" as const);
 
    const { apiClients, mutable, isLoadingStatus } = useServer();
    const queryClient = useQueryClient();
@@ -264,9 +266,9 @@ export function DashboardEditor(props: DashboardEditorProps) {
       fetchedAt: modelQuery.dataUpdatedAt,
       packageSettled: modelQuery.isSuccess && !modelQuery.isFetching,
       modelPath,
+      layout,
       notebook,
       noun,
-      refusedEvent,
       legacyFormat,
       textHeld,
       startedAt,
@@ -307,11 +309,24 @@ export function DashboardEditor(props: DashboardEditorProps) {
    });
    const workspaceName = workspace?.name;
    const reportEvent = useCallback(
-      (event: BuilderEvent) => {
+      (event: ReportEvent) => {
          onEventRef.current?.(withWorkspace(event, workspaceName));
       },
       [workspaceName],
    );
+   // The file could not be fetched before anything opened: once per mount,
+   // since a refetch that fails again is the same failure.
+   const fetchFailed = modelQuery.isError && !opened;
+   const fetchFailureReported = useRef(false);
+   useEffect(() => {
+      if (!fetchFailed || fetchFailureReported.current) return;
+      fetchFailureReported.current = true;
+      reportEmitter({ path: modelPath, layout }, onEventRef.current).emit({
+         type: "report.load_failed",
+         surface: "edit",
+         category: failureCategory(modelQuery.error),
+      });
+   }, [fetchFailed, modelQuery.error, modelPath, layout]);
    // Stable: the builder fires this from an effect that depends on it.
    const reportDirty = useCallback(
       (value: boolean) => {

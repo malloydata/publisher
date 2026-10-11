@@ -11,7 +11,7 @@ import type { ApiClients } from "../ServerProvider";
 // workspace it opens against, where Save goes, and the hash a package write
 // carries. The dashboard and notebook hosts both decide these the same way.
 
-import type { SavesTo } from "../Dashboard/telemetry";
+import type { SavesTo } from "../Report/telemetry";
 
 export type { SavesTo };
 

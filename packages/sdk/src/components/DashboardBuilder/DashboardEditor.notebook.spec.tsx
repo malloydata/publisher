@@ -26,7 +26,7 @@ import {
    type Workspace,
 } from "../DocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
-import type { BuilderEvent } from "./telemetry";
+import type { ReportEvent } from "../Report/telemetry";
 import { editInline } from "./testing/inline";
 
 /**
@@ -136,7 +136,7 @@ const mount = (
    props: Partial<Parameters<typeof DashboardEditor>[0]> & {
       dashboardName?: string;
    } = {},
-   onEvent?: (event: BuilderEvent) => void,
+   onEvent?: (event: ReportEvent) => void,
 ) =>
    render(
       <DashboardEditor
@@ -166,7 +166,7 @@ beforeEach(async () => {
 
 describe("DashboardEditor as a notebook", () => {
    it("reads the file with the authoring flag, and the manifest from the report read", async () => {
-      const onEvent = mock((_event: BuilderEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       mount({}, onEvent);
       expect(await screen.findByText("Tour")).toBeDefined();
       expect(getModel.mock.calls[0].slice(0, 3)).toEqual([
@@ -179,9 +179,11 @@ describe("DashboardEditor as a notebook", () => {
       expect(getReport.mock.calls[0][2]).toBe("notebooks/tour.malloy");
       expect(getDashboard).not.toHaveBeenCalled();
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "notebook.opened",
+         type: "report.opened",
+         surface: "edit",
+         layout: "linear",
          from: "package",
-         cells: 1,
+         tiles: 1,
       });
    });
 
@@ -209,7 +211,7 @@ describe("DashboardEditor as a notebook", () => {
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
       it("refuses a .malloynb notebook without fetching it", async () => {
-         const onEvent = mock((_event: BuilderEvent) => {});
+         const onEvent = mock((_event: ReportEvent) => {});
          mount({ dashboardName: "old.malloynb" }, onEvent);
          expect(
             await screen.findByText(
@@ -218,7 +220,9 @@ describe("DashboardEditor as a notebook", () => {
          ).toBeDefined();
          expect(getModel).not.toHaveBeenCalled();
          expect(onEvent.mock.calls[0][0]).toMatchObject({
-            type: "notebook.open_refused",
+            type: "report.load_failed",
+            surface: "edit",
+            category: "unsupported",
          });
       });
    });
@@ -226,7 +230,7 @@ describe("DashboardEditor as a notebook", () => {
    it("offers a notebook in the cell format as a conversion, and Save writes it exactly", async () => {
       served = LEGACY;
       servedHash = await sha256Hex(LEGACY);
-      const onEvent = mock((_event: BuilderEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       mount({}, onEvent);
       expect(
          await screen.findByText(/This report is in the cell format/),
@@ -242,8 +246,8 @@ describe("DashboardEditor as a notebook", () => {
       expect(writes[0]).toContain("view: revenue_by_month is sales_by_month");
       await waitFor(() =>
          expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
-            "notebook.opened",
-            "notebook.saved",
+            "report.opened",
+            "report.saved",
          ]),
       );
       expect(onEvent.mock.calls[1][0]).toMatchObject({ converted: true });
@@ -251,7 +255,7 @@ describe("DashboardEditor as a notebook", () => {
 
    it("says why a notebook cannot be converted, naming the line", async () => {
       served = REFUSED;
-      const onEvent = mock((_event: BuilderEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       mount({}, onEvent);
       const alert = await screen.findByText(/cannot be opened in the builder/);
       expect(alert.textContent).toMatch(/line 4/i);
@@ -259,8 +263,12 @@ describe("DashboardEditor as a notebook", () => {
          screen.queryByText(/This report is in the cell format/),
       ).toBeNull();
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "notebook.open_refused",
+         type: "report.load_failed",
+         surface: "edit",
+         category: "invalid",
       });
+      // A category, never the message: the reason can carry the file's text.
+      expect(onEvent.mock.calls[0][0]).not.toHaveProperty("reason");
    });
 });
 

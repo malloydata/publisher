@@ -8,7 +8,7 @@ import { DEFAULT_COLUMNS, nudgedSpan } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
-import type { BuilderEvent } from "./telemetry";
+import { reportEmitter, type ReportEventHandler } from "../Report/telemetry";
 import type { BuilderGiven } from "./controls";
 import { BuilderDialogs } from "./BuilderDialogs";
 import { BuilderGrid } from "./BuilderGrid";
@@ -144,8 +144,12 @@ export interface DashboardBuilderProps {
     * go. Absent, a drill can only filter this dashboard.
     */
    dashboards?: string[];
-   /** Saves and refusals, for the host to log; see `DashboardEvent`. A linear report reports `NotebookEvent`s instead. */
-   onEvent?: (event: BuilderEvent) => void;
+   /**
+    * Saves, refusals and layout switches, for the host to log; see
+    * `ReportEvent`. Each is stamped with `modelPath` (empty when the builder
+    * was given none) and the document's layout as it stands.
+    */
+   onEvent?: ReportEventHandler;
    /**
     * The document is a conversion of a cell-format notebook: `from` is the text
     * on disk, `to` the layout text it converts to. Save writes `to` with the
@@ -361,7 +365,8 @@ export function DashboardBuilder({
       shortcuts,
       report: builderReport({
          size: editor.document.tiles.length,
-         notebook,
+         path: modelPath ?? "",
+         layout: editor.document.layout,
          savesTo,
          onEvent,
       }),
@@ -381,10 +386,17 @@ export function DashboardBuilder({
             ? {
                  // A text-held document's layout is the host's record, so only a file gets the switch, and only when the host allows it.
                  layout: editor.document.layout,
-                 onLayoutChange: (next: ReportLayout) =>
+                 onLayoutChange: (next: ReportLayout) => {
+                    const from = editor.document.layout;
+                    if (next === from) return;
                     editor.update((draft) => {
                        draft.layout = next;
-                    }),
+                    });
+                    reportEmitter(
+                       { path: modelPath ?? "", layout: next },
+                       onEvent,
+                    ).emit({ type: "report.layout_changed", from, to: next });
+                 },
               }
             : {})}
       />

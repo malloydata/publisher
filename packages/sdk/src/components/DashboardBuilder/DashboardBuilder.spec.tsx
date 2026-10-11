@@ -10,7 +10,7 @@ import {
    within,
 } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
-import type { DashboardEvent } from "../Dashboard/telemetry";
+import type { ReportEvent } from "../Report/telemetry";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { openDocument } from "./testing/fixtures";
 import { closeMenu, editInline } from "./testing/inline";
@@ -31,7 +31,7 @@ source: a is scoped_orders extend {
 
 const mount = async (
    onSave?: (source: string) => Promise<void> | void,
-   onEvent?: (event: DashboardEvent) => void,
+   onEvent?: (event: ReportEvent) => void,
 ) => {
    const document = await openDocument(SOURCE);
    return render(
@@ -833,7 +833,7 @@ describe("DashboardBuilder: saving", () => {
 
    it("writes the change into the file, comment and all, and says so", async () => {
       let written: string | undefined;
-      const onEvent = mock((_event: DashboardEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       await mount((source) => {
          written = source;
       }, onEvent);
@@ -855,7 +855,7 @@ describe("DashboardBuilder: saving", () => {
       await waitFor(() => expect(button("Saved")).toBeDefined());
       expect(onEvent).toHaveBeenCalledTimes(1);
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "dashboard.saved",
+         type: "report.saved",
          tiles: 2,
          structural: false,
          // Where it went: a save into the package is a change every reader of
@@ -869,7 +869,7 @@ describe("DashboardBuilder: saving", () => {
    // The rule the writer rests on, shown through the surface: the work stays on
    // screen and the reason is visible.
    it("keeps the edit on screen when a save is refused, and says why", async () => {
-      const onEvent = mock((_event: DashboardEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       await mount(() => {
          throw new Error("disk full");
       }, onEvent);
@@ -880,7 +880,7 @@ describe("DashboardBuilder: saving", () => {
          expect(screen.getByRole("alert").textContent).toContain("disk full"),
       );
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "dashboard.save_refused",
+         type: "report.save_refused",
          reason: expect.stringContaining("disk full"),
       });
       // The edit is still on screen and still unsaved.

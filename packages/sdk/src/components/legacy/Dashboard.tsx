@@ -9,7 +9,11 @@ import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { DashboardView } from "../Dashboard/DashboardView";
-import type { DashboardEventHandler } from "../Dashboard/telemetry";
+import {
+   ReportEventsContext,
+   useReportEmitter,
+   type ReportEventHandler,
+} from "../Report/telemetry";
 import type { TileChrome } from "../Dashboard/TileCard";
 
 export interface DashboardProps {
@@ -53,8 +57,11 @@ export interface DashboardProps {
     */
    height?: number;
    maxResultSize?: number;
-   /** The rows shown and tiles explored, for the host to log or count. */
-   onEvent?: DashboardEventHandler;
+   /**
+    * The rows shown and failed tile queries, for the host to log or count;
+    * see `ReportEvent`. `path` is the manifest's model path.
+    */
+   onEvent?: ReportEventHandler;
    /**
     * `card` (default) draws each tile as a panel; `none` draws them bare, a
     * document that reads top to bottom.
@@ -126,6 +133,10 @@ export function Dashboard({
       enabled: uriNamesBoth,
    });
    const manifest = manifestResponse?.data;
+   const events = useReportEmitter(
+      { path: manifest?.path ?? dashboard, layout: "grid" },
+      onEvent,
+   );
 
    if (!uriNamesBoth) {
       return (
@@ -149,20 +160,21 @@ export function Dashboard({
    }
 
    return (
-      <DashboardView
-         manifest={manifest}
-         environmentName={environmentName}
-         packageName={packageName}
-         versionId={versionId}
-         documentName={dashboard}
-         givens={givens}
-         onGivensChange={onGivensChange}
-         onNavigate={onNavigate}
-         height={height}
-         maxResultSize={maxResultSize}
-         onEvent={onEvent}
-         chrome={chrome}
-      />
+      <ReportEventsContext.Provider value={events}>
+         <DashboardView
+            manifest={manifest}
+            environmentName={environmentName}
+            packageName={packageName}
+            versionId={versionId}
+            documentName={dashboard}
+            givens={givens}
+            onGivensChange={onGivensChange}
+            onNavigate={onNavigate}
+            height={height}
+            maxResultSize={maxResultSize}
+            chrome={chrome}
+         />
+      </ReportEventsContext.Provider>
    );
 }
 

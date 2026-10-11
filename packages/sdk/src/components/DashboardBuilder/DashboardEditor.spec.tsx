@@ -17,7 +17,7 @@ import {
 } from "../../../test/serverProvider";
 import { BrowserDocumentStorage } from "../DocumentStorage/BrowserDocumentStorage";
 import { DocumentStorageProvider } from "../DocumentStorage/DocumentStorageProvider";
-import type { DashboardEvent } from "../Dashboard/telemetry";
+import type { ReportEvent } from "../Report/telemetry";
 import { globalQueryClient } from "../../utils/queryClient";
 
 /**
@@ -122,7 +122,7 @@ const DRAFT = {
    path: "env/pkg/dashboards/overview.malloy",
 };
 
-const mount = (onEvent?: (event: DashboardEvent) => void) => {
+const mount = (onEvent?: (event: ReportEvent) => void) => {
    const storage = new BrowserDocumentStorage();
    render(
       <DocumentStorageProvider documentStorage={storage}>
@@ -292,7 +292,7 @@ describe("DashboardEditor", () => {
          'title="Drafted"',
       );
       await new BrowserDocumentStorage().saveDocument(DRAFT, draft);
-      const onEvent = mock((_event: DashboardEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       mount(onEvent);
       expect(
          await screen.findByText(/edits to this report saved in this browser/),
@@ -302,23 +302,23 @@ describe("DashboardEditor", () => {
       fireEvent.click(button("Resume"));
       expect(await screen.findByText("Drafted")).toBeDefined();
       expect(onEvent.mock.calls.at(-1)?.[0]).toMatchObject({
-         type: "dashboard.opened",
+         type: "report.opened",
          from: "draft",
       });
       expect(screen.queryByText(/saved in this browser/)).toBeNull();
    });
 
    it("reports the open, and offers Save rather than Close when it can save", async () => {
-      const onEvent = mock((_event: DashboardEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       mount(onEvent);
       await screen.findByText("Storefront");
       await waitFor(() =>
          expect(onEvent.mock.calls.map((call) => call[0].type)).toContain(
-            "dashboard.opened",
+            "report.opened",
          ),
       );
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "dashboard.opened",
+         type: "report.opened",
          from: "package",
          tiles: 1,
       });

@@ -1,74 +1,53 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { SavesTo } from "./documentSession";
-import type { BuilderEvent } from "./telemetry";
+import type { ReportLayout } from "../Package/documentLocation";
+import {
+   reportEmitter,
+   type ReportEventHandler,
+   type SavesTo,
+} from "../Report/telemetry";
 import type { SessionReport } from "./useBuilderSession";
 
 /**
- * What the builder's session says about a save, in the event names the
- * document's kind reports under.
+ * What the builder's session says about a save, as `report.*` events stamped
+ * with the report's path and the document's layout as it stands.
  */
 export const builderReport = ({
    size,
-   notebook,
+   path,
+   layout,
    savesTo,
    onEvent,
 }: {
    size: number;
-   notebook: boolean;
+   path: string;
+   layout: ReportLayout;
    savesTo: SavesTo;
-   onEvent: ((event: BuilderEvent) => void) | undefined;
-}): SessionReport => ({
-   size,
-   // A notebook-kind document keeps the `notebook.*` names hosts already count.
-   saved: ({ size, structural, durationMs, fromOpen }) =>
-      onEvent?.(
-         notebook
-            ? {
-                 type: "notebook.saved",
-                 cells: size,
-                 structural,
-                 converted: fromOpen,
-                 where: savesTo,
-                 durationMs,
-              }
-            : {
-                 type: "dashboard.saved",
-                 tiles: size,
-                 structural,
-                 where: savesTo,
-                 durationMs,
-              },
-      ),
-   refused: (reason) =>
-      onEvent?.({
-         type: notebook ? "notebook.save_refused" : "dashboard.save_refused",
-         reason,
-      }),
-   undone: ({ size, structural, durationMs }) =>
-      onEvent?.(
-         notebook
-            ? {
-                 type: "notebook.save_undone",
-                 cells: size,
-                 structural,
-                 where: savesTo,
-                 durationMs,
-              }
-            : {
-                 type: "dashboard.save_undone",
-                 tiles: size,
-                 structural,
-                 where: savesTo,
-                 durationMs,
-              },
-      ),
-   undoRefused: (reason) =>
-      onEvent?.({
-         type: notebook
-            ? "notebook.save_undo_refused"
-            : "dashboard.save_undo_refused",
-         reason,
-      }),
-});
+   onEvent: ReportEventHandler | undefined;
+}): SessionReport => {
+   const { emit } = reportEmitter({ path, layout }, onEvent);
+   return {
+      size,
+      saved: ({ size, structural, durationMs, fromOpen }) =>
+         emit({
+            type: "report.saved",
+            tiles: size,
+            structural,
+            ...(fromOpen ? { converted: true } : {}),
+            where: savesTo,
+            durationMs,
+         }),
+      refused: (reason) => emit({ type: "report.save_refused", reason }),
+      undone: ({ size, structural, durationMs }) =>
+         emit({
+            type: "report.save_undone",
+            tiles: size,
+            structural,
+            where: savesTo,
+            durationMs,
+         }),
+      undoRefused: (reason) =>
+         emit({ type: "report.save_undo_refused", reason }),
+   };
+};

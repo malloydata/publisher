@@ -15,7 +15,7 @@ import * as path from "path";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { readForEditor } from "./readForEditor";
 import { openDocument } from "./testing/fixtures";
-import type { BuilderEvent } from "./telemetry";
+import type { ReportEvent } from "../Report/telemetry";
 import { editInline } from "./testing/inline";
 
 const NOTEBOOK = `## artifact { layout=linear title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
@@ -73,7 +73,7 @@ const mountText = async (
    source: string,
    options: {
       onSave?: (source: string) => void;
-      onEvent?: (event: BuilderEvent) => void;
+      onEvent?: (event: ReportEvent) => void;
       withCatalog?: boolean;
    } = {},
 ) =>
@@ -195,19 +195,20 @@ describe("DashboardBuilder: a notebook is one column", () => {
       expect(screen.queryByLabelText("Add tile at the end")).toBeNull();
    });
 
-   it("reports notebook events, with the cell count", async () => {
-      const onEvent = mock((_event: BuilderEvent) => {});
+   it("reports a save with the cell count, the path and the linear layout", async () => {
+      const onEvent = mock((_event: ReportEvent) => {});
       await mountText(NOTEBOOK, { onSave: () => {}, onEvent });
       editInline("By cat", "Tile title", "Categories");
       fireEvent.click(button("Save"));
       await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(1));
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "notebook.saved",
-         cells: 2,
+         type: "report.saved",
+         layout: "linear",
+         tiles: 2,
          structural: false,
-         converted: false,
          where: "package",
       });
+      expect(onEvent.mock.calls[0][0]).not.toHaveProperty("converted");
    });
 });
 
@@ -223,7 +224,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
    const open = async (
       options: {
          onSave?: (source: string) => void;
-         onEvent?: (event: BuilderEvent) => void;
+         onEvent?: (event: ReportEvent) => void;
          onDirtyChange?: (dirty: boolean) => void;
       } = {},
    ) => {
@@ -287,7 +288,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
 
    it("saves the conversion exactly as converted", async () => {
       const writes: string[] = [];
-      const onEvent = mock((_event: BuilderEvent) => {});
+      const onEvent = mock((_event: ReportEvent) => {});
       const conversion = await open({
          onSave: (source) => void writes.push(source),
          onEvent,
@@ -300,7 +301,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       // Nothing was edited, so the file written is the conversion itself.
       expect(writes[0]).toBe(conversion.to);
       expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "notebook.saved",
+         type: "report.saved",
          converted: true,
       });
       expect(

@@ -6,7 +6,13 @@ import type { Workspace } from "../DocumentStorage";
 import { now } from "../../utils/clock";
 import type { DashboardDocument } from "./document";
 import { readForEditor } from "./readForEditor";
-import type { BuilderEvent } from "./telemetry";
+import type { ReportLayout } from "../Package/documentLocation";
+import {
+   failureCategory,
+   withReportContext,
+   type ReportEventBody,
+   type ReportEventHandler,
+} from "../Report/telemetry";
 
 export const LEGACY_REFUSAL =
    "a .malloynb notebook is read, not edited. Fix: rewrite it as a `.malloy` report to edit it here.";
@@ -42,9 +48,9 @@ export function useOpenedDocument({
    fetchedAt,
    packageSettled,
    modelPath,
+   layout,
    notebook,
    noun,
-   refusedEvent,
    legacyFormat,
    textHeld,
    startedAt,
@@ -63,16 +69,32 @@ export function useOpenedDocument({
    /** Whether the package's fetch has succeeded and is not refetching. */
    packageSettled: boolean;
    modelPath: string;
+   /** The layout the host opened it as: what a failure before the text is read reports. */
+   layout: ReportLayout;
    notebook: boolean;
    noun: string;
-   refusedEvent: "notebook.open_refused" | "dashboard.open_refused";
    legacyFormat: boolean;
    /** The document is held as text by the host: there is no package file to fall back on. */
    textHeld: boolean;
    /** When the open was asked for, so "opened" can say how long it took. */
    startedAt: MutableRefObject<number>;
-   onEventRef: MutableRefObject<((event: BuilderEvent) => void) | undefined>;
+   onEventRef: MutableRefObject<ReportEventHandler | undefined>;
 }) {
+   // Read when an outcome lands, so neither is a reason to open again.
+   const targetRef = useRef({ path: modelPath, layout });
+   targetRef.current = { path: modelPath, layout };
+   const emitRef = useRef((body: ReportEventBody, opened?: ReportLayout) => {
+      try {
+         onEventRef.current?.(
+            withReportContext(body, {
+               ...targetRef.current,
+               ...(opened ? { layout: opened } : {}),
+            }),
+         );
+      } catch {
+         // A sink that throws is the sink's problem, not the editor's.
+      }
+   });
    // The host's copy is the record: the editor opens it, writes back to it,
    // and never offers to "resume" it, because a record is not a pending edit.
    const authoritative = workspace?.authoritative === true;
@@ -179,9 +201,10 @@ export function useOpenedDocument({
             if (stale) return;
             if (result.ok === false) {
                setOpenError(result.reason);
-               onEventRef.current?.({
-                  type: refusedEvent,
-                  reason: result.reason,
+               emitRef.current({
+                  type: "report.load_failed",
+                  surface: "edit",
+                  category: "invalid",
                });
                return;
             }
@@ -203,28 +226,26 @@ export function useOpenedDocument({
                   : {}),
                generation: (previous?.generation ?? 0) + 1,
             }));
-            onEventRef.current?.(
-               notebook || result.document.layout === "linear"
-                  ? {
-                       type: "notebook.opened",
-                       from:
-                          fromRef.current === "package" ? "package" : "record",
-                       cells: result.document.tiles.length,
-                       durationMs: now() - startedAt.current,
-                    }
-                  : {
-                       type: "dashboard.opened",
-                       from: fromRef.current,
-                       tiles: result.document.tiles.length,
-                       durationMs: now() - startedAt.current,
-                    },
+            emitRef.current(
+               {
+                  type: "report.opened",
+                  surface: "edit",
+                  from: fromRef.current,
+                  tiles: result.document.tiles.length,
+                  durationMs: now() - startedAt.current,
+               },
+               result.document.layout,
             );
          })
          .catch((error: unknown) => {
             if (stale) return;
             const reason = `Could not read the ${noun}: ${error instanceof Error ? error.message : String(error)}`;
             setOpenError(reason);
-            onEventRef.current?.({ type: refusedEvent, reason });
+            emitRef.current({
+               type: "report.load_failed",
+               surface: "edit",
+               category: failureCategory(error),
+            });
          });
       return () => {
          stale = true;
@@ -236,20 +257,19 @@ export function useOpenedDocument({
       blockedOnRecord,
       notebook,
       noun,
-      refusedEvent,
       textHeld,
       // Refs, stable: read when the open lands, never a reason to open again.
       startedAt,
-      onEventRef,
    ]);
 
    useEffect(() => {
       if (legacyFormat)
-         onEventRef.current?.({
-            type: "notebook.open_refused",
-            reason: LEGACY_REFUSAL,
+         emitRef.current({
+            type: "report.load_failed",
+            surface: "edit",
+            category: "unsupported",
          });
-   }, [legacyFormat, onEventRef]);
+   }, [legacyFormat]);
 
    // The record is the only document a text source has, so it must exist and be one the host calls authoritative.
    useEffect(() => {
@@ -274,11 +294,12 @@ export function useOpenedDocument({
    useEffect(() => {
       if (!withheld) return;
       setOpenError(WITHHELD_REFUSAL);
-      onEventRef.current?.({
-         type: "notebook.open_refused",
-         reason: WITHHELD_REFUSAL,
+      emitRef.current({
+         type: "report.load_failed",
+         surface: "edit",
+         category: "forbidden",
       });
-   }, [withheld, onEventRef]);
+   }, [withheld]);
 
    // An explicit choice is a choice about the very text that would otherwise
    // be held back, so it is never held.

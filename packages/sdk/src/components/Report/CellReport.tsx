@@ -21,6 +21,7 @@ import { NotebookCell } from "../Notebook/NotebookCell";
 import { planRun } from "../Notebook/runPlan";
 import type { EnhancedNotebookCell } from "../Notebook/types";
 import { useServer } from "../ServerProvider";
+import { failureCategory, useReportEvents } from "./telemetry";
 import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
@@ -161,6 +162,8 @@ export function CellRunnerView({
    // produces. Batching matters more here than on a grid: one control change
    // re-runs every cell in the document.
    const autorun = notebook?.autorun !== false;
+   // Set by `Report`; silent under the deprecated `Notebook`, which shares this view.
+   const events = useReportEvents();
    const controls = useDocumentControls({
       specs: declaredGivens,
       loaded: isSuccess,
@@ -316,10 +319,18 @@ export function CellRunnerView({
                         runIdRef.current !== runId
                      )
                         return;
-                     console.error(
-                        `Error executing cell ${cellIndex}:`,
-                        cellError,
-                     );
+                     // The cell shows its error; the host hears of it, or
+                     // without one the console does, so it is never lost.
+                     events.emit({
+                        type: "report.query_failed",
+                        tile: cellIndex,
+                        category: failureCategory(cellError),
+                     });
+                     if (!events.listening)
+                        console.error(
+                           `Error executing cell ${cellIndex}:`,
+                           cellError,
+                        );
                      const message = cellErrorMessage(cellError);
                      setEnhancedCells((prev) => {
                         const next = [...prev];
@@ -355,7 +366,12 @@ export function CellRunnerView({
             await Promise.all(executing);
          } catch (error) {
             if (controller.signal.aborted || runIdRef.current !== runId) return;
-            console.error("Error executing notebook cells:", error);
+            events.emit({
+               type: "report.query_failed",
+               category: failureCategory(error),
+            });
+            if (!events.listening)
+               console.error("Error executing notebook cells:", error);
             setExecutionError(error as Error);
          } finally {
             if (runIdRef.current === runId) {
@@ -364,7 +380,7 @@ export function CellRunnerView({
             }
          }
       },
-      [isSuccess, notebook, declaredTypes, runCell],
+      [isSuccess, notebook, declaredTypes, runCell, events],
    );
 
    // Run the cells on load, and again whenever the applied parameters change.

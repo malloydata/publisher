@@ -3,7 +3,6 @@
 
 import {
    encodeResourceUri,
-   type DashboardEvent,
    Loading,
    LOADING_COPY,
    NarrowEditGate,
@@ -11,11 +10,7 @@ import {
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
-import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
-import {
-   logDashboardEvent,
-   logNotebookEvent,
-} from "../../../utils/consoleTelemetry";
+import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
 
 /**
@@ -51,25 +46,11 @@ export default function DashboardEditPage({
    layout = "grid",
 }: DashboardEditPageProps) {
    const guard = useLeaveGuard();
-   // Telemetry keys on the path: two reports may share a basename. Each event
-   // goes to the sink its own name belongs to, so after a layout switch the
-   // builder's events follow the report's new layout.
-   const onEvent = useMemo(() => {
-      const dashboard = logDashboardEvent({
-         environmentName,
-         packageName,
-         dashboardName: path,
-      });
-      const notebook = logNotebookEvent({
-         environmentName,
-         packageName,
-         notebookName: path,
-      });
-      return (event: DashboardEvent | NotebookEvent) =>
-         event.type.startsWith("notebook.")
-            ? notebook(event as NotebookEvent)
-            : dashboard(event as DashboardEvent);
-   }, [environmentName, packageName, path]);
+   // Each event names the report by path and carries its layout as it stands.
+   const onEvent = useMemo(
+      () => logReportEvent({ environmentName, packageName }),
+      [environmentName, packageName],
+   );
    return (
       // The reader's page width and edges, the same for either layout, so the
       // margins do not move between modes.

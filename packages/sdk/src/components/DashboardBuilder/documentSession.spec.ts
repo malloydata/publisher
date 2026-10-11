@@ -172,7 +172,7 @@ describe("resolveEditorTarget", () => {
 
 describe("withWorkspace", () => {
    const saved: { type: string; where: string; workspace?: string } = {
-      type: "dashboard.saved",
+      type: "report.saved",
       where: "host",
    };
 
@@ -185,24 +185,24 @@ describe("withWorkspace", () => {
 
    it("names the workspace on an undone save a workspace took, and not on a refused one", () => {
       const undone: { type: string; where: string; workspace?: string } = {
-         type: "notebook.save_undone",
+         type: "report.save_undone",
          where: "host",
       };
       expect(withWorkspace(undone, "records")).toEqual({
          ...undone,
          workspace: "records",
       });
-      const refused = { type: "notebook.save_undo_refused", reason: "x" };
+      const refused = { type: "report.save_undo_refused", reason: "x" };
       expect(withWorkspace(refused, "records")).toBe(refused);
    });
 
    it("leaves a package save alone", () => {
-      const pkg = { type: "notebook.saved", where: "package" };
+      const pkg = { type: "report.saved", where: "package" };
       expect(withWorkspace(pkg, "records")).toBe(pkg);
    });
 
    it("leaves other events and an unnamed workspace alone", () => {
-      const refused = { type: "dashboard.save_refused", reason: "x" };
+      const refused = { type: "report.save_refused", reason: "x" };
       expect(withWorkspace(refused, "records")).toBe(refused);
       expect(withWorkspace(saved, undefined)).toBe(saved);
    });

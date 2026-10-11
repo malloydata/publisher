@@ -145,7 +145,13 @@ describe("NewDocumentDialog", () => {
          'import { order_items } from "storefront.malloy"',
       );
       expect(onEvent.mock.calls).toEqual([
-         [{ type: "dashboard.created", where: "package" }],
+         [
+            expect.objectContaining({
+               type: "report.created",
+               where: "package",
+               layout: "grid",
+            }),
+         ],
       ]);
    });
 

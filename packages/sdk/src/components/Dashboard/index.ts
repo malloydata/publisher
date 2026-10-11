@@ -13,6 +13,5 @@ export {
    RESTRICTED_NOTICE,
    withPreamble,
 } from "./textSource";
-export type { DashboardEvent, DashboardEventHandler } from "./telemetry";
 export { TILE_MIN_HEIGHT, TileCard, TileHeading } from "./TileCard";
 export type { TileHeadingSlots } from "./TileCard";

@@ -28,7 +28,7 @@ import type { DashboardDocument, QueryTile } from "./document";
 import type { SavesTo } from "./documentSession";
 import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
 import type { TextSourceOptions } from "./DashboardEditor";
-import type { BuilderEvent } from "./telemetry";
+import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
 
@@ -85,7 +85,7 @@ export function EditorSurface({
    onDirtyChange: (dirty: boolean) => void;
    onExit?: () => void;
    allowLayoutChange?: boolean;
-   onEvent?: (event: BuilderEvent) => void;
+   onEvent?: ReportEventHandler;
    savesTo: SavesTo;
    saveLabel?: string;
    note: string;

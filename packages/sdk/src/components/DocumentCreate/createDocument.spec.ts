@@ -103,7 +103,14 @@ describe("createDocument on the storage route", () => {
       });
       expect(storage.saves).toEqual(["env/pkg/sales.malloy"]);
       expect(created).toEqual([result]);
-      expect(events).toEqual([{ type: "notebook.created", where: "host" }]);
+      expect(events).toMatchObject([
+         {
+            type: "report.created",
+            where: "host",
+            path: "sales.malloy",
+            layout: "linear",
+         },
+      ]);
    });
 
    it("takes the next name when the listing shows the slug", async () => {
@@ -201,10 +208,17 @@ describe("createDocument on the package route", () => {
       });
       expect(writes.map(([p]) => p)).toEqual(["sales-2.malloy"]);
       expect(writes[0][1]).toContain("##| artifact { layout=grid");
-      expect(events).toEqual([{ type: "dashboard.created", where: "package" }]);
+      expect(events).toMatchObject([
+         {
+            type: "report.created",
+            where: "package",
+            path: "sales-2.malloy",
+            layout: "grid",
+         },
+      ]);
    });
 
-   it("does not report a create the server refused", async () => {
+   it("reports a create the server refused as refused, never as created", async () => {
       const events: unknown[] = [];
       await expect(
          createDocument({
@@ -220,7 +234,14 @@ describe("createDocument on the package route", () => {
             onEvent: (e) => events.push(e),
          }),
       ).rejects.toThrow("409");
-      expect(events).toEqual([]);
+      expect(events).toEqual([
+         {
+            type: "report.create_refused",
+            reason: "409",
+            path: "",
+            layout: "linear",
+         },
+      ]);
    });
 });
 
