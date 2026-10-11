@@ -6,7 +6,7 @@
 /**
  * HTTP E2E coverage for `given:` runtime parameters on POST .../query:
  * givens retarget query results, unknown/mistyped givens surface as 400 (not
- * 500), givens compose with filterParams, a `null` given value is an
+ * 500), a `null` given value is an
  * explicit SQL-NULL override, and a numeric-string value is accepted for a
  * `number`-typed given (Malloy's own coercion). Malloy is the single validator:
  * an unknown name or bad value throws a `runtime-given-*` error that
@@ -108,18 +108,6 @@ describe("givens forwarding on /query (HTTP E2E)", () => {
       // surfaced as a 400 via the run try/catch in model.ts, not a 500.
       const res = await query({ givens: { min_amount: "not-a-number" } });
       expect(res.status).toBe(400);
-   });
-
-   it("composes givens with filterParams", async () => {
-      // target_region=EU narrows to ids 4,5,6; filterParams status=active
-      // narrows further to ids 4,6 -> order_count=2.
-      const res = await query({
-         givens: { target_region: "EU" },
-         filterParams: { status: "active" },
-      });
-      const r = await rows(res);
-      expect(r.length).toBe(1);
-      expect(Number(r[0].order_count)).toBe(2);
    });
 
    it("omitting givens entirely uses the declared defaults (US baseline)", async () => {

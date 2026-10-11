@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with `#(filter)`,
+// `filterParams` and `bypassFilters` (see RELEASE_NOTES deprecations).
+// Every test in this file is about that deprecated feature.
+
 /**
  * Filter-param (`#(filter)`) enforcement across source-derivation paths.
  *

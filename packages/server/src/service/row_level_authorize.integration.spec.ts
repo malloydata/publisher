@@ -1948,7 +1948,7 @@ source: X is duckdb.table('parent') extend {
 // ---------------------------------------------------------------------------
 
 describe("row-level authorize — runnable identity (CRITICAL)", () => {
-   it("a notebook-shaped cell composing a #(filter) source filter AND a row-level gate carries BOTH", async () => {
+   it("a notebook-shaped cell composing a source's own where: filter AND a row-level gate carries BOTH", async () => {
       // Exercised at the QueryMaterializer level (same recompile shape
       // executeNotebookCell uses: `mm.loadQuery` + authorizeAndBindRunnable),
       // since a full notebook harness needs the .malloynb worker path this
@@ -1967,7 +1967,7 @@ source: X is duckdb.table('parent') extend {
 }
 `);
       try {
-         // val != 'd' (the source's own #(filter)-equivalent where:) removes
+         // val != 'd' (the source's own where:) removes
          // id 4; org_id in [1] then keeps only ids 1,2 of what remains.
          const rows = await boundRows(
             internals,
@@ -2786,13 +2786,16 @@ run: local2 -> { aggregate: n is count() }
       }
    });
 
-   it("CRITICAL — a cell whose #(filter) refinement does not compile surfaces that failure, never a silent unfiltered admit", async () => {
-      const duckdb = await newDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `#(filter)` (see RELEASE_NOTES deprecations).
+   describe("deprecated: #(filter)", () => {
+      it("CRITICAL — a cell whose #(filter) refinement does not compile surfaces that failure, never a silent unfiltered admit", async () => {
+         const duckdb = await newDuckdb();
+         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rla-notebook-"));
+         try {
+            fs.writeFileSync(
+               path.join(dir, "nb.malloynb"),
+               `>>>malloy
 ##! experimental.givens
 
 given:
@@ -2806,34 +2809,35 @@ source: gated is duckdb.table('parent') extend {
 
 run: gated -> { aggregate: n is count() }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         const loadErr = (model as unknown as { compilationError?: Error })
-            .compilationError;
-         expect(loadErr).toBeUndefined();
+            );
+            const model = await Model.create(
+               "test-pkg",
+               dir,
+               "nb.malloynb",
+               new Map<string, Connection>([["duckdb", duckdb]]),
+            );
+            const loadErr = (model as unknown as { compilationError?: Error })
+               .compilationError;
+            expect(loadErr).toBeUndefined();
 
-         // filterParams supplies a value for the `nonexistent_field` filter,
-         // so the `#(filter)` refinement rebuild appends
-         // `+ {where: nonexistent_field = 'x'}` to the cell's text — which
-         // fails to compile, since `gated` has no such field. The caller is
-         // given the ADMITTING role deliberately: this pins that a broken
-         // refinement surfaces its own compile failure rather than silently
-         // admitting unfiltered rows, and a denied caller would short-circuit
-         // on the lock's 403 before reaching that question at all.
-         await expect(
-            model.executeNotebookCell(0, { nonexistent_field: "x" }, false, {
-               ROLE: "admin",
-            }),
-         ).rejects.toThrow(/nonexistent_field/);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
+            // filterParams supplies a value for the `nonexistent_field` filter,
+            // so the `#(filter)` refinement rebuild appends
+            // `+ {where: nonexistent_field = 'x'}` to the cell's text — which
+            // fails to compile, since `gated` has no such field. The caller is
+            // given the ADMITTING role deliberately: this pins that a broken
+            // refinement surfaces its own compile failure rather than silently
+            // admitting unfiltered rows, and a denied caller would short-circuit
+            // on the lock's 403 before reaching that question at all.
+            await expect(
+               model.executeNotebookCell(0, { nonexistent_field: "x" }, false, {
+                  ROLE: "admin",
+               }),
+            ).rejects.toThrow(/nonexistent_field/);
+         } finally {
+            await duckdb.close();
+            fs.rmSync(dir, { recursive: true, force: true });
+         }
+      });
    });
 
    it("CRITICAL — a row-level gate declared and run in the FIRST code cell returns correctly filtered rows (no earlier cell to graft against; grafts its OWN post-declaration scope, repointing the compiled queryDef rather than recompiling text)", async () => {

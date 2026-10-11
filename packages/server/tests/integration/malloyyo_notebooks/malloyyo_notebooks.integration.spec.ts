@@ -501,15 +501,19 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(rowsOf(body.result)).toEqual([{ n: 2 }]);
       });
 
-      it("rebuilds a cell with the source's #(filter) values", async () => {
-         const unfiltered = await runCell(SURFACE, CELLS, 8);
-         expect(unfiltered.status).toBe(200);
-         expect(rowsOf(unfiltered.body.result)).toEqual([{ n: 6 }]);
-         const filtered = await runCell(SURFACE, CELLS, 8, {
-            filterParams: { region: "EU" },
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // `#(filter)` / `filter_params` (see RELEASE_NOTES deprecations).
+      describe("deprecated: #(filter)", () => {
+         it("rebuilds a cell with the source's #(filter) values", async () => {
+            const unfiltered = await runCell(SURFACE, CELLS, 8);
+            expect(unfiltered.status).toBe(200);
+            expect(rowsOf(unfiltered.body.result)).toEqual([{ n: 6 }]);
+            const filtered = await runCell(SURFACE, CELLS, 8, {
+               filterParams: { region: "EU" },
+            });
+            expect(filtered.status).toBe(200);
+            expect(rowsOf(filtered.body.result)).toEqual([{ n: 3 }]);
          });
-         expect(filtered.status).toBe(200);
-         expect(rowsOf(filtered.body.result)).toEqual([{ n: 3 }]);
       });
 
       it("binds the request's givens", async () => {

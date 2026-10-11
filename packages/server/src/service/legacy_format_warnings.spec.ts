@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with `.malloynb` notebooks
+// and `#(filter)` (see RELEASE_NOTES deprecations). Every test in this file
+// is about those deprecated features.
+
 /**
  * A package on a deprecated format reports it in `getPackageMetadata().warnings`:
  * one warning per `.malloynb` notebook, and one per source declaring `#(filter)`

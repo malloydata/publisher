@@ -952,14 +952,18 @@ source: gated is duckdb.table('customers') extend {
       ).rejects.toThrow(AccessDeniedError);
    });
 
-   it("still enforces the gate when bypassFilters is true (authorize is not a filter)", async () => {
-      await writeModel("rt_single.malloy", SINGLE_GATE);
-      await expectDeniedByLock(
-         "rt_single.malloy",
-         "run: gated -> { aggregate: c }",
-         { ROLE: "intern" },
-         true,
-      );
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `bypassFilters` (see RELEASE_NOTES deprecations).
+   describe("deprecated: bypassFilters", () => {
+      it("still enforces the gate when bypassFilters is true (authorize is not a filter)", async () => {
+         await writeModel("rt_single.malloy", SINGLE_GATE);
+         await expectDeniedByLock(
+            "rt_single.malloy",
+            "run: gated -> { aggregate: c }",
+            { ROLE: "intern" },
+            true,
+         );
+      });
    });
 
    // The string form's "two OWN #(authorize) notes, OR'd" idiom folded into
@@ -4518,18 +4522,22 @@ source: dm_mixed is duckdb.table('customers') extend {
       expect(countOf(result.compactResult)).toBe(1);
    });
 
-   // Isolation, forward direction. The reverse ("bypassFilters does not disable
-   // the gate") is pinned separately in the runtime-gate describe above.
-   it("does not imply bypassFilters", async () => {
-      await writeModel("dm_mixed.malloy", GATED_PLUS_WHERE);
-      const result = await runGated(
-         "dm_mixed.malloy",
-         "run: dm_mixed -> { aggregate: c }",
-         {},
-         undefined, // bypassFilters deliberately NOT set
-         true,
-      );
-      expect(countOf(result.compactResult)).toBe(1);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `bypassFilters` (see RELEASE_NOTES deprecations).
+   describe("deprecated: bypassFilters", () => {
+      // Isolation, forward direction. The reverse ("bypassFilters does not disable
+      // the gate") is pinned separately in the runtime-gate describe above.
+      it("does not imply bypassFilters", async () => {
+         await writeModel("dm_mixed.malloy", GATED_PLUS_WHERE);
+         const result = await runGated(
+            "dm_mixed.malloy",
+            "run: dm_mixed -> { aggregate: c }",
+            {},
+            undefined, // bypassFilters deliberately NOT set
+            true,
+         );
+         expect(countOf(result.compactResult)).toBe(1);
+      });
    });
 
    describe("emits telemetry on every use", () => {

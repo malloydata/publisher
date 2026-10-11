@@ -378,14 +378,18 @@ describe("filter binding guard — a join whose ON or where: inputs are not reco
       ).toThrow(/ON or where: inputs are not recorded/);
    });
 
-   it("denies a #(filter) dimension that reaches through the join", () => {
-      expect(() =>
-         assertFilterDimensionBindsToDeclaringSource(
-            unrecordedOn,
-            unrecordedOn,
-            "child_org",
-         ),
-      ).toThrow(/#\(filter\) dimension .*not recorded/);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `#(filter)` (see RELEASE_NOTES deprecations).
+   describe("deprecated: #(filter)", () => {
+      it("denies a #(filter) dimension that reaches through the join", () => {
+         expect(() =>
+            assertFilterDimensionBindsToDeclaringSource(
+               unrecordedOn,
+               unrecordedOn,
+               "child_org",
+            ),
+         ).toThrow(/#\(filter\) dimension .*not recorded/);
+      });
    });
 });
 
