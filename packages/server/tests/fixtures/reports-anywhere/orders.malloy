@@ -1,0 +1,44 @@
+// An ordinary model: no artifact tag, so not a report.
+source: orders is duckdb.sql("""
+   select * from (values
+      (1, 'Acme', 'West', 10.0),
+      (2, 'Acme', 'East', 20.0),
+      (3, 'Bolt', 'West', 5.0)
+   ) as t(id, brand, region, amount)
+""") extend {
+   primary_key: id
+
+   // A path to a report two levels deep, from the package root.
+   # drill { to="sales/2026/q3" }
+   dimension: brand_name is brand
+
+   // A bare name exactly one report has, not at the root: still resolves
+   // (deprecated), and the package says which path to write.
+   # drill { to=story }
+   dimension: region_name is region
+
+   // A bare name two reports have: unresolved, naming both.
+   # drill { to=summary }
+   dimension: brand_upper is upper(brand)
+
+   // A bare name that IS a path at the root: no deprecation.
+   # drill { to=overview }
+   dimension: region_upper is upper(region)
+
+   // From any report to a linear one, by path.
+   # drill { to="dashboards/linear_in_dashboards" }
+   dimension: brand_lower is lower(brand)
+
+   measure: order_count is count()
+   measure: total_amount is sum(amount)
+
+   view: by_brand is {
+      group_by: brand_name
+      aggregate: total_amount
+   }
+
+   view: by_region is {
+      group_by: region_name
+      aggregate: order_count
+   }
+}

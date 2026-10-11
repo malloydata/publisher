@@ -1,0 +1,6 @@
+## artifact { layout=linear title="Story" }
+import { orders } from "../orders.malloy"
+
+##(markdown) How do brands compare?
+
+run: orders -> by_brand
