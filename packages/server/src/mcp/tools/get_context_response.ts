@@ -150,7 +150,7 @@ interface SourceCardEntity {
    values?: Array<{ value: string; relevance: number; search_text: string }>;
 }
 
-interface SourceCard {
+export interface SourceCard {
    source_info: SourceCardInfo;
    relevance?: number;
    entities?: SourceCardEntity[];

@@ -32,6 +32,10 @@
  * from, the picked sources one query from it can combine, and the targets
  * they answer. `coverage` is then target by group. The judge's caveats ride
  * on the first group; with no pick there is no group, and they are warnings.
+ *
+ * The answer is complete: every card a pick lands on, with every pick.
+ * Nothing here is cut to fit a response size; the response layer pages the
+ * cards (pages.ts).
  */
 
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -41,7 +45,6 @@ import {
 } from "../tools/get_context_values";
 import { matchValues } from "../tools/get_context_value_match";
 import {
-   fitBudget,
    projectEntity,
    sourceContextKey,
    summaryViewFor,
@@ -49,6 +52,7 @@ import {
    type PackageIndex,
    type ResolvedRequest,
    type ResultEntity,
+   type SourceCard,
 } from "../tools/get_context_tool";
 import type { CatalogNode, CatalogSource } from "./catalog";
 import type { Cluster, ConnectResult, PeerSource } from "./connect";
@@ -56,21 +60,16 @@ import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
 import type { JudgeVerdict } from "./judge";
 
-/** The response budget, the shipped engine's. */
-export const FCJ_MAX_CHARS = 35_000;
-const FCJ_RESERVE_CHARS = 1_000;
-
 /** Distinct values the query-time lookup reads for a gated dimension. */
 const GATED_LOOKUP_LIMIT = 2_000;
 const GATED_LOOKUP_TIMEOUT_MS = 8_000;
 
 export interface FcjAnswer {
-   sources: unknown[];
+   /** Every card, in the order its first pick came. */
+   sources: SourceCard[];
    clusters: unknown[];
    coverage?: unknown[];
    unresolved_targets: unknown[];
-   /** Whole cards the size budget removed. */
-   budgetDropped: number;
    warnings: string[];
 }
 
@@ -314,7 +313,6 @@ export async function respond(args: {
       args.pkgIndex.droppedSources,
       view,
    );
-   const fitted = fitBudget(built, FCJ_MAX_CHARS, FCJ_RESERVE_CHARS);
 
    const picked = new Set<number>();
    for (const v of verdicts)
@@ -335,11 +333,10 @@ export async function respond(args: {
            }))
          : undefined;
    return {
-      sources: fitted.cards,
+      sources: built,
       clusters: clustersOut,
       ...(coverage ? { coverage } : {}),
       unresolved_targets: unresolved,
-      budgetDropped: fitted.dropped,
       warnings,
    };
 }

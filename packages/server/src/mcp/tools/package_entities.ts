@@ -32,7 +32,7 @@ import type {
 export const SOURCE_DOC_MAX_CHARS = 500;
 export const JOIN_DOC_MAX_CHARS = 200;
 
-function truncateDoc(doc: string, max: number): string {
+export function truncateDoc(doc: string, max: number): string {
    if (doc.length <= max) return doc;
    const cut = doc.slice(0, max);
    const lastSpace = cut.lastIndexOf(" ");
