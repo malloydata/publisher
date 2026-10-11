@@ -8,6 +8,7 @@ import {
    useReportListing,
    useRouterClickHandler,
    type DrillNavigation,
+   type DrillOutcome,
 } from "@malloy-publisher/sdk";
 import { useCallback } from "react";
 
@@ -23,6 +24,11 @@ import { useCallback } from "react";
  * built from it could leave the package, and the package's load already
  * reports it as an unresolved drill.
  *
+ * It returns what the target came to, which `Report` reports as a
+ * `report.drill` event: `resolved` for a report the listing has,
+ * `unresolved` for a plain path nothing answers to, `malformed` for a target
+ * that goes nowhere.
+ *
  * A drill IS a navigation step, so unlike a control change it pushes history:
  * Back returns to the report the reader drilled from. `useRouterClickHandler`
  * also honours cmd/ctrl-click by opening the destination in a new tab.
@@ -35,9 +41,9 @@ export function useDrillNavigate(environmentName: string, packageName: string) {
    // Shared with every other reader of the listing, so this is usually already cached.
    const { reports } = useReportListing(environmentName, packageName);
    return useCallback(
-      (target: DrillNavigation, event?: MouseEvent) => {
+      (target: DrillNavigation, event?: MouseEvent): DrillOutcome => {
          const written = target.dashboard;
-         if (!isDrillTargetPath(written)) return;
+         if (!isDrillTargetPath(written)) return "malformed";
          const resolved = resolveDrillTarget(written, reports);
          const route = reportRoute(
             environmentName,
@@ -46,6 +52,7 @@ export function useDrillNavigate(environmentName: string, packageName: string) {
          );
          const query = new URLSearchParams(target.givens).toString();
          navigate(route + (query ? `?${query}` : ""), event);
+         return resolved.kind === "path" ? "resolved" : "unresolved";
       },
       [navigate, environmentName, packageName, reports],
    );

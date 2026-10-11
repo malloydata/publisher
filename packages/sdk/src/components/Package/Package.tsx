@@ -30,6 +30,7 @@ import { useOptionalDocumentStorage } from "../DocumentStorage/DocumentStoragePr
 import { Report } from "../Report";
 import { useServer } from "../ServerProvider";
 import { NewDocumentDialog } from "./NewDocumentDialog";
+import type { ReportEventHandler } from "../Report/telemetry";
 import { DataSchemaDialog, formatRowCount } from "./DataSchemaDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
@@ -87,12 +88,15 @@ interface PackageProps {
       event?: React.MouseEvent,
    ) => void;
    resourceUri: string;
+   /** What the New report dialog creates, or why it could not; see `ReportEvent`. */
+   onEvent?: ReportEventHandler;
 }
 
 export default function Package({
    onClickPackageFile,
    onOpenDocument,
    resourceUri,
+   onEvent,
 }: PackageProps) {
    const { apiClients, server, mutable } = useServer();
    const queryClient = useQueryClient();
@@ -378,6 +382,7 @@ export default function Package({
                   : {})}
                onRetryModels={() => void modelsQuery.refetch()}
                target={createTarget}
+               {...(onEvent ? { onEvent } : {})}
                onClose={() => setCreating(false)}
                onCreated={(created) => {
                   setCreating(false);

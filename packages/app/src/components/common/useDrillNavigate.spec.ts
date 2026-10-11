@@ -17,13 +17,15 @@ mock.module("@malloy-publisher/sdk", () => ({
 
 const { useDrillNavigate } = await import("./useDrillNavigate");
 
+let outcome: string | undefined;
 const drill = (env: string, pkg: string, to: string, givens = {}) => {
    const { result } = renderHook(() => useDrillNavigate(env, pkg));
-   result.current({ dashboard: to, givens });
+   outcome = result.current({ dashboard: to, givens });
    return navigate.mock.calls.at(-1)?.[0];
 };
 
 beforeEach(() => {
+   outcome = undefined;
    reports = [];
    navigate.mockClear();
 });
@@ -34,6 +36,7 @@ describe("useDrillNavigate", () => {
       expect(drill("env", "pkg", "sales/q3", { region: "west" })).toBe(
          "/env/pkg/sales/q3?region=west",
       );
+      expect(outcome).toBe("resolved");
    });
 
    it("lands a bare name on the report at the root", () => {
@@ -55,6 +58,7 @@ describe("useDrillNavigate", () => {
       reports = [{ path: "sales/q3.malloy", layout: "grid" }];
       for (const to of ["./sales/q3", "/sales/q3", "a//b", "../x"]) {
          expect(drill("env", "pkg", to)).toBeUndefined();
+         expect(outcome).toBe("malformed");
       }
    });
 
@@ -62,6 +66,7 @@ describe("useDrillNavigate", () => {
       expect(drill("env", "pkg", "x/missing", { a: "1" })).toBe(
          "/env/pkg/x/missing?a=1",
       );
+      expect(outcome).toBe("unresolved");
    });
 
    it("sends an unresolved bare name to its root path, never to a by-name alias", () => {
