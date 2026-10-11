@@ -21,7 +21,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
-import { DashboardController } from "./controller/dashboard.controller";
+import { ReportController } from "./controller/report.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -422,7 +422,7 @@ environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
 );
 const packageController = new PackageController(environmentStore);
-const dashboardController = new DashboardController(environmentStore);
+const reportController = new ReportController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -1801,7 +1801,7 @@ app.put(
       }
       try {
          // Express stores wildcard matches in params['0'].
-         const result = await dashboardController.putDashboardSource(
+         const result = await reportController.putReportSource(
             req.params.environmentName,
             req.params.packageName,
             (req.params as Record<string, string>)["0"],
@@ -1833,7 +1833,7 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports`,
    timeReportRead("list"),
    jsonRoute((req) =>
-      dashboardController.listReports(
+      reportController.listReports(
          req.params.environmentName,
          req.params.packageName,
       ),
@@ -1844,7 +1844,7 @@ app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports/*`,
    timeReportRead("get"),
    jsonRoute((req) =>
-      dashboardController.getReport(
+      reportController.getReport(
          req.params.environmentName,
          req.params.packageName,
          wildcardParam(req),

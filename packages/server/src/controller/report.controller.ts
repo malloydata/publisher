@@ -121,7 +121,7 @@ export const contentHashOf = (text: string): string =>
  * other query takes, so row caps, byte caps, authorize gates, and render-tag
  * validation apply for free.
  */
-export class DashboardController {
+export class ReportController {
    private environmentStore: EnvironmentStore;
 
    constructor(environmentStore: EnvironmentStore) {
@@ -190,7 +190,7 @@ export class DashboardController {
     * compiling reads the package; it does not read the file being replaced, so
     * nothing about the check depends on it.
     */
-   public async putDashboardSource(
+   public async putReportSource(
       environmentName: string,
       packageName: string,
       modelPath: string,
@@ -201,7 +201,7 @@ export class DashboardController {
       // rather than at each throw site, so a branch added later cannot forget.
       const startedAt = Date.now();
       // Tolerates a non-string path or source: the 400 for either comes from
-      // writeDashboardSource. A body the cheap refusals turn away is never
+      // writeReportSource. A body the cheap refusals turn away is never
       // scanned, and counts as a grid write, as does text that is no report.
       const tag =
          typeof modelPath === "string" &&
@@ -213,7 +213,7 @@ export class DashboardController {
       const layout: ReportLayout =
          tag?.status === "report" ? tag.layout : "grid";
       try {
-         const result = await this.writeDashboardSource(
+         const result = await this.writeReportSource(
             environmentName,
             packageName,
             modelPath,
@@ -233,7 +233,7 @@ export class DashboardController {
       }
    }
 
-   private async writeDashboardSource(
+   private async writeReportSource(
       environmentName: string,
       packageName: string,
       modelPath: string,

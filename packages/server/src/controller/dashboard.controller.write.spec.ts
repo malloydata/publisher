@@ -20,7 +20,7 @@ import {
 } from "../test_helpers/metrics_harness";
 import type { EnvironmentStore } from "../service/environment_store";
 import { readReportTag } from "../service/report";
-import { contentHashOf, DashboardController } from "./dashboard.controller";
+import { contentHashOf, ReportController } from "./report.controller";
 
 /**
  * The write path, against a stubbed environment: what is refused before
@@ -128,21 +128,21 @@ function harness(
       getEnvironment: sinon.stub().resolves(environment),
    } as unknown as EnvironmentStore;
    return {
-      controller: new DashboardController(store),
+      controller: new ReportController(store),
       environment,
       pkg,
       model,
    };
 }
 
-describe("DashboardController.putDashboardSource", () => {
+describe("ReportController.putReportSource", () => {
    afterEach(() => sinon.restore());
 
    it("compiles the text as the file, writes it atomically, and reloads the package in place", async () => {
       const { controller, environment, pkg, model } = harness({
          current: BEFORE,
       });
-      const result = await controller.putDashboardSource("env", "pkg", PATH, {
+      const result = await controller.putReportSource("env", "pkg", PATH, {
          source: AFTER,
          expectedHash: contentHashOf(BEFORE),
       });
@@ -175,7 +175,7 @@ describe("DashboardController.putDashboardSource", () => {
 
    it("creates a file that did not exist, and says so", async () => {
       const { controller } = harness();
-      const result = await controller.putDashboardSource("env", "pkg", PATH, {
+      const result = await controller.putReportSource("env", "pkg", PATH, {
          source: AFTER,
       });
       expect(result.created).toBe(true);
@@ -184,7 +184,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("refuses under frozenConfig before reading anything", async () => {
       const { controller, environment } = harness({ frozen: true });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+         controller.putReportSource("env", "pkg", PATH, { source: AFTER }),
       ).rejects.toBeInstanceOf(FrozenConfigError);
       expect(environment.getPackage.called).toBe(false);
    });
@@ -201,7 +201,7 @@ describe("DashboardController.putDashboardSource", () => {
       "sales/index.malloy",
    ])("creates a report at %s", async (good) => {
       const { controller, environment } = harness();
-      const result = await controller.putDashboardSource("env", "pkg", good, {
+      const result = await controller.putReportSource("env", "pkg", good, {
          source: AFTER,
       });
       expect(result).toMatchObject({ path: good, created: true });
@@ -222,7 +222,7 @@ describe("DashboardController.putDashboardSource", () => {
    ])("refuses %s before compiling", async (_name, bad) => {
       const { controller, environment } = harness();
       await expect(
-         controller.putDashboardSource("env", "pkg", bad, { source: AFTER }),
+         controller.putReportSource("env", "pkg", bad, { source: AFTER }),
       ).rejects.toBeInstanceOf(BadRequestError);
       expect(environment.compileSource.called).toBe(false);
       expect(environment.writeModelFileTransactional.called).toBe(false);
@@ -230,7 +230,7 @@ describe("DashboardController.putDashboardSource", () => {
 
    it("writes a linear report through the same compile-first flow", async () => {
       const { controller, environment } = harness();
-      const result = await controller.putDashboardSource(
+      const result = await controller.putReportSource(
          "env",
          "pkg",
          NOTEBOOK_PATH,
@@ -244,10 +244,10 @@ describe("DashboardController.putDashboardSource", () => {
 
    it("takes the layout from the tag, so either layout can be written into either folder", async () => {
       const { controller, environment } = harness();
-      await controller.putDashboardSource("env", "pkg", PATH, {
+      await controller.putReportSource("env", "pkg", PATH, {
          source: NOTEBOOK,
       });
-      await controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+      await controller.putReportSource("env", "pkg", NOTEBOOK_PATH, {
          source: '## artifact { layout=grid tiles=["a -> x"] }\n',
       });
       expect(environment.writeModelFileTransactional.calledTwice).toBe(true);
@@ -257,7 +257,7 @@ describe("DashboardController.putDashboardSource", () => {
       const grid = '## artifact { layout=grid tiles=["a -> x"] }\n';
       const linear = grid.replace("layout=grid", "layout=linear");
       const { controller } = harness({ current: grid });
-      const result = await controller.putDashboardSource(
+      const result = await controller.putReportSource(
          "env",
          "pkg",
          "q3.malloy",
@@ -272,7 +272,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("rolls back a written file the reloaded package does not serve as a report", async () => {
       const { controller } = harness({ served: false });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: NOTEBOOK,
          }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
@@ -280,7 +280,7 @@ describe("DashboardController.putDashboardSource", () => {
 
    it("lets a file whose artifact follows another property through the pre-write check", async () => {
       const { controller, environment } = harness();
-      await controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+      await controller.putReportSource("env", "pkg", NOTEBOOK_PATH, {
          source:
             '## dashboard { columns=2 } artifact { layout=linear tiles=["s -> v"] }\n',
       });
@@ -290,7 +290,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("refuses a file whose only artifact is a string value, before compiling", async () => {
       const { controller, environment } = harness();
       await expect(
-         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         controller.putReportSource("env", "pkg", NOTEBOOK_PATH, {
             source: '## dashboard { title="artifact" }\n',
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
@@ -307,7 +307,7 @@ describe("DashboardController.putDashboardSource", () => {
       async (_where, at) => {
          const { controller, environment } = harness();
          const error = await controller
-            .putDashboardSource("env", "pkg", at, {
+            .putReportSource("env", "pkg", at, {
                source: "source: a is duckdb.sql('select 1')\n",
             })
             .catch((e) => e);
@@ -321,7 +321,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("refuses a file tagged only at the query level, which is no report", async () => {
       const { controller, environment } = harness();
       const error = await controller
-         .putDashboardSource("env", "pkg", PATH, {
+         .putReportSource("env", "pkg", PATH, {
             source: '# artifact { title="T" }\nquery: q is a -> x\n',
          })
          .catch((e) => e);
@@ -344,7 +344,7 @@ describe("DashboardController.putDashboardSource", () => {
       "lets artifact after another property on %s through the pre-write check",
       async (_name, source) => {
          const { controller, environment } = harness();
-         await controller.putDashboardSource("env", "pkg", PATH, { source });
+         await controller.putReportSource("env", "pkg", PATH, { source });
          expect(environment.compileSource.called).toBe(true);
       },
    );
@@ -364,7 +364,7 @@ describe("DashboardController.putDashboardSource", () => {
       async (_name, source) => {
          const { controller, environment } = harness();
          const error = await controller
-            .putDashboardSource("env", "pkg", PATH, { source })
+            .putReportSource("env", "pkg", PATH, { source })
             .catch((e) => e);
          expect(error).toBeInstanceOf(BadRequestError);
          expect(environment.compileSource.called).toBe(false);
@@ -390,7 +390,7 @@ describe("DashboardController.putDashboardSource", () => {
          loadedReport: false,
       });
       const error = await controller
-         .putDashboardSource("env", "pkg", at, {
+         .putReportSource("env", "pkg", at, {
             source: NOTEBOOK,
             expectedHash: contentHashOf(existing),
          })
@@ -408,7 +408,7 @@ describe("DashboardController.putDashboardSource", () => {
          loadedReport: false,
       });
       const error = await controller
-         .putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         .putReportSource("env", "pkg", NOTEBOOK_PATH, {
             source: NOTEBOOK,
             expectedHash: contentHashOf(include),
          })
@@ -421,7 +421,7 @@ describe("DashboardController.putDashboardSource", () => {
       const untagged = "source: s is duckdb.sql('select 1')\n";
       const { controller } = harness({ current: untagged });
       await expect(
-         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         controller.putReportSource("env", "pkg", NOTEBOOK_PATH, {
             source: NOTEBOOK,
             expectedHash: contentHashOf(untagged),
          }),
@@ -431,7 +431,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("replaces an existing report the loaded package serves, of either layout, anywhere", async () => {
       for (const at of [NOTEBOOK_PATH, PATH, "q3.malloy", "a/b/c.malloy"]) {
          const { controller } = harness({ current: NOTEBOOK });
-         const result = await controller.putDashboardSource("env", "pkg", at, {
+         const result = await controller.putReportSource("env", "pkg", at, {
             source: NOTEBOOK.replace("Hello", "Hi"),
             expectedHash: contentHashOf(NOTEBOOK),
          });
@@ -442,7 +442,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("refuses a write whose tag is commented out before compiling it, as the compiler reads it", async () => {
       const { controller, environment } = harness({ served: false });
       await expect(
-         controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         controller.putReportSource("env", "pkg", NOTEBOOK_PATH, {
             source:
                "/*\n## artifact { layout=linear }\n*/\n##(markdown) Hello\n",
          }),
@@ -455,7 +455,7 @@ describe("DashboardController.putDashboardSource", () => {
          served: false,
          reloadedNotes: ["## artifact { layout=grid tiles=[] }"],
       });
-      const result = await controller.putDashboardSource("env", "pkg", PATH, {
+      const result = await controller.putReportSource("env", "pkg", PATH, {
          source: "## artifact { layout=grid tiles=[] }\n",
       });
       expect(result.created).toBe(true);
@@ -464,7 +464,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("rolls back a tile-less grid report whose reloaded model carries no artifact tag", async () => {
       const { controller } = harness({ served: false, reloadedNotes: [] });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: "## artifact { layout=grid tiles=[] }\n",
          }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
@@ -475,12 +475,12 @@ describe("DashboardController.putDashboardSource", () => {
    it("writes a report whose basename another report already has", async () => {
       const resave = await harness({
          current: BEFORE,
-      }).controller.putDashboardSource("env", "pkg", "dashboards/tour.malloy", {
+      }).controller.putReportSource("env", "pkg", "dashboards/tour.malloy", {
          source: AFTER,
          expectedHash: contentHashOf(BEFORE),
       });
       expect(resave.created).toBe(false);
-      const created = await harness().controller.putDashboardSource(
+      const created = await harness().controller.putReportSource(
          "env",
          "pkg",
          "sales/tour.malloy",
@@ -492,7 +492,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("answers a missing path with a BadRequestError, not a TypeError", async () => {
       const { controller } = harness();
       await expect(
-         controller.putDashboardSource("env", "pkg", undefined as never, {
+         controller.putReportSource("env", "pkg", undefined as never, {
             source: AFTER,
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
@@ -501,7 +501,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("refuses, without merging, when the file changed since it was opened", async () => {
       const { controller } = harness({ current: "## artifact { } changed" });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
@@ -511,7 +511,7 @@ describe("DashboardController.putDashboardSource", () => {
    it("refuses to overwrite an existing file when no expectedHash is sent", async () => {
       const { controller } = harness({ current: BEFORE });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+         controller.putReportSource("env", "pkg", PATH, { source: AFTER }),
       ).rejects.toBeInstanceOf(WriteConflictError);
    });
 
@@ -524,7 +524,7 @@ describe("DashboardController.putDashboardSource", () => {
          ],
       });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
@@ -538,7 +538,7 @@ describe("DashboardController.putDashboardSource", () => {
          reloadCompiles: false,
       });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
@@ -556,7 +556,7 @@ describe("DashboardController.putDashboardSource", () => {
  * these are what stops a reworded message — or a branch added later — from
  * quietly recounting a compile failure as a malformed request.
  */
-describe("putDashboardSource: what it reports", () => {
+describe("putReportSource: what it reports", () => {
    let metrics: MetricsHarness;
 
    beforeEach(async () => {
@@ -574,12 +574,12 @@ describe("putDashboardSource: what it reports", () => {
       metrics.collectCounter("publisher_report_writes_total", { outcome });
 
    it("reports a create and a replace apart", async () => {
-      await harness().controller.putDashboardSource("env", "pkg", PATH, {
+      await harness().controller.putReportSource("env", "pkg", PATH, {
          source: AFTER,
       });
       expect(await outcomeCount("created")).toBe(1);
 
-      await harness({ current: BEFORE }).controller.putDashboardSource(
+      await harness({ current: BEFORE }).controller.putReportSource(
          "env",
          "pkg",
          PATH,
@@ -589,13 +589,10 @@ describe("putDashboardSource: what it reports", () => {
    });
 
    it("labels each write with the layout written", async () => {
-      await harness().controller.putDashboardSource(
-         "env",
-         "pkg",
-         NOTEBOOK_PATH,
-         { source: NOTEBOOK },
-      );
-      await harness().controller.putDashboardSource("env", "pkg", PATH, {
+      await harness().controller.putReportSource("env", "pkg", NOTEBOOK_PATH, {
+         source: NOTEBOOK,
+      });
+      await harness().controller.putReportSource("env", "pkg", PATH, {
          source: AFTER,
       });
       const count = (layout: string) =>
@@ -607,7 +604,7 @@ describe("putDashboardSource: what it reports", () => {
       expect(await count("grid")).toBe(1);
 
       await expect(
-         harness().controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
+         harness().controller.putReportSource("env", "pkg", NOTEBOOK_PATH, {
             source: "no tag",
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
@@ -621,7 +618,7 @@ describe("putDashboardSource: what it reports", () => {
 
    it("reports a missing path as refused, not a crash", async () => {
       await expect(
-         harness().controller.putDashboardSource(
+         harness().controller.putReportSource(
             "env",
             "pkg",
             undefined as never,
@@ -634,7 +631,7 @@ describe("putDashboardSource: what it reports", () => {
    it("reports a stale hash as a conflict", async () => {
       const { controller } = harness({ current: "## artifact { } changed" });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
@@ -648,7 +645,7 @@ describe("putDashboardSource: what it reports", () => {
          problems: [{ severity: "error", message: "'x' is not defined" }],
       });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
@@ -660,12 +657,7 @@ describe("putDashboardSource: what it reports", () => {
       // wrong, not Malloy. Counting the two together would make the compile
       // gate impossible to watch.
       await expect(
-         harness().controller.putDashboardSource(
-            "env",
-            "pkg",
-            PATH,
-            {} as never,
-         ),
+         harness().controller.putReportSource("env", "pkg", PATH, {} as never),
       ).rejects.toBeInstanceOf(BadRequestError);
       expect(await outcomeCount("refused")).toBe(1);
    });
@@ -676,7 +668,7 @@ describe("putDashboardSource: what it reports", () => {
          reloadCompiles: false,
       });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
@@ -688,7 +680,7 @@ describe("putDashboardSource: what it reports", () => {
    it("reports a frozen config as refused, without touching the package", async () => {
       const { controller, environment } = harness({ frozen: true });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, { source: AFTER }),
+         controller.putReportSource("env", "pkg", PATH, { source: AFTER }),
       ).rejects.toBeInstanceOf(FrozenConfigError);
       expect(await outcomeCount("refused")).toBe(1);
       expect(environment.getPackage.called).toBe(false);
@@ -701,7 +693,7 @@ describe("putDashboardSource: what it reports", () => {
          restoreFails: true,
       });
       await expect(
-         controller.putDashboardSource("env", "pkg", PATH, {
+         controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf(BEFORE),
          }),
@@ -730,42 +722,42 @@ describe("putDashboardSource: what it reports", () => {
          });
 
       await harness({ frozen: true })
-         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .controller.putReportSource("env", "pkg", PATH, { source: AFTER })
          .catch(() => undefined);
       await harness()
-         .controller.putDashboardSource("env", "pkg", "../escape.malloy", {
+         .controller.putReportSource("env", "pkg", "../escape.malloy", {
             source: AFTER,
          })
          .catch(() => undefined);
       await harness()
-         .controller.putDashboardSource("env", "pkg", "index.malloy", {
+         .controller.putReportSource("env", "pkg", "index.malloy", {
             source: AFTER,
          })
          .catch(() => undefined);
       await harness()
-         .controller.putDashboardSource("env", "pkg", PATH, {} as never)
+         .controller.putReportSource("env", "pkg", PATH, {} as never)
          .catch(() => undefined);
       await harness()
-         .controller.putDashboardSource("env", "pkg", PATH, {
+         .controller.putReportSource("env", "pkg", PATH, {
             source: "source: s is t",
          })
          .catch(() => undefined);
       await harness({ current: "source: s is t", loadedReport: false })
-         .controller.putDashboardSource("env", "pkg", PATH, {
+         .controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
             expectedHash: contentHashOf("source: s is t"),
          })
          .catch(() => undefined);
       await harness({ noPackage: true })
-         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .controller.putReportSource("env", "pkg", PATH, { source: AFTER })
          .catch(() => undefined);
       await harness({ current: BEFORE })
-         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .controller.putReportSource("env", "pkg", PATH, { source: AFTER })
          .catch(() => undefined);
       await harness({
          problems: [{ severity: "error", message: "'x' is not defined" }],
       })
-         .controller.putDashboardSource("env", "pkg", PATH, { source: AFTER })
+         .controller.putReportSource("env", "pkg", PATH, { source: AFTER })
          .catch(() => undefined);
 
       expect(await reasonCount("refused", "frozen_config")).toBe(1);
@@ -785,7 +777,7 @@ describe("putDashboardSource: what it reports", () => {
             writeRefusal: new InvalidModelPathError(
                "Invalid model path: it resolves outside the package.",
             ),
-         }).controller.putDashboardSource("env", "pkg", PATH, {
+         }).controller.putReportSource("env", "pkg", PATH, {
             source: AFTER,
          }),
       ).rejects.toBeInstanceOf(BadRequestError);
@@ -799,7 +791,7 @@ describe("putDashboardSource: what it reports", () => {
    });
 
    it("labels a write that landed with no reason", async () => {
-      await harness().controller.putDashboardSource("env", "pkg", PATH, {
+      await harness().controller.putReportSource("env", "pkg", PATH, {
          source: AFTER,
       });
       expect(
