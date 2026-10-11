@@ -20,7 +20,7 @@ const PKG = "notebooks-malloyyo";
 const TOUR = "notebooks/browser_tour.malloy";
 
 const TOUR_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, second { kind=text }, "orders -> kpis"] }
+## artifact { layout=linear title="Browser tour" tiles=[first { kind=text }, second { kind=text }, "orders -> kpis"] }
 import "../models/orders.malloy"
 
 ##|(markdown) first

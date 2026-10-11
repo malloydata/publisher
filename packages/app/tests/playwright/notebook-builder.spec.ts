@@ -22,7 +22,7 @@ const FILE = `notebooks/${SLUG}.malloy`;
 const EDITED = "Revenue prose, edited in the browser";
 
 const REVENUE_REVIEW = `##! experimental.givens
-## artifact { kind=notebook title="Revenue review" tiles=[prose { kind=text }, "revenue_tiles -> by_month_tile"] }
+## artifact { layout=linear title="Revenue review" tiles=[prose { kind=text }, "revenue_tiles -> by_month_tile"] }
 import "../models/orders.malloy"
 
 ##|(markdown) prose
