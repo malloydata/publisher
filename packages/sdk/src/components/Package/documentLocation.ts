@@ -153,6 +153,21 @@ export type DrillTarget =
    | { kind: "unresolved"; candidates: string[] };
 
 /**
+ * Whether a `# drill { to=… }` is a plain package path: non-empty segments,
+ * none `.` or `..`, and no leading `/`. Anything else could name a route
+ * outside the package (`../../x`), so it resolves to nothing and a host must
+ * not build a route from it. The server's `isDrillTargetPath` is the same rule.
+ */
+export function isDrillTargetPath(to: string): boolean {
+   if (to === "" || to.startsWith("/")) return false;
+   return to
+      .split("/")
+      .every(
+         (segment) => segment !== "" && segment !== "." && segment !== "..",
+      );
+}
+
+/**
  * A `# drill` destination, by the server's rule (`resolveDrillDestination`):
  * read as a package path from the root (`sales/overview` is
  * `sales/overview.malloy`), and only for a bare name with no report at that
@@ -162,7 +177,8 @@ export function resolveDrillTarget(
    to: string,
    reports: readonly ListedReport[],
 ): DrillTarget {
-   const target = to.replace(/^\.?\//, "");
+   if (!isDrillTargetPath(to)) return { kind: "unresolved", candidates: [] };
+   const target = to;
    for (const candidate of [`${target}.malloy`, target]) {
       const report = locateReport(candidate, reports);
       if (report) return { kind: "path", report };

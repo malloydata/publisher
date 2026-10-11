@@ -710,7 +710,10 @@ source: order_items is duckdb.table('data/order_items.parquet') extend {
 - **`to=<path>` navigates to a report**, of either layout, with the clicked value written into the named
   given. The target is the report's package path without `.malloy`, read from the package root, so a drill
   tag means the same thing whichever report renders it: `to=category` is `category.malloy` at the root,
-  `to="regions/west"` is `regions/west.malloy`. Quote a path that contains a `/`.
+  `to="regions/west"` is `regions/west.malloy`. Quote a path that contains a `/`. It is a plain path from the
+  root, never relative: a target with a `.` or `..` segment, an empty segment, or a leading `/`
+  (`to="../x"`, `to="./x"`, `to="/x"`) resolves to no report, is reported as an unresolved drill, and the
+  click goes nowhere.
 - **`to=self`** filters wherever the click came from, without leaving the page. Under `autorun=false` it
   stages the value as a draft: neither the page nor the URL changes until Apply is pressed, while the same
   menu's `to=<path>` entry navigates and arrives already applied.

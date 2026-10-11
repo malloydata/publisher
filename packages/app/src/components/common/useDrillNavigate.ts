@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   isDrillTargetPath,
    reportRoute,
    reportRoutePath,
    resolveDrillTarget,
@@ -20,6 +21,9 @@ import { useCallback } from "react";
  * path, the deprecated basename fallback, which prefers a grid report. The
  * click then lands on the report's path route. A target nothing resolves still
  * navigates, to the path as written, where the page says nothing is there.
+ * A target that is not a plain package path (`../../x`, `/x`, `a//b`) goes
+ * nowhere: a route built from it could leave the package, and the package's
+ * load already reports it as an unresolved drill.
  *
  * A drill IS a navigation step, so unlike a control change it pushes history:
  * Back returns to the report the reader drilled from. `useRouterClickHandler`
@@ -40,7 +44,8 @@ export function useDrillNavigate(environmentName: string, packageName: string) {
          const query = new URLSearchParams(target.givens).toString();
          const env = encodeURIComponent(environmentName);
          const pkg = encodeURIComponent(packageName);
-         const written = target.dashboard.replace(/^\.?\//, "");
+         const written = target.dashboard;
+         if (!isDrillTargetPath(written)) return;
          const resolved = resolveDrillTarget(written, reports);
          // Unresolved here (a listing not yet in, or nothing there): a bare
          // name goes by the deprecated `dashboards/<name>` alias, which resolves

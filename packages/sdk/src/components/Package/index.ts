@@ -5,6 +5,7 @@ export { default as Package, type OpenDocumentRequest } from "./Package";
 export {
    documentRoute,
    documentSlug,
+   isDrillTargetPath,
    kindOfLayout,
    layoutOfKind,
    locateDocument,

@@ -14,6 +14,7 @@ import {
    matchesDocumentedDashboardName,
    lintDashboard,
    lintDrillTargets,
+   resolveDrillDestination,
    lintGivenTags,
    lintSelfDrills,
    isUnparsedDashboardTagFinding,
@@ -1680,6 +1681,28 @@ describe("service/dashboard lint", () => {
       ]);
       const lint = (to: string) =>
          lintDrillTargets([facts({ drills: [drill("brand", [to])] })], reports);
+
+      it("treats a target that is not a plain package path as unresolved", () => {
+         for (const to of [
+            "../../x",
+            "../sales/q3",
+            "sales/../q3",
+            "./sales/q3",
+            "/sales/q3",
+            "sales//q3",
+            "..",
+         ]) {
+            expect(resolveDrillDestination(to, reports)).toEqual({
+               kind: "unresolved",
+               candidates: [],
+               malformed: true,
+            });
+            const [finding] = lint(to);
+            expect(finding).toMatchObject({ severity: "error" });
+            expect(finding.message).toContain(`targets "${to}"`);
+            expect(finding.message).toContain("not a package path");
+         }
+      });
 
       it("resolves a path target, nested or at the root, with nothing said", () => {
          expect(lint("sales/q3")).toEqual([]);

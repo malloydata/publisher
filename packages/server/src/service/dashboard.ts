@@ -1805,12 +1805,30 @@ export function lintGivenTags(
  * it, and says which path to write unless that report sits at the root (where
  * the name already IS its path). Otherwise it is unresolved, naming the
  * candidates.
+ *
+ * A target that is not a plain package path, one with a `.` or `..` segment,
+ * an empty segment, or a leading `/`, is unresolved before any lookup: the
+ * Console would otherwise build a route from it that leaves the package
+ * (`../../x`). The SDK's `resolveDrillTarget` refuses the same shapes.
  */
 export type DrillResolution =
    | { kind: "self" }
    | { kind: "path"; path: string }
    | { kind: "name"; path: string; rewrite?: string }
-   | { kind: "unresolved"; candidates: string[] };
+   | { kind: "unresolved"; candidates: string[]; malformed?: true };
+
+/**
+ * Whether `to=` is a plain package path: non-empty segments, none `.` or `..`,
+ * and no leading `/`. Anything else could name a route outside the package.
+ */
+export function isDrillTargetPath(target: string): boolean {
+   if (target === "" || target.startsWith("/")) return false;
+   return target
+      .split("/")
+      .every(
+         (segment) => segment !== "" && segment !== "." && segment !== "..",
+      );
+}
 
 /** The `to=` form of a report path: the package path without `.malloy`. */
 export function drillPathOf(reportPath: string): string {
@@ -1825,7 +1843,9 @@ export function resolveDrillDestination(
    gridReportPaths: ReadonlySet<string> = new Set(),
 ): DrillResolution {
    if (destination === "self") return { kind: "self" };
-   const target = destination.replace(/^\.?\//, "");
+   if (!isDrillTargetPath(destination))
+      return { kind: "unresolved", candidates: [], malformed: true };
+   const target = destination;
    for (const candidate of [`${target}.malloy`, target]) {
       if (reportPaths.has(candidate)) return { kind: "path", path: candidate };
    }
@@ -1895,14 +1915,19 @@ export function lintDrillTargets(
             const { candidates } = resolved;
             findings.set(`${where}|${destination}`, {
                subject: where,
-               message:
-                  candidates.length > 1
-                     ? `# drill on ${where} targets "${destination}", which ` +
-                       `${candidates.length} reports in this package are named ` +
-                       `(${candidates.join(", ")}), so it resolves to none of ` +
-                       `them. Fix: write the path, to="${drillPathOf(candidates[0])}".`
-                     : `# drill on ${where} targets "${destination}", which is not ` +
-                       `a report in this package.`,
+               message: resolved.malformed
+                  ? `# drill on ${where} targets "${destination}", which is not ` +
+                    `a package path (a path from the package root with no "." ` +
+                    `or ".." segment, no empty segment and no leading "/"), so ` +
+                    `it resolves to no report. Fix: write the report's path ` +
+                    `from the package root, such as to="sales/overview".`
+                  : candidates.length > 1
+                    ? `# drill on ${where} targets "${destination}", which ` +
+                      `${candidates.length} reports in this package are named ` +
+                      `(${candidates.join(", ")}), so it resolves to none of ` +
+                      `them. Fix: write the path, to="${drillPathOf(candidates[0])}".`
+                    : `# drill on ${where} targets "${destination}", which is not ` +
+                      `a report in this package.`,
                severity: "error",
             });
          }

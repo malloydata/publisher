@@ -135,10 +135,6 @@ export async function createDocument(
    const kind = kindOfLayout(layout);
    const problem = newDocumentProblem(kind, document);
    if (problem) throw new Error(problem);
-   if (options.path !== undefined) {
-      const pathProblem = reportPathProblem(options.path);
-      if (pathProblem) throw new Error(pathProblem);
-   }
    const directory = normalizeDirectory(options.directory);
    // The one path asked for, or the title's slug and its numbered variants. Taken is by path, and only by path.
    const candidates =
@@ -147,6 +143,13 @@ export async function createDocument(
          : Array.from({ length: MAX_SLUG_ATTEMPTS }, (_, i) =>
               reportPathForTitle(document.title, i + 1, directory),
            );
+   // Every computed path is checked, not only a `path` given outright: a
+   // `directory` of `../x` or `public` is refused here, before the package
+   // or the store is asked anything.
+   for (const candidate of candidates) {
+      const pathProblem = reportPathProblem(candidate);
+      if (pathProblem) throw new Error(pathProblem);
+   }
    // The import is relative to where the report lands, so each candidate gets its own text.
    const sourceAt = (path: string) => newReportSource(document, layout, path);
 

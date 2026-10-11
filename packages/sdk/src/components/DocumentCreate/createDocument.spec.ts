@@ -424,6 +424,77 @@ describe("createDocument at a path", () => {
    });
 });
 
+describe("createDocument in a directory", () => {
+   const BAD_DIRECTORIES = [
+      "../x",
+      "a/../../x",
+      "public",
+      "Public/reports",
+      "./x",
+   ];
+
+   it("refuses a directory a report cannot live in, before the package is written", async () => {
+      for (const directory of BAD_DIRECTORIES) {
+         const writes: string[] = [];
+         await expect(
+            createDocument({
+               directory,
+               document: DOC,
+               target: {
+                  route: "package",
+                  existing: [],
+                  write: async (path) => {
+                     writes.push(path);
+                  },
+               },
+            }),
+         ).rejects.toThrow();
+         expect(writes).toEqual([]);
+      }
+   });
+
+   it("refuses it before the store is asked anything", async () => {
+      for (const directory of BAD_DIRECTORIES) {
+         const storage = new FakeStorage();
+         let asked = 0;
+         storage.listDocuments = async () => {
+            asked++;
+            return [];
+         };
+         storage.getDocument = async () => {
+            asked++;
+            throw new DocumentNotFoundError("absent");
+         };
+         await expect(
+            createDocument({
+               directory,
+               document: DOC,
+               target: target(storage),
+            }),
+         ).rejects.toThrow();
+         expect(asked).toBe(0);
+         expect(storage.saves).toEqual([]);
+      }
+   });
+
+   it("still writes into a directory that is fine", async () => {
+      const writes: string[] = [];
+      const created = await createDocument({
+         directory: "team/q3",
+         document: DOC,
+         target: {
+            route: "package",
+            existing: [],
+            write: async (path) => {
+               writes.push(path);
+            },
+         },
+      });
+      expect(created.path).toBe("team/q3/sales.malloy");
+      expect(writes).toEqual(["team/q3/sales.malloy"]);
+   });
+});
+
 describe("reportPathProblem", () => {
    it("accepts a path anywhere in the package outside public/", () => {
       for (const path of [

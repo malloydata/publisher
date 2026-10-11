@@ -142,12 +142,23 @@ describe("resolveDrillTarget", () => {
       expect("report" in target && target.report.path).toBe("sales/q3.malloy");
    });
 
-   it("ignores a leading ./ or /", () => {
-      for (const to of ["./sales/q3", "/sales/q3"]) {
-         const target = resolveDrillTarget(to, REPORTS);
-         expect("report" in target && target.report.path).toBe(
-            "sales/q3.malloy",
-         );
+   it("refuses a target that is not a plain package path: . or .. segments, empty segments, a leading /", () => {
+      for (const to of [
+         "../../x",
+         "../sales/q3",
+         "sales/../q3",
+         "./sales/q3",
+         "/sales/q3",
+         "sales//q3",
+         "sales/q3/",
+         ".",
+         "..",
+         "",
+      ]) {
+         expect(resolveDrillTarget(to, REPORTS)).toEqual({
+            kind: "unresolved",
+            candidates: [],
+         });
       }
    });
 
