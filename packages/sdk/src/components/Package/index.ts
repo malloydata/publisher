@@ -25,6 +25,7 @@ export {
    useDocumentLocation,
    useReportListing,
 } from "./useDocumentLocation";
+export { findDraftType, useDraftType } from "./useDraftType";
 export {
    NewDocumentDialog,
    type NewDocumentDialogProps,

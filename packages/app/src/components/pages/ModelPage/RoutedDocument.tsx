@@ -8,6 +8,7 @@ import {
    locateReportByName,
    MONO_FONT_FAMILY,
    reportRoute,
+   useDraftType,
    useReportListing,
 } from "@malloy-publisher/sdk";
 import { Alert, Box, Button, Typography } from "@mui/material";
@@ -52,6 +53,15 @@ export default function RoutedDocument({
    const { search } = useLocation();
    const path = `${routePath}.malloy`;
    const report = settled ? locateReport(path, reports) : undefined;
+   // An unlisted report opened for editing is the host's draft, or nothing
+   // yet: the type the host filed the draft under is its layout, which the
+   // listing cannot say. The editor looks the draft up under that type.
+   const draft = useDraftType(
+      environmentName,
+      packageName,
+      path,
+      edit && settled && !report,
+   );
    if (!settled) return <Loading text={LOADING_COPY.opening()} />;
    // A listing that failed says nothing about what is at this route, so it
    // is not "nothing here": say so, and offer to ask again.
@@ -145,15 +155,18 @@ export default function RoutedDocument({
    }
 
    // Not listed, but asked for in the builder: a draft the host keeps, or a
-   // file the package has not served yet. The editor says which.
-   if (edit)
+   // file the package has not served yet. The editor says which, opened with
+   // the layout the draft was filed under (grid when there is no draft).
+   if (edit) {
+      if (!draft.settled) return <Loading text={LOADING_COPY.opening()} />;
       return (
          <DashboardEditPage
             environmentName={environmentName}
             packageName={packageName}
             path={path}
-            kind="dashboard"
+            kind={draft.type ?? "dashboard"}
          />
       );
+   }
    return <>{notFound}</>;
 }

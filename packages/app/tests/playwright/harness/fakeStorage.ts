@@ -45,8 +45,12 @@ export class FakeStorage implements DocumentStorage {
    }
 
    async getDocument(locator: DocumentLocator): Promise<string> {
+      // Keyed by type as well as path, as a real backend may be: a document
+      // saved as one type is not found under the other. A seeded one, which
+      // has no type, answers to either.
       const content = this.documents.get(locator.path);
-      if (content === undefined)
+      const saved = this.types.get(locator.path);
+      if (content === undefined || (saved && saved !== locator.type))
          throw new DocumentNotFoundError(`No document at ${locator.path}`);
       return content;
    }
