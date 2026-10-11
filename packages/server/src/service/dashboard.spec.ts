@@ -1679,6 +1679,30 @@ describe("service/dashboard lint", () => {
          expect(lint("overview")).toEqual([]);
       });
 
+      it("resolves a bare name to the dashboard when a notebook shares its basename", () => {
+         // Bare names only ever named dashboards; a notebook could share the
+         // basename (storefront ships both), so the grid report wins.
+         const shared = new Set([
+            "dashboards/overview.malloy",
+            "notebooks/overview.malloy",
+         ]);
+         const [finding] = lintDrillTargets(
+            [facts({ drills: [drill("brand", ["overview"])] })],
+            shared,
+            new Set(["dashboards/overview.malloy"]),
+         );
+         expect(finding).toMatchObject({ code: "drill-target-by-name" });
+         expect(finding.message).toContain('to="dashboards/overview"');
+         // Two grid reports with the basename are still ambiguous.
+         const [ambiguous] = lintDrillTargets(
+            [facts({ drills: [drill("brand", ["overview"])] })],
+            shared,
+            shared,
+         );
+         expect(ambiguous.severity).toBe("error");
+         expect(ambiguous.message).toContain("2 reports");
+      });
+
       it("resolves a bare name one report has, and says which path to write", () => {
          const [finding] = lint("q3");
          expect(finding).toMatchObject({

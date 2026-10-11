@@ -3183,6 +3183,8 @@ export class Package {
       // because they could not be read. The drill lint resolves against this,
       // so a drop does not also turn a correct `# drill` into "not a report".
       const reportPaths = new Set<string>();
+      // The grid ones too: a bare drill name falls back to a grid report first (§3).
+      const gridReportPaths = new Set<string>();
       // Every `.malloy` that carries an artifact tag, served or not: a grid
       // report with no tiles yet is not served but is still the builder's to
       // save. The write path's replace rule reads this.
@@ -3314,6 +3316,7 @@ export class Package {
                // the same facts); it was the manifest CONSTRUCTION that failed.
                droppedByError.push({ modelPath, name });
                reportPaths.add(modelPath);
+               gridReportPaths.add(modelPath);
                continue;
             }
             if (!manifest) {
@@ -3339,6 +3342,7 @@ export class Package {
                });
                droppedByError.push({ modelPath, name });
                reportPaths.add(modelPath);
+               gridReportPaths.add(modelPath);
                continue;
             }
             manifest = {
@@ -3357,6 +3361,7 @@ export class Package {
          // what its tiles may read, not whether it is listed (see
          // applyQueryBoundaryToModels and lintTilesAgainstSurface).
          reportPaths.add(modelPath);
+         gridReportPaths.add(modelPath);
          // A name outside the documented pattern is served and only noted: it
          // still addresses the deprecated `…/dashboards/{name}` route, encoded.
          if (!matchesDocumentedDashboardName(name)) {
@@ -3393,6 +3398,7 @@ export class Package {
          allFacts,
          unconventionalNames,
          reportPaths,
+         gridReportPaths,
          droppedByError,
          queryLevel,
          indexTagged,
@@ -3449,6 +3455,7 @@ export class Package {
       allFacts: ReadonlyMap<string, DashboardModelFacts>;
       unconventionalNames: readonly { modelPath: string; name: string }[];
       reportPaths: ReadonlySet<string>;
+      gridReportPaths: ReadonlySet<string>;
       droppedByError: readonly { modelPath: string; name: string }[];
       queryLevel: readonly {
          modelPath: string;
@@ -3689,6 +3696,7 @@ export class Package {
          for (const finding of lintDrillTargets(
             drillFacts,
             inputs.reportPaths,
+            inputs.gridReportPaths,
          )) {
             warnings.push(finding);
          }

@@ -1797,10 +1797,14 @@ export function lintGivenTags(
  * and `to=` names that path without `.malloy`, read from the package root, so
  * `to="sales/overview"` is `sales/overview.malloy`, of either layout.
  *
- * A bare name (no `/`) is the deprecated basename form. During the deprecation
- * it resolves when EXACTLY ONE report has that basename, and says which path
- * to write unless that report sits at the root (where the name already IS its
- * path). Zero or several matches leave it unresolved, naming the candidates.
+ * A bare name (no `/`) is first read as a root path. Failing that it is the
+ * deprecated basename form, which only ever named a dashboard, while a notebook
+ * was free to share a dashboard's basename (`dashboards/overview.malloy` beside
+ * `notebooks/overview.malloy`). So during the deprecation it resolves to the one
+ * GRID report with that basename, else to the one report of either layout with
+ * it, and says which path to write unless that report sits at the root (where
+ * the name already IS its path). Otherwise it is unresolved, naming the
+ * candidates.
  */
 export type DrillResolution =
    | { kind: "self" }
@@ -1818,6 +1822,7 @@ export function drillPathOf(reportPath: string): string {
 export function resolveDrillDestination(
    destination: string,
    reportPaths: ReadonlySet<string>,
+   gridReportPaths: ReadonlySet<string> = new Set(),
 ): DrillResolution {
    if (destination === "self") return { kind: "self" };
    const target = destination.replace(/^\.?\//, "");
@@ -1828,8 +1833,10 @@ export function resolveDrillDestination(
    const matches = Array.from(reportPaths)
       .filter((path) => reportName(path) === target)
       .sort();
-   if (matches.length !== 1) return { kind: "unresolved", candidates: matches };
-   const [path] = matches;
+   const grid = matches.filter((path) => gridReportPaths.has(path));
+   const unique = grid.length === 1 ? grid : matches;
+   if (unique.length !== 1) return { kind: "unresolved", candidates: matches };
+   const [path] = unique;
    return path.includes("/")
       ? { kind: "name", path, rewrite: drillPathOf(path) }
       : { kind: "name", path };
@@ -1851,6 +1858,7 @@ export function resolveDrillDestination(
 export function lintDrillTargets(
    facts: readonly DashboardModelFacts[],
    reportPaths: ReadonlySet<string>,
+   gridReportPaths: ReadonlySet<string> = new Set(),
 ): (DashboardLintFinding & { code?: string })[] {
    const findings = new Map<string, DashboardLintFinding & { code?: string }>();
    for (const file of facts) {
@@ -1865,7 +1873,11 @@ export function lintDrillTargets(
             continue;
          }
          for (const destination of drill.to) {
-            const resolved = resolveDrillDestination(destination, reportPaths);
+            const resolved = resolveDrillDestination(
+               destination,
+               reportPaths,
+               gridReportPaths,
+            );
             if (resolved.kind === "self" || resolved.kind === "path") continue;
             if (resolved.kind === "name") {
                if (resolved.rewrite === undefined) continue;
