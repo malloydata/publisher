@@ -41,7 +41,7 @@ test.describe("curated package notebook", () => {
    test("a notebook with its own sources opens in the editor instead of waiting on the package's text", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/local/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/local?edit`);
       await editing(page);
       await expect(page.getByText("Opening the report…")).toHaveCount(0);
       await expect(page.getByText("A source over the surface")).toBeVisible();
@@ -71,7 +71,7 @@ import { orders } from '../orders.malloy'
    test("opens with the empty state, takes a first tile, and then serves", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/blank/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/blank?edit`);
       await editing(page);
       await expect(
          page.getByText("This report is not served until it has a tile."),
@@ -116,7 +116,7 @@ test.describe("joined filter", () => {
    test("a filter on a joined dimension is added, loads its options, saves quoted, and the package still loads", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/overview/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/overview?edit`);
       await editing(page);
       await page.getByRole("button", { name: "Add filter" }).click();
       const dialog = page.getByRole("dialog");

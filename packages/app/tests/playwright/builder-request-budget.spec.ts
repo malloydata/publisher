@@ -170,7 +170,7 @@ test.describe("builder request budget", () => {
             () =>
                page
                   .goto(
-                     `/${editor.env().env}/${editor.env().pkg}/${editor.path}/edit`,
+                     `/${editor.env().env}/${editor.env().pkg}/${editor.path}?edit`,
                   )
                   .then(() => undefined),
             () => editor.ready(page),

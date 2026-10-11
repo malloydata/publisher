@@ -43,6 +43,7 @@ import { PackageSection } from "../PackageSection";
 import {
    documentSlug,
    kindOfLayout,
+   reportEditRoute,
    reportRoute,
    type DocumentKind,
    type ListedReport,
@@ -84,7 +85,7 @@ interface PackageProps {
     * Open a report, to read or to edit. Where reading and editing live is the
     * host's business, not the package page's, so a host with a builder of its
     * own routes this. Absent, the page navigates to the Console's own routes:
-    * the report's path, and `/edit` under it to edit.
+    * the report's path, and the same path with `?edit` to edit.
     */
    onOpenDocument?: (
       request: OpenDocumentRequest,
@@ -110,7 +111,10 @@ export default function Package({
    const openDocument =
       onOpenDocument ??
       ((request: OpenDocumentRequest, event?: React.MouseEvent) => {
-         const to = `${reportRoute(environmentName, packageName, request.path)}${request.mode === "edit" ? "/edit" : ""}`;
+         const to =
+            request.mode === "edit"
+               ? reportEditRoute(environmentName, packageName, request.path)
+               : reportRoute(environmentName, packageName, request.path);
          // Without an event, called exactly as before this hook existed.
          if (event) onClick(to, event);
          else onClick(to);

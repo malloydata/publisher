@@ -53,7 +53,12 @@ You'll see two path styles, and they're not interchangeable:
 - **Console routes** are short — `/{environment}/{package}/{file}`, e.g.
   `http://localhost:4000/examples/storefront/storefront.malloy`. Use these to link to something
   inside the Console (a model, a report, a package). A report's route is its package path without
-  `.malloy`: `sales/q3.malloy` opens at `/{environment}/{package}/sales/q3`.
+  `.malloy`: `sales/q3.malloy` opens at `/{environment}/{package}/sales/q3`, and in the builder at
+  `/{environment}/{package}/sales/q3?edit`. Edit is a query parameter, not a path segment, so a report
+  whose own path ends in `edit` (`sales/edit.malloy`, at `/{environment}/{package}/sales/edit`) opens as
+  itself. An older `…/sales/q3/edit` link still opens the builder, by redirecting to `?edit`, unless a
+  report is at `sales/q3/edit.malloy`. A report under `data-apps/` opens as a report; any other path
+  there opens the package's data app of that name.
 - **Resource paths** are fully qualified — `/environments/{environment}/packages/{package}/...`.
   This is the canonical form the [REST and MCP APIs](api-overview.md) use, and it's also how an
   in-package HTML data app is served, e.g.

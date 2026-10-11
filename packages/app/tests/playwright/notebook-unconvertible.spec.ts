@@ -43,7 +43,7 @@ test.describe("an unconvertible notebook", () => {
    test("opens read-only in the builder with the reason, and still reads", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/inline-extend/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/inline-extend?edit`);
       const refusal = page.getByRole("alert");
       await expect(refusal).toContainText(
          "This report cannot be opened in the builder",

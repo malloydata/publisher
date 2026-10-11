@@ -99,7 +99,7 @@ test.describe("dashboard-create", () => {
 
       // The builder opens on the file just written into the package.
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/created-here/edit$`),
+         new RegExp(`/${env}/${PKG}/created-here\\?edit$`),
       );
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,

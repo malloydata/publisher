@@ -905,7 +905,7 @@ message, and the entry clears on the next reload that compiles.
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `/<env>/<pkg>/<path>`                                   | The Console page, `<path>` being the report's package path without `.malloy`                                                           |
 | `/<env>/<pkg>/<path>?CATEGORY=Outerwear`                | The same page, filtered: control state is URL state                                                                                    |
-| `/<env>/<pkg>/<path>/edit`                              | The same report in the builder                                                                                                         |
+| `/<env>/<pkg>/<path>?edit`                              | The same report in the builder. `<path>/edit` is a legacy alias, redirected here unless a report is at `<path>/edit.malloy`            |
 | `GET /api/v0/environments/<env>/packages/<pkg>/reports` | Every report: `path`, `name` (label), `layout`, `title`, `description`, `editable`, and the load `error` for one that does not compile |
 | `GET …/reports/{path}`                                  | One report's manifest: title, `layout`, autorun, columns, controls, tiles; for a `run:`-cell or `.malloynb` report, its cells          |
 | `PUT …/models/{path}`                                   | Write a report into the package and reload; the builder's save ([The write path](#the-write-path))                                     |
@@ -1072,7 +1072,7 @@ the surface with the complete embedding story.
 ## Editing one in your own React app
 
 `<DashboardEditor>` is the builder, from `@malloy-publisher/sdk/builder` (the main entry stays free of the
-Malloy parser): the same editor the Console's `/edit` route mounts, keyed by the report's `path`, with a
+Malloy parser): the same editor the Console's `?edit` route mounts, keyed by the report's `path`, with a
 layout switch (hidden with `allowLayoutChange={false}`, for a host that files reports by layout and so
 cannot let an author change it; the editor reads a file's layout by [Which layout](#which-layout), never by
 its folder), plus `onEvent` and `onDirtyChange`. It needs the same `<ServerProvider>`, and a

@@ -39,7 +39,7 @@ test.describe("filter chip", () => {
       expect(original).toContain("given: CATEGORY");
       expect(original).toContain("$CATEGORY");
 
-      await page.goto(`/${pe.env}/${pe.pkg}/overview/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/overview?edit`);
       await editorOpen(page);
       await expect(queryTiles(page)).toHaveCount(5, { timeout: 60_000 });
 

@@ -8,6 +8,7 @@ import {
    locateDocument,
    locateReport,
    locateReportByName,
+   reportEditRoute,
    reportRoute,
    reportRoutePath,
    resolveDrillTarget,
@@ -38,6 +39,18 @@ describe("reportRoute", () => {
          "/env/pkg/sales/q3",
       );
       expect(reportRoutePath("a#b/c d.malloy")).toBe("a%23b/c%20d");
+   });
+
+   it("edits with ?edit, so a report named edit keeps its own route", () => {
+      expect(reportEditRoute("env", "pkg", "sales/q3.malloy")).toBe(
+         "/env/pkg/sales/q3?edit",
+      );
+      expect(reportRoute("env", "pkg", "sales/edit.malloy")).toBe(
+         "/env/pkg/sales/edit",
+      );
+      expect(reportEditRoute("env", "pkg", "sales/edit.malloy")).toBe(
+         "/env/pkg/sales/edit?edit",
+      );
    });
 
    it("keeps a .malloynb suffix, which opens by path", () => {

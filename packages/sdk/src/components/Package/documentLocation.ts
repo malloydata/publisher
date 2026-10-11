@@ -67,6 +67,21 @@ export const reportRoute = (
 ) => `/${environmentName}/${packageName}/${reportRoutePath(path)}`;
 
 /**
+ * The query parameter that opens a report's route in the builder:
+ * `/<env>/<pkg>/sales/q3?edit`. A parameter rather than a trailing `/edit`
+ * segment, because a segment is also a path: `sales/edit.malloy` is a report
+ * whose route is `/<env>/<pkg>/sales/edit`.
+ */
+export const REPORT_EDIT_PARAM = "edit";
+
+/** The Console route that edits a report: its {@link reportRoute} with `?edit`. */
+export const reportEditRoute = (
+   environmentName: string,
+   packageName: string,
+   path: string,
+) => `${reportRoute(environmentName, packageName, path)}?${REPORT_EDIT_PARAM}`;
+
+/**
  * @deprecated A report is addressed by its path; use {@link reportRoute}. The
  * Console route of `dashboards/<slug>` or `notebooks/<slug>`, which now answer
  * only as compatibility aliases.

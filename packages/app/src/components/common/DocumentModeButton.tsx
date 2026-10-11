@@ -10,7 +10,7 @@ import {
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { editPathOf, splitEdit } from "./documentRoutes";
+import { isEditSearch, withEdit, withoutEdit } from "./documentRoutes";
 
 /**
  * A route ending in a model suffix is a FILE route, not a report: ModelPage
@@ -31,7 +31,7 @@ const FILE_ROUTE = /\.malloy(nb)?$/;
  * below 600px, where the builder steps aside.
  */
 export function DocumentModeButton() {
-   const { pathname } = useLocation();
+   const { pathname, search } = useLocation();
    const params = useParams();
    const navigate = useNavigate();
    const narrow = useNarrowScreen();
@@ -42,8 +42,7 @@ export function DocumentModeButton() {
       environmentName !== "" &&
       packageName !== "" &&
       splat !== "" &&
-      !FILE_ROUTE.test(splat) &&
-      !splat.startsWith("data-apps/");
+      !FILE_ROUTE.test(splat);
    const { reports, settled } = useReportListing(
       environmentName,
       packageName,
@@ -51,16 +50,15 @@ export function DocumentModeButton() {
       routeShaped,
    );
    if (!routeShaped || narrow) return null;
-   const { path, edit } = splitEdit(splat);
-   const page = edit
-      ? pathname.replace(/\/$/, "").replace(/\/edit$/, "")
-      : pathname.replace(/\/$/, "");
+   const path = splat.replace(/\/$/, "");
+   const edit = isEditSearch(search);
+   const page = pathname.replace(/\/$/, "");
    if (edit)
       return (
          <SecondaryButton
             label="View"
             icon={<VisibilityOutlinedIcon />}
-            onClick={() => navigate(page)}
+            onClick={() => navigate(`${page}${withoutEdit(search)}`)}
          />
       );
    const report = settled ? locateReport(`${path}.malloy`, reports) : undefined;
@@ -69,7 +67,7 @@ export function DocumentModeButton() {
       <SecondaryButton
          label="Edit"
          icon={<EditOutlinedIcon />}
-         onClick={() => navigate(editPathOf(page))}
+         onClick={() => navigate(`${page}${withEdit(search)}`)}
       />
    );
 }

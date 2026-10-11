@@ -10,6 +10,8 @@ export {
    locateDocument,
    locateReport,
    locateReportByName,
+   REPORT_EDIT_PARAM,
+   reportEditRoute,
    reportRoute,
    reportRoutePath,
    resolveDrillTarget,

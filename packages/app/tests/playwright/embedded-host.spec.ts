@@ -119,7 +119,7 @@ test.describe("embedded host", () => {
          { [record]: LOCAL_TEXT },
       );
       const writes = watchPackageWrites(page);
-      await page.goto(`/${curated.env}/${curated.pkg}/notebooks/local/edit`);
+      await page.goto(`/${curated.env}/${curated.pkg}/notebooks/local?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
@@ -167,12 +167,12 @@ test.describe("embedded host", () => {
 
       // At the package root, with the layout the dialog defaults to: linear.
       await expect(page).toHaveURL(
-         new RegExp(`/${storefront.pkg}/hosted-notebook(-\\d+)?/edit$`),
+         new RegExp(`/${storefront.pkg}/hosted-notebook(-\\d+)?\\?edit$`),
          {
             timeout: 60_000,
          },
       );
-      const slug = new URL(page.url()).pathname.split("/").slice(-2)[0]!;
+      const slug = new URL(page.url()).pathname.split("/").slice(-1)[0]!;
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
@@ -221,12 +221,12 @@ test.describe("embedded host", () => {
       await dialog.getByLabel("Report title").fill("Hosted dashboard");
       await dialog.getByRole("button", { name: "Create report" }).click();
       await expect(page).toHaveURL(
-         new RegExp(`/${storefront.pkg}/hosted-dashboard(-\\d+)?/edit$`),
+         new RegExp(`/${storefront.pkg}/hosted-dashboard(-\\d+)?\\?edit$`),
          {
             timeout: 60_000,
          },
       );
-      const slug = new URL(page.url()).pathname.split("/").slice(-2)[0]!;
+      const slug = new URL(page.url()).pathname.split("/").slice(-1)[0]!;
       const held = await hostOf(page);
       const stored = `${storefront.env}/${storefront.pkg}/${slug}.malloy`;
       expect(held.documents[stored]).toContain("tiles=");
@@ -256,7 +256,7 @@ test.describe("embedded host", () => {
          { [record]: text },
       );
       const writes = watchPackageWrites(page);
-      await page.goto(`/${storefront.env}/${storefront.pkg}/overview/edit`);
+      await page.goto(`/${storefront.env}/${storefront.pkg}/overview?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
@@ -278,7 +278,7 @@ test.describe("embedded host", () => {
    }) => {
       const writes = watchPackageWrites(page);
       await page.goto(
-         `/${storefront.env}/${storefront.pkg}/category-review/edit?host=scratch`,
+         `/${storefront.env}/${storefront.pkg}/category-review?edit&host=scratch`,
       );
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
@@ -297,7 +297,7 @@ test.describe("embedded host", () => {
    }) => {
       await frozenServer(page);
       await page.goto(
-         `/${storefront.env}/${storefront.pkg}/category-review/edit?host=scratch`,
+         `/${storefront.env}/${storefront.pkg}/category-review?edit&host=scratch`,
       );
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,

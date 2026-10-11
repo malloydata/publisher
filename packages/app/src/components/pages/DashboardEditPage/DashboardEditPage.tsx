@@ -39,9 +39,9 @@ export interface DashboardEditPageProps {
 }
 
 /**
- * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/<path>/edit`,
- * either layout. View in the header returns to the report itself, one segment
- * up.
+ * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/<path>?edit`,
+ * either layout. View in the header returns to the report itself, the same
+ * route without `?edit`.
  */
 export default function DashboardEditPage({
    environmentName,

@@ -12,14 +12,15 @@ import {
 import Box from "@mui/material/Box";
 import Link from "@mui/material/Link";
 import Typography from "@mui/material/Typography";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import { MONO_FONT_FAMILY } from "../../../theme/colors";
-import { splitEdit } from "../../common/documentRoutes";
+import { isEditSearch } from "../../common/documentRoutes";
 import ReportPage from "../ReportPage/ReportPage";
 import RoutedDocument from "./RoutedDocument";
 
 function ModelPage() {
    const params = useParams();
+   const { search } = useLocation();
    const modelPath = params["*"];
    const { server } = useServer();
    // Every branch below has the same parent, the package, so the way up is
@@ -44,36 +45,21 @@ function ModelPage() {
 
    const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
 
-   // In-package HTML data app (embedded view). The Apps section in
-   // <Package> routes clicks to `data-apps/<file>` so this branch picks them
-   // up. <DataAppViewer> iframes the standalone Publisher URL and resizes
-   // via the publisher.js postMessage protocol. Real models that live under
-   // a `data-apps/` subdirectory (e.g. `data-apps/x.malloy`) are excluded so
-   // they still open in the Model/Notebook viewer.
-   if (
-      modelPath?.startsWith("data-apps/") &&
-      !modelPath.endsWith(".malloy") &&
-      !modelPath.endsWith(".malloynb")
-   ) {
-      const dataAppPath = modelPath.slice("data-apps/".length);
-      const dataAppResourceUri = encodeResourceUri({
-         environmentName: params.environmentName,
-         packageName: params.packageName,
-         modelPath: dataAppPath,
-      });
-      // No wrapper: the viewer lays itself out at the report's width and
-      // edges, and a second padded box around it would push it 24px further in.
-      return <DataAppViewer resourceUri={dataAppResourceUri} />;
-   }
-
    // A report. Its route is its package path without `.malloy`, so
-   // `sales/q3` is `sales/q3.malloy`, and `/edit` under it opens the builder;
+   // `sales/q3` is `sales/q3.malloy`, and `?edit` on it opens the builder;
    // the file itself, `sales/q3.malloy`, keeps opening in the Model view,
    // which is the author's "view the Malloy" path. The package's report
-   // listing decides whether a path is a report, not a directory name, and
-   // an old `dashboards/<name>` or `notebooks/<name>` link with no file there
-   // is redirected by name. After the `data-apps/` branch, which is a viewer
-   // route of its own.
+   // listing decides whether a path is a report, not a directory name: an old
+   // `dashboards/<name>` or `notebooks/<name>` link with no file there is
+   // redirected by name, and a legacy `<path>/edit` link is redirected to
+   // `<path>?edit` only when no report is at `<path>/edit.malloy`.
+   //
+   // The report lookup comes FIRST, ahead of the `data-apps/` viewer, so a
+   // report under `data-apps/` opens as a report. A path there that is not a
+   // report is an in-package HTML data app: the Apps section in <Package>
+   // routes clicks to `data-apps/<file>`, and <DataAppViewer> iframes the
+   // standalone Publisher URL and resizes via the publisher.js postMessage
+   // protocol.
    //
    // The cost, stated the way `spa_fallback.ts` states its own: the route
    // drops `.malloy`, so a report at `report.malloy.malloy` has the route
@@ -86,26 +72,40 @@ function ModelPage() {
       !modelPath.endsWith(".malloy") &&
       !modelPath.endsWith(".malloynb")
    ) {
-      const { path: routePath, edit } = splitEdit(modelPath);
+      const routePath = modelPath.replace(/\/$/, "");
+      const dataApp = routePath.startsWith("data-apps/");
+      const notFound = dataApp ? (
+         // No wrapper: the viewer lays itself out at the report's width and
+         // edges, and a second padded box around it would push it 24px further in.
+         <DataAppViewer
+            resourceUri={encodeResourceUri({
+               environmentName: params.environmentName,
+               packageName: params.packageName,
+               modelPath: routePath.slice("data-apps/".length),
+            })}
+         />
+      ) : (
+         <NothingToOpen
+            environmentName={params.environmentName}
+            packageName={params.packageName}
+            modelPath={modelPath}
+            staticUrl={packageFileUrl({
+               server,
+               environmentName: params.environmentName,
+               packageName: params.packageName,
+               path: modelPath,
+            })}
+         />
+      );
       return (
          <RoutedDocument
             environmentName={params.environmentName}
             packageName={params.packageName}
             routePath={routePath}
-            edit={edit}
-            notFound={
-               <NothingToOpen
-                  environmentName={params.environmentName}
-                  packageName={params.packageName}
-                  modelPath={modelPath}
-                  staticUrl={packageFileUrl({
-                     server,
-                     environmentName: params.environmentName,
-                     packageName: params.packageName,
-                     path: modelPath,
-                  })}
-               />
-            }
+            edit={isEditSearch(search)}
+            notFound={notFound}
+            // A data app does not depend on the report listing: when it cannot be read, show the app.
+            notFoundOnError={dataApp}
          />
       );
    }

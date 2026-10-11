@@ -43,7 +43,7 @@ test.describe("builder chart type", () => {
    test("a converted notebook tile follows the picker: bar, from the view, table", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/category-review/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/category-review?edit`);
       await editorOpen(page);
       // Opened as an unsaved conversion, whose tiles are placeholders until it is saved.
       await expect(queryTiles(page)).toHaveCount(3, { timeout: 60_000 });
@@ -165,7 +165,7 @@ test.describe("builder chart type", () => {
          ["Table", "table"],
          ["From the view", "line"],
       ] as const) {
-         await page.goto(`/${pe.env}/${pe.pkg}/${slug}/edit`);
+         await page.goto(`/${pe.env}/${pe.pkg}/${slug}?edit`);
          await editorOpen(page);
          await pickChart(page, queryTiles(page).first(), option);
          await saveChanges(page);

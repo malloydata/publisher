@@ -50,7 +50,7 @@ test.describe("builder affordances", () => {
          "dashboards-test",
          { "dashboards/solo.malloy": SOLO_DASHBOARD },
       );
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/solo/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/solo?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
@@ -82,7 +82,7 @@ test.describe("builder affordances", () => {
          "notebooks-malloyyo",
       );
       await page.setViewportSize({ width: 1280, height: 720 });
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/layout/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/layout?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });

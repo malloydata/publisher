@@ -13,6 +13,7 @@ import {
 } from "@malloy-publisher/sdk";
 import { Alert, Box, Button, Typography } from "@mui/material";
 import { Link as RouterLink, Navigate, useLocation } from "react-router-dom";
+import { legacyEditBase, withEdit } from "../../common/documentRoutes";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import ReportPage from "../ReportPage/ReportPage";
 
@@ -23,6 +24,11 @@ const ALIAS = /^(dashboards|notebooks)\/([^/]+)$/;
  * A route with no model extension, opened as the report at that path: the
  * route is the report's package path without `.malloy`, so `sales/q3` is
  * `sales/q3.malloy`. The package's listing decides; no directory name does.
+ *
+ * `?edit` on the route opens the report in the builder. A legacy route ending
+ * in `/edit` (`sales/q3/edit`, the old edit route) is checked as a path FIRST:
+ * when `sales/q3/edit.malloy` is a report it opens, and only when it is not
+ * does the route redirect to `sales/q3?edit`.
  *
  * When no report is at that path and the route is exactly `dashboards/<x>` or
  * `notebooks/<x>`, it is an old link: the basename `<x>` is looked up (a grid
@@ -37,14 +43,18 @@ export default function RoutedDocument({
    routePath,
    edit,
    notFound,
+   notFoundOnError = false,
 }: {
    environmentName: string;
    packageName: string;
-   /** The route's path under the package, without `/edit`. */
+   /** The route's path under the package, as the URL spells it (no `?edit`). */
    routePath: string;
+   /** The route carries `?edit`. */
    edit: boolean;
    /** What to draw when nothing is at this route. */
    notFound: React.ReactNode;
+   /** Draw `notFound` rather than a retry when the listing cannot be read. */
+   notFoundOnError?: boolean;
 }) {
    const { reports, settled, isError, refetch } = useReportListing(
       environmentName,
@@ -63,6 +73,7 @@ export default function RoutedDocument({
       edit && settled && !report,
    );
    if (!settled) return <Loading text={LOADING_COPY.opening()} />;
+   if (isError && notFoundOnError) return <>{notFound}</>;
    // A listing that failed says nothing about what is at this route, so it
    // is not "nothing here": say so, and offer to ask again.
    if (isError)
@@ -106,6 +117,20 @@ export default function RoutedDocument({
       );
    }
 
+   // The old edit route, `<path>/edit`: no report has this path (checked
+   // above), so it is a link to edit `<path>`.
+   const legacyEdit = edit ? undefined : legacyEditBase(routePath);
+   if (legacyEdit !== undefined)
+      return (
+         <Navigate
+            replace
+            to={`/${environmentName}/${packageName}/${legacyEdit
+               .split("/")
+               .map(encodeURIComponent)
+               .join("/")}${withEdit(search)}`}
+         />
+      );
+
    const alias = ALIAS.exec(routePath);
    if (alias) {
       const lookup = locateReportByName(
@@ -117,7 +142,7 @@ export default function RoutedDocument({
          return (
             <Navigate
                replace
-               to={`${reportRoute(environmentName, packageName, lookup.found.path)}${edit ? "/edit" : ""}${search}`}
+               to={`${reportRoute(environmentName, packageName, lookup.found.path)}${edit ? withEdit(search) : search}`}
             />
          );
       if ("ambiguous" in lookup)

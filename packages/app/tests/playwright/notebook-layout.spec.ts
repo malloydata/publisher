@@ -120,7 +120,7 @@ test.describe("layout notebooks", () => {
       const file = "category-review.malloy";
       const original = await pe.readSource(file);
 
-      await page.goto(`/${pe.env}/${pe.pkg}/category-review/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/category-review?edit`);
       await editorOpen(page);
       await expect(
          page.getByText(

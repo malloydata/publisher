@@ -87,7 +87,7 @@ test.describe("notebook tiles", () => {
    });
 
    const open = async (page: Page, slug = "browser_tour") => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}?edit`);
       await editorOpen(page);
    };
 

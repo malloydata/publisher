@@ -299,7 +299,7 @@ describe("creating", () => {
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/by-category/edit",
+            "/env/pkg/by-category?edit",
          ),
       );
       const [, , path, body] = updateModelSource.mock.calls[0] as unknown as [
@@ -324,7 +324,7 @@ describe("creating", () => {
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/by-category/edit",
+            "/env/pkg/by-category?edit",
          ),
       );
       const [, , path, body] = updateModelSource.mock.calls[0] as unknown as [
@@ -366,7 +366,7 @@ describe("creating", () => {
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/sales/q3/edit",
+            "/env/pkg/sales/q3?edit",
          ),
       );
       const [, , path, body] = updateModelSource.mock.calls[0] as unknown as [
@@ -388,7 +388,7 @@ describe("creating", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
-         expect(onClickPackageFile).toHaveBeenCalledWith("/env/pkg/old-2/edit"),
+         expect(onClickPackageFile).toHaveBeenCalledWith("/env/pkg/old-2?edit"),
       );
       expect(updateModelSource.mock.calls[0][2]).toBe("old-2.malloy");
    });
@@ -401,7 +401,7 @@ describe("creating", () => {
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() =>
          expect(onClickPackageFile).toHaveBeenCalledWith(
-            "/env/pkg/by-category/edit",
+            "/env/pkg/by-category?edit",
          ),
       );
       expect(updateModelSource).not.toHaveBeenCalled();

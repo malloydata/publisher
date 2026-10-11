@@ -278,7 +278,11 @@ scope all switch from the path predicates to discovery's report map.
 ### 9. Console
 
 **Routes.** A report's route is its package path with `.malloy` removed: `/<env>/<pkg>/sales/q3`
-for `sales/q3.malloy`, with `/edit` for the builder. `<path>.malloy` keeps opening the Model view.
+for `sales/q3.malloy`, with the query parameter `?edit` for the builder (`/<env>/<pkg>/sales/q3?edit`).
+A parameter, not a trailing `/edit` segment, because a segment is also a path: `sales/edit.malloy` is
+a report whose route is `/<env>/<pkg>/sales/edit`. A trailing `/edit` (the edit route before this
+change) stays a legacy alias: it is looked up as a path first, and only when no report is at
+`<path>/edit.malloy` does it redirect to `<path>?edit`. `<path>.malloy` keeps opening the Model view.
 Every existing URL keeps working, because a file at `dashboards/overview.malloy` already lives at
 `/<env>/<pkg>/dashboards/overview`.
 
@@ -287,8 +291,9 @@ Every existing URL keeps working, because a file at `dashboards/overview.malloy`
 prefix: for a splat with no `.malloy` / `.malloynb` extension it asks the report listing for
 `<splat>.malloy`. If there is none and the splat is exactly `dashboards/<x>` or `notebooks/<x>`, it
 tries the basename `<x>` under §3's deprecation rule and redirects to the report's path route. That
-is a **compatibility alias only**; nothing new generates it. `data-apps/<file>` keeps its branch,
-ahead of the report lookup.
+is a **compatibility alias only**; nothing new generates it. The report lookup comes first, so a
+report under `data-apps/` opens as a report; `data-apps/<file>` that is not a report keeps opening
+the data-app viewer.
 
 **Drill** navigates to the target report's path route.
 

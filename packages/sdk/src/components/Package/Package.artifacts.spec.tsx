@@ -196,7 +196,7 @@ it("lists host drafts by path whatever type they are filed as, each opening its 
    fireEvent.click(await screen.findByText("team/n-one.malloy"));
    expect(screen.queryByText("x.malloy")).toBeNull();
    expect(onClick.mock.calls.map((call) => call[0])).toEqual([
-      "/env/pkg/d-one/edit",
-      "/env/pkg/team/n-one/edit",
+      "/env/pkg/d-one?edit",
+      "/env/pkg/team/n-one?edit",
    ]);
 });

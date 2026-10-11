@@ -100,11 +100,11 @@ export async function createDocument(
    await dialog.getByRole("button", { name: "Create report" }).click();
    // At the package root: no directory is created for a new report.
    await expect(page).toHaveURL(
-      new RegExp(`/${pe.env}/${pe.pkg}/[a-z0-9-]+/edit$`),
+      new RegExp(`/${pe.env}/${pe.pkg}/[a-z0-9-]+\\?edit$`),
       { timeout: 60_000 },
    );
    await editorOpen(page);
-   const slug = new URL(page.url()).pathname.split("/").slice(-2)[0]!;
+   const slug = new URL(page.url()).pathname.split("/").slice(-1)[0]!;
    // Deduplication changes the slug on a repeat run, never its prefix.
    expect(slug.startsWith(title.toLowerCase().replace(/ /g, "-"))).toBe(true);
    return slug;
