@@ -1594,7 +1594,7 @@ ${body}`,
 given: BY_SOURCE :: filter<number> is f''
 # label="Id" control=select suggest { query=raw_ids dimension=id }
 given: BY_QUERY :: filter<number> is f''
-# artifact { title="Dash" }
+## artifact { layout=grid title="Dash" tiles=["dash"] }
 query: dash is customers -> {
   where: id ~ $BY_SOURCE and id ~ $BY_QUERY
   group_by: id

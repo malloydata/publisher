@@ -47,10 +47,10 @@ const COMMENTED_INCLUDE =
 
 /** A dashboard that compiles against the fixture's `orders` model. */
 const dashboardSource = (title: string) => `##! experimental.givens
+##" Written by the write-path integration test.
+## artifact { layout=grid title="${title}" tiles=["written"] } dashboard {columns=12}
 import { orders } from '../orders.malloy'
 
-#" Written by the write-path integration test.
-# artifact { title="${title}" } dashboard {columns=12}
 query: written is orders -> {
    aggregate:
       # label="Orders"
@@ -266,9 +266,9 @@ import { orders } from '../orders.malloy'
    it("refuses source that does not compile with 400, naming where", async () => {
       const res = await put("dashboards/broken.malloy", {
          source: `##! experimental.givens
+## artifact { layout=grid title="Broken" tiles=["broken"] } dashboard {columns=12}
 import { orders } from '../orders.malloy'
 
-# artifact { title="Broken" } dashboard {columns=12}
 query: broken is orders -> { aggregate: no_such_measure }
 `,
       });

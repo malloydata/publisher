@@ -62,10 +62,10 @@ ${GIVEN_AND_SOURCE}
 run: orders -> { where: org_id = $ORG; aggregate: c }`;
 
 const DASHBOARD = `##! experimental.givens
+## artifact { layout=grid title="Unbound" tiles=["tile"] } dashboard {columns=12}
 given: ORG :: number
 source: orders is ${ROWS} extend { measure: c is count() }
 
-# artifact { title="Unbound" } dashboard {columns=12}
 query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 

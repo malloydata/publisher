@@ -313,7 +313,9 @@ describe("service/dashboard filter literals", () => {
    });
 });
 
-describe("service/dashboard manifest (single-query form)", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// the query-level `# artifact` (see RELEASE_NOTES deprecations).
+describe("deprecated: query-level # artifact — service/dashboard manifest (single-query form)", () => {
    it("reads the artifact tag and the sibling dashboard grid tag", () => {
       const manifest = build(
          facts({
@@ -417,6 +419,9 @@ describe("service/dashboard manifest (single-query form)", () => {
    });
 });
 
+/** A grid report whose one tile is the named query `overview`. */
+const GRID_OVERVIEW = '## artifact { layout=grid tiles=["overview"] }\n';
+
 describe("service/dashboard given specs (the control contract)", () => {
    /**
     * `default` must be usable AS a default, so a filter given publishes the BODY
@@ -430,10 +435,11 @@ describe("service/dashboard given specs (the control contract)", () => {
    it("unwraps a filter default and leaves a look-alike plain default alone", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["FILTERED", "PLAIN"],
                },
             ],
@@ -452,10 +458,11 @@ describe("service/dashboard given specs (the control contract)", () => {
    it("builds one control per given the query references, from its tags", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["BRAND", "MIN_PRICE"],
                },
             ],
@@ -508,10 +515,11 @@ describe("service/dashboard given specs (the control contract)", () => {
    it("carries an untagged given through as a bare control", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["REGION"],
                },
             ],
@@ -530,10 +538,11 @@ describe("service/dashboard given specs (the control contract)", () => {
    it("carries app-route annotations through, and drops reserved ones", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["REGION"],
                },
             ],
@@ -557,10 +566,11 @@ describe("service/dashboard given specs (the control contract)", () => {
    it("leaves a given's own (markdown) prose out of its annotations, at either level", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["REGION"],
                },
             ],
@@ -587,10 +597,11 @@ describe("service/dashboard given specs (the control contract)", () => {
    it("ignores a control kind it does not recognize", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["BRAND"],
                },
             ],
@@ -611,10 +622,11 @@ describe("service/dashboard suggest givenNames", () => {
    it("names the givens a suggest's source is gated or scoped by", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["BRAND"],
                },
             ],
@@ -641,10 +653,11 @@ describe("service/dashboard suggest givenNames", () => {
    it("leaves givenNames off a suggest whose source needs none", () => {
       const manifest = build(
          facts({
+            modelAnnotations: [GRID_OVERVIEW],
             queries: [
                {
                   name: "overview",
-                  annotations: ["# artifact\n"],
+                  annotations: [],
                   givens: ["BRAND"],
                },
             ],
@@ -662,32 +675,38 @@ describe("service/dashboard suggest givenNames", () => {
       });
    });
 
-   it("resolves the query form through the query lookup", () => {
-      const manifest = build(
-         facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: ["# artifact\n"],
-                  givens: ["BRAND"],
-               },
-            ],
-            givens: new Map([
-               given("BRAND", "filter<string>", [
-                  "# control=select suggest { query=brand_suggest dimension=brand }\n",
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
+   describe("deprecated: query-level # artifact", () => {
+      it("resolves the query form through the query lookup", () => {
+         const manifest = build(
+            facts({
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: ["# artifact\n"],
+                     givens: ["BRAND"],
+                  },
+               ],
+               givens: new Map([
+                  given("BRAND", "filter<string>", [
+                     "# control=select suggest { query=brand_suggest dimension=brand }\n",
+                  ]),
                ]),
-            ]),
-            suggestGivens: {
-               forSource: () => undefined,
-               forQuery: (name) =>
-                  name === "brand_suggest" ? ["TENANT", "REGION"] : undefined,
-            },
-         }),
-      );
-      expect(manifest?.givens?.[0]?.suggest?.givenNames).toEqual([
-         "TENANT",
-         "REGION",
-      ]);
+               suggestGivens: {
+                  forSource: () => undefined,
+                  forQuery: (name) =>
+                     name === "brand_suggest"
+                        ? ["TENANT", "REGION"]
+                        : undefined,
+               },
+            }),
+         );
+         expect(manifest?.givens?.[0]?.suggest?.givenNames).toEqual([
+            "TENANT",
+            "REGION",
+         ]);
+      });
    });
 });
 
@@ -1263,30 +1282,34 @@ describe("service/dashboard artifact-tag enumeration", () => {
       ).toEqual([expect.stringContaining("close the artifact braces first")]);
    });
 
-   // Half a migration to `tiles=`: the model-level tag is written, the query
-   // still carries its own, and discovery falls through to the query. Before
-   // this the page kept serving and nothing was said, because the lint that owns
-   // this diagnosis runs only when NO dashboard was built.
-   it("reports a tiles-less model tag that a query-level artifact rescued", () => {
-      expect(
-         lintOf(
-            facts({
-               modelAnnotations: ['## artifact { title="Migrating" }\n'],
-               queries: [
-                  {
-                     name: "overview",
-                     annotations: ["# artifact\n"],
-                     givens: [],
-                  },
-               ],
-            }),
-         ),
-      ).toEqual([
-         expect.stringContaining(
-            "declares no tiles=, so it builds nothing and this dashboard is " +
-               "the query's own '# artifact' instead",
-         ),
-      ]);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
+   describe("deprecated: query-level # artifact", () => {
+      // Half a migration to `tiles=`: the model-level tag is written, the query
+      // still carries its own, and discovery falls through to the query. Before
+      // this the page kept serving and nothing was said, because the lint that owns
+      // this diagnosis runs only when NO dashboard was built.
+      it("reports a tiles-less model tag that a query-level artifact rescued", () => {
+         expect(
+            lintOf(
+               facts({
+                  modelAnnotations: ['## artifact { title="Migrating" }\n'],
+                  queries: [
+                     {
+                        name: "overview",
+                        annotations: ["# artifact\n"],
+                        givens: [],
+                     },
+                  ],
+               }),
+            ),
+         ).toEqual([
+            expect.stringContaining(
+               "declares no tiles=, so it builds nothing and this dashboard is " +
+                  "the query's own '# artifact' instead",
+            ),
+         ]);
+      });
    });
 
    it("stays silent when the model tag does declare tiles", () => {
@@ -1881,24 +1904,28 @@ describe("service/dashboard multi-line doc comment as a title", () => {
    // comment is deliberately newline-joined markdown.
    const twoLine = ['#" Business Overview\n', '#" Updated nightly.\n'];
 
-   it("takes only the first line on the single-query form", () => {
-      const m = build(
-         facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: [...twoLine, "# artifact\n"],
-                  givens: [],
-               },
-            ],
-         }),
-      );
-      expect(m?.title).toBe("Business Overview");
-      expect(m?.title ?? "").not.toContain("\n");
-      // The description is what the title did NOT take. Asserting the whole
-      // comment here is what pinned the duplicate: the first line was published
-      // twice, as the heading and again under it.
-      expect(m?.description).toBe("Updated nightly.");
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
+   describe("deprecated: query-level # artifact", () => {
+      it("takes only the first line on the single-query form", () => {
+         const m = build(
+            facts({
+               queries: [
+                  {
+                     name: "overview",
+                     annotations: [...twoLine, "# artifact\n"],
+                     givens: [],
+                  },
+               ],
+            }),
+         );
+         expect(m?.title).toBe("Business Overview");
+         expect(m?.title ?? "").not.toContain("\n");
+         // The description is what the title did NOT take. Asserting the whole
+         // comment here is what pinned the duplicate: the first line was published
+         // twice, as the heading and again under it.
+         expect(m?.description).toBe("Updated nightly.");
+      });
    });
 
    it("takes only the first line on the composite form", () => {
@@ -1921,7 +1948,9 @@ describe("service/dashboard multi-line doc comment as a title", () => {
    });
 });
 
-describe("service/dashboard single-query given lint", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// the query-level `# artifact` (see RELEASE_NOTES deprecations).
+describe("deprecated: query-level # artifact — service/dashboard single-query given lint", () => {
    // The tile form warned about this and the single-query form did not, so a
    // single-query dashboard dropped the control in silence while
    // `buildGivenSpecs` claimed the lint covered it.
@@ -2393,15 +2422,19 @@ describe("service/dashboard grid width and hostile literals", () => {
       expect(build(f)?.dashboardColumns).toBeUndefined();
    });
 
-   it("names dashboard_columns on a single query as doing nothing", () => {
-      const findings = lintOf(
-         singleQuery("# artifact { dashboard_columns=4 }\n"),
-      );
-      expect(findings).toEqual([
-         expect.stringContaining(
-            "`dashboard_columns` in the artifact tag does nothing in Publisher",
-         ),
-      ]);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
+   describe("deprecated: query-level # artifact", () => {
+      it("names dashboard_columns on a single query as doing nothing", () => {
+         const findings = lintOf(
+            singleQuery("# artifact { dashboard_columns=4 }\n"),
+         );
+         expect(findings).toEqual([
+            expect.stringContaining(
+               "`dashboard_columns` in the artifact tag does nothing in Publisher",
+            ),
+         ]);
+      });
    });
 
    it("says nothing about a tile entry that carries only kind=query", () => {

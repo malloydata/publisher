@@ -177,15 +177,21 @@ describe("notebook predicates", () => {
       }
    });
 
-   it("locates the artifact note by its line, and only the ## form", () => {
-      const notes = [
-         note('##" above\n', 0),
-         note("## artifact { layout=linear }\n", 1),
-         note('##" below\n', 3),
-      ];
-      expect(artifactNoteLine(notes)).toBe(1);
-      expect(artifactNoteLine([note("## artifactual\n", 0)])).toBeUndefined();
-      expect(artifactNoteLine([note("# artifact {}\n", 0)])).toBeUndefined();
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
+   describe("deprecated: query-level # artifact", () => {
+      it("locates the artifact note by its line, and only the ## form", () => {
+         const notes = [
+            note('##" above\n', 0),
+            note("## artifact { layout=linear }\n", 1),
+            note('##" below\n', 3),
+         ];
+         expect(artifactNoteLine(notes)).toBe(1);
+         expect(
+            artifactNoteLine([note("## artifactual\n", 0)]),
+         ).toBeUndefined();
+         expect(artifactNoteLine([note("# artifact {}\n", 0)])).toBeUndefined();
+      });
    });
 
    it("keeps only the notes above the artifact line, and all when there is none", () => {
