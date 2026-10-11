@@ -8,12 +8,12 @@
 /// <reference types="bun-types" />
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { fileURLToPath } from "url";
-import { type RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ENV_NAME = "notebook-givens-scope-env";
 const PKG = "notebook-givens-scope";
 const NOTEBOOK = "nb.malloynb";
 
@@ -31,57 +31,23 @@ function cellCount(body: { result?: string }): number {
 }
 
 describe("notebook cell given scope (HTTP E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
+   let env: PackageEnv;
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const fixtureDir = path.resolve(
-         __dirname,
-         "../../fixtures/notebook-givens-scope",
-      );
-      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: fixtureDir }],
-            connections: [],
-         }),
+      env = await startPackageEnv("notebook-givens-scope-env", {
+         [PKG]: fixture("notebook-givens-scope"),
       });
-      if (!createRes.ok) {
-         throw new Error(
-            `Failed to create test environment (${createRes.status}): ${await createRes.text()}`,
-         );
-      }
-      const deadline = Date.now() + 30_000;
-      let loaded = false;
-      while (Date.now() < deadline) {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}`,
-         );
-         if (res.ok) {
-            loaded = true;
-            break;
-         }
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      if (!loaded) throw new Error(`package ${PKG} never loaded within 30s`);
-   });
+   }, 300_000);
 
-   afterAll(async () => {
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      }).catch(() => {});
-      await env?.stop();
-   });
+   afterAll(() => env?.stop());
 
    const runCell = (cellIndex: number, givens: Record<string, unknown>) =>
       fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/notebooks/${NOTEBOOK}/cells/${cellIndex}?givens=${encodeURIComponent(
-            JSON.stringify(givens),
-         )}`,
+         env.api(
+            `/notebooks/${NOTEBOOK}/cells/${cellIndex}?givens=${encodeURIComponent(
+               JSON.stringify(givens),
+            )}`,
+         ),
       );
 
    it("pre-import cell runs when handed a given it hasn't declared yet", async () => {

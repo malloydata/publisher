@@ -24,16 +24,17 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-
-const FIXTURES = path.resolve(__dirname, "../../fixtures");
-const ENV_NAME = "cell-query-parity-env";
+import {
+   fixture,
+   STOREFRONT,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
 /** The packages, and the givens each is run under besides none. */
 const CASES: Record<string, { location: string; givens: object[] }> = {
    "report-cell-governance": {
-      location: path.join(FIXTURES, "report-cell-governance"),
+      location: fixture("report-cell-governance"),
       givens: [
          { GROUPS: [1, 2] },
          { GROUPS: [] },
@@ -44,27 +45,27 @@ const CASES: Record<string, { location: string; givens: object[] }> = {
       ],
    },
    "notebooks-malloyyo-surface": {
-      location: path.join(FIXTURES, "notebooks-malloyyo-surface"),
+      location: fixture("notebooks-malloyyo-surface"),
       givens: [{ REGION: "US" }, { GROUPS: [1, 2] }, { ROLES: ["admin"] }],
    },
    "notebook-unbound-given": {
-      location: path.join(FIXTURES, "notebook-unbound-given"),
+      location: fixture("notebook-unbound-given"),
       givens: [{ ORG: 1 }],
    },
    "notebooks-malloyyo": {
-      location: path.join(FIXTURES, "notebooks-malloyyo"),
+      location: fixture("notebooks-malloyyo"),
       givens: [],
    },
    "reports-anywhere": {
-      location: path.join(FIXTURES, "reports-anywhere"),
+      location: fixture("reports-anywhere"),
       givens: [],
    },
    "notebooks-lint": {
-      location: path.join(FIXTURES, "notebooks-lint"),
+      location: fixture("notebooks-lint"),
       givens: [],
    },
    storefront: {
-      location: path.resolve(FIXTURES, "../../../../examples/storefront"),
+      location: STOREFRONT,
       givens: [{ CATEGORY: "Jeans" }],
    },
 };
@@ -102,36 +103,22 @@ const unboundRowLevelGiven = (a: Outcome, b: Outcome) =>
    /^Access denied for source/.test(b.message ?? "");
 
 describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-   const pkgUrl = (pkg: string, sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}${sub}`;
+   let env: PackageEnv;
+   const pkgUrl = (pkg: string, sub: string) => env.api(sub, pkg);
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: Object.entries(CASES).map(([name, { location }]) => ({
+      env = await startPackageEnv(
+         "cell-query-parity-env",
+         Object.fromEntries(
+            Object.entries(CASES).map(([name, { location }]) => [
                name,
                location,
-            })),
-            connections: [],
-         }),
-      });
-      if (!res.ok) throw new Error(await res.text());
+            ]),
+         ),
+      );
    }, 300_000);
 
-   afterAll(async () => {
-      if (!env) return;
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      });
-      await env.stop();
-   });
+   afterAll(() => env?.stop());
 
    it("refuses and answers alike, cell by cell", async () => {
       const differences: unknown[] = [];
@@ -155,16 +142,10 @@ describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
                         `/notebooks/${reportPath}/cells/${i}?givens=${encodeURIComponent(JSON.stringify(given))}`,
                      ),
                   );
-                  const viaQuery = await fetch(
-                     pkgUrl(pkg, `/models/${reportPath}/query`),
-                     {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                           query: cells[i].text,
-                           givens: given,
-                        }),
-                     },
+                  const viaQuery = await env.query(
+                     reportPath,
+                     { query: cells[i].text, givens: given },
+                     pkg,
                   );
                   const a = outcomeOf(viaCell.status, await viaCell.json());
                   const b = outcomeOf(viaQuery.status, await viaQuery.json());

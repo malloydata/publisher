@@ -19,11 +19,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import path from "path";
-import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+   type Warning,
+} from "../../harness/reports";
 
 const ENV_NAME = "dashboards-test-env";
 const PACKAGE_NAME = "dashboards-test";
@@ -46,33 +47,11 @@ const OPEN_PACKAGE = "dashboards-open";
 // does not export answers 404, with a fix that names index.malloy.
 const CONVENTION_PACKAGE = "dashboards-convention";
 
-const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
-
 /** The report change's deprecation notes, which these fixtures draw on purpose. */
 const DEPRECATION_CODES = new Set([
    "report-layout-implicit",
    "report-on-surface",
 ]);
-const noDashboardsFixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/html-data-apps-nopublic",
-);
-const lintFixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/dashboards-lint",
-);
-const curatedFixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/dashboards-curated",
-);
-const openFixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/dashboards-open",
-);
-const conventionFixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/dashboards-convention",
-);
 
 interface DashboardItem {
    resource?: string;
@@ -110,7 +89,7 @@ const gridOnly = (reports: DashboardItem[]) =>
    reports.filter((r) => r.layout === "grid");
 
 describe("Dashboard discovery (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
+   let env: PackageEnv;
    let baseUrl: string;
 
    const apiUrl = (sub: string) =>
@@ -123,61 +102,23 @@ describe("Dashboard discovery (E2E)", () => {
    };
 
    beforeAll(async () => {
-      env = await startRestE2E();
+      env = await startPackageEnv(
+         ENV_NAME,
+         Object.fromEntries(
+            [
+               PACKAGE_NAME,
+               NO_DASHBOARDS_PACKAGE,
+               LINT_PACKAGE,
+               CURATED_PACKAGE,
+               CONVENTION_PACKAGE,
+               OPEN_PACKAGE,
+            ].map((name) => [name, fixture(name)]),
+         ),
+      );
       baseUrl = env.baseUrl;
+   }, 300_000);
 
-      const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [
-               { name: PACKAGE_NAME, location: fixtureDir },
-               {
-                  name: NO_DASHBOARDS_PACKAGE,
-                  location: noDashboardsFixtureDir,
-               },
-               { name: LINT_PACKAGE, location: lintFixtureDir },
-               { name: CURATED_PACKAGE, location: curatedFixtureDir },
-               { name: CONVENTION_PACKAGE, location: conventionFixtureDir },
-               { name: OPEN_PACKAGE, location: openFixtureDir },
-            ],
-            connections: [],
-         }),
-      });
-      if (!createRes.ok) {
-         throw new Error(
-            `Failed to create test environment (${createRes.status}): ${await createRes.text()}`,
-         );
-      }
-
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         try {
-            const res = await fetch(
-               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}`,
-            );
-            if (res.ok) break;
-         } catch {
-            // not ready yet
-         }
-         await new Promise((r) => setTimeout(r, 500));
-      }
-   });
-
-   afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
-      await env?.stop();
-      env = null;
-   });
+   afterAll(() => env?.stop());
 
    // ── the list endpoint ────────────────────────────────────────────
 
@@ -670,37 +611,14 @@ describe("Dashboard discovery (E2E)", () => {
    // ── the load-time lint ───────────────────────────────────────────
 
    describe("load-time lint", () => {
-      const packageWarnings = async (
-         packageName: string,
-      ): Promise<
-         {
-            model?: string;
-            subject?: string;
-            message?: string;
-            severity?: string;
-         }[]
-      > => {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${packageName}`,
-         );
-         expect(res.status).toBe(200);
-         const body = (await res.json()) as {
-            warnings?: {
-               model?: string;
-               target?: string;
-               message?: string;
-               severity?: string;
-            }[];
-         };
-         return body.warnings ?? [];
-      };
+      const packageWarnings = (packageName: string) =>
+         env.warnings(packageName);
 
       it("says nothing about a well-formed package", async () => {
          // The fixture keeps `.malloynb` notebooks, each of which the package
          // reports as a deprecated format (`deprecatedFormatWarnings`, keyed by the
          // notebook's path); none of the rest is a dashboard lint finding.
-         const warnings: Array<{ model?: string; code?: string }> =
-            await packageWarnings(PACKAGE_NAME);
+         const warnings = await packageWarnings(PACKAGE_NAME);
          expect(
             warnings.filter(
                (w) =>
@@ -1058,22 +976,9 @@ describe("Dashboard discovery (E2E)", () => {
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CURATED_PACKAGE}${sub}`;
       const conventionUrl = (sub: string) =>
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${CONVENTION_PACKAGE}${sub}`;
-      const post = (url: string, body: object) =>
-         fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-         });
+      const post = (url: string, body: object) => env.post(url, body);
       const warningsOf = async (url: string) =>
-         (
-            (await (await fetch(url)).json()) as {
-               warnings?: {
-                  model?: string;
-                  message?: string;
-                  severity?: string;
-               }[];
-            }
-         ).warnings ?? [];
+         (await env.getJson<{ warnings?: Warning[] }>(url)).warnings ?? [];
       const wontLoad = async (url: string) =>
          (await warningsOf(url))
             .map((w) => w.message ?? "")

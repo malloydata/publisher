@@ -11,12 +11,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+   type Warning,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const ENV_NAME = "notebook-lint-env";
 const PKG = "notebooks-lint";
 const LINTY = "notebooks/linty.malloy";
 const BROKEN_SOURCE =
@@ -24,7 +25,7 @@ const BROKEN_SOURCE =
 const CLEAN = "notebooks/clean.malloy";
 const WRONG_KIND = "dashboards/wrong_kind.malloy";
 
-const fixtureDir = path.resolve(__dirname, `../../fixtures/${PKG}`);
+const fixtureDir = fixture(PKG);
 
 interface Problem {
    severity: string;
@@ -35,24 +36,17 @@ interface Problem {
 }
 
 describe("notebook lint through the real server (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-
-   const pkgUrl = (sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
+   let env: PackageEnv;
+   const pkgUrl = (sub: string) => env.api(sub);
    const compile = async (
       model: string,
       scope: "append" | "file" | "package",
       source?: string,
    ) => {
-      const res = await fetch(pkgUrl(`/models/${model}/compile`), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            scope,
-            source:
-               source ?? fs.readFileSync(path.join(fixtureDir, model), "utf8"),
-         }),
+      const res = await env.post(pkgUrl(`/models/${model}/compile`), {
+         scope,
+         source:
+            source ?? fs.readFileSync(path.join(fixtureDir, model), "utf8"),
       });
       expect(res.status).toBe(200);
       return (await res.json()) as { status: string; problems: Problem[] };
@@ -64,52 +58,15 @@ describe("notebook lint through the real server (E2E)", () => {
       );
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: fixtureDir }],
-            connections: [],
-         }),
-      });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-      const loaded = await fetch(pkgUrl(""));
-      if (!loaded.ok) throw new Error(`${PKG} did not load (${loaded.status})`);
-   });
+      env = await startPackageEnv("notebook-lint-env", { [PKG]: fixtureDir });
+   }, 300_000);
 
-   afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
-      await env?.stop();
-      env = null;
-   });
+   afterAll(() => env?.stop());
 
    describe("the package's warnings", () => {
-      let warnings: {
-         model?: string;
-         message: string;
-         severity?: string;
-         code?: string;
-      }[];
+      let warnings: (Warning & { message: string })[];
       beforeAll(async () => {
-         const res = await fetch(pkgUrl(""));
-         warnings =
-            ((await res.json()) as { warnings?: typeof warnings }).warnings ??
-            [];
+         warnings = (await env.warnings()) as typeof warnings;
       });
 
       it("carries each finding as a warn with its line", () => {

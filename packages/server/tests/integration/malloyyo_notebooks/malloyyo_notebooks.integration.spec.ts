@@ -14,27 +14,24 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { resetNotebookMetricsForTest } from "../../../src/notebook_metrics";
 import { resetReportMetricsForTest } from "../../../src/report_metrics";
 import {
    startMetricsHarness,
    type MetricsHarness,
 } from "../../../src/test_helpers/metrics_harness";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const ENV_NAME = "malloyyo-notebooks-env";
 const PLAIN = "notebooks-malloyyo";
 const SURFACE = "notebooks-malloyyo-surface";
 const REFUSED = "notebooks/refused.malloy";
 /** Written as a tile layout, so it has no cells to expect kinds for. */
 const LAYOUT = "notebooks/layout.malloy";
 const CELLS = "notebooks/cells.malloy";
-
-const fixture = (name: string) =>
-   path.resolve(__dirname, `../../fixtures/${name}`);
 
 interface Cell {
    type?: string;
@@ -120,12 +117,10 @@ const KINDS: Record<string, string[]> = {
 };
 
 describe("Malloyyo notebooks served through the real server (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
+   let env: PackageEnv;
    let harness: MetricsHarness;
-   let baseUrl: string;
 
-   const pkgUrl = (pkg: string, sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}${sub}`;
+   const pkgUrl = (pkg: string, sub: string) => env.api(sub, pkg);
    const getJson = async <T>(
       url: string,
    ): Promise<{ status: number; body: T }> => {
@@ -157,11 +152,11 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       params: { givens?: Record<string, unknown> } = {},
    ): Promise<{ status: number; body: Cell & { message?: string } }> => {
       const cell = (await getCells(pkg, report)).body.notebookCells?.[index];
-      const res = await fetch(pkgUrl(pkg, `/models/${report}/query`), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ query: cell?.text, givens: params.givens }),
-      });
+      const res = await env.query(
+         report,
+         { query: cell?.text, givens: params.givens },
+         pkg,
+      );
       return {
          status: res.status,
          body: { ...cell, ...((await res.json()) as { result?: string }) },
@@ -187,53 +182,26 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
    };
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      // After the server is imported, so its meter provider is the one replaced.
-      harness = await startMetricsHarness();
-      resetNotebookMetricsForTest();
-      resetReportMetricsForTest();
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [
-               { name: PLAIN, location: fixture(PLAIN) },
-               { name: SURFACE, location: fixture(SURFACE) },
-            ],
-            connections: [],
-         }),
-      });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-      // Loading is lazy: touch both packages so discovery has run before any assertion.
-      for (const pkg of [PLAIN, SURFACE]) {
-         const loaded = await fetch(pkgUrl(pkg, ""));
-         if (!loaded.ok) {
-            throw new Error(`${pkg} did not load (${loaded.status})`);
-         }
-      }
-   });
+      env = await startPackageEnv(
+         "malloyyo-notebooks-env",
+         { [PLAIN]: fixture(PLAIN), [SURFACE]: fixture(SURFACE) },
+         {
+            // After the server is imported, so its meter provider is the one
+            // replaced, and before the packages load, so their discovery counts.
+            beforeCreate: async () => {
+               harness = await startMetricsHarness();
+               resetNotebookMetricsForTest();
+               resetReportMetricsForTest();
+            },
+         },
+      );
+   }, 300_000);
 
    afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
+      await env?.stop();
       resetNotebookMetricsForTest();
       resetReportMetricsForTest();
       await harness?.shutdown();
-      await env?.stop();
-      env = null;
    });
 
    describe("a package with no surface", () => {
@@ -391,13 +359,9 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
                "utf8",
             );
             for (const scope of ["file", "package"]) {
-               const res = await fetch(
+               const res = await env.post(
                   pkgUrl(PLAIN, `/models/${REFUSED}/compile`),
-                  {
-                     method: "POST",
-                     headers: { "Content-Type": "application/json" },
-                     body: JSON.stringify({ source: text, scope }),
-                  },
+                  { source: text, scope },
                );
                expect(res.status).toBe(200);
                const { problems } = (await res.json()) as {
@@ -423,13 +387,9 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
                path.join(fixture(PLAIN), notebook),
                "utf8",
             );
-            const res = await fetch(
+            const res = await env.post(
                pkgUrl(PLAIN, `/models/${notebook}/compile`),
-               {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ source: text, scope: "file" }),
-               },
+               { source: text, scope: "file" },
             );
             expect(res.status).toBe(200);
             const { problems } = (await res.json()) as {
@@ -440,16 +400,9 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
 
          it("reads the appended text at append scope, so a fragment onto a refused notebook still fails", async () => {
             const append = async (notebook: string) => {
-               const res = await fetch(
+               const res = await env.post(
                   pkgUrl(PLAIN, `/models/${notebook}/compile`),
-                  {
-                     method: "POST",
-                     headers: { "Content-Type": "application/json" },
-                     body: JSON.stringify({
-                        source: "run: orders -> kpis",
-                        scope: "append",
-                     }),
-                  },
+                  { source: "run: orders -> kpis", scope: "append" },
                );
                expect(res.status).toBe(200);
                return (
@@ -570,11 +523,11 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       });
 
       it("does not admit the notebook's own named query by name on the model query route", async () => {
-         const res = await fetch(pkgUrl(SURFACE, `/models/${CELLS}/query`), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ queryName: "own_cells_query" }),
-         });
+         const res = await env.query(
+            CELLS,
+            { queryName: "own_cells_query" },
+            SURFACE,
+         );
          expect(res.status).toBe(404);
       });
 

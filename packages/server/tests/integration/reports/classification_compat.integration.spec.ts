@@ -30,22 +30,29 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   STOREFRONT,
+   startPackageEnv,
+   type PackageEnv,
+   type Warning,
+} from "../../harness/reports";
 import baseline from "./classification_baseline.json";
 
-const FIXTURES = path.resolve(__dirname, "../../fixtures");
 const PACKAGES: Record<string, string> = {
-   "dashboards-test": `${FIXTURES}/dashboards-test`,
-   "dashboards-curated": `${FIXTURES}/dashboards-curated`,
-   "dashboards-lint": `${FIXTURES}/dashboards-lint`,
-   "dashboards-convention": `${FIXTURES}/dashboards-convention`,
-   "notebooks-lint": `${FIXTURES}/notebooks-lint`,
-   "notebooks-malloyyo": `${FIXTURES}/notebooks-malloyyo`,
-   "notebooks-malloyyo-surface": `${FIXTURES}/notebooks-malloyyo-surface`,
-   storefront: path.resolve(__dirname, "../../../../../examples/storefront"),
+   ...Object.fromEntries(
+      [
+         "dashboards-test",
+         "dashboards-curated",
+         "dashboards-lint",
+         "dashboards-convention",
+         "notebooks-lint",
+         "notebooks-malloyyo",
+         "notebooks-malloyyo-surface",
+      ].map((name) => [name, fixture(name)]),
+   ),
+   storefront: STOREFRONT,
 };
-const ENV_NAME = "reports-compat-env";
 
 /** Findings this change adds; any other new warning is a regression. */
 const NEW_CODES = new Set([
@@ -95,14 +102,6 @@ const RETIRED = [
    /where the other kind is created/, // notebook-other-folder
    /artifact tag has no `kind`/, // notebook-kind-missing
 ];
-
-interface Warning {
-   model?: string | null;
-   subject?: string;
-   message?: string;
-   severity?: string | null;
-   code?: string;
-}
 
 type Baseline = Record<
    string,
@@ -162,46 +161,16 @@ const lf = (value: unknown): unknown =>
           : value;
 
 describe("Report classification compatibility (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
+   let env: PackageEnv;
    const expected = baseline as unknown as Baseline;
-   const api = (pkg: string, sub = "") =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}${sub}`;
-   const get = async <T>(url: string): Promise<T> => {
-      const res = await fetch(url);
-      expect(res.status).toBe(200);
-      return (await res.json()) as T;
-   };
+   const api = (pkg: string, sub = "") => env.api(sub, pkg);
+   const get = <T>(url: string) => env.getJson<T>(url);
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: Object.entries(PACKAGES).map(([name, location]) => ({
-               name,
-               location,
-            })),
-            connections: [],
-         }),
-      });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
+      env = await startPackageEnv("reports-compat-env", PACKAGES);
    }, 300_000);
 
-   afterAll(async () => {
-      if (!env) return;
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      });
-      await env.stop();
-   });
+   afterAll(() => env?.stop());
 
    for (const pkg of Object.keys(PACKAGES)) {
       describe(pkg, () => {
@@ -287,8 +256,7 @@ describe("Report classification compatibility (E2E)", () => {
 
          it("keeps every finding but the retired ones, and adds only report findings", async () => {
             const was = expectedFor(pkg, expected[pkg]);
-            const body = await get<{ warnings?: Warning[] }>(api(pkg));
-            const now = body.warnings ?? [];
+            const now = await env.warnings(pkg);
             const nowKeys = new Set(now.map(key));
             const kept = was.warnings
                .filter((w) => !RETIRED.some((re) => re.test(w.message ?? "")))
