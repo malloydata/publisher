@@ -57,9 +57,14 @@ describe("notebook lint through the real server (E2E)", () => {
       expect(res.status).toBe(200);
       return (await res.json()) as { status: string; problems: Problem[] };
    };
+   // The lint's warns, less the deprecated `kind=` spelling these fixtures still write.
    const lintOf = (problems: Problem[], model: string) =>
       problems.filter(
-         (p) => p.model === model && p.severity === "warn" && p.at,
+         (p) =>
+            p.model === model &&
+            p.severity === "warn" &&
+            p.code !== "report-kind-deprecated" &&
+            p.at,
       );
 
    beforeAll(async () => {
@@ -98,7 +103,12 @@ describe("notebook lint through the real server (E2E)", () => {
    });
 
    describe("the package's warnings", () => {
-      let warnings: { model?: string; message: string; severity?: string }[];
+      let warnings: {
+         model?: string;
+         message: string;
+         severity?: string;
+         code?: string;
+      }[];
       beforeAll(async () => {
          const res = await fetch(pkgUrl(""));
          warnings =
@@ -120,15 +130,17 @@ describe("notebook lint through the real server (E2E)", () => {
             ["warn", 8],
          ]);
          // `notebook-other-folder` is retired; what is left is the deprecated
-         // `kind=` spelling, as info.
-         expect(of(WRONG_KIND)).toEqual([["info", 1]]);
+         // `kind=` spelling, as a warn.
+         expect(of(WRONG_KIND)).toEqual([["warn", 1]]);
       });
 
       it("says nothing about a clean notebook, and no notebook or dashboard draws an unknown-render-tag warning", () => {
-         // Only the deprecated `kind=` spelling, as info.
+         // Only the deprecated `kind=` spelling, as a warn.
          expect(
-            warnings.filter((w) => w.model === CLEAN).map((w) => w.severity),
-         ).toEqual(["info"]);
+            warnings
+               .filter((w) => w.model === CLEAN)
+               .map((w) => [w.code, w.severity]),
+         ).toEqual([["report-kind-deprecated", "warn"]]);
          // The malformed colspan in linty proves the validator visits these files at all.
          expect(
             warnings.filter((w) => /Invalid # colspan/.test(w.message)),
@@ -144,7 +156,7 @@ describe("notebook lint through the real server (E2E)", () => {
                .filter(
                   (w) =>
                      w.model === model &&
-                     w.severity !== "info" &&
+                     w.code !== "report-kind-deprecated" &&
                      /^Line \d+:/.test(w.message),
                )
                .map((w) => [w.severity, w.message.split(":")[0]]);
@@ -332,11 +344,10 @@ describe("notebook lint through the real server (E2E)", () => {
                expect.objectContaining({ severity: "error" }),
             );
             expect(
-               problems
-                  .filter(
-                     (p) => p.model === CLEAN && p.severity === "warn" && p.at,
-                  )
-                  .map((p) => [p.code, p.at?.range.start.line]),
+               lintOf(problems, CLEAN).map((p) => [
+                  p.code,
+                  p.at?.range.start.line,
+               ]),
             ).toEqual([
                ["notebook-givens-not-enabled", 1],
                ["notebook-unterminated-block", 2],
