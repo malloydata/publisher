@@ -18,6 +18,7 @@ import {
 import { listItems, resolveDocParts, splitDocByRules } from "./doc_parts";
 import { buildFcjIndex } from "./index_build";
 import { KeywordIndex, stem, terms } from "./keyword";
+import { VectorSyncError } from "./vectors";
 import { SyncRequestBudget } from "../tools/get_context_llm";
 
 describe("doc parts by rules", () => {
@@ -227,6 +228,33 @@ describe("index build", () => {
          reused: 51,
          deleted: 0,
       });
+   });
+
+   it("names the vectors step, its progress and the deadline when embedding fails", async () => {
+      const stub = stubEmbeddingProvider();
+      const failing = Object.create(stub) as typeof stub;
+      failing.embedBatch = async () => {
+         throw new Error("Embedding request failed: timed out after 30000ms");
+      };
+      const err = await buildFcjIndex({
+         pkgIndex: fixture.pkgIndex,
+         db,
+         provider: failing,
+         environmentName: "env",
+         packageName: "fixture",
+         settings: DEFAULT_FCJ_SETTINGS,
+      }).then(
+         () => undefined,
+         (e: Error) => e,
+      );
+      expect(err).toBeInstanceOf(VectorSyncError);
+      expect(err!.message).toBe(
+         "The vectors step failed after embedding 0 of 51 new rows (0 reused): " +
+            "Embedding request failed: timed out after 30000ms. Each embedding request of up to " +
+            "256 rows has a 30000 ms deadline (EMBEDDING_BATCH_TIMEOUT_MS), and a timeout, a 429 " +
+            "or a 5xx is retried up to 5 attempts. The rows already embedded are stored, so the " +
+            "next build embeds only the rest.",
+      );
    });
 
    it("adds three question rows per field and view when the model writes them", async () => {
