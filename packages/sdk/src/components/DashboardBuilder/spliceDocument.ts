@@ -291,13 +291,15 @@ function viewDeclarationLine(
 
 /** `# drill { to=… given=… }`, one line, as the reader spells it back. */
 function drillTagLine(drill: DashboardDrill): string {
-   // A path target (`sales/overview`) is not a bare tag value, so it is quoted; a bare name or `self` stays as written.
+   // A path target (`sales/overview`) is not a bare tag value, so it is
+   // quoted, with `"` and `\` escaped as the tag parser reads them; a bare
+   // name or `self` stays as written.
    const one = (d: string) =>
-      /^[A-Za-z_][A-Za-z0-9_]*$/.test(d) ? d : `"${d}"`;
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(d) ? d : quoted(d);
    const to =
       drill.to.length === 1
          ? one(drill.to[0])
-         : `[${drill.to.map((d) => `"${d}"`).join(", ")}]`;
+         : `[${drill.to.map(quoted).join(", ")}]`;
    return `# drill { to=${to}${drill.given ? ` given=${drill.given}` : ""} }`;
 }
 

@@ -1047,6 +1047,17 @@ source: a is one extend {
       }
    });
 
+   it("escapes a quote or backslash in a target, so it reads back unchanged", async () => {
+      for (const to of [[`odd "name"`], ["back\\slash/x"], [`a"b`, "c\\d"]]) {
+         const out = await spliced(WITH_DIMENSION, (d) => {
+            d.drills = [{ ...(d.drills ?? [])[0], to }];
+         });
+         const reread = await readDashboardDocument(out);
+         if (readFailed(reread)) throw new Error(reread.reason);
+         expect(reread.document.drills?.[0].to).toEqual(to);
+      }
+   });
+
    it("refuses a drill on a dimension the model declares", async () => {
       const r = await splice(WITH_DIMENSION, (d) => {
          d.drills = [
