@@ -141,11 +141,12 @@ const without = <T extends Record<string, unknown>>(
 /**
  * The baseline was captured from an LF checkout. A Windows checkout gives the
  * fixtures CRLF line endings, and cell and prose text is the file's own text,
- * so line endings are normalized before comparing.
+ * so every `\r` is dropped before comparing: the legacy `.malloynb` reader
+ * splits on `\n` alone and leaves a stray `\r` at both ends of a cell.
  */
 const lf = (value: unknown): unknown =>
    typeof value === "string"
-      ? value.replace(/\r\n/g, "\n")
+      ? value.replace(/\r/g, "")
       : Array.isArray(value)
         ? value.map(lf)
         : value && typeof value === "object"
