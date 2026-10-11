@@ -11,11 +11,13 @@ export { newDashboardSource, slugFor } from "../DashboardBuilder/newDashboard";
  * `""` for the package root.
  */
 export const normalizeDirectory = (directory: string | undefined) =>
+   // Split rather than trim with `^\/+|\/+$`, which backtracks polynomially on a run of slashes.
    (directory ?? "")
       .trim()
       .replace(/\\/g, "/")
-      .replace(/^\/+|\/+$/g, "")
-      .replace(/\/{2,}/g, "/");
+      .split("/")
+      .filter((segment) => segment !== "")
+      .join("/");
 
 /**
  * The package-relative file for a slug: `<slug>.malloy` at the package root,
