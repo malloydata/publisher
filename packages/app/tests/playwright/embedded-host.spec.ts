@@ -134,7 +134,7 @@ test.describe("embedded host", () => {
       expect(held.saves).toHaveLength(1);
       expect(held.saves[0]!.path).toBe(record);
       expect(held.saves[0]!.content).toContain("Edited in the host.");
-      expect(held.saves[0]!.content).toContain("kind=notebook");
+      expect(held.saves[0]!.content).toContain("layout=linear");
       expect(writes).toEqual([]);
    });
 
@@ -143,12 +143,14 @@ test.describe("embedded host", () => {
    }) => {
       const writes = watchPackageWrites(page);
       await page.goto(`/${storefront.env}/${storefront.pkg}`);
-      await page.getByRole("button", { name: "New", exact: true }).click({
-         timeout: 60_000,
-      });
-      await page.getByRole("menuitem", { name: "Notebook" }).click();
+      await page
+         .getByRole("button", { name: "New report", exact: true })
+         .first()
+         .click({
+            timeout: 60_000,
+         });
       const dialog = page.getByRole("dialog");
-      await expect(dialog.getByLabel("Notebook title")).not.toHaveValue("", {
+      await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
       await dialog.getByRole("combobox", { name: "Model" }).click();
@@ -160,11 +162,12 @@ test.describe("embedded host", () => {
             exact: true,
          })
          .click();
-      await dialog.getByLabel("Notebook title").fill("Hosted notebook");
-      await dialog.getByRole("button", { name: "Create Notebook" }).click();
+      await dialog.getByLabel("Report title").fill("Hosted notebook");
+      await dialog.getByRole("button", { name: "Create report" }).click();
 
+      // At the package root, with the layout the dialog defaults to: linear.
       await expect(page).toHaveURL(
-         /\/notebooks\/hosted-notebook(-\d+)?\/edit$/,
+         new RegExp(`/${storefront.pkg}/hosted-notebook(-\\d+)?/edit$`),
          {
             timeout: 60_000,
          },
@@ -175,16 +178,16 @@ test.describe("embedded host", () => {
       });
 
       const held = await hostOf(page);
-      const stored = `${storefront.env}/${storefront.pkg}/notebooks/${slug}.malloy`;
+      const stored = `${storefront.env}/${storefront.pkg}/${slug}.malloy`;
       expect(Object.keys(held.documents)).toContain(stored);
-      expect(held.documents[stored]).toContain("kind=notebook");
+      expect(held.documents[stored]).toContain("layout=linear");
       expect(held.documents[stored]).toContain(
          "view: sales_by_month_tile is sales_by_month",
       );
       expect(writes).toEqual([]);
       // The package has no such file: the record is the only copy.
       const inPackage = await fetch(
-         `${API}/api/v0/environments/${storefront.env}/packages/${storefront.pkg}/models/${encodeURIComponent(`notebooks/${slug}.malloy`)}`,
+         `${API}/api/v0/environments/${storefront.env}/packages/${storefront.pkg}/models/${encodeURIComponent(`${slug}.malloy`)}`,
       );
       expect(inPackage.status).toBe(404);
    });
@@ -194,35 +197,40 @@ test.describe("embedded host", () => {
    }) => {
       const writes = watchPackageWrites(page);
       await page.goto(`/${storefront.env}/${storefront.pkg}`);
-      await page.getByRole("button", { name: "New", exact: true }).click({
-         timeout: 60_000,
-      });
-      await page.getByRole("menuitem", { name: "Dashboard" }).click();
+      await page
+         .getByRole("button", { name: "New report", exact: true })
+         .first()
+         .click({
+            timeout: 60_000,
+         });
       const dialog = page.getByRole("dialog");
-      await expect(dialog.getByLabel("Dashboard title")).not.toHaveValue("", {
+      await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
+      await dialog.getByRole("combobox", { name: "Layout" }).click();
+      await page.getByRole("option", { name: /^Grid/ }).click();
       await dialog.getByRole("combobox", { name: "Model" }).click();
       await page.getByRole("option", { name: "storefront.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First tile" }).click();
+      await dialog.getByRole("combobox", { name: "First query" }).click();
       await page
          .getByRole("option", {
             name: "order_items → sales_by_month",
             exact: true,
          })
          .click();
-      await dialog.getByLabel("Dashboard title").fill("Hosted dashboard");
-      await dialog.getByRole("button", { name: "Create Dashboard" }).click();
+      await dialog.getByLabel("Report title").fill("Hosted dashboard");
+      await dialog.getByRole("button", { name: "Create report" }).click();
       await expect(page).toHaveURL(
-         /\/dashboards\/hosted-dashboard(-\d+)?\/edit$/,
+         new RegExp(`/${storefront.pkg}/hosted-dashboard(-\\d+)?/edit$`),
          {
             timeout: 60_000,
          },
       );
       const slug = new URL(page.url()).pathname.split("/").slice(-2)[0]!;
       const held = await hostOf(page);
-      const stored = `${storefront.env}/${storefront.pkg}/dashboards/${slug}.malloy`;
+      const stored = `${storefront.env}/${storefront.pkg}/${slug}.malloy`;
       expect(held.documents[stored]).toContain("tiles=");
+      expect(held.documents[stored]).toContain("layout=grid");
       expect(writes).toEqual([]);
       // The dashboard editor opens a file the package serves, so a dashboard
       // that exists only in the host's store waits for its deploy.
@@ -234,13 +242,10 @@ test.describe("embedded host", () => {
    test("a dashboard the package serves opens from the host's record, and Save goes into the store", async ({
       page,
    }) => {
-      const record = `${storefront.env}/${storefront.pkg}/dashboards/overview.malloy`;
+      const record = `${storefront.env}/${storefront.pkg}/overview.malloy`;
       const text = fs
          .readFileSync(
-            path.join(
-               exampleFixture("storefront"),
-               "dashboards/overview.malloy",
-            ),
+            path.join(exampleFixture("storefront"), "overview.malloy"),
             "utf8",
          )
          .replace('title="Storefront overview"', 'title="Record overview"');
@@ -251,16 +256,14 @@ test.describe("embedded host", () => {
          { [record]: text },
       );
       const writes = watchPackageWrites(page);
-      await page.goto(
-         `/${storefront.env}/${storefront.pkg}/dashboards/overview/edit`,
-      );
+      await page.goto(`/${storefront.env}/${storefront.pkg}/overview/edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await expect(page.getByText("Record overview")).toBeVisible();
       // The title is edited where it is shown.
       await page.getByRole("heading", { level: 5 }).getByRole("button").click();
-      const title = page.getByLabel("Dashboard title");
+      const title = page.getByLabel("Report title");
       await title.fill("Record overview, edited");
       await title.press("Enter");
       await saveChanges(page);
@@ -275,7 +278,7 @@ test.describe("embedded host", () => {
    }) => {
       const writes = watchPackageWrites(page);
       await page.goto(
-         `/${storefront.env}/${storefront.pkg}/notebooks/category-review/edit?host=scratch`,
+         `/${storefront.env}/${storefront.pkg}/category-review/edit?host=scratch`,
       );
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
@@ -294,7 +297,7 @@ test.describe("embedded host", () => {
    }) => {
       await frozenServer(page);
       await page.goto(
-         `/${storefront.env}/${storefront.pkg}/notebooks/category-review/edit?host=scratch`,
+         `/${storefront.env}/${storefront.pkg}/category-review/edit?host=scratch`,
       );
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
@@ -306,13 +309,10 @@ test.describe("embedded host", () => {
 
       await page.goto(`/${storefront.env}/${storefront.pkg}?host=scratch`);
       await expect(
-         page.getByRole("heading", { name: "Artifacts", level: 6 }),
+         page.getByRole("heading", { name: "Reports", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(
-         page.getByRole("button", { name: "New", exact: true }),
-      ).toHaveCount(0);
-      await expect(
-         page.getByRole("button", { name: "New artifact" }),
+         page.getByRole("button", { name: "New report", exact: true }),
       ).toHaveCount(0);
    });
 });

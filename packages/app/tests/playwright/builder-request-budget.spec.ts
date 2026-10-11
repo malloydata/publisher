@@ -129,14 +129,15 @@ test.describe("builder request budget", () => {
       {
          name: "dashboard",
          env: () => pe,
-         path: "dashboards/overview",
+         path: "overview",
          ready: (page: Page) =>
             expect(page.locator("[data-malloy-render-as]").first()).toBeVisible(
                {
                   timeout: 60_000,
                },
             ),
-         link: /Overview|Storefront overview/,
+         // The grid one: overview-story.malloy shares its title.
+         link: /overview\.malloy/,
       },
       {
          name: "notebook",

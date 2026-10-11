@@ -1974,7 +1974,7 @@
          {
             "packageName": "storefront",
             "name": "overview",
-            "path": "dashboards/overview.malloy",
+            "path": "overview.malloy",
             "title": "Storefront overview",
             "description": "Revenue, margin and volume for the order lines the controls select.\n\n**Key figures** is the summary; everything under it explains the summary.\nThe monthly trend says which way the numbers are moving, and the state,\ncategory and product breakdowns say where they came from.\n\nEvery tile re-runs when a control changes, so narrowing to a single\n`Category` or `Region` reframes the whole page rather than filtering one\nlist in it."
          }
@@ -1983,7 +1983,7 @@
          "overview": {
             "packageName": "storefront",
             "name": "overview",
-            "path": "dashboards/overview.malloy",
+            "path": "overview.malloy",
             "kind": "dashboard",
             "title": "Storefront overview",
             "description": "Revenue, margin and volume for the order lines the controls select.\n\n**Key figures** is the summary; everything under it explains the summary.\nThe monthly trend says which way the numbers are moving, and the state,\ncategory and product breakdowns say where they came from.\n\nEvery tile re-runs when a control changes, so narrowing to a single\n`Category` or `Region` reframes the whole page rather than filtering one\nlist in it.",
@@ -2122,25 +2122,25 @@
       "notebooks": [
          {
             "packageName": "storefront",
-            "path": "notebooks/category-review.malloy",
+            "path": "category-review.malloy",
             "title": "Category review",
             "description": "One category at a time: how it sells across the year, which brands carry it, and the products that lead it."
          },
          {
             "packageName": "storefront",
-            "path": "notebooks/overview.malloy",
+            "path": "overview-story.malloy",
             "title": "Storefront overview",
             "description": "Revenue, margin and volume for the order lines the controls select, as a story: the summary first, then which way it is moving and where it came from."
          }
       ],
       "notebookBodies": {
-         "notebooks/category-review.malloy": {
+         "category-review.malloy": {
             "dashboard": null,
             "notebookCells": [
                {
                   "type": "code",
                   "kind": "definition",
-                  "text": "import { order_items, products } from \"../storefront.malloy\"",
+                  "text": "import { order_items, products } from \"storefront.malloy\"",
                   "proseLines": [],
                   "codeLine": 0
                },
@@ -2204,11 +2204,11 @@
                }
             ]
          },
-         "notebooks/overview.malloy": {
+         "overview-story.malloy": {
             "dashboard": {
                "packageName": "storefront",
-               "name": "overview",
-               "path": "notebooks/overview.malloy",
+               "name": "overview-story",
+               "path": "overview-story.malloy",
                "kind": "notebook",
                "title": "Storefront overview",
                "description": "Revenue, margin and volume for the order lines the controls select, as a story: the summary first, then which way it is moving and where it came from.",
@@ -2365,7 +2365,7 @@
                {
                   "type": "code",
                   "kind": "definition",
-                  "text": "import {\n   order_items,\n   products,\n   regions,\n   brand_suggest\n} from \"../storefront.malloy\"",
+                  "text": "import {\n   order_items,\n   products,\n   regions,\n   brand_suggest\n} from \"storefront.malloy\"",
                   "proseLines": [],
                   "codeLine": 0
                },
@@ -2472,17 +2472,17 @@
       "warnings": [],
       "models": [
          {
-            "path": "dashboards/overview.malloy",
-            "packageName": "storefront",
-            "isHidden": false
-         },
-         {
             "path": "data_app.malloy",
             "packageName": "storefront",
             "isHidden": false
          },
          {
             "path": "givens.malloy",
+            "packageName": "storefront",
+            "isHidden": false
+         },
+         {
+            "path": "overview.malloy",
             "packageName": "storefront",
             "isHidden": false
          },

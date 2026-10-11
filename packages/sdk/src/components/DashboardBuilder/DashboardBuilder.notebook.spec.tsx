@@ -59,7 +59,7 @@ const catalog = {
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 const LEGACY = fs
    .readFileSync(
-      path.join(REPO, "examples/storefront/notebooks/category-review.malloy"),
+      path.join(REPO, "examples/storefront/category-review.malloy"),
       "utf8",
    )
    .replace(/\r\n/g, "\n");
@@ -246,7 +246,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       await open({ onSave: () => {}, onDirtyChange });
       expect(
          screen.getByText(
-            /This notebook is in the cell format\. Saving rewrites it as a layout notebook, and a named query run once becomes that tile's view\./,
+            /This report is in the cell format\. Saving rewrites it as a layout notebook, and a named query run once becomes that tile's view\./,
          ),
       ).toBeDefined();
       expect(button("Save")).toBeDefined();
@@ -267,7 +267,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       fireEvent.click(button("Save"));
       expect(
          await screen.findByText(
-            /Saving rewrites this notebook in the tile layout/,
+            /Saving rewrites this report in the tile layout/,
          ),
       ).toBeDefined();
       expect(writes).toHaveLength(0);
@@ -304,7 +304,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
          converted: true,
       });
       expect(
-         screen.queryByText(/This notebook is in the cell format/),
+         screen.queryByText(/This report is in the cell format/),
       ).toBeNull();
    });
 });

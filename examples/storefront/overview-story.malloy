@@ -1,14 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// The overview dashboard (dashboards/overview.malloy) told as a notebook: the
-// same five controls and the same five charts, read top to bottom with a text
-// block before each chart saying what it answers. A notebook is a dashboard with
-// one column, so this is the same `## artifact { tiles=[…] }` tag with
-// `kind=notebook`, text tiles between the query tiles, and no widths.
+// The overview report (overview.malloy) told as a story: the same five controls
+// and the same five charts, read top to bottom with a text block before each
+// chart saying what it answers. The two differ only in layout, so this is the
+// same `## artifact { tiles=[…] }` tag with `layout=linear`, text tiles between
+// the query tiles, and no widths.
 ##! experimental.givens
 ##" Revenue, margin and volume for the order lines the controls select, as a story: the summary first, then which way it is moving and where it came from.
-##| artifact { kind=notebook title="Storefront overview"
+##| artifact { layout=linear title="Storefront overview"
   tiles=[
     intro { kind=text },
     "overview_tiles -> kpis",
@@ -23,7 +23,7 @@
   ]
 }
 |##
-// The same imports as the dashboard, for the same reason: the controls'
+// The same imports as the grid report, for the same reason: the controls'
 // pickers read their options from `products`, `regions` and `brand_suggest`,
 // and a suggest source has to resolve in this file.
 import {
@@ -31,7 +31,7 @@ import {
    products,
    regions,
    brand_suggest
-} from "../storefront.malloy"
+} from "storefront.malloy"
 
 # description="Narrow to one product category. Leave empty for all"
 # label="Category" control=select suggest { source=products dimension=category }
@@ -86,7 +86,7 @@ The best sellers for the selection, with their margin and volume, so a product
 that sells a lot at a thin margin stands out from one that earns its place.
 |##
 
-// One thin wrapper per chart over the modelled view, as on the dashboard: the
+// One thin wrapper per chart over the modelled view, as on the grid report: the
 // view keeps its chart tag, and the wrapper says which controls it answers to.
 #(doc) The overview notebook's tiles, each over the order lines its controls select
 source: overview_tiles is order_items extend {

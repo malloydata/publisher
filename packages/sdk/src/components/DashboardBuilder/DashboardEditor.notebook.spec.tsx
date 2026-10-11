@@ -36,7 +36,7 @@ import { editInline } from "./testing/inline";
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 const LEGACY = fs
    .readFileSync(
-      path.join(REPO, "examples/storefront/notebooks/category-review.malloy"),
+      path.join(REPO, "examples/storefront/category-review.malloy"),
       "utf8",
    )
    .replace(/\r\n/g, "\n");
@@ -73,18 +73,22 @@ const getModel = mock(
       },
    }),
 );
-const getNotebook = mock(
+// One read for either layout, by path: a report in tiles carries its manifest,
+// one in cells carries its cells instead.
+const getReport = mock(
    async (_env: string, _pkg: string, modelPath: string) => ({
       data: served.includes("tiles=")
          ? {
-              dashboard: {
-                 path: modelPath,
-                 kind: "notebook",
-                 givens: [{ name: "FROM_MANIFEST", type: "string" }],
-                 tiles: [],
-              },
+              path: modelPath,
+              layout: "linear",
+              givens: [{ name: "FROM_MANIFEST", type: "string" }],
+              tiles: [],
            }
-         : {},
+         : {
+              path: modelPath,
+              layout: "linear",
+              notebook: { notebookCells: [] },
+           },
    }),
 );
 const getDashboard = mock(() => pending());
@@ -113,11 +117,11 @@ const serverContext: {
 mockServerProvider(
    {
       models: { getModel, listModels, executeQueryModel, updateModelSource },
-      notebooks: { getNotebook },
-      dashboards: {
-         getDashboard,
-         listDashboards: mock(async () => ({ data: [] })),
+      reports: {
+         getReport,
+         listReports: mock(async () => ({ data: [] })),
       },
+      dashboards: { getDashboard },
    },
    serverContext,
 );
@@ -155,13 +159,13 @@ beforeEach(async () => {
    writes = [];
    serverContext.mutable = true;
    getModel.mockClear();
-   getNotebook.mockClear();
+   getReport.mockClear();
    getDashboard.mockClear();
    updateModelSource.mockClear();
 });
 
 describe("DashboardEditor as a notebook", () => {
-   it("reads the file with the authoring flag, and the manifest from the notebook read", async () => {
+   it("reads the file with the authoring flag, and the manifest from the report read", async () => {
       const onEvent = mock((_event: BuilderEvent) => {});
       mount({}, onEvent);
       expect(await screen.findByText("Tour")).toBeDefined();
@@ -171,7 +175,8 @@ describe("DashboardEditor as a notebook", () => {
          "notebooks/tour.malloy",
       ]);
       expect(getModel.mock.calls[0][4]).toBe(true);
-      await waitFor(() => expect(getNotebook).toHaveBeenCalled());
+      await waitFor(() => expect(getReport).toHaveBeenCalled());
+      expect(getReport.mock.calls[0][2]).toBe("notebooks/tour.malloy");
       expect(getDashboard).not.toHaveBeenCalled();
       expect(onEvent.mock.calls[0][0]).toMatchObject({
          type: "notebook.opened",
@@ -218,7 +223,7 @@ describe("DashboardEditor as a notebook", () => {
       const onEvent = mock((_event: BuilderEvent) => {});
       mount({}, onEvent);
       expect(
-         await screen.findByText(/This notebook is in the cell format/),
+         await screen.findByText(/This report is in the cell format/),
       ).toBeDefined();
       expect(screen.getByLabelText("Tile revenue_by_month")).toBeDefined();
 
@@ -245,7 +250,7 @@ describe("DashboardEditor as a notebook", () => {
       const alert = await screen.findByText(/cannot be opened in the builder/);
       expect(alert.textContent).toMatch(/line 4/i);
       expect(
-         screen.queryByText(/This notebook is in the cell format/),
+         screen.queryByText(/This report is in the cell format/),
       ).toBeNull();
       expect(onEvent.mock.calls[0][0]).toMatchObject({
          type: "notebook.open_refused",
@@ -298,7 +303,7 @@ describe("DashboardEditor as a notebook: the host's record", () => {
       );
       expect(await screen.findByText("From the record.")).toBeDefined();
       expect(store.types).toEqual(["notebook"]);
-      editInline("Tour", "Notebook title", "Tour, again");
+      editInline("Tour", "Report title", "Tour, again");
       fireEvent.click(button("Save"));
       await waitFor(() => expect(store.saved.size).toBe(1));
       expect(store.saved.get("env/pkg/notebooks/tour.malloy")).toContain(

@@ -1,17 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// A dashboard: `## artifact { tiles=[…] }` at model level, one tile per named
-// view, laid out by Publisher into the grid `# dashboard { columns=N }` names.
+// A report with grid layout: `## artifact { layout=grid tiles=[…] }` at model
+// level, one tile per named view, laid out by Publisher into the grid
+// `dashboard { columns=N }` names. The tag makes this file a report and
+// `layout=` decides how it is laid out; where the file lives decides nothing,
+// so it sits at the package root beside the model it reads. The same tiles
+// read top to bottom are overview-story.malloy, a linear report.
 //
 // The tag has to be model-level because a composite has no query of its own to
 // hang a `#` tag on, and it is model-level for a second reason worth knowing:
-// tiles run as separate queries, which is the only way a dashboard can span
+// tiles run as separate queries, which is the only way a report can span
 // unrelated sources. A nest's pipeline starts from its own query's source, so no
 // single Malloy result does.
 //
-// The filter controls are declared HERE, in the dashboard, and each tile says
-// which of them it reads. That is the convention for a dashboard the builder
+// The filter controls are declared HERE, in the report, and each tile says
+// which of them it reads. That is the convention for a report the builder
 // edits: the builder adds and removes filters, and a filter it can add has to be
 // a declaration in the one file it writes. It never edits imports or the model.
 //
@@ -23,11 +27,11 @@
 //
 // Compare `order_items -> business_overview` in storefront.malloy, which is the
 // same figures as one query with nests. That form is Malloy's own rendering
-// feature and still works; this is the form to author a dashboard in.
+// feature and still works; this is the form to author a report in.
 ##! experimental.givens
 
 // The page's narrative header. Model-level doc comments (`##"`) become the
-// dashboard's description, and Publisher renders that as MARKDOWN: paragraphs,
+// report's description, and Publisher renders that as MARKDOWN: paragraphs,
 // emphasis, lists, links and inline code all work, and a bare `##"` line
 // separates paragraphs.
 //
@@ -48,7 +52,7 @@
 ##" Every tile re-runs when a control changes, so narrowing to a single
 ##" `Category` or `Region` reframes the whole page rather than filtering one
 ##" list in it.
-## artifact { title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state", "overview -> revenue_by_category", "overview -> best_sellers"] } dashboard { columns=12 }
+## artifact { layout=grid title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend", "overview -> revenue_by_state", "overview -> revenue_by_category", "overview -> best_sellers"] } dashboard { columns=12 }
 // What this page reads from the model, by name. `order_items` is what every
 // tile runs over. `products`, `regions` and `brand_suggest` are what the
 // controls' pickers read their options from, and a `suggest { source= }` or
@@ -61,7 +65,7 @@ import {
    products,
    regions,
    brand_suggest
-} from "../storefront.malloy"
+} from "storefront.malloy"
 
 // The controls. A given is a typed runtime parameter (docs/givens.md), and the
 // tags on each declaration are its control contract: what the input is
@@ -108,7 +112,7 @@ given: MIN_SALE :: filter<number> is f''
 // answers to. Every tile here answers to all five, which is what makes a
 // control move the whole page; a tile that left one out would simply not move
 // when that control did. The builder writes these lines; the spelling is its.
-#(doc) The overview dashboard's tiles, each over the order lines its controls select
+#(doc) The overview report's tiles, each over the order lines its controls select
 source: overview is order_items extend {
   // A full-width KPI strip. `# big_value` renders each aggregate as a figure
   // rather than a table row. The figures are `key_figures` in storefront.malloy;
@@ -131,7 +135,7 @@ source: overview is order_items extend {
   // Sized to the constant, not eyeballed: the map fits whenever its tile is at
   // least 512px, which at six of twelve means a grid of about 1070px. Narrower
   // than that and it clips again, and no colspan available here avoids it —
-  // that is the renderer's fixed size, not this dashboard's layout.
+  // that is the renderer's fixed size, not this report's layout.
   # colspan=6
   # break
   # label="Revenue by month"

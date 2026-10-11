@@ -34,12 +34,12 @@ test.describe("filter chip", () => {
    test("removing a filter takes its declaration and its bindings out of the file, and the reader loses the control", async ({
       page,
    }) => {
-      const file = "dashboards/overview.malloy";
+      const file = "overview.malloy";
       const original = await pe.readSource(file);
       expect(original).toContain("given: CATEGORY");
       expect(original).toContain("$CATEGORY");
 
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/overview/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/overview/edit`);
       await editorOpen(page);
       await expect(queryTiles(page)).toHaveCount(5, { timeout: 60_000 });
 
@@ -56,7 +56,7 @@ test.describe("filter chip", () => {
       expect(saved).toContain("$BRAND");
 
       const reader = await page.context().newPage();
-      await reader.goto(`/${pe.env}/${pe.pkg}/dashboards/overview`);
+      await reader.goto(`/${pe.env}/${pe.pkg}/overview`);
       await expect(reader.getByRole("combobox", { name: "Brand" })).toBeVisible(
          { timeout: 60_000 },
       );

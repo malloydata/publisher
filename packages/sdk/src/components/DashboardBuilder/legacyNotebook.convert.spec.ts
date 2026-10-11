@@ -22,7 +22,7 @@ import {
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 const CATEGORY_REVIEW = path.join(
    REPO,
-   "examples/storefront/notebooks/category-review.malloy",
+   "examples/storefront/category-review.malloy",
 );
 const FIXTURES = path.join(
    REPO,
@@ -164,11 +164,7 @@ describe("convertLegacyNotebook: the storefront category review", () => {
    it("compiles under Malloy and its views run", async () => {
       const pkg = path.join(REPO, "examples/storefront");
       const converted = await convert(read(CATEGORY_REVIEW));
-      const model = await compiled(
-         pkg,
-         "notebooks/converted.malloy",
-         converted,
-      );
+      const model = await compiled(pkg, "converted.malloy", converted);
       try {
          for (const view of [
             "revenue_by_month",
@@ -501,12 +497,12 @@ describe("convertLegacyNotebook: shapes", () => {
       const cells = "\n##(markdown) Hello\n\nrun: orders -> kpis\n";
       const fromLine = await convert(`${HEAD}${cells}`);
       expect(fromLine).toContain(
-         '##| artifact { kind=notebook title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
+         '##| artifact { layout=linear title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
       );
       const block = `##! experimental.givens\n##| artifact { kind=notebook\n  title="T"\n}\n|##\nimport "../models/orders.malloy"\n${cells}`;
       const fromBlock = await convert(block);
       expect(fromBlock).toContain(
-         '##| artifact { kind=notebook\n  title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
+         '##| artifact { layout=linear\n  title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
       );
       expect(await syntaxErrors(fromBlock)).toEqual([]);
       expect((await document(fromBlock)).tiles.map((t) => t.name)).toEqual([
