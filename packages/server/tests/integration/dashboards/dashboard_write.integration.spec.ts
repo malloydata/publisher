@@ -251,12 +251,12 @@ import { orders } from '../orders.malloy'
          expect(await sourceOf("dashboards/empty-start.malloy")).toBe(EMPTY);
       });
 
-      it("still rolls back an empty layout whose tag is inside a comment, and says why", async () => {
+      it("refuses an empty layout whose tag is inside a comment, as the compiler reads it", async () => {
          const res = await put("dashboards/commented-empty.malloy", {
             source: "/*\n## artifact { layout=grid tiles=[] }\n*/\n",
          });
-         expect(res.status).toBe(500);
-         expect(await res.text()).toContain("is not served as a report");
+         expect(res.status).toBe(400);
+         expect(await res.text()).toContain("not a report");
          expect(await sourceOf("dashboards/commented-empty.malloy")).toBe(
             undefined,
          );
@@ -384,20 +384,20 @@ query: broken is orders -> { aggregate: no_such_measure }
       );
    });
 
-   it("rolls back a new notebook whose only tag is inside a block comment, so no unserved file lands", async () => {
+   it("refuses a new notebook whose only tag is inside a block comment, so no unserved file lands", async () => {
       const res = await put("notebooks/hidden_tag.malloy", {
          source: "/*\n## artifact { layout=linear }\n*/\n##(markdown) Prose.\n",
       });
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(400);
       expect(await sourceOf("notebooks/hidden_tag.malloy")).toBeUndefined();
    });
 
-   it("rolls back a new notebook whose only tag is inside a string, so no unserved file lands", async () => {
+   it("refuses a new notebook whose only tag is inside a string, so no unserved file lands", async () => {
       const res = await put("notebooks/string_tag.malloy", {
          source:
             'import \'../orders.malloy\'\nrun: orders -> {\n  select: note is """\n## artifact { layout=linear }\n"""\n}\n',
       });
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(400);
       expect(await sourceOf("notebooks/string_tag.malloy")).toBeUndefined();
    });
 

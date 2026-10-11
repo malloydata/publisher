@@ -2,7 +2,7 @@
 import { orders } from '../orders.malloy'
 import { BRAND } from '../givens.malloy'
 
-# artifact { title="Unlisted" }
+## artifact { layout=grid title="Unlisted" tiles=["unlisted"] }
 query: unlisted is orders -> {
    where: brand_name ~ $BRAND
    group_by: brand_name

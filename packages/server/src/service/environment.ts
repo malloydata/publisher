@@ -9,8 +9,12 @@ import type {
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { compileDocument, type CompiledDocument } from "./compile_document";
-import { claimsToBeANotebook, notebookReaderProblem } from "./notebook";
-import { isReportEligiblePath, isUnderPublicDir } from "./report";
+import { notebookReaderProblem } from "./notebook";
+import {
+   carriesArtifactTag,
+   isReportEligiblePath,
+   isUnderPublicDir,
+} from "./report";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -55,6 +59,7 @@ import {
 import {
    assertNoRenderTags,
    assertNoRestrictedConstructs,
+   exceedsDocumentBudget,
 } from "./compile_restriction";
 import { translatorMalloyError } from "./translator_error";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
@@ -834,10 +839,15 @@ export class Environment {
          }
          // A document is gated cell by cell and tile by tile below, so one
          // restricted cell does not refuse the cells the caller may read.
+         // Text over a document's annotation budget is not parsed to find
+         // out: when it names `artifact` at all it is taken for a document, and
+         // the budget refuses it below.
          const documentCandidate =
             scope === "append" &&
             source !== undefined &&
-            claimsToBeANotebook(source);
+            (exceedsDocumentBudget(source)
+               ? source.includes("artifact")
+               : carriesArtifactTag(source));
          const runEarlyGate = async (): Promise<void> => {
             if (gateModel && hasExactGateModel && source !== undefined) {
                // Only the authorize gate (the *who* axis) applies to /compile.

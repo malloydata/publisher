@@ -124,14 +124,14 @@ describe("PUT model source: reports anywhere (E2E)", () => {
       expect(fsSync.existsSync(served("teams/east/weekly.malloy"))).toBe(true);
    });
 
-   it("takes back the directories a create made when the reload refuses it", async () => {
-      // Tagged text that compiles as a file but only inside a block comment:
-      // the reloaded package does not serve it, so the write is rolled back.
+   it("creates no directory for a write it refuses", async () => {
+      // A tag only inside a block comment is no tag, as the compiler reads it,
+      // so the write is refused before anything touches disk.
       const res = await put("rolled/back/x.malloy", {
          source:
             "/*\n## artifact { layout=grid }\n*/\nsource: s is duckdb.sql('select 1 as x')\n",
       });
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(400);
       expect(fsSync.existsSync(served("rolled"))).toBe(false);
    });
 

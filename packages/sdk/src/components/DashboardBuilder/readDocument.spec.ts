@@ -1000,26 +1000,26 @@ describe("the kind of a document held as text", () => {
 });
 
 /**
- * This reader's column of the layout parity table the server's readers share
+ * The layout parity table the server's one reader is held to
  * (`report_layout_parity.spec.ts`). A failure to open is mapped to the layout
  * the reader judged: the cell-format refusal is linear, the "no tiles list"
- * one grid, and a file with no model-level tag is no report.
+ * one grid, and a file with no model-level tag is no report. A case marked
+ * `sdkPending` pins what this reader still answers (`sdk`) where it differs
+ * from the server; it is flipped once this reader follows the same rule.
  */
 describe("report layout parity: the SDK reader", () => {
-   const { layoutCases } = JSON.parse(
+   const { cases } = JSON.parse(
       fs.readFileSync(
          path.join(import.meta.dir, "testing/reportLayoutParity.json"),
          "utf8",
       ),
    ) as {
-      layoutCases: {
+      cases: {
          name: string;
          source: string;
-         compiled: string | null;
-         text: string | null;
-         lint: string | null;
-         sdk: string | null;
-         knownDifference?: string;
+         expected: string | null;
+         sdk?: string | null;
+         sdkPending?: boolean;
       }[];
    };
 
@@ -1034,17 +1034,11 @@ describe("report layout parity: the SDK reader", () => {
       return "refused";
    };
 
-   for (const testCase of layoutCases) {
+   for (const testCase of cases) {
       it(testCase.name, async () => {
-         expect(await sdkLayout(testCase.source)).toBe(testCase.sdk);
-         const all = [
-            testCase.compiled,
-            testCase.text,
-            testCase.lint,
-            testCase.sdk,
-         ];
-         expect(new Set(all).size > 1).toBe(
-            testCase.knownDifference !== undefined,
+         expect(testCase.sdkPending === true).toBe(testCase.sdk !== undefined);
+         expect(await sdkLayout(testCase.source)).toBe(
+            testCase.sdkPending ? testCase.sdk : testCase.expected,
          );
       });
    }

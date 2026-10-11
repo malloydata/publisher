@@ -92,16 +92,10 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
    });
 
    it("does not report a drill that resolves, even to an oddly named file", async () => {
-      // `v1.2` is served despite its name, so its drill is not dangling. This
-      // is the one the naming advisory must not leak into. A bare name is the
-      // deprecated form, so it says which path to write, and nothing worse.
+      // `dashboards/v1.2` is served despite its name, so its drill is not
+      // dangling. This is the one the naming advisory must not leak into.
       const joined = (await messages()).join("\n");
-      expect(joined).not.toContain(
-         'targets "v1.2", which is not a report in this package',
-      );
-      expect(joined).toContain(
-         '# drill on orders.unconventional_target targets "v1.2" by name, which is deprecated: a report is addressed by its path. Fix: write to="dashboards/v1.2".',
-      );
+      expect(joined).not.toContain("orders.unconventional_target");
    });
 
    it("reports a suggest naming a query nothing defines", async () => {
@@ -133,7 +127,8 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
    it("registers a what-if dashboard that does not compile, so a drill to it resolves", async () => {
       const { problems } = await env.compileSource(
          "dashboards-lint",
-         "dashboards/no_such_dashboard.malloy",
+         // A bare `to=` names a root file.
+         "no_such_dashboard.malloy",
          [
             '## artifact { title="Now exists" }',
             "source: broken is nonexistent_connection.table('nope')",
@@ -240,7 +235,7 @@ describe("compile_model, package scope: curation findings", () => {
       {
          model: "dashboards/hidden.malloy",
          severity: "error",
-         message: `hidden: Dashboard hidden reads orders_staging, ${REFUSAL_FIX}`,
+         message: `hidden: Tile hidden on dashboard hidden reads orders_staging, ${REFUSAL_FIX}`,
       },
       {
          model: "dashboards/tiles.malloy",
@@ -274,24 +269,9 @@ describe("compile_model, package scope: curation findings", () => {
       const { problems } = await compilePackage("dashboards-convention");
 
       // The fixture's artifact tags are well formed, so these are the only
-      // findings of any kind apart from the query-level form's deprecation. A
-      // malformed tag would add an "Unknown render tag" on the dashboard.
-      expect(
-         summarize(
-            problems.filter(
-               (p) =>
-                  (p as { code?: string }).code !== "query-artifact-deprecated",
-            ),
-         ),
-      ).toEqual(SAVED_REFUSALS);
-      expect(
-         problems
-            .filter(
-               (p) =>
-                  (p as { code?: string }).code === "query-artifact-deprecated",
-            )
-            .map((p) => p.model),
-      ).toEqual(["dashboards/hidden.malloy", "dashboards/overview.malloy"]);
+      // findings of any kind. A malformed tag would add an "Unknown render
+      // tag" on the dashboard.
+      expect(summarize(problems)).toEqual(SAVED_REFUSALS);
    });
 
    it("reports a render-tag finding from the what-if text, under its own code", async () => {

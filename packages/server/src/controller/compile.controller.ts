@@ -6,6 +6,10 @@ import { BadRequestError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";
 import type { CompiledDocument } from "../service/compile_document";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";
+import {
+   withLegacyDocumentKind,
+   type LegacyKind,
+} from "../service/legacy_report_views";
 
 export class CompileController {
    private environmentStore: EnvironmentStore;
@@ -26,7 +30,7 @@ export class CompileController {
       status: string;
       problems: TaggedLogMessage[];
       sql?: string;
-      document?: CompiledDocument;
+      document?: CompiledDocument & { kind: LegacyKind };
    }> {
       // A JSON body can send an object with its own `length`, which the text readers would loop to.
       let text: string | undefined;
@@ -53,7 +57,11 @@ export class CompileController {
          status: hasErrors ? "error" : "success",
          problems: problems,
          ...(sql !== undefined && { sql }),
-         ...(document !== undefined && { document }),
+         // `kind` is the deprecated name of the layout, which this route has
+         // answered with since documents were compiled.
+         ...(document !== undefined && {
+            document: withLegacyDocumentKind(document),
+         }),
       };
    }
 }

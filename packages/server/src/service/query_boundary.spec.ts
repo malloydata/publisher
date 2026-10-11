@@ -48,6 +48,7 @@ import {
 } from "../errors";
 import type { Model } from "./model";
 import { Package } from "./package";
+import { getDashboard, listDashboards } from "./legacy_report_views";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
@@ -1490,7 +1491,7 @@ import { customers } from "../index.malloy"`,
          writeManifest({});
          writeIndex("customers");
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
-         expect(pkg.getDashboard("dash")).toBeDefined();
+         expect(await getDashboard(pkg, "env", "dash")).toBeDefined();
          const dash = pkg.getModel("dashboards/dash.malloy")!;
          const found = tileWarnings(pkg);
          expect(found).toEqual([
@@ -2171,7 +2172,7 @@ export { listed }`,
                tempDir,
                malloyConfig,
             );
-            expect(pkg.listDashboards()).toEqual([]);
+            expect(listDashboards(pkg, "env")).toEqual([]);
             const models = (await pkg.listModels()).map((m) => m.path).sort();
             expect(models).toEqual(["dashboards/old.malloy", "index.malloy"]);
             const old = pkg.getModel("dashboards/old.malloy")!;

@@ -50,8 +50,8 @@ function lazyHistogram(
       }));
 }
 
-/** Which kind of file was written: the `kind` label on every write metric. */
-export type DashboardWriteKind = "dashboard" | "notebook";
+/** The layout of the report written: the `layout` label on every write metric. */
+export type ReportWriteLayout = "grid" | "linear";
 
 /**
  * How a write ended.
@@ -76,12 +76,12 @@ export type DashboardWriteOutcome =
 
 const writeCounter = lazyCounter(
    "publisher_dashboard_writes_total",
-   "Dashboard and notebook write attempts. Labels: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back'), kind ('dashboard'|'notebook').",
+   "Dashboard and notebook write attempts. Labels: outcome ('created'|'replaced'|'conflict'|'compile_failed'|'refused'|'rolled_back'), layout ('grid'|'linear').",
 );
 
 const writeDuration = lazyHistogram(
    "publisher_dashboard_write_duration_ms",
-   "Wall-clock duration of a dashboard or notebook write, compile and package reload included. Labels: outcome, kind.",
+   "Wall-clock duration of a dashboard or notebook write, compile and package reload included. Labels: outcome, layout.",
    "ms",
 );
 
@@ -89,10 +89,10 @@ const writeDuration = lazyHistogram(
 export function recordDashboardWrite(
    outcome: DashboardWriteOutcome,
    durationMs: number,
-   kind: DashboardWriteKind,
+   layout: ReportWriteLayout,
 ): void {
-   writeCounter().add(1, { outcome, kind });
-   writeDuration().record(durationMs, { outcome, kind });
+   writeCounter().add(1, { outcome, layout });
+   writeDuration().record(durationMs, { outcome, layout });
 }
 
 /** Drop memoized instruments so a test can install a fresh MeterProvider. */

@@ -18,6 +18,7 @@ import * as dashboard from "./dashboard";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
+import { getDashboard } from "./legacy_report_views";
 
 type ApiPackageWarning = NonNullable<
    components["schemas"]["Package"]["warnings"]
@@ -122,7 +123,7 @@ describe("report discovery: what it does with a report it cannot read", () => {
       });
       expect(entry.error).toContain("nowhere");
       // The stub manifest the deprecated route serves for it.
-      expect(pkg.getDashboard("broken")).toMatchObject({
+      expect(await getDashboard(pkg, "env", "broken")).toMatchObject({
          name: "broken",
          layout: "grid",
          kind: "dashboard",
@@ -132,7 +133,9 @@ describe("report discovery: what it does with a report it cannot read", () => {
          givens: [],
          tiles: undefined,
       });
-      expect(pkg.getDashboard("broken")?.error).toContain("nowhere");
+      expect((await getDashboard(pkg, "env", "broken"))?.error).toContain(
+         "nowhere",
+      );
       const report = await pkg.getReport("broken.malloy");
       expect(report?.error).toContain("nowhere");
       expect(report?.tiles).toBeUndefined();

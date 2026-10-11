@@ -3,7 +3,6 @@
 
 import { type GivenValue } from "@malloydata/malloy";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import * as fsSync from "fs";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -23,8 +22,7 @@ import {
    compileDocument,
    type CompiledDocument,
 } from "./compile_document";
-import type { DocumentKind, NotebookCellSpan } from "./notebook";
-import { kindOfLayout, layoutOfText } from "./report";
+import type { NotebookCellSpan } from "./notebook";
 import type { DashboardQueryTileSpec } from "./dashboard";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
 
@@ -115,7 +113,7 @@ run: open_src -> { aggregate: c }
 `,
          );
          expect(problems.filter((p) => p.severity === "error")).toEqual([]);
-         expect(document?.kind).toBe("notebook");
+         expect(document?.layout).toBe("linear");
          // The base declares a dashboard tag of its own; none of it reaches the document.
          expect(document?.manifest).toBeUndefined();
          expect(document?.cells.map((c) => [c.kind, c.restricted])).toEqual([
@@ -124,31 +122,31 @@ run: open_src -> { aggregate: c }
          ]);
       });
 
-      it("reads the kind from the tag, and from the layout when the tag names none", async () => {
+      it("reads the layout from the tag, by the one report rule", async () => {
          const kindOf = async (source: string) =>
-            (await compile(source)).document?.kind;
+            (await compile(source)).document?.layout;
          // Submitted text has no folder to take a kind from, so the layout decides.
          expect(await kindOf(`## artifact { tiles=["open_src -> v"] }\n`)).toBe(
-            "dashboard",
+            "grid",
          );
          expect(
             await kindOf(`## artifact { } dashboard { columns=12 }\n`),
-         ).toBe("dashboard");
+         ).toBe("grid");
          expect(
             await kindOf(
                `## artifact { }\nrun: open_src -> { aggregate: c }\n`,
             ),
-         ).toBe("notebook");
+         ).toBe("linear");
          expect(
             await kindOf(
                `## artifact { layout=linear tiles=["open_src -> v"] }\n`,
             ),
-         ).toBe("notebook");
+         ).toBe("linear");
          expect(
             await kindOf(
                `## artifact { layout=grid }\nrun: open_src -> { aggregate: c }\n`,
             ),
-         ).toBe("dashboard");
+         ).toBe("grid");
          const dashboard = await compile(
             DOC_TILES.replace("gated -> v", "open_src -> v"),
          );
@@ -594,7 +592,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
             `run: open_src -> { aggregate: c } ## artifact { layout=grid tiles=["open_src -> v"] }\n`,
             { ROLE: "analyst" },
          );
-         expect(document?.kind).toBe("dashboard");
+         expect(document?.layout).toBe("grid");
          expect(document?.manifest?.tiles).toHaveLength(1);
       });
    });
@@ -906,22 +904,4 @@ source: t is duckdb.sql("select 1 as a") extend {
       expect(tiles[1].restricted).toBeUndefined();
       expect(tiles[1].givenNames).toEqual([]);
    });
-});
-
-describe("the layout of submitted text", () => {
-   // One case table for the server's text rule (`layoutOfText`) and the SDK reader, whose spec reads the same file.
-   const { cases } = JSON.parse(
-      fsSync.readFileSync(
-         path.resolve(
-            __dirname,
-            "../../../sdk/src/components/DashboardBuilder/testing/documentKindRule.json",
-         ),
-         "utf8",
-      ),
-   ) as { cases: { name: string; source: string; kind: string }[] };
-   for (const { name, source, kind } of cases) {
-      it(`${name}: ${kind}`, () => {
-         expect(kindOfLayout(layoutOfText(source))).toBe(kind as DocumentKind);
-      });
-   }
 });

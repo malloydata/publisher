@@ -240,3 +240,87 @@ export function classifySpaFallback(
               : null,
    };
 }
+
+/** A percent-encoded path segment, decoded; a malformed escape compares as itself, a name that will not match. */
+function decodeSegment(segment: string | undefined): string {
+   if (segment === undefined) return "";
+   try {
+      return decodeURIComponent(segment);
+   } catch {
+      return segment;
+   }
+}
+
+/**
+ * What the fallback needs to know about what this server has loaded, by
+ * decoded name. In-memory only: the fallback answers unauthenticated traffic
+ * for any path nothing else claimed, so it must not do I/O a caller can trigger
+ * by guessing.
+ */
+export interface LoadedRoutes {
+   hasEnvironment(environmentName: string): boolean;
+   hasPackage(environmentName: string, packageName: string): boolean;
+   /**
+    * Whether `routePath` (decoded, under the package) is the Console route of a
+    * report the package serves: its path without `.malloy`, or a legacy alias.
+    */
+   isReportRoute(
+      environmentName: string,
+      packageName: string,
+      routePath: string,
+   ): boolean;
+}
+
+/**
+ * {@link classifySpaFallback}, with its candidates settled against what is
+ * loaded:
+ *
+ * - A redirect candidate is the app shell when its path is a report's route (a
+ *   report whose name ends in an asset extension is a route, not a file); a
+ *   404 when its environment or package is not loaded, since `/assets/foo/bar.js`
+ *   has the same shape and the static route would answer a bad name with JSON
+ *   that echoes it back; otherwise the redirect.
+ * - An `/<env>` or `/<env>/<pkg>` whose name merely ends in a servable
+ *   extension (`report.html` is a legal package name) is the app shell when
+ *   those names are loaded, and stays a 404 otherwise, which is what keeps
+ *   `/examples/style.css` a 404.
+ */
+export function resolveSpaFallback(
+   requestPath: string,
+   apiPrefix: string,
+   loaded: LoadedRoutes,
+): SpaFallbackAction {
+   const fallback = classifySpaFallback(requestPath, apiPrefix);
+   if (fallback.kind === "redirect") {
+      const environmentName = decodeSegment(fallback.environmentName);
+      const packageName = decodeSegment(fallback.packageName);
+      const routePath = fallback.reportPath
+         .split("/")
+         .map(decodeSegment)
+         .join("/");
+      if (!loaded.hasPackage(environmentName, packageName)) {
+         // Null, not the names: a candidate whose names did not resolve is
+         // not an app route either.
+         return {
+            kind: "assetNotFound",
+            path: requestPath,
+            appRouteCandidate: null,
+         };
+      }
+      return loaded.isReportRoute(environmentName, packageName, routePath)
+         ? { kind: "spa" }
+         : fallback;
+   }
+   if (fallback.kind === "assetNotFound" && fallback.appRouteCandidate) {
+      const environmentName = decodeSegment(
+         fallback.appRouteCandidate.environmentName,
+      );
+      const packageName = fallback.appRouteCandidate.packageName;
+      const isAppRoute =
+         loaded.hasEnvironment(environmentName) &&
+         (packageName === undefined ||
+            loaded.hasPackage(environmentName, decodeSegment(packageName)));
+      if (isAppRoute) return { kind: "spa" };
+   }
+   return fallback;
+}

@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Attached prose" }
+## artifact { layout=linear title="Attached prose" }
 import "../models/orders.malloy"
 
 #(markdown) The region filter.

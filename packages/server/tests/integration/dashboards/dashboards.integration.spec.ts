@@ -6,7 +6,7 @@
 /**
  * E2E coverage for dashboard discovery: the grid reports in the `/reports`
  * list and the `/reports/{path}` manifest, against a real package whose
- * `dashboards/` directory exercises each form — a single-query dashboard, one
+ * `dashboards/` directory exercises each form — a dashboard of one named query, one
  * relying on the doc-comment title fallback with `autorun=false` and a
  * filter-literal starting value, a composite (`## artifact { tiles=… }`), and a
  * shared include that must not be listed.
@@ -50,9 +50,6 @@ const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
 
 /** The report change's deprecation notes, which these fixtures draw on purpose. */
 const DEPRECATION_CODES = new Set([
-   "drill-target-by-name",
-   "report-kind-deprecated",
-   "query-artifact-deprecated",
    "report-layout-implicit",
    "report-on-surface",
 ]);
@@ -246,16 +243,15 @@ describe("Dashboard discovery (E2E)", () => {
 
    // ── the manifest endpoint ────────────────────────────────────────
 
-   it("returns the manifest of a single-query dashboard, grid width included", async () => {
+   it("returns the manifest of a one-tile dashboard, grid width included", async () => {
       const manifest = await getManifest("overview");
       expect(manifest).toMatchObject({
          name: "overview",
          title: "Business Overview",
-         query: "overview",
          dashboardColumns: 6,
          autorun: true,
       });
-      expect(manifest.tiles).toBeUndefined();
+      expect(manifest.tiles?.map((tile) => tile.query)).toEqual(["overview"]);
    });
 
    it("derives the control row from the givens the query references", async () => {
@@ -304,7 +300,6 @@ describe("Dashboard discovery (E2E)", () => {
          dashboardColumns: 4,
          autorun: true,
       });
-      expect(manifest.query).toBeUndefined();
       // Each tile carries the givens it actually references, so a viewer can
       // re-run only the tiles a changed control affects.
       expect(manifest.tiles).toEqual([
@@ -402,7 +397,7 @@ describe("Dashboard discovery (E2E)", () => {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
-            queryName: manifest.query,
+            query: `run: ${manifest.tiles?.[0]?.query}`,
             givens: { BRAND: "Nike" },
             compactJson: true,
          }),
@@ -436,7 +431,7 @@ describe("Dashboard discovery (E2E)", () => {
       const res = await fetch(apiUrl(`/models/${manifest.path}/query`), {
          method: "POST",
          headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({ queryName: manifest.query }),
+         body: JSON.stringify({ query: `run: ${manifest.tiles?.[0]?.query}` }),
       });
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
@@ -452,7 +447,7 @@ describe("Dashboard discovery (E2E)", () => {
       ).schema;
       const brand = (schema?.fields ?? []).find((f) => f.name === "brand_name");
       expect((brand?.annotations ?? []).map((a) => a.value)).toContain(
-         "# drill { to=overview given=BRAND }\n",
+         '# drill { to="dashboards/overview" given=BRAND }\n',
       );
       // And it arrives without a render warning: `drill` is Publisher's tag,
       // not one the renderer knows, so it would otherwise be reported as
@@ -474,7 +469,7 @@ describe("Dashboard discovery (E2E)", () => {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-               queryName: manifest.query,
+               query: `run: ${manifest.tiles?.[0]?.query}`,
                givens,
                compactJson: true,
             }),
@@ -599,7 +594,7 @@ describe("Dashboard discovery (E2E)", () => {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
-            queryName: manifest.query,
+            query: `run: ${manifest.tiles?.[0]?.query}`,
             givens: { BRAND: byName["BRAND"]?.default },
             compactJson: true,
          }),
@@ -704,9 +699,6 @@ describe("Dashboard discovery (E2E)", () => {
          // The fixture keeps `.malloynb` notebooks, each of which the package
          // reports as a deprecated format (`legacyFormatWarnings`, keyed by the
          // notebook's path); none of the rest is a dashboard lint finding.
-         // Nor are the deprecation notes the report change added: the
-         // fixture's query-level `# artifact` tags and its bare-name drills
-         // still work, and say which spelling to write.
          const warnings: Array<{ model?: string; code?: string }> =
             await packageWarnings(PACKAGE_NAME);
          expect(
@@ -985,13 +977,12 @@ describe("Dashboard discovery (E2E)", () => {
          expect(messages).not.toContainEqual(
             expect.stringContaining("by_brand + { limit: 2 }"),
          );
-         // `# drill { to=["overview"] }` resolves, so it says only that the
-         // bare name is deprecated.
+         // `# drill { to=["dashboards/overview"] }` resolves, so nothing is said.
          expect(
-            warnings
-               .filter((w) => (w.message ?? "").includes("orders.brand_name"))
-               .map((w) => (w as { code?: string }).code),
-         ).toEqual(["drill-target-by-name"]);
+            warnings.filter((w) =>
+               (w.message ?? "").includes("orders.brand_name"),
+            ),
+         ).toEqual([]);
 
          // The silent case: a tag that does not parse is discarded whole, so the
          // file quietly stops being a dashboard.
@@ -1093,10 +1084,10 @@ describe("Dashboard discovery (E2E)", () => {
       // `explores` and `queryableSources` (see RELEASE_NOTES deprecations).
       describe("deprecated: explores and queryableSources", () => {
          it("lists every dashboard, including ones explores does not list", async () => {
-            // Not `listed`: its only tag is a query-level `# artifact` and
-            // `explores` lists it, so it is on the surface and stays a model
-            // (query-artifact-ignored). `composite` is listed too, but carries a
-            // model-level `## artifact`, which always makes a report.
+            // Not `listed`: its only tag is a query-level `# artifact`, which
+            // is not read, so it is a model. `composite` is listed in
+            // `explores` too, but carries a model-level `## artifact`, which
+            // always makes a report.
             const res = await fetch(curatedUrl("/reports"));
             expect(res.status).toBe(200);
             const dashboards = gridOnly((await res.json()) as DashboardItem[]);
@@ -1120,9 +1111,11 @@ describe("Dashboard discovery (E2E)", () => {
                curatedUrl("/reports/dashboards/unlisted.malloy"),
             );
             expect(manifest.status).toBe(200);
-            expect(((await manifest.json()) as DashboardManifest).query).toBe(
-               "unlisted",
-            );
+            expect(
+               ((await manifest.json()) as DashboardManifest).tiles?.map(
+                  (tile) => tile.query,
+               ),
+            ).toEqual(["unlisted"]);
             const res = await post(
                curatedUrl("/models/dashboards/unlisted.malloy/query"),
                { queryName: "unlisted" },
@@ -1130,7 +1123,7 @@ describe("Dashboard discovery (E2E)", () => {
             expect(res.status).toBe(200);
          });
 
-         it("keeps a query-level dashboard that explores lists a model, still runnable, and says why", async () => {
+         it("reads no query-level # artifact: a file explores lists stays a model, still runnable", async () => {
             expect(
                (await fetch(curatedUrl("/reports/dashboards/listed.malloy")))
                   .status,
@@ -1140,13 +1133,11 @@ describe("Dashboard discovery (E2E)", () => {
                { queryName: "listed", compactJson: true },
             );
             expect(res.status).toBe(200);
-            const ignored = (await warningsOf(curatedUrl(""))).filter(
-               (w) =>
-                  w.model === "dashboards/listed.malloy" &&
-                  (w as { code?: string }).code === "query-artifact-ignored",
-            );
-            expect(ignored).toHaveLength(1);
-            expect(ignored[0].message).toContain('"explores" lists it');
+            expect(
+               (await warningsOf(curatedUrl(""))).filter(
+                  (w) => w.model === "dashboards/listed.malloy",
+               ),
+            ).toEqual([]);
          });
 
          it("re-checks tile findings after a metadata PATCH changes the surface", async () => {
@@ -1168,7 +1159,7 @@ describe("Dashboard discovery (E2E)", () => {
                expect(patch.ok).toBe(true);
                const after = await wontLoad(pkgUrl);
                expect(after).toContain(
-                  `Dashboard unlisted reads orders, which no file "explores" lists ` +
+                  `Tile unlisted on dashboard unlisted reads orders, which no file "explores" lists ` +
                      `exports, so it won't load. Fix: add orders to the export ` +
                      `{ ... } in dashboards/listed.malloy.`,
                );
@@ -1196,17 +1187,14 @@ describe("Dashboard discovery (E2E)", () => {
          });
 
          it("reports no dead drill at a dashboard explores does not list", async () => {
-            // `orders.malloy` carries `# drill { to=unlisted }`. The dashboard is
-            // served, so the click lands and nothing is said.
+            // `orders.malloy` carries `# drill { to="dashboards/unlisted" }`. The
+            // dashboard is served, so the click lands and nothing is said.
             const messages = (await warningsOf(curatedUrl(""))).map(
                (w) => w.message ?? "",
             );
             expect(
                messages.filter(
-                  (m) =>
-                     m.includes("# drill") &&
-                     m.includes("unlisted") &&
-                     !m.includes("by name, which is deprecated"),
+                  (m) => m.includes("# drill") && m.includes("unlisted"),
                ),
             ).toEqual([]);
          });
@@ -1318,7 +1306,7 @@ describe("Dashboard discovery (E2E)", () => {
 
          it("warns once per tile or dashboard that won't load, naming the source to export", async () => {
             expect(await wontLoad(conventionUrl(""))).toEqual([
-               `Dashboard hidden reads orders_staging, which index.malloy ` +
+               `Tile hidden on dashboard hidden reads orders_staging, which index.malloy ` +
                   `doesn't export, so it won't load. Fix: add orders_staging to ` +
                   `the export { ... } in index.malloy.`,
                `Tile orders_staging -> by_flag on dashboard tiles reads ` +

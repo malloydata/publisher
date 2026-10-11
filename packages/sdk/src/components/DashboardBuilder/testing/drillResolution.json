@@ -1,5 +1,5 @@
 {
-   "about": "Where a `# drill { to=… }` lands (docs/reports-design.md §3), by the server's rule (`resolveDrillDestination`, which the load lint applies) and the SDK's (`resolveDrillTarget`, which a click applies). `reports` is the package's reports: the server is handed every path, including a report `dropped` because it could not be read, with the grid ones as its grid set; the SDK is handed the listing, which omits a dropped report. `server` and `sdk` are each side's answer. A case whose two answers differ beyond the server's `rewrite` carries `knownDifference`, and each side's spec fails when one differs without it. A target that is not a plain package path (a `.`, `..` or empty segment, or a leading `/`) is unresolved on both sides; the server also marks it `malformed`, which the comparison leaves out like `rewrite`.",
+   "about": "Where a `# drill { to=… }` lands (docs/reports-design.md §3): `to=` is a package path from the root, with or without `.malloy`, and a bare name is a root file. `reports` is the package's reports; the server resolves against every path, a report `dropped` because it could not be read included, and the SDK's `resolveDrillTarget` against the listing, which omits a dropped one. `server` is the server's answer (`resolveDrillDestination`; it also marks a target that is not a plain package path `malformed`, which the comparison leaves out). The SDK's answer must equal it, compared by `kind` and `path`, except where a case carries `sdk`: under `sdkPending` the SDK still reads the removed basename fallback and `sdk` is what it answers until it follows the server; under `knownDifference` the two differ by design.",
    "cases": [
       {
          "name": "a path from the package root",
@@ -11,10 +11,6 @@
             }
          ],
          "server": {
-            "kind": "path",
-            "path": "sales/q3.malloy"
-         },
-         "sdk": {
             "kind": "path",
             "path": "sales/q3.malloy"
          }
@@ -31,10 +27,6 @@
          "server": {
             "kind": "path",
             "path": "sales/q3.malloy"
-         },
-         "sdk": {
-            "kind": "path",
-            "path": "sales/q3.malloy"
          }
       },
       {
@@ -47,10 +39,6 @@
             }
          ],
          "server": {
-            "kind": "path",
-            "path": "notes/story.malloynb"
-         },
-         "sdk": {
             "kind": "path",
             "path": "notes/story.malloynb"
          }
@@ -71,14 +59,10 @@
          "server": {
             "kind": "path",
             "path": "overview.malloy"
-         },
-         "sdk": {
-            "kind": "path",
-            "path": "overview.malloy"
          }
       },
       {
-         "name": "deprecated: a bare name with no root report falls back to the one grid report with that basename",
+         "name": "a bare name is a root file: a grid report elsewhere with that basename is not looked up",
          "to": "overview",
          "reports": [
             {
@@ -91,17 +75,16 @@
             }
          ],
          "server": {
-            "kind": "name",
-            "path": "dashboards/overview.malloy",
-            "rewrite": "dashboards/overview"
+            "kind": "unresolved"
          },
          "sdk": {
             "kind": "name",
             "path": "dashboards/overview.malloy"
-         }
+         },
+         "sdkPending": true
       },
       {
-         "name": "deprecated: failing a grid one, the one report of either layout",
+         "name": "a bare name is a root file: the one report elsewhere with that basename is not looked up",
          "to": "story",
          "reports": [
             {
@@ -110,17 +93,16 @@
             }
          ],
          "server": {
-            "kind": "name",
-            "path": "notebooks/story.malloy",
-            "rewrite": "notebooks/story"
+            "kind": "unresolved"
          },
          "sdk": {
             "kind": "name",
             "path": "notebooks/story.malloy"
-         }
+         },
+         "sdkPending": true
       },
       {
-         "name": "deprecated: a basename match at the root has no rewrite",
+         "name": "a bare name adds .malloy, never .malloynb",
          "to": "story",
          "reports": [
             {
@@ -129,16 +111,16 @@
             }
          ],
          "server": {
-            "kind": "name",
-            "path": "story.malloynb"
+            "kind": "unresolved"
          },
          "sdk": {
             "kind": "name",
             "path": "story.malloynb"
-         }
+         },
+         "sdkPending": true
       },
       {
-         "name": "deprecated: two grid reports share the basename: ambiguous, naming both",
+         "name": "a bare name two grid reports elsewhere have resolves to neither",
          "to": "overview",
          "reports": [
             {
@@ -151,16 +133,11 @@
             }
          ],
          "server": {
-            "kind": "unresolved",
-            "candidates": ["a/overview.malloy", "b/overview.malloy"]
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": ["a/overview.malloy", "b/overview.malloy"]
+            "kind": "unresolved"
          }
       },
       {
-         "name": "deprecated: two linear reports share the basename: ambiguous",
+         "name": "a bare name two linear reports elsewhere have resolves to neither",
          "to": "story",
          "reports": [
             {
@@ -173,12 +150,7 @@
             }
          ],
          "server": {
-            "kind": "unresolved",
-            "candidates": ["a/story.malloy", "b/story.malloy"]
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": ["a/story.malloy", "b/story.malloy"]
+            "kind": "unresolved"
          }
       },
       {
@@ -191,16 +163,11 @@
             }
          ],
          "server": {
-            "kind": "unresolved",
-            "candidates": []
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": []
+            "kind": "unresolved"
          }
       },
       {
-         "name": "a target with a / that misses never falls back to the basename",
+         "name": "a path target that misses is unresolved",
          "to": "x/q3",
          "reports": [
             {
@@ -209,12 +176,7 @@
             }
          ],
          "server": {
-            "kind": "unresolved",
-            "candidates": []
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": []
+            "kind": "unresolved"
          }
       },
       {
@@ -250,13 +212,12 @@
             "path": "broken.malloy"
          },
          "sdk": {
-            "kind": "unresolved",
-            "candidates": []
+            "kind": "unresolved"
          },
          "knownDifference": "The server counts a dropped report, so the lint does not also call a correct drill dangling; the listing the SDK resolves against omits it."
       },
       {
-         "name": "a dropped report still makes a basename ambiguous, to the server",
+         "name": "a bare name a report elsewhere has resolves to none, whether or not another was dropped",
          "to": "overview",
          "reports": [
             {
@@ -270,14 +231,13 @@
             }
          ],
          "server": {
-            "kind": "unresolved",
-            "candidates": ["a/overview.malloy", "b/overview.malloy"]
+            "kind": "unresolved"
          },
          "sdk": {
             "kind": "name",
             "path": "a/overview.malloy"
          },
-         "knownDifference": "The server counts the dropped report among the candidates; the listing the SDK resolves against omits it, so one report has the name."
+         "sdkPending": true
       },
       {
          "name": "a leading ./ is not a package path",
@@ -290,12 +250,7 @@
          ],
          "server": {
             "kind": "unresolved",
-            "candidates": [],
             "malformed": true
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": []
          }
       },
       {
@@ -309,12 +264,7 @@
          ],
          "server": {
             "kind": "unresolved",
-            "candidates": [],
             "malformed": true
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": []
          }
       },
       {
@@ -328,12 +278,7 @@
          ],
          "server": {
             "kind": "unresolved",
-            "candidates": [],
             "malformed": true
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": []
          }
       },
       {
@@ -347,12 +292,7 @@
          ],
          "server": {
             "kind": "unresolved",
-            "candidates": [],
             "malformed": true
-         },
-         "sdk": {
-            "kind": "unresolved",
-            "candidates": []
          }
       }
    ]

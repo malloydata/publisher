@@ -313,112 +313,6 @@ describe("service/dashboard filter literals", () => {
    });
 });
 
-// DEPRECATED FEATURE COVERAGE — delete together with
-// the query-level `# artifact` (see RELEASE_NOTES deprecations).
-describe("deprecated: query-level # artifact — service/dashboard manifest (single-query form)", () => {
-   it("reads the artifact tag and the sibling dashboard grid tag", () => {
-      const manifest = build(
-         facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: [
-                     '# artifact { title="Business Overview" } dashboard {columns=6}\n',
-                  ],
-                  givens: [],
-               },
-            ],
-         }),
-      );
-      expect(manifest).toMatchObject({
-         name: "overview",
-         title: "Business Overview",
-         query: "overview",
-         dashboardColumns: 6,
-         autorun: true,
-         entryFile: "dashboards/overview.malloy",
-      });
-   });
-
-   it('falls back to the #" doc comment, then to the slug, for the title', () => {
-      const withDoc = build(
-         facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: [
-                     '#" Business health at a glance.\n',
-                     "# artifact\n",
-                  ],
-                  givens: [],
-               },
-            ],
-         }),
-      );
-      expect(withDoc?.title).toBe("Business health at a glance.");
-      // And NOT also the description. The title took the only line there was,
-      // so repeating it would print the same words twice on the page.
-      expect(withDoc?.description).toBe(undefined);
-
-      const bare = build(
-         facts({
-            queries: [
-               { name: "overview", annotations: ["# artifact\n"], givens: [] },
-            ],
-         }),
-      );
-      expect(bare?.title).toBe("overview");
-      expect(bare?.description).toBe(undefined);
-   });
-
-   it("treats a file with no artifact tag as a shared include", () => {
-      expect(
-         build(
-            facts({
-               queries: [
-                  {
-                     name: "helper",
-                     annotations: ["# dashboard {columns=2}\n"],
-                     givens: [],
-                  },
-               ],
-            }),
-         ),
-      ).toBe(undefined);
-      expect(build(facts())).toBe(undefined);
-   });
-
-   it("honors autorun=false and per-dashboard starting values", () => {
-      const manifest = build(
-         facts({
-            queries: [
-               {
-                  name: "recalls",
-                  annotations: [
-                     `# artifact { autorun=false givens { MANUFACTURER=f'Ford Motor Company' PERIOD="30 days" } }\n`,
-                  ],
-                  givens: [],
-               },
-            ],
-            // Declared, because the unwrap is keyed on the type: MANUFACTURER is
-            // a filter so `f'…'` is a wrapper, PERIOD is a string so its value
-            // is whatever it says. Without the declarations neither is unwrapped.
-            givens: new Map([
-               given("MANUFACTURER", "filter<string>", []),
-               given("PERIOD", "string", []),
-            ]),
-         }),
-      );
-      expect(manifest?.autorun).toBe(false);
-      // Starting values arrive in run shape: the filter body, not the literal,
-      // and the string given untouched.
-      expect(manifest?.startingGivens).toEqual({
-         MANUFACTURER: "Ford Motor Company",
-         PERIOD: "30 days",
-      });
-   });
-});
-
 /** A grid report whose one tile is the named query `overview`. */
 const GRID_OVERVIEW = '## artifact { layout=grid tiles=["overview"] }\n';
 
@@ -674,40 +568,6 @@ describe("service/dashboard suggest givenNames", () => {
          dimension: "brand",
       });
    });
-
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
-   describe("deprecated: query-level # artifact", () => {
-      it("resolves the query form through the query lookup", () => {
-         const manifest = build(
-            facts({
-               queries: [
-                  {
-                     name: "overview",
-                     annotations: ["# artifact\n"],
-                     givens: ["BRAND"],
-                  },
-               ],
-               givens: new Map([
-                  given("BRAND", "filter<string>", [
-                     "# control=select suggest { query=brand_suggest dimension=brand }\n",
-                  ]),
-               ]),
-               suggestGivens: {
-                  forSource: () => undefined,
-                  forQuery: (name) =>
-                     name === "brand_suggest"
-                        ? ["TENANT", "REGION"]
-                        : undefined,
-               },
-            }),
-         );
-         expect(manifest?.givens?.[0]?.suggest?.givenNames).toEqual([
-            "TENANT",
-            "REGION",
-         ]);
-      });
-   });
 });
 
 describe("service/dashboard manifest (composite form)", () => {
@@ -776,7 +636,6 @@ describe("service/dashboard manifest (composite form)", () => {
          { kind: "query", query: "orders -> by_month" },
          { kind: "query", query: "users -> signups" },
       ]);
-      expect(manifest?.query).toBe(undefined);
    });
 
    it("resolves each tile's givens and unions them into one control row", () => {
@@ -951,26 +810,7 @@ describe("service/dashboard manifest (composite form)", () => {
       expect(findings).toHaveLength(1);
    });
 
-   it("prefers a composite declaration over a query-level tag in the same file", () => {
-      const manifest = build(
-         facts({
-            modelAnnotations: [
-               '## artifact { tiles=["orders -> by_month"] }\n',
-            ],
-            queries: [
-               {
-                  name: "stray",
-                  annotations: ['# artifact { title="Stray" }\n'],
-                  givens: [],
-               },
-            ],
-         }),
-      );
-      expect(manifest?.tiles).toHaveLength(1);
-      expect(manifest?.query).toBe(undefined);
-   });
-
-   it("is not composite when the model tag declares no tiles", () => {
+   it("builds no manifest when the model tag declares no tiles, and reads no query's # artifact", () => {
       const manifest = build(
          facts({
             modelAnnotations: ['## artifact { title="Not composite" }\n'],
@@ -983,8 +823,7 @@ describe("service/dashboard manifest (composite form)", () => {
             ],
          }),
       );
-      expect(manifest?.title).toBe("Real one");
-      expect(manifest?.query).toBe("overview");
+      expect(manifest).toBeUndefined();
    });
 });
 
@@ -1185,13 +1024,10 @@ describe("service/dashboard artifact-tag enumeration", () => {
       expect(
          lintOf(
             facts({
-               queries: [
-                  {
-                     name: "overview",
-                     annotations: ['# artifact { titel="Typo" }\n'],
-                     givens: [],
-                  },
+               modelAnnotations: [
+                  '## artifact { titel="Typo" tiles=["orders -> overview"] }\n',
                ],
+               viewGivens: new Map([["orders -> overview", []]]),
             }),
          ),
       ).toEqual([
@@ -1205,35 +1041,13 @@ describe("service/dashboard artifact-tag enumeration", () => {
       expect(
          lintOf(
             facts({
-               queries: [
-                  {
-                     name: "overview",
-                     annotations: ["# artifact { whatever=1 }\n"],
-                     givens: [],
-                  },
+               modelAnnotations: [
+                  '## artifact { whatever=1 tiles=["orders -> a"] }\n',
                ],
+               viewGivens: new Map([["orders -> a", []]]),
             }),
          )[0],
       ).toContain("does nothing in Publisher");
-   });
-
-   // `tiles=` on a query-level tag is the one wrong-position case worth its own
-   // wording: the property is real, it is the position that makes it inert, and
-   // "does nothing" alone would read as though composites were unsupported.
-   it("tells a query-level tiles= where the tag belongs", () => {
-      const message = lintOf(
-         facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: ['# artifact { tiles=["orders -> a"] }\n'],
-                  givens: [],
-               },
-            ],
-         }),
-      )[0];
-      expect(message).toContain("`tiles` in the artifact tag does nothing");
-      expect(message).toContain("## artifact");
    });
 
    // The keys under `givens` are the author's own given names, so descending
@@ -1280,36 +1094,6 @@ describe("service/dashboard artifact-tag enumeration", () => {
             }),
          ),
       ).toEqual([expect.stringContaining("close the artifact braces first")]);
-   });
-
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
-   describe("deprecated: query-level # artifact", () => {
-      // Half a migration to `tiles=`: the model-level tag is written, the query
-      // still carries its own, and discovery falls through to the query. Before
-      // this the page kept serving and nothing was said, because the lint that owns
-      // this diagnosis runs only when NO dashboard was built.
-      it("reports a tiles-less model tag that a query-level artifact rescued", () => {
-         expect(
-            lintOf(
-               facts({
-                  modelAnnotations: ['## artifact { title="Migrating" }\n'],
-                  queries: [
-                     {
-                        name: "overview",
-                        annotations: ["# artifact\n"],
-                        givens: [],
-                     },
-                  ],
-               }),
-            ),
-         ).toEqual([
-            expect.stringContaining(
-               "declares no tiles=, so it builds nothing and this dashboard is " +
-                  "the query's own '# artifact' instead",
-            ),
-         ]);
-      });
    });
 
    it("stays silent when the model tag does declare tiles", () => {
@@ -1371,48 +1155,6 @@ describe("service/dashboard lint", () => {
             }),
          ),
       ).toEqual([expect.stringContaining("@env.")]);
-   });
-
-   // The SINGLE-QUERY form, where `ownAnnotations` is the query's annotations,
-   // so scoping the parse report to those alone left the file's own model-level
-   // lines unreported by either lint. Found in review by Sha-Bang, who measured
-   // both shapes rather than arguing them.
-   it("reports a model-level @env line dropped from a single-query dashboard", () => {
-      expect(
-         lint(
-            facts({
-               modelAnnotations: ["## note=@env.SLICE6_SECRET\n"],
-               queries: [
-                  {
-                     name: "overview",
-                     annotations: ['# artifact { title="Overview" }\n'],
-                     givens: [],
-                  },
-               ],
-            }),
-         ),
-      ).toEqual([expect.stringContaining("@env.")]);
-   });
-
-   // The worse of the two, because the package does not merely stay silent: the
-   // broken composite tag is discarded, the file falls through to the
-   // single-query form, and it SERVES ONE TILE as though that were the whole
-   // dashboard. `lintUndiscoveredDashboard` carries the right message and never
-   // runs, because a manifest exists.
-   it("reports an unbalanced composite tag that left a single-query dashboard serving", () => {
-      const f = facts({
-         modelAnnotations: ['## artifact { tiles=["orders -> by_x" }\n'],
-         queries: [
-            {
-               name: "overview",
-               annotations: ['# artifact { title="Overview" }\n'],
-               givens: [],
-            },
-         ],
-      });
-      // The premise: it really did fall through to the single-query form.
-      expect(build(f)?.tiles).toBeUndefined();
-      expect(lint(f)).toEqual([expect.stringContaining("does not parse")]);
    });
 
    // The composite control. `ownAnnotations` IS `facts.modelAnnotations` there,
@@ -1543,13 +1285,10 @@ describe("service/dashboard lint", () => {
    it("flags a suggest naming a query, source, or dimension that is absent", () => {
       const messages = lint(
          facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: ['# artifact { title="Overview" }\n'],
-                  givens: ["A", "B", "C"],
-               },
+            modelAnnotations: [
+               '## artifact { title="Overview" tiles=["orders -> overview"] }\n',
             ],
+            viewGivens: new Map([["orders -> overview", ["A", "B", "C"]]]),
             sourceFields: new Map([["orders", new Set(["region"])]]),
             givens: new Map([
                given("A", "filter<string>", [
@@ -1576,13 +1315,10 @@ describe("service/dashboard lint", () => {
    it("accepts a dotted joined dimension and flags one the source lacks", () => {
       const messages = lint(
          facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: ['# artifact { title="Overview" }\n'],
-                  givens: ["A", "B"],
-               },
+            modelAnnotations: [
+               '## artifact { title="Overview" tiles=["orders -> overview"] }\n',
             ],
+            viewGivens: new Map([["orders -> overview", ["A", "B"]]]),
             sourceFields: new Map([
                ["orders", new Set(["region", "products.category"])],
             ]),
@@ -1667,7 +1403,6 @@ describe("service/dashboard lint", () => {
                }),
             ],
             new Set(["overview"]),
-            new Set(),
          ).map((f) => f.message);
          expect(messages).toEqual([
             expect.stringContaining('targets "gone"'),
@@ -1690,7 +1425,6 @@ describe("service/dashboard lint", () => {
                }),
             ],
             new Set(),
-            new Set(),
          );
          expect(messages).toHaveLength(1);
          expect(messages[0].subject).toBe("orders.brand");
@@ -1705,11 +1439,7 @@ describe("service/dashboard lint", () => {
          "notebooks/story.malloy",
       ]);
       const lint = (to: string) =>
-         lintDrillTargets(
-            [facts({ drills: [drill("brand", [to])] })],
-            reports,
-            new Set(),
-         );
+         lintDrillTargets([facts({ drills: [drill("brand", [to])] })], reports);
 
       it("treats a target that is not a plain package path as unresolved", () => {
          for (const to of [
@@ -1721,9 +1451,8 @@ describe("service/dashboard lint", () => {
             "sales//q3",
             "..",
          ]) {
-            expect(resolveDrillDestination(to, reports, new Set())).toEqual({
+            expect(resolveDrillDestination(to, reports)).toEqual({
                kind: "unresolved",
-               candidates: [],
                malformed: true,
             });
             const [finding] = lint(to);
@@ -1737,51 +1466,6 @@ describe("service/dashboard lint", () => {
          expect(lint("sales/q3")).toEqual([]);
          expect(lint("notebooks/story")).toEqual([]);
          expect(lint("overview")).toEqual([]);
-      });
-
-      // DEPRECATED FEATURE COVERAGE — delete together with
-      // bare-name `# drill` targets (see RELEASE_NOTES deprecations).
-      describe("deprecated: bare-name # drill targets", () => {
-         it("resolves a bare name to the dashboard when a notebook shares its basename", () => {
-            // Bare names only ever named dashboards; a notebook could share the
-            // basename (storefront ships both), so the grid report wins.
-            const shared = new Set([
-               "dashboards/overview.malloy",
-               "notebooks/overview.malloy",
-            ]);
-            const [finding] = lintDrillTargets(
-               [facts({ drills: [drill("brand", ["overview"])] })],
-               shared,
-               new Set(["dashboards/overview.malloy"]),
-            );
-            expect(finding).toMatchObject({ code: "drill-target-by-name" });
-            expect(finding.message).toContain('to="dashboards/overview"');
-            // Two grid reports with the basename are still ambiguous.
-            const [ambiguous] = lintDrillTargets(
-               [facts({ drills: [drill("brand", ["overview"])] })],
-               shared,
-               shared,
-            );
-            expect(ambiguous.severity).toBe("error");
-            expect(ambiguous.message).toContain("2 reports");
-         });
-
-         it("resolves a bare name one report has, and says which path to write", () => {
-            const [finding] = lint("q3");
-            expect(finding).toMatchObject({
-               code: "drill-target-by-name",
-               severity: "warn",
-            });
-            expect(finding.message).toContain('to="sales/q3"');
-         });
-
-         it("leaves a bare name several reports have unresolved, naming them", () => {
-            const [finding] = lint("summary");
-            expect(finding.severity).toBe("error");
-            expect(finding.code).toBeUndefined();
-            expect(finding.message).toContain("finance/summary.malloy");
-            expect(finding.message).toContain("sales/summary.malloy");
-         });
       });
 
       it("never resolves a path target by its basename", () => {
@@ -1914,30 +1598,6 @@ describe("service/dashboard multi-line doc comment as a title", () => {
    // comment is deliberately newline-joined markdown.
    const twoLine = ['#" Business Overview\n', '#" Updated nightly.\n'];
 
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
-   describe("deprecated: query-level # artifact", () => {
-      it("takes only the first line on the single-query form", () => {
-         const m = build(
-            facts({
-               queries: [
-                  {
-                     name: "overview",
-                     annotations: [...twoLine, "# artifact\n"],
-                     givens: [],
-                  },
-               ],
-            }),
-         );
-         expect(m?.title).toBe("Business Overview");
-         expect(m?.title ?? "").not.toContain("\n");
-         // The description is what the title did NOT take. Asserting the whole
-         // comment here is what pinned the duplicate: the first line was published
-         // twice, as the heading and again under it.
-         expect(m?.description).toBe("Updated nightly.");
-      });
-   });
-
    it("takes only the first line on the composite form", () => {
       const m = build(
          facts({
@@ -1955,48 +1615,6 @@ describe("service/dashboard multi-line doc comment as a title", () => {
       // comment here is what pinned the duplicate: the first line was published
       // twice, as the heading and again under it.
       expect(m?.description).toBe("Updated nightly.");
-   });
-});
-
-// DEPRECATED FEATURE COVERAGE — delete together with
-// the query-level `# artifact` (see RELEASE_NOTES deprecations).
-describe("deprecated: query-level # artifact — service/dashboard single-query given lint", () => {
-   // The tile form warned about this and the single-query form did not, so a
-   // single-query dashboard dropped the control in silence while
-   // `buildGivenSpecs` claimed the lint covered it.
-   it("names a given the query filters by but the file does not import", () => {
-      const f = facts({
-         queries: [
-            {
-               name: "overview",
-               annotations: ["# artifact\n"],
-               givens: ["REGION"],
-            },
-         ],
-      });
-      const manifest = build(f);
-      if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(f, manifest).map((x) => x.message)).toEqual([
-         expect.stringContaining(
-            'query "overview" filters by given "REGION", which this file does not import',
-         ),
-      ]);
-   });
-
-   it("stays silent when the file does import it", () => {
-      const f = facts({
-         queries: [
-            {
-               name: "overview",
-               annotations: ["# artifact\n"],
-               givens: ["REGION"],
-            },
-         ],
-         givens: new Map([given("REGION", "filter<string>", [])]),
-      });
-      const manifest = build(f);
-      if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(f, manifest)).toEqual([]);
    });
 });
 
@@ -2072,7 +1690,7 @@ describe("service/dashboard silent-vanish lint", () => {
       ]);
    });
 
-   it("names the tile form and the query form as the two fixes", () => {
+   it("names the tile to write as the fix", () => {
       const [message] = messages(
          facts({
             viewAnnotations: new Map([
@@ -2080,8 +1698,9 @@ describe("service/dashboard silent-vanish lint", () => {
             ]),
          }),
       );
-      expect(message).toContain('tiles=["orders -> by_month"]');
-      expect(message).toContain("query: by_month is orders -> by_month");
+      expect(message).toContain(
+         '## artifact { layout=grid tiles=["orders -> by_month"] }',
+      );
    });
 
    // The control: the ordinary per-tile layout tags on a view are exactly what
@@ -2121,44 +1740,24 @@ describe("service/dashboard silent-vanish lint", () => {
 
    // Every finding here carries the same subject (the file's slug), so two tags
    // failing the SAME way are byte-identical and an author is told the same
-   // thing twice about a file with one problem. The pair below is the natural
-   // shape: two queries in one dashboard file whose tags break identically.
-   it("reports one finding when two tags in a file fail the same way", () => {
-      const broken = "# artifact { givens { WHEN=@2024-03-01 10:00 } }\n";
-      expect(
-         messages(
-            facts({
-               queries: [
-                  { name: "a", annotations: [broken], givens: [] },
-                  { name: "b", annotations: [broken], givens: [] },
-               ],
-            }),
-         ),
-      ).toEqual([expect.stringContaining("Tag does not parse")]);
+   // thing twice about a file with one problem.
+   it("reports one finding when two lines in a file fail the same way", () => {
+      const broken = "## artifact { givens { WHEN=@2024-03-01 10:00 } }\n";
+      expect(messages(facts({ modelAnnotations: [broken, broken] }))).toEqual([
+         expect.stringContaining("Tag does not parse"),
+      ]);
    });
 
    // The control, and the half that matters: dedup must collapse repeats, not
    // distinct causes. Without it this passes just as well as the test above,
    // since returning only the first finding would satisfy that one alone.
-   it("still reports two findings when the two tags fail differently", () => {
+   it("still reports two findings when the two lines fail differently", () => {
       expect(
          messages(
             facts({
-               queries: [
-                  {
-                     name: "a",
-                     annotations: [
-                        "# artifact { givens { WHEN=@2024-03-01 10:00 } }\n",
-                     ],
-                     givens: [],
-                  },
-                  {
-                     name: "b",
-                     annotations: [
-                        `# artifact { title="${"x".repeat(9000)}" }\n`,
-                     ],
-                     givens: [],
-                  },
+               modelAnnotations: [
+                  "## artifact { givens { WHEN=@2024-03-01 10:00 } }\n",
+                  "## other { unclosed\n",
                ],
             }),
          ),
@@ -2316,23 +1915,12 @@ describe("service/dashboard grid width and hostile literals", () => {
       return lintDashboard(f, manifest).map((finding) => finding.message);
    }
 
-   const singleQuery = (annotation: string) =>
-      facts({
-         queries: [{ name: "overview", annotations: [annotation], givens: [] }],
-      });
-
    const composite = (annotation: string) =>
       facts({
          modelAnnotations: [annotation],
          viewGivens: new Map([["orders -> totals", []]]),
          sourceFields: new Map([["orders", new Set(["totals"])]]),
       });
-
-   it("validates the width on a query-level artifact", () => {
-      expect(
-         lintOf(singleQuery('# artifact dashboard { columns="wide" }\n')),
-      ).toEqual([expect.stringContaining("# dashboard { columns=… } must be")]);
-   });
 
    // Same tag, same reader, at model level. One spelling means the composite
    // has no second code path to get wrong, which is what the two used to.
@@ -2351,22 +1939,6 @@ describe("service/dashboard grid width and hostile literals", () => {
    // Infinity, which JSON renders as null against a field the spec declares an
    // integer. Both sides now share one helper so they cannot disagree.
    it("keeps an invalid width off the manifest, not just out of the lint", () => {
-      for (const bad of [
-         '# artifact dashboard { columns="12abc" }\n',
-         "# artifact dashboard { columns=1e999 }\n",
-         "# artifact dashboard { columns=0 }\n",
-         "# artifact dashboard { columns=-4 }\n",
-         "# artifact dashboard { columns=2.5 }\n",
-      ]) {
-         const manifest = build(singleQuery(bad));
-         expect(manifest?.dashboardColumns).toBeUndefined();
-         expect(lintOf(singleQuery(bad))).toHaveLength(1);
-      }
-   });
-
-   // The same strictness at model level: the reader is shared, but a test that
-   // only ever exercises the query position cannot show that.
-   it("keeps an invalid composite width off the manifest too", () => {
       for (const bad of ['"12abc"', "1e999", "0", "-4", "2.5"]) {
          const f = composite(
             `## artifact { tiles=["orders -> totals"] } dashboard { columns=${bad} }\n`,
@@ -2386,12 +1958,6 @@ describe("service/dashboard grid width and hostile literals", () => {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
       expect(lintDashboard(f, manifest)).toEqual([]);
-   });
-
-   it("accepts a valid width", () => {
-      expect(
-         lintOf(singleQuery("# artifact dashboard { columns=6 }\n")),
-      ).toEqual([]);
    });
 
    it("reads dashboard_columns as the grid width when dashboard { columns } is absent, and leaves reporting it to the notebook lint", () => {
@@ -2430,21 +1996,6 @@ describe("service/dashboard grid width and hostile literals", () => {
          '## artifact { tiles=["orders -> totals"] dashboard_columns=0 }\n',
       );
       expect(build(f)?.dashboardColumns).toBeUndefined();
-   });
-
-   // DEPRECATED FEATURE COVERAGE — delete together with
-   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
-   describe("deprecated: query-level # artifact", () => {
-      it("names dashboard_columns on a single query as doing nothing", () => {
-         const findings = lintOf(
-            singleQuery("# artifact { dashboard_columns=4 }\n"),
-         );
-         expect(findings).toEqual([
-            expect.stringContaining(
-               "`dashboard_columns` in the artifact tag does nothing in Publisher",
-            ),
-         ]);
-      });
    });
 
    it("says nothing about a tile entry that carries only kind=query", () => {
@@ -2517,7 +2068,9 @@ describe("service/dashboard grid width and hostile literals", () => {
    // `JSON.stringify(undefined)` is the literal text `undefined`.
    it("does not print the word undefined for an unreadable width", () => {
       const messages = lintOf(
-         singleQuery("# artifact dashboard { columns=@2024-13-01 }\n"),
+         composite(
+            '## artifact { tiles=["orders -> totals"] } dashboard { columns=@2024-13-01 }\n',
+         ),
       );
       expect(messages).toHaveLength(1);
       expect(messages[0]).toContain("could not be read");
@@ -2525,20 +2078,25 @@ describe("service/dashboard grid width and hostile literals", () => {
    });
 
    it("reports a bad date literal as a width rather than throwing", () => {
-      expect(() =>
-         lintOf(singleQuery("# artifact dashboard { columns=@2024-13-01 }\n")),
-      ).not.toThrow();
-      expect(
-         lintOf(singleQuery("# artifact dashboard { columns=@2024-13-01 }\n")),
-      ).toEqual([expect.stringContaining("# dashboard { columns=… } must be")]);
+      const bad = composite(
+         '## artifact { tiles=["orders -> totals"] } dashboard { columns=@2024-13-01 }\n',
+      );
+      expect(() => lintOf(bad)).not.toThrow();
+      expect(lintOf(bad)).toEqual([
+         expect.stringContaining("# dashboard { columns=… } must be"),
+      ]);
    });
 
    // Same throwing reader, reached through the manifest build rather than the
    // lint: a title that is a bad date literal must cost the title, not the
    // dashboard.
    it("still builds a manifest when the title is a bad date literal", () => {
-      const manifest = build(singleQuery("# artifact { title=@2024-13-01 }\n"));
-      expect(manifest).toMatchObject({ name: "overview", query: "overview" });
+      const manifest = build(
+         composite(
+            '## artifact { title=@2024-13-01 tiles=["orders -> totals"] }\n',
+         ),
+      );
+      expect(manifest).toMatchObject({ name: "overview" });
       // Falls through the title chain to the slug.
       expect(manifest?.title).toBe("overview");
    });
@@ -2558,15 +2116,10 @@ describe("service/dashboard inherits the annotation guards", () => {
       try {
          const manifest = build(
             facts({
-               queries: [
-                  {
-                     name: "overview",
-                     annotations: [
-                        "# artifact { title=@env.SLICE6_PROBE_SECRET }\n",
-                     ],
-                     givens: [],
-                  },
+               modelAnnotations: [
+                  '## artifact { title=@env.SLICE6_PROBE_SECRET tiles=["orders -> overview"] }\n',
                ],
+               viewGivens: new Map([["orders -> overview", []]]),
             }),
          );
          // Three assertions, because the obvious one proves nothing on its own.
@@ -2583,15 +2136,8 @@ describe("service/dashboard inherits the annotation guards", () => {
          expect(
             lintUndiscoveredDashboard(
                facts({
-                  modelAnnotations: [],
-                  queries: [
-                     {
-                        name: "overview",
-                        annotations: [
-                           "# artifact { title=@env.SLICE6_PROBE_SECRET }\n",
-                        ],
-                        givens: [],
-                     },
+                  modelAnnotations: [
+                     '## artifact { title=@env.SLICE6_PROBE_SECRET tiles=["orders -> overview"] }\n',
                   ],
                }),
             ).map((f) => f.message),
@@ -2599,13 +2145,10 @@ describe("service/dashboard inherits the annotation guards", () => {
          expect(
             build(
                facts({
-                  queries: [
-                     {
-                        name: "overview",
-                        annotations: ['# artifact { title="Plain" }\n'],
-                        givens: [],
-                     },
+                  modelAnnotations: [
+                     '## artifact { title="Plain" tiles=["orders -> overview"] }\n',
                   ],
+                  viewGivens: new Map([["orders -> overview", []]]),
                }),
             )?.title,
          ).toBe("Plain");
@@ -2641,13 +2184,10 @@ describe("service/dashboard inherits the annotation guards", () => {
       // unrelated tag parsed afterwards is the real assertion.
       const after = build(
          facts({
-            queries: [
-               {
-                  name: "overview",
-                  annotations: ['# artifact { title="Still fine" }\n'],
-                  givens: [],
-               },
+            modelAnnotations: [
+               '## artifact { title="Still fine" tiles=["orders -> overview"] }\n',
             ],
+            viewGivens: new Map([["orders -> overview", []]]),
          }),
       );
       expect(after?.title).toBe("Still fine");
@@ -2817,32 +2357,30 @@ describe("service/dashboard text tile entries", () => {
    });
 });
 
-describe("service/dashboard kind", () => {
-   const text = (kind: string) =>
-      `## artifact { kind=${kind} tiles=[note { kind=text }] } dashboard { columns=6 }\n`;
+describe("service/dashboard layout", () => {
+   const text = (layout: string) =>
+      `## artifact { layout=${layout} tiles=[note { kind=text }] } dashboard { columns=6 }\n`;
 
-   it("reads the kind off the tag, whichever folder the file is in", () => {
+   it("reads the layout off the tag, whichever folder the file is in", () => {
       expect(
          build(
             facts({
                modelPath: "notebooks/tour.malloy",
-               modelAnnotations: [text("dashboard")],
+               modelAnnotations: [text("grid")],
             }),
-         )?.kind,
-      ).toBe("dashboard");
+         )?.layout,
+      ).toBe("grid");
       expect(
          build(
             facts({
                modelPath: "dashboards/tour.malloy",
-               modelAnnotations: [text("notebook")],
+               modelAnnotations: [text("linear")],
             }),
-         )?.kind,
-      ).toBe("notebook");
+         )?.layout,
+      ).toBe("linear");
    });
 
-   // Retired: the folder used to decide a kindless tag. Now the tags alone do
-   // (`report.ts`, §2), so a tiled tag is grid wherever the file is.
-   it("never falls back to the folder: a kindless tag that lists tiles is grid anywhere", () => {
+   it("never falls back to the folder: a tag with no layout that lists tiles is grid anywhere", () => {
       const untagged =
          '## artifact { tiles=["orders -> kpis"] } dashboard { columns=6 }\n';
       for (const modelPath of [
@@ -2855,11 +2393,11 @@ describe("service/dashboard kind", () => {
             facts({ modelPath, modelAnnotations: [untagged] }),
          );
          expect(manifest?.layout).toBe("grid");
-         expect(manifest?.kind).toBe("dashboard");
+         expect(manifest).not.toHaveProperty("kind");
       }
    });
 
-   it("reads layout= over kind=, and kind= when layout= is absent", () => {
+   it("reads layout=, and builds nothing for a tag that sets the removed kind=", () => {
       const withProps = (props: string) =>
          build(
             facts({
@@ -2867,45 +2405,42 @@ describe("service/dashboard kind", () => {
                   `## artifact { ${props} tiles=["orders -> kpis"] }\n`,
                ],
             }),
-         )?.layout;
-      expect(withProps("layout=linear")).toBe("linear");
-      expect(withProps("layout=grid kind=notebook")).toBe("grid");
-      expect(withProps("layout=linear")).toBe("linear");
-      expect(withProps("layout=wide")).toBe("grid");
+         );
+      expect(withProps("layout=linear")?.layout).toBe("linear");
+      expect(withProps("layout=grid")?.layout).toBe("grid");
+      expect(withProps("layout=wide")?.layout).toBe("grid");
+      expect(withProps("layout=grid kind=notebook")).toBeUndefined();
+      expect(withProps("kind=dashboard")).toBeUndefined();
    });
 
-   it("lays a notebook out in one column, whatever the file asks for", () => {
+   it("lays a linear report out in one column, whatever the file asks for", () => {
       const manifest = build(
          facts({
             modelPath: "notebooks/tour.malloy",
-            modelAnnotations: [text("notebook"), "##|(markdown) note\nhi"],
+            modelAnnotations: [text("linear"), "##|(markdown) note\nhi"],
          }),
       );
       expect(manifest?.dashboardColumns).toBe(1);
    });
 
-   it("serves a notebook with no tiles yet as a layout, and a dashboard with none as nothing", () => {
-      const empty = (kind: string, modelPath: string) =>
+   it("serves a linear report with no tiles yet as a layout, and a grid one with none as nothing", () => {
+      const empty = (layout: string, modelPath: string) =>
          build(
             facts({
                modelPath,
-               modelAnnotations: [`## artifact { kind=${kind} tiles=[] }\n`],
+               modelAnnotations: [
+                  `## artifact { layout=${layout} tiles=[] }\n`,
+               ],
             }),
          );
-      expect(empty("notebook", "notebooks/new.malloy")?.tiles).toEqual([]);
-      expect(empty("dashboard", "dashboards/new.malloy")).toBeUndefined();
+      expect(empty("linear", "notebooks/new.malloy")?.tiles).toEqual([]);
+      expect(empty("grid", "dashboards/new.malloy")).toBeUndefined();
    });
 });
 
 /** The server's column of the drill case table the SDK's `resolveDrillTarget` shares. */
 describe("resolveDrillDestination: the shared drill case table", () => {
-   type Answer = {
-      kind: string;
-      path?: string;
-      rewrite?: string;
-      candidates?: string[];
-      malformed?: boolean;
-   };
+   type Answer = { kind: string; path?: string; malformed?: boolean };
    const { cases } = JSON.parse(
       fs.readFileSync(
          path.resolve(
@@ -2920,30 +2455,23 @@ describe("resolveDrillDestination: the shared drill case table", () => {
          to: string;
          reports: { path: string; layout: string; dropped?: boolean }[];
          server: Answer;
-         sdk: Answer;
+         sdk?: Answer;
+         sdkPending?: boolean;
          knownDifference?: string;
       }[];
    };
    for (const testCase of cases) {
       it(testCase.name, () => {
-         // Discovery's sets: every report path, dropped or not, and the grid ones.
+         // Discovery's set: every report path, dropped or not.
          const reportPaths = new Set(testCase.reports.map((r) => r.path));
-         const gridReportPaths = new Set(
-            testCase.reports
-               .filter((r) => r.layout === "grid")
-               .map((r) => r.path),
+         expect(resolveDrillDestination(testCase.to, reportPaths)).toEqual(
+            testCase.server as never,
          );
-         expect(
-            resolveDrillDestination(testCase.to, reportPaths, gridReportPaths),
-         ).toEqual(testCase.server as never);
-         const {
-            rewrite: _rewrite,
-            malformed: _malformed,
-            ...comparable
-         } = testCase.server;
-         expect(
-            JSON.stringify(comparable) !== JSON.stringify(testCase.sdk),
-         ).toBe(testCase.knownDifference !== undefined);
+         // A case says why the SDK answers otherwise, or the SDK must agree.
+         expect(testCase.sdk !== undefined).toBe(
+            testCase.sdkPending === true ||
+               testCase.knownDifference !== undefined,
+         );
       });
    }
 });

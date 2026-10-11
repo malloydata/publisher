@@ -1,6 +1,0 @@
-// A model-level `## artifact` always makes a report, on the surface or not
-// (report-on-surface).
-## artifact { layout=grid title="Model level" tiles=["orders_by_tag -> v"] }
-source: orders_by_tag is duckdb.sql("select 3 as z") extend {
-   view: v is { select: z }
-}

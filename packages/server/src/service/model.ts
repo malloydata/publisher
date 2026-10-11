@@ -129,7 +129,7 @@ import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
    buildDashboardManifest,
    compileTileGivens,
-   factsCarryArtifactTag,
+   factsReportTag,
    readDashboardModelFacts,
    type DashboardManifest,
    type DashboardModelFacts,
@@ -137,7 +137,6 @@ import {
 import { isReportEligiblePath } from "./report";
 import {
    docNotesAboveArtifact,
-   isArtifactNoteText,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
@@ -5835,27 +5834,16 @@ export class Model {
          : "malloy";
    }
 
-   /** Whether this compiled model has the own `## artifact` note that makes a
-    *  candidate under `notebooks/` a served notebook. */
-   public carriesNotebookArtifactNote(): boolean {
-      return (
-         this.modelDef !== undefined &&
-         ownModelNoteObjects(this.modelDef).some((note) =>
-            isArtifactNoteText(note.text),
-         )
-      );
-   }
-
    /**
-    * Whether this compiled file carries the artifact tag that makes it a
-    * report (`report.ts`), read off its own notes: a parsed model-level
-    * `## artifact`, or an own query's `# artifact`. For a check that runs
-    * before discovery has said; discovery's map is the answer after it.
+    * Whether this compiled file carries a model-level `## artifact` tag
+    * (`report.ts`), so the renderer's "unknown tag" findings for the tags
+    * Publisher owns are dropped. For a check that runs before discovery has
+    * said; discovery's map is the answer after it.
     */
    public carriesReportTag(): boolean {
       if (!isReportEligiblePath(this.modelPath)) return false;
       const facts = this.getDashboardModelFacts();
-      return facts !== undefined && factsCarryArtifactTag(facts);
+      return facts !== undefined && factsReportTag(facts).status !== "none";
    }
 
    private isDashboard(): boolean {
@@ -6406,7 +6394,7 @@ export class Model {
       const facts =
          this.settledCompiledDashboardFacts ?? this.getDashboardModelFacts();
       const manifest = facts && buildDashboardManifest(facts);
-      return manifest?.kind === "notebook" && manifest.tiles
+      return manifest?.layout === "linear" && manifest.tiles
          ? manifest
          : undefined;
    }
@@ -9053,7 +9041,6 @@ export class Model {
                name: this.notebookLayout.name,
                path: this.modelPath,
                layout: this.notebookLayout.layout,
-               kind: this.notebookLayout.kind,
                title: this.notebookLayout.title,
                description: this.notebookLayout.description,
                tiles: this.notebookLayout.tiles,

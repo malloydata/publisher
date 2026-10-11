@@ -14,24 +14,20 @@ import {
 } from "../errors";
 import {
    recordDashboardWrite,
-   type DashboardWriteKind,
+   type ReportWriteLayout,
    type DashboardWriteOutcome,
 } from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
 import { INDEX_MODEL_NAME, MODEL_FILE_SUFFIX } from "../constants";
 import {
+   carriesArtifactTag,
    isUnderPublicDir,
-   kindOfLayout,
-   layoutOfText,
-   textClaimsToBeAReport,
+   readReportTagOfText,
 } from "../service/report";
-import { factsCarryArtifactTag } from "../service/dashboard";
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
 
-type ApiDashboard = components["schemas"]["Dashboard"];
-type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 type ApiReport = components["schemas"]["Report"];
 type ApiReportManifest = components["schemas"]["ReportManifest"];
 type ApiModelSourceWrite = components["schemas"]["ModelSourceWriteRequest"];
@@ -40,23 +36,24 @@ type ApiModelSourceWriteResult =
 
 /**
  * Whether the file now at `modelPath` is one the write path may replace: a
- * `.malloy` whose on-disk text, which may postdate the load, carries an
- * artifact tag, and which the loaded package reads as a report (served, or a
- * grid report with no tiles yet) or which claims to be one by its own
- * `## artifact` note even though that tag does not parse. The last is still
- * the author's report, and saving the fix is how it gets served again. A
- * model, an untagged file, a `.malloy` whose only artifact tag is on a query,
- * a `.malloynb`, the root `index.malloy` and anything in `public/` never
- * qualify (the last three are refused by path before this runs).
+ * `.malloy` whose on-disk text, which may postdate the load, carries a
+ * model-level artifact tag, and which the loaded package reads as a report
+ * (served, or a grid report with no tiles yet) or which claims to be one by
+ * its own `## artifact` note even though that tag does not parse or sets the
+ * removed `kind=`. The last is still the author's report, and saving the fix
+ * is how it gets served again. A model, an untagged file, a `.malloynb`, the
+ * root `index.malloy` and anything in `public/` never qualify (the last three
+ * are refused by path before this runs).
  */
 function currentIsAReport(
    current: string,
    loaded: Package | undefined,
    modelPath: string,
 ): boolean {
-   if (!textClaimsToBeAReport(current)) return false;
-   if (loaded?.isWritableReport(modelPath)) return true;
-   return loaded?.getModel(modelPath)?.carriesNotebookArtifactNote() === true;
+   return (
+      carriesArtifactTag(current) &&
+      loaded?.isWritableReport(modelPath) === true
+   );
 }
 
 /**
@@ -97,11 +94,12 @@ export const contentHashOf = (text: string): string =>
    createHash("sha256").update(text, "utf8").digest("hex");
 
 /**
- * Read-only discovery for a package's dashboards. Both routes serve state the
- * package computed at load, so neither compiles or queries anything.
+ * A package's reports: the two read routes serve state the package computed
+ * at load, so neither compiles or queries anything, and the write route is the
+ * builder's save.
  *
- * There is deliberately no run endpoint: a dashboard's query, a composite's
- * tiles, and a control's suggest query all run through the ordinary
+ * There is deliberately no run endpoint: a report's tiles, cells and a
+ * control's suggest query all run through the ordinary
  * `POST …/models/{path}/query` with `givens` — the same governed path every
  * other query takes, so row caps, byte caps, authorize gates, and render-tag
  * validation apply for free.
@@ -111,38 +109,6 @@ export class DashboardController {
 
    constructor(environmentStore: EnvironmentStore) {
       this.environmentStore = environmentStore;
-   }
-
-   public async listDashboards(
-      environmentName: string,
-      packageName: string,
-   ): Promise<ApiDashboard[]> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const p = await environment.getPackage(packageName, false);
-      return p.listDashboards();
-   }
-
-   public async getDashboard(
-      environmentName: string,
-      packageName: string,
-      dashboardName: string,
-   ): Promise<ApiDashboardManifest> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const p = await environment.getPackage(packageName, false);
-      // Throws AmbiguousReportNameError (409) when two grid reports share it.
-      const dashboard = p.getDashboard(dashboardName);
-      if (!dashboard) {
-         throw new DashboardNotFoundError(
-            `Dashboard ${dashboardName} does not exist in package ${packageName}`,
-         );
-      }
-      return dashboard;
    }
 
    /** Every report in the package, of either layout, by path. */
@@ -219,33 +185,34 @@ export class DashboardController {
       const startedAt = Date.now();
       // Tolerates a non-string path or source: the 400 for either comes from
       // writeDashboardSource. A body the cheap refusals turn away is never
-      // scanned, and counts as a grid write.
-      const kind: DashboardWriteKind =
+      // scanned, and counts as a grid write, as does text that is no report.
+      const tag =
          typeof modelPath === "string" &&
          typeof body?.source === "string" &&
          !this.environmentStore.publisherConfigIsFrozen &&
          reportPathProblem(modelPath) === undefined
-            ? kindOfLayout(layoutOfText(body.source))
-            : "dashboard";
+            ? readReportTagOfText(body.source)
+            : undefined;
+      const layout: ReportWriteLayout =
+         tag?.status === "report" ? tag.layout : "grid";
       try {
          const result = await this.writeDashboardSource(
             environmentName,
             packageName,
             modelPath,
             body,
-            kind,
          );
          recordDashboardWrite(
             result.created ? "created" : "replaced",
             Date.now() - startedAt,
-            kind,
+            layout,
          );
          return result;
       } catch (error) {
          recordDashboardWrite(
             outcomeOf(error as Error),
             Date.now() - startedAt,
-            kind,
+            layout,
          );
          throw error;
       }
@@ -256,7 +223,6 @@ export class DashboardController {
       packageName: string,
       modelPath: string,
       body: ApiModelSourceWrite,
-      kind: DashboardWriteKind,
    ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
@@ -272,9 +238,9 @@ export class DashboardController {
          );
       }
       // An untagged file is a model that other files may import, not a
-      // report. Either sigil passes (the query-level form is deprecated, not
-      // gone); a tag inside a block comment still reaches the reload verify.
-      if (!textClaimsToBeAReport(body.source)) {
+      // report. A tag that does not parse, or that sets `kind=`, passes here so
+      // the compile below refuses it with the lint's fix.
+      if (!carriesArtifactTag(body.source)) {
          throw new BadRequestError(
             `\`${modelPath}\` has no artifact tag (\`## artifact { layout=grid … }\` ` +
                `or \`## artifact { layout=linear … }\`), so it is not a report. ` +
@@ -300,7 +266,7 @@ export class DashboardController {
       const errors = problems.filter((problem) => problem.severity === "error");
       if (errors.length > 0) {
          throw new CompileRefusedError(
-            `The ${kind} does not compile, so it was not written: ` +
+            `The report does not compile, so it was not written: ` +
                errors.map(formatProblem).join("; "),
          );
       }
@@ -363,16 +329,9 @@ export class DashboardController {
                   { cause },
                );
             });
-            // The textual tag check can pass for a file discovery then drops
-            // (a tag in a comment). A tile-less grid report yields no
-            // manifest, so its compiled tag is the evidence there.
-            const facts = written.getDashboardModelFacts();
-            const served =
-               reloaded.isServedReport(modelPath) ||
-               (reloaded.isWritableReport(modelPath) &&
-                  facts !== undefined &&
-                  factsCarryArtifactTag(facts));
-            if (!served)
+            // A grid report with no tiles yet is the builder's to save but not
+            // served, so "a report" is the test, not "served".
+            if (!reloaded.isReport(modelPath))
                throw new WriteVerifyError(
                   `\`${modelPath}\` is not served as a report once the package reloads`,
                );

@@ -37,6 +37,7 @@ import {
 } from "../package_load/package_load_pool";
 import { AccessDeniedError, NotQueryableError } from "../errors";
 import { Package } from "./package";
+import { listDashboards, listNotebooks } from "./legacy_report_views";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
@@ -160,7 +161,7 @@ export { customers }`,
          expect(result.data).toBeDefined();
 
          // Reports are always public regardless of the surface.
-         expect((await pkg.listNotebooks()).map((n) => n.path)).toEqual([
+         expect((await listNotebooks(pkg, "env")).map((n) => n.path)).toEqual([
             "report.malloy",
          ]);
 
@@ -770,7 +771,7 @@ export { pub2, pub3 }`,
          );
          await pkg.reloadAllModels({});
          expect(pkg.getReportLayout("notebooks/nb.malloy")).toBe("linear");
-         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
             "dashboards/d.malloy",
          ]);
          expect(pkg.brokenSurfaceWarnings()[0].message).toContain(

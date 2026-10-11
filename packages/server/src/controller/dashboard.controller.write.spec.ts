@@ -16,6 +16,7 @@ import {
    type MetricsHarness,
 } from "../test_helpers/metrics_harness";
 import type { EnvironmentStore } from "../service/environment_store";
+import { readReportTag } from "../service/report";
 import { contentHashOf, DashboardController } from "./dashboard.controller";
 
 /**
@@ -67,14 +68,14 @@ function harness(
    };
    const pkg = {
       getModel: sinon.stub().returns(model),
-      isServedReport: () => options.served ?? true,
-      isWritableReport: () => options.reloadedNotes !== undefined,
+      // A report, served or (a grid one with no tiles yet) not.
+      isReport: () =>
+         (options.served ?? true) ||
+         (options.reloadedNotes !== undefined &&
+            readReportTag(options.reloadedNotes).status === "report"),
    };
    const loaded = {
       isWritableReport: () => options.loadedReport ?? true,
-      // A file the load did not read as a report is replaceable only when its
-      // own compiled notes carry `## artifact` (a tag that does not parse).
-      getModel: () => ({ carriesNotebookArtifactNote: () => false }),
    };
    const environment = {
       getPackage: sinon.stub().resolves(pkg),
@@ -300,12 +301,16 @@ describe("DashboardController.putDashboardSource", () => {
       },
    );
 
-   it("lets a file tagged at the query level (deprecated) through the pre-write check", async () => {
+   it("refuses a file tagged only at the query level, which is no report", async () => {
       const { controller, environment } = harness();
-      await controller.putDashboardSource("env", "pkg", PATH, {
-         source: '# artifact { title="T" }\nrun: a -> x\n',
-      });
-      expect(environment.compileSource.called).toBe(true);
+      const error = await controller
+         .putDashboardSource("env", "pkg", PATH, {
+            source: '# artifact { title="T" }\nquery: q is a -> x\n',
+         })
+         .catch((e) => e);
+      expect(error).toBeInstanceOf(BadRequestError);
+      expect(error.message).toContain("not a report");
+      expect(environment.compileSource.called).toBe(false);
    });
 
    // Each of these compiles to a served report: `artifact` need not be the line's first property.
@@ -313,10 +318,6 @@ describe("DashboardController.putDashboardSource", () => {
       [
          "a model-level line",
          '## dashboard { columns=2 } artifact { tiles=["s -> v"] }\n',
-      ],
-      [
-         "a query-level line",
-         '# dashboard { columns=2 } artifact { title="T" }\nquery: q is s -> v\n',
       ],
       [
          "a block",
@@ -421,14 +422,15 @@ describe("DashboardController.putDashboardSource", () => {
       }
    });
 
-   it("rolls back a write whose tag is commented out, so the package does not serve it", async () => {
-      const { controller } = harness({ served: false });
+   it("refuses a write whose tag is commented out before compiling it, as the compiler reads it", async () => {
+      const { controller, environment } = harness({ served: false });
       await expect(
          controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
             source:
                "/*\n## artifact { layout=linear }\n*/\n##(markdown) Hello\n",
          }),
-      ).rejects.toBeInstanceOf(WriteRolledBackError);
+      ).rejects.toBeInstanceOf(BadRequestError);
+      expect(environment.compileSource.called).toBe(false);
    });
 
    it("accepts a tile-less grid report, which has no manifest, when the reloaded model carries the artifact tag", async () => {
@@ -446,7 +448,7 @@ describe("DashboardController.putDashboardSource", () => {
       const { controller } = harness({ served: false, reloadedNotes: [] });
       await expect(
          controller.putDashboardSource("env", "pkg", PATH, {
-            source: "/*\n## artifact { layout=grid tiles=[] }\n*/\n",
+            source: "## artifact { layout=grid tiles=[] }\n",
          }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });
@@ -569,7 +571,7 @@ describe("putDashboardSource: what it reports", () => {
       expect(await outcomeCount("replaced")).toBe(1);
    });
 
-   it("labels a notebook write with its own kind", async () => {
+   it("labels each write with the layout written", async () => {
       await harness().controller.putDashboardSource(
          "env",
          "pkg",
@@ -579,13 +581,13 @@ describe("putDashboardSource: what it reports", () => {
       await harness().controller.putDashboardSource("env", "pkg", PATH, {
          source: AFTER,
       });
-      const count = (kind: string) =>
+      const count = (layout: string) =>
          metrics.collectCounter("publisher_dashboard_writes_total", {
             outcome: "created",
-            kind,
+            layout,
          });
-      expect(await count("notebook")).toBe(1);
-      expect(await count("dashboard")).toBe(1);
+      expect(await count("linear")).toBe(1);
+      expect(await count("grid")).toBe(1);
 
       await expect(
          harness().controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
@@ -595,7 +597,7 @@ describe("putDashboardSource: what it reports", () => {
       expect(
          await metrics.collectCounter("publisher_dashboard_writes_total", {
             outcome: "refused",
-            kind: "notebook",
+            layout: "grid",
          }),
       ).toBe(1);
    });

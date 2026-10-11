@@ -71,11 +71,9 @@ tags:
       wherever it lives, with a linear or grid layout - their listing,
       manifests, and cells
   - name: notebooks
-    description:
-      Deprecated aliases for the linear reports. Use the `reports` routes.
+    description: Deprecated aliases for the linear reports. Use the `reports` routes.
   - name: dashboards
-    description:
-      Deprecated aliases for the grid reports. Use the `reports` routes.
+    description: Deprecated aliases for the grid reports. Use the `reports` routes.
   - name: data-apps
     description:
       In-package HTML data apps (static pages served from a package's public/
@@ -4425,8 +4423,7 @@ components:
     Notebook:
       type: object
       deprecated: true
-      description:
-        DEPRECATED, use `Report`. A linear report as the deprecated
+      description: DEPRECATED, use `Report`. A linear report as the deprecated
         list-notebooks route lists it.
       properties:
         environmentName:
@@ -4728,6 +4725,7 @@ components:
 
     Report:
       type: object
+      required: [resource, packageName, path, name, layout, title, editable]
       description: |
         One report in a package, as list-reports lists it: a `.malloy` file
         carrying an artifact tag, wherever it lives outside `public/`, or a
@@ -4780,6 +4778,7 @@ components:
 
     ReportManifest:
       type: object
+      required: [resource, packageName, path, name, layout, title, editable]
       description: |
         Everything a viewer needs to render one report. Every report carries
         the `Report` fields. A report written as tiles, of either layout,
@@ -6176,8 +6175,7 @@ components:
           type: integer
           minimum: 1
           maximum: 2147483647
-          description:
-            Maximum run time of each statement on the database, in
+          description: Maximum run time of each statement on the database, in
             milliseconds. The database cancels a statement that exceeds it.
             When omitted, the database's own statement_timeout applies. Not
             applied to a DuckLake catalog connection.

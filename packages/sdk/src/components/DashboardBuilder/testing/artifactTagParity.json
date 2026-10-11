@@ -47,8 +47,8 @@
          "name": "a same-line |## with no later closer leaves the block unclosed",
          "source": "##| artifact { kind=dashboard } |##\nrun: x",
          "tag": null,
-         "server": ["##| artifact { kind=dashboard } |##"],
-         "why": "The file does not compile (`unclosed-block-annotation`). The server's write gate still reads the opener as a tag so the write reaches the compiler, whose error says to close the block, instead of being refused as untagged."
+         "server": ["##| artifact { kind=dashboard } |##", "run: x"],
+         "why": "The file does not compile (`unclosed-block-annotation`): the unclosed block runs to the end of the file. The server still reads it as the artifact note, so a write reaches the compiler, whose error says to close the block, instead of being refused as untagged."
       },
       {
          "name": "a |## inside a string in the block body does not close it",

@@ -22,6 +22,7 @@ import {
 } from "../test_helpers/metrics_harness";
 import { Model } from "./model";
 import { Package } from "./package";
+import { listNotebooks } from "./legacy_report_views";
 
 const FIXTURE_DIR = path.resolve(
    __dirname,
@@ -70,7 +71,7 @@ describe("served notebook cells", () => {
       fs.writeFileSync(
          path.join(tempDir, SETTINGS),
          "##! experimental.givens\n" +
-            "## artifact { kind=notebook autorun=false givens { REGION=f'EU' } }\n" +
+            "## artifact { layout=linear autorun=false givens { REGION=f'EU' } }\n" +
             'import "../models/orders.malloy"\n' +
             "given: REGION :: filter<string> is f''\n" +
             "run: orders -> kpis + { where: region ~ $REGION }\n",
@@ -114,7 +115,7 @@ describe("served notebook cells", () => {
       );
       expect(raw.annotations).toEqual([
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Revenue review" }\n',
+         '## artifact { layout=linear title="Revenue review" }\n',
       ]);
       // The query cell describes the run it maps to, not some other one.
       expect(
@@ -276,7 +277,7 @@ describe("served notebook cells", () => {
 
    describe("a notebook the reader refuses", () => {
       it("lists with the reader's error, naming the line", async () => {
-         const listed = (await pkg.listNotebooks()).find(
+         const listed = (await listNotebooks(pkg, "env")).find(
             (nb) => nb.path === REFUSED,
          );
          expect(listed?.error).toContain("Line 7:");

@@ -17,7 +17,16 @@
  * what they answered (plus the new `layout` field), and that the warnings are
  * the same apart from the new report findings and the two retired folder
  * findings, and apart from the deliberate changes in {@link DELIBERATE}, which
- * are applied to the baseline (left as captured) before comparing.
+ * are applied to the baseline before comparing.
+ *
+ * The baseline is as captured except where a fixture moved off a form that
+ * was removed rather than deprecated: a fixture dashboard whose only tag was a
+ * query-level `# artifact` now carries `## artifact { layout=grid tiles=[…] }`
+ * naming that query, so its manifest lists the query as its one tile where it
+ * named it as `query`, and the single-query surface refusal reads as that
+ * tile's; and the `explores` advice in `dashboards-curated` now names
+ * `dashboards/listed.malloy`, which is a model (its query-level tag is not
+ * read) and which the advice reads by the same tag reader as discovery.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -40,31 +49,24 @@ const ENV_NAME = "reports-compat-env";
 
 /** Findings this change adds; any other new warning is a regression. */
 const NEW_CODES = new Set([
-   "drill-target-by-name",
-   "report-kind-deprecated",
+   "report-kind-removed",
    "report-layout-implicit",
    "report-on-surface",
-   "query-artifact-deprecated",
    "index-is-not-a-report",
-   "query-artifact-ignored",
 ]);
 
 /**
- * Files whose classification changed on purpose, per package. A file whose
- * only artifact tag is a query-level `# artifact` and that is on the curated
- * surface (the root `index.malloy` imports it, or `explores` lists it) is a
- * model, not a report, so the deprecated form cannot take what a model
- * publishes off the surface (`docs/reports-design.md`, "The query-level
- * artifact form"). Before, such a file in `dashboards/` was a dashboard.
+ * Files whose classification changed on purpose, per package: each is now a
+ * model, listed by `GET …/models`.
  *
- * - `dashboards-curated`: `dashboards/listed.malloy` is listed in
- *   `explores` (the shape older advice produced: list a dashboard file in
- *   `explores`) and its only tag is `# artifact` on `query: listed`. It is
- *   now a model, listed by `GET …/models`, and reported as
- *   `query-artifact-ignored`.
+ * - `dashboards-curated`: `dashboards/listed.malloy`'s only tag is a
+ *   query-level `# artifact`, which is no longer read.
+ * - `notebooks-lint`: `dashboards/wrong_kind.malloy`'s tag sets `kind=`, which
+ *   is no longer read; it is reported as `report-kind-removed`.
  */
 const DELIBERATE: Record<string, { becameModels: string[] }> = {
    "dashboards-curated": { becameModels: ["dashboards/listed.malloy"] },
+   "notebooks-lint": { becameModels: ["dashboards/wrong_kind.malloy"] },
 };
 
 /** The baseline with the {@link DELIBERATE} changes applied. */
@@ -79,7 +81,11 @@ function expectedFor(pkg: string, was: Baseline[string]): Baseline[string] {
             ([, m]) => !moved.has(m.path as string),
          ),
       ),
-      // A finding about the file as a dashboard no longer applies to it.
+      notebooks: was.notebooks.filter((n) => !moved.has(n.path as string)),
+      notebookBodies: Object.fromEntries(
+         Object.entries(was.notebookBodies).filter(([p]) => !moved.has(p)),
+      ),
+      // A finding about the file as a report no longer applies to it.
       warnings: was.warnings.filter((w) => !moved.has(w.model ?? "")),
    };
 }

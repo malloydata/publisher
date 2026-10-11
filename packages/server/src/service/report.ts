@@ -7,28 +7,20 @@
  * check, the write path and the deprecated dashboard and notebook routes all
  * read it from here, so none of them can disagree about a file.
  *
- * A report is a `.malloy` file in the package, outside `public/`, that carries
- * an artifact tag (a model-level `## artifact`, or a deprecated query-level
- * `# artifact` on a `query:`), and is not the package's root `index.malloy`.
- * A legacy `.malloynb` is also a report (linear, read-only). WHERE a file lives
- * carries no meaning: `dashboards/` and `notebooks/` are ordinary directory
- * names.
+ * A report is a `.malloy` file in the package, outside `public/`, whose
+ * model-level `## artifact` tag parses and does not set `kind=`, and which is
+ * not the package's root `index.malloy`. A legacy `.malloynb` is also a report
+ * (linear, read-only). WHERE a file lives carries no meaning: `dashboards/` and
+ * `notebooks/` are ordinary directory names.
  */
 
-import type { Tag } from "@malloydata/malloy-tag";
 import {
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
 } from "../constants";
 import { motlyTag, tagText } from "./motly";
-import {
-   ANY_ARTIFACT_NOTE,
-   artifactTagText,
-   hasArtifactLineOutsideBlocks,
-   type DocumentKind,
-   type LineTest,
-} from "./notebook";
+import { isArtifactNoteText, modelNotesOfText } from "./notebook";
 
 /** How a report's tiles are placed: one column top to bottom, or a grid. */
 export type ReportLayout = "grid" | "linear";
@@ -72,202 +64,68 @@ export function reportName(modelPath: string): string {
    return basename;
 }
 
-/** `layout=` values, and the legacy `kind=` values read as one. */
+/** A `layout=` value, or undefined for anything else. */
 export function parseLayoutValue(
    value: string | undefined,
 ): ReportLayout | undefined {
    return value === "grid" || value === "linear" ? value : undefined;
 }
 
-/** `kind=dashboard` → grid, `kind=notebook` → linear; anything else names no layout. */
-export function layoutOfKind(
-   kind: string | undefined,
-): ReportLayout | undefined {
-   if (kind === "dashboard") return "grid";
-   if (kind === "notebook") return "linear";
-   return undefined;
-}
-
-/** The legacy document kind a layout is served as on the deprecated routes. */
-export function kindOfLayout(layout: ReportLayout): DocumentKind {
-   return layout === "grid" ? "dashboard" : "notebook";
-}
-
-/** What the layout rule reads off a file's tags. */
-export interface ReportLayoutFacts {
-   /** The model-level artifact tag's `layout`, as written. */
-   layout?: string;
-   /** The model-level artifact tag's `kind`, as written. */
-   kind?: string;
-   /** A model-level `## artifact` tag is present. */
-   modelTag: boolean;
-   /** A query-level `# artifact` tag is present (deprecated). */
-   queryTag: boolean;
-   /** The model-level tag lists `tiles` (an empty list counts). */
-   tiles: boolean;
-   /** A model-level `dashboard { … }` grid tag is present. */
-   gridTag: boolean;
-}
-
 /** Which rule decided a layout, for the lint's fix-its. */
-type LayoutDecidedBy = "layout" | "kind" | "query" | "tiles" | "default";
-
-export interface ResolvedReportLayout {
-   layout: ReportLayout;
-   decidedBy: LayoutDecidedBy;
-}
+type LayoutDecidedBy = "layout" | "tiles" | "default";
 
 /**
- * §2, in order, first match wins:
+ * What a file's model-level notes make it (`docs/reports-design.md` §1, §2).
  *
- * 1. `layout=` in the model-level tag, or the legacy `kind=` (dashboard → grid,
- *    notebook → linear). Both present and disagreeing is read by `layout=` and
- *    reported as an error by the lint.
- * 2. A query-level `# artifact` is grid.
- * 3. A model-level tag that lists `tiles` or sits beside a `dashboard { … }`
- *    grid tag is grid.
- * 4. Anything else is linear.
+ * - `none`: no model-level `## artifact` note, so not a report.
+ * - `unparsed`: an artifact note the tag parser rejects, so not a report; the
+ *   lint says why.
+ * - `kind-removed`: the tag sets `kind=`, which is no longer read, so not a
+ *   report; the lint says to write `layout=`.
+ * - `report`: a report, with its layout.
  */
-export function resolveReportLayout(
-   facts: ReportLayoutFacts,
-): ResolvedReportLayout {
-   const byLayout = facts.modelTag ? parseLayoutValue(facts.layout) : undefined;
-   const byKind = facts.modelTag ? layoutOfKind(facts.kind) : undefined;
-   if (byLayout) return { layout: byLayout, decidedBy: "layout" };
-   if (byKind) return { layout: byKind, decidedBy: "kind" };
-   if (facts.queryTag) return { layout: "grid", decidedBy: "query" };
-   if (facts.modelTag && (facts.tiles || facts.gridTag))
-      return { layout: "grid", decidedBy: "tiles" };
-   return { layout: "linear", decidedBy: "default" };
+export type ReportTag =
+   | { status: "none" }
+   | { status: "unparsed" }
+   | { status: "kind-removed"; kind: string }
+   | { status: "report"; layout: ReportLayout; decidedBy: LayoutDecidedBy };
+
+/**
+ * The one reader of a report's tag, over a file's model-level notes: its own
+ * compiled `##` notes, or the same notes read off its text
+ * ({@link readReportTagOfText}). Discovery, the lint, the compile check and the
+ * write path all read a file through here, so they cannot disagree about it.
+ *
+ * The layout, first match wins: `layout=grid|linear`; else grid when the tag
+ * lists `tiles` (an empty list counts) or a model-level `dashboard { … }` grid
+ * tag is present; else linear.
+ */
+export function readReportTag(modelNotes: readonly string[]): ReportTag {
+   const tags = motlyTag(modelNotes);
+   const artifact = tags?.tag("artifact");
+   if (!artifact)
+      return modelNotes.some(isArtifactNoteText)
+         ? { status: "unparsed" }
+         : { status: "none" };
+   const kind = tagText(artifact, "kind");
+   if (kind !== undefined) return { status: "kind-removed", kind };
+   const layout = parseLayoutValue(tagText(artifact, "layout"));
+   if (layout) return { status: "report", layout, decidedBy: "layout" };
+   if (artifact.has("tiles") || tags?.tag("dashboard") !== undefined)
+      return { status: "report", layout: "grid", decidedBy: "tiles" };
+   return { status: "report", layout: "linear", decidedBy: "default" };
 }
 
-/** The layout facts of a parsed model-level tag (all own `##` notes) and the queries' tags. */
-function layoutFactsOfTags(
-   modelTag: Tag | undefined,
-   queryTagged: boolean,
-): ReportLayoutFacts {
-   const artifact = modelTag?.tag("artifact");
-   return {
-      layout: tagText(artifact, "layout"),
-      kind: tagText(artifact, "kind"),
-      modelTag: artifact !== undefined,
-      queryTag: queryTagged,
-      tiles: artifact?.has("tiles") === true,
-      gridTag: modelTag?.tag("dashboard") !== undefined,
-   };
-}
-
-/** The layout facts of a compiled file: its own model notes, and each of its own named queries' notes. */
-export function layoutFactsOfNotes(
-   modelNotes: readonly string[],
-   queryNotes: readonly (readonly string[])[],
-): ReportLayoutFacts {
-   return layoutFactsOfTags(
-      motlyTag(modelNotes),
-      queryNotes.some((notes) => queryNotesCarryArtifact(notes)),
-   );
-}
-
-/** Whether one query's notes carry a parsed `# artifact` tag. */
-export function queryNotesCarryArtifact(notes: readonly string[]): boolean {
-   return Boolean(motlyTag(notes)?.tag("artifact"));
+/** {@link readReportTag} over text that is not compiled: a file that failed to, or text handed to the write path or the compile check. */
+export function readReportTagOfText(text: string): ReportTag {
+   return readReportTag(modelNotesOfText(text));
 }
 
 /**
- * A single-`#` tag line (a query-level `# artifact`), as the generous text test
- * reads it: an `artifact` property anywhere outside a quoted string.
+ * Whether text carries a model-level artifact tag at all, parsed or not: what
+ * the write path asks of a body before compiling it, so a tag the author got
+ * wrong reaches the compile and its findings rather than "not a report".
  */
-const QUERY_ARTIFACT_NOTE: LineTest = {
-   test(text: string): boolean {
-      return /^#(?!#)/.test(text) && ANY_ARTIFACT_NOTE.test(text);
-   },
-};
-
-/**
- * Whether raw file text claims to be a report: an artifact tag on a `#` or `##`
- * line outside a block body. For a file that did not compile, and for text the
- * write path is handed. Generous on purpose: a false negative hides a real
- * report, and the write path's post-reload verify rolls back a file discovery
- * then does not serve.
- */
-export function textClaimsToBeAReport(source: string): boolean {
-   return hasArtifactLineOutsideBlocks(source, ANY_ARTIFACT_NOTE);
-}
-
-/** The layout facts read off raw text, for a file that did not compile or text not yet saved. */
-export function layoutFactsOfText(source: string): ReportLayoutFacts {
-   const line = artifactTagText(source);
-   const tag = line === undefined ? undefined : motlyTag([line]);
-   const facts = layoutFactsOfTags(
-      tag,
-      hasArtifactLineOutsideBlocks(source, QUERY_ARTIFACT_NOTE),
-   );
-   // A model-level tag that does not parse still says what it is to an author.
-   if (line !== undefined && !facts.modelTag) {
-      facts.modelTag = true;
-      facts.layout = /\blayout\s*=\s*(\w+)/.exec(line)?.[1];
-      facts.kind = /\bkind\s*=\s*(\w+)/.exec(line)?.[1];
-      facts.tiles = /\btiles\s*=/.test(line);
-   }
-   return facts;
-}
-
-/** The layout of text that claims to be a report, by §2. */
-export function layoutOfText(source: string): ReportLayout {
-   return resolveReportLayout(layoutFactsOfText(source)).layout;
-}
-
-/**
- * The body of the `artifact { … }` property in a tag line, or "" for a bare
- * `# artifact`. Brace-counted, outside quoted strings, so a nested
- * `givens { … }` stays whole.
- */
-export function artifactPropertyBody(note: string): string {
-   const match = /(^|[\s{])artifact\b/.exec(note);
-   if (!match) return "";
-   let i = match.index + match[0].length;
-   while (i < note.length && /\s/.test(note[i])) i++;
-   if (note[i] !== "{") return "";
-   const start = i + 1;
-   let depth = 0;
-   for (; i < note.length; i++) {
-      const c = note[i];
-      if (c === '"' || c === "'") {
-         const quote = c;
-         i++;
-         while (i < note.length && note[i] !== quote)
-            i += note[i] === "\\" ? 2 : 1;
-         continue;
-      }
-      if (c === "{") depth++;
-      else if (c === "}") {
-         depth--;
-         if (depth === 0) return note.slice(start, i).trim();
-      }
-   }
-   return note.slice(start).trim();
-}
-
-/**
- * The model-level rewrite of a query-level `# artifact`: the same properties,
- * `layout=grid`, and the query as the one tile. Mechanical, because the
- * query-level tag's properties are a subset of the model-level tag's.
- */
-export function queryArtifactRewrite(
-   queryName: string,
-   queryNotes: readonly string[],
-): string {
-   const note = queryNotes.find((text) => /\bartifact\b/.test(text)) ?? "";
-   const body = artifactPropertyBody(note)
-      .replace(/\bkind\s*=\s*\w+\s*/g, "")
-      .replace(/\blayout\s*=\s*\w+\s*/g, "")
-      .trim();
-   const columns = tagText(motlyTag(queryNotes)?.tag("dashboard"), "columns");
-   const tile = /^[A-Za-z_][A-Za-z0-9_]*$/.test(queryName)
-      ? queryName
-      : `\`${queryName}\``;
-   return (
-      `## artifact { layout=grid${body ? ` ${body}` : ""} tiles=["${tile}"] }` +
-      (columns !== undefined ? ` dashboard { columns=${columns} }` : "")
-   );
+export function carriesArtifactTag(text: string): boolean {
+   return readReportTagOfText(text).status !== "none";
 }

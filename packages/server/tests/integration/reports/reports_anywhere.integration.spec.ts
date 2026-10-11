@@ -7,8 +7,8 @@
  * Reports anywhere in a package (`docs/reports-design.md` §1–§4, §6, §8, §9),
  * over real HTTP against `tests/fixtures/reports-anywhere`: reports at the root
  * and two levels deep, a grid report in `notebooks/` and a linear one in
- * `dashboards/`, two reports sharing a basename, drills by path and by a unique
- * and an ambiguous bare name, a tagged model `index.malloy` imports, a tagged
+ * `dashboards/`, two reports sharing a basename, drills by path and by bare
+ * names that are and are not root files, a tagged model `index.malloy` imports, a tagged
  * `index.malloy`, and a tagged file under `public/`.
  */
 
@@ -247,34 +247,20 @@ describe("Reports anywhere in a package (E2E)", () => {
          expect(subjects).not.toContain("orders.brand_lower");
       });
 
-      it("resolves a bare name that is a root path with no deprecation", () => {
+      it("resolves a bare name that is a root path with nothing said", () => {
          expect(drillFindings().map((w) => w.subject)).not.toContain(
             "orders.region_upper",
          );
       });
 
-      // DEPRECATED FEATURE COVERAGE — delete together with
-      // bare-name `# drill` targets (see RELEASE_NOTES deprecations).
-      describe("deprecated: bare-name # drill targets", () => {
-         it("resolves a bare name one report has, warning with the path to write", () => {
-            const finding = drillFindings().find(
-               (w) => w.subject === "orders.region_name",
+      it("never looks a bare name up elsewhere: one that is no root file is unresolved", () => {
+         for (const subject of ["orders.region_name", "orders.brand_upper"]) {
+            const finding = drillFindings().find((w) => w.subject === subject);
+            expect(finding).toMatchObject({ severity: "error" });
+            expect(finding?.message).toContain(
+               "is not a report in this package",
             );
-            expect(finding).toMatchObject({
-               code: "drill-target-by-name",
-               severity: "warn",
-            });
-            expect(finding?.message).toContain('to="deep/story"');
-         });
-
-         it("leaves a bare name two reports have unresolved, naming both", () => {
-            const finding = drillFindings().find(
-               (w) => w.subject === "orders.brand_upper",
-            );
-            expect(finding?.severity).toBe("error");
-            expect(finding?.message).toContain("finance/summary.malloy");
-            expect(finding?.message).toContain("sales/summary.malloy");
-         });
+         }
       });
    });
 

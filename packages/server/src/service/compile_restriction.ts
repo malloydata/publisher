@@ -332,16 +332,8 @@ function offendingTag(tag: Tag): string | undefined {
  * Applied to document text only (see `assertNoRestrictedConstructs`).
  */
 export function renderTagRefusal(source: string): string | undefined {
-   // Counted before parsing, so an oversized body costs a scan and not a parse.
-   if (source.split("#").length - 1 > MAX_HASHES) return TOO_MANY;
+   if (exceedsDocumentBudget(source)) return TOO_MANY;
    const scan = scanFragment(source);
-   const total = scan.annotations.reduce((sum, text) => sum + text.length, 0);
-   if (
-      scan.annotations.length > MAX_ANNOTATIONS ||
-      total > MAX_ANNOTATION_CHARS_TOTAL
-   ) {
-      return TOO_MANY;
-   }
    // A `##` note is a document's own tag; the parser drops one that reads `@env.`, which would hide it rather than refuse it.
    for (const note of scan.notes) {
       if (onMotlyRoute(note) && hasEnvReference(note)) return ENV_REFUSAL;
@@ -382,6 +374,21 @@ export function renderTagRefusal(source: string): string | undefined {
 
 const ENV_REFUSAL =
    "an annotation reads the server's environment (`@env.`), which a document may not do";
+
+/**
+ * Whether text carries more annotations than any document may, counted
+ * without parsing, so an oversized body costs a scan and not a parse. A caller
+ * that would parse text to learn whether it is a document asks this first.
+ */
+export function exceedsDocumentBudget(source: string): boolean {
+   if (source.split("#").length - 1 > MAX_HASHES) return true;
+   const scan = scanFragment(source);
+   const total = scan.annotations.reduce((sum, text) => sum + text.length, 0);
+   return (
+      scan.annotations.length > MAX_ANNOTATIONS ||
+      total > MAX_ANNOTATION_CHARS_TOTAL
+   );
+}
 
 const TOO_MANY = `the submitted document carries more annotations than one may (over ${MAX_ANNOTATIONS}, ${MAX_ANNOTATION_CHARS_TOTAL} characters in all, or ${MAX_HASHES} \`#\` characters)`;
 

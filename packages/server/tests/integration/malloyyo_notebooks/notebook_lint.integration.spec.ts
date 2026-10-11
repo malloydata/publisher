@@ -57,14 +57,10 @@ describe("notebook lint through the real server (E2E)", () => {
       expect(res.status).toBe(200);
       return (await res.json()) as { status: string; problems: Problem[] };
    };
-   // The lint's warns, less the deprecated `kind=` spelling these fixtures still write.
+   // The lint's warns, at their lines.
    const lintOf = (problems: Problem[], model: string) =>
       problems.filter(
-         (p) =>
-            p.model === model &&
-            p.severity === "warn" &&
-            p.code !== "report-kind-deprecated" &&
-            p.at,
+         (p) => p.model === model && p.severity === "warn" && p.at,
       );
 
    beforeAll(async () => {
@@ -129,18 +125,12 @@ describe("notebook lint through the real server (E2E)", () => {
             ["warn", 4],
             ["warn", 8],
          ]);
-         // `notebook-other-folder` is retired; what is left is the deprecated
-         // `kind=` spelling, as a warn.
-         expect(of(WRONG_KIND)).toEqual([["warn", 1]]);
+         // `kind=` is no longer read: the file is no report, and says so.
+         expect(of(WRONG_KIND)).toEqual([["error", 1]]);
       });
 
       it("says nothing about a clean notebook, and no notebook or dashboard draws an unknown-render-tag warning", () => {
-         // Only the deprecated `kind=` spelling, as a warn.
-         expect(
-            warnings
-               .filter((w) => w.model === CLEAN)
-               .map((w) => [w.code, w.severity]),
-         ).toEqual([["report-kind-deprecated", "warn"]]);
+         expect(warnings.filter((w) => w.model === CLEAN)).toEqual([]);
          // The malformed colspan in linty proves the validator visits these files at all.
          expect(
             warnings.filter((w) => /Invalid # colspan/.test(w.message)),
@@ -153,12 +143,7 @@ describe("notebook lint through the real server (E2E)", () => {
       it("carries a header statement, a column conflict and a bad text block as errors, and the alias and orphan block as warns", () => {
          const severityOf = (model: string) =>
             warnings
-               .filter(
-                  (w) =>
-                     w.model === model &&
-                     w.code !== "report-kind-deprecated" &&
-                     /^Line \d+:/.test(w.message),
-               )
+               .filter((w) => w.model === model && /^Line \d+:/.test(w.message))
                .map((w) => [w.severity, w.message.split(":")[0]]);
          expect(severityOf("notebooks/header_statement.malloy")).toEqual([
             ["error", "Line 1"],
@@ -233,6 +218,7 @@ describe("notebook lint through the real server (E2E)", () => {
                .map((p) => [p.model, p.code]),
          ).toEqual([
             ["dashboards/columns_conflict.malloy", "notebook-columns-conflict"],
+            ["dashboards/wrong_kind.malloy", "report-kind-removed"],
             [
                "notebooks/header_statement.malloy",
                "notebook-statement-above-artifact",
@@ -250,7 +236,7 @@ describe("notebook lint through the real server (E2E)", () => {
             problems
                .filter((p) => p.model === WRONG_KIND && p.at)
                .map((p) => [p.code, p.severity]),
-         ).toEqual([["report-kind-deprecated", "warn"]]);
+         ).toEqual([["report-kind-removed", "error"]]);
       });
 
       it("fails the compile of a notebook with a statement above its artifact tag, at that line", async () => {

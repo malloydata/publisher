@@ -1,6 +1,6 @@
 ##! experimental.givens
 ##" Order totals, described above the artifact tag.
-## artifact { kind=notebook title="Imported prose" }
+## artifact { layout=linear title="Imported prose" }
 import "../models/orders.malloy"
 
 ##(markdown) The only prose cell in this notebook.

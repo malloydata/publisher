@@ -14,20 +14,14 @@
  * diverges, the grid width; see `docs/malloyyo-dashboards-design.md`
  * §Where Publisher diverges.
  *
- * A dashboard is `## artifact { tiles=[…] }` at model level: named views that
- * run separately and combine into one grid Publisher lays out. That is the form
- * to author, and the only one that can span sources — a nest's pipeline starts
- * from its own query's source, so no single Malloy result spans two.
+ * A report written as tiles is `## artifact { tiles=[…] }` at model level:
+ * named views that run separately and combine into one page Publisher lays
+ * out, the only form that can span sources (a nest's pipeline starts from its
+ * own query's source, so no single Malloy result spans two). Only the
+ * model-level tag makes a report; a `# artifact` on a query or a view is not
+ * read.
  *
- * `# artifact` on a `query:` is also served, and is the same thing a notebook
- * cell shows: one Malloy result that @malloydata/render lays out from the query's
- * own `# dashboard {columns=N}`. That is Malloy's rendering feature rather than a
- * second dashboard grammar, and the docs no longer offer it as an alternative.
- *
- * Both read the same grid-width spelling and the same per-tile layout tags, so a
- * view carries its own layout whichever way it is consumed.
- *
- * A `.malloy` carrying neither tag is an ordinary model, which a report may
+ * A `.malloy` with no model-level tag is an ordinary model, which a report may
  * import: skipped, not an error.
  */
 
@@ -45,15 +39,12 @@ import {
    dashboardDescriptionNotes,
    isMarkdownNote,
    parseMarkdownOpener,
-   type DocumentKind,
 } from "./notebook";
 import {
-   kindOfLayout,
-   layoutFactsOfNotes,
-   queryNotesCarryArtifact,
+   readReportTag,
    reportName,
-   resolveReportLayout,
    type ReportLayout,
+   type ReportTag,
 } from "./report";
 import {
    readGivenControlSpec,
@@ -200,13 +191,9 @@ export interface DashboardManifest {
    name: string;
    /** How the tiles are placed (`report.ts`, §2); a linear report lays out as one column. */
    layout: ReportLayout;
-   /** `layout` as the deprecated routes name it: grid is `dashboard`, linear is `notebook`. */
-   kind: DocumentKind;
    title: string;
    description?: string;
-   /** The tagged query's name. Set for the single-query form only. */
-   query?: string;
-   /** Set for the composite (`tiles=[…]`) form only. */
+   /** The tiles, in order; absent only on a grid report listed with its compile error. */
    tiles?: DashboardTileSpec[];
    /** Grid width: `# dashboard {columns=N}`, beside the artifact tag. */
    dashboardColumns?: number;
@@ -329,21 +316,16 @@ export function matchesDocumentedDashboardName(slug: string): boolean {
  * enumerates against these, so anything added to the reader belongs here too —
  * kept adjacent for that reason.
  */
-const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
+const ARTIFACT_PROPERTIES: readonly string[] = [
    "title",
    "tiles",
    "givens",
    "autorun",
-   // Not read here: notebook_lint.ts judges `layout` and `kind` on a model-level `## artifact`; this lint only stays quiet about them.
+   // Not read here: notebook_lint.ts judges `layout`; this lint only stays quiet about it.
    "layout",
-   "kind",
    // Deprecated spelling of `dashboard { columns }`, read below; notebook_lint.ts reports it.
    "dashboard_columns",
 ];
-const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
-   COMPOSITE_ARTIFACT_PROPERTIES.filter(
-      (property) => property !== "tiles" && property !== "dashboard_columns",
-   );
 
 /**
  * Properties that reach the artifact tag by mistake, and what to write instead.
@@ -353,8 +335,6 @@ const QUERY_ARTIFACT_PROPERTIES: readonly string[] =
  * reads naturally and puts it somewhere nothing looks.
  */
 const ARTIFACT_PROPERTY_REPLACEMENTS: Record<string, string> = {
-   dashboard_columns:
-      "A single query has no grid; a composite's width is `dashboard { columns=N }` beside its artifact tag.",
    dashboard:
       "The grid width is a sibling of the artifact tag, not a property of it: " +
       "close the artifact braces first, as `## artifact { … } dashboard { columns=N }`.",
@@ -504,11 +484,6 @@ export interface DashboardModelFacts {
        * source is inlined in the query's own definition, which cannot dangle.
        */
       sourceName?: string;
-      /**
-       * Declared in this file rather than imported. Only an own query's
-       * `# artifact` makes the file a report. Absent means own.
-       */
-      own?: boolean;
    }[];
    /**
     * Given declarations this file can actually *bind*, keyed by name.
@@ -683,9 +658,6 @@ export function readDashboardModelFacts(
             .filter((name): name is string => name !== undefined),
          sourceName:
             typeof query.structRef === "string" ? query.structRef : undefined,
-         own:
-            query.location?.url === undefined ||
-            query.location.url === modelDef.modelID,
       }));
 
    const viewGivens = new Map<string, string[]>();
@@ -985,53 +957,15 @@ function givenSpec(
    };
 }
 
-/**
- * Whether a compiled file carries an artifact tag at all, read from the same two
- * places {@link buildDashboardManifest} reads it: the model-level annotations and
- * each named query's.
- *
- * Exists for the one caller that has `facts` in hand but no manifest, because
- * building it threw. There the textual `claimsToBeADashboard` heuristic is the
- * wrong tool: the tag IS readable, it was the construction that failed, and that
- * caller pays the most for a false positive (it emits an `error` finding and
- * registers a slug, which silences a genuinely dangling `# drill`).
- *
- * Deliberately broader than the manifest build, which additionally needs
- * `readArtifactTag` to yield something. So `manifest !== undefined` implies this
- * is true, never the reverse. That is the safe direction: it can over-report a
- * dropped dashboard, and can never silently drop a real one.
- */
-export function factsCarryArtifactTag(facts: DashboardModelFacts): boolean {
-   if (motlyTag(facts.modelAnnotations)?.tag("artifact")) return true;
-   return ownQueries(facts).some((query) =>
-      queryNotesCarryArtifact(query.annotations),
-   );
-}
-
-/** The named queries the file declares itself; an imported query's tag describes its own file. */
-export function ownQueries(
-   facts: DashboardModelFacts,
-): DashboardModelFacts["queries"] {
-   return facts.queries.filter((query) => query.own !== false);
-}
-
-/** A compiled file's layout by the report rule (`report.ts`, §2). */
-export function factsLayout(facts: DashboardModelFacts): ReportLayout {
-   return resolveReportLayout(
-      layoutFactsOfNotes(
-         facts.modelAnnotations,
-         ownQueries(facts).map((query) => query.annotations),
-      ),
-   ).layout;
+/** A compiled file's report tag, by the one reader (`report.ts`) over its own model-level notes. */
+export function factsReportTag(facts: DashboardModelFacts): ReportTag {
+   return readReportTag(facts.modelAnnotations);
 }
 
 /**
- * Build the manifest for one dashboard file, or undefined when the file carries
- * no artifact tag (a shared include).
- *
- * The model-level (`##`) tag is checked first so a composite declaration wins
- * over an incidental query-level tag in the same file; Malloyyo treats the two
- * forms as alternatives, not a combination.
+ * Build the manifest of a report written as tiles, or undefined when the file
+ * is no report (`report.ts`), or one with no tiles to lay out: a linear report
+ * written as `run:` cells, or a grid tag whose tile list is missing or empty.
  */
 export function buildDashboardManifest(
    facts: DashboardModelFacts,
@@ -1046,13 +980,14 @@ export function buildDashboardManifest(
       entryFile: facts.modelPath,
    };
 
+   const tag = factsReportTag(facts);
+   if (tag.status !== "report") return undefined;
+   const { layout } = tag;
    const modelTag = motlyTag(facts.modelAnnotations);
    const declaredType = (name: string) => facts.givens.get(name)?.type;
    const composite = modelTag
       ? readArtifactTag(modelTag, declaredType)
       : undefined;
-   const layout = factsLayout(facts);
-   const kind = kindOfLayout(layout);
    // A linear report with no tiles yet is still a layout, so the editor can open it.
    if (
       composite?.tiles &&
@@ -1091,7 +1026,6 @@ export function buildDashboardManifest(
       return {
          ...base,
          layout,
-         kind,
          title: doc.title ?? name,
          description: doc.description,
          tiles,
@@ -1129,28 +1063,6 @@ export function buildDashboardManifest(
                  ),
             facts,
          ),
-      };
-   }
-
-   for (const query of ownQueries(facts)) {
-      const tag = motlyTag(query.annotations);
-      const artifact = tag ? readArtifactTag(tag, declaredType) : undefined;
-      if (!artifact) continue;
-      const doc = docCommentTitleAndDescription(
-         query.annotations,
-         artifact.title,
-      );
-      return {
-         ...base,
-         layout: "grid",
-         kind: "dashboard",
-         title: doc.title ?? name,
-         description: doc.description,
-         query: query.name,
-         dashboardColumns: artifact.dashboardColumns,
-         startingGivens: artifact.givens,
-         autorun: artifact.autorun,
-         givens: buildGivenSpecs(query.givens, facts),
       };
    }
 
@@ -1207,14 +1119,8 @@ export function lintDashboard(
    const add = (message: string, severity: "error" | "warn" = "warn") =>
       findings.push({ subject: slug, message, severity });
 
-   // One selection, used for both the tag and the parse-failure report below,
-   // so the two cannot disagree about which annotations belong to this
-   // dashboard.
-   const ownAnnotations = manifest.tiles
-      ? facts.modelAnnotations
-      : (facts.queries.find((query) => query.name === manifest.query)
-           ?.annotations ?? []);
-   const ownTag = motlyTag(ownAnnotations);
+   // The file's own model-level notes: the tag and every line beside it.
+   const ownTag = motlyTag(facts.modelAnnotations);
    const artifactTag = ownTag?.tag("artifact");
 
    // A dropped or refused annotation on a dashboard that STILL BUILT. Every
@@ -1228,60 +1134,13 @@ export function lintDashboard(
    // was told nothing at all. Measured: that file built and produced zero
    // findings.
    //
-   // The file's model-level lines PLUS this dashboard's own, and not every
-   // query in the file, which is what the undiscovered lint reads. That lint
-   // has no dashboard to attribute to and casts wide on purpose; here a
-   // SIBLING query's broken tag would be reported against a dashboard that does
-   // not contain it. A model-level line is not that case: it belongs to the
-   // file either way, so it reaches this dashboard however the tag was written.
-   //
-   // Scoping to `ownAnnotations` alone was the first version and it left the
-   // single-query form silent, since there `ownAnnotations` is the QUERY's
-   // annotations. Measured, both shapes built a manifest and reported nothing:
-   // a `## note=@env.X` beside a query-level `# artifact`, and an unbalanced
-   // `## artifact { tiles=[…` beside one, where the composite tag is discarded,
-   // the file falls through to the single-query form, and it serves ONE TILE
-   // while saying nothing. Found in review by Sha-Bang, who measured both.
-   //
-   // Deduplicated as a SET OF ANNOTATIONS rather than by concatenating. On the
-   // composite path `ownAnnotations` IS `facts.modelAnnotations`, so the set
-   // collapses to that same list in that same order and the input is
-   // byte-identical: the no-op there is structural rather than something to be
-   // re-measured whenever the parser changes.
-   //
-   // Concatenating instead is not equivalent, though it passes: measured, a
-   // doubled syntax error comes back TWICE from `motlyParseErrors` and only the
-   // message-level Set below absorbs it. That works today and stops working the
-   // day a message carries anything that distinguishes two occurrences, such as
-   // a position. Deduplicating the input rather than the output also keeps the
-   // per-line rescue in `parseMotly` from running over every model-level line
-   // twice.
-   //
    // Worded for a dashboard that exists. The undiscovered wording ("treated as
    // a shared include rather than a dashboard") is false on this path.
-   const lintTargets = new Set([...facts.modelAnnotations, ...ownAnnotations]);
-   for (const message of new Set(motlyParseErrors([...lintTargets]))) {
+   for (const message of new Set(motlyParseErrors(facts.modelAnnotations))) {
       add(
          `Annotation ${describeParseFailure(message)}, so that line had no ` +
             `effect on this dashboard.`,
       );
-   }
-
-   // The same tiles-less `## artifact`, on a file a query-level `# artifact`
-   // rescued. `lintUndiscoveredDashboard` owns this diagnosis but package.ts
-   // runs it only when NO dashboard was built, so the rescued case reached
-   // nobody: a half-finished migration to `tiles=` keeps serving the old
-   // one-query page with the new tag entirely inert, which is the silent shape
-   // this file exists to prevent.
-   if (!manifest.tiles) {
-      const modelArtifact = motlyTag(facts.modelAnnotations)?.tag("artifact");
-      if (modelArtifact) {
-         add(
-            `${describeTilelessModelArtifact(modelArtifact)}, so it builds ` +
-               `nothing and this dashboard is the query's own '# artifact' ` +
-               `instead. ${NAME_THE_TILES}`,
-         );
-      }
    }
 
    // Every property `readArtifactTag` does not read, named. The reader looks up
@@ -1291,22 +1150,15 @@ export function lintDashboard(
    //
    // Top level only, and `givens` is opaque: its keys are the author's own given
    // names, so descending into it would warn about every control on the page.
-   const knownProperties = manifest.tiles
-      ? COMPOSITE_ARTIFACT_PROPERTIES
-      : QUERY_ARTIFACT_PROPERTIES;
    for (const property of Object.keys(artifactTag?.dict ?? {})) {
-      if (knownProperties.includes(property)) continue;
+      if (ARTIFACT_PROPERTIES.includes(property)) continue;
       // Scoped to Publisher, because Malloyyo's `# artifact` reference is not in
       // this repo and a property inert here may well mean something there.
       add(
          `\`${property}\` in the artifact tag does nothing in Publisher` +
             (ARTIFACT_PROPERTY_REPLACEMENTS[property]
                ? `. ${ARTIFACT_PROPERTY_REPLACEMENTS[property]}`
-               : property === "tiles"
-                 ? `: a dashboard whose tag sits on a query is that one query's ` +
-                   `result. Move the tag to model level (\`## artifact\`) to ` +
-                   `combine separate queries into a grid.`
-                 : `.`),
+               : `.`),
       );
    }
 
@@ -1469,22 +1321,6 @@ export function lintDashboard(
             `tile "${tile}" filters by given "${name}", which this file does ` +
                `not import, so no control is shown for it and it stays at its ` +
                `default. Add it to an import in ${facts.modelPath}.`,
-         );
-      }
-   }
-
-   // The same loss, on the single-query form. It used to be reported for tiles
-   // only, so a single-query dashboard dropped the control in silence while
-   // `buildGivenSpecs` claimed the lint covered it.
-   if (manifest.query !== undefined) {
-      const query = facts.queries.find((q) => q.name === manifest.query);
-      for (const name of query?.givens ?? []) {
-         if (facts.givens.has(name)) continue;
-         add(
-            `query "${manifest.query}" filters by given "${name}", which this ` +
-               `file does not import, so no control is shown for it and it ` +
-               `stays at its default. Add it to an import in ` +
-               `${facts.modelPath}.`,
          );
       }
    }
@@ -1667,10 +1503,9 @@ export function lintUndiscoveredDashboard(
    // message happens to be equivalent today, because `describeParseFailure`
    // embeds it verbatim, but three of its four branches return a constant, so
    // that is incidental rather than a property worth depending on.
-   const messages = [
-      ...motlyParseErrors(facts.modelAnnotations),
-      ...facts.queries.flatMap((query) => motlyParseErrors(query.annotations)),
-   ].map(unparsedTagMessage);
+   const messages = motlyParseErrors(facts.modelAnnotations).map(
+      unparsedTagMessage,
+   );
    const findings: DashboardLintFinding[] = Array.from(
       new Set(messages),
       (message) => ({ subject, message, severity: "error" as const }),
@@ -1679,11 +1514,11 @@ export function lintUndiscoveredDashboard(
 
    // A tag that PARSES but describes no dashboard vanishes just as completely,
    // and the checks above cannot see it because there is no parse error to
-   // report. The common case is a model-level `## artifact` with no `tiles=`:
-   // the composite branch is gated on having at least one tile, and no
-   // query-level artifact tag follows, so the file produces nothing at all.
+   // report: a grid `## artifact` whose `tiles=` is missing or empty. A tag
+   // that sets the removed `kind=` is no report either, and the text lint
+   // reports it with the fix.
    const modelArtifact = motlyTag(facts.modelAnnotations)?.tag("artifact");
-   if (modelArtifact) {
+   if (modelArtifact && factsReportTag(facts).status === "report") {
       findings.push({
          subject,
          message:
@@ -1701,7 +1536,7 @@ export function lintUndiscoveredDashboard(
  *
  * Malloyyo accepts the tag on a view of a source the dashboard file extends
  * (its "other forms"), so a repo written for it can carry one. Publisher reads
- * `# artifact` off a `query:` and `## artifact` at model level only; the view
+ * `## artifact` at model level only; the view
  * tag is never asked for, so the file falls through to the shared-include path
  * and vanishes with nothing said. That is the same silent outcome the parse
  * check above exists to prevent, for a tag that parses perfectly.
@@ -1720,15 +1555,13 @@ function lintArtifactOnView(
    const findings: DashboardLintFinding[] = [];
    for (const [view, annotations] of facts.viewAnnotations) {
       if (!motlyTag(annotations)?.tag("artifact")) continue;
-      const viewName = view.split("->").at(-1)?.trim() ?? view;
       findings.push({
          subject,
          message:
             `'# artifact' on view '${view}' is not read: Publisher reads the ` +
-            `tag on a 'query:' or at model level, so this file produces no ` +
-            `dashboard. Either name the view as a tile, ` +
-            `## artifact { tiles=["${view}"] }, or tag a query that runs it, ` +
-            `query: ${viewName} is ${view}.`,
+            `tag at model level only, so this file produces no report. Name ` +
+            `the view as a tile: ` +
+            `## artifact { layout=grid tiles=["${view}"] }.`,
          severity: "error" as const,
       });
    }
@@ -1794,17 +1627,10 @@ export function lintGivenTags(
 /**
  * How a `# drill { to=… }` destination resolves against the package's reports
  * (`docs/reports-design.md` §3). A report is identified by its package path,
- * and `to=` names that path without `.malloy`, read from the package root, so
- * `to="sales/overview"` is `sales/overview.malloy`, of either layout.
- *
- * A bare name (no `/`) is first read as a root path. Failing that it is the
- * deprecated basename form, which only ever named a dashboard, while a notebook
- * was free to share a dashboard's basename (`dashboards/overview.malloy` beside
- * `notebooks/overview.malloy`). So during the deprecation it resolves to the one
- * GRID report with that basename, else to the one report of either layout with
- * it, and says which path to write unless that report sits at the root (where
- * the name already IS its path). Otherwise it is unresolved, naming the
- * candidates.
+ * and `to=` names that path from the package root, with or without `.malloy`:
+ * `to="sales/overview"` is `sales/overview.malloy`, of either layout, and a
+ * bare `to="overview"` is the root file `overview.malloy`. A basename is never
+ * looked up elsewhere.
  *
  * A target that is not a plain package path, one with a `.` or `..` segment,
  * an empty segment, or a leading `/`, is unresolved before any lookup: the
@@ -1814,8 +1640,7 @@ export function lintGivenTags(
 export type DrillResolution =
    | { kind: "self" }
    | { kind: "path"; path: string }
-   | { kind: "name"; path: string; rewrite?: string }
-   | { kind: "unresolved"; candidates: string[]; malformed?: true };
+   | { kind: "unresolved"; malformed?: true };
 
 /**
  * Whether `to=` is a plain package path: non-empty segments, none `.` or `..`,
@@ -1830,36 +1655,17 @@ export function isDrillTargetPath(target: string): boolean {
       );
 }
 
-/** The `to=` form of a report path: the package path without `.malloy`. */
-export function drillPathOf(reportPath: string): string {
-   return reportPath.endsWith(".malloy")
-      ? reportPath.slice(0, -".malloy".length)
-      : reportPath;
-}
-
 export function resolveDrillDestination(
    destination: string,
    reportPaths: ReadonlySet<string>,
-   gridReportPaths: ReadonlySet<string>,
 ): DrillResolution {
    if (destination === "self") return { kind: "self" };
    if (!isDrillTargetPath(destination))
-      return { kind: "unresolved", candidates: [], malformed: true };
-   const target = destination;
-   for (const candidate of [`${target}.malloy`, target]) {
+      return { kind: "unresolved", malformed: true };
+   for (const candidate of [`${destination}.malloy`, destination]) {
       if (reportPaths.has(candidate)) return { kind: "path", path: candidate };
    }
-   if (target.includes("/")) return { kind: "unresolved", candidates: [] };
-   const matches = Array.from(reportPaths)
-      .filter((path) => reportName(path) === target)
-      .sort();
-   const grid = matches.filter((path) => gridReportPaths.has(path));
-   const unique = grid.length === 1 ? grid : matches;
-   if (unique.length !== 1) return { kind: "unresolved", candidates: matches };
-   const [path] = unique;
-   return path.includes("/")
-      ? { kind: "name", path, rewrite: drillPathOf(path) }
-      : { kind: "name", path };
+   return { kind: "unresolved" };
 }
 
 /**
@@ -1878,9 +1684,8 @@ export function resolveDrillDestination(
 export function lintDrillTargets(
    facts: readonly DashboardModelFacts[],
    reportPaths: ReadonlySet<string>,
-   gridReportPaths: ReadonlySet<string>,
-): (DashboardLintFinding & { code?: string })[] {
-   const findings = new Map<string, DashboardLintFinding & { code?: string }>();
+): DashboardLintFinding[] {
+   const findings = new Map<string, DashboardLintFinding>();
    for (const file of facts) {
       for (const drill of file.drills) {
          const where = `${drill.source}.${drill.dimension}`;
@@ -1893,26 +1698,8 @@ export function lintDrillTargets(
             continue;
          }
          for (const destination of drill.to) {
-            const resolved = resolveDrillDestination(
-               destination,
-               reportPaths,
-               gridReportPaths,
-            );
-            if (resolved.kind === "self" || resolved.kind === "path") continue;
-            if (resolved.kind === "name") {
-               if (resolved.rewrite === undefined) continue;
-               findings.set(`${where}|${destination}`, {
-                  subject: where,
-                  code: "drill-target-by-name",
-                  message:
-                     `# drill on ${where} targets "${destination}" by name, ` +
-                     `which is deprecated: a report is addressed by its path. ` +
-                     `Fix: write to="${resolved.rewrite}".`,
-                  severity: "warn",
-               });
-               continue;
-            }
-            const { candidates } = resolved;
+            const resolved = resolveDrillDestination(destination, reportPaths);
+            if (resolved.kind !== "unresolved") continue;
             findings.set(`${where}|${destination}`, {
                subject: where,
                message: resolved.malformed
@@ -1921,13 +1708,8 @@ export function lintDrillTargets(
                     `or ".." segment, no empty segment and no leading "/"), so ` +
                     `it resolves to no report. Fix: write the report's path ` +
                     `from the package root, such as to="sales/overview".`
-                  : candidates.length > 1
-                    ? `# drill on ${where} targets "${destination}", which ` +
-                      `${candidates.length} reports in this package are named ` +
-                      `(${candidates.join(", ")}), so it resolves to none of ` +
-                      `them. Fix: write the path, to="${drillPathOf(candidates[0])}".`
-                    : `# drill on ${where} targets "${destination}", which is not ` +
-                      `a report in this package.`,
+                  : `# drill on ${where} targets "${destination}", which is not ` +
+                    `a report in this package.`,
                severity: "error",
             });
          }

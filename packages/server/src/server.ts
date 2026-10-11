@@ -30,7 +30,6 @@ import { WatchModeController } from "./controller/watch-mode.controller";
 import {
    BadRequestError,
    internalErrorToHttpError,
-   NotImplementedError,
    ServiceUnavailableError,
 } from "./errors";
 import {
@@ -92,15 +91,18 @@ import {
    normalizeQueryArray,
    parseNonNegativeIntParam,
 } from "./query_param_utils";
-import {
-   booleanParamOr400,
-   optionalBooleanParamOr400,
-   setCollectionReloadError,
-} from "./route_params";
+import { booleanParamOr400, setCollectionReloadError } from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
-import { classifySpaFallback } from "./spa_fallback";
+import { resolveSpaFallback, type LoadedRoutes } from "./spa_fallback";
+import { isLegacyReportAlias } from "./service/legacy_report_views";
+import { registerDeprecatedRoutes } from "./routes/deprecated";
+import {
+   jsonRoute,
+   setVersionIdError,
+   wildcardParam,
+} from "./routes/json_route";
 import {
    RATE_LIMIT_ENV,
    parseRateLimit,
@@ -949,13 +951,6 @@ if (!isDevelopment) {
       }),
    );
 }
-
-const setVersionIdError = (res: express.Response) => {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-};
 
 app.use(
    cors({
@@ -1836,234 +1831,27 @@ app.put(
 );
 
 app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await dashboardController.listDashboards(
-               req.params.environmentName,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await dashboardController.getDashboard(
-               req.params.environmentName,
-               req.params.packageName,
-               req.params.dashboardName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await modelController.listNotebooks(
-               req.params.environmentName,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-/**
- * Run one cell of a linear report by index: the deprecated
- * `…/notebooks/{path}/cells/{i}`, kept for a `.malloynb` until the deprecated
- * routes go. A `.malloy` report's cells run through
- * `POST …/models/{path}/query` instead, which holds them to the same surface,
- * `#(authorize)` and row-level gates
- * (`tests/integration/reports/cell_query_parity.integration.spec.ts`).
- *
- * The cell route must come BEFORE the general get routes, so the wildcard
- * does not swallow `/cells/{i}`.
- */
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
-   queryConcurrency(),
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         const cellIndex = parseInt(req.params.cellIndex, 10);
-         if (isNaN(cellIndex)) {
-            res.status(400).json({
-               error: "Invalid cell index",
-            });
-            return;
-         }
-
-         // Express stores wildcard matches in params['0']
-         const notebookPath = (req.params as Record<string, string>)["0"];
-
-         // Parse optional filter_params (JSON query string) and bypass_filters
-         let filterParams: Record<string, string | string[]> | undefined;
-         if (typeof req.query.filter_params === "string") {
-            try {
-               filterParams = JSON.parse(req.query.filter_params);
-            } catch {
-               res.status(400).json({
-                  error: "Invalid filter_params: must be valid JSON",
-               });
-               return;
-            }
-         }
-         // Absence must stay distinguishable from an explicit `false` here:
-         // the Deprecation header below fires on `bypassFilters !== undefined`.
-         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
-         if (!bypass.ok) {
-            return;
-         }
-         const bypassFilters = bypass.value;
-
-         let givens: Record<string, GivenValue> | undefined;
-         if (typeof req.query.givens === "string") {
-            try {
-               givens = JSON.parse(req.query.givens);
-            } catch {
-               res.status(400).json({
-                  error: "Invalid givens: must be valid JSON",
-               });
-               return;
-            }
-         }
-
-         const result = await modelController.executeNotebookCell(
-            req.params.environmentName,
-            req.params.packageName,
-            notebookPath,
-            cellIndex,
-            filterParams,
-            bypassFilters,
-            givens,
-         );
-         setFilterDeprecationHeaders(res, {
-            filterParams,
-            bypassFilters,
-         });
-         res.status(200).json(result);
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await dashboardController.listReports(
-               req.params.environmentName,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
+   jsonRoute((req) =>
+      dashboardController.listReports(
+         req.params.environmentName,
+         req.params.packageName,
+      ),
+   ),
 );
 
 app.get(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports/*`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await dashboardController.getReport(
-               req.params.environmentName,
-               req.params.packageName,
-               // Express stores wildcard matches in params['0']
-               (req.params as Record<string, string>)["0"],
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
+   jsonRoute((req) =>
+      dashboardController.getReport(
+         req.params.environmentName,
+         req.params.packageName,
+         wildcardParam(req),
+      ),
+   ),
 );
 
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*?`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         // Express stores wildcard matches in params['0']
-         const notebookPath = (req.params as Record<string, string>)["0"];
-         res.status(200).json(
-            await modelController.getNotebook(
-               req.params.environmentName,
-               req.params.packageName,
-               notebookPath,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
+registerDeprecatedRoutes(app, API_PREFIX, environmentStore);
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
@@ -2312,108 +2100,51 @@ if (!isDevelopment) {
          /[<>&]/g,
          (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
       );
-   // `req.path` arrives percent-encoded, while environment names are stored
-   // decoded. A malformed escape is not a name we know, so it compares as one
-   // that will not match rather than throwing.
-   const decodeSegment = (segment: string | undefined) => {
-      if (segment === undefined) return "";
-      try {
-         return decodeURIComponent(segment);
-      } catch {
-         return segment;
-      }
+   // Deliberately the in-memory lists rather than `getEnvironment`, which
+   // resolves from storage (see `LoadedRoutes`). The cost is real and worth
+   // stating precisely: an environment OR package that is not loaded yet gets
+   // the 404 page instead of a redirect. That covers a cold start, and an
+   // environment resolved lazily by the static route (which loads its packages
+   // on demand, so they can be absent here while that URL serves them). In
+   // those cases the page names the canonical URL and following it does load
+   // them. The exception is a package that fails to compile: it is absent
+   // here, and the canonical URL answers 424, so there the page leads somewhere
+   // that reports the real problem rather than somewhere that works.
+   const loadedPackage = (environmentName: string, packageName: string) =>
+      environmentStore
+         .getLoadedEnvironments()
+         .find(
+            (environment) =>
+               environment.getEnvironmentName() === environmentName,
+         )
+         ?.getLoadedPackages()
+         .find((pkg) => pkg.getPackageName() === packageName);
+   const loadedRoutes: LoadedRoutes = {
+      hasEnvironment: (environmentName) =>
+         environmentStore
+            .getLoadedEnvironments()
+            .some(
+               (environment) =>
+                  environment.getEnvironmentName() === environmentName,
+            ),
+      hasPackage: (environmentName, packageName) =>
+         loadedPackage(environmentName, packageName) !== undefined,
+      isReportRoute: (environmentName, packageName, routePath) => {
+         const pkg = loadedPackage(environmentName, packageName);
+         return (
+            pkg !== undefined &&
+            (pkg.isServedReport(`${routePath}.malloy`) ||
+               isLegacyReportAlias(pkg, routePath))
+         );
+      },
    };
    app.get("*", (req, res) => {
       // Not everything unmatched is an app route. A request that names a file
       // gets a real answer rather than the app shell with a 200, which reads as
       // success and then leaves the app blaming the file for a wrong path. See
-      // classifySpaFallback for why the decision is by extension.
-      let fallback = classifySpaFallback(req.path, API_PREFIX);
-      // The classifier only sees the shape of a path, and several real things
-      // share a shape with a package asset. Resolve the names against what is
-      // actually loaded before acting on its guess.
-      //
-      // Deliberately the in-memory lists rather than `getEnvironment`, which
-      // resolves from storage: this is the last handler before the app shell and
-      // it answers unauthenticated traffic for any path nothing else claimed, so
-      // it must not do I/O a caller can trigger by guessing. That also keeps this
-      // handler synchronous. The cost is real and worth stating precisely: an
-      // environment OR package that is not loaded yet gets the 404 page instead
-      // of a redirect. That covers a cold start, and an environment resolved
-      // lazily by the static route (which loads its packages on demand, so they
-      // can be absent here while that URL serves them). In those cases the page
-      // names the canonical URL and following it does load them. The exception is
-      // a package that fails to compile: it is absent here, and the canonical URL
-      // answers 424, so there the page leads somewhere that reports the real
-      // problem rather than somewhere that works.
-      const loadedEnvironment = (name: string) =>
-         environmentStore
-            .getLoadedEnvironments()
-            .find((environment) => environment.getEnvironmentName() === name);
-      if (fallback.kind === "redirect") {
-         // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
-         // Redirecting it lands on the static route, which answers a name it
-         // cannot resolve with JSON naming an internal failure ("Environment ...
-         // could not be resolved", "Package nope not found", or a 400 for a
-         // malformed name) and echoes the segment back, which the static route's
-         // own 404s deliberately avoid doing. BOTH names have to be real, not
-         // just the environment: a good environment with a bad package reaches
-         // exactly that reflected JSON.
-         const environment = loadedEnvironment(
-            decodeSegment(fallback.environmentName),
-         );
-         const packageName = decodeSegment(fallback.packageName);
-         const loadedPackage = environment
-            ?.getLoadedPackages()
-            .find((pkg) => pkg.getPackageName() === packageName);
-         const known = loadedPackage !== undefined;
-         // A report's route is its path without `.malloy`, so a report whose
-         // name ends in an asset extension is an app route, not a file.
-         const reportPath = fallback.reportPath
-            .split("/")
-            .map(decodeSegment)
-            .join("/");
-         // The deprecated `dashboards/<name>` and `notebooks/<name>` links are
-         // the Console's alias for a report named `<name>` wherever it lives;
-         // only when one exists, so `public/dashboards/` files stay reachable.
-         const alias = /^(?:dashboards|notebooks)\/([^/]+)$/.exec(reportPath);
-         if (
-            loadedPackage?.isServedReport(`${reportPath}.malloy`) ||
-            (alias !== null && loadedPackage?.hasReportNamed(alias[1]))
-         ) {
-            fallback = { kind: "spa" };
-         } else if (!known) {
-            // Null, not the names: a redirect candidate whose names did not
-            // resolve is not an app route either, so it must not be rescued into
-            // the app shell by the branch below.
-            fallback = {
-               kind: "assetNotFound",
-               path: req.path,
-               appRouteCandidate: null,
-            };
-         }
-      }
-      if (fallback.kind === "assetNotFound" && fallback.appRouteCandidate) {
-         // `/<env>` or `/<env>/<pkg>` where a name merely ends in a servable
-         // extension, which names may: `report.html` is a legal package name. It
-         // is an app route after all, but only if these are things this server
-         // actually has. Checking the package too is what keeps
-         // `/examples/style.css` a 404: without it, any asset request under a real
-         // environment went back to answering with the app shell and a 200, which
-         // is the whole defect this handler removes.
-         const { environmentName, packageName } = fallback.appRouteCandidate;
-         const environment = loadedEnvironment(decodeSegment(environmentName));
-         const isAppRoute =
-            environment !== undefined &&
-            (packageName === undefined ||
-               environment
-                  .getLoadedPackages()
-                  .some(
-                     (pkg) =>
-                        pkg.getPackageName() === decodeSegment(packageName),
-                  ));
-         if (isAppRoute) fallback = { kind: "spa" };
-      }
+      // classifySpaFallback for why the decision is by extension, and
+      // resolveSpaFallback for how its guesses are settled.
+      const fallback = resolveSpaFallback(req.path, API_PREFIX, loadedRoutes);
       if (fallback.kind === "redirect") {
          // 302, not a permanent redirect: this maps a mistaken URL onto the
          // right one, and a path the app may later claim as a route of its own

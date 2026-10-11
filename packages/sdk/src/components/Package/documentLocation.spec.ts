@@ -240,16 +240,10 @@ describe("locateDocument (deprecated)", () => {
 
 /** The SDK's column of the drill case table the server's `resolveDrillDestination` shares. */
 describe("resolveDrillTarget: the shared drill case table", () => {
-   type Answer = {
-      kind: string;
-      path?: string;
-      rewrite?: string;
-      candidates?: string[];
-      malformed?: boolean;
-   };
+   type Answer = { kind: string; path?: string; malformed?: boolean };
    const { cases } = JSON.parse(
       fs.readFileSync(
-         path.join(
+         path.resolve(
             import.meta.dir,
             "../DashboardBuilder/testing/drillResolution.json",
          ),
@@ -261,7 +255,8 @@ describe("resolveDrillTarget: the shared drill case table", () => {
          to: string;
          reports: { path: string; layout: string; dropped?: boolean }[];
          server: Answer;
-         sdk: Answer;
+         sdk?: Answer;
+         sdkPending?: boolean;
          knownDifference?: string;
       }[];
    };
@@ -272,17 +267,10 @@ describe("resolveDrillTarget: the shared drill case table", () => {
          const target = resolveDrillTarget(testCase.to, listed);
          const answer: Answer =
             target.kind === "unresolved"
-               ? { kind: target.kind, candidates: target.candidates }
+               ? { kind: target.kind }
                : { kind: target.kind, path: target.report.path };
-         expect(answer).toEqual(testCase.sdk);
-         const {
-            rewrite: _rewrite,
-            malformed: _malformed,
-            ...comparable
-         } = testCase.server;
-         expect(
-            JSON.stringify(comparable) !== JSON.stringify(testCase.sdk),
-         ).toBe(testCase.knownDifference !== undefined);
+         const { malformed: _malformed, ...server } = testCase.server;
+         expect(answer).toEqual(testCase.sdk ?? server);
       });
    }
 });

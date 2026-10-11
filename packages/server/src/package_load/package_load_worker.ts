@@ -82,7 +82,7 @@ import {
    normalizeModelPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
-import { isReportEligiblePath, textClaimsToBeAReport } from "../service/report";
+import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import {
    recordAuthorizeAdmitAllGate,
    recordRowLevelGateRejected,
@@ -484,9 +484,9 @@ async function readInstallRecord(
 }
 
 /**
- * Which `explores` entries are reports, by the report rule's text test
- * (`report.ts`): the same test discovery applies to a file it has no compiled
- * tags for. Read here, before the compile, because the manifest is resolved
+ * Which `explores` entries are reports, by the one report tag reader
+ * (`report.ts`) over each file's text: what discovery reads off the compiled
+ * file. Read here, before the compile, because the manifest is resolved
  * first. Only the declared entries are read. Never throws.
  */
 async function declaredReportPaths(
@@ -506,7 +506,8 @@ async function declaredReportPaths(
             path.join(packagePath, modelPath),
             "utf8",
          );
-         if (textClaimsToBeAReport(text)) reports.add(modelPath);
+         if (readReportTagOfText(text).status === "report")
+            reports.add(modelPath);
       } catch {
          // Unreadable: not a report as far as the advice goes.
       }

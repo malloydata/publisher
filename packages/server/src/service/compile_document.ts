@@ -15,7 +15,6 @@ import {
 import {
    buildDashboardManifest,
    compileTileGivens,
-   factsLayout,
    normalizeTileExpression,
    readDashboardModelFacts,
    readDocumentTileExpressions,
@@ -29,14 +28,14 @@ import {
 } from "./query_text";
 import {
    cellOffsets,
-   claimsToBeANotebook,
+   cellsUnreadableProblem,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
    type NotebookCellSpan,
 } from "./notebook";
 import { extractSourcesFromModelDef } from "./source_extraction";
-import { kindOfLayout, type ReportLayout } from "./report";
+import { readReportTagOfText, type ReportLayout } from "./report";
 
 /**
  * Compile of a document: caller-submitted text that carries a model-level
@@ -93,8 +92,6 @@ export interface DocumentCell {
 
 export interface CompiledDocument {
    layout: ReportLayout;
-   /** `layout` in the old vocabulary (grid is `dashboard`), kept for older clients. */
-   kind: DashboardManifest["kind"];
    manifest?: Omit<DashboardManifest, "entryFile" | "path">;
    cells: DocumentCell[];
 }
@@ -190,28 +187,13 @@ export async function compileDocument(input: {
    gates: DocumentGates;
 }): Promise<DocumentCompileResult | undefined> {
    const { base, source, modelName, gates } = input;
-   if (!claimsToBeANotebook(source)) return undefined;
+   const tag = readReportTagOfText(source);
+   if (tag.status !== "report") return undefined;
    const parse = parseNotebookText(source);
    if (isNotebookReaderError(parse)) return undefined;
    const read = readNotebookCells(parse, undefined, source);
    if (read.error) {
-      const line = read.error.line - 1;
-      return {
-         problems: [
-            {
-               code: "notebook-cells-unreadable",
-               severity: "error",
-               message: read.error.message,
-               at: {
-                  url: "",
-                  range: {
-                     start: { line, character: 0 },
-                     end: { line, character: 0 },
-                  },
-               },
-            } as LogMessage,
-         ],
-      };
+      return { problems: [cellsUnreadableProblem(read.error, "")] };
    }
 
    // Phase 1: decide every unit by its text, in file order so a restricted
@@ -476,18 +458,13 @@ export async function compileDocument(input: {
       });
    if (!manifest) {
       // Written as cells: no tile layout, so the file's own cells are the document.
-      const layout = factsLayout(facts);
-      return {
-         problems,
-         document: { layout, kind: kindOfLayout(layout), cells },
-      };
+      return { problems, document: { layout: tag.layout, cells } };
    }
    const { entryFile: _entry, ...rest } = manifest;
    return {
       problems,
       document: {
          layout: manifest.layout,
-         kind: manifest.kind,
          manifest: { ...rest, name: slug },
          cells,
       },

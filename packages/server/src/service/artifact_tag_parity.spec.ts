@@ -5,7 +5,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
-   artifactTagText,
+   artifactNoteOfText,
    translateToParse,
    type TokenStreamShape,
 } from "./notebook";
@@ -69,7 +69,7 @@ describe("the artifact tag read off raw text agrees with the SDK and the lexer",
    for (const { name, source, tag, server } of cases)
       it(name, () => {
          expect(lexerTag(source)).toEqual(tag);
-         const found = artifactTagText(source);
+         const found = artifactNoteOfText(source);
          expect(found === undefined ? null : lines(found)).toEqual(
             server ?? tag,
          );
