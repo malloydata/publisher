@@ -153,7 +153,10 @@ describe("Package skills and agents (E2E)", () => {
       it("returns the resolved agent with every skill file by default", async () => {
          const { status, body } = await get("/agents/analyst");
          expect(status).toBe(200);
-         expect(body.instructions).toBe("Be careful with revenue.\n");
+         // Windows checks the fixture out with CRLF.
+         expect(body.instructions.replace(/\r\n/g, "\n")).toBe(
+            "Be careful with revenue.\n",
+         );
          expect(
             body.skills.map(
                (f: { relative_filepath: string }) => f.relative_filepath,
