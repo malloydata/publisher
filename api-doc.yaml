@@ -3681,7 +3681,13 @@ components:
             (`model` is its path), and each source a file declares deprecated
             `#(filter)` annotations on (`model` is that file, `subject` the
             source; a source that only inherits or imports a filter is not
-            reported). Both still load and run.
+            reported). Both still load and run. Temporarily, until the
+            deprecations end, also `report-layout-changed` (`warn`): a
+            `notebooks/<name>.malloy` directly under the top-level
+            `notebooks/` whose model-level `## artifact` lists tiles and names
+            no `layout=` or `kind=`. It read as linear before reports, because
+            the folder supplied the kind, and is grid now; the fix is
+            `layout=linear`.
             Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
@@ -3790,7 +3796,10 @@ components:
                   notebook, the deprecated cell format (one per file, `model`
                   naming it). `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
-                  `model` naming its file and `subject` the source). The per-file
+                  `model` naming its file and `subject` the source).
+                  `report-layout-changed` (temporary): a `notebooks/<name>.malloy`
+                  that lists tiles and names no layout, which read as linear
+                  before reports and is grid now (one per file). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation and drill findings (`drill-target-by-name`,
                   `report-on-surface`, `index-is-not-a-report`,
