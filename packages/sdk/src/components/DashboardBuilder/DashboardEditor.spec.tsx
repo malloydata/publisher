@@ -319,10 +319,30 @@ describe("DashboardEditor", () => {
       );
       expect(onEvent.mock.calls[0][0]).toMatchObject({
          type: "report.opened",
+         path: "dashboards/overview.malloy",
+         layout: "grid",
+         surface: "edit",
          from: "package",
          tiles: 1,
       });
       expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
       expect(button("Saved")).toBeDefined();
+   });
+
+   it("reports a file it could not fetch as one load failure, by category", async () => {
+      fetchFailure = Object.assign(new Error("gone"), { status: 404 });
+      const onEvent = mock((_event: ReportEvent) => {});
+      mount(onEvent);
+      await waitFor(() => expect(onEvent).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(onEvent.mock.calls.map(([event]) => event)).toEqual([
+         {
+            type: "report.load_failed",
+            path: "dashboards/overview.malloy",
+            layout: "grid",
+            surface: "edit",
+            category: "not_found",
+         },
+      ]);
    });
 });

@@ -3,6 +3,7 @@
 
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
+import type { ReportEvent } from "../Report/telemetry";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { openDocument } from "./testing/fixtures";
 
@@ -110,5 +111,35 @@ describe("the layout switch", () => {
       expect(onSave.mock.calls[0][0]).toBe(
          GRID.replace("layout=grid", "layout=linear"),
       );
+   });
+
+   it("reports a switch once, and the save after it under the new layout", async () => {
+      const onEvent = mock((_event: ReportEvent) => {});
+      render(
+         <DashboardBuilder
+            source={LINEAR}
+            document={await openDocument(LINEAR)}
+            onSave={() => Promise.resolve()}
+            modelPath="store/front.malloy"
+            onEvent={onEvent}
+         />,
+      );
+      fireEvent.click(button("Grid layout"));
+      // The layout already pressed is not a switch.
+      fireEvent.click(button("Grid layout"));
+      fireEvent.click(button("Save"));
+      await waitFor(() => expect(onEvent).toHaveBeenCalledTimes(2));
+      expect(onEvent.mock.calls[0][0]).toEqual({
+         type: "report.layout_changed",
+         path: "store/front.malloy",
+         layout: "grid",
+         from: "linear",
+         to: "grid",
+      });
+      expect(onEvent.mock.calls[1][0]).toMatchObject({
+         type: "report.saved",
+         path: "store/front.malloy",
+         layout: "grid",
+      });
    });
 });
