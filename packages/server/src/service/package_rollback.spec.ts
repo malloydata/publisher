@@ -10,22 +10,21 @@ import { BadRequestError } from "../errors";
 import { Environment } from "./environment";
 
 /**
- * Regression tests for explores-validation ROLLBACK, guarding against the two
+ * Regression tests for publish-validation ROLLBACK, guarding against the two
  * data-loss bugs a code review found:
  *
  *  1. No-location create rollback must NOT delete a pre-existing user
  *     directory. The controller now `unloadPackage`s (evict from memory, keep
  *     files) instead of `deletePackage` (which renames + rm's the tree).
  *
- *  2. A location update/reinstall with invalid explores must roll back to the
- *     PREVIOUS tree rather than swapping the rejected one in and 400-ing after.
+ *  2. A location update/reinstall that fails validation (here, an invalid
+ *     persistence policy) must roll back to the PREVIOUS tree rather than
+ *     swapping the rejected one in and 400-ing after.
  *     Validation now happens inside `installPackage`'s swap window.
  *
  * Both run against a real `Environment` + real `Package.create` over temp dirs.
  */
-// DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
-// RELEASE_NOTES deprecations).
-describe("deprecated: explores — validation rollback (real Environment)", () => {
+describe("publish-validation rollback (real Environment)", () => {
    let rootDir: string;
    let envPath: string;
 
@@ -92,9 +91,10 @@ describe("deprecated: explores — validation rollback (real Environment)", () =
       const goodFixture = path.join(rootDir, "good");
       const badFixture = path.join(rootDir, "bad");
       await writePackageDir(goodFixture, {}, GOOD_MODEL);
+      // A cron schedule needs "scope": "version"; the default is "package".
       await writePackageDir(
          badFixture,
-         { explores: ["missing.malloy"] },
+         { materialization: { schedule: "0 * * * *" } },
          BAD_MODEL,
       );
 
@@ -106,12 +106,12 @@ describe("deprecated: explores — validation rollback (real Environment)", () =
          GOOD_MODEL,
       );
 
-      // Reinstall with an invalid-explores tree, validated inside the swap.
+      // Reinstall with an invalid-policy tree, validated inside the swap.
       await expect(
          env.installPackage(
             "pkg",
             (stagingPath) => copyDir(badFixture, stagingPath),
-            (pkg) => pkg.formatInvalidExplores(),
+            (pkg) => pkg.formatInvalidPersistencePolicy(),
          ),
       ).rejects.toBeInstanceOf(BadRequestError);
 
@@ -129,7 +129,7 @@ describe("deprecated: explores — validation rollback (real Environment)", () =
       await writePackageDir(goodFixture, {}, GOOD_MODEL);
       await writePackageDir(
          nextFixture,
-         { explores: ["model.malloy"] },
+         { materialization: { scope: "version", schedule: "0 * * * *" } },
          BAD_MODEL,
       );
 
@@ -139,57 +139,65 @@ describe("deprecated: explores — validation rollback (real Environment)", () =
       await env.installPackage(
          "pkg",
          (stagingPath) => copyDir(nextFixture, stagingPath),
-         (pkg) => pkg.formatInvalidExplores(),
+         (pkg) => pkg.formatInvalidPersistencePolicy(),
       );
       expect(await env.getModelFileText("pkg", "model.malloy")).toBe(BAD_MODEL);
    });
 
-   it("updatePackage normalizes a ./-prefixed body explores (no false 400, persists normalized)", async () => {
-      // API-body explores must go through the same normalization the worker
-      // applies to on-disk explores, so `./model.malloy` validates and persists
-      // as `model.malloy` rather than being rejected with a misleading 404.
-      const env = await Environment.create("testEnv", envPath, []);
-      const pkgDir = path.join(envPath, "pkg");
-      await writePackageDir(pkgDir, {}, GOOD_MODEL);
-      await env.addPackage("pkg");
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `explores` (see RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("updatePackage normalizes a ./-prefixed body explores (no false 400, persists normalized)", async () => {
+         // API-body explores must go through the same normalization the worker
+         // applies to on-disk explores, so `./model.malloy` validates and persists
+         // as `model.malloy` rather than being rejected with a misleading 404.
+         const env = await Environment.create("testEnv", envPath, []);
+         const pkgDir = path.join(envPath, "pkg");
+         await writePackageDir(pkgDir, {}, GOOD_MODEL);
+         await env.addPackage("pkg");
 
-      const updated = await env.updatePackage("pkg", {
-         name: "pkg",
-         explores: ["./model.malloy"],
+         const updated = await env.updatePackage("pkg", {
+            name: "pkg",
+            explores: ["./model.malloy"],
+         });
+
+         // Accepted (no BadRequestError) and stored in normalized form...
+         expect(updated.explores).toEqual(["model.malloy"]);
+         // ...both in memory and on disk.
+         const manifest = JSON.parse(
+            await fs.readFile(path.join(pkgDir, "publisher.json"), "utf-8"),
+         );
+         expect(manifest.explores).toEqual(["model.malloy"]);
       });
-
-      // Accepted (no BadRequestError) and stored in normalized form...
-      expect(updated.explores).toEqual(["model.malloy"]);
-      // ...both in memory and on disk.
-      const manifest = JSON.parse(
-         await fs.readFile(path.join(pkgDir, "publisher.json"), "utf-8"),
-      );
-      expect(manifest.explores).toEqual(["model.malloy"]);
    });
 
-   it("compileSource rejects a notebook path; a model path still compiles", async () => {
-      // /compile appends source to the target MODEL's content for context; a
-      // notebook isn't a valid target and must be rejected up front (not left to
-      // a confusing downstream parse error).
-      const env = await Environment.create("testEnv", envPath, []);
-      const pkgDir = path.join(envPath, "pkg");
-      await writePackageDir(pkgDir, {}, GOOD_MODEL);
-      await fs.writeFile(
-         path.join(pkgDir, "report.malloynb"),
-         `>>>markdown\n# Report\n`,
-      );
-      await env.addPackage("pkg");
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("compileSource rejects a notebook path; a model path still compiles", async () => {
+         // /compile appends source to the target MODEL's content for context; a
+         // notebook isn't a valid target and must be rejected up front (not left to
+         // a confusing downstream parse error).
+         const env = await Environment.create("testEnv", envPath, []);
+         const pkgDir = path.join(envPath, "pkg");
+         await writePackageDir(pkgDir, {}, GOOD_MODEL);
+         await fs.writeFile(
+            path.join(pkgDir, "report.malloynb"),
+            `>>>markdown\n# Report\n`,
+         );
+         await env.addPackage("pkg");
 
-      await expect(
-         env.compileSource("pkg", "report.malloynb", "run: ones"),
-      ).rejects.toBeInstanceOf(BadRequestError);
+         await expect(
+            env.compileSource("pkg", "report.malloynb", "run: ones"),
+         ).rejects.toBeInstanceOf(BadRequestError);
 
-      // The .malloy model still compiles ad-hoc source (no regression).
-      const { problems } = await env.compileSource(
-         "pkg",
-         "model.malloy",
-         "run: ones -> { select: x }",
-      );
-      expect(problems.some((p) => p.severity === "error")).toBe(false);
+         // The .malloy model still compiles ad-hoc source (no regression).
+         const { problems } = await env.compileSource(
+            "pkg",
+            "model.malloy",
+            "run: ones -> { select: x }",
+         );
+         expect(problems.some((p) => p.severity === "error")).toBe(false);
+      });
    });
 });
