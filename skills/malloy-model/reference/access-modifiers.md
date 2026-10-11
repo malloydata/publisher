@@ -21,6 +21,8 @@ Add `##! experimental.access_modifiers` at the top of base source files.
 
 **What to mark `private` (only after user confirms, very rare):** Highly sensitive data only (SSNs, raw credit cards, passwords).
 
+**Personal data** (names, email addresses, street addresses, phone numbers, dates of birth) is not on that list, but never publish it silently. Point out each such column when you propose the interface, and let the user decide whether it stays public or is marked `internal` or `private`.
+
 **Include positioning:**
 - `include { } extend { }`: New definitions in extend are PUBLIC
 - `extend { } include { }`: Include covers everything
