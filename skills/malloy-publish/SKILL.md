@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 # Packaging Malloy models for Publisher
 
-> **CRITICAL: Only package or prepare a release when the user explicitly asks.** Making model changes, adding documentation, or building notebooks is NOT a publish request. Never auto-package after completing other tasks.
+> **CRITICAL: Only package or prepare a release when the user explicitly asks.** Making model changes, adding documentation, or building reports is NOT a publish request. Never auto-package after completing other tasks.
 
 ## Publishing in open-source Publisher
 
@@ -19,7 +19,7 @@ Once the package is in shape, self-hosters publish it through their own host: co
 
 ## Prerequisites
 
-- Malloy model (`.malloy`) and/or notebook (`notebooks/<slug>.malloy`) files ready
+- Malloy model (`.malloy`) and/or report (a `.malloy` file with an `## artifact` tag) files ready
 - The Publisher MCP tools configured (used by the modeling and analysis skills, not by a publish step)
 
 ## Connections: a flat-file package needs none
@@ -99,7 +99,7 @@ To check, fetch `index.malloy`'s model: its `givens` should list every given a p
 
 `publisher.json` has two older keys for this, `explores` and `queryableSources`. A new package uses neither: `index.malloy` does the job.
 
-- **`explores`** (`string[]`) is deprecated in every form. The files it lists are listed and queryable, and what they export is the surface, wherever they live. The one exception is a tagged dashboard it lists, which reads the surface and adds nothing to it. A package that sets it gets a load-time warning naming the edit that replaces it. A surface spanning several files needs no `explores`: import them all into one `index.malloy` and export what you publish.
+- **`explores`** (`string[]`) is deprecated in every form. The files it lists are listed and queryable, and what they export is the surface, wherever they live. The one exception is a tagged report it lists, which reads the surface and adds nothing to it. A package that sets it gets a load-time warning naming the edit that replaces it. A surface spanning several files needs no `explores`: import them all into one `index.malloy` and export what you publish.
 
   ```malloy
   // index.malloy
@@ -122,7 +122,7 @@ With a valid `publisher.json` in place, confirm the package is in the flat, publ
 
 ## Package Structure
 
-A flat layout at the package root is the simplest default. Subfolders work too: an `import` path resolves relative to the file that contains it, so `import "../storefront.malloy"` works from a file under `dashboards/`. Notebooks live under `notebooks/` and dashboards under `dashboards/`.
+A flat layout at the package root is the simplest default, for models and reports alike. Subfolders work too: an `import` path resolves relative to the file that contains it, so `import "../storefront.malloy"` works from a file one directory down. No directory has a special meaning: a report is a report because of its `## artifact` tag, wherever it sits.
 
 ```
 <package-name>/
@@ -132,13 +132,12 @@ A flat layout at the package root is the simplest default. Subfolders work too: 
   user_order_facts.malloy       # Computed source
   order_analysis.malloy         # Source file (joins base sources)
   customer_health.malloy        # Source file
-  notebooks/
-    monthly_report.malloy       # Notebook (optional)
+  monthly_report.malloy         # Report (optional): ## artifact { layout=linear … }
 ```
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- `notebooks/*.malloy` files with an `## artifact { kind=notebook … }` tag - Notebooks for exploration/documentation, written as a one-column layout of tiles or as older `run:` cells (see `skill:malloy-notebooks`). The tag's `kind=` decides whether a file is a notebook or a dashboard, not its folder. An existing `.malloynb` is still served; never write a new one.
+- Reports: `.malloy` files with an `## artifact { layout=linear … }` or `## artifact { layout=grid … }` tag, anywhere in the package (outside `public/`), written as tiles or, for a linear report, as older `run:` cells (see `skill:malloy-reports`). The tag alone makes a file a report and sets its layout; the folder means nothing. An existing `.malloynb` is still served as a linear report; never write a new one.
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management
@@ -151,7 +150,7 @@ Publishable contents:
 ## Workflow
 
 1. Verify `publisher.json` exists; if not, create it (suggest name from model content, default `0.0.1`).
-2. Confirm the package layout: model files in the package root (or imported by relative path from wherever they sit), notebooks under `notebooks/`, dashboards under `dashboards/`.
+2. Confirm the package layout: model and report files in the package root (or imported by relative path from wherever they sit), every report tagged with `layout=`, nothing a report needs under `public/`.
 3. Hand the package to the host's publish path (commit to git, then run the deploy step for your Publisher instance). If a version-already-exists conflict occurs, bump the patch version in `publisher.json` and retry.
 4. Confirm with the user how their package is served so they can verify it is reachable.
 
