@@ -38,6 +38,13 @@ A report is identified by its **path**. Two reports may share a basename in diff
 **Deprecated, still working until a later release removes them:**
 
 - `GET …/dashboards` and `…/dashboards/{name}` (the grid reports) and `GET …/notebooks`, `…/notebooks/{path}` and `…/cells/{i}` (the linear reports). `…/dashboards/{name}` resolves a basename only when exactly one grid report has it, and answers 409 naming every match when several do. Move to `…/reports`.
+
+  These deprecated routes still answer, but their contracts are wider than before, and a client of them should check:
+  - `GET …/dashboards/{name}` can now answer **409** (several grid reports share the basename). It never did before.
+  - `GET …/dashboards` and `GET …/notebooks` now list reports from **anywhere** in the package, not only files directly under `dashboards/` or `notebooks/`: a `path` may be `sales/q3.malloy` or `a/b/c.malloy`, and a grid report in `notebooks/` is listed by `…/dashboards`, a linear one in `dashboards/` by `…/notebooks`.
+  - `Dashboard.name` is still the basename, but it is **no longer unique** in the listing; key on `path`.
+  - The SDK's `DrillNavigation.dashboard` (what a `# drill` click hands a host) is the tag's `to=`, which is now usually a **path containing `/`** (`sales/overview`) rather than a single-segment slug. Resolve it with `resolveDrillTarget` against `GET …/reports` rather than putting it into a URL as one segment.
+
 - `kind=dashboard` / `kind=notebook`: still read, reported as `report-kind-deprecated` (`warn`) with the `layout=` to write.
 - The query-level `# artifact` on a `query:`: still served as a grid report, reported as `query-artifact-deprecated` with the model-level tag to write instead. It never takes a file off the curated surface: on a file that the root `index.malloy` imports (directly or through other files) or `explores` lists, the tag is ignored, the file stays a model, and the package reports `query-artifact-ignored` naming the importer or `explores`.
 - A bare `# drill { to=name }`: it is read first as a path from the package root (`name.malloy`), with nothing said. Only when no report is there does the deprecated basename fallback apply: the one grid report with that basename resolves (bare names only ever named dashboards, and a notebook could share a dashboard's basename), else the one report of either layout with it, with a `drill-target-by-name` warning giving the path to write; otherwise it is unresolved, naming the candidates. A target with a `/` is a path only. Write `to="sales/overview"`.

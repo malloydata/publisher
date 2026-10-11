@@ -2055,6 +2055,13 @@ paths:
         tells them apart. A file with no artifact tag is an ordinary model and is
         not listed, whether or not it compiles.
 
+        **Contract change since reports.** This route used to list only
+        `.malloy` files directly under `dashboards/`, so every `name` was unique
+        and every `path` was `dashboards/<name>.malloy`. It now lists grid
+        reports from anywhere in the package (`sales/q3.malloy`,
+        `notebooks/x.malloy`, `a/b/c.malloy`), so `path` may have any depth and
+        `name` may repeat. Key on `path`.
+
         A tagged dashboard that failed to compile is listed carrying its
         `error` where that state can arise at all, so a broken dashboard is
         visibly broken rather than silently absent. In practice it rarely does:
@@ -2135,6 +2142,12 @@ paths:
         only when exactly one grid report in the package has it. When several
         do, the answer is 409 naming every matching path; address the report
         by path with get-report instead.
+
+        **Contract change since reports.** This route never answered 409
+        before: a dashboard lived directly under `dashboards/`, so its name was
+        unique. A grid report may now live anywhere, two may share a basename,
+        and a client of this route must handle 409. The match also covers grid
+        reports outside `dashboards/`.
       parameters:
         - name: environmentName
           in: path
@@ -2206,6 +2219,12 @@ paths:
         `.malloy` report whose layout is linear, wherever it lives. Each entry
         includes the relative path, package name, title, description, and any
         compilation or reading error.
+
+        **Contract change since reports.** This route used to list `.malloy`
+        notebooks only directly under `notebooks/`. It now lists linear reports
+        from anywhere in the package, including `dashboards/` and nested
+        directories, and no longer lists a kindless tiled file in `notebooks/`,
+        which is now grid (`report-layout-changed`).
       parameters:
         - name: environmentName
           in: path
@@ -4466,7 +4485,9 @@ components:
           description: >-
             The report's filename basename: a display label, and the segment of
             the deprecated get-dashboard URL. Not an identity: two reports may
-            share it.
+            share it. A change since reports: it used to be unique within the
+            package (every dashboard was directly under `dashboards/`), and a
+            client that keyed a map on it must key on `path` instead.
         path:
           type: string
           description:
@@ -4509,7 +4530,9 @@ components:
           description: >-
             The report's filename basename: a display label, and the segment of
             the deprecated get-dashboard URL. Not an identity: two reports may
-            share it.
+            share it. A change since reports: it used to be unique within the
+            package (every dashboard was directly under `dashboards/`), and a
+            client that keyed a map on it must key on `path` instead.
         path:
           type: string
           description: |

@@ -163,6 +163,10 @@ export interface DrillNavigation {
     * without `.malloy` (`sales/overview`), or a deprecated bare name. Resolve
     * it with `resolveDrillTarget` against `GET …/reports`. Named `dashboard`
     * for the hosts that already read it.
+    *
+    * A change since reports: this used to be a dashboard's slug, a single
+    * segment. It may now contain `/`, so a host that put it into a URL as one
+    * segment (`/dashboards/${dashboard}`) must resolve it instead.
     */
    dashboard: string;
    /**
