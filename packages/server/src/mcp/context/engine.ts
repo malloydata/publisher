@@ -14,6 +14,13 @@
  * Each stage is timed and traced the way the shipped stages are, so the
  * `X-Publisher-Retrieval-Trace: summary` header gives the same block, and
  * `full` adds what each stage kept and why.
+ *
+ * The stages return the complete result, and only the response is paged
+ * (pages.ts): a result longer than one page carries `next_offset`, and a
+ * call with the same arguments and that `offset` gets the next page of the
+ * same held result, with no stage run again. When the held result is gone
+ * (held 10 minutes, or the index was rebuilt), the stages run again and a
+ * warning says the page is from a new run.
  */
 
 import {
@@ -43,7 +50,16 @@ import {
 import type { FcjIndex } from "./index_build";
 import { connect, type ConnectResult } from "./connect";
 import { judge, type JudgeVerdict } from "./judge";
-import { FCJ_MAX_CHARS, respond } from "./respond";
+import {
+   FCJ_MAX_CHARS,
+   FCJ_RESERVE_CHARS,
+   FCJ_RESULT_TTL_MS,
+   heldResults,
+   pageAt,
+   resultKey,
+   type HeldResult,
+} from "./pages";
+import { respond } from "./respond";
 import { routesOf } from "./routes";
 import { toUnit } from "./vectors";
 
@@ -216,6 +232,24 @@ export async function runFcjQuery(args: {
       });
    }
    const index = state.index;
+   const held = heldResults;
+   const key = resultKey(request);
+   const leading = [...args.warnings];
+   if (request.offset > 0) {
+      const kept = held.get(key, index);
+      if (kept) {
+         return pageResponse({
+            uri,
+            result: kept,
+            request,
+            leading,
+            traceMode,
+         });
+      }
+      leading.push(
+         `No held result matched this offset, so the search ran again. A result is held for ${FCJ_RESULT_TTL_MS / 60_000} minutes, for the same arguments and givens only. This page is from the new run and can differ from pages you already have; for a consistent set, start again without offset.`,
+      );
+   }
    const settings = fcjSettingsOf(pkg.getRetrievalSettings?.());
    const stages: StageRow[] = [];
    const targets = findTargetsOf(request);
@@ -356,38 +390,35 @@ export async function runFcjQuery(args: {
       llm_calls: 0,
       tokens: { input: 0, output: 0 },
    });
-   const warnings = [
-      ...args.warnings,
-      ...(gatedWarning ? [gatedWarning] : []),
-      ...answer.warnings,
-      ...(answer.budgetDropped > 0
-         ? [
-              `${answer.budgetDropped} source card(s) were dropped to keep the response under ${FCJ_MAX_CHARS} characters. Narrow the request with scopes.`,
-           ]
-         : []),
-      ...(answer.unresolved_targets.length > 0
-         ? [
-              `No source in this package answered ${answer.unresolved_targets.length} target(s); see unresolved_targets. Rephrase them, ask the user, or answer without them.`,
-           ]
-         : []),
-   ];
-   return jsonResource(uri, {
-      sources: answer.sources,
-      ranking: "relevance" as const,
-      total_available: answer.sources.length + answer.budgetDropped,
-      returned: answer.sources.length,
-      retrieval: "semantic",
-      engine: "fcj",
+   const result: HeldResult = {
+      cards: answer.sources,
       clusters: answer.clusters,
       ...(answer.coverage ? { coverage: answer.coverage } : {}),
       unresolved_targets: answer.unresolved_targets,
-      ...(warnings.length > 0 ? { warnings } : {}),
-      ...(traceMode !== "none"
-         ? { retrieval_trace: { engine: "fcj", stages } }
-         : {}),
+      warnings: [
+         ...(gatedWarning ? [gatedWarning] : []),
+         ...answer.warnings,
+         ...(answer.unresolved_targets.length > 0
+            ? [
+                 `No source in this package answered ${answer.unresolved_targets.length} target(s); see unresolved_targets. Rephrase them, ask the user, or answer without them.`,
+              ]
+            : []),
+      ],
+   };
+   return pageResponse({
+      uri,
+      result,
+      request,
+      leading,
+      traceMode,
+      stages,
+      // Held only when there is a page to come back for.
+      hold: (paged) => {
+         if (paged) held.set(key, index, result);
+      },
       ...(traceMode === "full"
          ? {
-              retrieval_trace_full: {
+              full: {
                  fcj: {
                     find: findTrace(index, found),
                     connect: connectTrace(index, connected),
@@ -405,6 +436,89 @@ export async function runFcjQuery(args: {
                  },
               },
            }
+         : {}),
+   });
+}
+
+/**
+ * One page of a complete result, in the shipped response's shape plus
+ * `next_offset` when more pages remain. `total_available` counts every card
+ * of the result. The clusters, coverage and unresolved targets describe the
+ * whole result and ride on every page. A page served from a held result
+ * runs no stage, so its trace has only the page row.
+ */
+function pageResponse(args: {
+   uri: string;
+   result: HeldResult;
+   request: ResolvedRequest;
+   /** The request's warnings, ahead of the result's own. */
+   leading: string[];
+   traceMode: TraceMode;
+   stages?: StageRow[];
+   full?: unknown;
+   hold?: (paged: boolean) => void;
+}): ReturnType<typeof jsonResource> {
+   const { result, request, traceMode } = args;
+   const started = performance.now();
+   const total = result.cards.length;
+   const page = pageAt(result.cards, request.offset, {
+      maxChars: FCJ_MAX_CHARS,
+      reserveChars: FCJ_RESERVE_CHARS,
+      limit: request.limit,
+   });
+   args.hold?.(page.nextOffset !== undefined);
+   const stages: StageRow[] = [
+      ...(args.stages ?? []),
+      {
+         name: "page",
+         status: "ran",
+         ms: Math.round(performance.now() - started),
+         in: total,
+         out: page.cards.length,
+         llm_calls: 0,
+         tokens: { input: 0, output: 0 },
+      },
+   ];
+   const first = request.offset + 1;
+   const last = request.offset + page.cards.length;
+   const warnings = [
+      ...args.leading,
+      ...result.warnings,
+      ...(page.nextOffset !== undefined
+         ? [
+              `This page holds sources ${first} to ${last} of ${total}; nothing was cut from the result. For the rest, call get_context again with the same arguments and offset: ${page.nextOffset} (next_offset), until a response has no next_offset.`,
+           ]
+         : []),
+      ...(request.offset > 0 && page.cards.length === 0
+         ? [
+              `offset ${request.offset} is past the end of this result, which has ${total} source(s).`,
+           ]
+         : []),
+      ...(page.trimmed > 0
+         ? [
+              `One source card is larger than a page by itself, so ${page.trimmed} of its descriptions were shortened (marked …). Every picked field is still on it.${page.oversized ? ` It is still over ${FCJ_MAX_CHARS} characters.` : ""}`,
+           ]
+         : []),
+   ];
+   return jsonResource(args.uri, {
+      sources: page.cards,
+      ranking: "relevance" as const,
+      total_available: total,
+      returned: page.cards.length,
+      ...(page.nextOffset !== undefined
+         ? { next_offset: page.nextOffset }
+         : {}),
+      retrieval: "semantic",
+      engine: "fcj",
+      clusters: result.clusters,
+      ...(result.coverage ? { coverage: result.coverage } : {}),
+      unresolved_targets: result.unresolved_targets,
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(traceMode !== "none"
+         ? { retrieval_trace: { engine: "fcj", stages } }
+         : {}),
+      ...(traceMode === "full" && args.full
+         ? { retrieval_trace_full: args.full }
          : {}),
    });
 }
