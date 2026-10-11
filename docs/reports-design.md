@@ -5,8 +5,25 @@ SPDX-License-Identifier: MIT
 
 # Design: reports, anywhere in a package
 
-**Status: built.** The decisions are under [Decisions](#decisions). There are no open
-questions.
+**Status: shipped, except ending the deprecations.** This is the design record; the user-facing
+reference is [reports.md](reports.md). The decisions are under [Decisions](#decisions), and there
+are no open questions.
+
+- **Shipped** (Delivery steps 1–4): the report rule and layout reader on the server and in the SDK,
+  path identity, `GET …/reports` and `…/reports/{path}`, one report lint, the curation edges, the
+  write path, the builder with its layout switch, New report at the package root, drafts keyed by
+  path, drill by path, the Console's path routes, and the docs and skills. `kind=`, the query-level
+  `# artifact` and the bare-name drill fallback are removed, not deprecated: `kind=` is the
+  `report-kind-removed` error.
+- **Deferred** (Delivery step 5): removing what stays deprecated behind its own seam — the
+  `…/dashboards*` and `…/notebooks*` routes and the basename alias (`routes/deprecated.ts`,
+  `controller/legacy_report.controller.ts`, `service/legacy_report_views.ts`), the Console
+  `/dashboards/<name>` alias, and the SDK `Dashboard`/`Notebook` wrappers and kind-typed props
+  (`components/legacy/`), once Credible has moved; and `.malloynb`, `explores`,
+  `queryableSources` and `#(filter)` (`service/deprecated/`).
+
+[Where the split lives today](#where-the-split-lives-today) records the code as it stood before
+this change, which is why it names files and symbols that no longer exist.
 
 ## Goal
 
