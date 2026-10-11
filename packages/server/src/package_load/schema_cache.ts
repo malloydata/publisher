@@ -20,11 +20,12 @@
  * environment, the connection instance, and the table path or SQL. Entries
  * never go stale on their own, as in Malloy's connection cache, which only
  * refetches when a request carries a `refreshTimestamp`; the caller sends
- * those requests to the main thread instead of reading them from here.
+ * those requests to the main thread rather than reading them from here, and
+ * stores what comes back over the entry.
  */
 export class SchemaCache<T> {
    private readonly entries = new Map<string, { value: T; bytes: number }>();
-   private readonly inFlight = new Map<string, Promise<T | undefined>>();
+   private readonly inFlight = new Map<string, Promise<InFlightAnswer<T>>>();
    private totalBytes = 0;
    private hitCount = 0;
 
@@ -85,11 +86,10 @@ export class SchemaCache<T> {
    }
 
    /**
-    * The fetch already under way for `key`, if any. The promise resolves to
-    * undefined when that fetch did not produce `key`. A caller answered by it
-    * records that with {@link noteJoinedHit}.
+    * The answer of the fetch already under way for `key`, if any. A caller
+    * answered with a value records that with {@link noteJoinedHit}.
     */
-   joinInFlight(key: string): Promise<T | undefined> | undefined {
+   joinInFlight(key: string): Promise<InFlightAnswer<T>> | undefined {
       return this.inFlight.get(key);
    }
 
@@ -100,14 +100,25 @@ export class SchemaCache<T> {
 
    /**
     * Record `fetch` as under way for `key` until it settles, so concurrent
-    * misses for the same key share one fetch. The value is cached by the
-    * caller with {@link set}; a fetch that fails resolves to undefined here.
+    * misses for the same key share one fetch and its outcome, an error
+    * included. The value is cached by the caller with {@link set}; a fetch that
+    * rejects answers with its message as the error.
     */
-   trackInFlight(key: string, fetch: Promise<T | undefined>): void {
-      const settled = fetch.catch(() => undefined);
+   trackInFlight(key: string, fetch: Promise<InFlightAnswer<T>>): void {
+      const settled = fetch.catch(
+         (error: unknown): InFlightAnswer<T> => ({
+            error: error instanceof Error ? error.message : String(error),
+         }),
+      );
       this.inFlight.set(key, settled);
       void settled.finally(() => {
          if (this.inFlight.get(key) === settled) this.inFlight.delete(key);
       });
    }
+}
+
+/** What a fetch produced for one key: its value, or why there is none. */
+export interface InFlightAnswer<T> {
+   value?: T;
+   error?: string;
 }

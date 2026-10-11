@@ -1310,9 +1310,11 @@ source: t is base -> { group_by: a }
          expect(
             logSpy.mock.calls.some((call) => {
                const [level, message, meta] = call as unknown[];
+               // winston folds the entry's `message` field into its message,
+               // as it does for the same call on this thread.
                return (
                   level === "warn" &&
-                  message === "Persist annotation issue" &&
+                  String(message).startsWith("Persist annotation issue") &&
                   (meta as { modelPath?: string } | undefined)?.modelPath ===
                      "malformed.malloy"
                );

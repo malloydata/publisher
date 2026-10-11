@@ -6023,10 +6023,13 @@ export class Model {
          this.modelDef.contents as Record<string, unknown>,
       );
       this.preaggregatePlansVersion += 1;
-      // The worker compiles the companion alongside the model, against the
-      // same manifest (see SerializedModel.preaggregateCompanion), so the first
-      // build after hydration loads it rather than compiling it here. Taken
-      // once: a later rebuild compiles against whatever is bound then.
+      // The worker compiles the companion alongside the model (see
+      // SerializedModel.preaggregateCompanion), so the first build after
+      // hydration loads it rather than compiling it here. A build manifest is
+      // read only when a query is prepared, never by the compile, so loading it
+      // into a runtime holding `buildManifest` serves exactly what compiling it
+      // here would. Taken once: a later rebuild compiles against whatever is
+      // bound then.
       const prepared = this.preparedPreaggregateCompanion;
       this.preparedPreaggregateCompanion = undefined;
       if (prepared) {

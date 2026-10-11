@@ -148,11 +148,14 @@ export interface LoadPackageRequest {
     */
    computeBuildPlan?: boolean;
    /**
-    * How long into the job the worker keeps doing the work it takes on for
-    * the main thread (the build plan, render-tag results, pre-aggregation
-    * companions). Past it, the rest is left to the main thread, so a slow
-    * package degrades to the main-thread path rather than having its load
-    * fail on the pool's job timeout. A share of that timeout.
+    * How long into the job the worker keeps preparing render-tag results and
+    * pre-aggregation companions for the main thread. It is checked before
+    * each render-tag target and each companion; past it, a model's remaining
+    * share is left to the main thread, so a slow package degrades to the
+    * main-thread path for those models rather than having its load fail on
+    * the pool's job timeout. A share of that timeout. The build plan is not
+    * bounded by it: the main thread could only derive the plan by compiling
+    * the whole package again, so the worker always finishes it.
     */
    mainThreadWorkBudgetMs: number;
    /**
@@ -324,7 +327,9 @@ export interface LoadPackageResult {
    timings: {
       /**
        * Compile-region wall-clock minus time awaiting proxied schema fetches —
-       * a conservative ceiling on Malloy compile CPU.
+       * a conservative ceiling on Malloy compile CPU. The region includes the
+       * build plan, render-tag results and companions prepared for the main
+       * thread, which interleave with the models' compiles.
        */
       compileDurationMs: number;
       /** Wall-clock awaiting proxied connection schema fetches (union). */
@@ -338,31 +343,38 @@ export interface LoadPackageResult {
       schemaCacheHits?: number;
    };
    /**
-    * Present when the request set `computeBuildPlan` and the worker derived
-    * the plan before its soft deadline (see `jobTimeoutMs`).
+    * Present when the request set `computeBuildPlan` and every model
+    * compiled. A model that fails to compile fails a load that wants a plan,
+    * so the worker stops collecting it.
     */
    buildPlan?: WorkerBuildPlan;
-   /** What the job logged, for the main thread to log (see WorkerLogEntry). */
-   logs?: WorkerLogEntry[];
 }
 
 /**
- * A log call made while a job ran in the worker. The worker's logger writes
- * only to its own stdout, outside the main thread's OpenTelemetry log
- * pipeline, so a job's log calls are captured and sent back with its result
- * for the main thread to log.
+ * A log entry written while a job ran in the worker. The worker's logger
+ * writes only to its own stdout, outside the main thread's OpenTelemetry log
+ * pipeline, so a job's entries are sent to the main thread as they are
+ * written, and logged there: they reach it whatever later happens to the job,
+ * a timeout or a crash included.
  */
-export interface WorkerLogEntry {
-   level: "error" | "warn" | "info" | "debug";
+export interface WorkerLogMessage {
+   type: "log";
+   jobId: string;
+   /** The package the job loads, added to the entry's meta. */
+   packagePath: string;
+   level: string;
    message: string;
-   meta?: Record<string, unknown>;
+   /** The entry's other fields, an error's message and stack among them. */
+   meta: Record<string, unknown>;
 }
 
 /**
  * The package build plan the worker derived from the models it compiled, so
  * the main thread does not compile the package a second time to get it.
- * `durationMs` is the worker time spent deriving it. A failure carries the
- * message the main thread reports; it fails the plan, not the load.
+ * `durationMs` is the wall-clock from the first model's plan collection to the
+ * end of the derivation. Other models' compiles interleave with it, so it is a
+ * ceiling on the plan's own cost and never exceeds the load. A failure carries
+ * the message the main thread reports; it fails the plan, not the load.
  */
 export type WorkerBuildPlan =
    | {
@@ -386,8 +398,6 @@ export interface LoadPackageError {
    type: "load-package-error";
    requestId: string;
    error: SerializedError;
-   /** What the job logged before it failed (see WorkerLogEntry). */
-   logs?: WorkerLogEntry[];
 }
 
 /**
@@ -546,4 +556,5 @@ export type WorkerToMainMessage =
    | SchemaForTablesRequest
    | SchemaForSqlRequest
    | ReadUrlRequest
+   | WorkerLogMessage
    | ReadyMessage;

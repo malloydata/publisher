@@ -25,6 +25,7 @@ import {
    describe,
    expect,
    it,
+   spyOn,
 } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
@@ -353,12 +354,185 @@ source: by_category_table is orders -> by_category
       expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeDefined();
    });
 
-   it("leaves the main thread's work to it past the budget, and the load still succeeds", async () => {
+   it("leaves render-tag results and companions to the main thread past the budget, but still derives the plan", async () => {
       const outcome = await loadWith(0);
       expect(outcome.models[0].compilationError).toBeUndefined();
-      expect(outcome.buildPlan).toBeUndefined();
       expect(outcome.models[0].renderTagResults).toBeUndefined();
       expect(outcome.models[0].preaggregateCompanion).toBeUndefined();
+      // The main thread could only derive the plan by compiling the package
+      // again, so the worker finishes it whatever the budget.
+      expect(outcome.buildPlan?.ok).toBe(true);
+   });
+});
+
+describe("PackageLoadPool (work for the main thread)", () => {
+   let tempDir: string;
+   beforeEach(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-prep-"));
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({ name: "pkg" }),
+      );
+   });
+   afterEach(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+   });
+
+   /**
+    * A pool and a DuckDB connection whose table-schema fetches, as this
+    * thread answers the worker's, are recorded and held up by `hold`.
+    */
+   async function setUp(
+      hold: (tables: string[]) => Promise<void>,
+      options: { jobTimeoutMs?: number } = {},
+   ) {
+      const pool = new PackageLoadPool(1, undefined, options);
+      const { MalloyConfig, FixedConnectionMap } = await import(
+         "@malloydata/malloy"
+      );
+      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
+      const duckdb = new DuckDBConnection("duckdb", ":memory:");
+      const tableFetches: string[][] = [];
+      const fetch = duckdb.fetchSchemaForTables.bind(duckdb);
+      duckdb.fetchSchemaForTables = async (tables, fetchOptions) => {
+         const paths = Object.values(tables);
+         tableFetches.push(paths);
+         await hold(paths);
+         return fetch(tables, fetchOptions);
+      };
+      const malloyConfig = new MalloyConfig({ connections: {} });
+      malloyConfig.wrapConnections(
+         () => new FixedConnectionMap(new Map([["duckdb", duckdb]]), "duckdb"),
+      );
+      const load = (computeBuildPlan: boolean) =>
+         pool.loadPackage({
+            packagePath: tempDir,
+            packageName: "pkg",
+            environmentName: "env",
+            malloyConfig,
+            defaultConnectionName: "duckdb",
+            computeBuildPlan,
+            withPreaggregateCompanions: true,
+         });
+      const tearDown = async () => {
+         await pool.shutdown();
+         await duckdb.close();
+      };
+      return { duckdb, tableFetches, load, tearDown };
+   }
+
+   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+   it("logs a job's entries on this thread as they are written, so a job that times out keeps them", async () => {
+      // A malformed `#@ persist` tag is reported while the worker collects
+      // the plan; the other model waits on a table forever, so the job times
+      // out after that report.
+      fs.writeFileSync(
+         path.join(tempDir, "malformed.malloy"),
+         `##! experimental.persistence
+source: base is duckdb.sql("select 1 as a")
+#@ persist name="t" (
+source: t is base -> { group_by: a }
+`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "stuck.malloy"),
+         `source: stuck is duckdb.table('never_answered')\n`,
+      );
+      const { tearDown, load } = await setUp(
+         (tables) =>
+            tables.includes("never_answered")
+               ? new Promise<void>(() => {})
+               : Promise.resolve(),
+         { jobTimeoutMs: 3000 },
+      );
+      const { logger } = await import("../logger");
+      const logSpy = spyOn(logger, "log");
+      try {
+         await expect(load(true)).rejects.toThrow(/timed out/);
+         // winston folds the entry's `message` field into its message, as it
+         // does for the same call on this thread.
+         const reported = logSpy.mock.calls.find((call) => {
+            const [level, message] = call as unknown[];
+            return (
+               level === "warn" &&
+               String(message).startsWith("Persist annotation issue")
+            );
+         }) as unknown[] | undefined;
+         expect(reported?.[2]).toMatchObject({
+            packagePath: tempDir,
+            modelPath: "malformed.malloy",
+         });
+      } finally {
+         logSpy.mockRestore();
+         await tearDown();
+      }
+   });
+
+   it("stops preparing for this thread once a model fails in a load that wants a plan", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "good.malloy"),
+         `source: good is duckdb.table('slow_t') extend {
+  # bar_chart
+  view: by_a is { group_by: a }
+}
+`,
+      );
+      // The good model's compile waits on its table, so the broken one has
+      // failed by the time the good one is ready for its share.
+      const { duckdb, load, tearDown } = await setUp((tables) =>
+         tables.includes("slow_t") ? sleep(500) : Promise.resolve(),
+      );
+      try {
+         await duckdb.runSQL("create table slow_t as select 1 as a");
+         const brokenPath = path.join(tempDir, "broken.malloy");
+         fs.writeFileSync(
+            brokenPath,
+            `source: broken is duckdb.sql("select 1 as a") extend {
+  dimension: b is no_such_field
+}
+`,
+         );
+         const outcome = await load(true);
+         const byPath = new Map(outcome.models.map((m) => [m.modelPath, m]));
+         expect(byPath.get("broken.malloy")?.compilationError).toBeDefined();
+         expect(byPath.get("good.malloy")?.compilationError).toBeUndefined();
+         expect(byPath.get("good.malloy")?.renderTagResults).toBeUndefined();
+         expect(outcome.buildPlan).toBeUndefined();
+
+         // Without the broken model, the good one's results are prepared.
+         fs.rmSync(brokenPath);
+         const alone = await load(true);
+         expect(alone.models[0].renderTagResults?.length).toBe(1);
+      } finally {
+         await tearDown();
+      }
+   });
+
+   it("asks this thread once for a table every model waits on, sharing a failed fetch's error", async () => {
+      for (let i = 0; i < 5; i++) {
+         fs.writeFileSync(
+            path.join(tempDir, `m${i}.malloy`),
+            `source: s${i} is duckdb.table('missing_t')\n`,
+         );
+      }
+      // Held long enough for every model's compile to ask for the table
+      // while the first request is still out.
+      const { tableFetches, load, tearDown } = await setUp((tables) =>
+         tables.includes("missing_t") ? sleep(300) : Promise.resolve(),
+      );
+      try {
+         const outcome = await load(false);
+         expect(outcome.models).toHaveLength(5);
+         for (const model of outcome.models) {
+            expect(model.compilationError?.message).toContain("missing_t");
+         }
+         expect(
+            tableFetches.filter((paths) => paths.includes("missing_t")),
+         ).toHaveLength(1);
+      } finally {
+         await tearDown();
+      }
    });
 });
 

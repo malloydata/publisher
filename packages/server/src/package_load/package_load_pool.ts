@@ -103,8 +103,8 @@ import type {
    SchemaForSqlResponse,
    SchemaForTablesRequest,
    SchemaForTablesResponse,
-   WorkerLogEntry,
    SerializedModel,
+   WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
 
@@ -177,10 +177,10 @@ const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
 })();
 
 /**
- * The share of a job's timeout the worker spends on work it does for the main
- * thread before leaving the rest to it (see
- * LoadPackageRequest.mainThreadWorkBudgetMs). The remainder is headroom for
- * the compile to finish.
+ * The share of a job's timeout the worker spends preparing render-tag results
+ * and pre-aggregation companions for the main thread before leaving the rest
+ * to it (see LoadPackageRequest.mainThreadWorkBudgetMs). The remainder is
+ * headroom for the compile and the build plan to finish.
  */
 const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
 
@@ -351,6 +351,7 @@ export class PackageLoadPool {
    private readonly workerScript: URL;
    private readonly schemaCacheBytes: number;
    private readonly mainThreadWorkBudgetMs: number;
+   private readonly jobTimeoutMs: number;
 
    constructor(
       maxWorkers: number,
@@ -358,6 +359,8 @@ export class PackageLoadPool {
       options: {
          /** See LoadPackageRequest.mainThreadWorkBudgetMs. */
          mainThreadWorkBudgetMs?: number;
+         /** Overrides PACKAGE_LOAD_JOB_TIMEOUT_MS. */
+         jobTimeoutMs?: number;
       } = {},
    ) {
       if (!Number.isFinite(maxWorkers) || maxWorkers < 1) {
@@ -370,9 +373,10 @@ export class PackageLoadPool {
       this.maxWorkers = maxWorkers;
       this.workerScript = workerScript ?? resolveWorkerScript();
       this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
+      this.jobTimeoutMs = options.jobTimeoutMs ?? PACKAGE_LOAD_JOB_TIMEOUT_MS;
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
-         MAIN_THREAD_WORK_BUDGET_SHARE * PACKAGE_LOAD_JOB_TIMEOUT_MS;
+         MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
    }
 
    get size(): number {
@@ -495,7 +499,7 @@ export class PackageLoadPool {
 
       const timeout = setTimeout(() => {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
-      }, PACKAGE_LOAD_JOB_TIMEOUT_MS);
+      }, this.jobTimeoutMs);
 
       this.jobs.set(jobId, {
          jobId,
@@ -543,12 +547,12 @@ export class PackageLoadPool {
       packagePath: string,
    ): void {
       logger.error(
-         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${PACKAGE_LOAD_JOB_TIMEOUT_MS}ms; terminating worker #${pw.id}`,
+         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${this.jobTimeoutMs}ms; terminating worker #${pw.id}`,
       );
       this.failJob(
          jobId,
          new Error(
-            `Package-load worker timed out after ${PACKAGE_LOAD_JOB_TIMEOUT_MS}ms (package=${packagePath})`,
+            `Package-load worker timed out after ${this.jobTimeoutMs}ms (package=${packagePath})`,
          ),
       );
       void pw.worker.terminate();
@@ -682,6 +686,9 @@ export class PackageLoadPool {
          case "read-url":
             void this.handleReadUrl(pw, msg);
             return;
+         case "log":
+            handleWorkerLog(msg);
+            return;
          default: {
             const exhaustive: never = msg;
             void exhaustive;
@@ -691,7 +698,6 @@ export class PackageLoadPool {
    }
 
    private completeJob(pw: PoolWorker, msg: LoadPackageResult): void {
-      replayWorkerLogs(msg.logs);
       const ctx = this.jobs.get(msg.requestId);
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
@@ -702,7 +708,6 @@ export class PackageLoadPool {
    }
 
    private errorJob(pw: PoolWorker, msg: LoadPackageError): void {
-      replayWorkerLogs(msg.logs);
       const ctx = this.jobs.get(msg.requestId);
       if (!ctx) return;
       this.jobs.delete(msg.requestId);
@@ -927,13 +932,15 @@ function connectionGeneration(conn: object): number {
 }
 
 /**
- * Log what a job logged in the worker, on this thread, whose logger reaches
- * the OpenTelemetry log pipeline (see WorkerLogEntry).
+ * Log an entry a job wrote in the worker on this thread, whose logger reaches
+ * the OpenTelemetry log pipeline (see WorkerLogMessage), naming the package
+ * the job loads.
  */
-function replayWorkerLogs(logs: WorkerLogEntry[] | undefined): void {
-   for (const entry of logs ?? []) {
-      logger.log(entry.level, entry.message, entry.meta ?? {});
-   }
+function handleWorkerLog(msg: WorkerLogMessage): void {
+   logger.log(msg.level, msg.message, {
+      packagePath: msg.packagePath,
+      ...msg.meta,
+   });
 }
 
 /**

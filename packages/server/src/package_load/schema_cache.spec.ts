@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { SchemaCache } from "./schema_cache";
+import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 
 /** Sizes an entry by its string length, so a test can reason in bytes. */
 const byLength = (value: string): number => value.length;
@@ -51,20 +51,36 @@ describe("SchemaCache", () => {
       cache.set("t", "T");
       cache.get("t");
       cache.get("missing");
-      let resolve: (v: string) => void = () => {};
-      cache.trackInFlight("u", new Promise<string>((r) => (resolve = r)));
+      let resolve: (v: InFlightAnswer<string>) => void = () => {};
+      cache.trackInFlight(
+         "u",
+         new Promise<InFlightAnswer<string>>((r) => (resolve = r)),
+      );
       const joined = cache.joinInFlight("u");
       expect(cache.hits).toBe(1);
-      resolve("U");
-      expect(await joined).toBe("U");
+      resolve({ value: "U" });
+      expect(await joined).toEqual({ value: "U" });
       cache.noteJoinedHit();
       expect(cache.hits).toBe(2);
    });
 
-   it("resolves a joined fetch that failed to undefined, and forgets it once settled", async () => {
+   it("shares a fetch's error with the requests that joined it", async () => {
+      const cache = new SchemaCache<string>(100, byLength);
+      cache.trackInFlight(
+         "t",
+         Promise.resolve({ error: "relation t does not exist" }),
+      );
+      expect(await cache.joinInFlight("t")).toEqual({
+         error: "relation t does not exist",
+      });
+   });
+
+   it("answers a joined fetch that rejected with its message, and forgets it once settled", async () => {
       const cache = new SchemaCache<string>(100, byLength);
       cache.trackInFlight("t", Promise.reject(new Error("warehouse down")));
-      expect(await cache.joinInFlight("t")).toBeUndefined();
+      expect(await cache.joinInFlight("t")).toEqual({
+         error: "warehouse down",
+      });
       await Promise.resolve();
       await Promise.resolve();
       expect(cache.joinInFlight("t")).toBeUndefined();
