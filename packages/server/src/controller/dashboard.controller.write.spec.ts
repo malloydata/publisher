@@ -34,7 +34,7 @@ const PATH = "dashboards/overview.malloy";
 const BEFORE = '## artifact { title="Before" tiles=["a -> x"] }';
 const AFTER = '## artifact { title="After" tiles=["a -> x"] }';
 const NOTEBOOK_PATH = "notebooks/tour.malloy";
-const NOTEBOOK = "## artifact { kind=notebook }\n##(markdown) Hello\n";
+const NOTEBOOK = "## artifact { layout=linear }\n##(markdown) Hello\n";
 
 function harness(
    options: {
@@ -384,7 +384,7 @@ describe("DashboardController.putDashboardSource", () => {
 
    it("refuses a tagged write over a file whose only tag is inside a block comment, as discovery reads it", async () => {
       const include =
-         "/*\n## artifact { kind=notebook }\n*/\nsource: s is duckdb.sql('select 1')\n";
+         "/*\n## artifact { layout=linear }\n*/\nsource: s is duckdb.sql('select 1')\n";
       const { controller } = harness({
          current: include,
          loadedReport: false,
@@ -426,7 +426,7 @@ describe("DashboardController.putDashboardSource", () => {
       await expect(
          controller.putDashboardSource("env", "pkg", NOTEBOOK_PATH, {
             source:
-               "/*\n## artifact { kind=notebook }\n*/\n##(markdown) Hello\n",
+               "/*\n## artifact { layout=linear }\n*/\n##(markdown) Hello\n",
          }),
       ).rejects.toBeInstanceOf(WriteRolledBackError);
    });

@@ -41,14 +41,14 @@ const LEGACY = fs
    )
    .replace(/\r\n/g, "\n");
 
-const LAYOUT = `## artifact { kind=notebook title="Tour" tiles=[intro { kind=text }] }
+const LAYOUT = `## artifact { layout=linear title="Tour" tiles=[intro { kind=text }] }
 
 ##|(markdown) intro
 Hello.
 |##
 `;
 
-const REFUSED = `## artifact { kind=notebook }
+const REFUSED = `## artifact { layout=linear }
 import { orders } from "../m.malloy"
 
 run: orders extend { dimension: z is 1 } -> { select: z }

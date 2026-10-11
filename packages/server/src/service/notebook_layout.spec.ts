@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Notebooks written as a tile layout (`## artifact { kind=notebook tiles=[…] }`)
+ * Notebooks written as a tile layout (`## artifact { layout=linear tiles=[…] }`)
  * and the kind-from-tag rule, driven through `Package.create` on the
  * package-load worker pool, the way a real load runs.
  */
@@ -33,7 +33,7 @@ const SOURCE =
    `}\n`;
 
 const LAYOUT =
-   `## artifact { kind=notebook title="Tour" tiles=[intro { kind=text }, "base -> by_label"] }\n` +
+   `## artifact { layout=linear title="Tour" tiles=[intro { kind=text }, "base -> by_label"] }\n` +
    SOURCE +
    `\n##|(markdown) intro\n# Welcome\n\nRead **this** first.\n|##\n`;
 
@@ -175,7 +175,7 @@ describe("notebooks written as tiles (worker path)", () => {
    it("keeps a notebook written as cells free of a layout", async () => {
       write(
          "notebooks/cells.malloy",
-         `## artifact { kind=notebook }\n${SOURCE}run: base -> by_label\n`,
+         `## artifact { layout=linear }\n${SOURCE}run: base -> by_label\n`,
       );
       await withPackage(async (pkg) => {
          const raw = await pkg
@@ -192,7 +192,7 @@ describe("notebooks written as tiles (worker path)", () => {
    it("serves a notebook with no tiles yet as a layout", async () => {
       write(
          "notebooks/empty.malloy",
-         `## artifact { kind=notebook tiles=[] }\n${SOURCE}`,
+         `## artifact { layout=linear tiles=[] }\n${SOURCE}`,
       );
       await withPackage(async (pkg) => {
          const raw = await pkg
@@ -230,7 +230,7 @@ describe("notebooks written as tiles (worker path)", () => {
       );
       write(
          "notebooks/in_notebooks.malloy",
-         `## artifact { kind=dashboard tiles=["base -> by_label"] }\n${SOURCE}`,
+         `## artifact { layout=grid tiles=["base -> by_label"] }\n${SOURCE}`,
       );
       await withPackage(async (pkg) => {
          expect(pkg.getReportLayout("dashboards/in_dashboards.malloy")).toBe(

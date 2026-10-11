@@ -751,7 +751,7 @@ export { pub2, pub3 }`,
       );
       fs.writeFileSync(
          path.join(tempDir, "notebooks/nb.malloy"),
-         `## artifact { kind=notebook }\nsource: nb is duckdb.sql("select 1 as id")\n`,
+         `## artifact { layout=linear }\nsource: nb is duckdb.sql("select 1 as id")\n`,
       );
       fs.writeFileSync(
          path.join(tempDir, "dashboards/d.malloy"),

@@ -379,8 +379,8 @@ query: x is sales -> by_n
       // A valid notebook tag after the broken one makes the file a notebook,
       // so the dashboard lint reports nothing. A reload keeps it too.
       await writeDashboard(
-         `## artifact { kind=notebook title=Monthly sales! }\n` +
-            `## artifact { kind=notebook }\n` +
+         `## artifact { layout=linear title=Monthly sales! }\n` +
+            `## artifact { layout=linear }\n` +
             `source: a is duckdb.sql("select 1 as x")\n`,
       );
       const result = await compilePackage();

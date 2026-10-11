@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { DashboardBuilder } from "./DashboardBuilder";
 import { openDocument } from "./testing/fixtures";
 
-const NOTEBOOK = `## artifact { kind=notebook title="Review" tiles=["a -> by_cat"] }
+const NOTEBOOK = `## artifact { layout=linear title="Review" tiles=["a -> by_cat"] }
 import { scoped_orders } from "../data_app.malloy"
 import { spare } from "../spare.malloy"
 

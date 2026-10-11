@@ -151,7 +151,7 @@ describe("warnings for content on a deprecated format", () => {
       write("models/regional.malloy", GIVENS_MODEL);
       write(
          "notebooks/overview.malloy",
-         `##! experimental.givens\n## artifact { kind=notebook title="Overview" }\nimport "../models/regional.malloy"\n\nrun: regional -> { aggregate: n }\n`,
+         `##! experimental.givens\n## artifact { layout=linear title="Overview" }\nimport "../models/regional.malloy"\n\nrun: regional -> { aggregate: n }\n`,
       );
 
       const found = await warnings();

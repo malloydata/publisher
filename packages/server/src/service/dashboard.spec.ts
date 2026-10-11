@@ -2425,7 +2425,7 @@ describe("service/dashboard grid width and hostile literals", () => {
       expect(
          lintOf(
             composite(
-               '## artifact { kind=notebook tiles=["orders -> totals"] }\n',
+               '## artifact { layout=linear tiles=["orders -> totals"] }\n',
             ),
          ),
       ).toEqual([]);
@@ -2827,7 +2827,7 @@ describe("service/dashboard kind", () => {
          )?.layout;
       expect(withProps("layout=linear")).toBe("linear");
       expect(withProps("layout=grid kind=notebook")).toBe("grid");
-      expect(withProps("kind=notebook")).toBe("linear");
+      expect(withProps("layout=linear")).toBe("linear");
       expect(withProps("layout=wide")).toBe("grid");
    });
 

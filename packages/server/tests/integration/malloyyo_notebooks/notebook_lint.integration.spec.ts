@@ -20,7 +20,7 @@ const ENV_NAME = "notebook-lint-env";
 const PKG = "notebooks-lint";
 const LINTY = "notebooks/linty.malloy";
 const BROKEN_SOURCE =
-   "## artifact { kind=notebook }\ngiven: G :: string is 'a'\n##|\"\nprose\n";
+   "## artifact { layout=linear }\ngiven: G :: string is 'a'\n##|\"\nprose\n";
 const CLEAN = "notebooks/clean.malloy";
 const WRONG_KIND = "dashboards/wrong_kind.malloy";
 
@@ -278,7 +278,7 @@ describe("notebook lint through the real server (E2E)", () => {
             expect(
                await findings(
                   "notebooks/tiles_run.malloy",
-                  `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}\nrun: a -> v\n`,
+                  `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}\nrun: a -> v\n`,
                ),
             ).toEqual([["notebook-layout-run", 6]]);
          });
@@ -287,7 +287,7 @@ describe("notebook lint through the real server (E2E)", () => {
             expect(
                await findings(
                   "notebooks/tiles_columns.malloy",
-                  `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] } dashboard { columns=12 }\n${SOURCE_LINE}${BLOCK}`,
+                  `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v"] } dashboard { columns=12 }\n${SOURCE_LINE}${BLOCK}`,
                ),
             ).toEqual([["notebook-columns-ignored", 0]]);
          });
@@ -296,7 +296,7 @@ describe("notebook lint through the real server (E2E)", () => {
             expect(
                await findings(
                   "notebooks/tiles_layout.malloy",
-                  `## artifact { kind=notebook tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}`,
+                  `## artifact { layout=linear tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}`,
                ),
             ).toEqual([["notebook-tile-layout-ignored", 0]]);
          });

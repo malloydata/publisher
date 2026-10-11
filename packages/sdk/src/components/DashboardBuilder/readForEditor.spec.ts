@@ -36,7 +36,7 @@ describe("readForEditor", () => {
 
    it("refuses a conversion it cannot make, naming the line", async () => {
       const result = await readForEditor(
-         `## artifact { kind=notebook }\nimport { o } from "../m.malloy"\n\nrun: o extend { dimension: z is 1 } -> { select: z }\n`,
+         `## artifact { layout=linear }\nimport { o } from "../m.malloy"\n\nrun: o extend { dimension: z is 1 } -> { select: z }\n`,
       );
       expect(result.ok).toBe(false);
       expect(result.ok === false && result.reason).toMatch(/line 4/i);

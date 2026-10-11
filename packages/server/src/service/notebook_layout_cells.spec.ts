@@ -25,7 +25,7 @@ const INDEX = `source: customers is duckdb.sql("select 1 as id") extend {
 
 // The surface file is the root index.malloy when the package is curated.
 const layout = (surface: string) =>
-   `## artifact { kind=notebook tiles=["customers -> v", "helper -> hv"] }
+   `## artifact { layout=linear tiles=["customers -> v", "helper -> hv"] }
 import "../base.malloy"
 import "../${surface}"
 `;

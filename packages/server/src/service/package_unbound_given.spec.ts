@@ -48,7 +48,7 @@ query: for_org is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const LAYOUT_NOTEBOOK = `##! experimental.givens
-## artifact { kind=notebook title="Unbound" }
+## artifact { layout=linear title="Unbound" }
 given: ORG :: number
 source: orders is ${ROWS} extend { measure: c is count() }
 

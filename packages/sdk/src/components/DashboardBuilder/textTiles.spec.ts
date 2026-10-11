@@ -604,7 +604,9 @@ source: a_tiles is a extend {
    });
 });
 
-describe("spliceDashboardDocument: switching kind", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `kind=` in an artifact tag (see RELEASE_NOTES deprecations).
+describe("deprecated: kind= — spliceDashboardDocument: switching kind", () => {
    it("refuses a kind change unless it is asked for", async () => {
       const reason = await refused(DASHBOARD, (d) => {
          d.kind = "notebook";

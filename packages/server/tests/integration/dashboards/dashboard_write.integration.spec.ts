@@ -43,7 +43,7 @@ const hashOf = (text: string) =>
 const SHARED_INCLUDE = "##(markdown) A shared include other models import.\n";
 /** An include whose only tag is commented out: the text looks tagged, the compiled model has no note. */
 const COMMENTED_INCLUDE =
-   "/*\n## artifact { kind=notebook }\n*/\n##(markdown) A shared include.\n";
+   "/*\n## artifact { layout=linear }\n*/\n##(markdown) A shared include.\n";
 
 /** A dashboard that compiles against the fixture's `orders` model. */
 const dashboardSource = (title: string) => `##! experimental.givens
@@ -221,7 +221,7 @@ describe("PUT model source: dashboards", () => {
 
    describe("a dashboard with no tiles yet", () => {
       const EMPTY = `##! experimental.givens
-## artifact { title="Empty start" kind=dashboard tiles=[] }
+## artifact { title="Empty start" layout=grid tiles=[] }
 `;
 
       it("writes the empty layout, a tile into it, and the empty text back with the returned hash", async () => {
@@ -234,7 +234,7 @@ describe("PUT model source: dashboards", () => {
 
          const withTile = `##! experimental.givens
 import { orders } from '../orders.malloy'
-## artifact { title="Empty start" kind=dashboard tiles=["orders -> totals"] }
+## artifact { title="Empty start" layout=grid tiles=["orders -> totals"] }
 `;
          const filled = await put("dashboards/empty-start.malloy", {
             source: withTile,
@@ -253,7 +253,7 @@ import { orders } from '../orders.malloy'
 
       it("still rolls back an empty layout whose tag is inside a comment, and says why", async () => {
          const res = await put("dashboards/commented-empty.malloy", {
-            source: "/*\n## artifact { kind=dashboard tiles=[] }\n*/\n",
+            source: "/*\n## artifact { layout=grid tiles=[] }\n*/\n",
          });
          expect(res.status).toBe(500);
          expect(await res.text()).toContain("is not served as a report");
@@ -315,7 +315,7 @@ query: broken is orders -> { aggregate: no_such_measure }
 
    it("writes a tagged notebook under notebooks/ and serves it afterwards", async () => {
       const source = `##! experimental.givens
-## artifact { kind=notebook title="Written notebook" }
+## artifact { layout=linear title="Written notebook" }
 
 ##(markdown) Written by the write-path integration test.
 `;
@@ -361,7 +361,7 @@ query: broken is orders -> { aggregate: no_such_measure }
 
    it("refuses a tagged write over an existing untagged notebooks/ file with 400, leaving it intact", async () => {
       const res = await put("notebooks/shared.malloy", {
-         source: "## artifact { kind=notebook }\n",
+         source: "## artifact { layout=linear }\n",
          expectedHash: hashOf(SHARED_INCLUDE),
       });
       expect(res.status).toBe(400);
@@ -374,7 +374,7 @@ query: broken is orders -> { aggregate: no_such_measure }
 
    it("refuses a tagged write over an include whose only tag is inside a block comment, leaving it intact", async () => {
       const res = await put("notebooks/commented.malloy", {
-         source: "## artifact { kind=notebook }\n",
+         source: "## artifact { layout=linear }\n",
          expectedHash: hashOf(COMMENTED_INCLUDE),
       });
       expect(res.status).toBe(400);
@@ -386,7 +386,7 @@ query: broken is orders -> { aggregate: no_such_measure }
 
    it("rolls back a new notebook whose only tag is inside a block comment, so no unserved file lands", async () => {
       const res = await put("notebooks/hidden_tag.malloy", {
-         source: "/*\n## artifact { kind=notebook }\n*/\n##(markdown) Prose.\n",
+         source: "/*\n## artifact { layout=linear }\n*/\n##(markdown) Prose.\n",
       });
       expect(res.status).toBe(500);
       expect(await sourceOf("notebooks/hidden_tag.malloy")).toBeUndefined();
@@ -395,7 +395,7 @@ query: broken is orders -> { aggregate: no_such_measure }
    it("rolls back a new notebook whose only tag is inside a string, so no unserved file lands", async () => {
       const res = await put("notebooks/string_tag.malloy", {
          source:
-            'import \'../orders.malloy\'\nrun: orders -> {\n  select: note is """\n## artifact { kind=notebook }\n"""\n}\n',
+            'import \'../orders.malloy\'\nrun: orders -> {\n  select: note is """\n## artifact { layout=linear }\n"""\n}\n',
       });
       expect(res.status).toBe(500);
       expect(await sourceOf("notebooks/string_tag.malloy")).toBeUndefined();
@@ -426,7 +426,7 @@ query: broken is orders -> { aggregate: no_such_measure }
 
       // Ported from the name-collision 409: a report is identified by its
       // path, so two may share a basename and both are served.
-      it("writes a notebooks/ file that declares kind=dashboard, and serves both", async () => {
+      it("writes a notebooks/ file that declares layout=grid, and serves both", async () => {
          const res = await put("notebooks/dup.malloy", {
             source: layoutSource("dashboard", "Same name"),
          });
@@ -498,18 +498,18 @@ query: broken is orders -> { aggregate: no_such_measure }
    });
 
    for (const [name, source] of [
-      ["crlf", "## artifact { kind=notebook }\r\n\r\n##(markdown) Prose.\r\n"],
+      ["crlf", "## artifact { layout=linear }\r\n\r\n##(markdown) Prose.\r\n"],
       [
          "no_final_newline",
-         "## artifact { kind=notebook }\n\n##(markdown) Prose.",
+         "## artifact { layout=linear }\n\n##(markdown) Prose.",
       ],
       [
          "license_above_flags",
-         "// Copyright (c) Example\n// SPDX-License-Identifier: MIT\n##! experimental.givens\n## artifact { kind=notebook }\n\n##(markdown) Prose.\n",
+         "// Copyright (c) Example\n// SPDX-License-Identifier: MIT\n##! experimental.givens\n## artifact { layout=linear }\n\n##(markdown) Prose.\n",
       ],
       [
          "late_import",
-         "##! experimental.givens\n## artifact { kind=notebook }\nimport '../orders.malloy'\n\nrun: orders -> { aggregate: order_count }\n\nimport '../givens.malloy'\n\n##(markdown) After a late import.\n",
+         "##! experimental.givens\n## artifact { layout=linear }\nimport '../orders.malloy'\n\nrun: orders -> { aggregate: order_count }\n\nimport '../givens.malloy'\n\n##(markdown) After a late import.\n",
       ],
       ["bare_tag", "## artifact\n\n##(markdown) Prose.\n"],
    ] as const) {
@@ -530,21 +530,21 @@ query: broken is orders -> { aggregate: no_such_measure }
 
    it("writes a notebook whose markdown prose names #(authorize) and #(access_filter)", async () => {
       const res = await put("notebooks/gate_prose.malloy", {
-         source: `## artifact { kind=notebook }\nimport '../orders.malloy'\n\n##|(markdown)\n${GATE_PROSE}\n|##\n\nrun: orders -> { aggregate: order_count }\n`,
+         source: `## artifact { layout=linear }\nimport '../orders.malloy'\n\n##|(markdown)\n${GATE_PROSE}\n|##\n\nrun: orders -> { aggregate: order_count }\n`,
       });
       expect(res.status).toBe(201);
    });
 
    it("writes a notebook whose one-line markdown cell names #(access_filter)", async () => {
       const res = await put("notebooks/gate_line.malloy", {
-         source: `## artifact { kind=notebook }\nimport '../orders.malloy'\n\n##(markdown) Rows are limited by #(access_filter).\n\nrun: orders -> { aggregate: order_count }\n`,
+         source: `## artifact { layout=linear }\nimport '../orders.malloy'\n\n##(markdown) Rows are limited by #(access_filter).\n\nrun: orders -> { aggregate: order_count }\n`,
       });
       expect(res.status).toBe(201);
    });
 
    it("refuses a notebook that declares a real gate, with 400, and writes nothing", async () => {
       const res = await put("notebooks/gate_real.malloy", {
-         source: `## artifact { kind=notebook }\nimport '../orders.malloy'\n\n##|(markdown)\n${GATE_PROSE}\n|##\n\n#(authorize) true\nsource: mine is orders extend {}\n\nrun: mine -> { aggregate: order_count }\n`,
+         source: `## artifact { layout=linear }\nimport '../orders.malloy'\n\n##|(markdown)\n${GATE_PROSE}\n|##\n\n#(authorize) true\nsource: mine is orders extend {}\n\nrun: mine -> { aggregate: order_count }\n`,
       });
       expect(res.status).toBe(400);
       expect(await res.text()).toContain("not permitted in caller-submitted");
@@ -581,7 +581,7 @@ query: broken is orders -> { aggregate: no_such_measure }
          source: `##! experimental.givens
 import { orders } from '../orders.malloy'
 
-## artifact { kind=notebook }
+## artifact { layout=linear }
 
 ##(markdown) Prose.
 `,

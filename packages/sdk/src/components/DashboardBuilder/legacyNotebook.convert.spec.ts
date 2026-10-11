@@ -79,7 +79,7 @@ async function compiled(pkg: string, file: string, text: string) {
 }
 
 const HEAD = `##! experimental.givens
-## artifact { kind=notebook title="T" }
+## artifact { layout=linear title="T" }
 import "../models/orders.malloy"
 `;
 
@@ -274,7 +274,7 @@ describe("convertLegacyNotebook: every cell-format notebook in the corpus", () =
 
    it("refuses a tag whose artifact property is not the first, rather than rewriting it", async () => {
       const result = await refusal(
-         `##! experimental.givens\n## dashboard { columns=2 } artifact { kind=notebook title="T" }\nimport "../m.malloy"\n\nrun: orders -> kpis\n`,
+         `##! experimental.givens\n## dashboard { columns=2 } artifact { layout=linear title="T" }\nimport "../m.malloy"\n\nrun: orders -> kpis\n`,
       );
       expect(result.refused).toContain("`artifact { … }` first");
       expect(result.line).toBe(2);
@@ -499,7 +499,7 @@ describe("convertLegacyNotebook: shapes", () => {
       expect(fromLine).toContain(
          '##| artifact { layout=linear title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
       );
-      const block = `##! experimental.givens\n##| artifact { kind=notebook\n  title="T"\n}\n|##\nimport "../models/orders.malloy"\n${cells}`;
+      const block = `##! experimental.givens\n##| artifact { layout=linear\n  title="T"\n}\n|##\nimport "../models/orders.malloy"\n${cells}`;
       const fromBlock = await convert(block);
       expect(fromBlock).toContain(
          '##| artifact { layout=linear\n  title="T"\n  tiles=[\n    text_1 { kind=text },\n    "orders_tiles -> tile_1"\n  ]\n}\n|##\n',
