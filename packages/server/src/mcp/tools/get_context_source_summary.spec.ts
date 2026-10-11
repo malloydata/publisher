@@ -432,6 +432,7 @@ describe("the source match prompt", () => {
          },
       } as Record<string, unknown>;
       const pkg = {
+         listSkills: () => [],
          listModels: async () => [{ path: "wide.malloy" }],
          getModel: (p: string) => models[p],
          getRetrievalSettings: () => ({

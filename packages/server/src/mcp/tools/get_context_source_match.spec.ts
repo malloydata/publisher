@@ -772,6 +772,7 @@ describe("get_context with source match", () => {
          getQueries: () => [],
       };
       const pkg = {
+         listSkills: () => [],
          listModels: async () => [{ path: "big.malloy" }],
          getModel: () => model,
          getRetrievalSettings: () => ({

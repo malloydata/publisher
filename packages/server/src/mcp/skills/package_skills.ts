@@ -10,9 +10,13 @@ import {
    referencePointer,
    type SkillEntry,
 } from "./build_skills_bundle";
+import skillsBundle from "./skills_bundle.json";
 import { CronEvaluator } from "../../service/cron_evaluator";
 import { canonicalSha } from "../../service/package_revision";
 import { stepsOutside } from "../../service/package_retrieval";
+
+/** The build-time bundle of the repo's skills, served as MCP prompts and through get_skill. */
+export const BUNDLED_SKILLS = (skillsBundle as { skills: SkillEntry[] }).skills;
 
 /** The directory a package keeps its own agent skills in. */
 export const PACKAGE_SKILLS_DIR = "skills";
@@ -39,6 +43,8 @@ export interface PackageSkills {
     * so nothing here throws.
     */
    warnings: string[];
+   /** The subset of `warnings` that leave a skill unserved, which an agent cannot be served without. */
+   blocking: string[];
 }
 
 /** Largest single skill file served. A markdown guide never needs more. */
@@ -94,10 +100,15 @@ function referenceFilesInside(
          );
          return [];
       }
-   } catch {
+      return referenceFiles(skillDir);
+   } catch (error) {
+      // No reference/ is the common case; a file or unreadable directory there is not.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      warnings.push(
+         `Package skill reference directory '${rel}/reference' cannot be listed (${(error as Error).message}), so its references are not served. Fix: make it a readable directory of .md files, or remove it.`,
+      );
       return [];
    }
-   return referenceFiles(skillDir);
 }
 
 /**
@@ -121,24 +132,31 @@ export function readSkillsDir(
    const skills: SkillEntry[] = [];
    const files: PackageSkills["files"] = [];
    const warnings: string[] = [];
+   const blocking: string[] = [];
+   const unserved = (message: string) => {
+      warnings.push(message);
+      blocking.push(message);
+   };
 
    let realRoot: string;
    let entries: fs.Dirent[];
    let escapes: boolean;
    try {
       realRoot = fs.realpathSync(packagePath);
-      if (!fs.statSync(root).isDirectory()) return { skills, files, warnings };
+      if (!fs.statSync(root).isDirectory()) {
+         return { skills, files, warnings, blocking };
+      }
       escapes = stepsOutside(path.relative(realRoot, fs.realpathSync(root)));
       entries = fs.readdirSync(root, { withFileTypes: true });
    } catch {
       // No skills directory is the common case, and one that vanishes mid-load is the same.
-      return { skills, files, warnings };
+      return { skills, files, warnings, blocking };
    }
    if (escapes) {
-      warnings.push(
+      unserved(
          `Skills directory '${dirRel}' resolves outside the package through a link, so it is not served. Fix: copy the skills into the package.`,
       );
-      return { skills, files, warnings };
+      return { skills, files, warnings, blocking };
    }
 
    for (const entry of [...entries].sort((a, b) =>
@@ -158,7 +176,7 @@ export function readSkillsDir(
          PACKAGE_SKILL_FILE_MAX_BYTES,
       );
       if ("problem" in read) {
-         warnings.push(
+         unserved(
             `Package skill '${rel}/SKILL.md' ${read.problem}, so it is not served. Fix: add a readable SKILL.md inside the package, or remove the directory.`,
          );
          continue;
@@ -174,7 +192,7 @@ export function readSkillsDir(
       }
       // The directory name is what callers install under, so it must be the name.
       if (skill.name !== entry.name) {
-         warnings.push(
+         unserved(
             `Package skill '${rel}' declares the name '${skill.name}', which is not its directory name '${entry.name}', so it is not served. Fix: make 'name:' in ${rel}/SKILL.md equal '${entry.name}'.`,
          );
          continue;
@@ -206,13 +224,13 @@ export function readSkillsDir(
          served.push(file);
       }
       if (references.length > 0) {
-         skill.body = `${skill.body}\n\n${referencePointer(skill.name, served)}`;
+         skill.body = `${skill.body}\n\n${referencePointer(skill.name, served, "package")}`;
       }
       skills.push(skill, ...references);
       files.push({ path: `${rel}/SKILL.md`, text: read.text }, ...refFiles);
    }
 
-   return { skills, files, warnings };
+   return { skills, files, warnings, blocking };
 }
 
 /** Largest instructions or task file an agent serves. */
@@ -234,6 +252,8 @@ export interface PackageAgent {
    model: string;
    instructions: string;
    skills: Array<{ relative_filepath: string; file_contents: string }>;
+   /** Parsed name and description of each served SKILL.md, by `relative_filepath`; the emitted text quotes them. */
+   skillMeta: Map<string, { name: string; description: string }>;
    schedules: PackageAgentSchedule[];
    warnings: string[];
    definitionSha: string;
@@ -279,6 +299,11 @@ function agentPath(value: unknown, what: string): string {
    if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) {
       throw new AgentProblem(`${what} '${value}' is an absolute path`);
    }
+   if (value.includes("\\")) {
+      throw new AgentProblem(
+         `${what} '${value}' contains a backslash; write it with forward slashes`,
+      );
+   }
    const normalized = path.posix.normalize(value).replace(/\/+$/, "");
    if (
       normalized === "." ||
@@ -307,8 +332,8 @@ function holdsManifest(realRoot: string, dir: string): boolean {
 /**
  * True when a publisher.json sits in a skills root, a skill directory under it,
  * or its reference/: the only places a served file can be. It never walks
- * deeper and never follows a link, so a link cannot make this scan the
- * filesystem or report on files outside the package.
+ * deeper, and follows a link only to a directory inside the package, so a link
+ * cannot make this scan the filesystem or report on files outside it.
  */
 function servedTreeHoldsManifest(realRoot: string, root: string): boolean {
    if (holdsManifest(realRoot, root)) return true;
@@ -316,17 +341,13 @@ function servedTreeHoldsManifest(realRoot: string, root: string): boolean {
       if (stepsOutside(path.relative(realRoot, fs.realpathSync(root)))) {
          return false;
       }
-      return fs
-         .readdirSync(root, { withFileTypes: true })
-         .some(
-            (e) =>
-               e.isDirectory() &&
-               (holdsManifest(realRoot, path.join(root, e.name)) ||
-                  holdsManifest(
-                     realRoot,
-                     path.join(root, e.name, "reference"),
-                  )),
-         );
+      return fs.readdirSync(root, { withFileTypes: true }).some(
+         (e) =>
+            // A link to a directory is a skill dir readSkillsDir follows.
+            (e.isDirectory() || e.isSymbolicLink()) &&
+            (holdsManifest(realRoot, path.join(root, e.name)) ||
+               holdsManifest(realRoot, path.join(root, e.name, "reference"))),
+      );
    } catch {
       return false;
    }
@@ -371,7 +392,10 @@ const emitSkillMd = (name: string, description: string, body: string) =>
    `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n\n${body}\n`;
 
 /** A served skill file without its text; a SKILL.md also carries the name and description its frontmatter holds. */
-export function summarizeAgentSkillFile(file: PackageAgent["skills"][number]): {
+export function summarizeAgentSkillFile(
+   file: PackageAgent["skills"][number],
+   meta: PackageAgent["skillMeta"],
+): {
    relative_filepath: string;
    name?: string;
    description?: string;
@@ -379,14 +403,10 @@ export function summarizeAgentSkillFile(file: PackageAgent["skills"][number]): {
 } {
    const { relative_filepath, file_contents } = file;
    const bytes = Buffer.byteLength(file_contents);
-   if (!relative_filepath.endsWith("/SKILL.md")) {
-      return { relative_filepath, bytes };
-   }
-   const { name, description } = parseSkill(
-      file_contents,
-      relative_filepath.split("/")[0]!,
-   );
-   return { relative_filepath, name, description, bytes };
+   const parsed = meta.get(relative_filepath);
+   return parsed
+      ? { relative_filepath, ...parsed, bytes }
+      : { relative_filepath, bytes };
 }
 
 function readAgentSchedules(
@@ -438,7 +458,11 @@ function readAgentSkills(
    raw: unknown,
    paths: string[],
    warnings: string[],
-): { roots: string[]; files: PackageAgent["skills"] } {
+): {
+   roots: string[];
+   files: PackageAgent["skills"];
+   meta: PackageAgent["skillMeta"];
+} {
    if (raw !== undefined && !Array.isArray(raw)) {
       throw new AgentProblem("'skills' must be a list of directories");
    }
@@ -446,6 +470,7 @@ function readAgentSkills(
       agentPath(entry, "'skills' entry"),
    );
    const served = new Map<string, string>();
+   const meta: PackageAgent["skillMeta"] = new Map();
    let bytes = 0;
    for (const root of roots) {
       try {
@@ -467,8 +492,12 @@ function readAgentSkills(
          }
       }
       const read = readSkillsDir(packagePath, root);
-      if (read.warnings.length > 0) {
-         throw new AgentProblem(read.warnings.join(" "));
+      if (read.blocking.length > 0) {
+         throw new AgentProblem(read.blocking.join(" "));
+      }
+      // Served but flagged: what is left is a missing description or a skipped reference.
+      for (const w of read.warnings) {
+         warnings.push(`skill finding: ${w.replace(/\.$/, "")}`);
       }
       if (read.files.length === 0) {
          warnings.push(
@@ -486,6 +515,10 @@ function readAgentSkills(
          paths.push(file.path);
          if (relative.endsWith("/SKILL.md")) {
             const skill = parseSkill(file.text, relative.split("/")[0]!);
+            meta.set(relative, {
+               name: skill.name,
+               description: skill.description,
+            });
             served.set(
                relative,
                emitSkillMd(skill.name, skill.description, skill.body),
@@ -508,6 +541,7 @@ function readAgentSkills(
             relative_filepath,
             file_contents,
          })),
+      meta,
    };
 }
 
@@ -580,6 +614,7 @@ function readAgent(
          model: model as string,
          instructions: instructions.text,
          skills: skills.files,
+         skillMeta: skills.meta,
          schedules,
          warnings,
          definitionSha,
@@ -651,20 +686,28 @@ export function resolveSkills(
    bundled: SkillEntry[],
    packageSkills: SkillEntry[],
 ): ResolvedSkill[] {
-   const shadows = new Map(packageSkills.map((s) => [s.name, s]));
+   // A reference entry is `<skill>/<stem>`; a package skill's own name carries no slash.
+   const root = (name: string) => name.split("/")[0]!;
+   const shadows = new Map(
+      packageSkills
+         .filter((s) => !s.name.includes("/"))
+         .map((s) => [s.name, s]),
+   );
    const bundledNames = new Set(bundled.map((s) => s.name));
-   // Bundled order first, each entry replaced in place by the package's copy
+   // Bundled order first, each skill replaced in place by the package's copy
    // when there is one, then the package's new names in their own order. Two
    // packages' listings therefore line up row for row wherever they agree.
    return [
-      ...bundled.map((s): ResolvedSkill => {
-         const shadow = shadows.get(s.name);
-         return shadow
-            ? { ...shadow, origin: "package" }
-            : { ...s, origin: "bundled" };
+      ...bundled.flatMap((s): ResolvedSkill[] => {
+         const shadow = shadows.get(root(s.name));
+         if (!shadow) return [{ ...s, origin: "bundled" }];
+         // Nothing is merged: a shadowed skill's bundled references go with it.
+         return s.name === shadow.name
+            ? [{ ...shadow, origin: "package" }]
+            : [];
       }),
       ...packageSkills
-         .filter((s) => !bundledNames.has(s.name))
+         .filter((s) => s.name.includes("/") || !bundledNames.has(s.name))
          .map((s): ResolvedSkill => ({ ...s, origin: "package" })),
    ];
 }

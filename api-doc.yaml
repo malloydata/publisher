@@ -75,6 +75,15 @@ tags:
     description:
       In-package HTML data apps (static pages served from a package's public/
       directory)
+  - name: skills
+    description:
+      Agent skills in force for a package - the bundled guides plus the package's
+      own `skills/`, with the package's copy replacing a bundled one of the same
+      name
+  - name: agents
+    description:
+      Agents a package declares in `publisher.json`, resolved to their
+      instructions, skill files and schedules (served, never run)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -2090,8 +2099,9 @@ paths:
       description: |
         Returns one skill in force for this package, including its full
         Markdown. `skillName` is a name from the listing, exactly as spelled
-        there; a reference file is addressed as `<skill>/<stem>` and must be
-        URL-encoded.
+        there; a reference file is addressed as `<skill>/<stem>`. The slash may
+        be sent literally or as `%2F`; a literal `%` in a name must be sent as
+        `%25`.
 
         404 when no skill of that name is in force.
       parameters:
@@ -2111,7 +2121,7 @@ paths:
           in: path
           description: >-
             Skill name as returned by the listing. A reference file is
-            `<skill>/<stem>` and must be URL-encoded.
+            `<skill>/<stem>`; the slash may be literal or `%2F`.
           required: true
           schema:
             type: string
@@ -2204,10 +2214,15 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: agentName
           in: path
-          description: Agent name as returned by the listing.
+          description: >-
+            Agent name as returned by the listing. Names are 1-64 lowercase
+            letters, digits and single hyphens; any other value is a 404, not a
+            400.
           required: true
           schema:
             type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
         - name: skills
           in: query
           description: >-
@@ -2215,7 +2230,8 @@ paths:
             `summary` returns each file's `relative_filepath` and `bytes`, plus
             `name` and `description` for a `SKILL.md`, and no `file_contents`;
             fetch a file with `GET .../agents/{agentName}/skills/{path}`. The
-            `source` pin is identical in both.
+            `source` pin is identical in both. Any other value, including an
+            empty one, is a 400.
           required: false
           schema:
             type: string
@@ -2228,6 +2244,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2266,13 +2284,21 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: agentName
           in: path
-          description: Agent name as returned by the listing.
+          description: >-
+            Agent name as returned by the listing. Names are 1-64 lowercase
+            letters, digits and single hyphens; any other value is a 404, not a
+            400.
           required: true
           schema:
             type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
         - name: relativeFilepath
           in: path
-          description: A `relative_filepath` from the agent's skill summary; may contain slashes.
+          description: >-
+            A `relative_filepath` from the agent's skill summary. Slashes may be
+            sent literally or as `%2F`; a literal `%` in a name must be sent as
+            `%25`.
           required: true
           schema:
             type: string
@@ -3752,6 +3778,14 @@ components:
             (the reader could not read a served notebook's cells). The rest are
             `warn` (a mistyped `(markdown)` opener, a missing `kind=notebook`, a
             block that never closes, and similar).
+            Skill and agent findings, all `warn`: a package skill under
+            `skills/` that is not served (unreadable or linked-out `SKILL.md`,
+            a frontmatter `name` that is not its directory name, a `skills/`
+            directory that links out of the package) or served with a gap (no
+            `description`, a `reference/` that cannot be listed or read); and
+            each agent the manifest declares that is not served, or is served
+            with a finding (an agent skill with no `description`, a skills
+            directory with no skills, an unreadable reference).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
             `#(filter)` annotations on (`model` is that file, `subject` the
@@ -4204,8 +4238,11 @@ components:
             It covers EVERY model path in the package, so an edit to an imported
             file moves it where a hash of one model path would not. It covers
             nothing outside the list above: a data file, a `public/` asset, a
-            `version` bump or any other key in publisher.json all leave it
-            unchanged, because none of them changes what is served.
+            `version` bump or any other key in publisher.json (`retrieval`,
+            `explores`, `queryableSources`, `scope`) all leave it unchanged,
+            although some of those do change what is served. An unchanged value
+            therefore proves an edit to a hashed file did not reach the served
+            copy, and says nothing about an edit to anything else.
         agents:
           type: array
           readOnly: true
@@ -4258,6 +4295,11 @@ components:
     AgentSkillFile:
       type: object
       readOnly: true
+      description: >-
+        One of an agent's skill files. The snake_case keys
+        (`relative_filepath`, `file_contents`) mirror the MCP `get_agent` tool
+        the shape is shared with, unlike the camelCase used elsewhere in this
+        API.
       properties:
         relative_filepath:
           type: string

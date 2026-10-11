@@ -76,7 +76,7 @@ A package can carry agent skills of its own in a `skills/` directory at its root
 
 - A skill whose `name` matches a bundled skill replaces it for this package. Nothing is merged. Every entry carries an `origin` (`package` or `bundled`) saying which one you are reading.
 - Every file is read through its real path, and one that resolves outside the package is not served, so a link cannot pull in a file from elsewhere on the machine. A `skills/` directory that is itself a link out of the package is skipped with a load warning.
-- A file over 256 KB is not served. A skill whose `SKILL.md` cannot be read, or that repeats another skill's `name`, is skipped; one with no `description` is served but flagged, since nothing tells a caller when to read it. Each case is a load warning naming the fix, and the package still loads.
+- A file over 256 KB is not served. A skill whose `SKILL.md` cannot be read, or whose frontmatter `name` differs from its directory name, is skipped; one with no `description` is served but flagged, since nothing tells a caller when to read it. A `reference/` that cannot be listed or read is skipped the same way, without dropping its skill. Each case is a load warning naming the fix, and the package still loads.
 
 ## Agents
 
@@ -111,7 +111,7 @@ The agent's name is its key: 1 to 64 characters of lowercase letters, digits and
 
 **Strict allowlist.** An agent or schedule entry with a key this server does not know is dropped, because a key it does not understand might limit the agent, and an unknown key never runs. `tools`, `mcp-servers`, `hooks`, `permission-mode` and `base` are not part of the schema, so they are dropped too: a definition adds words to a session and never widens what the session may do. A key starting `x-` is ignored, for notes and tool metadata.
 
-**A broken agent never fails the package.** An agent that fails validation (a bad name, a missing file, a path that escapes the package or resolves outside it through a link, a nested `publisher.json` under an agent path, an over-cap file, a bad cron) is left out and reported in the package's load warnings with a `Fix:` line. The model and the other agents keep serving. A package with no `agents` key is unchanged, and an older Publisher serves a package that has one as before, without the agents.
+**A broken agent never fails the package.** An agent that fails validation (a bad name, a missing file, a path that escapes the package or resolves outside it through a link, a nested `publisher.json` under an agent path, an over-cap file, a bad cron) is left out and reported in the package's load warnings with a `Fix:` line. The model and the other agents keep serving. An agent skill with no `description`, a `reference/` that cannot be read, or a skills directory with no skills is not a failure: the agent is served and the finding appears in its `warnings`. A package with no `agents` key is unchanged, and an older Publisher serves a package that has one as before, without the agents.
 
 Two hashes say which bytes a definition came from. `sourceContentSha` on the package covers the models, the package skill files, the `agents` object and every file an agent reads; a `version` bump or another manifest key does not move it. `definitionSha` on the resolved agent covers only that agent's configuration, instructions, skills and task files, so editing one agent or a model leaves another agent's `definitionSha` alone. `GET …/agents/{name}` returns both under `source`, with `servedRevision`.
 

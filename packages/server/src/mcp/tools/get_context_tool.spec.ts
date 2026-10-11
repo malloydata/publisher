@@ -297,6 +297,7 @@ const mockModel = {
 const mockPackage = {
    listModels: async () => [{ path: "ecommerce.malloy" }],
    getModel: () => mockModel,
+   listSkills: () => [],
 };
 
 // A package with more than 10 sources, to prove the enumeration tier is not
@@ -314,6 +315,7 @@ const mockManySourceModel = {
 const mockManySourcePackage = {
    listModels: async () => [{ path: "many.malloy" }],
    getModel: () => mockManySourceModel,
+   listSkills: () => [],
 };
 
 /**
@@ -331,7 +333,11 @@ const envWith = (
    > = new Map(),
 ) =>
    ({
-      getPackage,
+      // Every package ships no skills unless a test says otherwise.
+      getPackage: async () => ({
+         listSkills: () => [],
+         ...((await getPackage()) as object),
+      }),
       getStaleCompileErrors: () => staleCompileErrors,
    }) as never;
 // A source carrying a raw physical column beside its own documented alias,
@@ -379,6 +385,7 @@ const mockAliasModel = {
 const mockAliasPackage = {
    listModels: async () => [{ path: "b.malloy" }],
    getModel: () => mockAliasModel,
+   listSkills: () => [],
 };
 
 // Both carry an expression, and NEITHER is a bare reference to the other:
@@ -446,10 +453,12 @@ const mockDistinctSpellingModel = {
 const mockDistinctSpellingPackage = {
    listModels: async () => [{ path: "d.malloy" }],
    getModel: () => mockDistinctSpellingModel,
+   listSkills: () => [],
 };
 const mockSiblingPackage = {
    listModels: async () => [{ path: "sib.malloy" }],
    getModel: () => mockSiblingModel,
+   listSkills: () => [],
 };
 
 // A source whose doc is longer than SOURCE_DOC_MAX_CHARS, and one that
@@ -476,6 +485,7 @@ const mockLongDocModel = {
 const mockLongDocPackage = {
    listModels: async () => [{ path: "rooms.malloy" }],
    getModel: () => mockLongDocModel,
+   listSkills: () => [],
 };
 
 const mockTwoSourceModel = {
@@ -510,6 +520,7 @@ const mockTwoSourceModel = {
 const mockTwoSourcePackage = {
    listModels: async () => [{ path: "sales.malloy" }],
    getModel: () => mockTwoSourceModel,
+   listSkills: () => [],
 };
 
 describe("get_context discovery tiers", () => {
@@ -640,6 +651,33 @@ describe("get_context discovery tiers", () => {
       ]);
       expect(JSON.stringify(payload)).not.toContain("LONG BODY");
       expect(typeof payload.skills_note).toBe("string");
+   });
+
+   it("bounds the total description text it attaches, keeping every name", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () =>
+            envWith(async () => ({
+               ...mockPackage,
+               listSkills: () =>
+                  ["a", "b", "c"].map((name) => ({
+                     name,
+                     description: "x".repeat(3000),
+                     body: "",
+                  })),
+            })),
+      });
+      const payload = parse(
+         await handler({
+            search_targets: [{ target_type: "source" }],
+            scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
+         }),
+      );
+      const skills = payload.skills as Array<{
+         name: string;
+         description: string;
+      }>;
+      expect(skills.map((s) => s.name)).toEqual(["a", "b", "c"]);
+      expect(skills.reduce((n, s) => n + s.description.length, 0)).toBe(4000);
    });
 
    it("carries no skills key for a package that ships none", async () => {
@@ -1362,6 +1400,7 @@ describe("get_context discovery tiers", () => {
                getPackage: async () => ({
                   listModels: async () => [{ path: "h.malloy" }],
                   getModel: () => hiddenModel,
+                  listSkills: () => [],
                }),
             }) as never,
       });

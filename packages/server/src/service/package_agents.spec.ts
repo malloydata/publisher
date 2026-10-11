@@ -343,6 +343,49 @@ describe("package agents", () => {
          );
       });
 
+      it("finishes a reload, with a warn finding, when a package skill's reference is a regular file", async () => {
+         manifest({ agents: { analyst: analyst() } });
+         const pkg = await load();
+         const before = pkg.getSourceContentSha();
+
+         write(
+            "skills/odd/SKILL.md",
+            "---\nname: odd\ndescription: d\n---\n\nbody\n",
+         );
+         write("skills/odd/reference", "not a directory");
+         await pkg.reloadAllModels({});
+
+         expect(pkg.listSkills().map((s) => s.name)).toEqual(["odd"]);
+         expect(pkg.getSourceContentSha()).not.toBe(before);
+         expect(pkg.getAgent("analyst")).toBeDefined();
+         expect(
+            pkg
+               .getPackageMetadata()
+               .warnings?.filter((w) =>
+                  w.message?.includes("cannot be listed"),
+               ),
+         ).toEqual([
+            expect.objectContaining({
+               severity: "warn",
+               message: expect.any(String),
+            }),
+         ]);
+      });
+
+      it("serves an agent whose skill has no description and reports it as a warn finding", async () => {
+         write(
+            "agents/analyst/skills/quiet/SKILL.md",
+            "---\nname: quiet\n---\n\nbody\n",
+         );
+         manifest({ agents: { analyst: analyst() } });
+         const pkg = await load();
+         expect(pkg.getAgent("analyst")).toBeDefined();
+         const finding = pkg
+            .getPackageMetadata()
+            .warnings?.find((w) => w.message?.includes("no description"));
+         expect(finding?.severity).toBe("warn");
+      });
+
       it("drops an agent on reload when the manifest removes it", async () => {
          manifest({ agents: { analyst: analyst() } });
          const pkg = await load();

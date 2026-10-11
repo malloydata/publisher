@@ -119,12 +119,21 @@ export function parseReference(
  * that would break the filesystem channel, so the mapping is appended to the
  * bundled copy only. One source file, one correct rendering per channel.
  */
-export function referencePointer(skillName: string, files: string[]): string {
+export function referencePointer(
+   skillName: string,
+   files: string[],
+   channel: "bundled" | "package" = "bundled",
+): string {
    const stems = files.map((f) => path.basename(f, ".md"));
+   // Prompts are registered once at server start, for bundled skills only.
+   const how =
+      channel === "bundled"
+         ? `served as separate prompts, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, get the prompt named \`${skillName}/<name>\` instead.`
+         : `served as separate guides, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, call get_skill with skill_name \`${skillName}/<name>\` and the same \`scopes\` you used for this skill instead.`;
    return [
       `## Reference files over MCP`,
       ``,
-      `This skill's \`${REFERENCE_DIR}/\` files are served as separate prompts, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, get the prompt named \`${skillName}/<name>\` instead.`,
+      `This skill's \`${REFERENCE_DIR}/\` files are ${how}`,
       ``,
       `Available: ${stems.join(", ")}.`,
    ].join("\n");

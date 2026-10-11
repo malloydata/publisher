@@ -46,6 +46,7 @@ describe("readSkillsDir", () => {
          skills: [],
          files: [],
          warnings: [],
+         blocking: [],
       });
    });
 
@@ -55,6 +56,7 @@ describe("readSkillsDir", () => {
          skills: [],
          files: [],
          warnings: [],
+         blocking: [],
       });
    });
 
@@ -178,7 +180,10 @@ describe("readSkillsDir", () => {
       // The parent body has to tell an MCP-only caller where the file went,
       // since a relative path means nothing over that channel: the prompt-name
       // template, and which files are actually there.
-      expect(skills[0]!.body).toContain("revenue-rules/<name>");
+      // A package skill has no MCP prompt, so the pointer names get_skill.
+      expect(skills[0]!.body).toContain("get_skill");
+      expect(skills[0]!.body).toContain("`revenue-rules/<name>`");
+      expect(skills[0]!.body).not.toContain("prompt");
       expect(skills[0]!.body).toContain("Available: margin.");
       expect(files.map((f) => f.path)).toEqual([
          "skills/revenue-rules/SKILL.md",
@@ -209,6 +214,42 @@ describe("readSkillsDir", () => {
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("'other'");
       expect(warnings[0]).toContain("Fix:");
+   });
+
+   it("warns, and still serves the skill, when reference is a regular file", () => {
+      writeSkill("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
+      fs.writeFileSync(path.join(pkg, "skills", "odd", "reference"), "x");
+      const { skills, warnings, blocking } = readSkillsDir(pkg);
+      expect(skills.map((s) => s.name)).toEqual(["odd"]);
+      expect(warnings.join("\n")).toContain("cannot be listed");
+      expect(blocking).toEqual([]);
+   });
+
+   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+      "warns, and still serves the skill, when reference is unreadable",
+      () => {
+         writeSkill("odd", "---\nname: odd\ndescription: d\n---\n\nbody\n");
+         const ref = path.join(pkg, "skills", "odd", "reference");
+         fs.mkdirSync(ref);
+         fs.chmodSync(ref, 0o000);
+         try {
+            const { skills, warnings, blocking } = readSkillsDir(pkg);
+            expect(skills.map((s) => s.name)).toEqual(["odd"]);
+            expect(warnings.join("\n")).toContain("cannot be listed");
+            expect(blocking).toEqual([]);
+         } finally {
+            fs.chmodSync(ref, 0o755);
+         }
+      },
+   );
+
+   it("marks as blocking only what leaves a skill unserved", () => {
+      writeSkill("quiet", "---\nname: quiet\n---\n\nbody\n");
+      writeSkill("a-dir", "---\nname: other\ndescription: d\n---\n\nA\n");
+      const { warnings, blocking } = readSkillsDir(pkg);
+      expect(warnings).toHaveLength(2);
+      expect(blocking).toHaveLength(1);
+      expect(blocking[0]).toContain("'other'");
    });
 
    it("does not list a reference/ directory that is a link out of the package", () => {
@@ -311,6 +352,25 @@ describe("resolveSkills", () => {
          ["malloy-analysis", "package"],
          ["malloy-phrase-detection", "bundled"],
          ["revenue-rules", "package"],
+      ]);
+   });
+
+   it("drops a shadowed bundled skill's reference entries, since nothing is merged", () => {
+      const withRefs = [
+         skill("malloy-review", "bundled", "BUNDLED"),
+         skill("malloy-review/rubric", "bundled ref", "BUNDLED REF"),
+         skill("malloy-analysis", "bundled", "A"),
+         skill("malloy-analysis/detail", "bundled ref", "A REF"),
+      ];
+      const resolved = resolveSkills(withRefs, [
+         skill("malloy-review", "ours", "OURS"),
+         skill("malloy-review/ours-ref", "ours ref", "OUR REF"),
+      ]);
+      expect(resolved.map((s) => [s.name, s.origin])).toEqual([
+         ["malloy-review", "package"],
+         ["malloy-analysis", "bundled"],
+         ["malloy-analysis/detail", "bundled"],
+         ["malloy-review/ours-ref", "package"],
       ]);
    });
 
