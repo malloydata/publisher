@@ -685,14 +685,14 @@ describe("notebook lint", () => {
          ).toEqual([]);
       });
 
-      it("gives the layout= to write for a kind=, as info", () => {
+      it("gives the layout= to write for a kind=, as a warn", () => {
          expect(all(`## artifact { kind=notebook }\n${SOURCE}`)).toEqual([
             {
                line: 1,
                code: "report-kind-deprecated",
                message:
                   "Line 1: `kind=notebook` is the deprecated spelling of the layout, read as `layout=linear`. Fix: write `layout=linear` instead.",
-               severity: "info",
+               severity: "warn",
             },
          ]);
          expect(

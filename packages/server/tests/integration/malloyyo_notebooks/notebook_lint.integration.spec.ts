@@ -236,7 +236,7 @@ describe("notebook lint through the real server (E2E)", () => {
             problems
                .filter((p) => p.model === WRONG_KIND && p.at)
                .map((p) => [p.code, p.severity]),
-         ).toEqual([["report-kind-deprecated", "info"]]);
+         ).toEqual([["report-kind-deprecated", "warn"]]);
       });
 
       it("fails the compile of a notebook with a statement above its artifact tag, at that line", async () => {

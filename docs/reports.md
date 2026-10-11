@@ -867,7 +867,7 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
   `error` naming the line and the fix.
 - **The layout.** `layout=` and `kind=` that disagree (`report-layout-conflict`, error; `layout=` wins), and
   a `layout=` other than `grid` or `linear` (`report-layout-unknown`, error).
-- **Deprecations.** `kind=` in the tag (`report-kind-deprecated`, info, with the `layout=` to write); a
+- **Deprecations.** `kind=` in the tag (`report-kind-deprecated`, warn, with the `layout=` to write); a
   query-level `# artifact` (`query-artifact-deprecated`, with the rewrite), or one that is ignored because
   its file is on the surface (`query-artifact-ignored`); a tileless tag with no `layout=`
   (`report-layout-implicit`).

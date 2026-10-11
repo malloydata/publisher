@@ -3671,13 +3671,12 @@ components:
             (the reader could not read a linear report's cells), plus
             `report-layout-conflict` (`layout=` and `kind=` disagree; `layout=`
             wins) and `report-layout-unknown` (a `layout=` other than `grid` or
-            `linear`). `report-kind-deprecated` is `info`: the tag spells its
-            layout with the deprecated `kind=`, which is still read
-            (`dashboard` as grid, `notebook` as linear), and the finding gives
-            the `layout=` to write. The rest are `warn` (a mistyped
-            `(markdown)` opener, `report-layout-implicit` for a tag that names
-            no layout and lists no tiles, a block that never closes, and
-            similar).
+            `linear`). The rest are `warn` (a mistyped `(markdown)` opener,
+            `report-kind-deprecated` for a tag that spells its layout with the
+            deprecated `kind=`, which is still read, `dashboard` as grid and
+            `notebook` as linear, with the `layout=` to write,
+            `report-layout-implicit` for a tag that names no layout and lists
+            no tiles, a block that never closes, and similar).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
             `#(filter)` annotations on (`model` is that file, `subject` the
@@ -3802,11 +3801,10 @@ components:
                 enum:
                   - error
                   - warn
-                  - info
                 description: >-
-                  Finding severity. `info` is a deprecated spelling that still
-                  reads as written (`report-kind-deprecated`); nothing about it
-                  is wrong today. Render-tag findings use both: `error` for
+                  Finding severity, `error` or `warn` and nothing else; a
+                  deprecated spelling that still reads as written (such as
+                  `report-kind-deprecated`) is `warn`. Render-tag findings use both: `error` for
                   a tag malformed for the field it sits on, which renders as
                   "[object Object]" or an inline error at query time, and `warn`
                   for one that is well-formed but inert where it sits and so is
@@ -6943,10 +6941,8 @@ components:
           description: Human-readable problem description
         severity:
           type: string
-          description: >-
-            Severity level of the problem. `info` is a deprecated spelling that
-            still reads as written, such as `report-kind-deprecated`.
-          enum: ["error", "warn", "info", "debug"]
+          description: Severity level of the problem
+          enum: ["error", "warn", "debug"]
         code:
           type: string
           description: Machine-readable error code

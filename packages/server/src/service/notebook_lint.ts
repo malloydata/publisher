@@ -43,10 +43,11 @@ export interface NotebookLintFinding {
    message: string;
    /**
     * An error is a file that cannot do what it says; a warn is one that does
-    * something other than it reads as; an info is a deprecated spelling that
-    * still reads as written.
+    * something other than it reads as, or a deprecated spelling that still
+    * reads as written. There is no third severity: strict clients of
+    * `PackageWarning` and `CompileProblem` accept only these.
     */
-   severity: "info" | "warn" | "error";
+   severity: "warn" | "error";
 }
 
 /** `text` is reserved for the dashboard text tile; it is not an unknown kind. */
@@ -178,7 +179,7 @@ export function lintNotebookText(
       line: number,
       code: string,
       message: string,
-      severity: "info" | "warn" | "error" = "warn",
+      severity: "warn" | "error" = "warn",
    ) =>
       findings.push({
          line,
@@ -796,7 +797,6 @@ export function lintNotebookText(
             byLayout
                ? `\`kind=${declaredKind}\` is the deprecated spelling of the layout, and \`layout=${declaredLayout}\` already says it. Fix: remove \`kind=${declaredKind}\`.`
                : `\`kind=${declaredKind}\` is the deprecated spelling of the layout, read as \`layout=${byKind}\`. Fix: write \`layout=${byKind}\` instead.`,
-            "info",
          );
       }
       if (resolved.decidedBy === "default") {
