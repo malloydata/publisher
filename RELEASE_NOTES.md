@@ -21,6 +21,27 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Reports: one document type, anywhere in a package, with a `layout`
+
+Dashboards and notebooks are now one document type, the **report**, and a report can live anywhere in a package. A report is any `.malloy` file outside `public/` that carries an artifact tag (a model-level `## artifact`, or the deprecated query-level `# artifact`), other than the root `index.malloy`; a `.malloynb` is a linear report wherever it is. `dashboards/` and `notebooks/` are now ordinary directory names: nothing about a file depends on which directory holds it, and a report two directories deep is served like one at the root. Every file served from those two directories before is classified the same way by its tags alone.
+
+A report's **layout** is `grid` or `linear`, decided by its tag: `layout=grid` / `layout=linear`; else the deprecated `kind=` (`dashboard` is grid, `notebook` is linear); else grid for a query-level `# artifact`; else grid when the tag lists `tiles` or sits beside a `dashboard { … }` grid tag; else linear. A tag with both `layout=` and `kind=` is read by `layout=`, and is an error finding when they disagree.
+
+A report is identified by its **path**. Two reports may share a basename in different directories and both are served; the old shadowing (the second file was not served) and the write path's name-collision 409 are gone.
+
+**New routes.** `GET …/reports` lists every report with `path`, `name` (the basename, a label), `layout`, `title`, `description`, `editable` and any load `error`. `GET …/reports/{path}` returns one report by its full package path including `.malloy` (or `.malloynb`), exactly as the listing gives it: the manifest fields for a report written as tiles, or `notebook` (its cells) for a `run:`-cell report or a `.malloynb`. `GET …/reports/{path}/cells/{i}` runs a cell. `DashboardManifest`, `RawNotebook.dashboard` and a compile's `CompiledDocument` gain `layout`; package warnings gain an optional `code`; warning and compile-problem severities gain `info`.
+
+**Writing.** `PUT …/models/{path}` (the builder's save) now creates a report at any `.malloy` path outside `public/` other than the root `index.malloy`, creating missing directories inside the package root only, and replaces only a file the package reads as a report. It still cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`. See `docs/security-posture.md`.
+
+**Deprecated, still working until a later release removes them:**
+
+- `GET …/dashboards` and `…/dashboards/{name}` (the grid reports) and `GET …/notebooks`, `…/notebooks/{path}` and `…/cells/{i}` (the linear reports). `…/dashboards/{name}` resolves a basename only when exactly one grid report has it, and answers 409 naming every match when several do. Move to `…/reports`.
+- `kind=dashboard` / `kind=notebook`: still read, reported as `report-kind-deprecated` (`info`) with the `layout=` to write.
+- The query-level `# artifact` on a `query:`: still served as a grid report, reported as `query-artifact-deprecated` with the model-level tag to write instead.
+- A bare `# drill { to=name }`: it is read first as a path from the package root (`name.malloy`), with nothing said. Only when no report is there does the deprecated basename fallback apply: exactly one report with that basename resolves, with a `drill-target-by-name` warning giving the path to write; none or several leave it unresolved, naming the candidates. A target with a `/` is a path only. Write `to="sales/overview"`.
+
+**What may change in an existing package.** A model outside `dashboards/` and `notebooks/` that carries an artifact tag is now a report: it leaves the model listing on a curated package and contributes nothing to the surface. The package says so with `report-on-surface` whenever `index.malloy` imports it or `explores` lists it. A tagged root `index.malloy` stays the surface, and its tag is ignored with an `index-is-not-a-report` error. A kindless, tileless `## artifact` in `dashboards/` (an unserved empty dashboard before) is now a linear report, reported as `report-layout-implicit`. `notebook-other-folder` and `notebook-kind-missing` are retired, and a package's own `public/dashboards/` and `public/notebooks/` files are reachable at `/<env>/<pkg>/dashboards/<file>` again.
+
 ## [0.9.7] — Packages report `.malloynb` notebooks and `#(filter)` sources as warnings
 
 A package's `warnings` (`GET …/packages/{package}`) now include one advisory entry per `.malloynb` notebook (`model` is its path) and one per source that declares deprecated `#(filter)` annotations (`subject` is the source name, reported once however many models import it). Both carry `severity: "warn"`. Nothing else changes: such packages still load and run. Migrating is covered in [Coming from `#(filter)`](docs/givens.md#coming-from-filter).
