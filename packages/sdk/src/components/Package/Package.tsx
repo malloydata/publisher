@@ -10,11 +10,6 @@ import {
    Container,
    IconButton,
    Stack,
-   Table,
-   TableBody,
-   TableCell,
-   TableHead,
-   TableRow,
    Tooltip,
    Typography,
 } from "@mui/material";
@@ -35,13 +30,13 @@ import { useOptionalDocumentStorage } from "../DocumentStorage/DocumentStoragePr
 import { Report } from "../Report";
 import { useServer } from "../ServerProvider";
 import { NewDocumentDialog } from "./NewDocumentDialog";
+import { DataSchemaDialog, formatRowCount } from "./DataSchemaDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
 import ContentTypeIcon, {
    CONTENT_TINT,
    type ContentType,
 } from "./ContentTypeIcon";
-import { AppDialog } from "../AppDialog";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
@@ -666,38 +661,10 @@ export default function Package({
             </>
          )}
 
-         <AppDialog
-            open={schemaDatabase !== null}
+         <DataSchemaDialog
+            database={schemaDatabase}
             onClose={() => setSchemaDatabase(null)}
-            title={schemaDatabase?.path ?? "Columns"}
-            showClose
-         >
-            {schemaDatabase?.error && (
-               <Typography variant="body2" color="error">
-                  {schemaDatabase.error}
-               </Typography>
-            )}
-            {schemaDatabase?.info?.columns && (
-               <Table size="small">
-                  <TableHead>
-                     <TableRow>
-                        <TableCell>Column</TableCell>
-                        <TableCell>Type</TableCell>
-                     </TableRow>
-                  </TableHead>
-                  <TableBody>
-                     {schemaDatabase.info.columns.map((column) => (
-                        <TableRow key={column.name}>
-                           <TableCell component="th" scope="row">
-                              {column.name}
-                           </TableCell>
-                           <TableCell>{column.type}</TableCell>
-                        </TableRow>
-                     ))}
-                  </TableBody>
-               </Table>
-            )}
-         </AppDialog>
+         />
       </Container>
    );
 }
@@ -809,12 +776,4 @@ function EmptyRow({
          )}
       </Stack>
    );
-}
-
-function formatRowCount(rows: number): string {
-   if (rows >= 1_000_000_000)
-      return `${(rows / 1_000_000_000).toFixed(1)} B rows`;
-   if (rows >= 1_000_000) return `${(rows / 1_000_000).toFixed(1)} M rows`;
-   if (rows >= 1_000) return `${(rows / 1_000).toFixed(1)} K rows`;
-   return `${rows} rows`;
 }
