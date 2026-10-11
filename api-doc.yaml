@@ -4479,94 +4479,62 @@ components:
             not be read.
 
     ReportManifest:
-      type: object
-      required: [resource, packageName, path, name, layout, title, editable]
       description: |
-        Everything a viewer needs to render one report. Every report carries
-        the `Report` fields. A report written as tiles, of either layout,
-        carries the manifest fields too (`tiles`, `dashboardColumns`,
-        `startingGivens`, `autorun`, `givens`), whose tiles and suggest queries
-        run through
-        `POST …/models/{path}/query` with `givens`. A linear report written as
-        `run:` cells, or a `.malloynb`, carries `notebook` instead.
-      properties:
-        resource:
-          type: string
-          description: Resource path to the report
-        packageName:
-          type: string
-          description: Name of the package containing this report
-        path:
-          type: string
-          description: >-
-            The report's path within its package, its identity, and the model
-            its tiles and queries run against.
-        name:
-          type: string
-          description: The file's basename without its extension; a display label.
-        layout:
-          type: string
-          enum: [grid, linear]
-          description: >-
-            How its tiles are placed. A `linear` report is one column:
-            `dashboardColumns` is 1 whatever the file says.
-        title:
-          type: string
-          description: Human title, as `Report.title`.
-        description:
-          type: string
-          description: The report's doc comment, when it has one.
-        editable:
-          type: boolean
-          description: As `Report.editable`.
-        error:
-          type: string
-          description: Error message when the report failed to compile.
-        tiles:
-          type: array
-          description: >-
-            The report's tiles, each run as its own query (or shown as text),
-            in order. Absent on a `run:`-cell report.
-          items:
-            $ref: "#/components/schemas/ReportTile"
-        dashboardColumns:
-          type: integer
-          description: >-
-            Grid width, from the `# dashboard {columns=N}` tag beside the
-            artifact tag. 1 on a linear report. Absent means the viewer's
-            default.
-        startingGivens:
-          allOf:
-            - $ref: "#/components/schemas/EncodedGivenValues"
-          description: >-
-            Starting values for controls, from the artifact tag. URL
-            parameters override these.
-        autorun:
-          type: boolean
-          description: >-
-            False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true.
-        givens:
-          type: array
-          description: >-
-            The control row: one entry per given the report's tiles run with
-            (less a given only a source's gate reads, which a host injects),
-            widened to every given the entry file surfaces when a tile cannot be
-            resolved (see `ReportTile.givenNames`). `default` is the value the
-            query endpoint takes, not the Malloy literal: a `filter<…>` given
-            declared `f'West'` publishes `West`.
-          items:
-            $ref: "#/components/schemas/Given"
-        notebook:
-          allOf:
-            - $ref: "#/components/schemas/ReportCells"
-          description: >-
-            For a linear report written as `run:` cells, or a `.malloynb`: its
-            cells and model. Run a `.malloy`
-            report's cell through the model query endpoint, its `text` as
-            `query`; a `.malloynb`'s with execute-notebook-cell. Absent on a
-            report written as tiles, and on a
-            report that failed to compile.
+        A `Report` plus what a viewer needs to draw it. A report written as
+        tiles, of either layout, carries `tiles`, `dashboardColumns`,
+        `startingGivens`, `autorun` and `givens`, whose tiles and suggest
+        queries run through `POST …/models/{path}/query` with `givens`. A
+        linear report written as `run:` cells, or a `.malloynb`, carries
+        `notebook` instead.
+      allOf:
+        - $ref: "#/components/schemas/Report"
+        - type: object
+          properties:
+            tiles:
+              type: array
+              description: >-
+                The report's tiles, each run as its own query (or shown as text),
+                in order. Absent on a `run:`-cell report.
+              items:
+                $ref: "#/components/schemas/ReportTile"
+            dashboardColumns:
+              type: integer
+              description: >-
+                Grid width, from the `# dashboard {columns=N}` tag beside the
+                artifact tag. 1 on a linear report. Absent means the viewer's
+                default.
+            startingGivens:
+              allOf:
+                - $ref: "#/components/schemas/EncodedGivenValues"
+              description: >-
+                Starting values for controls, from the artifact tag. URL
+                parameters override these.
+            autorun:
+              type: boolean
+              description: >-
+                False batches control changes behind an Apply button instead of
+                re-running on every change. Defaults to true.
+            givens:
+              type: array
+              description: >-
+                The control row: one entry per given the report's tiles run with
+                (less a given only a source's gate reads, which a host injects),
+                widened to every given the entry file surfaces when a tile cannot be
+                resolved (see `ReportTile.givenNames`). `default` is the value the
+                query endpoint takes, not the Malloy literal: a `filter<…>` given
+                declared `f'West'` publishes `West`.
+              items:
+                $ref: "#/components/schemas/Given"
+            notebook:
+              allOf:
+                - $ref: "#/components/schemas/ReportCells"
+              description: >-
+                For a linear report written as `run:` cells, or a `.malloynb`: its
+                cells and model. Run a `.malloy`
+                report's cell through the model query endpoint, its `text` as
+                `query`; a `.malloynb`'s with execute-notebook-cell. Absent on a
+                report written as tiles, and on a
+                report that failed to compile.
 
     ReportTile:
       type: object
