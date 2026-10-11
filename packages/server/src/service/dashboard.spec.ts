@@ -24,7 +24,7 @@ import {
    type DashboardGivenDeclaration,
    type DashboardModelFacts,
 } from "./dashboard";
-import { isReportEligiblePath, reportName } from "./report";
+import { isReportEligiblePath, isUnderPublicDir, reportName } from "./report";
 
 /** A facts bundle with everything empty, for tests to override a slice of. */
 function facts(
@@ -81,6 +81,14 @@ describe("service/report path helpers", () => {
       expect(isReportEligiblePath("index.malloy")).toBe(false);
       expect(isReportEligiblePath("sales/index.malloy")).toBe(true);
       expect(isReportEligiblePath("overview.json")).toBe(false);
+   });
+
+   it("reads public/ without case: on a case-insensitive file system Public/ is public/", () => {
+      for (const p of ["Public/x.malloy", "PUBLIC/a/x.malloy", "public"])
+         expect(isUnderPublicDir(p)).toBe(true);
+      expect(isReportEligiblePath("Public/overview.malloy")).toBe(false);
+      for (const p of ["publications/x.malloy", "sales/public/x.malloy"])
+         expect(isUnderPublicDir(p)).toBe(false);
    });
 
    it("derives the display name from the basename", () => {

@@ -36,9 +36,16 @@ export type ReportLayout = "grid" | "linear";
 /** The package directory Publisher serves as raw static files; never a report's home. */
 export const PUBLIC_DIR = "public";
 
-/** True for a path inside the package's `public/` directory. */
+/**
+ * True for a path inside the package's `public/` directory. The first segment
+ * is compared without case: on a case-insensitive file system `Public/x.malloy`
+ * IS `public/x.malloy`, and refusing it on a case-sensitive one costs nothing.
+ * A symlink into `public/` is caught where the write path resolves the real
+ * directory (`Environment.writeModelFileTransactional`).
+ */
 export function isUnderPublicDir(modelPath: string): boolean {
-   return modelPath === PUBLIC_DIR || modelPath.startsWith(`${PUBLIC_DIR}/`);
+   const first = modelPath.replace(/^\.\//, "").split("/")[0];
+   return first.toLowerCase() === PUBLIC_DIR;
 }
 
 /**

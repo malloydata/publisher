@@ -438,6 +438,10 @@ describe("reportPathProblem", () => {
 
    it("names why a path is refused", () => {
       expect(reportPathProblem("public/x.malloy")).toContain("public/");
+      // On a case-insensitive file system these land in public/ too.
+      expect(reportPathProblem("Public/x.malloy")).toContain("public/");
+      expect(reportPathProblem("PUBLIC/a/x.malloy")).toContain("public/");
+      expect(reportPathProblem("publications/x.malloy")).toBeUndefined();
       expect(reportPathProblem("index.malloy")).toContain("index.malloy");
       expect(reportPathProblem("../x.malloy")).toContain("inside the package");
       expect(reportPathProblem("x.malloynb")).toContain(".malloy");

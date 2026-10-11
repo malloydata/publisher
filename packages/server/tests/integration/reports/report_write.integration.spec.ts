@@ -211,6 +211,15 @@ describe("PUT model source: reports anywhere (E2E)", () => {
       expect(fsSync.existsSync(served("public/new.malloy"))).toBe(false);
    });
 
+   it("refuses to create a report under public/ spelled in another case", async () => {
+      // On a case-insensitive file system this is the same directory.
+      const res = await put("Public/new.malloy", {
+         source: grid("Public", "../orders.malloy"),
+      });
+      expect(res.status).toBe(400);
+      expect(fsSync.existsSync(served("public/new.malloy"))).toBe(false);
+   });
+
    it("refuses untagged text anywhere", async () => {
       const res = await put("teams/plain.malloy", {
          source: "source: s is duckdb.sql('select 1 as x')\n",

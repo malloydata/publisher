@@ -103,7 +103,8 @@ export function reportPathProblem(path: string): string | undefined {
    if (segments.some((s) => s === "" || s === "." || s === ".."))
       return "A location is a path inside the package, such as sales/q3.malloy.";
    if (segments.at(-1) === ".malloy") return "A report's file needs a name.";
-   if (segments[0] === "public")
+   // Without case: on a case-insensitive file system `Public/` is `public/`.
+   if (segments[0].toLowerCase() === "public")
       return "A report cannot live under public/, which is served as plain files.";
    if (path === "index.malloy")
       return "The package's index.malloy is its surface, never a report.";

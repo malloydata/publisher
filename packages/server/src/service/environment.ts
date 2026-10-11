@@ -10,7 +10,7 @@ import type {
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { compileDocument, type CompiledDocument } from "./compile_document";
 import { claimsToBeANotebook, notebookReaderProblem } from "./notebook";
-import { isReportEligiblePath } from "./report";
+import { isReportEligiblePath, isUnderPublicDir } from "./report";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -2133,7 +2133,10 @@ export class Environment {
       try {
          return await fs.promises.readFile(target, "utf8");
       } catch (error) {
-         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+         const code = (error as NodeJS.ErrnoException).code;
+         // ENOTDIR: a directory on the path is a file, so nothing is here;
+         // creating the directories says so (`_prepareModelFileDirLocked`).
+         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          return undefined;
       }
    }
@@ -2141,13 +2144,18 @@ export class Environment {
    /**
     * Create the directories a new model file needs, inside the package root
     * only, and return the ones it created, deepest first, so a rollback can
-    * take them back. The caller holds the package lock.
+    * take them back. The caller holds the package lock. On a failure part way
+    * through, the ones already made are removed before the error is raised.
     *
     * The target path is already confined lexically (`safeJoinUnderRoot`), but
     * a directory in the package can be a symlink to somewhere else, and
     * `mkdir -p` and the write would follow it. So the nearest directory that
     * already exists is resolved and must lie inside the resolved package root:
     * a write the package could not have read back is refused rather than made.
+    * The resolved path must not be in `public/` either, which a symlink, or a
+    * differently cased name on a case-insensitive file system, would reach
+    * past the lexical check. A path through an existing file is refused before
+    * anything is created.
     */
    private async _prepareModelFileDirLocked(
       packageRoot: string,
@@ -2155,15 +2163,24 @@ export class Environment {
    ): Promise<string[]> {
       const missing: string[] = [];
       let dir = path.dirname(target);
-      while (
-         dir.startsWith(packageRoot) &&
-         !(await fs.promises
-            .stat(dir)
-            .then((st) => st.isDirectory())
-            .catch(() => false))
-      ) {
-         missing.push(dir);
-         dir = path.dirname(dir);
+      while (dir.startsWith(packageRoot)) {
+         const stat = await fs.promises.stat(dir).catch((error) => {
+            const code = (error as NodeJS.ErrnoException).code;
+            // ENOTDIR: an ancestor is a file, found as the walk goes up.
+            if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+            throw error;
+         });
+         if (stat === undefined) {
+            missing.push(dir);
+            dir = path.dirname(dir);
+            continue;
+         }
+         if (!stat.isDirectory())
+            throw new BadRequestError(
+               `Invalid model path: \`${path.relative(packageRoot, dir).split(path.sep).join("/")}\` ` +
+                  `is a file in the package, not a directory.`,
+            );
+         break;
       }
       const [realRoot, realExisting] = await Promise.all([
          fs.promises.realpath(packageRoot),
@@ -2178,13 +2195,35 @@ export class Environment {
             `Invalid model path: it resolves outside the package.`,
          );
       }
-      // Shallowest first to create; returned deepest first to remove.
-      for (const created of [...missing].reverse()) {
-         await fs.promises.mkdir(created).catch((error) => {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-         });
+      if (
+         isUnderPublicDir(
+            path.relative(realRoot, realExisting).split(path.sep).join("/"),
+         )
+      ) {
+         throw new BadRequestError(
+            `Invalid model path: it resolves into \`public/\`, which is served ` +
+               `as raw static files.`,
+         );
       }
-      return missing;
+      // Shallowest first to create; returned deepest first to remove.
+      const created: string[] = [];
+      try {
+         for (const next of [...missing].reverse()) {
+            await fs.promises.mkdir(next);
+            created.unshift(next);
+         }
+      } catch (error) {
+         await this._removeCreatedDirsLocked(created);
+         throw error;
+      }
+      return created;
+   }
+
+   /** Take back directories a create made, deepest first; only empty ones go. */
+   private async _removeCreatedDirsLocked(dirs: string[]): Promise<void> {
+      for (const dir of dirs) {
+         await fs.promises.rmdir(dir).catch(() => undefined);
+      }
    }
 
    /**
@@ -2198,8 +2237,13 @@ export class Environment {
    ): Promise<void> {
       await fs.promises.mkdir(path.dirname(target), { recursive: true });
       const temporary = `${target}.${crypto.randomUUID()}.tmp`;
-      await fs.promises.writeFile(temporary, source, "utf8");
-      await fs.promises.rename(temporary, target);
+      try {
+         await fs.promises.writeFile(temporary, source, "utf8");
+         await fs.promises.rename(temporary, target);
+      } catch (error) {
+         await fs.promises.rm(temporary, { force: true });
+         throw error;
+      }
    }
 
    /**
@@ -2249,7 +2293,17 @@ export class Environment {
             safeJoinUnderRoot(this.environmentPath, packageName),
             target,
          );
-         await this._writeModelFileLocked(target, source);
+         try {
+            await this._writeModelFileLocked(target, source);
+         } catch (error) {
+            // Nothing was served from the new text, so there is no reload to
+            // undo: only a new file and the directories made for it.
+            if (previous === undefined) {
+               await fs.promises.rm(target, { force: true });
+               await this._removeCreatedDirsLocked(createdDirs);
+            }
+            throw error;
+         }
          try {
             // The locked form, because this whole callback already holds the
             // mutex that `getPackage` would take.
@@ -2264,9 +2318,7 @@ export class Environment {
             else {
                await fs.promises.rm(target, { force: true });
                // The directories this create made, emptied by the removal.
-               for (const dir of createdDirs) {
-                  await fs.promises.rmdir(dir).catch(() => undefined);
-               }
+               await this._removeCreatedDirsLocked(createdDirs);
             }
             await this._loadOrGetPackageLocked(packageName, true).catch(
                () => undefined,
