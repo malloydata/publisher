@@ -16,15 +16,11 @@ import {
 } from "./notebook_lint";
 
 /**
- * The layout findings (`report-kind-deprecated`, `report-layout-implicit`)
- * fire on almost every fixture here, which spells its layout with the
- * deprecated `kind=`. They have their own tests below; the rest of this file
- * is about the other findings, so they are set aside here.
+ * `report-layout-implicit` fires on any fixture here whose tag names no
+ * `layout=`. It has its own tests below; the rest of this file is about the
+ * other findings, so it is set aside here.
  */
-const LAYOUT_CODES = new Set([
-   "report-kind-deprecated",
-   "report-layout-implicit",
-]);
+const LAYOUT_CODES = new Set(["report-layout-implicit"]);
 const lintNotebookText = (modelPath: string, text: string) =>
    lintNotebookTextAll(modelPath, text).filter(
       (finding) => !LAYOUT_CODES.has(finding.code),

@@ -47,12 +47,6 @@ const OPEN_PACKAGE = "dashboards-open";
 // does not export answers 404, with a fix that names index.malloy.
 const CONVENTION_PACKAGE = "dashboards-convention";
 
-/** The report change's deprecation notes, which these fixtures draw on purpose. */
-const DEPRECATION_CODES = new Set([
-   "report-layout-implicit",
-   "report-on-surface",
-]);
-
 interface DashboardItem {
    resource?: string;
    layout?: string;
@@ -620,11 +614,7 @@ describe("Dashboard discovery (E2E)", () => {
          // notebook's path); none of the rest is a dashboard lint finding.
          const warnings = await packageWarnings(PACKAGE_NAME);
          expect(
-            warnings.filter(
-               (w) =>
-                  !w.model?.endsWith(".malloynb") &&
-                  !DEPRECATION_CODES.has(w.code ?? ""),
-            ),
+            warnings.filter((w) => w.code !== "deprecated-malloynb-notebook"),
          ).toEqual([]);
       });
 
@@ -1133,7 +1123,8 @@ describe("Dashboard discovery (E2E)", () => {
          const mine = (await warningsOf(curatedUrl(""))).filter(
             (w) =>
                (w.model ?? "").includes("w1.9") &&
-               !DEPRECATION_CODES.has((w as { code?: string }).code ?? ""),
+               // Drawn on purpose; `reports_anywhere` owns the finding.
+               w.code !== "report-on-surface",
          );
          expect(mine).toHaveLength(1);
          expect(mine[0]?.message ?? "").toContain("is served, but");
