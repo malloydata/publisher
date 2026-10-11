@@ -2898,6 +2898,7 @@ describe("resolveDrillDestination: the shared drill case table", () => {
       path?: string;
       rewrite?: string;
       candidates?: string[];
+      malformed?: boolean;
    };
    const { cases } = JSON.parse(
       fs.readFileSync(
@@ -2929,7 +2930,11 @@ describe("resolveDrillDestination: the shared drill case table", () => {
          expect(
             resolveDrillDestination(testCase.to, reportPaths, gridReportPaths),
          ).toEqual(testCase.server as never);
-         const { rewrite: _rewrite, ...comparable } = testCase.server;
+         const {
+            rewrite: _rewrite,
+            malformed: _malformed,
+            ...comparable
+         } = testCase.server;
          expect(
             JSON.stringify(comparable) !== JSON.stringify(testCase.sdk),
          ).toBe(testCase.knownDifference !== undefined);

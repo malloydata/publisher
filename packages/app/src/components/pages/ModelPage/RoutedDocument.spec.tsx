@@ -4,7 +4,8 @@
 /**
  * What a report route draws, decided by the package's listing: the report
  * page, the builder, a redirect from a deprecated by-name alias, the list of
- * reports an ambiguous alias names, a draft the host keeps, or nothing.
+ * reports an ambiguous alias names, a draft the host keeps, a redirect from
+ * the legacy `<path>/edit` route to `<path>?edit`, or nothing.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
@@ -52,7 +53,7 @@ function Where() {
 }
 
 function mount(routePath: string, edit = false, search = "") {
-   const at = `/env/pkg/${routePath}${edit ? "/edit" : ""}${search}`;
+   const at = `/env/pkg/${routePath}${search || (edit ? "?edit" : "")}`;
    return render(
       <MemoryRouter initialEntries={[at]}>
          <Routes>
@@ -134,14 +135,32 @@ describe("RoutedDocument", () => {
       );
    });
 
-   it("redirects a deprecated notebooks/<name>/edit alias to the linear report's edit route", () => {
+   it("redirects a deprecated notebooks/<name> alias in edit mode to the linear report's ?edit route", () => {
       listing.reports = [
          { path: "team/overview.malloy", layout: "grid" },
          { path: "notes/overview.malloy", layout: "linear" },
       ];
       mount("notebooks/overview", true);
       expect(screen.getByTestId("where").textContent).toBe(
-         "/env/pkg/notes/overview/edit",
+         "/env/pkg/notes/overview?edit",
+      );
+   });
+
+   it("redirects the legacy <path>/edit route to <path>?edit, keeping the query", () => {
+      listing.reports = [{ path: "sales/q3.malloy", layout: "grid" }];
+      mount("sales/q3/edit", false, "?region=west");
+      expect(screen.getByTestId("where").textContent).toBe(
+         "/env/pkg/sales/q3?edit&region=west",
+      );
+   });
+
+   it("opens a report at <path>/edit.malloy rather than reading the segment as the legacy edit route", () => {
+      listing.reports = [
+         { path: "sales/q3/edit.malloy", layout: "grid", editable: true },
+      ];
+      mount("sales/q3/edit");
+      expect(screen.getByTestId("report").textContent).toBe(
+         "read sales/q3/edit.malloy editable=true",
       );
    });
 

@@ -1,89 +1,154 @@
 {
-   "about": "Where a `# drill { to=… }` lands (docs/reports-design.md §3), by the server's rule (`resolveDrillDestination`, which the load lint applies) and the SDK's (`resolveDrillTarget`, which a click applies). `reports` is the package's reports: the server is handed every path, including a report `dropped` because it could not be read, with the grid ones as its grid set; the SDK is handed the listing, which omits a dropped report. `server` and `sdk` are each side's answer. A case whose two answers differ beyond the server's `rewrite` carries `knownDifference`, and each side's spec fails when one differs without it.",
+   "about": "Where a `# drill { to=… }` lands (docs/reports-design.md §3), by the server's rule (`resolveDrillDestination`, which the load lint applies) and the SDK's (`resolveDrillTarget`, which a click applies). `reports` is the package's reports: the server is handed every path, including a report `dropped` because it could not be read, with the grid ones as its grid set; the SDK is handed the listing, which omits a dropped report. `server` and `sdk` are each side's answer. A case whose two answers differ beyond the server's `rewrite` carries `knownDifference`, and each side's spec fails when one differs without it. A target that is not a plain package path (a `.`, `..` or empty segment, or a leading `/`) is unresolved on both sides; the server also marks it `malformed`, which the comparison leaves out like `rewrite`.",
    "cases": [
       {
          "name": "a path from the package root",
          "to": "sales/q3",
-         "reports": [{ "path": "sales/q3.malloy", "layout": "grid" }],
-         "server": { "kind": "path", "path": "sales/q3.malloy" },
-         "sdk": { "kind": "path", "path": "sales/q3.malloy" }
-      },
-      {
-         "name": "a leading ./ is the package root",
-         "to": "./sales/q3",
-         "reports": [{ "path": "sales/q3.malloy", "layout": "linear" }],
-         "server": { "kind": "path", "path": "sales/q3.malloy" },
-         "sdk": { "kind": "path", "path": "sales/q3.malloy" }
-      },
-      {
-         "name": "a leading / is the package root",
-         "to": "/sales/q3",
-         "reports": [{ "path": "sales/q3.malloy", "layout": "grid" }],
-         "server": { "kind": "path", "path": "sales/q3.malloy" },
-         "sdk": { "kind": "path", "path": "sales/q3.malloy" }
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "sales/q3.malloy"
+         },
+         "sdk": {
+            "kind": "path",
+            "path": "sales/q3.malloy"
+         }
       },
       {
          "name": "a path written with its .malloy",
          "to": "sales/q3.malloy",
-         "reports": [{ "path": "sales/q3.malloy", "layout": "grid" }],
-         "server": { "kind": "path", "path": "sales/q3.malloy" },
-         "sdk": { "kind": "path", "path": "sales/q3.malloy" }
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "sales/q3.malloy"
+         },
+         "sdk": {
+            "kind": "path",
+            "path": "sales/q3.malloy"
+         }
       },
       {
          "name": "a .malloynb by its full path",
          "to": "notes/story.malloynb",
-         "reports": [{ "path": "notes/story.malloynb", "layout": "linear" }],
-         "server": { "kind": "path", "path": "notes/story.malloynb" },
-         "sdk": { "kind": "path", "path": "notes/story.malloynb" }
+         "reports": [
+            {
+               "path": "notes/story.malloynb",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "path",
+            "path": "notes/story.malloynb"
+         },
+         "sdk": {
+            "kind": "path",
+            "path": "notes/story.malloynb"
+         }
       },
       {
          "name": "a bare name is a root path first, ahead of a grid report elsewhere",
          "to": "overview",
          "reports": [
-            { "path": "dashboards/overview.malloy", "layout": "grid" },
-            { "path": "overview.malloy", "layout": "linear" }
+            {
+               "path": "dashboards/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "overview.malloy",
+               "layout": "linear"
+            }
          ],
-         "server": { "kind": "path", "path": "overview.malloy" },
-         "sdk": { "kind": "path", "path": "overview.malloy" }
+         "server": {
+            "kind": "path",
+            "path": "overview.malloy"
+         },
+         "sdk": {
+            "kind": "path",
+            "path": "overview.malloy"
+         }
       },
       {
          "name": "deprecated: a bare name with no root report falls back to the one grid report with that basename",
          "to": "overview",
          "reports": [
-            { "path": "dashboards/overview.malloy", "layout": "grid" },
-            { "path": "notebooks/overview.malloy", "layout": "linear" }
+            {
+               "path": "dashboards/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "notebooks/overview.malloy",
+               "layout": "linear"
+            }
          ],
          "server": {
             "kind": "name",
             "path": "dashboards/overview.malloy",
             "rewrite": "dashboards/overview"
          },
-         "sdk": { "kind": "name", "path": "dashboards/overview.malloy" }
+         "sdk": {
+            "kind": "name",
+            "path": "dashboards/overview.malloy"
+         }
       },
       {
          "name": "deprecated: failing a grid one, the one report of either layout",
          "to": "story",
-         "reports": [{ "path": "notebooks/story.malloy", "layout": "linear" }],
+         "reports": [
+            {
+               "path": "notebooks/story.malloy",
+               "layout": "linear"
+            }
+         ],
          "server": {
             "kind": "name",
             "path": "notebooks/story.malloy",
             "rewrite": "notebooks/story"
          },
-         "sdk": { "kind": "name", "path": "notebooks/story.malloy" }
+         "sdk": {
+            "kind": "name",
+            "path": "notebooks/story.malloy"
+         }
       },
       {
          "name": "deprecated: a basename match at the root has no rewrite",
          "to": "story",
-         "reports": [{ "path": "story.malloynb", "layout": "linear" }],
-         "server": { "kind": "name", "path": "story.malloynb" },
-         "sdk": { "kind": "name", "path": "story.malloynb" }
+         "reports": [
+            {
+               "path": "story.malloynb",
+               "layout": "linear"
+            }
+         ],
+         "server": {
+            "kind": "name",
+            "path": "story.malloynb"
+         },
+         "sdk": {
+            "kind": "name",
+            "path": "story.malloynb"
+         }
       },
       {
          "name": "deprecated: two grid reports share the basename: ambiguous, naming both",
          "to": "overview",
          "reports": [
-            { "path": "b/overview.malloy", "layout": "grid" },
-            { "path": "a/overview.malloy", "layout": "grid" }
+            {
+               "path": "b/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "a/overview.malloy",
+               "layout": "grid"
+            }
          ],
          "server": {
             "kind": "unresolved",
@@ -98,8 +163,14 @@
          "name": "deprecated: two linear reports share the basename: ambiguous",
          "to": "story",
          "reports": [
-            { "path": "a/story.malloy", "layout": "linear" },
-            { "path": "b/story.malloy", "layout": "linear" }
+            {
+               "path": "a/story.malloy",
+               "layout": "linear"
+            },
+            {
+               "path": "b/story.malloy",
+               "layout": "linear"
+            }
          ],
          "server": {
             "kind": "unresolved",
@@ -113,48 +184,176 @@
       {
          "name": "a bare name nothing has",
          "to": "absent",
-         "reports": [{ "path": "sales/q3.malloy", "layout": "grid" }],
-         "server": { "kind": "unresolved", "candidates": [] },
-         "sdk": { "kind": "unresolved", "candidates": [] }
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "candidates": []
+         },
+         "sdk": {
+            "kind": "unresolved",
+            "candidates": []
+         }
       },
       {
          "name": "a target with a / that misses never falls back to the basename",
          "to": "x/q3",
-         "reports": [{ "path": "sales/q3.malloy", "layout": "grid" }],
-         "server": { "kind": "unresolved", "candidates": [] },
-         "sdk": { "kind": "unresolved", "candidates": [] }
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "candidates": []
+         },
+         "sdk": {
+            "kind": "unresolved",
+            "candidates": []
+         }
       },
       {
          "name": "self",
          "to": "self",
-         "reports": [{ "path": "self.malloy", "layout": "grid" }],
-         "server": { "kind": "self" },
-         "sdk": { "kind": "path", "path": "self.malloy" },
+         "reports": [
+            {
+               "path": "self.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "self"
+         },
+         "sdk": {
+            "kind": "path",
+            "path": "self.malloy"
+         },
          "knownDifference": "The server reads `self` before any path; the SDK's caller handles `self` before it resolves a target (resolveDrill.ts `DRILL_SELF`), so `resolveDrillTarget` reads it as a path like any other."
       },
       {
          "name": "a report dropped because it could not be read is still where a drill points, to the server",
          "to": "broken",
          "reports": [
-            { "path": "broken.malloy", "layout": "grid", "dropped": true }
+            {
+               "path": "broken.malloy",
+               "layout": "grid",
+               "dropped": true
+            }
          ],
-         "server": { "kind": "path", "path": "broken.malloy" },
-         "sdk": { "kind": "unresolved", "candidates": [] },
+         "server": {
+            "kind": "path",
+            "path": "broken.malloy"
+         },
+         "sdk": {
+            "kind": "unresolved",
+            "candidates": []
+         },
          "knownDifference": "The server counts a dropped report, so the lint does not also call a correct drill dangling; the listing the SDK resolves against omits it."
       },
       {
          "name": "a dropped report still makes a basename ambiguous, to the server",
          "to": "overview",
          "reports": [
-            { "path": "a/overview.malloy", "layout": "grid" },
-            { "path": "b/overview.malloy", "layout": "grid", "dropped": true }
+            {
+               "path": "a/overview.malloy",
+               "layout": "grid"
+            },
+            {
+               "path": "b/overview.malloy",
+               "layout": "grid",
+               "dropped": true
+            }
          ],
          "server": {
             "kind": "unresolved",
             "candidates": ["a/overview.malloy", "b/overview.malloy"]
          },
-         "sdk": { "kind": "name", "path": "a/overview.malloy" },
+         "sdk": {
+            "kind": "name",
+            "path": "a/overview.malloy"
+         },
          "knownDifference": "The server counts the dropped report among the candidates; the listing the SDK resolves against omits it, so one report has the name."
+      },
+      {
+         "name": "a leading ./ is not a package path",
+         "to": "./sales/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "candidates": [],
+            "malformed": true
+         },
+         "sdk": {
+            "kind": "unresolved",
+            "candidates": []
+         }
+      },
+      {
+         "name": "a leading / is not a package path",
+         "to": "/sales/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "candidates": [],
+            "malformed": true
+         },
+         "sdk": {
+            "kind": "unresolved",
+            "candidates": []
+         }
+      },
+      {
+         "name": "an empty segment is not a package path",
+         "to": "sales//q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "candidates": [],
+            "malformed": true
+         },
+         "sdk": {
+            "kind": "unresolved",
+            "candidates": []
+         }
+      },
+      {
+         "name": "a .. segment is not a package path",
+         "to": "../sales/q3",
+         "reports": [
+            {
+               "path": "sales/q3.malloy",
+               "layout": "grid"
+            }
+         ],
+         "server": {
+            "kind": "unresolved",
+            "candidates": [],
+            "malformed": true
+         },
+         "sdk": {
+            "kind": "unresolved",
+            "candidates": []
+         }
       }
    ]
 }

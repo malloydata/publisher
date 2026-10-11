@@ -34,7 +34,6 @@ describe("useDrillNavigate", () => {
       expect(drill("env", "pkg", "sales/q3", { region: "west" })).toBe(
          "/env/pkg/sales/q3?region=west",
       );
-      expect(drill("env", "pkg", "./sales/q3")).toBe("/env/pkg/sales/q3");
    });
 
    it("lands a deprecated bare name on the report it resolves to", () => {
@@ -52,6 +51,13 @@ describe("useDrillNavigate", () => {
       expect(drill("my env", "my pkg", "a b/c#d")).toBe(
          "/my%20env/my%20pkg/a%20b/c%23d",
       );
+   });
+
+   it("goes nowhere for a target that is not a plain package path", () => {
+      reports = [{ path: "sales/q3.malloy", layout: "grid" }];
+      for (const to of ["./sales/q3", "/sales/q3", "a//b", "../x"]) {
+         expect(drill("env", "pkg", to)).toBeUndefined();
+      }
    });
 
    it("sends an unresolved path to itself", () => {
