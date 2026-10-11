@@ -115,7 +115,7 @@ Separate from security, and do not conflate them. `isHidden: true` in Power BI i
 
 Classify each hidden object by reason before mapping it:
 
-**Do NOT map `isHidden` to `internal:` mechanically.** `internal` fields are **not reachable through join paths**, and Power BI hides essentially every surrogate key by default, so the mechanical mapping marks the join keys internal and breaks the joins that depend on them.
+**Do NOT map `isHidden` to `internal:` mechanically.** `internal` fields are **not reachable through join paths**, and Power BI hides essentially every surrogate key by default, so the mechanical mapping marks the join keys internal and breaks the joins that depend on them. Nor does `internal:` protect anything: a caller's query can still read an internal field by naming it in its own `extend` or `include`.
 
 | Reason it is hidden | Malloy |
 |---|---|
@@ -124,7 +124,7 @@ Classify each hidden object by reason before mapping it:
 | Clutter, superseded, deprecated | `# hidden`, or drop it |
 | Genuinely sensitive | **Not `isHidden`.** See object-level security below. |
 
-`# hidden` is a render tag: it belongs on fields a user should not see in a picker, not on anything that needs to stay reachable. Reserve `internal:` for fields nothing outside the source should reach at all.
+`# hidden` is a render tag: it belongs on fields a user should not see in a picker, not on anything that needs to stay reachable. `internal:` takes a field off the source's field list, which is tidying, not protection: a caller's query can still read it through its own `extend` or `include`. For a field no caller may read, use `private:`.
 
 ### Object-Level Security Is the Real One
 
@@ -138,7 +138,7 @@ role Restricted
     columnPermission Salary[Amount] = none
 ```
 
-`metadataPermission` / `columnPermission` set to `none` is a real restriction, unlike `isHidden`. **That** is what maps to `private:` / `internal:`. A role reader that only looks at `tablePermission` filter expressions drops OLS silently, which is a permission removed without anyone deciding to remove it.
+`metadataPermission` / `columnPermission` set to `none` is a real restriction, unlike `isHidden`. **That** is what maps to `private:`, never `internal:`, since a caller's query can re-expose an internal field. `private:` applies to every caller, so if only some roles lost the column, marking it private takes it from the roles that kept it too. Model each audience as its own extension source instead, with its own `#(authorize)`, and mark the column `private:` only in the extensions whose roles lost it. A role reader that only looks at `tablePermission` filter expressions drops OLS silently, which is a permission removed without anyone deciding to remove it.
 
 `classify_measures.py` parses row filters only. A role that carries object-level security and no row filter appears in its report as a **Not parsed** line rather than as a row, and a role that carries both is listed for its row filter alone, so read every role file for OLS yourself.
 
