@@ -25,11 +25,11 @@ what is left of the split:
    `dashboards/` and `notebooks/` are not required, not a default, and not a convention. They become
    ordinary directory names. Tags alone decide whether a file is a report and which layout it has.
 
-Existing packages keep working, with one exception that is linted: every file in a `dashboards/` or
-`notebooks/` directory today is classified the same way by its tags alone (checked against every
-example and fixture in this repo, §Compatibility) except a kindless model-level tag that lists tiles
-in `notebooks/`, which was a notebook and is now a grid report (`report-layout-changed`). Every URL
-and REST route that answers today still answers, the old ones as deprecated aliases.
+Existing packages keep working, with one exception: every file in a `dashboards/` or `notebooks/`
+directory today is classified the same way by its tags alone (checked against every example and
+fixture in this repo, §Compatibility) except a kindless model-level tag that lists tiles in
+`notebooks/`, which was a notebook and is now a grid report. Every URL and REST route that answers
+today still answers, the old ones as deprecated aliases.
 
 ## Decisions
 
@@ -137,7 +137,7 @@ all (the grid's default width applies), and that rule would turn them linear. So
 that lists tiles must say so**, with `layout=linear` (or today's `kind=notebook`). Every such file
 in the repo already does, because the builder always wrote `kind=notebook`. A hand-written one in
 `notebooks/` that lists tiles and names no kind took the folder's kind and was a notebook; it is
-now grid, and the temporary `report-layout-changed` warning (§8) says so (§Compatibility).
+now grid (§Compatibility).
 
 The builder and the create templates **always write `layout=`**, so a file never depends on steps
 2–4 after its first save, and `spliceDocument.ts` drops its `dashboards/` special case. Changing a
@@ -257,20 +257,19 @@ copy of a shared finding); with one report map there is one pass per report, plu
 layout-specific checks (grid: `columns`, `colspan`; linear: `notebook-tile-layout-ignored`,
 `run:`-cell readability).
 
-| Finding                                       | Change                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `notebook-other-folder`                       | **Retired.** It tells an author to move a file to its kind's folder.                                                                                                                                                                                                                                                                                                                                                         |
-| `notebook-kind-missing`                       | **Replaced** by `report-layout-implicit`.                                                                                                                                                                                                                                                                                                                                                                                    |
-| the shadowed-dashboard finding                | **Retired.** Two reports may share a basename (§3).                                                                                                                                                                                                                                                                                                                                                                          |
-| drill-target lint                             | Resolves `to=` as a path to a report of either layout. A bare name follows §3's deprecation rule; an unresolved or ambiguous one names the candidate paths.                                                                                                                                                                                                                                                                  |
-| **new** `drill-target-by-name` (warning)      | A `# drill { to=<name> }` that resolved by basename. Gives the exact path to write.                                                                                                                                                                                                                                                                                                                                          |
-| **new** `report-kind-deprecated` (warning)    | A tag that uses `kind=`. Read as before (`dashboard` → grid, `notebook` → linear); gives the `layout=` to write. A tag carrying both is read by `layout=`, and is an error when they disagree.                                                                                                                                                                                                                               |
-| **new** `report-layout-changed` (warning)     | **Temporary**, deleted with the other deprecations (Delivery step 5), and computed with the deprecated-format findings rather than in the report lint. A model-level `## artifact` that lists tiles and names no `layout=`/`kind=`, directly under the top-level `notebooks/`: before reports it took the folder's kind and was linear; now it is grid by §2 step 3. Fix: add `layout=linear` to keep it (or `layout=grid`). |
-| **new** `report-layout-implicit` (warning)    | A model-level `## artifact` with no `layout=`/`kind=` and no tiles, read as linear by §2 step 4. In `dashboards/` that shape is an unserved empty dashboard today, so this is the one file that changes meaning; none exists in the repo. Fix: add `layout=`.                                                                                                                                                                |
-| **new** `report-on-surface` (warning)         | §6's imported-or-listed report.                                                                                                                                                                                                                                                                                                                                                                                              |
-| **new** `index-is-not-a-report` (error)       | §6's tagged root `index.malloy`.                                                                                                                                                                                                                                                                                                                                                                                             |
-| **new** `query-artifact-deprecated` (warning) | A query-level `# artifact` that makes a report. Still served, as grid, until Delivery step 5. Gives the `## artifact { layout=grid … tiles=["<query>"] }` rewrite for that file.                                                                                                                                                                                                                                             |
-| **new** `query-artifact-ignored` (warning)    | A query-level `# artifact` on a file that is on the surface (root `index.malloy` imports it, directly or not, or `explores` lists it): the tag is ignored and the file stays a model. Names the importer or `explores`, and gives the `## artifact` rewrite to put in a file of its own if a report was meant.                                                                                                               |
+| Finding                                       | Change                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `notebook-other-folder`                       | **Retired.** It tells an author to move a file to its kind's folder.                                                                                                                                                                                                                                           |
+| `notebook-kind-missing`                       | **Replaced** by `report-layout-implicit`.                                                                                                                                                                                                                                                                      |
+| the shadowed-dashboard finding                | **Retired.** Two reports may share a basename (§3).                                                                                                                                                                                                                                                            |
+| drill-target lint                             | Resolves `to=` as a path to a report of either layout. A bare name follows §3's deprecation rule; an unresolved or ambiguous one names the candidate paths.                                                                                                                                                    |
+| **new** `drill-target-by-name` (warning)      | A `# drill { to=<name> }` that resolved by basename. Gives the exact path to write.                                                                                                                                                                                                                            |
+| **new** `report-kind-deprecated` (warning)    | A tag that uses `kind=`. Read as before (`dashboard` → grid, `notebook` → linear); gives the `layout=` to write. A tag carrying both is read by `layout=`, and is an error when they disagree.                                                                                                                 |
+| **new** `report-layout-implicit` (warning)    | A model-level `## artifact` with no `layout=`/`kind=` and no tiles, read as linear by §2 step 4. In `dashboards/` that shape is an unserved empty dashboard today, so this is the one file that changes meaning; none exists in the repo. Fix: add `layout=`.                                                  |
+| **new** `report-on-surface` (warning)         | §6's imported-or-listed report.                                                                                                                                                                                                                                                                                |
+| **new** `index-is-not-a-report` (error)       | §6's tagged root `index.malloy`.                                                                                                                                                                                                                                                                               |
+| **new** `query-artifact-deprecated` (warning) | A query-level `# artifact` that makes a report. Still served, as grid, until Delivery step 5. Gives the `## artifact { layout=grid … tiles=["<query>"] }` rewrite for that file.                                                                                                                               |
+| **new** `query-artifact-ignored` (warning)    | A query-level `# artifact` on a file that is on the surface (root `index.malloy` imports it, directly or not, or `explores` lists it): the tag is ignored and the file stays a model. Names the importer or `explores`, and gives the `## artifact` rewrite to put in a file of its own if a report was meant. |
 
 The lint, `notebookReaderProblem`, the lint-text read in `environment.ts`, and the package-warning
 scope all switch from the path predicates to discovery's report map.
@@ -371,14 +370,12 @@ map, and the `compile_model` description's statement of the kind rule becomes th
   in `dashboards/` that lists tiles (grid by step 3, a dashboard today), or is a kindless
   model-level tag in `notebooks/` with no tiles (linear by step 4, a notebook today). The untagged
   `dashboards/_shared.malloy` stays a model. That check is a test
-  (`classification_compat.integration.spec.ts`). Two shapes change meaning, neither in the repo,
-  both linted (§8):
+  (`classification_compat.integration.spec.ts`). Two shapes change meaning, neither in the repo:
   - A **kindless model-level tag that lists tiles in `notebooks/x.malloy`**. Before, the folder
     supplied `kind=notebook`, so it was a linear notebook. Folders mean nothing now, so §2 step 3
     makes it **grid**: it moves from `GET …/notebooks` to `GET …/dashboards` (and is `grid` in
-    `GET …/reports`), and renders as a grid. The temporary `report-layout-changed` warning names
-    each such file and tells the author to add `layout=linear` to keep it. It is reported only for
-    a file directly under the top-level `notebooks/`, the only place the folder default applied.
+    `GET …/reports`), and renders as a grid. Nothing warns about it; the author adds
+    `layout=linear` to keep it linear.
   - A kindless, tileless model-level tag in `dashboards/` (an unserved empty dashboard before) is
     now linear (`report-layout-implicit`).
 - **Every existing URL and REST route answers.** Path routes cover every file already in the two

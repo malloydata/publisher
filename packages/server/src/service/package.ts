@@ -129,7 +129,6 @@ import {
 import { motlyTag } from "./motly";
 import {
    isReportEligiblePath,
-   layoutFactsOfText,
    layoutOfText,
    queryArtifactRewrite,
    queryNotesCarryArtifact,
@@ -185,15 +184,6 @@ type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
 export const DEPRECATED_MALLOYNB_NOTEBOOK = "deprecated-malloynb-notebook";
 /** `PackageWarning.code` of a source's deprecated `#(filter)` annotations warning. */
 export const DEPRECATED_FILTER_ANNOTATION = "deprecated-filter-annotation";
-/**
- * `PackageWarning.code` of a report directly under `notebooks/` whose layout
- * changed when folders stopped meaning anything. TEMPORARY: deleted with the
- * other deprecations (docs/reports-design.md, Delivery step 5).
- */
-export const REPORT_LAYOUT_CHANGED = "report-layout-changed";
-
-/** A path directly under the package's top-level `notebooks/` directory. */
-const TOP_LEVEL_NOTEBOOK_PATH = /^notebooks\/[^/]+\.malloy$/;
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
 // A thunk lets callers pass a live reference to the *current* environment
@@ -2661,41 +2651,7 @@ export class Package {
             });
          }
       }
-      return [...notebooks, ...filters, ...this.layoutChangedWarnings()];
-   }
-
-   /**
-    * TEMPORARY, deleted with the other deprecations (docs/reports-design.md,
-    * Delivery step 5). Before reports, a kindless tag in `notebooks/x.malloy`
-    * took the folder's kind, so a model-level `## artifact` that lists tiles
-    * there was a linear notebook. Folders now mean nothing and the same tag is
-    * a grid report (§2 step 3): it moves from the notebook listing to the
-    * dashboard listing and renders as a grid. One warning per such file, so
-    * its author can pin the old layout with `layout=linear`. Only that exact
-    * shape: a tag naming `layout=` or `kind=`, a file anywhere else, or one
-    * nested deeper was read the same before and is not reported.
-    */
-   private layoutChangedWarnings(): ApiPackageWarning[] {
-      const warnings: ApiPackageWarning[] = [];
-      for (const report of this.reports.values()) {
-         if (!TOP_LEVEL_NOTEBOOK_PATH.test(report.path)) continue;
-         if (report.layout !== "grid" || report.queryLevel) continue;
-         const facts = layoutFactsOfText(report.text ?? "");
-         if (!facts.modelTag || !facts.tiles) continue;
-         if (facts.layout !== undefined || facts.kind !== undefined) continue;
-         warnings.push({
-            model: report.path,
-            code: REPORT_LAYOUT_CHANGED,
-            severity: "warn",
-            message:
-               `${report.path} lists tiles and names no layout, so it is now ` +
-               `a grid report (a dashboard). Before this release a file in ` +
-               `notebooks/ read as linear (a notebook). Fix: add ` +
-               `\`layout=linear\` to its artifact tag to keep it linear, or ` +
-               `\`layout=grid\` to keep the grid and silence this warning.`,
-         });
-      }
-      return warnings;
+      return [...notebooks, ...filters];
    }
 
    /**

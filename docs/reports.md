@@ -873,9 +873,7 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 - **Deprecations.** `kind=` in the tag (`report-kind-deprecated`, warn, with the `layout=` to write); a
   query-level `# artifact` (`query-artifact-deprecated`, with the rewrite), or one that is ignored because
   its file is on the surface (`query-artifact-ignored`); a tileless tag with no `layout=`
-  (`report-layout-implicit`); and, temporarily, a `notebooks/x.malloy` whose tag lists tiles and names no
-  `layout=` or `kind=` (`report-layout-changed`): it read as linear before this release, because the folder
-  supplied the kind, and is grid now. Add `layout=linear` to keep it linear.
+  (`report-layout-implicit`).
 - **The surface.** A tagged root `index.malloy` (`index-is-not-a-report`, error); a report that
   `index.malloy` imports or `explores` lists (`report-on-surface`); and a tile, single query or `suggest` that
   reads a source the surface does not publish, for example:
