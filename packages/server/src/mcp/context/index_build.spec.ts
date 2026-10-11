@@ -296,4 +296,82 @@ describe("index build", () => {
             ?.map((f) => f.facet),
       ).toEqual(["derived", "q1", "q2", "q3"]);
    });
+
+   it("writes questionsPerNode rows with the chosen wording, and shows values only to the values wording", async () => {
+      const seen: string[] = [];
+      const chat = scriptedChat((prompt) => {
+         if (prompt.includes("<docs>")) {
+            return JSON.stringify({
+               results: numberedLines(prompt).map(([i, line]) => ({
+                  index: i,
+                  what: line.split(". ")[0],
+                  values: [],
+                  rules: [],
+                  examples: [],
+               })),
+            });
+         }
+         seen.push(prompt);
+         return JSON.stringify({
+            results: numberedLines(prompt).map(([i]) => ({
+               index: i,
+               questions: [1, 2, 3, 4, 5, 6].map((k) => `phrase ${k} of ${i}`),
+            })),
+         });
+      });
+      const run = (settings: typeof DEFAULT_FCJ_SETTINGS) =>
+         buildFcjIndex({
+            pkgIndex: fixture.pkgIndex,
+            db,
+            provider: stubEmbeddingProvider(),
+            environmentName: "env",
+            packageName: "fixture",
+            settings,
+            llm: { chat: chat.model, concurrency: 1, maxCallsPerSync: 100 },
+            // The two #(index) dimensions read these values, most frequent first.
+            valueRead: {
+               environmentStore: {} as never,
+               fetcher: async () => ({
+                  values: [
+                     { value: "Boston", count: 9 },
+                     { value: "Denver", count: 5 },
+                  ],
+                  truncated: false,
+               }),
+            },
+         });
+      const five = await run({
+         ...DEFAULT_FCJ_SETTINGS,
+         questionsPrompt: "phrases",
+         questionsPerNode: 5,
+      });
+      // Six came back; five are kept, so 39 nodes x 5 rows.
+      expect(five.report.vectors.rows).toBe(51 + 39 * 5);
+      expect(
+         five.vectors
+            .get("measure:flights@travel.malloy:flight_count")
+            ?.map((f) => f.facet),
+      ).toEqual(["derived", "q1", "q2", "q3", "q4", "q5"]);
+      expect(seen.every((p) => !p.includes(" Values: "))).toBe(true);
+      expect(seen[0]).toContain(
+         '"questions": ["...", "...", "...", "...", "..."]',
+      );
+      seen.length = 0;
+      // The values wording is a new prompt, so every row is written again,
+      // and an #(index) dimension shows its stored values on its line.
+      const withValues = await run({
+         ...DEFAULT_FCJ_SETTINGS,
+         questionsPrompt: "values",
+      });
+      expect(withValues.report.questions).toMatchObject({
+         written: 39,
+         reused: 0,
+      });
+      const lines = seen.flatMap((p) => numberedLines(p).map(([, l]) => l));
+      const shown = lines.filter((l) => l.includes(" Values: "));
+      expect(shown.length).toBe(2);
+      expect(shown.every((l) => l.endsWith(" Values: Boston, Denver."))).toBe(
+         true,
+      );
+   });
 });
