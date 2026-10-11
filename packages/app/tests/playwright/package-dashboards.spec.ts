@@ -97,9 +97,9 @@ test.describe("package-dashboards", () => {
       ).toBeVisible();
 
       // A report belongs in the Reports section, not a second time under
-      // Semantic Models where clicking it would open the Explorer instead. (Its
+      // Models where clicking it would open the Explorer instead. (Its
       // row in Reports shows the path, so the check is scoped to the models.)
-      const models = page.getByRole("region", { name: "Semantic Models" });
+      const models = page.getByRole("region", { name: "Models", exact: true });
       await expect(
          models.getByRole("button", { name: /dashboards\/_shared\.malloy/ }),
       ).toBeVisible();

@@ -44,7 +44,7 @@ function ModelPage() {
 
    const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
 
-   // In-package HTML data app (embedded view). The Data Apps section in
+   // In-package HTML data app (embedded view). The Apps section in
    // <Package> routes clicks to `data-apps/<file>` so this branch picks them
    // up. <DataAppViewer> iframes the standalone Publisher URL and resizes
    // via the publisher.js postMessage protocol. Real models that live under

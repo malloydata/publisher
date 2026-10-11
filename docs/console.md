@@ -28,7 +28,7 @@ Environment            e.g. "examples"
     │   └── View       a saved, reusable query on a source
     ├── Report         a .malloy file with an ## artifact tag, anywhere in the package: text and query
     │                  tiles behind filter controls, in a linear or a grid layout
-    └── Data Apps      an in-package HTML data app (the package's public/ dir)
+    └── Apps           an in-package HTML data app (the package's public/ dir)
 ```
 
 The [REST and MCP APIs](api-overview.md) expose this exact hierarchy; the Console is a view onto it.
@@ -64,11 +64,11 @@ is a Console convenience.
 
 ## What you can do in the Console
 
-- **Browse a package** — one section each for **Reports**, **Data Apps**, **Semantic Models**,
-  **Package Data** and **Materializations**, in that order, plus the package's README rendered
+- **Browse a package** — one section each for **Reports**, **Apps**, **Models**,
+  **Data** and **Materializations**, in that order, plus the package's README rendered
   underneath (a report at the package root whose basename is `README`). Reports lists every report in
   the package, whatever directory it sits in, each row marked with its layout (linear or grid) and
-  opened by its path, and carries the **New report** button on its heading row. Data Apps is hidden
+  opened by its path, and carries the **New report** button on its heading row. Apps is hidden
   when the package has none. Reports is hidden when empty too, unless creating is offered: then it
   shows a "No reports yet" row with a **New report** button.
   The Materializations section lists the package's build runs and carries the three controls that

@@ -227,7 +227,7 @@ export default function Package({
          } catch (e) {
             // A 404 or transport-level failure (older Publisher without the
             // /data-apps route, network blip) is non-fatal: render the package
-            // page without a Data Apps section. A genuinely missing package
+            // page without an Apps section. A genuinely missing package
             // surfaces its own error via the package query above, so an empty
             // list here can't hide it.
             const status = (e as { response?: { status?: number } })?.response
@@ -248,7 +248,7 @@ export default function Package({
    );
    const artifacts = reportRows(reports);
    // A report is listed once, under Reports. Its file is a model like any
-   // other, so it would otherwise appear a second time under Semantic Models
+   // other, so it would otherwise appear a second time under Models
    // where clicking it opens the Explorer rather than the report. The listed
    // paths decide it, never a directory name.
    const reportPaths = new Set(
@@ -334,7 +334,7 @@ export default function Package({
 
    // The models list is FILTERED by the report listing, so every section waits
    // for it: gated on anything less, a listing that resolved after the models
-   // call showed a report under Semantic Models and then took it away. A
+   // call showed a report under Models and then took it away. A
    // FAILURE cannot hang the page, since the query turns a 404 or a transport
    // failure into an empty list; the cost is one parallel request's latency.
    const isLoading = !reportsQuery.isSuccess && !reportsQuery.isError;
@@ -547,7 +547,7 @@ export default function Package({
                )}
 
                {dataApps.length > 0 && (
-                  <PackageSection title="Data Apps" count={dataApps.length}>
+                  <PackageSection title="Apps" count={dataApps.length}>
                      {dataApps.map((dataApp) => {
                         const hasTitle =
                            !!dataApp.title && dataApp.title !== dataApp.path;
@@ -611,7 +611,7 @@ export default function Package({
                   </PackageSection>
                )}
 
-               <PackageSection title="Semantic Models" count={models.length}>
+               <PackageSection title="Models" count={models.length}>
                   {models.map((model) => (
                      <PackageItemRow
                         key={model.path}
@@ -628,7 +628,7 @@ export default function Package({
                   {models.length === 0 && <EmptyRow label="No models" />}
                </PackageSection>
 
-               <PackageSection title="Package Data" count={databases.length}>
+               <PackageSection title="Data" count={databases.length}>
                   {databases.map((database) => (
                      <PackageItemRow
                         key={database.path}
