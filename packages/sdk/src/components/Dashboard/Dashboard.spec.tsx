@@ -141,7 +141,7 @@ describe("the version reaches what the manifest drives", () => {
    const manifest: DashboardManifest = {
       name: "ops",
       path: "dashboards/ops.malloy",
-      query: "overview",
+      tiles: [{ kind: "query", query: "overview" }],
       givens: [
          { name: "REGION", type: "string" },
          {

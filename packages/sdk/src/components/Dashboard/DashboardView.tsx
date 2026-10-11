@@ -251,23 +251,6 @@ export function DashboardView({
             <Alert severity="error">
                This dashboard has no model path, so there is nothing to run.
             </Alert>
-         ) : manifest.query !== undefined ? (
-            // Single-query form: one query whose result IS the dashboard. Its
-            // `# dashboard {columns=N}` tag is the renderer's business, so no
-            // grid is imposed here: doing so would nest a grid in a grid.
-            <DashboardTile
-               environmentName={environmentName}
-               packageName={packageName}
-               versionId={versionId}
-               modelPath={modelPath}
-               queryName={manifest.query}
-               givens={applied}
-               declaredTypes={declaredTypes}
-               height={height}
-               maxResultSize={maxResultSize}
-               drill={drill}
-               chrome={chrome}
-            />
          ) : tiles.length > 0 ? (
             // Composite form: each tile runs on its own and the results are
             // combined into one grid here, since no single Malloy result spans

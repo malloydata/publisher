@@ -1675,7 +1675,10 @@ describe("every not a report survives an edit", () => {
    const editable = found.filter((f) => {
       const text = fs.readFileSync(f, "utf8");
       return (
-         /##\s*artifact[\s\S]*tiles\s*=/.test(text) && !/-lint[\\/]/.test(f)
+         /##\s*artifact[\s\S]*tiles\s*=/.test(text) &&
+         !/-lint[\\/]/.test(f) &&
+         // A report whose one tile is a named query is not one the builder edits.
+         !/tiles=\["[A-Za-z_]\w*"\]/.test(text)
       );
    });
 

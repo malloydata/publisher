@@ -900,9 +900,15 @@ describe("every not a report in the repository opens", () => {
    };
    for (const root of roots) walk(path.join(REPO, root));
 
-   const composites = found.filter((f) =>
-      /##\s*artifact[\s\S]*tiles\s*=/.test(fs.readFileSync(f, "utf8")),
-   );
+   // A report whose one tile is a named query is not one the builder lays
+   // out (it edits `source -> view` tiles), so it is not expected to open.
+   const composites = found.filter((f) => {
+      const text = fs.readFileSync(f, "utf8");
+      return (
+         /##\s*artifact[\s\S]*tiles\s*=/.test(text) &&
+         !/tiles=\["[A-Za-z_]\w*"\]/.test(text)
+      );
+   });
 
    it("finds composites to check", () => {
       expect(composites.length).toBeGreaterThan(0);

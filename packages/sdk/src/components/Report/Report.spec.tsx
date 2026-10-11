@@ -19,7 +19,7 @@ import {
 } from "../../../test/serverProvider";
 import type { ReportManifest } from "../../client";
 
-let manifest: ReportManifest = {};
+let manifest = {} as ReportManifest;
 const getReport = mock(
    (
       _environmentName: string,
@@ -63,12 +63,12 @@ const { Report } = await import("./Report");
 
 const URI = "publisher://environments/env/packages/pkg";
 
-const TILES: ReportManifest = {
+const TILES = {
    path: "sales/q3.malloy",
    name: "q3",
    title: "Third quarter",
    tiles: [{ kind: "query", query: "orders -> by_month" }],
-};
+} as ReportManifest;
 
 beforeEach(() => {
    clearCache();
