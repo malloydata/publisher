@@ -1,5 +1,5 @@
 ##" One or more scored runs over one evaluation set: the analytical tables.
-## artifact { kind=notebook title="Eval run" }
+## artifact { layout=linear title="Eval run" }
 import "../eval_run.malloy"
 
 ##|(markdown)
