@@ -126,20 +126,20 @@ mockServerProvider(
    serverContext,
 );
 
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 const { NotebookEditor } = await import("../legacy/NotebookEditor");
 
 const button = (name: string | RegExp) =>
    screen.getByRole("button", { name, hidden: true });
 
 const mount = (
-   props: Partial<Parameters<typeof DashboardEditor>[0]> & {
+   props: Partial<Parameters<typeof ReportEditor>[0]> & {
       dashboardName?: string;
    } = {},
    onEvent?: (event: ReportEvent) => void,
 ) =>
    render(
-      <DashboardEditor
+      <ReportEditor
          kind="notebook"
          environmentName="env"
          packageName="pkg"
@@ -164,7 +164,7 @@ beforeEach(async () => {
    updateModelSource.mockClear();
 });
 
-describe("DashboardEditor as a notebook", () => {
+describe("ReportEditor as a notebook", () => {
    it("reads the file with the authoring flag, and the manifest from the report read", async () => {
       const onEvent = mock((_event: ReportEvent) => {});
       mount({}, onEvent);
@@ -272,7 +272,7 @@ describe("DashboardEditor as a notebook", () => {
    });
 });
 
-describe("DashboardEditor as a notebook: the host's record", () => {
+describe("ReportEditor as a notebook: the host's record", () => {
    const RECORD: Workspace = {
       name: "Branch",
       writeable: true,
@@ -307,7 +307,7 @@ describe("DashboardEditor as a notebook: the host's record", () => {
       const store = new Store(LAYOUT.replace("Hello.", "From the record."));
       render(
          <DocumentStorageProvider documentStorage={store}>
-            <DashboardEditor
+            <ReportEditor
                kind="notebook"
                environmentName="env"
                packageName="pkg"

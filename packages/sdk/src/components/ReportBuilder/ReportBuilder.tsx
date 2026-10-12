@@ -28,7 +28,7 @@ import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
 import { useControlBindings } from "./useControlBindings";
 import { useConversionConfirm } from "./useConversionConfirm";
-import { useDashboardEditor } from "./useDashboardEditor";
+import { useReportEditor } from "./useReportEditor";
 import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
@@ -67,7 +67,7 @@ export type { BuilderGiven } from "./controls";
  *
  * Tiles are added from the package's catalog and removed from their menu.
  */
-export interface DashboardBuilderProps {
+export interface ReportBuilderProps {
    /** The file being edited. */
    source: string;
    /** The document that file produced. */
@@ -204,7 +204,7 @@ export interface DashboardBuilderProps {
    allowLayoutChange?: boolean;
 }
 
-export function DashboardBuilder({
+export function ReportBuilder({
    source,
    document,
    onSave,
@@ -226,8 +226,8 @@ export function DashboardBuilder({
    modelPath,
    visibleSources,
    addFilterDisabledReason,
-}: DashboardBuilderProps) {
-   const editor = useDashboardEditor({
+}: ReportBuilderProps) {
+   const editor = useReportEditor({
       source,
       document,
       ...(onSave ? { onSave } : {}),

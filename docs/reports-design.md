@@ -334,7 +334,7 @@ and its old by-name link, and gives back a package's own `public/dashboards/` an
   section, each row marked with its layout and opened by path; README detection becomes "a report at
   the package root whose basename is `README`", replacing the `notebooks/readme.malloy` check; the
   new-report model picker excludes listed report paths instead of two prefixes.
-- **Builder** (`catalog.ts`, `EditorSurface.tsx`, `DashboardEditor`): one editor, keyed by `path`,
+- **Builder** (`catalog.ts`, `EditorSurface.tsx`, `ReportEditor`): one editor, keyed by `path`,
   with a layout switch that rewrites `layout=` and nothing else. Reports are excluded from the
   source catalog by the listed paths, not by prefix. The drill editor writes path targets.
 - **Create** (`DocumentCreate/*`, `newDashboard.ts`, `newNotebook.ts`): one **New report** action

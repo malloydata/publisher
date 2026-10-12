@@ -11,7 +11,7 @@ import {
    useDocumentEditor,
 } from "./useDocumentEditor";
 
-export type DashboardEditor = DocumentEditor<DashboardDocument>;
+export type ReportEditorHandle = DocumentEditor<DashboardDocument>;
 export type { SaveOutcome };
 
 /**
@@ -31,7 +31,7 @@ const tilesChanged = (saved: DashboardDocument, next: DashboardDocument) => {
    );
 };
 
-export function useDashboardEditor(options: {
+export function useReportEditor(options: {
    /** The file as read from storage. */
    source: string;
    /** The document that file produced. */
@@ -48,7 +48,7 @@ export function useDashboardEditor(options: {
    replaces?: string;
    /** The sources a document held as text sees without an `import`. */
    visibleSources?: readonly string[];
-}): DashboardEditor {
+}): ReportEditorHandle {
    const { conversion, visibleSources, ...rest } = options;
    const from = conversion?.from;
    const to = conversion?.to;

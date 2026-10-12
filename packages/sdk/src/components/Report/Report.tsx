@@ -50,7 +50,7 @@ export interface ReportProps {
       managed: readonly string[],
    ) => void;
    /**
-    * Where to go when a `# drill` cell is clicked. `target.dashboard` is the
+    * Where to go when a `# drill` cell is clicked. `target.path` is the
     * tag's `to=` as written: a package path from the root, without `.malloy`,
     * for the host to resolve against `GET …/reports` (`resolveDrillTarget`).
     * Without it, drilling to another report is inert: `to=self` still filters

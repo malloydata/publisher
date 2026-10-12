@@ -1,10 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { slugFor } from "../DashboardBuilder/newDashboard";
+import { slugFor } from "../ReportBuilder/newDashboard";
 import type { DocumentLocator, DocumentType } from "../DocumentStorage";
 
-export { newDashboardSource, slugFor } from "../DashboardBuilder/newDashboard";
+export { newDashboardSource, slugFor } from "../ReportBuilder/newDashboard";
 
 /**
  * A directory as the create dialog takes it: no leading or trailing slash,

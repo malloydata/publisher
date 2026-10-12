@@ -10,7 +10,7 @@ import {
    within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 import { editInline } from "./testing/inline";
 import { TEXT_TILE_PLACEHOLDER } from "./TextTileBody";
@@ -53,7 +53,7 @@ const mount = async (
 ) => {
    const document = await openDocument(SOURCE);
    return render(
-      <DashboardBuilder
+      <ReportBuilder
          source={SOURCE}
          document={document}
          catalog={catalog}

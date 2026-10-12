@@ -49,13 +49,13 @@ mockServerProvider(
    { mutable: true },
 );
 
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 
 beforeEach(() => clearCache());
 
 async function warnings(): Promise<Record<string, string>> {
    render(
-      <DashboardEditor
+      <ReportEditor
          environmentName="env"
          packageName="pkg"
          dashboardName="overview"
@@ -74,7 +74,7 @@ async function warnings(): Promise<Record<string, string>> {
    );
 }
 
-describe("DashboardEditor filter warnings", () => {
+describe("ReportEditor filter warnings", () => {
    it("warns only on the tile the control does not reach", async () => {
       packageFile = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
 import { scoped_orders } from "../data_app.malloy"

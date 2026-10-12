@@ -13,7 +13,7 @@ import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
 import type { ConversionConfirm } from "./useConversionConfirm";
 import type { useControlBindings } from "./useControlBindings";
-import type { DashboardEditor } from "./useDashboardEditor";
+import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileEditing } from "./useTileEditing";
 
 /**
@@ -33,7 +33,7 @@ export function BuilderDialogs({
    confirmConversion,
    exitDialog,
 }: {
-   editor: DashboardEditor;
+   editor: ReportEditorHandle;
    catalog: PackageCatalog | undefined;
    columns: number;
    dashboards: string[] | undefined;

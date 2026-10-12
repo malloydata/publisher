@@ -4,7 +4,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import type { ReportEvent } from "../Report/telemetry";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 
 /**
@@ -42,7 +42,7 @@ const mount = async (
    textHeld = false,
 ) =>
    render(
-      <DashboardBuilder
+      <ReportBuilder
          source={source}
          document={await openDocument(source)}
          onSave={onSave}
@@ -59,7 +59,7 @@ describe("the layout switch", () => {
 
    it("is not offered when the host turns it off with allowLayoutChange={false}", async () => {
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={GRID}
             document={await openDocument(GRID)}
             onSave={() => {}}
@@ -116,7 +116,7 @@ describe("the layout switch", () => {
    it("reports a switch once, and the save after it under the new layout", async () => {
       const onEvent = mock((_event: ReportEvent) => {});
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={LINEAR}
             document={await openDocument(LINEAR)}
             onSave={() => Promise.resolve()}

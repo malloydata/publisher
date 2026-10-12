@@ -1099,7 +1099,7 @@ class ApiDocumentStorage implements DocumentStorage {
 
 ### Hosts that file reports by layout
 
-The builder (`DashboardEditor` / `DashboardBuilder` from `@malloy-publisher/sdk/builder`) reads a report's
+The builder (`ReportEditor` / `ReportBuilder` from `@malloy-publisher/sdk/builder`; `DashboardEditor` / `DashboardBuilder` are deprecated aliases) reads a report's
 layout from its text alone, never from where the file lives, in the same order the server uses, first match
 wins:
 
@@ -1143,7 +1143,7 @@ function MyComponent() {
 ## Telemetry
 
 The report surfaces report what happens on them through an `onEvent` prop, for the host to log or count:
-`Report` (every layout), `DashboardEditor` and `DashboardBuilder` from `@malloy-publisher/sdk/builder`,
+`Report` (every layout), `ReportEditor` and `ReportBuilder` from `@malloy-publisher/sdk/builder`,
 `NewDocumentDialog`, `Package` (for its New report dialog), and the deprecated `Dashboard`. Every event is a
 `ReportEvent`, named `report.*`, and carries the report's package `path` and its `layout`; the host knows the
 environment and package and adds them when it logs.

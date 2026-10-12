@@ -3,11 +3,11 @@
 
 import { describe, expect, it } from "bun:test";
 import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
-import { isQueryTile, isTextTile } from "../DashboardBuilder/document";
+import { isQueryTile, isTextTile } from "../ReportBuilder/document";
 import {
    readDashboardDocument,
    readFailed,
-} from "../DashboardBuilder/readDocument";
+} from "../ReportBuilder/readDocument";
 import { reportPathFor, reportPathForTitle, slugFor } from "./documentPath";
 import { newDocumentProblem } from "./guards";
 import { newNotebookSource, newReportSource } from "./newNotebook";

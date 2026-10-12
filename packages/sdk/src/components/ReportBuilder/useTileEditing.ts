@@ -5,7 +5,7 @@ import { useState } from "react";
 import type { NewTile } from "./AddTileDialog";
 import { isTextTile, tileKey, type DashboardTile } from "./document";
 import { addTileToDocument } from "./addTileToDocument";
-import type { DashboardEditor } from "./useDashboardEditor";
+import type { ReportEditorHandle } from "./useReportEditor";
 
 /**
  * Adding, changing and removing tiles, with the add-tile picker and a tile's
@@ -20,7 +20,7 @@ export function useTileEditing({
    selectTile,
    deselectTile,
 }: {
-   editor: DashboardEditor;
+   editor: ReportEditorHandle;
    notebook: boolean;
    columns: number;
    /** The document's file within the package, which a tile's import is relative to. */

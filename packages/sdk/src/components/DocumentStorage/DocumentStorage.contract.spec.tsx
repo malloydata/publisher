@@ -31,8 +31,8 @@ import {
    serverWrapper,
 } from "../../../test/serverProvider";
 import { createDocument } from "../DocumentCreate/createDocument";
-import { useHostCopy } from "../DashboardBuilder/useHostCopy";
-import { useSaveChannel } from "../DashboardBuilder/useSaveChannel";
+import { useHostCopy } from "../ReportBuilder/useHostCopy";
+import { useSaveChannel } from "../ReportBuilder/useSaveChannel";
 import { findDraftLayout } from "../Package/useDraftLayout";
 import { BrowserDocumentStorage } from "./BrowserDocumentStorage";
 import {

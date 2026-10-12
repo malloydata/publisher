@@ -20,7 +20,7 @@ const { useDrillNavigate } = await import("./useDrillNavigate");
 let outcome: string | undefined;
 const drill = (env: string, pkg: string, to: string, givens = {}) => {
    const { result } = renderHook(() => useDrillNavigate(env, pkg));
-   outcome = result.current({ dashboard: to, givens });
+   outcome = result.current({ path: to, dashboard: to, givens });
    return navigate.mock.calls.at(-1)?.[0];
 };
 

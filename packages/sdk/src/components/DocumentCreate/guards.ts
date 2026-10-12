@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { annotationTextProblem } from "../DashboardBuilder/annotationText";
+import { annotationTextProblem } from "../ReportBuilder/annotationText";
 import { isBareName } from "../../utils/malloyText";
 
 export const malloyName = (name: string) =>

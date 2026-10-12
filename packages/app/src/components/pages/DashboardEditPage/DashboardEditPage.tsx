@@ -19,9 +19,9 @@ import { useLeaveGuard } from "../useLeaveGuard";
  * of every other page's chunk and downloads the first time someone opens a
  * report for editing.
  */
-const DashboardEditor = React.lazy(() =>
+const ReportEditor = React.lazy(() =>
    import("@malloy-publisher/sdk/builder").then((module) => ({
-      default: module.DashboardEditor,
+      default: module.ReportEditor,
    })),
 );
 
@@ -35,7 +35,7 @@ export interface DashboardEditPageProps {
 }
 
 /**
- * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/<path>?edit`,
+ * The Console's host for the SDK `ReportEditor`: `/<env>/<pkg>/<path>?edit`,
  * either layout. View in the header returns to the report itself, the same
  * route without `?edit`.
  */
@@ -59,7 +59,7 @@ export default function DashboardEditPage({
             <Suspense
                fallback={<Loading text={LOADING_COPY.opening("builder")} />}
             >
-               <DashboardEditor
+               <ReportEditor
                   // Remounts on a route change so another report starts from a fresh read.
                   key={`${environmentName}/${packageName}/${path}`}
                   resourceUri={encodeResourceUri({

@@ -289,7 +289,7 @@ the reader to find.
 The shape after the end-to-end quality pass (2026-09-15), recorded so the next
 change lands in the right place.
 
-**Modules** (`packages/sdk/src/components/DashboardBuilder`):
+**Modules** (`packages/sdk/src/components/ReportBuilder`):
 
 - `document.ts` — the editing projection: tiles, sources and their own
   dimensions, local givens with their control contract, drills, settings; one
@@ -312,10 +312,10 @@ change lands in the right place.
 - `layout.ts` — what a reorder does to the rows; `useTileReorder.ts` — the
   drag, previewing and committing once;
   `TileFrame.tsx` — what is drawn around a tile; `FilterStrip.tsx`.
-- `useDashboardEditor.ts` — whole-document history and save; `useDraft.ts` —
+- `useReportEditor.ts` — whole-document history and save; `useDraft.ts` —
   edit a copy, commit on close.
-- `DashboardBuilder.tsx` — the document, the selection and the dialogs.
-- `DashboardEditor.tsx` — the Console's host: the package file, the browser's
+- `ReportBuilder.tsx` — the document, the selection and the dialogs.
+- `ReportEditor.tsx` — the Console's host: the package file, the browser's
   draft, the catalog (built from the package's published models, limited to
   what the file imports), the live surface, export.
 - `../Dashboard/useDashboardControls.ts` — the control row, shared by the viewer
@@ -330,7 +330,7 @@ files, or a `#` tag the document does not model.
 **Tests**, by layer: unit specs on the reader, writer (including its refusals),
 controls, catalog, preview, layout, literal encoding, the filter form and the
 two gestures (geometry faked); integration specs on the builder (Testing
-Library) and on `DashboardEditor` against a mocked client and real browser
+Library) and on `ReportEditor` against a mocked client and real browser
 storage; one Playwright spec on the Console's edit page. Lines covered:
 builder 97%, writer 92%, reader 96%, editor host 93%.
 
@@ -546,7 +546,7 @@ Platform class as for dashboards.
 _Superseded 2026-10-02: there is no separate cell editor; see the status line at the top._
 
 **The builder that follows.** With the format decided, the notebook builder
-is the dashboard builder's core with a linear surface: `useDashboardEditor`
+is the dashboard builder's core with a linear surface: `useReportEditor`
 generalised to a `useDocumentEditor<T>` (history, dirty, save with a refusal
 reason); the writer's `Edit`/`applyEdits` primitives, `DiffDialog`,
 `BuilderToolbar`, `useDraft`, the host's open / draft / resume / export flow,

@@ -12,7 +12,7 @@ import {
 import { afterEach, describe, expect, it, mock } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { readForEditor } from "./readForEditor";
 import { openDocument } from "./testing/fixtures";
 import type { ReportEvent } from "../Report/telemetry";
@@ -78,7 +78,7 @@ const mountText = async (
    } = {},
 ) =>
    render(
-      <DashboardBuilder
+      <ReportBuilder
          source={source}
          document={await openDocument(source)}
          {...(options.withCatalog ? { catalog } : {})}
@@ -87,7 +87,7 @@ const mountText = async (
       />,
    );
 
-describe("DashboardBuilder: a notebook is one column", () => {
+describe("ReportBuilder: a notebook is one column", () => {
    it("draws its text and description bare, as the notebook reader does", async () => {
       await mountText(NOTEBOOK);
       for (const card of document.querySelectorAll("[data-chrome]"))
@@ -212,7 +212,7 @@ describe("DashboardBuilder: a notebook is one column", () => {
    });
 });
 
-describe("DashboardBuilder: a document's kind", () => {
+describe("ReportBuilder: a document's kind", () => {
    it("is fixed once created: there is no switch between dashboard and notebook", async () => {
       await mountText(DASHBOARD, { onSave: () => {} });
       expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
@@ -220,7 +220,7 @@ describe("DashboardBuilder: a document's kind", () => {
    });
 });
 
-describe("DashboardBuilder: a notebook in the cell format", () => {
+describe("ReportBuilder: a notebook in the cell format", () => {
    const open = async (
       options: {
          onSave?: (source: string) => void;
@@ -232,7 +232,7 @@ describe("DashboardBuilder: a notebook in the cell format", () => {
       if (result.ok === false) throw new Error(result.reason);
       if (!result.conversion) throw new Error("expected a conversion");
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={LEGACY}
             document={result.document}
             conversion={result.conversion}

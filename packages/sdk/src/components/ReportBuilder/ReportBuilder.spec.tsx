@@ -11,7 +11,7 @@ import {
 } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import type { ReportEvent } from "../Report/telemetry";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 import { closeMenu, editInline } from "./testing/inline";
 import { dragEdge } from "./testing/resize";
@@ -35,7 +35,7 @@ const mount = async (
 ) => {
    const document = await openDocument(SOURCE);
    return render(
-      <DashboardBuilder
+      <ReportBuilder
          source={SOURCE}
          document={document}
          {...(onSave ? { onSave } : {})}
@@ -101,7 +101,7 @@ const itemStyleOf = (name: string): string => {
    return declarations.join(" ");
 };
 
-describe("DashboardBuilder", () => {
+describe("ReportBuilder", () => {
    it("shows a tile per entry, titled as a reader would see it", async () => {
       await mount();
       // The labelled tile shows its label; the unlabelled one falls back to the
@@ -155,7 +155,7 @@ describe("DashboardBuilder", () => {
    it("hands the whole tile to renderTile, adding no heading of its own", async () => {
       const document = await openDocument(SOURCE);
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={SOURCE}
             document={document}
             renderTile={(each) => <article>a real {each.name}</article>}
@@ -173,7 +173,7 @@ describe("DashboardBuilder", () => {
    it("marks selection without resizing the tile", async () => {
       const document = await openDocument(SOURCE);
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={SOURCE}
             document={document}
             renderTile={(each) => <article>a real {each.name}</article>}
@@ -205,7 +205,7 @@ describe("DashboardBuilder", () => {
    });
 });
 
-describe("DashboardBuilder: the dashboard's filters", () => {
+describe("ReportBuilder: the dashboard's filters", () => {
    // The convention, end to end through the surface: a filter added here is a
    // declaration in THIS file plus a binding on each ticked tile, and the save
    // writes exactly that.
@@ -255,7 +255,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       let written: string | undefined;
       const document = await openDocument(SOURCE);
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={SOURCE}
             document={document}
             givens={[
@@ -295,7 +295,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       );
       const document = await openDocument(source);
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={source}
             document={document}
             onSave={(next) => {
@@ -319,7 +319,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
       );
       const document = await openDocument(source);
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={source}
             document={document}
             onSave={(next) => {
@@ -346,7 +346,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
    });
 });
 
-describe("DashboardBuilder: fields, when the package is known", () => {
+describe("ReportBuilder: fields, when the package is known", () => {
    const catalog = {
       sources: [
          {
@@ -378,7 +378,7 @@ describe("DashboardBuilder: fields, when the package is known", () => {
    const mountWithCatalog = async () => {
       const document = await openDocument(SOURCE);
       return render(
-         <DashboardBuilder
+         <ReportBuilder
             source={SOURCE}
             document={document}
             catalog={catalog}
@@ -449,7 +449,7 @@ describe("DashboardBuilder: fields, when the package is known", () => {
       );
       const document = await openDocument(source);
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={source}
             document={document}
             catalog={catalog}
@@ -460,7 +460,7 @@ describe("DashboardBuilder: fields, when the package is known", () => {
    });
 });
 
-describe("DashboardBuilder: a control the model declares", () => {
+describe("ReportBuilder: a control the model declares", () => {
    // Its declaration is not ours to delete, but a control is a given some tile
    // binds, so taking it off the dashboard is unbinding every tile.
    it("can still be taken off the dashboard", async () => {
@@ -481,7 +481,7 @@ describe("DashboardBuilder: a control the model declares", () => {
    });
 });
 
-describe("DashboardBuilder: tiles added and removed", () => {
+describe("ReportBuilder: tiles added and removed", () => {
    // A catalog whose source the fixture's extension is built on, with a view
    // to put on the page. `scoped_orders` is reachable because `a` extends it.
    const catalogWithViews = {
@@ -504,7 +504,7 @@ describe("DashboardBuilder: tiles added and removed", () => {
    const mountWithCatalog = async (onSave: (source: string) => void) => {
       const document = await openDocument(SOURCE);
       return render(
-         <DashboardBuilder
+         <ReportBuilder
             source={SOURCE}
             document={document}
             catalog={catalogWithViews}
@@ -562,7 +562,7 @@ describe("DashboardBuilder: tiles added and removed", () => {
    });
 });
 
-describe("DashboardBuilder: the last tile", () => {
+describe("ReportBuilder: the last tile", () => {
    it("cannot be removed while the saved dashboard has tiles, and says why on screen", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
@@ -579,7 +579,7 @@ describe("DashboardBuilder: the last tile", () => {
    });
 });
 
-describe("DashboardBuilder: a tile's own settings", () => {
+describe("ReportBuilder: a tile's own settings", () => {
    it("retitles a tile where it is shown, one history entry per commit", async () => {
       await mount();
       editInline("By category", "Tile title", "Revenue by category");
@@ -606,7 +606,7 @@ describe("DashboardBuilder: a tile's own settings", () => {
    it("offers no title to a tile the model owns", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const document = await openDocument(source);
-      render(<DashboardBuilder source={source} document={document} />);
+      render(<ReportBuilder source={source} document={document} />);
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(screen.getByText(/Declared on its source/)).toBeDefined();
@@ -616,7 +616,7 @@ describe("DashboardBuilder: a tile's own settings", () => {
    });
 });
 
-describe("DashboardBuilder: widths and the page's own settings", () => {
+describe("ReportBuilder: widths and the page's own settings", () => {
    it("steps a tile's width from the keyboard on its edge, one undo step each", async () => {
       await mount();
       const edge = screen.getByRole("separator", {
@@ -675,7 +675,7 @@ describe("DashboardBuilder: widths and the page's own settings", () => {
    });
 });
 
-describe("DashboardBuilder: clickable cells", () => {
+describe("ReportBuilder: clickable cells", () => {
    const WITH_DIMENSION = `## artifact { title="T" tiles=["a -> x"] } dashboard { columns=12 }
 import "../data_app.malloy"
 
@@ -691,7 +691,7 @@ source: a is scoped_orders extend {
       let saved = "";
       const doc = await openDocument(WITH_DIMENSION);
       render(
-         <DashboardBuilder
+         <ReportBuilder
             source={WITH_DIMENSION}
             document={doc}
             dashboards={["regions"]}
@@ -745,7 +745,7 @@ source: a is scoped_orders extend {
    });
 });
 
-describe("DashboardBuilder: keyboard", () => {
+describe("ReportBuilder: keyboard", () => {
    it("undoes and redoes from the keyboard, and never from inside a text field", async () => {
       await mount();
       retitle("By category", "Renamed");
@@ -804,7 +804,7 @@ describe("DashboardBuilder: keyboard", () => {
    });
 });
 
-describe("DashboardBuilder: history", () => {
+describe("ReportBuilder: history", () => {
    it("enables undo only once there is something to undo", async () => {
       await mount();
       expect(button("Undo")).toHaveProperty("disabled", true);
@@ -825,7 +825,7 @@ describe("DashboardBuilder: history", () => {
    });
 });
 
-describe("DashboardBuilder: saving", () => {
+describe("ReportBuilder: saving", () => {
    it("offers no save button when there is nowhere to save", async () => {
       await mount();
       expect(screen.queryByRole("button", { name: /Save|Saved/ })).toBeNull();

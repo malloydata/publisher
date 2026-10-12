@@ -2443,7 +2443,7 @@ describe("resolveDrillDestination: the shared drill case table", () => {
       fs.readFileSync(
          path.resolve(
             __dirname,
-            "../../../sdk/src/components/DashboardBuilder/testing/drillResolution.json",
+            "../../../sdk/src/components/ReportBuilder/testing/drillResolution.json",
          ),
          "utf8",
       ),

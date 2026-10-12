@@ -51,7 +51,7 @@ export interface ReportEventContext {
  * What a report surface reports about itself, for the host to log or count:
  * one event per outcome a reader or author would recognise, each with how long
  * it took where that means anything. Delivered through the `onEvent` prop of
- * `Report`, `DashboardEditor`, `DashboardBuilder`, `NewDocumentDialog` and
+ * `Report`, `ReportEditor`, `ReportBuilder`, `NewDocumentDialog` and
  * `Package`.
  */
 export type ReportEvent =

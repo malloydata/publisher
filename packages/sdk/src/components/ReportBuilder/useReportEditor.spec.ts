@@ -4,7 +4,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
 import { openDocument } from "./testing/fixtures";
-import { useDashboardEditor } from "./useDashboardEditor";
+import { useReportEditor } from "./useReportEditor";
 import { queryTile } from "./testing/fixtures";
 import { tileKey } from "./document";
 
@@ -27,11 +27,11 @@ const editor = async (
 ) => {
    const document = await openDocument(source);
    return renderHook(() =>
-      useDashboardEditor({ source, document, ...(onSave ? { onSave } : {}) }),
+      useReportEditor({ source, document, ...(onSave ? { onSave } : {}) }),
    );
 };
 
-describe("useDashboardEditor: editing", () => {
+describe("useReportEditor: editing", () => {
    it("applies a change to a copy, leaving the previous state intact", async () => {
       const view = await editor();
       const before = view.result.current.document;
@@ -76,7 +76,7 @@ describe("useDashboardEditor: editing", () => {
    });
 });
 
-describe("useDashboardEditor: history", () => {
+describe("useReportEditor: history", () => {
    it("undoes and redoes a change", async () => {
       const view = await editor();
       act(() => {
@@ -140,7 +140,7 @@ describe("useDashboardEditor: history", () => {
    });
 });
 
-describe("useDashboardEditor: saving", () => {
+describe("useReportEditor: saving", () => {
    it("splices the change into the file and keeps its comments", async () => {
       let written: string | undefined;
       const view = await editor((source) => {
@@ -262,7 +262,7 @@ describe("useDashboardEditor: saving", () => {
  * `structural` is what a save reports as structural, so it has to mean what the WRITER means by a changed tile — not what
  * the grid means.
  */
-describe("useDashboardEditor: structural", () => {
+describe("useReportEditor: structural", () => {
    it("is false for presentation and layout edits", async () => {
       const view = await editor();
       act(() => {

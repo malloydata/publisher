@@ -9,7 +9,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { InlineMarkdown } from "./InlineMarkdown";
 import { InlineText } from "./InlineText";
 import { selectionSx } from "./TileFrame";
-import type { DashboardEditor } from "./useDashboardEditor";
+import type { ReportEditorHandle } from "./useReportEditor";
 
 /**
  * The document's title, with the builder's actions on its line, and its
@@ -23,7 +23,7 @@ export function BuilderHeader({
    descriptionSelected,
    selectDescription,
 }: {
-   editor: DashboardEditor;
+   editor: ReportEditorHandle;
    /** Kept for callers; the title reads the same in either layout. */
    notebook?: boolean;
    /** The name a reader's view titles an untitled document with. */

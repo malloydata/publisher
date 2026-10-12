@@ -129,7 +129,7 @@ mockServerProvider(
    serverContext,
 );
 
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 
 const PATH = "env/pkg/dashboards/overview.malloy";
 const RECORD: Workspace = {
@@ -210,7 +210,7 @@ const mount = (
 ) =>
    render(
       <DocumentStorageProvider documentStorage={storage}>
-         <DashboardEditor
+         <ReportEditor
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"
@@ -270,7 +270,7 @@ beforeEach(() => {
    updateModelSource.mockClear();
 });
 
-describe("DashboardEditor, when the host's store is the record", () => {
+describe("ReportEditor, when the host's store is the record", () => {
    it("opens the store's copy rather than the package file, and never offers to resume it", async () => {
       const storage = new FakeStorage(RECORD);
       storage.documents.set(PATH, withTitle("Recorded"));
@@ -405,7 +405,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
    });
 });
 
-describe("DashboardEditor, when the copy is kept beside the package", () => {
+describe("ReportEditor, when the copy is kept beside the package", () => {
    it("opens the package but withholds Save when the saved copy could not be read", async () => {
       const storage = new FakeStorage(BESIDE);
       storage.readFailure = new Error("the branch could not be reached");
@@ -498,7 +498,7 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
  * up with. Everything here is about that window: what the editor believes is
  * open in it, and what it does with a version that lands during or after it.
  */
-describe("DashboardEditor, after a save", () => {
+describe("ReportEditor, after a save", () => {
    it("keeps the next edit, on the package path", async () => {
       serverContext.mutable = true;
       mount(new FakeStorage(BESIDE));
@@ -640,7 +640,7 @@ describe("DashboardEditor, after a save", () => {
    });
 });
 
-describe("DashboardEditor, when a new version of the file arrives", () => {
+describe("ReportEditor, when a new version of the file arrives", () => {
    it("holds it back rather than replacing unsaved edits, and loads it when the reader says so", async () => {
       serverContext.mutable = true;
       mount(new FakeStorage(BESIDE));

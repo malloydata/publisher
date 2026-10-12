@@ -9,7 +9,7 @@ import {
    waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat"] } dashboard { columns=12 }
@@ -29,7 +29,7 @@ const mount = async (
 ) => {
    const document = await openDocument(SOURCE);
    return render(
-      <DashboardBuilder
+      <ReportBuilder
          source={SOURCE}
          document={document}
          {...(options.onSave ? { onSave: options.onSave } : {})}
@@ -53,7 +53,7 @@ const type = (field: HTMLElement, value: string) =>
 
 afterEach(cleanup);
 
-describe("DashboardBuilder: an open inline draft", () => {
+describe("ReportBuilder: an open inline draft", () => {
    it("is clean again once the committed draft is saved, and stays open", async () => {
       const onDirtyChange = mock((_dirty: boolean) => {});
       const onSave = mock(async (_source: string) => {});

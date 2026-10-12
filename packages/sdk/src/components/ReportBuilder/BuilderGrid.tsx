@@ -24,7 +24,7 @@ import { builderSensors } from "./sortable";
 import { TextTileBody } from "./TextTileBody";
 import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
 import { tileDisplayTitle } from "./tileDisplayTitle";
-import type { DashboardEditor } from "./useDashboardEditor";
+import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileReorder } from "./useTileReorder";
 import type { useTileResize } from "./useTileResize";
 
@@ -51,7 +51,7 @@ export function BuilderGrid({
    editTile,
    renderTile,
 }: {
-   editor: DashboardEditor;
+   editor: ReportEditorHandle;
    reorder: ReturnType<typeof useTileReorder>;
    resizing: ReturnType<typeof useTileResize>;
    gridBox: RefObject<HTMLDivElement | null>;

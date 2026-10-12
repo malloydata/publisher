@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { useEffect, useState } from "react";
-import { chooseWorkspace } from "../DashboardBuilder/documentSession";
+import { chooseWorkspace } from "../ReportBuilder/documentSession";
 import { draftKey } from "../DocumentCreate/documentPath";
 import {
    useOptionalDocumentStorage,

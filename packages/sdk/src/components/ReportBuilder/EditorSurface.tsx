@@ -22,12 +22,12 @@ import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useReportListing } from "../Package/useDocumentLocation";
 import { useServer } from "../ServerProvider";
 import { buildCatalog, isReportModel, type PackageCatalog } from "./catalog";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
 import type { DashboardDocument, QueryTile } from "./document";
 import type { SavesTo } from "./documentSession";
 import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
-import type { TextSourceOptions } from "./DashboardEditor";
+import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
@@ -445,7 +445,7 @@ export function EditorSurface({
                {compiled.error?.message}
             </Alert>
          )}
-         <DashboardBuilder
+         <ReportBuilder
             {...(textSource
                ? {
                     addFilterDisabledReason:

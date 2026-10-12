@@ -162,9 +162,10 @@ export interface DrillNavigation {
     * The destination report, as the tag's `to=` names it: a package path
     * without `.malloy` (`sales/overview`); a bare name is a file at the root.
     * It may contain `/`, so resolve it with `resolveDrillTarget` against
-    * `GET …/reports` rather than using it as one URL segment. Named
-    * `dashboard` for the hosts that already read it.
+    * `GET …/reports` rather than using it as one URL segment.
     */
+   path: string;
+   /** @deprecated Use `path`; always the same value. */
    dashboard: string;
    /**
     * Control values to open it with: the clicked value seeded into the drill's

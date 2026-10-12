@@ -42,7 +42,7 @@ export function useDrillNavigate(environmentName: string, packageName: string) {
    const { reports } = useReportListing(environmentName, packageName);
    return useCallback(
       (target: DrillNavigation, event?: MouseEvent): DrillOutcome => {
-         const written = target.dashboard;
+         const written = target.path;
          if (!isDrillTargetPath(written)) return "malformed";
          const resolved = resolveDrillTarget(written, reports);
          const route = reportRoute(

@@ -20,7 +20,7 @@ import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
-import { chooseWorkspace } from "../DashboardBuilder/documentSession";
+import { chooseWorkspace } from "../ReportBuilder/documentSession";
 import { createRoute, type CreateTarget } from "../DocumentCreate";
 import type {
    DocumentLocator,

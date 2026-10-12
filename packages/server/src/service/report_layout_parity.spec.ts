@@ -29,7 +29,7 @@ const { cases } = JSON.parse(
    fs.readFileSync(
       path.resolve(
          __dirname,
-         "../../../sdk/src/components/DashboardBuilder/testing/reportLayoutParity.json",
+         "../../../sdk/src/components/ReportBuilder/testing/reportLayoutParity.json",
       ),
       "utf8",
    ),

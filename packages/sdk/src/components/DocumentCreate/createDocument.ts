@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { saveTarget } from "../DashboardBuilder/documentSession";
+import { saveTarget } from "../ReportBuilder/documentSession";
 import {
    isDocumentNotFound,
    type DocumentLocator,

@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { importPathOf } from "../DashboardBuilder/imports";
+import { importPathOf } from "../ReportBuilder/imports";
 import type { ReportLayout } from "../Package/documentLocation";
 import { malloyName, newDocumentProblem, type NewDocument } from "./guards";
 

@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
 import { chartLineText } from "./chartLine";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 import { closeMenu, editInline } from "./testing/inline";
 
@@ -47,7 +47,7 @@ const catalog = {
 const mount = async (onSave?: (source: string) => void) => {
    const document = await openDocument(SOURCE);
    return render(
-      <DashboardBuilder
+      <ReportBuilder
          source={SOURCE}
          document={document}
          catalog={catalog}
@@ -72,7 +72,7 @@ const choose = (name: string, option: string) =>
       optionsOf(name).find((o) => o.textContent === option) as HTMLElement,
    );
 
-describe("DashboardBuilder: charts", () => {
+describe("ReportBuilder: charts", () => {
    it("sets a tile's chart from its menu and writes the one line", async () => {
       let written: string | undefined;
       await mount((source) => {
@@ -145,7 +145,7 @@ describe("DashboardBuilder: charts", () => {
    it("disables the picker on a tile the model owns, with the reason", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const document = await openDocument(source);
-      render(<DashboardBuilder source={source} document={document} />);
+      render(<ReportBuilder source={source} document={document} />);
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
       expect(
          screen

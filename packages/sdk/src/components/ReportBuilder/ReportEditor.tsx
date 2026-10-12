@@ -53,7 +53,7 @@ import { useSaveChannel } from "./useSaveChannel";
  * editor (its value is written into each tile's query) but reaches the package
  * only when the file is saved into it.
  */
-export type DashboardEditorProps = (
+export type ReportEditorProps = (
    | {
         /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
         resourceUri: string;
@@ -155,7 +155,7 @@ export interface TextSourceOptions {
    givens?: Record<string, HostGivenValue>;
 }
 
-export function DashboardEditor(props: DashboardEditorProps) {
+export function ReportEditor(props: ReportEditorProps) {
    const {
       onEvent,
       onDirtyChange,

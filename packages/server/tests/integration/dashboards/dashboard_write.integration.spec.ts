@@ -20,7 +20,7 @@ import path from "path";
 import {
    conversionRefused,
    convertLegacyNotebook,
-} from "../../../../sdk/src/components/DashboardBuilder/legacyNotebook";
+} from "../../../../sdk/src/components/ReportBuilder/legacyNotebook";
 import { newNotebookSource } from "../../../../sdk/src/components/DocumentCreate/newNotebook";
 import {
    fixture,

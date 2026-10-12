@@ -1027,13 +1027,15 @@ import {
     }
     onNavigate={(target) =>
       navigate(
-        `/reports/${encodeURIComponent(target.dashboard)}` +
+        `/reports/${encodeURIComponent(target.path)}` +
           `?${new URLSearchParams(target.givens)}`,
       )
     }
   />
 </ServerProvider>;
 ```
+
+`target.path` is the drill's `to=` as written (`target.dashboard`, the same value, is deprecated).
 
 Without `onNavigate`, drilling to another report is inert, and those cells do not read as clickable either,
 so a host that has not wired navigation shows no affordance rather than a dead one. `to=self` still works,
@@ -1044,7 +1046,7 @@ the surface with the complete embedding story.
 
 ## Editing one in your own React app
 
-`<DashboardEditor>` is the builder, from `@malloy-publisher/sdk/builder` (the main entry stays free of the
+`<ReportEditor>` is the builder, from `@malloy-publisher/sdk/builder` (the main entry stays free of the
 Malloy parser): the same editor the Console's `?edit` route mounts, keyed by the report's `path`, with a
 layout switch (hidden with `allowLayoutChange={false}`, for a host that files reports by layout and so
 cannot let an author change it; the editor reads a file's layout by [Which layout](#which-layout), never by
@@ -1061,7 +1063,8 @@ passes `onExit`: the toolbar then shows **Close** after Save, and Close on unsav
 off against a pinned version rather than opening onto a compare-and-swap it can never win.
 
 The other exports of `@malloy-publisher/sdk/builder`: `NotebookEditor` (a deprecated wrapper over
-`DashboardEditor`), `createRoute` (whether a host can create reports: `"package"`, `"storage"`, or
+`ReportEditor`), `DashboardEditor` and `DashboardBuilder` (deprecated aliases of `ReportEditor` and
+`ReportBuilder`, with their `*Props` types), `createRoute` (whether a host can create reports: `"package"`, `"storage"`, or
 `undefined`), `useDocumentChoices` (the models and views the New dialog offers), `createDocument` (writes
 the new file at the package root unless given a `directory` or `path`, always with `layout=` in the tag, and
 returns its package path as `CreatedDocument.path`; a host store that files documents somewhere else
@@ -1118,7 +1121,7 @@ is a complete defense: the renderer has other sinks that draw a data value as HT
 and the except-and-redeclare refusal is partial, so a host should also run the viewer under a
 Content-Security-Policy.
 
-The SDK reads this with `<DashboardEditor textSource={{ modelPath, hiddenGivens }} />` (the text comes from the
+The SDK reads this with `<ReportEditor textSource={{ modelPath, hiddenGivens }} />` (the text comes from the
 host's authoritative `DocumentStorage`) and `<DashboardView preamble runModelPath hiddenGivens />`. Every tile,
 cell and control option runs as the document's definitions followed by one `run:`, sent to `modelPath`. Use the
 package's `index.malloy` as `modelPath`: a base file the package hides is refused when the document compiles and

@@ -10,7 +10,7 @@ import {
    within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "bun:test";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 
 const NOTEBOOK = `## artifact { layout=linear title="Review" tiles=["a -> by_cat"] }
@@ -46,7 +46,7 @@ const catalog = {
 const AT_ROOT = NOTEBOOK.replace(/"\.\.\//g, '"');
 const mount = async (onSave: (source: string) => void, atRoot = false) =>
    render(
-      <DashboardBuilder
+      <ReportBuilder
          source={atRoot ? AT_ROOT : NOTEBOOK}
          document={await openDocument(atRoot ? AT_ROOT : NOTEBOOK)}
          catalog={catalog}

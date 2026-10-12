@@ -19,7 +19,7 @@ import {
    type LocalGiven,
    type QueryTile,
 } from "./document";
-import type { DashboardEditor } from "./useDashboardEditor";
+import type { ReportEditorHandle } from "./useReportEditor";
 
 /**
  * The document's controls, the fields each tile may bind one to, and the
@@ -31,7 +31,7 @@ export function useControlBindings({
    givens,
    catalog,
 }: {
-   editor: DashboardEditor;
+   editor: ReportEditorHandle;
    /** The document as the host opened it, before any edit here. */
    opened: DashboardDocument;
    /** The givens the host resolved across the model and its imports. */

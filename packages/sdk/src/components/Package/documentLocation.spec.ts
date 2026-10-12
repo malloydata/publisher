@@ -142,7 +142,7 @@ describe("resolveDrillTarget: the shared drill case table", () => {
       fs.readFileSync(
          path.resolve(
             import.meta.dir,
-            "../DashboardBuilder/testing/drillResolution.json",
+            "../ReportBuilder/testing/drillResolution.json",
          ),
          "utf8",
       ),

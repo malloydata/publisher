@@ -114,7 +114,7 @@ mockServerProvider(
 );
 
 // Imported after the stub is registered: a static import would hoist above it.
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 
 const DRAFT = {
    workspace: "Local",
@@ -126,7 +126,7 @@ const mount = (onEvent?: (event: ReportEvent) => void) => {
    const storage = new BrowserDocumentStorage();
    render(
       <DocumentStorageProvider documentStorage={storage}>
-         <DashboardEditor
+         <ReportEditor
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"
@@ -151,7 +151,7 @@ beforeEach(() => {
    getReport.mockClear();
 });
 
-describe("DashboardEditor", () => {
+describe("ReportEditor", () => {
    it("opens the package file in the builder, with the package's sources to pick from", async () => {
       mount();
       expect(await screen.findByText("Storefront")).toBeDefined();

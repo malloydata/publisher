@@ -93,7 +93,7 @@ mockServerProvider(
    { mutable: true },
 );
 
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 
 const RECORD: Workspace = {
    name: "Host",
@@ -134,7 +134,7 @@ const mount = (
 ) =>
    render(
       <DocumentStorageProvider documentStorage={storage}>
-         <DashboardEditor
+         <ReportEditor
             environmentName="env"
             packageName="pkg"
             dashboardName="ops"
@@ -159,7 +159,7 @@ beforeEach(() => {
    listModels.mockClear();
 });
 
-describe("DashboardEditor in text-source mode", () => {
+describe("ReportEditor in text-source mode", () => {
    it("compiles the stored text for the viewer and reads the package model nowhere", async () => {
       mount(documentStore());
 

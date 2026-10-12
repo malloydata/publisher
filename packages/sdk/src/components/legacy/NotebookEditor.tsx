@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   DashboardEditor,
-   type DashboardEditorProps,
-} from "../DashboardBuilder/DashboardEditor";
+   ReportEditor,
+   type ReportEditorProps,
+} from "../ReportBuilder/ReportEditor";
 
 /** The props a host passed the notebook editor before notebooks opened in the one builder. */
 export type NotebookEditorProps = (
@@ -21,9 +21,9 @@ export type NotebookEditorProps = (
         notebookName: string;
      }
 ) &
-   Pick<DashboardEditorProps, "onEvent" | "onDirtyChange" | "onExit" | "path">;
+   Pick<ReportEditorProps, "onEvent" | "onDirtyChange" | "onExit" | "path">;
 
-/** `DashboardEditor` opened on a notebook, under the name hosts already import. */
+/** `ReportEditor` opened on a notebook, under the name hosts already import. */
 export function NotebookEditor(props: NotebookEditorProps) {
    const { onEvent, onDirtyChange, onExit, path } = props;
    const target =
@@ -35,7 +35,7 @@ export function NotebookEditor(props: NotebookEditorProps) {
               dashboardName: props.notebookName,
            };
    return (
-      <DashboardEditor
+      <ReportEditor
          {...target}
          kind="notebook"
          {...(onEvent ? { onEvent } : {})}

@@ -11,11 +11,11 @@ import {
    within,
 } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { isTextTile } from "./document";
 import { openDocument } from "./testing/fixtures";
 import { TEXT_TILE_PLACEHOLDER } from "./TextTileBody";
-import { useDashboardEditor } from "./useDashboardEditor";
+import { useReportEditor } from "./useReportEditor";
 import { dragEdge } from "./testing/resize";
 
 const SOURCE = `## artifact { title="Storefront" tiles=[intro { kind=text colspan=12 }, "a -> by_cat", empty { kind=text }] } dashboard { columns=12 }
@@ -51,7 +51,7 @@ const catalog = {
 const mount = async (onSave?: (source: string) => void) => {
    const document = await openDocument(SOURCE);
    return render(
-      <DashboardBuilder
+      <ReportBuilder
          source={SOURCE}
          document={document}
          catalog={catalog}
@@ -64,7 +64,7 @@ const tile = (name: string) => screen.getByLabelText(`Tile ${name}`);
 const button = (name: string) =>
    screen.getByRole("button", { name, hidden: true });
 
-describe("DashboardBuilder: text tiles", () => {
+describe("ReportBuilder: text tiles", () => {
    it("draws a text tile's markdown, and a hint while it is empty", async () => {
       await mount();
       expect(
@@ -158,7 +158,7 @@ describe("DashboardBuilder: text tiles", () => {
    it("edits a text tile's markdown through the document, and writes the block", async () => {
       const document = await openDocument(SOURCE);
       const view = renderHook(() =>
-         useDashboardEditor({ source: SOURCE, document, onSave: () => {} }),
+         useReportEditor({ source: SOURCE, document, onSave: () => {} }),
       );
       act(() =>
          view.result.current.update((draft) => {

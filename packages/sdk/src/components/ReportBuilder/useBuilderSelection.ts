@@ -12,7 +12,7 @@ import {
 import { scrollBehavior } from "../../theme/motion";
 import { changedTileKey } from "./changedTile";
 import type { DashboardDocument } from "./document";
-import type { DashboardEditor } from "./useDashboardEditor";
+import type { ReportEditorHandle } from "./useReportEditor";
 
 /**
  * What is selected on the page: one tile, by index, or the description.
@@ -36,7 +36,7 @@ export function useBuilderSelection({
    editor,
    gridBox,
 }: {
-   editor: DashboardEditor;
+   editor: ReportEditorHandle;
    /** The grid's box, searched for the changed tile to scroll to. */
    gridBox: RefObject<HTMLDivElement | null>;
 }) {

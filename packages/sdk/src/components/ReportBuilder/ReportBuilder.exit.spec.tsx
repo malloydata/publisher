@@ -10,7 +10,7 @@ import {
    waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { DashboardBuilder } from "./DashboardBuilder";
+import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 import { editInline } from "./testing/inline";
 
@@ -35,7 +35,7 @@ const mount = async (
 ) => {
    const document = await openDocument(SOURCE);
    return render(
-      <DashboardBuilder
+      <ReportBuilder
          source={SOURCE}
          document={document}
          {...(options.onSave ? { onSave: options.onSave } : {})}
@@ -59,7 +59,7 @@ const shortcut = (key: string) =>
 
 afterEach(cleanup);
 
-describe("DashboardBuilder: leaving", () => {
+describe("ReportBuilder: leaving", () => {
    it("draws Save and no Close when it can save", async () => {
       await mount({ onSave: async () => {} });
       expect(button("Saved").hasAttribute("disabled")).toBe(true);
@@ -103,7 +103,7 @@ const removeTile = () => {
    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 };
 
-describe("DashboardBuilder: leaving with a structural edit", () => {
+describe("ReportBuilder: leaving with a structural edit", () => {
    it("Save writes a structural edit at once, once, and stays open", async () => {
       const onSave = mock(async () => {});
       await mount({ onSave });
@@ -130,7 +130,7 @@ describe("DashboardBuilder: leaving with a structural edit", () => {
    });
 });
 
-describe("DashboardBuilder: a host's opt-in Close", () => {
+describe("ReportBuilder: a host's opt-in Close", () => {
    it("draws no Close unless the host passes onExit", async () => {
       await mount({ onSave: async () => {} });
       expect(screen.queryByRole("button", { name: "Close" })).toBeNull();

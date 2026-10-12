@@ -109,7 +109,7 @@ mockServerProvider(
 );
 
 // Imported after the stub is registered: a static import would hoist above it.
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 
 beforeEach(() => {
    clearCache();
@@ -117,10 +117,10 @@ beforeEach(() => {
    updateModelSource.mockClear();
 });
 
-describe("DashboardEditor, starting empty", () => {
+describe("ReportEditor, starting empty", () => {
    it("fetches the manifest once, after the save that gives it its first tile", async () => {
       render(
-         <DashboardEditor
+         <ReportEditor
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"

@@ -81,7 +81,7 @@ mockServerProvider(
    { mutable: true },
 );
 
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 
 const DRAFT = {
    workspace: "Local",
@@ -93,7 +93,7 @@ const mount = () => {
    const storage = new BrowserDocumentStorage();
    render(
       <DocumentStorageProvider documentStorage={storage}>
-         <DashboardEditor
+         <ReportEditor
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"
@@ -112,7 +112,7 @@ beforeEach(() => {
    updateModelSource.mockClear();
 });
 
-describe("DashboardEditor, when the server takes writes", () => {
+describe("ReportEditor, when the server takes writes", () => {
    it("saves into the package with the hash of the text it opened, and supersedes the browser draft", async () => {
       const storage = mount();
       await new BrowserDocumentStorage().saveDocument(DRAFT, "stale draft");
@@ -196,13 +196,13 @@ describe("DashboardEditor, when the server takes writes", () => {
    });
 });
 
-describe("DashboardEditor's layout switch", () => {
+describe("ReportEditor's layout switch", () => {
    const mountWith = (allowLayoutChange?: boolean) =>
       render(
          <DocumentStorageProvider
             documentStorage={new BrowserDocumentStorage()}
          >
-            <DashboardEditor
+            <ReportEditor
                environmentName="env"
                packageName="pkg"
                dashboardName="overview"

@@ -115,7 +115,7 @@ mockServerProvider(
    serverContext,
 );
 
-const { DashboardEditor } = await import("./DashboardEditor");
+const { ReportEditor } = await import("./ReportEditor");
 
 const URI = "publisher://environments/env/packages/pkg";
 const button = (name: string | RegExp) =>
@@ -124,7 +124,7 @@ const button = (name: string | RegExp) =>
 const mountByUri = (versionId?: string) =>
    render(
       <DocumentStorageProvider documentStorage={new BrowserDocumentStorage()}>
-         <DashboardEditor
+         <ReportEditor
             resourceUri={
                versionId === undefined ? URI : `${URI}?versionId=${versionId}`
             }
@@ -137,7 +137,7 @@ const mountByUri = (versionId?: string) =>
 const mountByPath = () =>
    render(
       <DocumentStorageProvider documentStorage={new BrowserDocumentStorage()}>
-         <DashboardEditor resourceUri={URI} path="dashboards/overview.malloy" />
+         <ReportEditor resourceUri={URI} path="dashboards/overview.malloy" />
       </DocumentStorageProvider>,
       { wrapper: serverWrapper },
    );
@@ -145,7 +145,7 @@ const mountByPath = () =>
 const mountLegacy = () =>
    render(
       <DocumentStorageProvider documentStorage={new BrowserDocumentStorage()}>
-         <DashboardEditor
+         <ReportEditor
             environmentName="env"
             packageName="pkg"
             dashboardName="overview"
@@ -365,7 +365,7 @@ describe("a malformed resourceUri", () => {
    for (const [what, resourceUri] of badUris) {
       it(`degrades to an error display when it ${what}`, async () => {
          render(
-            <DashboardEditor resourceUri={resourceUri} dashboard="overview" />,
+            <ReportEditor resourceUri={resourceUri} dashboard="overview" />,
             { wrapper: serverWrapper },
          );
 
