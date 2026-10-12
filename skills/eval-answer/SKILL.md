@@ -146,8 +146,9 @@ order:
    miss. Agent targets that match no golden target are listed as extras.
 2. **Did search return the right entities?** For each golden target the agent
    asked for, recall and precision over the entities THAT target returned,
-   read from the server's `matched_targets` (or by entity kind on a lexical
-   run, which can only over-credit). Then per attempt over everything
+   read from the server's `matched_targets` and kept to the kinds the
+   target's type can return (or by entity kind alone on a lexical run, which
+   can only over-credit). Then per attempt over everything
    returned. A target never asked for gets no retrieval number, only whether
    its entities arrived some other way.
 3. **Did it get the answer right?** The judge's verdict, unchanged, split by

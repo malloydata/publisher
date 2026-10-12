@@ -44,7 +44,9 @@ sent) when the run recorded it; otherwise `targets` (`"measure: revenue"`)
 and `target_shapes` (for a target with no text) are read instead.
 
 Which entities a target returned comes from the server's own attribution:
-each hit's `matched_targets` names the search texts that matched it. A source
+each hit's `matched_targets` names the search texts that matched it, and a
+target is credited only with the hits of a kind it can return, since the same
+text may be sent under two target types. A source
 card carries no attribution, and a lexical run carries none at all, so there a
 target is credited with every entity of a kind it can return
 (`score_retrieval.KINDS_BY_TARGET`). `attribution` on the row says which rule
@@ -126,8 +128,9 @@ def returned_by(target: dict[str, Any],
                 call: dict[str, Any]) -> tuple[set[str], str]:
     """The entities this one target returned in its call, and the rule used.
 
-    `server` when the call's hits carry `matched_targets`: the entities whose
-    attribution names this target's text, plus the source cards when the
+    `server` when the call's hits carry `matched_targets`: the entities of a
+    kind this target type can return whose attribution names this target's
+    text, plus the source cards when the
     target asked for sources (a card never carries attribution). `kind`
     otherwise: every returned entity of a kind this target type can return.
     """
@@ -137,9 +140,13 @@ def returned_by(target: dict[str, Any],
     attributed = any(isinstance(h.get("matched_targets"), list) for h in hits)
     text = target.get("search_text")
     if attributed and text:
+        # Attribution names the search text, not the target type, so the same
+        # text sent as a dimension and as a measure would each be credited
+        # with the other's hits. Only hits of this target's own kinds count.
         got = {h["entity_id"] for h in hits
-               if any(isinstance(m, dict) and m.get("search_text") == text
-                      for m in h.get("matched_targets") or [])}
+               if split_entity(h.get("entity_id", ""))[0] in kinds
+               and any(isinstance(m, dict) and m.get("search_text") == text
+                       for m in h.get("matched_targets") or [])}
         if "source" in kinds:
             got |= {h["entity_id"] for h in hits
                     if split_entity(h.get("entity_id", ""))[0] == "source"}
