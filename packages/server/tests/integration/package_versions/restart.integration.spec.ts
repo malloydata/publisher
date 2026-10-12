@@ -121,6 +121,7 @@ class Server {
             PUBLISHER_HOST: "127.0.0.1",
             PUBLISHER_PORT: String(port),
             MCP_PORT: String(mcpPort),
+            PUBLISHER_PACKAGE_VERSIONING: "on",
             PUBLISHER_VERSION_PROMOTION: "on-publish",
             PUBLISHER_NO_MCP_CONFIG: "1",
          },

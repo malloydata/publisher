@@ -169,6 +169,21 @@ export type PublisherConfig = {
 };
 
 /**
+ * `PUBLISHER_PACKAGE_VERSIONING`: `on` or `off` (the default). A TRANSITION
+ * flag, read from the environment only, and checked in one place: the publish
+ * from a location. Off, that publish installs the package in place as before
+ * versions; on, it publishes the version its publisher.json declares and
+ * refuses a tree that declares none. #1381 removes the flag and the off branch
+ * together, once every deployment runs with it on.
+ */
+export type PackageVersioningMode = "off" | "on";
+
+const PACKAGE_VERSIONING_MODES: readonly PackageVersioningMode[] = [
+   "off",
+   "on",
+];
+
+/**
  * Who moves a package's `latest` version.
  *
  *  - `on-publish` (default): a publish makes the new version `latest` unless a
@@ -1583,8 +1598,8 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
  * One of a closed set of modes, or undefined when unset (absent, null, or
  * blank). Matched case-insensitively. A value outside the set throws, naming
  * where it came from and what is allowed: a typo must not leave a server in a
- * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`
- * and `versionPromotion`.
+ * mode nobody chose. The one parser for every such knob: `PERSIST_STORAGE_MODE`,
+ * `PUBLISHER_PACKAGE_VERSIONING` and `versionPromotion`.
  */
 function parseModeSetting<T extends string>(
    raw: unknown,
@@ -1601,6 +1616,19 @@ function parseModeSetting<T extends string>(
       `${where} must be one of ${allowed.join(" | ")} (got ${JSON.stringify(raw)})`,
    );
 }
+
+/**
+ * Whether a publish from a location publishes versions
+ * (`PUBLISHER_PACKAGE_VERSIONING=on`; off when unset). Read at call time, so a
+ * test can switch it; a value outside on/off throws, and it is read at startup
+ * so a typo fails the boot.
+ */
+export const isVersioningEnabled = (): boolean =>
+   parseModeSetting(
+      process.env.PUBLISHER_PACKAGE_VERSIONING,
+      "PUBLISHER_PACKAGE_VERSIONING",
+      PACKAGE_VERSIONING_MODES,
+   ) === "on";
 
 /**
  * The server's {@link VersionPromotionMode}: `PUBLISHER_VERSION_PROMOTION` when

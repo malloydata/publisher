@@ -1,10 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import * as fs from "fs";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
-import { getVersionPromotionMode } from "../config";
+import { getVersionPromotionMode, isVersioningEnabled } from "../config";
 import {
    BadRequestError,
    FrozenConfigError,
@@ -18,11 +17,6 @@ import { EnvironmentStore } from "../service/environment_store";
 import type { Environment } from "../service/environment";
 import type { Package } from "../service/package";
 import type { VersionService } from "../service/versions/version_service";
-import {
-   isUnversionedStage,
-   type StagedVersion,
-   type UnversionedStage,
-} from "../service/versions/version_store";
 import { versionManifestLocation } from "./manifest_location";
 import { changedFields } from "./versioned_patch";
 
@@ -80,24 +74,15 @@ function formatPublishRejections(
 }
 
 /**
- * Say, on a publish from a location whose publisher.json declares no semantic
- * version, that the package is installed in place as before versions, and how
- * to publish immutable versions instead.
+ * Say, on a publish from a location with package versioning off, that the
+ * package is installed in place as before versions, and that versions will be
+ * required.
  */
-export function warnUnversionedPublish(
-   packageName: string,
-   reason: PackageVersionError,
-): void {
+export function warnVersioningOff(packageName: string): void {
    logger.warn(
-      `Publisher now supports package versioning. Package ${packageName}'s publisher.json declares no semantic version, so it is published as latest, replacing the package in place as before. Add a "version" (such as "1.0.0") to publish immutable versions.`,
-      { packageName, reason: reason.reason },
+      `Package versioning is off, so package ${packageName} is installed in place, replacing the previous publish, as before versions. Versions will be required in a future release: set PUBLISHER_PACKAGE_VERSIONING=on and give publisher.json a semantic "version" (such as "1.0.0") to publish immutable versions.`,
+      { packageName },
    );
-}
-
-/** Hand a staged download to an install, which downloads into `target`. */
-async function moveStagedTree(source: string, target: string): Promise<void> {
-   await fs.promises.rm(target, { recursive: true, force: true });
-   await fs.promises.rename(source, target);
 }
 
 export class PackageController {
@@ -295,10 +280,10 @@ export class PackageController {
       // surface. (At startup/reload we fail safe and only warn — see
       // Package.loadViaWorker.) The rollback differs by path so a rejected
       // publish never destroys user content:
-      //   - location, with a version: its tree was downloaded into a fresh
-      //     folder and the checks run before it is recorded, so a failure
-      //     removes only that download.
-      //   - location, without a version: the tree was just downloaded into a
+      //   - location, versioning on: a published version. Its tree was
+      //     downloaded into a fresh folder and the checks run before it is
+      //     recorded, so a failure removes only that download.
+      //   - location, versioning off: the tree was just downloaded into a
       //     fresh canonical, so validation runs inside installPackage's swap
       //     window and a failure wipes that download (the existing rollback)
       //     — nothing pre-existing to lose.
@@ -319,77 +304,55 @@ export class PackageController {
                   bodyLocation,
                   stagingPath,
                );
-            // A tree whose publisher.json declares a semantic version is
-            // published as that immutable version. One that declares none is
-            // installed in place, as every publish from a location was before
-            // versions: each publish replaces the package, and it is what a
-            // request without a versionId reads.
-            let installFrom = download;
-            let unversioned: UnversionedStage | undefined;
-            if (versions) {
-               const staged = await versions.stageForPublish(
+            // Versioning on: the tree is published as the immutable version
+            // its publisher.json declares, and one that declares none is
+            // refused (400).
+            if (versions && isVersioningEnabled()) {
+               return await this.publishVersion(
+                  versions,
                   packageName,
                   download,
+                  bodyLocation,
+                  body,
                );
-               if (!isUnversionedStage(staged)) {
-                  return await this.publishVersion(
-                     versions,
-                     staged,
-                     bodyLocation,
-                     body,
-                  );
-               }
-               // A package that has published versions is never installed in
-               // place, so for it a tree with no semantic version is only a
-               // version that is missing: say which.
-               if (await versions.isVersioned(packageName)) {
-                  await versions.discardStage(staged);
-                  throw staged.reason;
-               }
-               unversioned = staged;
-               if (staged.hasManifest) {
-                  warnUnversionedPublish(packageName, staged.reason);
-               }
-               installFrom = (stagingPath) =>
-                  moveStagedTree(staged.stagingPath, stagingPath);
             }
-            try {
-               result = await environment.installPackage(
-                  packageName,
-                  installFrom,
-                  (pkg) => formatPublishRejections(pkg),
-                  // The install records where it fetched from, and a publish
-                  // that names a manifest binds it, both under the install's
-                  // own lock. The downloaded tree's publisher.json carries
-                  // neither: the location is the caller's, and the
-                  // orchestrator computes the manifest, not the author.
-                  // Without the location a later PATCH naming the same
-                  // location could not be told from new content; without the
-                  // manifest the package came up serving live and was fully
-                  // reloaded moments later by the drift check.
-                  {
-                     update: {
-                        location: bodyLocation,
-                        // Only a manifest to bind. A fresh install serves live
-                        // already, so a null or empty value has nothing to
-                        // revert and would only recompile the package a
-                        // second time.
-                        ...(body.manifestLocation
-                           ? { manifestLocation: body.manifestLocation }
-                           : {}),
-                     },
+            // Versioning off, the transition default (#1381): installed in
+            // place, as every publish from a location was before versions,
+            // whatever its publisher.json declares. Versions already published
+            // are not replaced.
+            if (versions && (await versions.isVersioned(packageName))) {
+               throw new PackageVersionError(
+                  "PACKAGE_IS_VERSIONED",
+                  `Package ${packageName} has published versions, which are immutable, and package versioning is off, so this publish would replace them. Set PUBLISHER_PACKAGE_VERSIONING=on to publish a new version.`,
+               );
+            }
+            warnVersioningOff(packageName);
+            result = await environment.installPackage(
+               packageName,
+               download,
+               (pkg) => formatPublishRejections(pkg),
+               // The install records where it fetched from, and a publish
+               // that names a manifest binds it, both under the install's
+               // own lock. The downloaded tree's publisher.json carries
+               // neither: the location is the caller's, and the
+               // orchestrator computes the manifest, not the author.
+               // Without the location a later PATCH naming the same
+               // location could not be told from new content; without the
+               // manifest the package came up serving live and was fully
+               // reloaded moments later by the drift check.
+               {
+                  update: {
+                     location: bodyLocation,
+                     // Only a manifest to bind. A fresh install serves live
+                     // already, so a null or empty value has nothing to
+                     // revert and would only recompile the package a
+                     // second time.
+                     ...(body.manifestLocation
+                        ? { manifestLocation: body.manifestLocation }
+                        : {}),
                   },
-               );
-            } finally {
-               if (unversioned && versions) {
-                  await versions.discardStage(unversioned).catch((error) =>
-                     logger.warn("Could not remove a staged package", {
-                        packageName,
-                        error,
-                     }),
-                  );
-               }
-            }
+               },
+            );
          } else {
             result = await environment.addPackage(packageName);
          }
@@ -448,32 +411,27 @@ export class PackageController {
    }
 
    /**
-    * Publish a staged tree as the version its publisher.json declares. The
-    * request carries no version. A request field this refuses discards the
-    * stage, which is never placed.
+    * Publish the downloaded tree as the version its publisher.json declares:
+    * the request carries no version. The request's own fields are checked
+    * before anything is downloaded.
     */
    private async publishVersion(
       versions: VersionService<Package>,
-      staged: StagedVersion,
+      packageName: string,
+      download: (stagingPath: string) => Promise<void>,
       location: string,
       body: ApiPackage,
    ): Promise<Package> {
-      let manifestLocation: string | null | undefined;
-      try {
-         const fields = body as Record<string, unknown>;
-         if (
-            fields.description !== undefined &&
-            fields.description !== null &&
-            typeof fields.description !== "string"
-         ) {
-            throw new BadRequestError("`description` must be a string.");
-         }
-         manifestLocation = versionManifestLocation(fields.manifestLocation);
-      } catch (error) {
-         await versions.discardStage(staged);
-         throw error;
+      const fields = body as Record<string, unknown>;
+      if (
+         fields.description !== undefined &&
+         fields.description !== null &&
+         typeof fields.description !== "string"
+      ) {
+         throw new BadRequestError("`description` must be a string.");
       }
-      const published = await versions.publishStagedVersion(staged, {
+      const manifestLocation = versionManifestLocation(fields.manifestLocation);
+      const published = await versions.publish(packageName, download, {
          sourceLocation: location,
          manifestLocation,
          description: body.description ?? undefined,

@@ -18,6 +18,7 @@ service. The package's latest cannot be archived: move latest first.
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: on
 
 ## Model anchor/anchor.malloy
 

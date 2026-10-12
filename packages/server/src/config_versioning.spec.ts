@@ -9,6 +9,7 @@ import {
    getPersistStorageMode,
    getPublisherConfig,
    getVersionPromotionMode,
+   isVersioningEnabled,
 } from "./config";
 
 describe("versionPromotion setting", () => {
@@ -113,6 +114,38 @@ describe("PERSIST_STORAGE_MODE", () => {
       process.env.PERSIST_STORAGE_MODE = "read-only";
       expect(() => getPersistStorageMode()).toThrow(
          'PERSIST_STORAGE_MODE must be one of off | write-only | on (got "read-only")',
+      );
+   });
+});
+
+// The transition flag: off unless set to on, so a server that sets nothing
+// publishes as it did before versions.
+describe("PUBLISHER_PACKAGE_VERSIONING", () => {
+   const saved = process.env.PUBLISHER_PACKAGE_VERSIONING;
+
+   afterEach(() => {
+      if (saved === undefined) delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+      else process.env.PUBLISHER_PACKAGE_VERSIONING = saved;
+   });
+
+   it("is off when unset or blank", () => {
+      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+      expect(isVersioningEnabled()).toBe(false);
+      process.env.PUBLISHER_PACKAGE_VERSIONING = " ";
+      expect(isVersioningEnabled()).toBe(false);
+   });
+
+   it("is on only for on, ignoring case and surrounding space", () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = " On ";
+      expect(isVersioningEnabled()).toBe(true);
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
+      expect(isVersioningEnabled()).toBe(false);
+   });
+
+   it("refuses a value outside on and off, naming the setting", () => {
+      process.env.PUBLISHER_PACKAGE_VERSIONING = "true";
+      expect(() => isVersioningEnabled()).toThrow(
+         'PUBLISHER_PACKAGE_VERSIONING must be one of off | on (got "true")',
       );
    });
 });

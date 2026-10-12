@@ -10,11 +10,13 @@
  * are the fixtures in tests/fixtures/publish-locations.
  *
  * For each kind, the same two rules:
- * - a tree with a version: published (200); the same content again, in any
- *   form, is placement (200, nothing written); other content under that
- *   version is 409 VERSION_CONFLICT, and the first content keeps serving;
- * - a tree with no version: 200 every time, each publish replacing the
- *   package in place, as every publish from a location did before versions.
+ * - with package versioning on, a tree with a version: published (200); the
+ *   same content again, in any form, is placement (200, nothing written);
+ *   other content under that version is 409 VERSION_CONFLICT, and the first
+ *   content keeps serving;
+ * - with it off (the default), a tree with no version: 200 every time, each
+ *   publish replacing the package in place, as every publish from a location
+ *   did before versions.
  *
  * Nothing leaves the process. The server's GCS and S3 clients are swapped
  * for in-memory buckets holding the fixtures, and the clone of a
@@ -23,7 +25,15 @@
  * placement and install run as in production.
  */
 
-import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
+import {
+   afterAll,
+   afterEach,
+   beforeAll,
+   describe,
+   expect,
+   it,
+   mock,
+} from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -38,6 +48,8 @@ const FIXTURE_FOLDERS = [
 ];
 const GIT_FIXTURES = "https://github.com/publisher-fixtures/";
 const ENV_NAME = "publish-locations-env";
+const FLAG = "PUBLISHER_PACKAGE_VERSIONING";
+const savedFlag = process.env[FLAG];
 
 /** Copy a fixture folder's files into `target`. */
 function copyFixture(folder: string, target: string): void {
@@ -236,7 +248,13 @@ describe("publishing from each kind of location, over HTTP", () => {
       );
    }, 180_000);
 
+   afterEach(() => {
+      delete process.env[FLAG];
+   });
+
    afterAll(async () => {
+      if (savedFlag === undefined) delete process.env[FLAG];
+      else process.env[FLAG] = savedFlag;
       await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
          method: "DELETE",
       }).catch(() => undefined);
@@ -249,7 +267,8 @@ describe("publishing from each kind of location, over HTTP", () => {
 
    for (const kind of KINDS) {
       describe(kind.slug, () => {
-         it("a version: published, the same content again is 200, other content under it is 409", async () => {
+         it("versioning on, a version: published, the same content again is 200, other content under it is 409", async () => {
+            process.env[FLAG] = "on";
             const name = `${kind.slug}-versioned`;
             const first = await publish(name, kind.location("sales-1.0.0"));
             expect([first.status, first.json.versionId]).toEqual([
@@ -283,7 +302,8 @@ describe("publishing from each kind of location, over HTTP", () => {
             expect(await answerOf(name)).toBe(1);
          });
 
-         it("no version: 200 every time, each publish replacing the package in place", async () => {
+         it("versioning off, no version: 200 every time, each publish replacing the package in place", async () => {
+            delete process.env[FLAG];
             const name = `${kind.slug}-unversioned`;
             const first = await publish(
                name,

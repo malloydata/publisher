@@ -19,7 +19,7 @@ import {
 } from "../../storage/DatabaseInterface";
 import { compareSemver, isSemver } from "./semver";
 import { VersionCache, VersionEvictedDuringLoadError } from "./version_cache";
-import { StagedVersion, UnversionedStage, VersionStore } from "./version_store";
+import { StagedVersion, VersionStore } from "./version_store";
 
 /** The registry calls the version rules use. */
 export type VersionRegistry = Pick<
@@ -364,30 +364,8 @@ export class VersionService<P = unknown> {
       );
    }
 
-   /**
-    * Download a tree for a publish and read the version its publisher.json
-    * declares. A tree that declares no semantic version comes back as an
-    * UnversionedStage, still staged: the caller installs it in place, as a
-    * package with no versions, or discards it (discardStage).
-    */
-   async stageForPublish(
-      packageName: string,
-      downloader: (stagingPath: string) => Promise<void>,
-   ): Promise<StagedVersion | UnversionedStage> {
-      const host = this.requireHost();
-      // Before any path is built from it.
-      assertSafePackageName(packageName);
-      host.admit(packageName, "publish a package");
-      return this.requireStore().stageAny(packageName, downloader);
-   }
-
-   /** Remove a staged tree that will not be published or installed. */
-   async discardStage(stage: { stagingPath: string }): Promise<void> {
-      await this.requireStore().discard(stage);
-   }
-
-   /** Publish a staged version (from stageForPublish); the stage is consumed. */
-   async publishStagedVersion(
+   /** Publish a staged version; the stage is consumed. */
+   private async publishStagedVersion(
       staged: StagedVersion,
       options: PublishOptions<P>,
    ): Promise<PublishResult<P>> {

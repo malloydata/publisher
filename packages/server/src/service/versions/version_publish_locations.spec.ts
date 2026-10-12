@@ -11,7 +11,7 @@ import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { DuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
 import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
-import { isUnversionedStage, VersionStore } from "./version_store";
+import { VersionStore } from "./version_store";
 
 /**
  * Publishing a version again, for every kind of location a publish fetches
@@ -522,57 +522,60 @@ describe("what a publish fetches, by location kind", () => {
    });
 });
 
+/**
+ * What a publish leaves behind when it refuses a tree: nothing at the
+ * package's path, no staged folder, and no version recorded. (A bucket `.zip`
+ * download also leaves its archive beside the staged folder, as it does on
+ * every publish; the boot sweep of `.staging/` removes it.)
+ */
+async function expectNothingPublished(): Promise<void> {
+   expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
+   const staging = path.join(envPath, ".staging");
+   const stagedFolders = fs.existsSync(staging)
+      ? fs
+           .readdirSync(staging, { withFileTypes: true })
+           .filter((entry) => entry.isDirectory())
+      : [];
+   expect(stagedFolders).toEqual([]);
+   expect(await svc.isVersioned(PKG)).toBe(false);
+}
+
 describe("a tree that declares no semantic version, by location kind", () => {
    for (const { kind, needsZip, setUp } of LOCATION_KINDS) {
       it.skipIf(needsZip === true && !hasZip)(
-         `${kind}: comes back staged and whole, for an install in place`,
+         `${kind}: refused with 400 MANIFEST_VERSION_MISSING, leaving nothing behind`,
          async () => {
-            const location = setUp(NO_VERSION);
-            const staged = await svc.stageForPublish(PKG, (stagingPath) =>
-               downloads.downloadPackageInto(
-                  ENV_NAME,
-                  PKG,
-                  location,
-                  stagingPath,
-               ),
+            const error = await publish(setUp(NO_VERSION)).catch((e) => e);
+            expect(error).toBeInstanceOf(PackageVersionError);
+            expect((error as PackageVersionError).reason).toBe(
+               "MANIFEST_VERSION_MISSING",
             );
-            expect(isUnversionedStage(staged)).toBe(true);
-            if (!isUnversionedStage(staged)) return;
-            expect(staged.reason.reason).toBe("MANIFEST_VERSION_MISSING");
-            expect(staged.hasManifest).toBe(true);
-            expect(filesUnder(staged.stagingPath)).toEqual(PACKAGE_FILES);
-            await svc.discardStage(staged);
-            expect(fs.existsSync(staged.stagingPath)).toBe(false);
+            await expectNothingPublished();
          },
       );
    }
 
-   it("a version that is not semver comes back the same way, saying so", async () => {
+   it("a version that is not semver: 400 MANIFEST_VERSION_INVALID", async () => {
       const location = sourceFolder("not-semver", {
          ...FIRST,
          "publisher.json": JSON.stringify({ name: PKG, version: "1.0" }),
       });
-      const staged = await svc.stageForPublish(PKG, (stagingPath) =>
-         downloads.downloadPackageInto(ENV_NAME, PKG, location, stagingPath),
+      const error = await publish(location).catch((e) => e);
+      expect((error as PackageVersionError).reason).toBe(
+         "MANIFEST_VERSION_INVALID",
       );
-      expect(isUnversionedStage(staged)).toBe(true);
-      if (!isUnversionedStage(staged)) return;
-      expect(staged.reason.reason).toBe("MANIFEST_VERSION_INVALID");
-      expect(staged.hasManifest).toBe(true);
-      await svc.discardStage(staged);
+      await expectNothingPublished();
    });
 
-   it("a location that fetches no publisher.json says it has none", async () => {
+   it("a location that fetches no publisher.json: 400 MANIFEST_VERSION_MISSING", async () => {
       const location = sourceFolder("no-manifest", {
          "model.malloy": "source: s is x",
       });
-      const staged = await svc.stageForPublish(PKG, (stagingPath) =>
-         downloads.downloadPackageInto(ENV_NAME, PKG, location, stagingPath),
+      const error = await publish(location).catch((e) => e);
+      expect((error as PackageVersionError).reason).toBe(
+         "MANIFEST_VERSION_MISSING",
       );
-      expect(isUnversionedStage(staged)).toBe(true);
-      if (!isUnversionedStage(staged)) return;
-      expect(staged.hasManifest).toBe(false);
-      await svc.discardStage(staged);
+      await expectNothingPublished();
    });
 });
 

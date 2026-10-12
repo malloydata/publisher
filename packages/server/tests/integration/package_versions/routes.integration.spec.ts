@@ -16,6 +16,7 @@ import os from "os";
 import path from "path";
 import vm from "vm";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { versioningOnForSuite } from "../../harness/versioning";
 
 const ENV_NAME = "package-versions-routes-env";
 const PKG = "versioned";
@@ -82,6 +83,8 @@ async function answerOf(versionId?: string): Promise<number> {
 }
 
 describe("package-scoped routes of a versioned package", () => {
+   versioningOnForSuite();
+
    beforeAll(async () => {
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "package-versions-routes-")),

@@ -28,6 +28,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { versioningOnForSuite } from "../../harness/versioning";
 
 const ENV_NAME = "versioning-modes-env";
 const PLAIN_ENV = "versioning-modes-plain-env";
@@ -253,6 +254,8 @@ const route = (name: string): Route => {
 };
 
 describe("package versions across promotion modes and package kinds", () => {
+   versioningOnForSuite();
+
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
    let scratch: string;
