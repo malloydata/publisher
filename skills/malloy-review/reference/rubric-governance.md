@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 **Dimension:** `governance`
 **Rules:** 3
 
-Governance findings cover access modifiers when the experimental feature is in use. Source-level `where:` filters and `private:` choices are **deliberate modeling decisions**, the reviewer trusts the modeler on those, not the rubric. If something looks unusual, surface it as a "Question for the Author," not a finding.
+Governance findings cover access modifiers when the experimental feature is in use. Source-level `where:` filters and `private:` choices are **deliberate modeling decisions**, the reviewer trusts the modeler on those, not the rubric. If something looks unusual, surface it as a "Question for the Author," not a finding. That trust does not extend to `internal:`: a sensitive column left `internal:` is still readable by any caller, so G-03 flags it.
 
 For every rule, the linked instruction-skill section is the canonical source for rationale and examples.
 
