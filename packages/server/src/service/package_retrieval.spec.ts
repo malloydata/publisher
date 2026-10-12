@@ -94,6 +94,7 @@ describe("publisher.json retrieval block", () => {
          alsoLikely: "auto",
          alsoLikelyTwins: 2,
          joinedCopies: "indexed",
+         listRoutes: 3,
       });
       expect(
          parsePackageRetrieval({ fcj: { connect: "list", listTopK: 12 } }).fcj,
@@ -149,6 +150,22 @@ describe("publisher.json retrieval block", () => {
       );
    });
 
+   it("reads listRoutes from 0 to 20 and rejects anything else with a fix", () => {
+      expect(parsePackageRetrieval({ fcj: { listRoutes: 0 } }).fcj).toEqual({
+         ...DEFAULT_FCJ_SETTINGS,
+         listRoutes: 0,
+      });
+      expect(
+         parsePackageRetrieval({ fcj: { listRoutes: 20 } }).fcj?.listRoutes,
+      ).toBe(20);
+      expect(() => parsePackageRetrieval({ fcj: { listRoutes: 21 } })).toThrow(
+         'Invalid publisher.json retrieval.fcj.listRoutes: expected an integer from 0 to 20, got 21. Fix: "listRoutes": 3',
+      );
+      expect(() => parsePackageRetrieval({ fcj: { listRoutes: -1 } })).toThrow(
+         'Invalid publisher.json retrieval.fcj.listRoutes: expected an integer from 0 to 20, got -1. Fix: "listRoutes": 3',
+      );
+   });
+
    it("rejects an unknown question wording or a row count out of range, with a fix", () => {
       expect(() =>
          parsePackageRetrieval({ fcj: { questionsPrompt: "keyphrases" } }),
@@ -175,7 +192,7 @@ describe("publisher.json retrieval block", () => {
          'Invalid publisher.json retrieval.fcj.perTarget: expected an integer from 1 to 500, got 2.5. Fix: "perTarget": 30',
       );
       expect(() => parsePackageRetrieval({ fcj: { window: 3 } })).toThrow(
-         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode, alsoLikely, alsoLikelyTwins, joinedCopies.",
+         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode, alsoLikely, alsoLikelyTwins, joinedCopies, listRoutes.",
       );
       expect(() => parsePackageRetrieval({ fcj: { connect: "tree" } })).toThrow(
          'Invalid publisher.json retrieval.fcj.connect: expected one of clusters, list, got "tree". Fix: "connect": "clusters" (source groups) or "list" (the find stage\'s top listTopK per target).',
