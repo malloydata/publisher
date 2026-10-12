@@ -14,7 +14,8 @@ import {
  * segment, a report whose own path ends in `edit` opens like any other, and a
  * report under `data-apps/` opens as a report rather than as a data app. The
  * old `<path>/edit` route still opens the builder, but only when no report is
- * at `<path>/edit.malloy`.
+ * at `<path>/edit.malloy`, and an old by-name `dashboards/<name>` link lands on
+ * the report's own path.
  */
 
 const report = (title: string, importDepth: string) => `##! experimental.givens
@@ -48,6 +49,7 @@ test.describe("report routes", () => {
             "sales/edit.malloy": report("Edit named report", "../"),
             "quarterly.malloy": report("Quarterly report", ""),
             "data-apps/board.malloy": report("Board under data-apps", "../"),
+            "reports/2026/q3.malloy": report("Third quarter", "../../"),
          },
       );
    });
@@ -106,6 +108,22 @@ test.describe("report routes", () => {
       await expect(page.locator("iframe")).toHaveCount(0);
 
       await page.goto(`/${pe.env}/${pe.pkg}/data-apps/board?edit`);
+      await editing(page);
+   });
+
+   test("an old by-name dashboards/ link lands on the report's nested path, keeping its query and ?edit", async ({
+      page,
+   }) => {
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/q3?BRAND=Acme`);
+      await expect(page).toHaveURL(
+         new RegExp(`/${pe.pkg}/reports/2026/q3\\?BRAND=Acme$`),
+      );
+      await reading(page, "Third quarter");
+
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/q3?edit`);
+      await expect(page).toHaveURL(
+         new RegExp(`/${pe.pkg}/reports/2026/q3\\?edit$`),
+      );
       await editing(page);
    });
 });
