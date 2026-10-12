@@ -6126,6 +6126,10 @@ export class Model {
       ];
 
       const findings: RenderTagWarning[] = [];
+      // Once per model: it reads the whole model, and the loop below runs
+      // without an await, so a call per result held the event loop for the
+      // number of results times the model's size.
+      const carriesReportTag = this.carriesReportTag();
       for (const { label, result } of prepared) {
          // Keep both severities. The renderer reports a tag that is well-formed
          // but inert as `warn`, not `error` -- `# colspan` outside columns mode
@@ -6151,7 +6155,7 @@ export class Model {
          // narrowing below surfaces anything unexpected as `warn` instead.
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            this.carriesReportTag(),
+            carriesReportTag,
          );
          if (logs.length > 0) {
             // An inert tag is not an invalid one, so don't call it "Invalid";

@@ -793,6 +793,35 @@ run: mid_ungated -> { aggregate: c }`,
       }
    });
 
+   it("reads a model's report facts once while validating its render tags, not once per target", async () => {
+      writeManifest();
+      // Ten annotated views: ten render-tag targets in one model.
+      const views = Array.from(
+         { length: 10 },
+         (_, i) =>
+            `  # bar_chart\n  view: v${i} is { group_by: a; aggregate: total }`,
+      ).join("\n");
+      fs.writeFileSync(
+         path.join(tempDir, "many.malloy"),
+         `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {\n  measure: total is a.sum()\n${views}\n}\n`,
+      );
+      const { Model } = await import("./model");
+      const factsSpy = spyOn(
+         Model.prototype as unknown as { getReportModelFacts: () => unknown },
+         "getReportModelFacts",
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         await Package.create("env", "pkg", tempDir, malloyConfig);
+         // Each read walks the whole model. Once per target, the check held
+         // the event loop for the targets times the model's size.
+         expect(factsSpy.mock.calls.length).toBeLessThan(10);
+      } finally {
+         factsSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
+
    it("logs a warning for a backtick-quoted (hyphenated) source with a bad view render tag", async () => {
       writeManifest();
       // A source whose name needs Malloy backtick-quoting (here, a hyphen). The

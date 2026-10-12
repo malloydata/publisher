@@ -1371,6 +1371,12 @@ async function prepareForMainThread(
            })) ?? null)
          : undefined;
 
+   // Checked again: another model may have left the plan to the main thread,
+   // or the deadline passed, while this one's companion compiled.
+   if (wantsPlan && (load.planLeftToMainThread || pastDeadline())) {
+      load.planLeftToMainThread = true;
+      wantsPlan = false;
+   }
    if (wantsPlan && companion !== undefined && !load.failed) {
       load.planStart ??= performance.now();
       try {

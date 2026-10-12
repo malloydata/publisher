@@ -38,6 +38,7 @@ import {
    getPackageLoadWorkerCount,
    handleWorkerLog,
 } from "./package_load_pool";
+import { failsFirstStartMarker } from "./test_fixtures/fails_first_start_marker";
 
 // ──────────────────────────────────────────────────────────────────────
 // getPackageLoadWorkerCount — env var parsing
@@ -539,7 +540,9 @@ source: t is base -> { group_by: a }
       // table and the companion's compile then waits 3500 ms on it again. The
       // compile fits a 4000 ms timeout with room to spare before the worker's
       // deadline at three quarters of it (3000 ms), and the job, at 4500 ms or
-      // more, runs past the timeout itself.
+      // more, runs past the timeout itself. The companion ends past the
+      // deadline, so the plan, which would start after it, is left to this
+      // thread.
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental { persistence composite_sources }
@@ -553,7 +556,7 @@ source: orders is duckdb.table('limit_t') extend {
       const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
       process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
       let limitFetches = 0;
-      const { duckdb, tableFetches, load, tearDown } = await setUp(
+      const { duckdb, load, tearDown } = await setUp(
          (tables) => {
             if (!tables.includes("limit_t")) return Promise.resolve();
             limitFetches += 1;
@@ -570,11 +573,7 @@ source: orders is duckdb.table('limit_t') extend {
          expect(
             outcome.models[0].preaggregateCompanion?.modelDef,
          ).toBeDefined();
-         expect(outcome.buildPlan?.ok).toBe(true);
-         // The companion's compile is the plan's too: no third fetch.
-         expect(
-            tableFetches.filter((paths) => paths.includes("limit_t")),
-         ).toHaveLength(2);
+         expect(outcome.buildPlan).toBeUndefined();
       } finally {
          if (cacheBytes === undefined) {
             delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
@@ -584,6 +583,79 @@ source: orders is duckdb.table('limit_t') extend {
          await tearDown();
       }
    }, 20000);
+
+   it("derives the plan from the companion the worker compiled for this thread, not from a second compile", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `##! experimental { persistence composite_sources }
+
+source: orders is duckdb.table('shared_t') extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+      );
+      // With the worker's schema cache off, every compile fetches the table:
+      // the model's, the companion's, and a second companion's if the plan
+      // compiled its own.
+      const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
+      const { duckdb, tableFetches, load, tearDown } = await setUp(() =>
+         Promise.resolve(),
+      );
+      try {
+         await duckdb.runSQL(
+            "create or replace table shared_t as select 10 as amount, 'A' as category",
+         );
+         const outcome = await load(true);
+         expect(
+            outcome.models[0].preaggregateCompanion?.modelDef,
+         ).toBeDefined();
+         expect(outcome.buildPlan?.ok).toBe(true);
+         expect(
+            tableFetches.filter((paths) => paths.includes("shared_t")),
+         ).toHaveLength(2);
+      } finally {
+         if (cacheBytes === undefined) {
+            delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+         } else {
+            process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = cacheBytes;
+         }
+         await tearDown();
+      }
+   });
+
+   it("answers a schema fetch that outlives its job's timeout without ending the process", async () => {
+      // The answer reaches a worker the timeout has terminated. Under Bun 1.3
+      // posting to it throws, and an unhandled throw there ends the process,
+      // this test run included.
+      fs.writeFileSync(
+         path.join(tempDir, "late.malloy"),
+         `source: late is duckdb.table('late_t')\n`,
+      );
+      const { duckdb, load, tearDown } = await setUp(
+         (tables) =>
+            tables.includes("late_t") ? sleep(1000) : Promise.resolve(),
+         { jobTimeoutMs: 250 },
+      );
+      try {
+         await duckdb.runSQL("create or replace table late_t as select 1 as a");
+         await expect(load(false)).rejects.toThrow(/timed out/);
+         // Past the moment the held fetch answers.
+         await sleep(1000);
+         fs.rmSync(path.join(tempDir, "late.malloy"));
+         fs.writeFileSync(
+            path.join(tempDir, "fine.malloy"),
+            `source: fine is duckdb.sql("select 1 as a")\n`,
+         );
+         const outcome = await load(false);
+         expect(outcome.models.map((m) => m.modelPath)).toEqual([
+            "fine.malloy",
+         ]);
+      } finally {
+         await tearDown();
+      }
+   });
 
    it("sends a load retried after a timeout to a new worker, not to the one that timed out", async () => {
       fs.writeFileSync(
@@ -672,6 +744,73 @@ describe("PackageLoadPool (dispatch)", () => {
          expect(new Set(outcomes.map((o) => o.packageMetadata.name)).size).toBe(
             3,
          );
+      } finally {
+         await pool.shutdown();
+      }
+   });
+});
+
+describe("PackageLoadPool (stopped workers)", () => {
+   it("sends the loads queued behind a worker that fails to start to a new worker", async () => {
+      const marker = failsFirstStartMarker();
+      fs.rmSync(marker, { force: true });
+      const pool = new PackageLoadPool(
+         1,
+         new URL(
+            "./test_fixtures/fails_first_start_worker.ts",
+            import.meta.url,
+         ),
+      );
+      try {
+         const { MalloyConfig } = await import("@malloydata/malloy");
+         const results = await Promise.allSettled(
+            [1, 2, 3].map((n) =>
+               pool.loadPackage({
+                  packagePath: `/nowhere/pkg-${n}`,
+                  packageName: `pkg-${n}`,
+                  environmentName: "env",
+                  malloyConfig: new MalloyConfig({ connections: {} }),
+                  defaultConnectionName: "duckdb",
+               }),
+            ),
+         );
+         // The load waiting on the failed worker fails with it; the two
+         // queued behind it are served by its replacement.
+         expect(results.map((r) => r.status)).toEqual([
+            "rejected",
+            "fulfilled",
+            "fulfilled",
+         ]);
+      } finally {
+         await pool.shutdown();
+         fs.rmSync(marker, { force: true });
+      }
+   });
+
+   it("drops an answer to a worker that has stopped rather than throwing", async () => {
+      const pool = new PackageLoadPool(1);
+      const post = (
+         pool as unknown as {
+            postToWorker: (pw: unknown, message: unknown) => void;
+         }
+      ).postToWorker.bind(pool);
+      try {
+         const terminated = {
+            id: 1,
+            exited: false,
+            worker: {
+               postMessage: () => {
+                  throw new Error("Worker has been terminated");
+               },
+            },
+         };
+         expect(() => post(terminated, { type: "rpc-error" })).not.toThrow();
+         let posted = 0;
+         post(
+            { id: 2, exited: true, worker: { postMessage: () => posted++ } },
+            { type: "rpc-error" },
+         );
+         expect(posted).toBe(0);
       } finally {
          await pool.shutdown();
       }

@@ -234,9 +234,9 @@ interface PoolWorker {
    inFlight: Set<string>; // job ids — capped at 1 by per-worker active job rule
    exited: boolean;
    /**
-    * Terminated after a job timeout and not yet exited. It takes no new job,
-    * but holds its slot until it exits, so the pool never runs more than
-    * `maxWorkers` threads.
+    * Stopping and not yet exited: terminated after a job timeout, or failed to
+    * start or errored. It takes no new job, but holds its slot until it exits,
+    * so the pool never runs more than `maxWorkers` threads.
     */
    retiring: boolean;
 }
@@ -617,6 +617,9 @@ export class PackageLoadPool {
       ready.catch(() => {});
 
       const spawnTimer = setTimeout(() => {
+         // Retired before the rejection reaches a waiting load, so the loads
+         // queued behind it go to a new worker rather than to this one.
+         pw.retiring = true;
          readyReject(
             new Error(
                `Package-load worker #${id} failed to become ready within ${WORKER_SPAWN_TIMEOUT_MS}ms`,
@@ -643,6 +646,9 @@ export class PackageLoadPool {
             error: err,
          });
          clearTimeout(spawnTimer);
+         // An uncaught error ends the worker; until its exit event it would
+         // look idle and take every queued load. See spawnTimer above.
+         pw.retiring = true;
          readyReject(err);
       });
 
@@ -701,16 +707,16 @@ export class PackageLoadPool {
             this.errorJob(pw, msg);
             return;
          case "connection-metadata":
-            void this.handleConnectionMetadata(pw, msg);
+            this.answerWorker(pw, msg, this.handleConnectionMetadata(pw, msg));
             return;
          case "schema-for-tables":
-            void this.handleSchemaForTables(pw, msg);
+            this.answerWorker(pw, msg, this.handleSchemaForTables(pw, msg));
             return;
          case "schema-for-sql":
-            void this.handleSchemaForSql(pw, msg);
+            this.answerWorker(pw, msg, this.handleSchemaForSql(pw, msg));
             return;
          case "read-url":
-            void this.handleReadUrl(pw, msg);
+            this.answerWorker(pw, msg, this.handleReadUrl(pw, msg));
             return;
          case "log":
             handleWorkerLog(msg);
@@ -742,6 +748,46 @@ export class PackageLoadPool {
       this.tryDispatch();
    }
 
+   /**
+    * Send a worker the answer to one of its requests. A request is answered
+    * after an await, by which time a job timeout may have terminated the worker,
+    * and posting to a terminated worker throws (`InvalidStateError` under Bun
+    * 1.3). Nothing awaits the handler, so the throw would be an unhandled
+    * rejection, which ends the server process. A worker that has exited is
+    * skipped, and a throw from one that is exiting is logged.
+    */
+   private postToWorker(pw: PoolWorker, message: MainToWorkerMessage): void {
+      if (pw.exited) return;
+      try {
+         pw.worker.postMessage(message);
+      } catch (error) {
+         logger.warn(
+            `PackageLoadPool: dropped an answer to worker #${pw.id}, which has stopped`,
+            { error: error instanceof Error ? error.message : String(error) },
+         );
+      }
+   }
+
+   /**
+    * Run a request handler that nothing awaits, logging a failure instead of
+    * leaving it to end the process as an unhandled rejection.
+    */
+   private answerWorker(
+      pw: PoolWorker,
+      msg: { type: string; requestId: string },
+      handling: Promise<void>,
+   ): void {
+      handling.catch((error: unknown) => {
+         logger.error(
+            `PackageLoadPool: answering worker #${pw.id}'s ${msg.type} request failed`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      });
+   }
+
    /** Fail a job out-of-band (timeout, worker exit). */
    private failJob(jobId: string, error: Error): void {
       const ctx = this.jobs.get(jobId);
@@ -759,7 +805,7 @@ export class PackageLoadPool {
       const reply = (
          response: ConnectionMetadataResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -806,7 +852,7 @@ export class PackageLoadPool {
       const reply = (
          response: SchemaForTablesResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -850,7 +896,7 @@ export class PackageLoadPool {
       const reply = (
          response: SchemaForSqlResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -902,7 +948,7 @@ export class PackageLoadPool {
    ): Promise<void> {
       const ctx = this.jobs.get(msg.jobId);
       const reply = (response: ReadUrlResponse | RpcErrorResponse): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
