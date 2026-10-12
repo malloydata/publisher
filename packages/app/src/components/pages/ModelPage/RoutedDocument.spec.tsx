@@ -9,6 +9,7 @@
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 type Listed = { path: string; layout: string; editable?: boolean };
@@ -46,6 +47,15 @@ mock.module("../ReportPage/ReportPage", () => ({
 
 const { default: RoutedDocument } = await import("./RoutedDocument");
 
+let frameMounts = 0;
+/** Stands in for a data app's frame: counts mounts, so a reload is visible. */
+function Frame() {
+   useEffect(() => {
+      frameMounts++;
+   }, []);
+   return <div data-testid="not-found">nothing</div>;
+}
+
 function Where() {
    const location = useLocation();
    return (
@@ -53,12 +63,22 @@ function Where() {
    );
 }
 
-function mount(routePath: string, edit = false, search = "") {
+function mount(
+   routePath: string,
+   edit = false,
+   search = "",
+   notFoundUntilListed = false,
+) {
    const at = `/env/pkg/${routePath}${search || (edit ? "?edit" : "")}`;
-   return render(tree(at, routePath, edit));
+   return render(tree(at, routePath, edit, notFoundUntilListed));
 }
 
-function tree(at: string, routePath: string, edit: boolean) {
+function tree(
+   at: string,
+   routePath: string,
+   edit: boolean,
+   notFoundUntilListed = false,
+) {
    return (
       <MemoryRouter initialEntries={[at]}>
          <Routes>
@@ -72,7 +92,8 @@ function tree(at: string, routePath: string, edit: boolean) {
                         packageName="pkg"
                         routePath={routePath}
                         edit={edit}
-                        notFound={<div data-testid="not-found">nothing</div>}
+                        notFound={<Frame />}
+                        notFoundUntilListed={notFoundUntilListed}
                      />
                   </>
                }
@@ -92,6 +113,7 @@ beforeEach(() => {
    };
    draft = { layout: undefined, settled: true };
    draftCalls.length = 0;
+   frameMounts = 0;
    refetch.mockClear();
 });
 
@@ -161,6 +183,52 @@ describe("RoutedDocument", () => {
       listing.isFetching = true;
       mount("story");
       expect(screen.getByTestId("report")).toBeDefined();
+   });
+
+   it("draws a data app at once while the listing is unread, and keeps it when the listing has no report there", () => {
+      listing = { ...listing, settled: false, isFetching: true };
+      const view = mount("data-apps/app.html", false, "", true);
+      expect(screen.getByTestId("not-found")).toBeDefined();
+      listing = { ...listing, settled: true, isFetching: false };
+      view.rerender(
+         tree("/env/pkg/data-apps/app.html", "data-apps/app.html", false, true),
+      );
+      expect(screen.getByTestId("not-found")).toBeDefined();
+      // The same frame throughout: the app is not reloaded when the listing lands.
+      expect(frameMounts).toBe(1);
+   });
+
+   it("decides a data app from a cached listing at once, and gives way to a report the listing names", () => {
+      listing.reports = [{ path: "data-apps/board.malloy", layout: "grid" }];
+      listing.isFetching = true;
+      mount("data-apps/board", false, "", true);
+      expect(screen.getByTestId("report").textContent).toBe(
+         "read data-apps/board.malloy editable=true",
+      );
+   });
+
+   it("switches a data app to the report a later listing names", () => {
+      listing = { ...listing, settled: false, isFetching: true };
+      const view = mount("data-apps/board", false, "", true);
+      expect(screen.getByTestId("not-found")).toBeDefined();
+      listing = {
+         ...listing,
+         settled: true,
+         isFetching: false,
+         reports: [{ path: "data-apps/board.malloy", layout: "grid" }],
+      };
+      view.rerender(
+         tree("/env/pkg/data-apps/board", "data-apps/board", false, true),
+      );
+      expect(screen.getByTestId("report")).toBeDefined();
+      expect(screen.queryByTestId("not-found")).toBeNull();
+   });
+
+   it("draws a data app when the listing cannot be read", () => {
+      listing.isError = true;
+      mount("data-apps/app.html", false, "", true);
+      expect(screen.getByTestId("not-found")).toBeDefined();
+      expect(screen.queryByRole("alert")).toBeNull();
    });
 
    it("says a failed listing cannot tell, and retries on request", () => {

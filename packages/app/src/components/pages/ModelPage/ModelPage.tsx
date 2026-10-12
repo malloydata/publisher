@@ -56,7 +56,8 @@ function ModelPage() {
    //
    // The report lookup comes FIRST, ahead of the `data-apps/` viewer, so a
    // report under `data-apps/` opens as a report. A path there that is not a
-   // report is an in-package HTML data app: the Apps section in <Package>
+   // report is an in-package HTML data app, drawn without waiting for the
+   // listing (reports still win when it arrives): the Apps section in <Package>
    // routes clicks to `data-apps/<file>`, and <DataAppViewer> iframes the
    // standalone Publisher URL and resizes via the publisher.js postMessage
    // protocol.
@@ -104,8 +105,9 @@ function ModelPage() {
             routePath={routePath}
             edit={isEditSearch(search)}
             notFound={notFound}
-            // A data app does not depend on the report listing: when it cannot be read, show the app.
-            notFoundOnError={dataApp}
+            // A data app does not wait on the report listing: it opens at once,
+            // and gives way only if the listing names a report at this path.
+            notFoundUntilListed={dataApp}
          />
       );
    }

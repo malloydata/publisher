@@ -28,6 +28,10 @@ import LegacyAliasRoute from "./LegacyAliasRoute";
  *
  * When no report is at that path, an old by-name link is redirected by
  * `LegacyAliasRoute`, and otherwise `?edit` opens the host's draft at the path.
+ *
+ * With `notFoundUntilListed`, a route that is something else unless a report
+ * claims it (a data app) draws `notFound` at once rather than waiting on the
+ * listing, and switches only when the listing names a report at its path.
  */
 export default function RoutedDocument({
    environmentName,
@@ -35,7 +39,7 @@ export default function RoutedDocument({
    routePath,
    edit,
    notFound,
-   notFoundOnError = false,
+   notFoundUntilListed = false,
 }: {
    environmentName: string;
    packageName: string;
@@ -45,8 +49,12 @@ export default function RoutedDocument({
    edit: boolean;
    /** What to draw when nothing is at this route. */
    notFound: React.ReactNode;
-   /** Draw `notFound` rather than a retry when the listing cannot be read. */
-   notFoundOnError?: boolean;
+   /**
+    * Draw `notFound` while the listing is unread, refreshing or unreadable,
+    * rather than a spinner or a retry: for a route that is not a report unless
+    * the listing says so. Not for `?edit`, which opens the builder.
+    */
+   notFoundUntilListed?: boolean;
 }) {
    const { reports, settled, isFetching, isError, refetch } = useReportListing(
       environmentName,
@@ -74,8 +82,28 @@ export default function RoutedDocument({
       path,
       edit && decided && !report,
    );
-   if (!decided) return <Loading text={LOADING_COPY.opening()} />;
-   if (isError && notFoundOnError) return <>{notFound}</>;
+   // Drawn in the same place as the unlisted branch's `notFound` below, so a
+   // listing that answers with nothing here keeps the page mounted (a data
+   // app's frame does not reload).
+   const unlisted = (children: React.ReactNode) => (
+      <LegacyAliasRoute
+         environmentName={environmentName}
+         packageName={packageName}
+         routePath={routePath}
+         edit={edit}
+         reports={reports}
+      >
+         {children}
+      </LegacyAliasRoute>
+   );
+   const early = notFoundUntilListed && !edit && !report;
+   if (!decided)
+      return early ? (
+         unlisted(notFound)
+      ) : (
+         <Loading text={LOADING_COPY.opening()} />
+      );
+   if (isError && early) return unlisted(notFound);
    // A listing that failed says nothing about what is at this route, so it
    // is not "nothing here": say so, and offer to ask again.
    if (isError)
@@ -133,32 +161,23 @@ export default function RoutedDocument({
          />
       );
 
-   return (
-      <LegacyAliasRoute
-         environmentName={environmentName}
-         packageName={packageName}
-         routePath={routePath}
-         edit={edit}
-         reports={reports}
-      >
-         {/* Not listed, but asked for in the builder: a draft the host keeps,
-             or a file the package has not served yet. The editor says which,
-             opened with the layout the draft recorded (grid when there is no
-             draft). */}
-         {edit ? (
-            draft.settled ? (
-               <DashboardEditPage
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  path={path}
-                  layout={draft.layout ?? "grid"}
-               />
-            ) : (
-               <Loading text={LOADING_COPY.opening()} />
-            )
+   // Not listed, but asked for in the builder: a draft the host keeps, or a
+   // file the package has not served yet. The editor says which, opened with
+   // the layout the draft recorded (grid when there is no draft).
+   return unlisted(
+      edit ? (
+         draft.settled ? (
+            <DashboardEditPage
+               environmentName={environmentName}
+               packageName={packageName}
+               path={path}
+               layout={draft.layout ?? "grid"}
+            />
          ) : (
-            notFound
-         )}
-      </LegacyAliasRoute>
+            <Loading text={LOADING_COPY.opening()} />
+         )
+      ) : (
+         notFound
+      ),
    );
 }
