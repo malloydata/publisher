@@ -250,7 +250,7 @@ describe("versionId", () => {
       expect(cacheKeys("dashboard-editor-manifest")[0]).toContain('"v7"');
       expect(cacheKeys("reports")[0]).toContain('"v7"');
       await waitFor(() =>
-         expect(cacheKeys("dashboard-editor-catalog")[0]).toContain('"v7"'),
+         expect(cacheKeys("report-editor-models")[0]).toContain('"v7"'),
       );
    });
 

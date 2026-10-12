@@ -21,7 +21,6 @@ import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useReportListing } from "../Package/useDocumentLocation";
 import { useServer } from "../ServerProvider";
-import { buildCatalog, isReportModel, type PackageCatalog } from "./catalog";
 import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
 import type { DashboardDocument, QueryTile } from "./document";
@@ -30,6 +29,7 @@ import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
+import { useEditorCatalog } from "./useEditorCatalog";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
 
 /**
@@ -199,53 +199,13 @@ export function EditorSurface({
       [reportList, modelPath],
    );
 
-   // The catalog: every source the package publishes. A tile runs against
-   // this file and may read only the package surface; files off it are not
-   // readable anyway (their model GET is 404).
-   const { data: catalog } = useQueryWithApiError<PackageCatalog>({
-      queryKey: [
-         "dashboard-editor-catalog",
-         environmentName,
-         packageName,
-         versionId,
-      ],
-      queryFn: async () => {
-         // The reports, by path, so the catalog leaves them out whatever
-         // directory holds them: the listing above, not a second request for it.
-         const reportPaths = new Set(
-            reportList.flatMap((r) => (r.path ? [r.path] : [])),
-         );
-         const listed = (
-            await apiClients.models.listModels(
-               environmentName,
-               packageName,
-               versionId,
-            )
-         ).data.filter(
-            // The catalog leaves reports out, this file's own text included.
-            (m) =>
-               m.path &&
-               !m.error &&
-               m.path !== modelPath &&
-               !isReportModel(m.path, reportPaths),
-         );
-         // One model that fails to load (a reload racing this fetch, say)
-         // costs the catalog that model's sources, not every suggestion.
-         const settled = await Promise.allSettled(
-            listed.map((m) =>
-               apiClients.models
-                  .getModel(environmentName, packageName, m.path!, versionId)
-                  .then((response) => response.data),
-            ),
-         );
-         const models = settled.flatMap((result) =>
-            result.status === "fulfilled" ? [result.value] : [],
-         );
-         // Every published source: a tile on one the file cannot see yet
-         // imports it as it is added.
-         return buildCatalog(models, reportPaths);
-      },
-      enabled: reportsSettled,
+   const catalog = useEditorCatalog({
+      environmentName,
+      packageName,
+      ...(versionId !== undefined ? { versionId } : {}),
+      modelPath,
+      reports: reportList,
+      reportsSettled,
    });
 
    // A text-held document has no `import`, so only what its run model lists resolves for it.
