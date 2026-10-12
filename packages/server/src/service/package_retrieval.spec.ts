@@ -7,6 +7,7 @@ import * as os from "os";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
 import {
+   alsoLikelyOn,
    DEFAULT_FCJ_SETTINGS,
    DEFAULT_PACKAGE_RETRIEVAL,
    engineOf,
@@ -90,6 +91,9 @@ describe("publisher.json retrieval block", () => {
          listTopK: 15,
          questionsPrompt: "questions",
          questionsPerNode: 3,
+         alsoLikely: "auto",
+         alsoLikelyTwins: 2,
+         joinedCopies: "indexed",
       });
       expect(
          parsePackageRetrieval({ fcj: { connect: "list", listTopK: 12 } }).fcj,
@@ -103,6 +107,46 @@ describe("publisher.json retrieval block", () => {
          questionsPrompt: "phrases",
          questionsPerNode: 5,
       });
+   });
+
+   it("reads alsoLikely, alsoLikelyTwins and joinedCopies, and says when alsoLikely is on", () => {
+      expect(
+         parsePackageRetrieval({
+            fcj: {
+               alsoLikely: false,
+               alsoLikelyTwins: 1,
+               joinedCopies: "routes",
+            },
+         }).fcj,
+      ).toEqual({
+         ...DEFAULT_FCJ_SETTINGS,
+         alsoLikely: false,
+         alsoLikelyTwins: 1,
+         joinedCopies: "routes",
+      });
+      expect(alsoLikelyOn({ alsoLikely: "auto", connect: "list" })).toBe(true);
+      expect(alsoLikelyOn({ alsoLikely: "auto", connect: "clusters" })).toBe(
+         false,
+      );
+      expect(alsoLikelyOn({ alsoLikely: false, connect: "list" })).toBe(false);
+      expect(alsoLikelyOn({ alsoLikely: true, connect: "clusters" })).toBe(
+         true,
+      );
+      expect(() =>
+         parsePackageRetrieval({ fcj: { alsoLikely: "yes" } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.fcj.alsoLikely: expected "auto", true or false, got "yes". Fix: "alsoLikely": "auto" (on with connect "list", off with "clusters").',
+      );
+      expect(() =>
+         parsePackageRetrieval({ fcj: { alsoLikelyTwins: 11 } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.fcj.alsoLikelyTwins: expected an integer from 0 to 10, got 11. Fix: "alsoLikelyTwins": 2',
+      );
+      expect(() =>
+         parsePackageRetrieval({ fcj: { joinedCopies: "deep" } }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.fcj.joinedCopies: expected one of indexed, routes, got "deep". Fix: "joinedCopies": "indexed" (joined copies are searchable rows) or "routes" (each field is searched on its own source and shown with its routes).',
+      );
    });
 
    it("rejects an unknown question wording or a row count out of range, with a fix", () => {
@@ -131,7 +175,7 @@ describe("publisher.json retrieval block", () => {
          'Invalid publisher.json retrieval.fcj.perTarget: expected an integer from 1 to 500, got 2.5. Fix: "perTarget": 30',
       );
       expect(() => parsePackageRetrieval({ fcj: { window: 3 } })).toThrow(
-         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode.",
+         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode, alsoLikely, alsoLikelyTwins, joinedCopies.",
       );
       expect(() => parsePackageRetrieval({ fcj: { connect: "tree" } })).toThrow(
          'Invalid publisher.json retrieval.fcj.connect: expected one of clusters, list, got "tree". Fix: "connect": "clusters" (source groups) or "list" (the find stage\'s top listTopK per target).',

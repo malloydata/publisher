@@ -9,10 +9,19 @@
  * a Malloy join is a left join, so the copy reached from `order_items` counts
  * products that were ordered, while `products.category` counts every product.
  * The response lists the routes rather than picking one.
+ *
+ * How deep a route goes is the catalog's `routeDepth`: two joins with
+ * `joinedCopies: "indexed"` (the depth the shipped index gives joined
+ * copies), any depth the join walk recorded with `"routes"`. In routes mode a
+ * field of a raw-table join on its own source (`date_dim.year` on `orders`)
+ * has routes too: `orders.date_dim.year` from a source that reaches `orders`
+ * through `orders`.
  */
 
 import { entityId } from "../tools/get_context_tool";
-import type { Catalog, CatalogNode } from "./catalog";
+import { ROUTE_MAX_DEPTH, type Catalog, type CatalogNode } from "./catalog";
+
+export { ROUTE_MAX_DEPTH };
 
 export interface Route {
    /** Catalog key of the source the field is reached from. */
@@ -22,9 +31,6 @@ export interface Route {
    /** The wire id of the field under that route. */
    id: string;
 }
-
-/** Deepest route listed, the depth the shipped index gives joined copies. */
-export const ROUTE_MAX_DEPTH = 2;
 
 const reverseCache = new WeakMap<
    Catalog,
@@ -56,14 +62,18 @@ function reverseJoins(catalog: Catalog) {
    return rev;
 }
 
-/** Every route to a dimension or measure, up to `depth` joins; none for other kinds. */
+/**
+ * Every route to a dimension or measure, up to `depth` joins (the catalog's
+ * routeDepth by default); none for other kinds. In indexed mode a joined
+ * copy has none (it is a route itself).
+ */
 export function routeList(
    catalog: Catalog,
    node: CatalogNode,
-   depth = ROUTE_MAX_DEPTH,
+   depth = catalog.routeDepth ?? ROUTE_MAX_DEPTH,
 ): Route[] {
    if (node.kind !== "dimension" && node.kind !== "measure") return [];
-   if (node.joinPath) return [];
+   if (node.joinPath && catalog.joinedCopies !== "routes") return [];
    const out: Route[] = [];
    for (const r of reverseJoins(catalog).get(node.sourceKey) ?? []) {
       if (r.path.length > depth) continue;
@@ -80,6 +90,21 @@ export function routeList(
       });
    }
    return out;
+}
+
+/**
+ * The routes to a field from the given sources only, shortest first: what
+ * routes mode shows in the judge's list and in the response, where `from`
+ * is the other sources on the list or in the response.
+ */
+export function routesFrom(
+   catalog: Catalog,
+   node: CatalogNode,
+   from: ReadonlySet<string>,
+): Route[] {
+   return routeList(catalog, node).filter(
+      (r) => r.from !== node.sourceKey && from.has(r.from),
+   );
 }
 
 /**

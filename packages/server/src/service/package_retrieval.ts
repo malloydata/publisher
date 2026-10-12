@@ -168,10 +168,46 @@ export interface FcjSettings {
    questionsPrompt: QuestionsPrompt;
    /** PROVISIONAL, 3 by default. Index-time rows written per field and view. */
    questionsPerNode: number;
+   /**
+    * PROVISIONAL, `auto` by default (on with `connect: "list"`, off with
+    * `clusters`). After the judge, the response also returns "also likely"
+    * fields, marked as such: up to `alsoLikelyTwins` fields with the same
+    * name and kind as each pick on other sources, and one field for each name
+    * the judge wrote in its reasons or caveats that no pick carries. See
+    * also_likely.ts.
+    */
+   alsoLikely: FcjAlsoLikely;
+   /** PROVISIONAL, 2 by default. Most same-named fields added per pick by `alsoLikely`. */
+   alsoLikelyTwins: number;
+   /**
+    * PROVISIONAL, `indexed` by default. `indexed`: a joined field the
+    * compiled model carries as a copy on the joining source (a join to a
+    * source extended in the join, or a field added there) is a searchable row
+    * of its own, and routes are listed two joins deep. `routes`: a joined
+    * copy of a field that has a node on its own source is not indexed; the
+    * field is searched once, on its own source, and the judge's list and the
+    * response show every route to it from the other listed sources, at any
+    * depth. Fields of a join to a raw table or SQL (no source of their own)
+    * stay indexed on the joining source in both.
+    */
+   joinedCopies: FcjJoinedCopies;
 }
 
 export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
 export type FcjConnect = (typeof FCJ_CONNECT_MODES)[number];
+export const FCJ_ALSO_LIKELY = ["auto", true, false] as const;
+export type FcjAlsoLikely = (typeof FCJ_ALSO_LIKELY)[number];
+export const FCJ_JOINED_COPIES = ["indexed", "routes"] as const;
+export type FcjJoinedCopies = (typeof FCJ_JOINED_COPIES)[number];
+
+/** Whether the "also likely" fields are added under these settings. */
+export function alsoLikelyOn(
+   settings: Pick<FcjSettings, "alsoLikely" | "connect">,
+): boolean {
+   return settings.alsoLikely === "auto"
+      ? settings.connect === "list"
+      : settings.alsoLikely;
+}
 
 export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    perTarget: 30,
@@ -193,6 +229,9 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    listTopK: 15,
    questionsPrompt: "questions",
    questionsPerNode: DEFAULT_QUESTIONS_PER_NODE,
+   alsoLikely: "auto",
+   alsoLikelyTwins: 2,
+   joinedCopies: "indexed",
 };
 
 export interface PackageRetrievalSettings {
@@ -494,6 +533,28 @@ function fcjQuestionsPrompt(obj: Record<string, unknown>): QuestionsPrompt {
    return value as QuestionsPrompt;
 }
 
+function fcjAlsoLikely(obj: Record<string, unknown>): FcjAlsoLikely {
+   const value = obj.alsoLikely ?? DEFAULT_FCJ_SETTINGS.alsoLikely;
+   if (!(FCJ_ALSO_LIKELY as readonly unknown[]).includes(value)) {
+      fail(
+         `Invalid publisher.json retrieval.fcj.alsoLikely: expected "auto", true or false, got ${describe(obj.alsoLikely)}. ` +
+            `Fix: "alsoLikely": "auto" (on with connect "list", off with "clusters").`,
+      );
+   }
+   return value as FcjAlsoLikely;
+}
+
+function fcjJoinedCopies(obj: Record<string, unknown>): FcjJoinedCopies {
+   const value = obj.joinedCopies ?? DEFAULT_FCJ_SETTINGS.joinedCopies;
+   if (!(FCJ_JOINED_COPIES as readonly unknown[]).includes(value)) {
+      fail(
+         `Invalid publisher.json retrieval.fcj.joinedCopies: expected one of ${FCJ_JOINED_COPIES.join(", ")}, got ${describe(obj.joinedCopies)}. ` +
+            `Fix: "joinedCopies": "indexed" (joined copies are searchable rows) or "routes" (each field is searched on its own source and shown with its routes).`,
+      );
+   }
+   return value as FcjJoinedCopies;
+}
+
 function parseFcj(raw: unknown): FcjSettings {
    const obj = objectBlock(
       raw,
@@ -526,6 +587,9 @@ function parseFcj(raw: unknown): FcjSettings {
       listTopK: int("listTopK", 1, 500),
       questionsPrompt: fcjQuestionsPrompt(obj),
       questionsPerNode: int("questionsPerNode", 1, 8),
+      alsoLikely: fcjAlsoLikely(obj),
+      alsoLikelyTwins: int("alsoLikelyTwins", 0, 10),
+      joinedCopies: fcjJoinedCopies(obj),
    };
 }
 

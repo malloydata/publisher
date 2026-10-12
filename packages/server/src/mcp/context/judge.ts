@@ -30,6 +30,7 @@ import { humanizeName } from "../tools/embedding_index";
 import { runPooled } from "../tools/get_context_llm";
 import type { CatalogNode } from "./catalog";
 import type { Cluster } from "./connect";
+import { routesFrom } from "./routes";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
 
@@ -57,13 +58,47 @@ export interface JudgeVerdict {
 /** Doc text the judge reads for one candidate; long docs are cut here, not dropped. */
 const JUDGE_DOC_MAX_CHARS = 1_500;
 
-/** How a field is reached from the home; nothing in a list, which has no home. */
+/** Most join paths shown between two peers, and most routes shown per field. */
+export const PATHS_SHOWN = 5;
+export const ROUTES_SHOWN = 8;
+
+/**
+ * In routes mode (`joinedCopies: "routes"`), how the other listed sources
+ * reach a field: `reachable from orders through customer.region or from
+ * shipments through order.customer.region`, shortest first.
+ */
+export function routesLine(
+   index: FcjIndex,
+   node: CatalogNode,
+   listed: ReadonlySet<string>,
+): string | undefined {
+   const routes = routesFrom(index.catalog, node, listed);
+   if (routes.length === 0) return undefined;
+   const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
+   const shown = routes
+      .slice(0, ROUTES_SHOWN)
+      .map((r) => `from ${nameOf(r.from)} through ${r.path.join(".")}`);
+   const more = routes.length - shown.length;
+   return `reachable ${shown.join(" or ")}${more > 0 ? ` (and ${more} more routes)` : ""}`;
+}
+
+/**
+ * How a field is reached: from the home in a cluster. In a list, which has
+ * no home, nothing; in routes mode, the other listed sources' routes to it.
+ */
 function routeOf(
    index: FcjIndex,
    cluster: Cluster,
    node: CatalogNode,
 ): string | undefined {
-   if (cluster.peers) return undefined;
+   if (cluster.peers) {
+      if (index.catalog.joinedCopies !== "routes") return undefined;
+      return routesLine(
+         index,
+         node,
+         new Set(cluster.peers.map((p) => p.source)),
+      );
+   }
    const entry = cluster.reach.get(node.sourceKey);
    if (!entry || entry.hops === 0) return "own field";
    const home = index.catalog.sources.get(cluster.home)?.name ?? cluster.home;
@@ -242,13 +277,16 @@ function peerLines(index: FcjIndex, cluster: Cluster): string[] {
          peer.reaches.length === 0
             ? `  A query from ${name} can use none of the other listed sources.`
             : `  A query from ${name} can also use: ${peer.reaches
-                 .map(
-                    (r) =>
-                       `${nameOf(r.source)} (through ${r.paths
-                          .filter((p) => p.length > 0)
-                          .map((p) => `${name}.${p.join(".")}`)
-                          .join(" or ")})`,
-                 )
+                 .map((r) => {
+                    const paths = r.paths.filter((p) => p.length > 0);
+                    const more = paths.length - PATHS_SHOWN;
+                    return `${nameOf(r.source)} (through ${paths
+                       .slice(0, PATHS_SHOWN)
+                       .map((p) => `${name}.${p.join(".")}`)
+                       .join(
+                          " or ",
+                       )}${more > 0 ? ` or ${more} more paths` : ""})`;
+                 })
                  .join(", ")}.`,
       );
    }
