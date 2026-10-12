@@ -38,12 +38,33 @@ describe("ResultPanel", () => {
       });
       render(
          <ResultPanel
-            state={stateOf({ isError: true, error })}
+            state={stateOf({ isError: true, isLoadingError: true, error })}
             context="orders -> by_month"
          />,
       );
       expect(screen.getByText("filter 'state' is required")).toBeDefined();
       expect(screen.getByText("orders -> by_month")).toBeDefined();
+      expect(screen.queryByText("Running…")).toBeNull();
+   });
+
+   it("keeps a drawn result when re-running the same query fails", () => {
+      // react-query keeps the last result in `data` when a refetch fails.
+      // The result goes to `ResultContainer`, which lazy-loads the renderer,
+      // so this pins only that the error card does not take its place.
+      const error = new Error("Network Error");
+      render(
+         <ResultPanel
+            state={stateOf({
+               isError: true,
+               isRefetchError: true,
+               error,
+               data: { data: { result: "{}" } },
+            } as Partial<QueryResultState>)}
+            context="orders -> by_month"
+         />,
+      );
+      expect(screen.queryByText("Network Error")).toBeNull();
+      expect(screen.queryByText("orders -> by_month")).toBeNull();
       expect(screen.queryByText("Running…")).toBeNull();
    });
 });

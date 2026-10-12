@@ -55,9 +55,7 @@ export default function Environment({
 
          <PackageSection
             title="Packages"
-            {...(packages.isSuccess
-               ? { count: packages.data.data.length }
-               : {})}
+            {...(packages.data ? { count: packages.data.data.length } : {})}
             description="Published packages available for use in this environment"
             {...(mutable
                ? { action: <AddPackageDialog resourceUri={resourceUri} /> }

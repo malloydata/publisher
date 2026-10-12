@@ -50,11 +50,11 @@ export function ResultPanel({
    fill,
    transform,
 }: ResultPanelProps) {
-   const { data, isSuccess, isError, error, fetchStatus } = state;
+   const { data, isLoadingError, error, fetchStatus } = state;
    // Fetch the renderer while the query runs, so the first chart does not wait
    // on it after the rows arrive. Not before: a tile still waiting to scroll
    // into view has asked for nothing, and neither should its renderer.
-   const resultOnItsWay = isSuccess || fetchStatus === "fetching";
+   const resultOnItsWay = data !== undefined || fetchStatus === "fetching";
    useEffect(() => {
       if (resultOnItsWay) warmMalloyRenderer();
    }, [resultOnItsWay]);
@@ -64,14 +64,16 @@ export function ResultPanel({
       [raw, transform],
    );
 
-   if (isError) {
+   // A failed re-run of the same query keeps the result already drawn; only a
+   // query with nothing to show draws its error in place of one.
+   if (isLoadingError) {
       return (
          <Box sx={{ p: 2 }}>
             <ApiErrorDisplay context={context} error={error} />
          </Box>
       );
    }
-   if (!isSuccess)
+   if (!data)
       // Nothing is running while a query waits (a tile not yet scrolled near),
       // so it does not say "Running…".
       return (

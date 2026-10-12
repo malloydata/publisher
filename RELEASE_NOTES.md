@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] - SDK views keep what they showed when a refresh fails, and a failed request says why
+
+A background refetch that failed used to replace a view the reader was already looking at with an error card, even though the last good data was still cached. A report (`Report`), the deprecated `Dashboard` and `Notebook`, a model, the package page and its report listing, the environment list, connection list, result panel and materializations list now keep showing what they had. Only a view with nothing to show yet shows the error. `Report`, `Dashboard` and the materializations list add a small warning that the refresh failed, and `Report` sends `report.load_failed` only for a report that never loaded.
+
+`ApiErrorDisplay` used to say "Unknown error" for any failure without a server response body: a network error, a timeout, an aborted request, an empty 502, a token the host could not fetch. It now shows the error's own message and the HTTP status when there is one. A server's message still comes first.
+
+The SDK's query client no longer refetches on reconnect (`refetchOnReconnect: false`), matching `refetchOnWindowFocus: false`. A laptop waking from sleep fires the browser's "online" event before the network is usable, so every query on the page refetched into a network error at once. A host that wants fresh data after a reconnect can still invalidate queries itself.
+
 ## [0.9.8] — Reports: one document type, anywhere in a package, with a `layout`
 
 Dashboards and notebooks are now one document type, the **report**, and a report can live anywhere in a package. A report is any `.malloy` file outside `public/` that carries a model-level `## artifact` tag, other than the root `index.malloy`; a `.malloynb` is a linear report wherever it is. `dashboards/` and `notebooks/` are now ordinary directory names: nothing about a file depends on which directory holds it, and a report two directories deep is served like one at the root. Every file served from those two directories before is classified the same way by its tags alone, with one exception, listed under "What may change" below.
