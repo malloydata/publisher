@@ -148,14 +148,15 @@ export interface LoadPackageRequest {
     */
    computeBuildPlan?: boolean;
    /**
-    * How long into the job the worker keeps preparing render-tag results and
-    * pre-aggregation companions for the main thread. It is checked before
-    * each render-tag target and each companion; past it, a model's remaining
-    * share is left to the main thread, so a slow package degrades to the
-    * main-thread path for those models rather than having its load fail on
-    * the pool's job timeout. A share of that timeout. The build plan is not
-    * bounded by it: the main thread could only derive the plan by compiling
-    * the whole package again, so the worker always finishes it.
+    * How long into the job the worker keeps doing work for the main thread:
+    * render-tag results, pre-aggregation companions and the build plan. It is
+    * checked before each render-tag target and before each model's companion
+    * and plan parts. Past it, a model's remaining render-tag targets and its
+    * companion are left to the main thread, and so is the whole plan once a
+    * model's parts are missing, so a slow package loads as it would with all
+    * of that work on the main thread. A share of the job timeout; the pool
+    * gives the job room for it on top of the compile (see the pool's
+    * jobLimitMs).
     */
    mainThreadWorkBudgetMs: number;
    /**
@@ -239,29 +240,32 @@ export interface SerializedModel {
     *    all. The model still loads and serves; the affected entry point
     *    denies every request (`Model.resolveGateShape`).
     *
-    * The worker has no logger (see `extractSources`'s doc in
-    * `package_load_worker.ts`), so these ride over the wire as plain strings
-    * for the main thread — which does have one — to log once the model is
-    * constructed.
+    * They ride over the wire as plain strings for the main thread to log
+    * once the model is constructed, alongside the model they describe.
     */
    authorizeWarnings?: string[];
    /**
-    * The compiled result of each render-tag target (see `renderTagTargets`),
-    * prepared compile-only alongside the model's compile, for the main thread
-    * to run the renderer's tag validation over. The renderer cannot load in
-    * the worker, but preparing these queries is the expensive part, and on
-    * the main thread it blocks the event loop. A target that fails to
-    * prepare is left out, as the main thread would skip it. Absent when the
-    * worker did not prepare them; the main thread then prepares them itself.
-    * Wire-typed `unknown` like `modelDef`: each is a `Malloy.Result`.
+    * The compiled results of the model's render-tag targets (see
+    * `renderTagTargets`), prepared compile-only alongside the model's
+    * compile, for the main thread to run the renderer's tag validation over.
+    * The renderer cannot load in the worker, but preparing these queries is
+    * the expensive part, and on the main thread it blocks the event loop.
+    *
+    * One entry per target the worker reached, in target order; `result` is
+    * absent for a target that failed to prepare, which the check skips. The
+    * main thread prepares the targets after the last entry itself: all of
+    * them when this is absent, and the rest when the worker stopped at its
+    * soft deadline. Wire-typed `unknown` like `modelDef`: each is a
+    * `Malloy.Result`.
     */
-   renderTagResults?: { label: string; result: unknown }[];
+   renderTagResults?: { label: string; result?: unknown }[];
    /**
-    * This model's synthesized pre-aggregation companion, compiled against the
-    * same build manifest as the model, for the main thread to hydrate rather
-    * than compile (see Model.buildPreaggregateServeModel). `{}` when the model
-    * has no companion or it failed to compile; absent when the worker did not
-    * attempt it, in which case the main thread compiles it.
+    * This model's synthesized pre-aggregation companion, for the main thread
+    * to hydrate against the job's build manifest rather than compile (see
+    * Model.buildPreaggregateServeModel). A build manifest is read only when a
+    * query is prepared, so the one compile serves the build plan too. `{}`
+    * when the model has no companion or it failed to compile; absent when the
+    * worker did not attempt it, in which case the main thread compiles it.
     */
    preaggregateCompanion?: { modelDef?: unknown };
 }
@@ -328,8 +332,9 @@ export interface LoadPackageResult {
       /**
        * Compile-region wall-clock minus time awaiting proxied schema fetches —
        * a conservative ceiling on Malloy compile CPU. The region includes the
-       * build plan, render-tag results and companions prepared for the main
-       * thread, which interleave with the models' compiles.
+       * render-tag results, companions and plan parts prepared for the main
+       * thread, which interleave with the models' compiles, but not the
+       * plan's final derivation, which follows it.
        */
       compileDurationMs: number;
       /** Wall-clock awaiting proxied connection schema fetches (union). */
@@ -343,9 +348,11 @@ export interface LoadPackageResult {
       schemaCacheHits?: number;
    };
    /**
-    * Present when the request set `computeBuildPlan` and every model
-    * compiled. A model that fails to compile fails a load that wants a plan,
-    * so the worker stops collecting it.
+    * Present when the request set `computeBuildPlan`, every model compiled,
+    * and every model's plan parts were collected before the soft deadline
+    * (see `mainThreadWorkBudgetMs`). Absent otherwise: a model that fails to
+    * compile fails a load that wants a plan, and a plan the worker did not
+    * finish in time is derived by the main thread.
     */
    buildPlan?: WorkerBuildPlan;
 }
@@ -390,6 +397,8 @@ export type WorkerBuildPlan =
         ok: false;
         error: string;
         durationMs: number;
+        /** Connections whose digest could not be read before it failed. */
+        digestSkipped: string[];
         /** Refusals counted before the derivation failed. */
         eligibilityRefused: Partial<Record<EligibilityRefusalReason, number>>;
      };

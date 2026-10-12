@@ -3,8 +3,8 @@
 
 /**
  * Compiling a package's build plan on the main thread, against the package's
- * live connections: the build path (MaterializationService) and any load the
- * package-load worker did not derive a plan for. Kept apart from
+ * live connections: the build path (MaterializationService) and a load whose
+ * plan the package-load worker left at its soft deadline. Kept apart from
  * `build_plan.ts` because it compiles through `Model.getModelRuntime`, and the
  * worker, which imports `build_plan.ts`, must not load `./model`.
  */

@@ -54,10 +54,12 @@
  *   - **Worker dies mid-job.** `worker.exit` fails every in-flight job
  *     on that worker; the pool prunes the dead worker, and the next
  *     `loadPackage()` lazily respawns up to `maxWorkers`.
- *   - **Job timeout.** `PACKAGE_LOAD_JOB_TIMEOUT_MS` (default 120s) caps a
- *     single package load. On timeout we **terminate the worker** and
- *     reject the caller — we do not silently fall back, and we do not
- *     leave a zombie compile burning CPU on the worker.
+ *   - **Job timeout.** `PACKAGE_LOAD_JOB_TIMEOUT_MS` (default 120s) bounds
+ *     a single package load's compile; the job may run to twice it (see
+ *     JOB_LIMIT_FACTOR). On timeout we **terminate the worker**, retire it
+ *     so no queued load is sent to it while it exits, and reject the
+ *     caller — we do not silently fall back, and we do not leave a zombie
+ *     compile burning CPU on the worker.
  *
  * Schema-fetch RPC routing
  * ------------------------
@@ -177,12 +179,23 @@ const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
 })();
 
 /**
- * The share of a job's timeout the worker spends preparing render-tag results
- * and pre-aggregation companions for the main thread before leaving the rest
- * to it (see LoadPackageRequest.mainThreadWorkBudgetMs). The remainder is
- * headroom for the compile and the build plan to finish.
+ * The share of a job's timeout the worker spends on work for the main thread,
+ * render-tag results, pre-aggregation companions and the build plan, before
+ * leaving the rest to it (see LoadPackageRequest.mainThreadWorkBudgetMs).
  */
 const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
+
+/**
+ * How many times `PACKAGE_LOAD_JOB_TIMEOUT_MS` the pool lets a job run. The
+ * timeout bounds the compile, as it did when the work for the main thread ran
+ * on the main thread after the job. That work now interleaves with the
+ * compile, and since the worker starts none of it past
+ * MAIN_THREAD_WORK_BUDGET_SHARE of the timeout, a job whose compile fits the
+ * timeout finishes within twice it: the remaining quarter is room for the
+ * pieces already under way when that point passes. A hung job is caught at
+ * twice the timeout.
+ */
+const JOB_LIMIT_FACTOR = 2;
 
 /**
  * How long a freshly-spawned worker has to send its `ready` handshake.
@@ -220,6 +233,12 @@ interface PoolWorker {
    ready: Promise<void>;
    inFlight: Set<string>; // job ids — capped at 1 by per-worker active job rule
    exited: boolean;
+   /**
+    * Terminated after a job timeout and not yet exited. It takes no new job,
+    * but holds its slot until it exits, so the pool never runs more than
+    * `maxWorkers` threads.
+    */
+   retiring: boolean;
 }
 
 /**
@@ -352,6 +371,8 @@ export class PackageLoadPool {
    private readonly schemaCacheBytes: number;
    private readonly mainThreadWorkBudgetMs: number;
    private readonly jobTimeoutMs: number;
+   /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
+   private readonly jobLimitMs: number;
 
    constructor(
       maxWorkers: number,
@@ -374,6 +395,7 @@ export class PackageLoadPool {
       this.workerScript = workerScript ?? resolveWorkerScript();
       this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
       this.jobTimeoutMs = options.jobTimeoutMs ?? PACKAGE_LOAD_JOB_TIMEOUT_MS;
+      this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
       this.mainThreadWorkBudgetMs =
          options.mainThreadWorkBudgetMs ??
          MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
@@ -464,7 +486,7 @@ export class PackageLoadPool {
     */
    private findIdleOrSpawnable(): PoolWorker | null {
       const alive = this.workers.filter((w) => !w.exited);
-      const idle = alive.find((w) => w.inFlight.size === 0);
+      const idle = alive.find((w) => !w.retiring && w.inFlight.size === 0);
       if (idle) return idle;
       if (alive.length < this.maxWorkers) {
          const pw = this.spawnWorker();
@@ -499,7 +521,7 @@ export class PackageLoadPool {
 
       const timeout = setTimeout(() => {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
-      }, this.jobTimeoutMs);
+      }, this.jobLimitMs);
 
       this.jobs.set(jobId, {
          jobId,
@@ -547,12 +569,15 @@ export class PackageLoadPool {
       packagePath: string,
    ): void {
       logger.error(
-         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${this.jobTimeoutMs}ms; terminating worker #${pw.id}`,
+         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${this.jobLimitMs}ms; terminating worker #${pw.id}`,
       );
+      // Before the caller hears of the timeout: a load it retries must not be
+      // sent to this worker, which is about to exit and would fail it.
+      pw.retiring = true;
       this.failJob(
          jobId,
          new Error(
-            `Package-load worker timed out after ${this.jobTimeoutMs}ms (package=${packagePath})`,
+            `Package-load worker timed out after ${this.jobLimitMs}ms (package=${packagePath})`,
          ),
       );
       void pw.worker.terminate();
@@ -606,6 +631,7 @@ export class PackageLoadPool {
          ready,
          inFlight: new Set(),
          exited: false,
+         retiring: false,
       };
 
       worker.on("message", (msg: WorkerToMainMessage) => {
@@ -936,10 +962,14 @@ function connectionGeneration(conn: object): number {
  * the OpenTelemetry log pipeline (see WorkerLogMessage), naming the package
  * the job loads.
  */
-function handleWorkerLog(msg: WorkerLogMessage): void {
-   logger.log(msg.level, msg.message, {
+export function handleWorkerLog(msg: WorkerLogMessage): void {
+   // As one entry rather than `log(level, message, meta)`, which reads a `%`
+   // in the message as a format directive and then drops the meta.
+   logger.log({
       packagePath: msg.packagePath,
       ...msg.meta,
+      level: msg.level,
+      message: msg.message,
    });
 }
 

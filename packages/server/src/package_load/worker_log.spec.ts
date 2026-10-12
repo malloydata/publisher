@@ -65,14 +65,16 @@ describe("plainLogEntry", () => {
       ]);
    });
 
-   it("survives meta that JSON cannot represent", () => {
+   it("keeps the other fields when one cannot be copied as JSON", () => {
       const circular: Record<string, unknown> = {};
       circular.self = circular;
-      const [entry] = entriesOf((logger) => logger.info("x", circular));
+      const [entry] = entriesOf((logger) =>
+         logger.warn("x", { modelPath: "m.malloy", rows: 10n, loop: circular }),
+      );
       expect(plainLogEntry(entry)).toEqual({
-         level: "info",
+         level: "warn",
          message: "x",
-         meta: {},
+         meta: { modelPath: "m.malloy", rows: "10", loop: "[object Object]" },
       });
    });
 });

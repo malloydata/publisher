@@ -38,6 +38,7 @@ import * as os from "os";
 import * as path from "path";
 import { ModelCompilationError } from "../errors";
 import { logger } from "../logger";
+import * as materializationMetrics from "../materialization_metrics";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
@@ -730,6 +731,68 @@ run: mid_ungated -> { aggregate: c }`,
       }
    });
 
+   it("prepares on the main thread only the render-tag targets after the worker's last result", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "render.malloy"),
+         `source: cards is duckdb.sql("select 1 as a, 2 as b") extend {
+  measure: total is a.sum()
+  # bar_chart
+  view: fine is { group_by: a; aggregate: total }
+  # big_value { sparkline=trend }
+  view: card is {
+    aggregate: total
+    nest:
+      # line_chart { size=spark }
+      trend is { group_by: a; aggregate: total }
+  }
+}`,
+      );
+
+      // As when the worker's soft deadline passes after the first target.
+      const loadPackage = pool.loadPackage.bind(pool);
+      const spy = spyOn(pool, "loadPackage").mockImplementation(
+         async (request) => {
+            const outcome = await loadPackage(request);
+            return {
+               ...outcome,
+               models: outcome.models.map((model) => ({
+                  ...model,
+                  renderTagResults: model.renderTagResults?.slice(0, 1),
+               })),
+            };
+         },
+      );
+      const { Model } = await import("./model");
+      const prepareSpy = spyOn(
+         Model.prototype as unknown as {
+            prepareRenderTagTargets: (
+               mm: unknown,
+               targets: { label: string }[],
+            ) => Promise<unknown[]>;
+         },
+         "prepareRenderTagTargets",
+      );
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(
+            (pkg.getPackageMetadata().warnings ?? []).some(
+               (w) => w.subject === "cards -> card" && w.severity === "error",
+            ),
+         ).toBe(true);
+         expect(
+            prepareSpy.mock.calls.map(([, targets]) =>
+               targets.map((t) => t.label),
+            ),
+         ).toEqual([["cards -> card"]]);
+      } finally {
+         spy.mockRestore();
+         prepareSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
+
    it("logs a warning for a backtick-quoted (hyphenated) source with a bad view render tag", async () => {
       writeManifest();
       // A source whose name needs Malloy backtick-quoting (here, a hyphen). The
@@ -1195,6 +1258,37 @@ source: orders is duckdb.sql("""
                "persist:stored",
                "preaggregate:orders__preagg__category__edb2cd3b",
             ]);
+
+            // A plan the worker left at its soft deadline is derived here, and
+            // it is the same plan.
+            const leftToMainThread = spyOn(
+               pool,
+               "loadPackage",
+            ).mockImplementation(async (request) => ({
+               ...(await loadPackage(request)),
+               buildPlan: undefined,
+            }));
+            const durations = spyOn(
+               materializationMetrics,
+               "recordBuildPlanComputeDuration",
+            );
+            try {
+               const derivedHere = await Package.create(
+                  "env",
+                  "pkg",
+                  tempDir,
+                  malloyConfig,
+               );
+               expect(derivedHere.getPackageMetadata().buildPlan).toEqual(
+                  workerPlan.outcome.plan ?? undefined,
+               );
+               expect(durations.mock.calls.map((call) => call[1])).toEqual([
+                  "main_thread",
+               ]);
+            } finally {
+               leftToMainThread.mockRestore();
+               durations.mockRestore();
+            }
          } finally {
             spy.mockRestore();
             await duckdb.close();
@@ -1202,6 +1296,40 @@ source: orders is duckdb.sql("""
       },
       { timeout: 60000 },
    );
+
+   it("reports the connection digests a failed plan skipped", async () => {
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "plain.malloy"),
+         `source: nums is duckdb.sql("select 1 as a")\n`,
+      );
+      const loadPackage = pool.loadPackage.bind(pool);
+      const spy = spyOn(pool, "loadPackage").mockImplementation(
+         async (request) => ({
+            ...(await loadPackage(request)),
+            buildPlan: {
+               ok: false,
+               error: "the derivation failed",
+               durationMs: 1,
+               digestSkipped: ["gone"],
+               eligibilityRefused: {},
+            },
+         }),
+      );
+      const warnSpy = spyOn(logger, "warn");
+      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      try {
+         await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(warnSpy.mock.calls as unknown[][]).toContainEqual([
+            "Skipping connection digest; connection did not resolve",
+            { connectionName: "gone" },
+         ]);
+      } finally {
+         spy.mockRestore();
+         warnSpy.mockRestore();
+         await duckdb.close();
+      }
+   });
 
    it(
       "answers a later load's schema requests from the worker cache, within an environment only",
@@ -1308,15 +1436,16 @@ source: t is base -> { group_by: a }
       try {
          await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(
-            logSpy.mock.calls.some((call) => {
-               const [level, message, meta] = call as unknown[];
+            logSpy.mock.calls.some(([entry]) => {
+               const { message, modelPath } = entry as unknown as Record<
+                  string,
+                  unknown
+               >;
                // winston folds the entry's `message` field into its message,
                // as it does for the same call on this thread.
                return (
-                  level === "warn" &&
                   String(message).startsWith("Persist annotation issue") &&
-                  (meta as { modelPath?: string } | undefined)?.modelPath ===
-                     "malformed.malloy"
+                  modelPath === "malformed.malloy"
                );
             }),
          ).toBe(true);

@@ -13,8 +13,9 @@
  * differ only in how they type the result
  * (generated API types vs. worker wire types — structurally identical, so each
  * casts at its boundary) and in how they report a filter parse failure (the
- * service logs a warning; the worker has no logger and stays silent), which is
- * threaded through the optional `onParseError` callback.
+ * service logs a warning; the worker stays silent, since the main thread logs
+ * it when it builds the model's filters), which is threaded through the
+ * optional `onParseError` callback.
  */
 
 import {

@@ -69,7 +69,7 @@ import {
    type RollupPlan,
 } from "./preaggregation_synthesis";
 import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
-import { renderTagTargets } from "./render_tag_targets";
+import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
@@ -4856,7 +4856,7 @@ export class Model {
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
       model.preparedRenderTagResults = data.renderTagResults as
-         | { label: string; result: Malloy.Result }[]
+         | { label: string; result?: Malloy.Result }[]
          | undefined;
       model.preparedPreaggregateCompanion = data.preaggregateCompanion as
          | { modelDef?: ModelDef }
@@ -6106,12 +6106,24 @@ export class Model {
       );
 
       // The worker prepares the targets alongside the model's compile (see
-      // SerializedModel.renderTagResults); a model that arrives without them is
-      // prepared here. Taken once: the results are only read by this check.
-      const prepared =
-         this.preparedRenderTagResults ??
-         (await this.prepareRenderTagTargets(mm));
+      // SerializedModel.renderTagResults), in target order, up to its soft
+      // deadline; the targets after the last one it reached are prepared here,
+      // all of them for a model that arrives without results. Taken once: the
+      // results are only read by this check.
+      const fromWorker = this.preparedRenderTagResults ?? [];
       this.preparedRenderTagResults = undefined;
+      const remaining = renderTagTargets(this.queries, this.sources).slice(
+         fromWorker.length,
+      );
+      const prepared = [
+         ...fromWorker.filter(
+            (entry): entry is { label: string; result: Malloy.Result } =>
+               entry.result !== undefined,
+         ),
+         ...(remaining.length > 0
+            ? await this.prepareRenderTagTargets(mm, remaining)
+            : []),
+      ];
 
       const findings: RenderTagWarning[] = [];
       for (const { label, result } of prepared) {
@@ -6166,19 +6178,20 @@ export class Model {
     * until {@link validateRenderTags} reads them.
     */
    private preparedRenderTagResults:
-      | { label: string; result: Malloy.Result }[]
+      | { label: string; result?: Malloy.Result }[]
       | undefined;
 
    /**
-    * Prepare each render-tag target compile-only, for a model the worker did
-    * not prepare them for. A target that fails to prepare is reported by the
-    * normal compile path, so it is skipped rather than masked here.
+    * Prepare render-tag targets compile-only: the ones the worker did not
+    * reach. A target that fails to prepare is reported by the normal compile
+    * path, so it is skipped rather than masked here.
     */
    private async prepareRenderTagTargets(
       mm: ModelMaterializer,
+      targets: RenderTagTarget[],
    ): Promise<{ label: string; result: Malloy.Result }[]> {
       const prepared: { label: string; result: Malloy.Result }[] = [];
-      for (const target of renderTagTargets(this.queries, this.sources)) {
+      for (const target of targets) {
          try {
             const result = await mm
                .loadQuery(target.queryString)

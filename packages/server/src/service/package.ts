@@ -114,6 +114,7 @@ const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
    "grain_dimension_not_public",
 ]);
 import { ColocatedSourceEligibility, SourceEligibility } from "./build_plan";
+import { computePackageBuildPlan } from "./build_plan_compile";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
@@ -1456,12 +1457,13 @@ export class Package {
       // The persist build plan, derived off the live (unbound) models before
       // the caller binds any configured manifest, so the surfaced plan reflects
       // the canonical build (not the manifest-rewritten SQL). The load worker
-      // derives it from its own compile (see LoadPackageResult.buildPlan) and
-      // always returns it for a load whose models all compiled; deriving it
-      // here would compile every model a second time on this thread, blocking
-      // the event loop for as long as the worker's compile took. Best-effort: a
-      // plan failure is logged, not fatal — the package still serves; the plan
-      // is just absent.
+      // derives it from its own compile (see LoadPackageResult.buildPlan).
+      // Deriving it here compiles every model a second time on this thread,
+      // blocking the event loop for as long as the worker's compile took, so it
+      // happens only when the worker left the plan at its soft deadline, for a
+      // package whose load came close to the job timeout. Best-effort: a plan
+      // failure is logged, not fatal — the package still serves; the plan is
+      // just absent.
       //
       // A failure also leaves `sourceEligibility` unknown, which refuses every
       // storage serve binding until a load succeeds (see
@@ -1474,29 +1476,27 @@ export class Package {
       // for the package to live recompute (see bindColocatedServeManifest and
       // its recordColocatedBindDropped("build_plan_unavailable") counter).
       try {
+         const buildPlanStart = Date.now();
          const workerPlan = outcome.buildPlan;
-         if (!workerPlan) {
-            throw new Error("The package-load worker returned no build plan");
-         }
-         // Before a failed plan throws: the main-thread derivation recorded
-         // each refusal as it went, so one that failed part-way had already
-         // counted its refusals.
+         // Before a failed plan throws: the main-thread derivation records
+         // each refusal and skipped digest as it goes, so one that fails
+         // part-way has already counted them.
          for (const [reason, count] of Object.entries(
-            workerPlan.eligibilityRefused,
+            workerPlan?.eligibilityRefused ?? {},
          )) {
             for (let i = 0; i < (count ?? 0); i++) {
                recordEligibilityRefused(reason as EligibilityRefusalReason);
             }
          }
-         if (!workerPlan.ok) {
-            throw new Error(workerPlan.error);
-         }
-         for (const connectionName of workerPlan.digestSkipped) {
+         for (const connectionName of workerPlan?.digestSkipped ?? []) {
             recordConnectionDigestSkipped();
             logger.warn(
                "Skipping connection digest; connection did not resolve",
                { connectionName },
             );
+         }
+         if (workerPlan && !workerPlan.ok) {
+            throw new Error(workerPlan.error);
          }
          const {
             plan,
@@ -1504,7 +1504,9 @@ export class Package {
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
-         } = workerPlan.outcome;
+         } = workerPlan
+            ? workerPlan.outcome
+            : await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
          pkg.sourceEligibility = sourceEligibility;
@@ -1521,7 +1523,10 @@ export class Package {
                sourceEntityId: source.sourceEntityId,
                declaration: incrementalDeclarations[sourceID],
             }));
-         recordBuildPlanComputeDuration(workerPlan.durationMs);
+         recordBuildPlanComputeDuration(
+            workerPlan ? workerPlan.durationMs : Date.now() - buildPlanStart,
+            workerPlan ? "worker" : "main_thread",
+         );
       } catch (err) {
          recordBuildPlanComputeFailed();
          logger.warn(

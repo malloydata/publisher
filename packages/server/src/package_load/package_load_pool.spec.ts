@@ -36,6 +36,7 @@ import {
    __setPackageLoadPoolForTests,
    getPackageLoadSchemaCacheBytes,
    getPackageLoadWorkerCount,
+   handleWorkerLog,
 } from "./package_load_pool";
 
 // ──────────────────────────────────────────────────────────────────────
@@ -354,14 +355,13 @@ source: by_category_table is orders -> by_category
       expect(outcome.models[0].preaggregateCompanion?.modelDef).toBeDefined();
    });
 
-   it("leaves render-tag results and companions to the main thread past the budget, but still derives the plan", async () => {
+   it("leaves the render-tag results, companion and plan to the main thread past the budget", async () => {
       const outcome = await loadWith(0);
       expect(outcome.models[0].compilationError).toBeUndefined();
-      expect(outcome.models[0].renderTagResults).toBeUndefined();
+      // No target reached, so the main thread prepares all of them.
+      expect(outcome.models[0].renderTagResults).toEqual([]);
       expect(outcome.models[0].preaggregateCompanion).toBeUndefined();
-      // The main thread could only derive the plan by compiling the package
-      // again, so the worker finishes it whatever the budget.
-      expect(outcome.buildPlan?.ok).toBe(true);
+      expect(outcome.buildPlan).toBeUndefined();
    });
 });
 
@@ -384,7 +384,7 @@ describe("PackageLoadPool (work for the main thread)", () => {
     */
    async function setUp(
       hold: (tables: string[]) => Promise<void>,
-      options: { jobTimeoutMs?: number } = {},
+      options: { jobTimeoutMs?: number; mainThreadWorkBudgetMs?: number } = {},
    ) {
       const pool = new PackageLoadPool(1, undefined, options);
       const { MalloyConfig, FixedConnectionMap } = await import(
@@ -444,22 +444,21 @@ source: t is base -> { group_by: a }
             tables.includes("never_answered")
                ? new Promise<void>(() => {})
                : Promise.resolve(),
-         { jobTimeoutMs: 3000 },
+         { jobTimeoutMs: 1500 },
       );
       const { logger } = await import("../logger");
       const logSpy = spyOn(logger, "log");
       try {
          await expect(load(true)).rejects.toThrow(/timed out/);
          // winston folds the entry's `message` field into its message, as it
-         // does for the same call on this thread.
-         const reported = logSpy.mock.calls.find((call) => {
-            const [level, message] = call as unknown[];
-            return (
-               level === "warn" &&
-               String(message).startsWith("Persist annotation issue")
+         // does for the same call on this thread. (The console format colours
+         // `level` in place, so the entry is found by its message.)
+         const reported = logSpy.mock.calls
+            .map(([entry]) => entry as unknown as Record<string, unknown>)
+            .find((entry) =>
+               String(entry.message).startsWith("Persist annotation issue"),
             );
-         }) as unknown[] | undefined;
-         expect(reported?.[2]).toMatchObject({
+         expect(reported).toMatchObject({
             packagePath: tempDir,
             modelPath: "malformed.malloy",
          });
@@ -532,6 +531,114 @@ source: t is base -> { group_by: a }
          ).toHaveLength(1);
       } finally {
          await tearDown();
+      }
+   });
+
+   it("loads a package whose compile fits the job timeout, with the work for this thread on top", async () => {
+      // The compile waits once on its table, and so does the companion's
+      // compile, with the worker's schema cache off: about 2 × 1000 ms of a
+      // job whose compile alone takes about 1000 ms, under a 1500 ms timeout.
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `##! experimental { persistence composite_sources }
+
+source: orders is duckdb.table('limit_t') extend {
+  #@ preaggregate grain="category"
+  measure: total is amount.sum()
+}
+`,
+      );
+      const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+      process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
+      const { duckdb, tableFetches, load, tearDown } = await setUp(
+         (tables) =>
+            tables.includes("limit_t") ? sleep(1000) : Promise.resolve(),
+         { jobTimeoutMs: 1500 },
+      );
+      try {
+         await duckdb.runSQL(
+            "create or replace table limit_t as select 10 as amount, 'A' as category",
+         );
+         const outcome = await load(true);
+         expect(outcome.models[0].compilationError).toBeUndefined();
+         expect(
+            outcome.models[0].preaggregateCompanion?.modelDef,
+         ).toBeDefined();
+         expect(outcome.buildPlan?.ok).toBe(true);
+         // The companion's compile is the plan's too: no third fetch.
+         expect(
+            tableFetches.filter((paths) => paths.includes("limit_t")),
+         ).toHaveLength(2);
+      } finally {
+         if (cacheBytes === undefined) {
+            delete process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+         } else {
+            process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = cacheBytes;
+         }
+         await tearDown();
+      }
+   });
+
+   it("sends a load retried after a timeout to a new worker, not to the one that timed out", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "good.malloy"),
+         `source: good is duckdb.sql("select 1 as a")\n`,
+      );
+      const stuckPath = path.join(tempDir, "stuck.malloy");
+      fs.writeFileSync(
+         stuckPath,
+         `source: stuck is duckdb.table('never_answered')\n`,
+      );
+      const { load, tearDown } = await setUp(
+         (tables) =>
+            tables.includes("never_answered")
+               ? new Promise<void>(() => {})
+               : Promise.resolve(),
+         { jobTimeoutMs: 500 },
+      );
+      try {
+         // Retried as soon as the timeout is reported, while the worker that
+         // timed out is still exiting.
+         const retried = load(false).then(
+            () => {
+               throw new Error("The first load should have timed out");
+            },
+            (error: Error) => {
+               expect(error.message).toMatch(/timed out/);
+               fs.rmSync(stuckPath);
+               return load(false);
+            },
+         );
+         const outcome = await retried;
+         expect(outcome.models.map((m) => m.modelPath)).toEqual([
+            "good.malloy",
+         ]);
+      } finally {
+         await tearDown();
+      }
+   });
+});
+
+describe("handleWorkerLog", () => {
+   it("keeps an entry's fields when its message reads like a format string", async () => {
+      const { logger } = await import("../logger");
+      const write = spyOn(logger, "write");
+      try {
+         handleWorkerLog({
+            type: "log",
+            jobId: "job-1",
+            packagePath: "/pkg",
+            level: "warn",
+            message: "Persist annotation issue near '%smith%'",
+            meta: { modelPath: "m.malloy" },
+         });
+         expect(write.mock.calls[0]?.[0]).toMatchObject({
+            message: "Persist annotation issue near '%smith%'",
+            packagePath: "/pkg",
+            modelPath: "m.malloy",
+         });
+      } finally {
+         write.mockRestore();
       }
    });
 });

@@ -354,13 +354,17 @@ export function recordIncrementalStep(
 
 /**
  * Record the wall-clock cost of a package's build plan at load
- * (`Package.buildPlan`), as the package-load worker reports it (see
- * WorkerBuildPlan.durationMs). Labelled `computed_in="worker"`, which sets it
- * apart from releases that compiled the package again on the main thread to
- * derive it.
+ * (`Package.buildPlan`). `computed_in` separates the two populations: `worker`
+ * is the package-load worker deriving it from the compile it already ran (see
+ * WorkerBuildPlan.durationMs); `main_thread` is the derivation that compiles
+ * the package again on the event loop, which a load takes only when the
+ * worker left the plan at its soft deadline.
  */
-export function recordBuildPlanComputeDuration(durationMs: number): void {
-   buildPlanComputeDuration().record(durationMs, { computed_in: "worker" });
+export function recordBuildPlanComputeDuration(
+   durationMs: number,
+   computedIn: "worker" | "main_thread",
+): void {
+   buildPlanComputeDuration().record(durationMs, { computed_in: computedIn });
 }
 
 /**

@@ -153,6 +153,7 @@ import { logger } from "../logger";
 import {
    tryCompileSynthesizedPreaggregation,
    type SynthesizedPreaggregation,
+   type SynthesizedRuntimeFactory,
 } from "../service/preaggregation_compile";
 import { type InFlightAnswer, SchemaCache } from "./schema_cache";
 import { plainLogEntry } from "./worker_log";
@@ -297,8 +298,8 @@ const writeEntry = logger.write.bind(logger) as (entry: unknown) => boolean;
 ) => {
    const job = jobContext.getStore();
    if (!job) return writeEntry(entry);
-   const { level, message, meta } = plainLogEntry(entry);
-   if (logger.isLevelEnabled(level)) {
+   if (logger.isLevelEnabled(String((entry as { level?: unknown }).level))) {
+      const { level, message, meta } = plainLogEntry(entry);
       const msg: WorkerLogMessage = {
          type: "log",
          jobId: job.jobId,
@@ -935,9 +936,9 @@ interface ApiQueryWire {
 type ApiGivenWire = MalloyGivenApi;
 
 // Source / query introspection is shared with the in-process path; see
-// service/source_extraction.ts. The worker has no logger, so a filter parse
-// failure is swallowed silently (no `onParseError` callback) — matching the
-// prior worker-local behavior.
+// service/source_extraction.ts. A filter parse failure is swallowed silently
+// here (no `onParseError` callback): the main thread logs it when it builds the
+// model's filters.
 function extractSources(
    modelDef: ModelDef,
    givens: ApiGivenWire[] | undefined,
@@ -970,9 +971,8 @@ function extractSources(
 /**
  * Collects `validateAuthorizeProbes`'s non-fatal `onRowLevelGateUnexpressible`
  * findings as plain strings for the wire
- * (`SerializedModel.authorizeWarnings`) — the worker has no logger (see
- * `extractSources`'s doc above), so these ride to the main thread, which does,
- * to be logged once per compiled model.
+ * (`SerializedModel.authorizeWarnings`), for the main thread to log once per
+ * compiled model, alongside the model they describe.
  */
 function authorizeWarningCollector(): {
    onRowLevelGateUnexpressible: (sourceName: string, detail: string) => void;
@@ -1029,17 +1029,13 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    };
 }
 
-function buildRuntimeForModel(
+/** A Runtime for the job: its connections and its build manifest. */
+function jobRuntime(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-): {
-   runtime: Runtime;
-   urlReader: HackyDataStylesAccumulator;
-   textFor: (url: URL) => string | undefined;
-} {
-   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
-   const urlReader = new HackyDataStylesAccumulator(reader);
-   const runtime = new Runtime({
+   urlReader: { readURL: (url: URL) => Promise<string> },
+): Runtime {
+   return new Runtime({
       urlReader,
       config: malloyConfig,
       buildManifest:
@@ -1053,6 +1049,19 @@ function buildRuntimeForModel(
               }
             : undefined,
    });
+}
+
+function buildRuntimeForModel(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+): {
+   runtime: Runtime;
+   urlReader: HackyDataStylesAccumulator;
+   textFor: (url: URL) => string | undefined;
+} {
+   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
+   const urlReader = new HackyDataStylesAccumulator(reader);
+   const runtime = jobRuntime(job, malloyConfig, urlReader);
    return { runtime, urlReader, textFor };
 }
 
@@ -1064,8 +1073,8 @@ function buildRuntimeForModel(
  */
 interface LoadContext {
    /**
-    * Past this (a `performance.now()` time) render-tag results and companions
-    * are left to the main thread; see LoadPackageRequest.mainThreadWorkBudgetMs.
+    * Past this (a `performance.now()` time) the work is left to the main
+    * thread; see LoadPackageRequest.mainThreadWorkBudgetMs.
     */
    softDeadline: number;
    /** Each `.malloy` model's plan parts, when the request asked for a plan. */
@@ -1087,6 +1096,11 @@ interface LoadContext {
    planError?: { order: number; message: string };
    /** When the first model's plan collection started. */
    planStart?: number;
+   /**
+    * A model reached its plan parts past the soft deadline, so the plan is
+    * left to the main thread, which derives it from the whole package.
+    */
+   planLeftToMainThread: boolean;
 }
 
 async function compileMalloyModel(
@@ -1190,9 +1204,8 @@ async function compileMalloyModel(
       // callback) -- `sourceName` may be an inheritor, not only the
       // DECLARING source. `modelDef.contents[sourceName]` is the same
       // struct the probe was grafted onto, so `refSummary` is already
-      // resolved against it either way. The worker has no logger (see this
-      // function's doc), so a warning rides the same wire channel as
-      // `onRowLevelGateUnexpressible` above.
+      // resolved against it either way. A warning rides the same wire channel
+      // as `onRowLevelGateUnexpressible` above.
       onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
          const struct = modelDef.contents[sourceName];
          if (!struct || !isSourceDef(struct)) return;
@@ -1256,14 +1269,15 @@ async function compileMalloyModel(
 
 /**
  * Do one compiled model's share of what this worker does for the main thread:
- * prepare its render-tag results, compile its pre-aggregation companion
- * against the job's build manifest, and collect its build-plan parts. The
- * load's soft deadline is checked before each render-tag target and before
- * the companion; past it, that part of the model's share is left to the main
- * thread, which does it as it did before, so a slow load degrades rather than
- * failing on the job timeout. The plan parts are always collected: the main
- * thread could only derive the plan by compiling the whole package again.
- * Never throws: a failure here fails at most the plan, not the model.
+ * prepare its render-tag results, compile its pre-aggregation companion, and
+ * collect its build-plan parts. The load's soft deadline is checked before each
+ * render-tag target and before the companion and plan parts. Past it, the rest
+ * of the model's render-tag targets and its companion are left to the main
+ * thread, and so is the whole plan, which the main thread then derives from the
+ * package. Either way the main thread does that work as it would without the
+ * worker, so a slow package loads rather than failing on the job limit (see the
+ * pool's jobLimitMs). Never throws: a failure here fails at most the plan, not
+ * the model.
  */
 async function prepareForMainThread(
    job: LoadPackageRequest,
@@ -1278,7 +1292,7 @@ async function prepareForMainThread(
       sources: Parameters<typeof renderTagTargets>[1];
    },
 ): Promise<{
-   renderTagResults?: { label: string; result: Malloy.Result }[];
+   renderTagResults?: { label: string; result?: Malloy.Result }[];
    preaggregateCompanion?: { modelDef?: unknown };
 }> {
    if (load.failed) return {};
@@ -1287,16 +1301,12 @@ async function prepareForMainThread(
 
    // Prepared here rather than on the main thread, where compiling every
    // annotated view of a large model blocks the event loop (see
-   // SerializedModel.renderTagResults). All or none: the main thread prepares
-   // every target of a model it receives no results for.
-   let renderTagResults:
-      | { label: string; result: Malloy.Result }[]
-      | undefined = [];
+   // SerializedModel.renderTagResults). Every model prepares its targets at
+   // once, so the ones prepared before the deadline are kept, and the main
+   // thread prepares only those after them.
+   const renderTagResults: { label: string; result?: Malloy.Result }[] = [];
    for (const target of renderTagTargets(model.queries, model.sources)) {
-      if (load.failed || pastDeadline()) {
-         renderTagResults = undefined;
-         break;
-      }
+      if (load.failed || pastDeadline()) break;
       try {
          const prepared = await materializer
             .loadQuery(target.queryString)
@@ -1311,46 +1321,45 @@ async function prepareForMainThread(
       } catch {
          // A view or query that fails to prepare is reported by the normal
          // compile path; the render-tag check skips it.
+         renderTagResults.push({ label: target.label });
       }
    }
 
-   // The runtime the companion the main thread serves rollups through
-   // compiles in, set up like the model's own.
-   const runtimeWith =
-      (buildManifest: unknown) =>
-      async (
-         overlay: ReadonlyMap<string, string>,
-      ): Promise<{ runtime: Runtime; importBaseURL: URL }> => {
-         const files = makeWorkerUrlReader(job);
-         return {
-            runtime: new Runtime({
-               urlReader: {
-                  readURL: (url: URL) => {
-                     const text = overlay.get(url.href);
-                     return text !== undefined
-                        ? Promise.resolve(text)
-                        : files.readURL(url);
-                  },
-               },
-               config: malloyConfig,
-               buildManifest:
-                  buildManifest !== undefined && buildManifest !== null
-                     ? {
-                          entries: buildManifest as Record<
-                             string,
-                             BuildManifestEntry
-                          >,
-                          strict: false,
-                       }
-                     : undefined,
-            }),
-            importBaseURL,
-         };
+   const order = load.modelOrder.get(modelPath) ?? 0;
+   let wantsPlan =
+      load.planParts !== undefined &&
+      !load.failed &&
+      !load.planLeftToMainThread &&
+      !(load.planError && load.planError.order < order);
+   if (wantsPlan && pastDeadline()) {
+      load.planLeftToMainThread = true;
+      wantsPlan = false;
+   }
+
+   // The runtime the companion compiles in: the model's own, reading the
+   // synthesized model's text from the overlay.
+   const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => {
+      const files = makeWorkerUrlReader(job);
+      return {
+         runtime: jobRuntime(job, malloyConfig, {
+            readURL: (url: URL) => {
+               const text = overlay.get(url.href);
+               return text !== undefined
+                  ? Promise.resolve(text)
+                  : files.readURL(url);
+            },
+         }),
+         importBaseURL,
       };
-   // Undefined when not asked for or left to the main thread; null when the
-   // model declares no usable rollup.
+   };
+   // One compile serves the main thread, which hydrates it against the job's
+   // build manifest, and the plan: a build manifest is read only when a query
+   // is prepared, never by a compile. Undefined when neither wants it or it is
+   // left to the main thread; null when the model declares no usable rollup.
    const companion: SynthesizedPreaggregation | null | undefined =
-      job.withPreaggregateCompanions && !load.failed && !pastDeadline()
+      (job.withPreaggregateCompanions || wantsPlan) &&
+      !load.failed &&
+      !pastDeadline()
          ? ((await tryCompileSynthesizedPreaggregation({
               packagePath: job.packagePath,
               modelPath,
@@ -1358,16 +1367,11 @@ async function prepareForMainThread(
                  string,
                  unknown
               >,
-              getRuntime: runtimeWith(job.buildManifest),
+              getRuntime: companionRuntime,
            })) ?? null)
          : undefined;
 
-   const order = load.modelOrder.get(modelPath) ?? 0;
-   if (
-      load.planParts &&
-      !load.failed &&
-      !(load.planError && load.planError.order < order)
-   ) {
+   if (wantsPlan && companion !== undefined && !load.failed) {
       load.planStart ??= performance.now();
       try {
          const parts = emptyBuildPlanParts();
@@ -1376,14 +1380,10 @@ async function prepareForMainThread(
             packagePath: job.packagePath,
             materializer,
             malloyModel: model.model,
-            // The plan describes the canonical build, so it reads the
-            // companion compiled without a manifest: the one above when the
-            // job has none, a fresh one otherwise.
-            getRuntime: runtimeWith(undefined),
-            synthesized:
-               job.buildManifest === undefined ? companion : undefined,
+            getRuntime: companionRuntime,
+            synthesized: companion,
          });
-         load.planParts.set(modelPath, parts);
+         load.planParts?.set(modelPath, parts);
       } catch (error) {
          if (!load.planError || order < load.planError.order) {
             load.planError = {
@@ -1392,12 +1392,15 @@ async function prepareForMainThread(
             };
          }
       }
+   } else if (wantsPlan) {
+      // The deadline passed while the companion was being decided.
+      load.planLeftToMainThread = true;
    }
 
    return {
       renderTagResults,
       preaggregateCompanion:
-         companion === undefined
+         !job.withPreaggregateCompanions || companion === undefined
             ? undefined
             : companion
               ? { modelDef: companion.model._modelDef }
@@ -1719,6 +1722,7 @@ async function loadPackage(
          : undefined,
       modelOrder: new Map(modelPaths.map((modelPath, i) => [modelPath, i])),
       failed: false,
+      planLeftToMainThread: false,
    };
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
@@ -1762,9 +1766,9 @@ async function loadPackage(
 
 /**
  * Merge the models' plan parts, in model order, into the package's persist
- * build plan: the derivation `computePackageBuildPlan` runs on the main thread
- * after compiling the package a second time. Undefined when no plan was asked
- * for or a model failed to compile, which fails the load.
+ * build plan, deriving it as `computePackageBuildPlan` does. Undefined when no
+ * plan was asked for, when a model failed to compile, which fails the load, or
+ * when the plan was left to the main thread at the soft deadline.
  */
 async function finishWorkerBuildPlan(
    malloyConfig: MalloyConfig,
@@ -1772,11 +1776,14 @@ async function finishWorkerBuildPlan(
    load: LoadContext,
    materializationConfig: WirePackageMaterialization | null,
 ): Promise<WorkerBuildPlan | undefined> {
-   if (!load.planParts || load.failed) return undefined;
+   if (!load.planParts || load.failed || load.planLeftToMainThread) {
+      return undefined;
+   }
    const start = performance.now();
    const refusals = (): Partial<Record<EligibilityRefusalReason, number>> => ({
       ...(jobContext.getStore()?.refusals ?? {}),
    });
+   const digestSkipped: string[] = [];
    try {
       if (load.planError) throw new Error(load.planError.message);
       const parts = emptyBuildPlanParts();
@@ -1793,7 +1800,6 @@ async function finishWorkerBuildPlan(
          },
          parts.graphs.map((g) => g.connectionName),
       );
-      const digestSkipped: string[] = [];
       const connectionDigests = await resolveConnectionDigests(
          connections,
          parts.graphs,
@@ -1815,6 +1821,7 @@ async function finishWorkerBuildPlan(
          ok: false,
          error: errMessage(error),
          durationMs: performance.now() - (load.planStart ?? start),
+         digestSkipped,
          eligibilityRefused: refusals(),
       };
    }
