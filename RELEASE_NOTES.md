@@ -30,7 +30,7 @@ With `PUBLISHER_PACKAGE_VERSIONING=on`, `POST /api/v0/environments/{env}/package
 **With versioning on, for a publish from a location:**
 
 - A `publisher.json` with no `version` answers 400 `MANIFEST_VERSION_MISSING`, and one that is not a semantic version such as `1.2.0` or `1.2.0-rc.1` answers 400 `MANIFEST_VERSION_INVALID`.
-- Publishing a version again with the same content answers 200 and writes nothing. With different content it answers 409 `VERSION_CONFLICT`. **If you re-POST a changed tree under the same version to update it, bump `version` instead.**
+- Publishing a version again with the same content answers 200, writes nothing and leaves `latest` where it is, so a retried publish never undoes a rollback. With different content it answers 409 `VERSION_CONFLICT`. **If you re-POST a changed tree under the same version to update it, bump `version` instead.**
 - A versioned package no longer changes in place: `?reload=true` (and MCP `reload_package`) returns it as it is (`mode: "unchanged"`), and model, report, dashboard and notebook writes answer 409 `PACKAGE_IS_VERSIONED`, as does a publish to it with versioning turned off again. Iterate with watch mode, then publish.
 - `PATCH …/packages/{pkg}` is deprecated. On a versioned package it still rebinds `latest`'s `manifestLocation` and sets the package's `description`, and accepts the package sent back whole; a change to content answers 409.
 - `manifestLocation` on a versioned publish, on that PATCH, and on the new manifest route must be a `gs://` or `s3://` URI (400 otherwise).

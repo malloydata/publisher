@@ -539,8 +539,11 @@ export class VersionService<P = unknown> {
     * Publishing a version this server already holds: placement, not a new
     * publish. The same content succeeds and writes no files; different
     * content is 409 and an archived version 410. A non-null manifest on the
-    * request binds the version to it, and `latest` moves only to a version
-    * strictly higher than the current one.
+    * request binds the version to it. `latest` is left where it is: a
+    * placement is the same publish again (a retry, or a load onto one more
+    * server), so it must not undo a rollback made since. Only a package with
+    * no `latest` at all takes the version as its `latest`, under
+    * `on-publish`.
     */
    private async reload(
       existing: Version,
@@ -607,8 +610,7 @@ export class VersionService<P = unknown> {
             this.environmentId,
             packageName,
             versionId,
-            (current) =>
-               current === null || compareSemver(versionId, current) > 0,
+            (current) => current === null,
          );
          if (moved) {
             this.latestSeen.set(packageName, versionId);

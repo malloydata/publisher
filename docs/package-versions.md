@@ -32,17 +32,17 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
   -d '{"name": "sales", "location": "/srv/packages/sales"}'
 ```
 
-| What you publish                                                | Answer                                                                                                                                                             |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| A new version                                                   | 200. It is recorded, loaded and checked like any publish. A version that fails the checks is refused with 400, and the versions already published keep serving.    |
-| A version already published, with the same content              | 200, and nothing is written. Placing a version onto a server that already holds it is safe to retry. A `manifestLocation` on that request binds the version to it. |
-| A version already published, with different content             | 409 `VERSION_CONFLICT`. Bump the version.                                                                                                                          |
-| A version that differs from a published one only by letter case | 409 `VERSION_CONFLICT`: a case-insensitive filesystem cannot keep the two apart.                                                                                   |
-| No `version`                                                    | 400 `MANIFEST_VERSION_MISSING`. Nothing is written.                                                                                                                |
-| A `version` that is not a semantic version                      | 400 `MANIFEST_VERSION_INVALID`. Nothing is written.                                                                                                                |
-| An archived version, again                                      | 410 `VERSION_ARCHIVED`. Unarchive it instead.                                                                                                                      |
-| Into a package watch mode mounts in place                       | 400. A watch mount is your source directory, which is never immutable.                                                                                             |
-| A `manifestLocation` that is not a `gs://` or `s3://` URI       | 400.                                                                                                                                                               |
+| What you publish                                                | Answer                                                                                                                                                                                         |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A new version                                                   | 200. It is recorded, loaded and checked like any publish. A version that fails the checks is refused with 400, and the versions already published keep serving.                                |
+| A version already published, with the same content              | 200, and nothing is written: `latest` stays where it is. Placing a version onto a server that already holds it is safe to retry. A `manifestLocation` on that request binds the version to it. |
+| A version already published, with different content             | 409 `VERSION_CONFLICT`. Bump the version.                                                                                                                                                      |
+| A version that differs from a published one only by letter case | 409 `VERSION_CONFLICT`: a case-insensitive filesystem cannot keep the two apart.                                                                                                               |
+| No `version`                                                    | 400 `MANIFEST_VERSION_MISSING`. Nothing is written.                                                                                                                                            |
+| A `version` that is not a semantic version                      | 400 `MANIFEST_VERSION_INVALID`. Nothing is written.                                                                                                                                            |
+| An archived version, again                                      | 410 `VERSION_ARCHIVED`. Unarchive it instead.                                                                                                                                                  |
+| Into a package watch mode mounts in place                       | 400. A watch mount is your source directory, which is never immutable.                                                                                                                         |
+| A `manifestLocation` that is not a `gs://` or `s3://` URI       | 400.                                                                                                                                                                                           |
 
 "The same content" is a hash of the package tree: every file's path and bytes, and every symlink's target text, with `.git` skipped.
 
@@ -87,7 +87,7 @@ A `versionId` on a static file pins only a version the package has; anything els
 
 `versionPromotion` decides what a publish does to it. It is set in `publisher.config.json`, or with `PUBLISHER_VERSION_PROMOTION`, which wins; a value other than these two fails startup.
 
-- **`on-publish` (the default).** A publish moves `latest` to the new version unless a higher version already is `latest`. A version that differs from `latest` only by build metadata (`1.2.0+b2` after `1.2.0+b1`) takes it, because it is the later build. A re-publish of identical content moves `latest` only to a strictly higher version, never back to an older build.
+- **`on-publish` (the default).** A publish moves `latest` to the new version unless a higher version already is `latest`. A version that differs from `latest` only by build metadata (`1.2.0+b2` after `1.2.0+b1`) takes it, because it is the later build. A re-publish of identical content is a placement and leaves `latest` where it is, so a retried publish never undoes a rollback; it sets `latest` only for a package that has none.
 - **`explicit`.** A publish never moves `latest`. A version is servable by name as soon as it is published, and a request that names none gets 404 until something sets `latest`. This is the mode for an orchestrator that decides when a version is ready.
 
 `PUT …/packages/{pkg}/latest` with `{"version": "1.1.0"}` sets it, in either mode. The version must exist (404) and must not be archived (410), and it is loaded before the pointer moves, so a version that cannot load never becomes `latest`. Pointing `latest` at an earlier version is a rollback; under `on-publish`, the next publish of a higher version moves it forward again.

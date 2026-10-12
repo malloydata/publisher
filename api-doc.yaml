@@ -1477,8 +1477,9 @@ paths:
           409 (`reason` `VERSION_CONFLICT`). The same content again succeeds and writes no
           files, so re-loading a version onto a server that already holds it is safe to retry;
           a non-null `manifestLocation` on that request binds the version to it. A re-load
-          moves `latest` only to a strictly higher version, never back to an older build of an
-          equal one. Re-publishing an archived version is refused with 410 (`reason`
+          leaves `latest` where it is, so a retried publish never undoes a rollback; it sets
+          `latest` only for a package that has none. Re-publishing an archived version is
+          refused with 410 (`reason`
           `VERSION_ARCHIVED`): unarchive it instead.
         - A version that does not pass the publish checks (the same ones an unversioned publish
           applies) is refused with 400, and the versions already published keep serving.

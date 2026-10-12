@@ -257,6 +257,27 @@ describe("versions routes", () => {
       expect(await answerOf()).toBe(3);
    });
 
+   it("a replayed publish of a newer version leaves a rollback in place", async () => {
+      // A client retrying a publish, or loading one more server, sends the
+      // same version again: a placement, which must not undo the rollback.
+      await call("PUT", "/latest", { version: "1.1.0" });
+      const replayed = await fetch(
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
+         {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+               name: PKG,
+               location: writePackage("2.0.0", 3),
+            }),
+         },
+      );
+      expect(replayed.status).toBe(200);
+      expect((await call("GET", "")).json.versionId).toBe("1.1.0");
+      expect(await answerOf()).toBe(2);
+      await call("PUT", "/latest", { version: "2.0.0" });
+   });
+
    it("binds a version's manifest, refuses an empty location, and clears it with null", async () => {
       const empty = await call("PUT", "/versions/1.1.0/manifest", {
          manifestLocation: "",
