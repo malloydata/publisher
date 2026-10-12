@@ -175,6 +175,35 @@ import { orders } from '../orders.malloy'
          expect(undone.status).toBe(200);
          expect(await sourceOf("dashboards/empty-start.malloy")).toBe(EMPTY);
       });
+
+      // A tagged report with no tiles is not served yet, but it is still a
+      // report: a query run against it must drop the renderer's complaints
+      // about tile layout tags the same way the model's own check does.
+      it("runs a query in it with no spurious render warning for a tile tag", async () => {
+         const written = await put("dashboards/tileless-query.malloy", {
+            source: `##! experimental.givens
+import { orders } from '../orders.malloy'
+## artifact { title="Tileless" layout=grid tiles=[] }
+
+# colspan=6
+query: wide is orders -> { aggregate: order_count }
+`,
+         });
+         expect(written.status).toBe(201);
+         const res = await fetch(
+            env.api("/models/dashboards/tileless-query.malloy/query"),
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ query: "run: wide" }),
+            },
+         );
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as {
+            renderLogs?: { message?: string }[];
+         };
+         expect(body.renderLogs).toBeUndefined();
+      });
    });
 
    it("refuses source that does not compile with 400, naming where", async () => {

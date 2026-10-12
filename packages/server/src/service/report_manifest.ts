@@ -265,10 +265,12 @@ const UNKNOWN_RENDER_TAG = /^Unknown render tag '([^']+)' on field '([^']*)'/;
  */
 export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    logs: T[],
-   /** Whether the model this query ran against is a served report, which
-    * decides whether a tile could have produced it (the package's report map,
-    * `Package.isServedReport`). Required rather than optional so a new call
-    * site cannot silently widen the suppression back to every query. */
+   /** Whether the model this query ran against carries a report tag, which
+    * decides whether a tile could have produced it (`Model.carriesReportTag`,
+    * the one rule for every call site, so a report with no tiles yet reads
+    * the same on the query route as in the model's own check). Required
+    * rather than optional so a new call site cannot silently widen the
+    * suppression back to every query. */
    couldBeATile: boolean,
 ): T[] {
    return logs.filter((log) => {

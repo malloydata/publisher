@@ -162,7 +162,7 @@ export class QueryController {
          );
          const renderLogs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            p.isServedReport(modelPath),
+            p.getModel(modelPath)?.carriesReportTag() ?? false,
          );
          return {
             // Already serialized by the model, which was told which shape this

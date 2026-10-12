@@ -120,9 +120,9 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
-               isServedReport: () => false,
                getModel: () => ({
                   getModelType: () => "model",
+                  carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async () => {
                      throw error;
@@ -168,9 +168,9 @@ function storeCapturingMetadata(
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
-               isServedReport: () => false,
                getModel: () => ({
                   getModelType: () => "model",
+                  carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async (..._args: unknown[]) => {
                      // Positional: sourceName, queryName, query, filterParams,
