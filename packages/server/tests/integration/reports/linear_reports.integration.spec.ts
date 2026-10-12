@@ -15,7 +15,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
    fixture,
-   lf,
    startPackageEnv,
    type PackageEnv,
 } from "../../harness/reports";
@@ -150,17 +149,13 @@ describe("Linear reports written as run: cells (E2E)", () => {
    });
 
    describe("titles in the package listing", () => {
-      const listed = async (reportPath: string) => {
-         const reports = await env.getJson<LinearReport[]>(env.api("/reports"));
-         const found = reports.find((r) => r.path === reportPath);
-         return (
-            found && {
-               ...found,
-               title: lf(found.title),
-               description: lf(found.description),
-            }
+      // Compared as served: a title or description never carries a `\r`,
+      // whatever line endings the checkout gave the fixture
+      // (`service/report_listing_crlf.spec.ts`).
+      const listed = async (reportPath: string) =>
+         (await env.getJson<LinearReport[]>(env.api("/reports"))).find(
+            (r) => r.path === reportPath,
          );
-      };
 
       it("prefers an explicit title= over everything else", async () => {
          expect(await listed("orders-since.malloy")).toMatchObject({
