@@ -28,7 +28,7 @@ import {
    embeddingConfigured,
 } from "../../service/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { fcjSettingsOf } from "../../service/package_retrieval";
+import { alsoLikelyOn, fcjSettingsOf } from "../../service/package_retrieval";
 import { logger } from "../../logger";
 import { activeLlmSettings } from "../../providers/active";
 import { LlmMeter } from "../tools/get_context_llm";
@@ -39,6 +39,7 @@ import {
    type ResolvedRequest,
    type ResultEntity,
 } from "../tools/get_context_tool";
+import { alsoLikelyFields } from "./also_likely";
 import type { CatalogNode } from "./catalog";
 import { fcjChat, fcjStateOf, kickFcjBuild } from "./engine_state";
 import {
@@ -371,6 +372,20 @@ export async function runFcjQuery(args: {
       });
    }
 
+   // "Also likely" fields: after the judge only, since they read its picks
+   // and its notes.
+   const judged = stages.some((s) => s.name === "judge" && s.status === "ran");
+   const alsoLikely =
+      judged && alsoLikelyOn(settings)
+         ? alsoLikelyFields({
+              index,
+              found,
+              connected,
+              verdicts,
+              twins: settings.alsoLikelyTwins ?? 2,
+           })
+         : [];
+
    started = performance.now();
    const answer = await respond({
       index,
@@ -380,6 +395,7 @@ export async function runFcjQuery(args: {
       verdicts,
       targets,
       environmentStore,
+      alsoLikely,
    });
    stages.push({
       name: "respond",
@@ -432,6 +448,12 @@ export async function runFcjQuery(args: {
                           ...(p.reason ? { reason: p.reason } : {}),
                        })),
                        caveats: v.caveats,
+                    })),
+                    also_likely: alsoLikely.map((a) => ({
+                       id: a.id,
+                       rule: a.rule,
+                       ...(a.of ? { of: a.of } : {}),
+                       reason: a.reason,
                     })),
                  },
               },

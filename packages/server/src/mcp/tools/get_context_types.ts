@@ -130,6 +130,17 @@ export interface ResultEntity {
    values?: Array<{ value: string; score: number; searchText: string }>;
    /** Set on a row the values stage created, so assembly makes no joined copy of it. */
    fromValueSearch?: true;
+   /**
+    * fcj engine, provisional `alsoLikely`: the row is not a judge pick but a
+    * field returned beside them, and this is why. Serialized as
+    * `also_likely: true` and `also_likely_reason`.
+    */
+   alsoLikely?: string;
+   /**
+    * fcj engine, provisional `joinedCopies: "routes"`: how the answer's other
+    * sources reach this field, each with the id the field has there.
+    */
+   routes?: Array<{ id: string; from: string; path: string }>;
 }
 
 /** A join as reported in source context: enough to write the traversal. */

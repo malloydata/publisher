@@ -50,6 +50,10 @@ describe("catalog", () => {
          gatedSources: 0,
          unresolvedReferences: 3,
          copiesFolded: 0,
+         joinPaths: 10,
+         deepestJoinPath: 3,
+         joinPathsCapped: 0,
+         joinedCopiesDropped: 0,
       });
    });
 
@@ -243,7 +247,13 @@ describe("catalog store", () => {
 
    it("formats the report as one line", () => {
       expect(catalogReportLine(catalog.report)).toBe(
-         "8 sources; nodes: 8 source, 30 dimension, 7 measure, 2 view, 4 join; edges: 43 contains, 4 joins, 1 extends, 9 depends, 4 uses; 10 nodes resolve in more than one file; 2 #(index) dimensions; 0 gated sources; 3 field references resolved to no node",
+         "8 sources; nodes: 8 source, 30 dimension, 7 measure, 2 view, 4 join; edges: 43 contains, 4 joins, 1 extends, 9 depends, 4 uses; 10 nodes resolve in more than one file; 2 #(index) dimensions; 0 gated sources; 3 field references resolved to no node; 10 join paths, the longest 3 joins",
+      );
+   });
+
+   it("names the join walk's guard when a path reached it", () => {
+      expect(catalogReportLine({ ...catalog.report, joinPathsCapped: 2 })).toBe(
+         "8 sources; nodes: 8 source, 30 dimension, 7 measure, 2 view, 4 join; edges: 43 contains, 4 joins, 1 extends, 9 depends, 4 uses; 10 nodes resolve in more than one file; 2 #(index) dimensions; 0 gated sources; 3 field references resolved to no node; 10 join paths, the longest 3 joins; 2 join paths stopped at the guard (8 joins, or 1000 paths from one source)",
       );
    });
 });

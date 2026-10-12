@@ -9,7 +9,12 @@
  */
 
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import type { Catalog, CatalogReport } from "./catalog";
+import {
+   JOIN_WALK_MAX_HOPS,
+   JOIN_WALK_MAX_PATHS,
+   type Catalog,
+   type CatalogReport,
+} from "./catalog";
 
 /** Rows per INSERT statement. */
 const INSERT_BATCH = 200;
@@ -98,6 +103,13 @@ export function catalogReportLine(report: CatalogReport): string {
       `${report.sources} sources; nodes: ${nodes}; edges: ${edges}; ` +
       `${report.multiFileNodes} nodes resolve in more than one file; ` +
       `${report.indexedDimensions} #(index) dimensions; ${report.gatedSources} gated sources; ` +
-      `${report.unresolvedReferences} field references resolved to no node`
+      `${report.unresolvedReferences} field references resolved to no node; ` +
+      `${report.joinPaths} join paths, the longest ${report.deepestJoinPath} joins` +
+      (report.joinPathsCapped > 0
+         ? `; ${report.joinPathsCapped} join paths stopped at the guard (${JOIN_WALK_MAX_HOPS} joins, or ${JOIN_WALK_MAX_PATHS} paths from one source)`
+         : "") +
+      (report.joinedCopiesDropped > 0
+         ? `; ${report.joinedCopiesDropped} joined copies left out (searched on their own source, reached by route)`
+         : "")
    );
 }
