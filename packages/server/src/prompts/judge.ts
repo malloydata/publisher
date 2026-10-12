@@ -60,8 +60,8 @@ ${DATA_LINE}`;
  * field reached from another listed source through that source's joins, each
  * with its own number and the first sentence of the joining source's doc.
  * The rules keep a field and its route apart: both only when the question
- * could mean either set of rows, never chosen for sharing a query, and never
- * for rows the joining source lacks. A target that still holds many routes
+ * could mean either set of rows (otherwise exactly one), never chosen for
+ * sharing a query, and never for rows the joining source lacks. A target that still holds many routes
  * beside their own fields loses those routes after the judge
  * (`dropRoutesAt`, see judge.ts).
  */
@@ -77,7 +77,7 @@ ${CAVEAT_FILTER_RULE}
 - When several sources serve a target, prefer the one that can share a query with the other targets' picks: the same source, or a source its joins reach. Say in "caveats" which picks can be queried together.
 - Some fields are listed with routes: the same field reached from another listed source through that source's joins, each with its own number. A route counts the rows of the joining source. Through order_items, products.product_count counts the products that appear on order items, not every product. Each route line quotes what the joining source holds.
 - Pick the route when the target is about the joining source's rows: "products that were ordered", "customers who placed orders". Pick the field itself when the target is about every row of its own source: "all products we sell", "every customer on file".
-- Between a field and its routes, pick both only when the question could mean either set of rows, and say which is which in the reason.
+- Between a field and its routes, pick both only when the question could mean either set of rows, and say which is which in the reason. Otherwise pick exactly one of them.
 - Sharing a query never decides between a field and its route. Pick by the rows the target is about, then say in "caveats" how to query the picks together.
 - A route has none of the rows its joining source lacks. When the target is about rows the joining source does not hold, the route does not answer it.
 - Pick nothing for a target no listed source can answer. ${NAME_RULE}
