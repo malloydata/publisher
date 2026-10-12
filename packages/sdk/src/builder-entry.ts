@@ -21,71 +21,79 @@ if (typeof globalThis.process === "undefined") {
    globalThis.process.env = {};
 }
 
-export { DashboardBuilder } from "./components/DashboardBuilder/DashboardBuilder";
+export { ReportBuilder } from "./components/ReportBuilder/ReportBuilder";
 export type {
    BuilderGiven,
-   DashboardBuilderProps,
-} from "./components/DashboardBuilder/DashboardBuilder";
+   ReportBuilderProps,
+} from "./components/ReportBuilder/ReportBuilder";
 export {
-   DashboardEditor,
-   type DashboardEditorProps,
+   ReportEditor,
+   type ReportEditorProps,
    type TextSourceOptions,
-} from "./components/DashboardBuilder/DashboardEditor";
+} from "./components/ReportBuilder/ReportEditor";
+// Deprecated aliases of the two above.
+export {
+   DashboardBuilder,
+   DashboardEditor,
+   type DashboardBuilderProps,
+   type DashboardEditorProps,
+} from "./components/legacy/builderNames";
 export type {
    SaveContext,
    SaveHandler,
-} from "./components/DashboardBuilder/useDocumentEditor";
+} from "./components/ReportBuilder/useDocumentEditor";
 export type {
    DashboardDocument,
    DashboardTile,
    LocalGiven,
-} from "./components/DashboardBuilder/document";
+} from "./components/ReportBuilder/document";
 export {
    readDashboardDocument,
    readFailed,
    type ReadResult,
-} from "./components/DashboardBuilder/readDocument";
+} from "./components/ReportBuilder/readDocument";
+// What a report's text is, by the server's rule, for a host that files a document by its layout.
+export {
+   readReportTagOfText,
+   type ReportTag,
+} from "./components/ReportBuilder/reportTag";
 export {
    spliceDashboardDocument,
    spliceFailed,
    type SpliceResult,
-} from "./components/DashboardBuilder/spliceDocument";
+} from "./components/ReportBuilder/spliceDocument";
 export {
    buildCatalog,
    type PackageCatalog,
-} from "./components/DashboardBuilder/catalog";
+} from "./components/ReportBuilder/catalog";
 export type {
-   DashboardEvent,
-   DashboardEventHandler,
-} from "./components/Dashboard/telemetry";
+   DrillOutcome,
+   ReportEvent,
+   ReportEventContext,
+   ReportEventHandler,
+   ReportFailure,
+   SavesTo,
+} from "./components/Report/telemetry";
 export {
    NotebookEditor,
    type NotebookEditorProps,
-} from "./components/DashboardBuilder/NotebookEditor";
-export type {
-   BuilderEvent,
-   NotebookEvent,
-   NotebookEventHandler,
-} from "./components/DashboardBuilder/telemetry";
+} from "./components/legacy/NotebookEditor";
 export {
    createDocument,
    createRoute,
-   documentPathFor,
-   documentPathForTitle,
    locatorFor,
    MAX_SLUG_ATTEMPTS,
    newDashboardSource,
    newDocumentProblem,
    newNotebookSource,
+   reportPathFor,
+   reportPathForTitle,
    slugFor,
    slugOrFallback,
    useDocumentChoices,
    type CreatedDocument,
    type CreateDocumentOptions,
    type CreateTarget,
-   type DashboardCreatedEvent,
    type DocumentChoice,
-   type DocumentCreatedEvent,
    type NewDocument,
-   type NotebookCreatedEvent,
 } from "./components/DocumentCreate";

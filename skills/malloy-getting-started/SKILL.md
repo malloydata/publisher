@@ -114,7 +114,7 @@ A retrieval response is a `sources` array. Each entry's `source_info.resource_id
 - a named view or query: pass its `name` as `queryName` (with the card's `resource_id.source` as `sourceName` for a view), or
 - an ad-hoc query: pass Malloy code as `query`.
 
-The result is JSON. Charts and dashboards defined in the model render in the Publisher UI at http://localhost:4000.
+The result is JSON. Charts and reports defined in the package render in the Publisher UI at http://localhost:4000.
 
 ## 3. When you need Malloy syntax
 
@@ -137,7 +137,7 @@ No `.malloy` files in the workspace? The user can say "model my data" and `mallo
 
 This is a catalogue of what exists, not of what is loaded. A host that installs one group (`analysis`, `modeling` or `eval`) takes that group's skills alone, so a name below may not be installed. The names are plain text, not `skill:` references, for that reason.
 
-- **Answering and presenting:** `malloy-analysis` (a data question, or open-ended exploration), `malloy-phrase-detection` (turn a question into search targets for `get_context`), `malloy-queries` (query syntax and compile errors), `malloy-charts` (chart choice, renderer tags, scale rules), `malloy-notebooks` (notebooks), `malloy-analysis-report` (combine queries you already ran into a report), `malloy-dashboards` (a saved dashboard: a tagged `.malloy` file in the package's `dashboards/` directory), `malloy-source-unreachable` (a source missing from discovery, or a query refused with a 404 or 403), `malloy-html-data-apps` (in-package HTML data apps: design, runtime, embedding).
+- **Answering and presenting:** `malloy-analysis` (a data question, or open-ended exploration), `malloy-phrase-detection` (turn a question into search targets for `get_context`), `malloy-queries` (query syntax and compile errors), `malloy-charts` (chart choice, renderer tags, scale rules), `malloy-reports` (a saved report: a `.malloy` file with an `## artifact` tag at the package root, laid out as a grid, which is a dashboard, or linear, which is a notebook), `malloy-analysis-report` (combine queries you already ran into a report), `malloy-dashboards` and `malloy-notebooks` (the old names of `malloy-reports`, kept as pointers to it), `malloy-source-unreachable` (a source missing from discovery, or a query refused with a 404 or 403), `malloy-html-data-apps` (in-package HTML data apps: design, runtime, embedding).
 - **Modeling, in order:** `malloy-modeling` (the driver), `malloy-discover` (silent data discovery, prior art), `malloy-define` (scope, source plan, field definitions), `malloy-model` (write and curate the `.malloy` files), `malloy-document` (`#(doc)` tags), `malloy-model-as-you-go` (grow the model from answered questions), `malloy-gotchas-modeling` (mistakes to avoid, and fixing compile errors in a model), `malloy-review` (review existing Malloy), `malloy-lookml-review` and `malloy-powerbi-review` (prior-art adapters).
 - **Serving a package:** `malloy-publish` (move a finished model into a served package), `malloy-materialization` (persist an expensive source, and tune what to persist and when).
 - **Evaluating a model** (the `eval` group, which neither `analysis` nor `modeling` includes): `eval-loop` (the loop), `eval-answer`, `eval-judge`, `eval-diagnose`, `eval-improve`, `eval-import`, `eval-report`.

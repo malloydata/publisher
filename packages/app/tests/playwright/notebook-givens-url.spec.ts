@@ -18,24 +18,24 @@ import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
  * unit tests rather than here. Do not read a green run here as evidence that
  * the multiselect works end to end.
  */
-const FIXTURE_NOTEBOOK = "test_givens_url_notebook.malloynb";
-const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/${FIXTURE_NOTEBOOK}`;
+const FIXTURE_NOTEBOOK = "test_givens_url_notebook.malloy";
+const NOTEBOOK = `/${DEFAULT_ENV}/${PACKAGES.governed}/test_givens_url_notebook`;
 const PKG_DIR = path.resolve(
    path.dirname(fileURLToPath(import.meta.url)),
    "../../../server/publisher_data/examples/governed-analytics",
 );
-// `.malloynb` is deprecated and the examples no longer ship one, so this suite
-// writes the notebook it drives and removes it afterwards.
-const NOTEBOOK_SOURCE = `>>>markdown
-# Governed analytics — interactive controls
-
->>>malloy
+// The examples ship no report over these givens, so this suite writes the
+// linear report it drives and removes it afterwards.
+const NOTEBOOK_SOURCE = `##! experimental.givens
+## artifact { layout=linear }
 import "orders.malloy"
 
->>>malloy
+##|(markdown)
+# Governed analytics — interactive controls
+|##
+
 run: sales -> overview
 
->>>malloy
 run: sales -> by_region
 `;
 

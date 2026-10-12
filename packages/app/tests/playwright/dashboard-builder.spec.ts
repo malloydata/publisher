@@ -67,7 +67,7 @@ test.describe("dashboard-builder", () => {
    // The title is matched loosely because one test above saves a new one into
    // the package, and every test here opens the same dashboard.
    const openEditor = async (page: Page) => {
-      await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
+      await page.goto(`/${env}/${PKG}/dashboards/tiled?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
@@ -86,7 +86,7 @@ test.describe("dashboard-builder", () => {
 
       // The title is edited where it is shown.
       await page.getByRole("heading", { level: 5 }).getByRole("button").click();
-      const title = page.getByLabel("Dashboard title");
+      const title = page.getByLabel("Report title");
       await title.fill("Tiled, edited");
       await title.press("Enter");
       await expect(
@@ -100,7 +100,7 @@ test.describe("dashboard-builder", () => {
 
       // The save went into the package, so the next visit opens the edited
       // file itself: the new title, and nothing offering a browser draft.
-      await page.goto(`/${env}/${PKG}/dashboards/tiled/edit`);
+      await page.goto(`/${env}/${PKG}/dashboards/tiled?edit`);
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
@@ -108,7 +108,7 @@ test.describe("dashboard-builder", () => {
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
       await expect(
-         page.getByText(/edits to this dashboard saved in this browser/),
+         page.getByText(/edits to this report saved in this browser/),
       ).toHaveCount(0);
    });
 

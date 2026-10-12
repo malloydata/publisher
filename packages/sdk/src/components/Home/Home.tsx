@@ -52,7 +52,7 @@ const FEATURES: Array<{ title: string; body: string; href: string }> = [
    },
    {
       title: "Surface",
-      body: "Dashboards declared in Malloy, notebooks, and no-build HTML data apps, all shipped inside the package, plus this Console for browsing them.",
+      body: "Reports declared in Malloy, laid out as a grid or read top to bottom, and no-build HTML data apps, all shipped inside the package, plus this Console for browsing them.",
       href: DOC_LINKS.surfaces,
    },
    {

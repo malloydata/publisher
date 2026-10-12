@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Revenue review" }
+## artifact { layout=linear title="Revenue review" }
 import "../models/orders.malloy"
 
 ##|(markdown)

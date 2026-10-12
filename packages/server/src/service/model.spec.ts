@@ -200,82 +200,86 @@ describe("service/model", () => {
             sinon.restore();
          });
 
-         it("embeds model-level givens in each newSources SourceInfo", async () => {
-            const sourceInfo = {
-               name: "carriers",
-               schema: { fields: [] },
-            };
-            const givens = [
-               {
-                  name: "region",
-                  type: "string",
-                  annotations: ["#(doc) Region"],
-               },
-            ];
-            const model = new Model(
-               packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined, // modelMaterializer
-               undefined, // modelDef
-               undefined, // sources
-               undefined, // queries
-               undefined, // sourceInfos
-               [
+         // DEPRECATED FEATURE COVERAGE — delete together with
+         // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+         describe("deprecated: .malloynb notebooks", () => {
+            it("embeds model-level givens in each newSources SourceInfo", async () => {
+               const sourceInfo = {
+                  name: "carriers",
+                  schema: { fields: [] },
+               };
+               const givens = [
                   {
-                     type: "code",
-                     text: "import 'carriers.malloy'",
-                     newSources: [sourceInfo],
+                     name: "region",
+                     type: "string",
+                     annotations: ["#(doc) Region"],
                   },
-               ], // runnableNotebookCells
-               undefined, // compilationError
-               undefined, // filterMap
-               givens, // givens
-            );
+               ];
+               const model = new Model(
+                  packageName,
+                  "test.malloynb",
+                  {},
+                  "notebook",
+                  undefined, // modelMaterializer
+                  undefined, // modelDef
+                  undefined, // sources
+                  undefined, // queries
+                  undefined, // sourceInfos
+                  [
+                     {
+                        type: "code",
+                        text: "import 'carriers.malloy'",
+                        newSources: [sourceInfo],
+                     },
+                  ], // runnableNotebookCells
+                  undefined, // compilationError
+                  undefined, // filterMap
+                  givens, // givens
+               );
 
-            const notebook = await model.getNotebook();
-            expect(notebook.notebookCells).toHaveLength(1);
-            const parsed = JSON.parse(
-               notebook.notebookCells![0].newSources![0],
-            );
-            expect(parsed.name).toBe("carriers");
-            // SourceInfo fields are preserved untouched.
-            expect(parsed.schema).toEqual({ fields: [] });
-            // Givens ride along verbatim — no second getModel round-trip needed.
-            expect(parsed.givens).toEqual(givens);
-         });
+               const notebook = await model.getNotebook();
+               expect(notebook.notebookCells).toHaveLength(1);
+               const parsed = JSON.parse(
+                  notebook.notebookCells![0].newSources![0],
+               );
+               expect(parsed.name).toBe("carriers");
+               // SourceInfo fields are preserved untouched.
+               expect(parsed.schema).toEqual({ fields: [] });
+               // Givens ride along verbatim — no second getModel round-trip needed.
+               expect(parsed.givens).toEqual(givens);
+            });
 
-         it("omits givens from newSources when the model declares none", async () => {
-            const sourceInfo = { name: "carriers", schema: { fields: [] } };
-            const model = new Model(
-               packageName,
-               "test.malloynb",
-               {},
-               "notebook",
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               undefined,
-               [
-                  {
-                     type: "code",
-                     text: "import 'carriers.malloy'",
-                     newSources: [sourceInfo],
-                  },
-               ],
-               undefined,
-               undefined,
-               undefined, // no givens
-            );
+            it("omits givens from newSources when the model declares none", async () => {
+               const sourceInfo = { name: "carriers", schema: { fields: [] } };
+               const model = new Model(
+                  packageName,
+                  "test.malloynb",
+                  {},
+                  "notebook",
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  [
+                     {
+                        type: "code",
+                        text: "import 'carriers.malloy'",
+                        newSources: [sourceInfo],
+                     },
+                  ],
+                  undefined,
+                  undefined,
+                  undefined, // no givens
+               );
 
-            const notebook = await model.getNotebook();
-            const parsed = JSON.parse(
-               notebook.notebookCells![0].newSources![0],
-            );
-            expect(parsed.name).toBe("carriers");
-            expect(parsed).not.toHaveProperty("givens");
+               const notebook = await model.getNotebook();
+               const parsed = JSON.parse(
+                  notebook.notebookCells![0].newSources![0],
+               );
+               expect(parsed.name).toBe("carriers");
+               expect(parsed).not.toHaveProperty("givens");
+            });
          });
       });
 
@@ -912,7 +916,9 @@ describe("service/model", () => {
          });
       });
 
-      describe("executeNotebookCell", () => {
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+      describe("deprecated: .malloynb — executeNotebookCell", () => {
          it("forwards givens to runnable.getPreparedResult and .run", async () => {
             const givensArg = { target_code: "AA" };
             const preparedResultStub = sinon

@@ -13,6 +13,7 @@ import {
    createDocument,
    createRoute,
    MAX_SLUG_ATTEMPTS,
+   reportPathProblem,
 } from "./createDocument";
 
 const WORKSPACE: Workspace = {
@@ -29,17 +30,18 @@ const DOC = {
    view: "by_category",
 };
 
-/** A store whose `saveDocument` replaces what is there, like the interface says. */
+/** A store keyed by path whose `saveDocument` replaces what is there, like the interface says. */
 class FakeStorage implements DocumentStorage {
    readonly files = new Map<string, string>();
+   readonly layouts = new Map<string, DocumentType>();
    readonly saves: string[] = [];
    /** What `listDocuments` reports; defaults to the files, a stale test sets it. */
    listing?: string[];
    getFailure?: Error;
 
-   private key = (l: DocumentLocator) => `${l.type}:${l.path}`;
-   seed(type: DocumentType, path: string, content = "original") {
-      this.files.set(`${type}:${path}`, content);
+   seed(path: string, content = "original", layout: DocumentType = "grid") {
+      this.files.set(path, content);
+      this.layouts.set(path, layout);
    }
    async listWorkspaces() {
       return [WORKSPACE];
@@ -47,24 +49,25 @@ class FakeStorage implements DocumentStorage {
    async listDocuments(_w: Workspace, type?: DocumentType) {
       const paths =
          this.listing ??
-         [...this.files.keys()]
-            .filter((k) => type === undefined || k.startsWith(`${type}:`))
-            .map((k) => k.slice(k.indexOf(":") + 1));
+         [...this.files.keys()].filter(
+            (path) => type === undefined || this.layouts.get(path) === type,
+         );
       return paths.map((path) => ({
          workspace: WORKSPACE.name,
-         type: type ?? "dashboard",
+         type: this.layouts.get(path) ?? "grid",
          path,
       }));
    }
    async getDocument(locator: DocumentLocator) {
       if (this.getFailure) throw this.getFailure;
-      const text = this.files.get(this.key(locator));
+      const text = this.files.get(locator.path);
       if (text === undefined) throw new DocumentNotFoundError("absent");
       return text;
    }
    async saveDocument(locator: DocumentLocator, content: string) {
       this.saves.push(locator.path);
-      this.files.set(this.key(locator), content);
+      this.files.set(locator.path, content);
+      this.layouts.set(locator.path, locator.type);
    }
    async deleteDocument() {}
    async moveDocument() {}
@@ -85,56 +88,57 @@ describe("createDocument on the storage route", () => {
       const created: unknown[] = [];
       const events: unknown[] = [];
       const result = await createDocument({
-         kind: "notebook",
+         layout: "linear",
          document: DOC,
          target: target(storage),
          onCreated: (c) => created.push(c),
          onEvent: (e) => events.push(e),
       });
-      expect(result.path).toBe("notebooks/sales.malloy");
+      expect(result.path).toBe("sales.malloy");
       expect(result.slug).toBe("sales");
       expect(result.locator).toEqual({
          workspace: "record",
-         type: "notebook",
-         path: "env/pkg/notebooks/sales.malloy",
+         type: "linear",
+         path: "env/pkg/sales.malloy",
       });
-      expect(storage.saves).toEqual(["env/pkg/notebooks/sales.malloy"]);
+      expect(storage.saves).toEqual(["env/pkg/sales.malloy"]);
       expect(created).toEqual([result]);
-      expect(events).toEqual([{ type: "notebook.created", where: "host" }]);
+      expect(events).toMatchObject([
+         {
+            type: "report.created",
+            where: "host",
+            path: "sales.malloy",
+            layout: "linear",
+         },
+      ]);
    });
 
    it("takes the next name when the listing shows the slug", async () => {
       const storage = new FakeStorage();
-      storage.seed("dashboard", "env/pkg/dashboards/sales.malloy");
+      storage.seed("env/pkg/sales.malloy");
       const result = await createDocument({
-         kind: "dashboard",
+         layout: "grid",
          document: DOC,
          target: target(storage),
       });
       expect(result.slug).toBe("sales-2");
-      expect(
-         storage.files.get("dashboard:env/pkg/dashboards/sales.malloy"),
-      ).toBe("original");
+      expect(storage.files.get("env/pkg/sales.malloy")).toBe("original");
    });
 
    it("never overwrites a file a stale listing misses", async () => {
       const storage = new FakeStorage();
-      storage.seed("dashboard", "env/pkg/dashboards/sales.malloy");
-      storage.seed("dashboard", "env/pkg/dashboards/sales-2.malloy", "two");
+      storage.seed("env/pkg/sales.malloy");
+      storage.seed("env/pkg/sales-2.malloy", "two");
       storage.listing = [];
       const result = await createDocument({
-         kind: "dashboard",
+         layout: "grid",
          document: DOC,
          target: target(storage),
       });
       expect(result.slug).toBe("sales-3");
-      expect(storage.saves).toEqual(["env/pkg/dashboards/sales-3.malloy"]);
-      expect(
-         storage.files.get("dashboard:env/pkg/dashboards/sales.malloy"),
-      ).toBe("original");
-      expect(
-         storage.files.get("dashboard:env/pkg/dashboards/sales-2.malloy"),
-      ).toBe("two");
+      expect(storage.saves).toEqual(["env/pkg/sales-3.malloy"]);
+      expect(storage.files.get("env/pkg/sales.malloy")).toBe("original");
+      expect(storage.files.get("env/pkg/sales-2.malloy")).toBe("two");
    });
 
    it("aborts, saving nothing, when the read fails for any reason but absence", async () => {
@@ -142,7 +146,7 @@ describe("createDocument on the storage route", () => {
       storage.getFailure = new Error("backend down");
       await expect(
          createDocument({
-            kind: "dashboard",
+            layout: "grid",
             document: DOC,
             target: target(storage),
          }),
@@ -153,12 +157,12 @@ describe("createDocument on the storage route", () => {
    it("gives up after the attempt cap rather than looping", async () => {
       const storage = new FakeStorage();
       storage.listing = [];
-      storage.seed("dashboard", "env/pkg/dashboards/sales.malloy");
+      storage.seed("env/pkg/sales.malloy");
       for (let n = 2; n <= MAX_SLUG_ATTEMPTS; n++)
-         storage.seed("dashboard", `env/pkg/dashboards/sales-${n}.malloy`);
+         storage.seed(`env/pkg/sales-${n}.malloy`);
       await expect(
          createDocument({
-            kind: "dashboard",
+            layout: "grid",
             document: DOC,
             target: target(storage),
          }),
@@ -171,7 +175,7 @@ describe("createDocument on the storage route", () => {
       for (const title of ["a\nb", "x ##(authorize) y", "  "]) {
          await expect(
             createDocument({
-               kind: "notebook",
+               layout: "linear",
                document: { ...DOC, title },
                target: target(storage),
             }),
@@ -186,11 +190,11 @@ describe("createDocument on the package route", () => {
       const writes: Array<[string, string]> = [];
       const events: unknown[] = [];
       const result = await createDocument({
-         kind: "dashboard",
+         layout: "grid",
          document: DOC,
          target: {
             route: "package",
-            existing: ["dashboards/sales.malloy", "notebooks/sales.malloy"],
+            existing: ["sales.malloy", "other/sales.malloy"],
             write: async (path, source) => {
                writes.push([path, source]);
             },
@@ -198,20 +202,27 @@ describe("createDocument on the package route", () => {
          onEvent: (e) => events.push(e),
       });
       expect(result).toEqual({
-         kind: "dashboard",
-         path: "dashboards/sales-2.malloy",
+         layout: "grid",
+         path: "sales-2.malloy",
          slug: "sales-2",
       });
-      expect(writes.map(([p]) => p)).toEqual(["dashboards/sales-2.malloy"]);
-      expect(writes[0][1]).toContain("## artifact");
-      expect(events).toEqual([{ type: "dashboard.created", where: "package" }]);
+      expect(writes.map(([p]) => p)).toEqual(["sales-2.malloy"]);
+      expect(writes[0][1]).toContain("##| artifact { layout=grid");
+      expect(events).toMatchObject([
+         {
+            type: "report.created",
+            where: "package",
+            path: "sales-2.malloy",
+            layout: "grid",
+         },
+      ]);
    });
 
-   it("does not report a create the server refused", async () => {
+   it("reports a create the server refused as refused, never as created", async () => {
       const events: unknown[] = [];
       await expect(
          createDocument({
-            kind: "notebook",
+            layout: "linear",
             document: DOC,
             target: {
                route: "package",
@@ -223,7 +234,14 @@ describe("createDocument on the package route", () => {
             onEvent: (e) => events.push(e),
          }),
       ).rejects.toThrow("409");
-      expect(events).toEqual([]);
+      expect(events).toEqual([
+         {
+            type: "report.create_refused",
+            reason: "409",
+            path: "",
+            layout: "linear",
+         },
+      ]);
    });
 });
 
@@ -231,11 +249,11 @@ describe("createDocument names", () => {
    it("on the storage route, skips a path the package listing has", async () => {
       const storage = new FakeStorage();
       const result = await createDocument({
-         kind: "dashboard",
+         layout: "grid",
          document: DOC,
          target: {
             ...target(storage),
-            existing: ["dashboards/sales.malloy"],
+            existing: ["sales.malloy"],
          },
       });
       expect(result.slug).toBe("sales-2");
@@ -244,7 +262,7 @@ describe("createDocument names", () => {
    it("on the package route, moves to the next name when the server answers 409", async () => {
       const tried: string[] = [];
       const result = await createDocument({
-         kind: "dashboard",
+         layout: "grid",
          document: DOC,
          target: {
             route: "package",
@@ -259,9 +277,9 @@ describe("createDocument names", () => {
          },
       });
       expect(tried).toEqual([
-         "dashboards/sales.malloy",
-         "dashboards/sales-2.malloy",
-         "dashboards/sales-3.malloy",
+         "sales.malloy",
+         "sales-2.malloy",
+         "sales-3.malloy",
       ]);
       expect(result.slug).toBe("sales-3");
    });
@@ -270,7 +288,7 @@ describe("createDocument names", () => {
       let writes = 0;
       await expect(
          createDocument({
-            kind: "dashboard",
+            layout: "grid",
             document: DOC,
             target: {
                route: "package",
@@ -306,5 +324,280 @@ describe("createRoute", () => {
       expect(
          createRoute({ authoritative: true, mutable: true, canStore: false }),
       ).toBeUndefined();
+   });
+});
+
+describe("createDocument at a path", () => {
+   const write = () => {
+      const writes: Array<[string, string]> = [];
+      return {
+         writes,
+         target: {
+            route: "package" as const,
+            existing: ["taken.malloy"],
+            write: async (path: string, source: string) => {
+               writes.push([path, source]);
+            },
+         },
+      };
+   };
+
+   it("writes `<slug>.malloy` at the package root, importing the model beside it", async () => {
+      const { writes, target: t } = write();
+      const result = await createDocument({
+         layout: "linear",
+         document: { ...DOC, modelPath: "storefront.malloy" },
+         target: t,
+      });
+      expect(result).toEqual({
+         layout: "linear",
+         path: "sales.malloy",
+         slug: "sales",
+      });
+      expect(writes[0][1]).toContain(
+         'import { order_items } from "storefront.malloy"',
+      );
+      expect(writes[0][1]).toContain("layout=linear");
+      expect(writes[0][1]).not.toContain("kind=notebook");
+   });
+
+   it("defaults to a linear report", async () => {
+      const { target: t } = write();
+      const result = await createDocument({ document: DOC, target: t });
+      expect(result.layout).toBe("linear");
+   });
+
+   it("writes at a nested path, with the import relative to it", async () => {
+      const { writes, target: t } = write();
+      const result = await createDocument({
+         layout: "grid",
+         path: "team/sales.malloy",
+         document: { ...DOC, modelPath: "m.malloy" },
+         target: t,
+      });
+      expect(result.path).toBe("team/sales.malloy");
+      expect(result.slug).toBe("sales");
+      expect(writes[0][0]).toBe("team/sales.malloy");
+      expect(writes[0][1]).toContain('from "../m.malloy"');
+      expect(writes[0][1]).toContain("layout=grid");
+   });
+
+   it("puts a title-named file in a directory", async () => {
+      const { writes, target: t } = write();
+      await createDocument({
+         directory: "/team/",
+         document: DOC,
+         target: t,
+      });
+      expect(writes[0][0]).toBe("team/sales.malloy");
+   });
+
+   it("refuses a taken path rather than renaming it", async () => {
+      const { writes, target: t } = write();
+      await expect(
+         createDocument({ path: "taken.malloy", document: DOC, target: t }),
+      ).rejects.toThrow("taken.malloy already exists");
+      expect(writes).toEqual([]);
+   });
+
+   it("refuses a path the server answers 409 for, once", async () => {
+      const tried: string[] = [];
+      await expect(
+         createDocument({
+            path: "x.malloy",
+            document: DOC,
+            target: {
+               route: "package",
+               existing: [],
+               write: async (path) => {
+                  tried.push(path);
+                  throw Object.assign(new Error("exists"), {
+                     response: { status: 409 },
+                  });
+               },
+            },
+         }),
+      ).rejects.toThrow("already exists");
+      expect(tried).toEqual(["x.malloy"]);
+   });
+
+   it("refuses a path a report cannot live at, before writing", async () => {
+      for (const path of [
+         "public/x.malloy",
+         "index.malloy",
+         "../x.malloy",
+         "a/../x.malloy",
+         "/x.malloy",
+         "x.txt",
+         "x",
+         "dir/.malloy",
+      ]) {
+         const { writes, target: t } = write();
+         await expect(
+            createDocument({ path, document: DOC, target: t }),
+         ).rejects.toThrow();
+         expect(writes).toEqual([]);
+      }
+   });
+});
+
+describe("createDocument in a directory", () => {
+   const BAD_DIRECTORIES = [
+      "../x",
+      "a/../../x",
+      "public",
+      "Public/reports",
+      "./x",
+   ];
+
+   it("refuses a directory a report cannot live in, before the package is written", async () => {
+      for (const directory of BAD_DIRECTORIES) {
+         const writes: string[] = [];
+         await expect(
+            createDocument({
+               directory,
+               document: DOC,
+               target: {
+                  route: "package",
+                  existing: [],
+                  write: async (path) => {
+                     writes.push(path);
+                  },
+               },
+            }),
+         ).rejects.toThrow();
+         expect(writes).toEqual([]);
+      }
+   });
+
+   it("refuses it before the store is asked anything", async () => {
+      for (const directory of BAD_DIRECTORIES) {
+         const storage = new FakeStorage();
+         let asked = 0;
+         storage.listDocuments = async () => {
+            asked++;
+            return [];
+         };
+         storage.getDocument = async () => {
+            asked++;
+            throw new DocumentNotFoundError("absent");
+         };
+         await expect(
+            createDocument({
+               directory,
+               document: DOC,
+               target: target(storage),
+            }),
+         ).rejects.toThrow();
+         expect(asked).toBe(0);
+         expect(storage.saves).toEqual([]);
+      }
+   });
+
+   it("still writes into a directory that is fine", async () => {
+      const writes: string[] = [];
+      const created = await createDocument({
+         directory: "team/q3",
+         document: DOC,
+         target: {
+            route: "package",
+            existing: [],
+            write: async (path) => {
+               writes.push(path);
+            },
+         },
+      });
+      expect(created.path).toBe("team/q3/sales.malloy");
+      expect(writes).toEqual(["team/q3/sales.malloy"]);
+   });
+});
+
+describe("reportPathProblem", () => {
+   it("accepts a path anywhere in the package outside public/", () => {
+      for (const path of [
+         "x.malloy",
+         "sales/q3.malloy",
+         "dashboards/x.malloy",
+         "notebooks/a/b.malloy",
+         "sub/index.malloy",
+      ])
+         expect(reportPathProblem(path)).toBeUndefined();
+   });
+
+   it("names why a path is refused", () => {
+      expect(reportPathProblem("public/x.malloy")).toContain("public/");
+      // On a case-insensitive file system these land in public/ too.
+      expect(reportPathProblem("Public/x.malloy")).toContain("public/");
+      expect(reportPathProblem("PUBLIC/a/x.malloy")).toContain("public/");
+      expect(reportPathProblem("publications/x.malloy")).toBeUndefined();
+      expect(reportPathProblem("index.malloy")).toContain("index.malloy");
+      // As the server refuses it: on a case-insensitive file system it is the surface.
+      expect(reportPathProblem("Index.malloy")).toContain("index.malloy");
+      expect(reportPathProblem("sales/Index.malloy")).toBeUndefined();
+      expect(reportPathProblem("../x.malloy")).toContain("inside the package");
+      expect(reportPathProblem("x.malloynb")).toContain(".malloy");
+   });
+});
+
+/**
+ * A host store that files documents by layout, as a host may:
+ * whatever path the locator asks for, the file lands in `dashboards/` or
+ * `notebooks/` under its basename.
+ */
+class RelocatingStorage extends FakeStorage {
+   readonly written = new Map<string, string>();
+   relocate = (locator: DocumentLocator) => {
+      const base = locator.path.slice(locator.path.lastIndexOf("/") + 1);
+      return `${locator.type === "grid" ? "dashboards" : "notebooks"}/${base}`;
+   };
+   resolveDocumentPath(locator: DocumentLocator) {
+      return this.relocate(locator);
+   }
+   async saveDocument(locator: DocumentLocator, content: string) {
+      await super.saveDocument(locator, content);
+      this.written.set(this.relocate(locator), content);
+   }
+}
+
+describe("createDocument into a store that chooses the file's place", () => {
+   it("writes the import for where the store puts the file, and returns that path", async () => {
+      const storage = new RelocatingStorage();
+      const created = await createDocument({
+         layout: "grid",
+         document: DOC,
+         target: target(storage),
+      });
+      expect(created.path).toBe("dashboards/sales.malloy");
+      expect(created.slug).toBe("sales");
+      const text = storage.written.get("dashboards/sales.malloy")!;
+      expect(text).toContain(
+         'import { order_items } from "../models/storefront.malloy"',
+      );
+   });
+
+   it("skips a name whose real place the package already has", async () => {
+      const storage = new RelocatingStorage();
+      const created = await createDocument({
+         layout: "linear",
+         document: DOC,
+         target: {
+            ...target(storage),
+            existing: ["notebooks/sales.malloy"],
+         },
+      });
+      expect(created.path).toBe("notebooks/sales-2.malloy");
+   });
+
+   it("falls back to the requested path for a store that says nothing", async () => {
+      const storage = new FakeStorage();
+      const created = await createDocument({
+         layout: "grid",
+         document: DOC,
+         target: target(storage),
+      });
+      expect(created.path).toBe("sales.malloy");
+      expect(storage.files.get("env/pkg/sales.malloy")).toContain(
+         'from "models/storefront.malloy"',
+      );
    });
 });

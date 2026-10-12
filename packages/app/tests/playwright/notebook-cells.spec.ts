@@ -30,7 +30,7 @@ const PKG = "notebooks-malloyyo";
 const TOUR = "notebooks/browser_tour.malloy";
 
 const TOUR_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, second { kind=text }, third { kind=text }, "orders -> kpis", fourth { kind=text }, "orders -> by_month"] }
+## artifact { layout=linear title="Browser tour" tiles=[first { kind=text }, second { kind=text }, third { kind=text }, "orders -> kpis", fourth { kind=text }, "orders -> by_month"] }
 import "../models/orders.malloy"
 
 ##|(markdown) first
@@ -52,7 +52,7 @@ Fourth note.
 `;
 
 const AUTORUN_OFF = `##! experimental.givens
-## artifact { kind=notebook title="Autorun off" autorun=false givens { REGION=f'US' } }
+## artifact { layout=linear title="Autorun off" autorun=false givens { REGION=f'US' } }
 import "../models/orders.malloy"
 
 # label="Region" control=select suggest { source=orders dimension=region }
@@ -87,7 +87,7 @@ test.describe("notebook tiles", () => {
    });
 
    const open = async (page: Page, slug = "browser_tour") => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}?edit`);
       await editorOpen(page);
    };
 

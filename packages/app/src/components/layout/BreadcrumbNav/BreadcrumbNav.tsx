@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { useRouterClickHandler } from "@malloy-publisher/sdk";
-import { splitEdit } from "../../common/documentRoutes";
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import Box from "@mui/material/Box";
 import Breadcrumbs from "@mui/material/Breadcrumbs";
@@ -60,9 +59,9 @@ function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
 
 export default function BreadcrumbNav() {
    const params = useParams();
-   // The builder's edit segment is a mode, not a place: the breadcrumb names
-   // the document and leads to it, in either mode.
-   const modelPath = params["*"] ? splitEdit(params["*"]).path : undefined;
+   // The builder is `?edit`, a mode, not a place: the path names the document
+   // in either mode, and a report may be named `edit`.
+   const modelPath = params["*"] ? params["*"].replace(/\/$/, "") : undefined;
    const navigate = useRouterClickHandler();
 
    if (!params.environmentName && !params.packageName && !modelPath) {

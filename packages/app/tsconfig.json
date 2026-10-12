@@ -27,5 +27,7 @@
       "forceConsistentCasingInFileNames": true
    },
    "include": ["src"],
-   "exclude": ["**/*.spec.ts"]
+   // Specs are checked by tsconfig.spec.json instead, so the build emits no
+   // stray declaration for one. The four name patterns `bun test` discovers.
+   "exclude": ["**/*.spec.*", "**/*.test.*", "**/*_spec.*", "**/*_test.*"]
 }

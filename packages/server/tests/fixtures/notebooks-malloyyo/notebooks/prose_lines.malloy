@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Prose lines" }
+## artifact { layout=linear title="Prose lines" }
 import "../models/orders.malloy"
 
 ##(markdown) Two contiguous lines of prose
