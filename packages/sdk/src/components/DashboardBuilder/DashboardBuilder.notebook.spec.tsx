@@ -18,7 +18,7 @@ import { openDocument } from "./testing/fixtures";
 import type { BuilderEvent } from "./telemetry";
 import { editInline } from "./testing/inline";
 
-const NOTEBOOK = `## artifact { kind=notebook title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
+const NOTEBOOK = `## artifact { layout=linear title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
 import "../data_app.malloy"
 
 ##|(markdown) intro

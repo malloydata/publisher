@@ -474,13 +474,17 @@ describe("notebook lint", () => {
       expect(lint(`${HEADER}##(markdown) a cell\n${SOURCE}`)).toEqual([]);
    });
 
-   it("reads a text tile entry with kind=query, and a dashboard with kind=dashboard, as clean", () => {
-      expect(
-         lint(
-            `## artifact { kind=dashboard tiles=[q { kind=query }] }\n${SOURCE}`,
-            "dashboards/d.malloy",
-         ),
-      ).toEqual([]);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `kind=` in an artifact tag (see RELEASE_NOTES deprecations).
+   describe("deprecated: kind= in an artifact tag", () => {
+      it("reads a text tile entry with kind=query, and a dashboard with kind=dashboard, as clean", () => {
+         expect(
+            lint(
+               `## artifact { kind=dashboard tiles=[q { kind=query }] }\n${SOURCE}`,
+               "dashboards/d.malloy",
+            ),
+         ).toEqual([]);
+      });
    });
 
    it("points a ## heading line at the prose notation", () => {
@@ -685,37 +689,41 @@ describe("notebook lint", () => {
          ).toEqual([]);
       });
 
-      it("gives the layout= to write for a kind=, as a warn", () => {
-         expect(all(`## artifact { kind=notebook }\n${SOURCE}`)).toEqual([
-            {
-               line: 1,
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // `kind=` in an artifact tag (see RELEASE_NOTES deprecations).
+      describe("deprecated: kind= in an artifact tag", () => {
+         it("gives the layout= to write for a kind=, as a warn", () => {
+            expect(all(`## artifact { kind=notebook }\n${SOURCE}`)).toEqual([
+               {
+                  line: 1,
+                  code: "report-kind-deprecated",
+                  message:
+                     "Line 1: `kind=notebook` is the deprecated spelling of the layout, read as `layout=linear`. Fix: write `layout=linear` instead.",
+                  severity: "warn",
+               },
+            ]);
+            expect(
+               all(
+                  `## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE}`,
+               )[0],
+            ).toMatchObject({
                code: "report-kind-deprecated",
-               message:
-                  "Line 1: `kind=notebook` is the deprecated spelling of the layout, read as `layout=linear`. Fix: write `layout=linear` instead.",
-               severity: "warn",
-            },
-         ]);
-         expect(
-            all(
-               `## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE}`,
-            )[0],
-         ).toMatchObject({
-            code: "report-kind-deprecated",
-            message: expect.stringContaining("read as `layout=grid`"),
+               message: expect.stringContaining("read as `layout=grid`"),
+            });
          });
-      });
 
-      it("errors when layout= and kind= disagree, and reads layout=", () => {
-         expect(
-            all(
-               `## artifact { layout=grid kind=notebook tiles=["a -> v"] }\n${SOURCE}`,
-            ).map((f) => [f.code, f.severity]),
-         ).toEqual([["report-layout-conflict", "error"]]);
-         expect(
-            all(`## artifact { layout=linear kind=notebook }\n${SOURCE}`).map(
-               (f) => f.code,
-            ),
-         ).toEqual(["report-kind-deprecated"]);
+         it("errors when layout= and kind= disagree, and reads layout=", () => {
+            expect(
+               all(
+                  `## artifact { layout=grid kind=notebook tiles=["a -> v"] }\n${SOURCE}`,
+               ).map((f) => [f.code, f.severity]),
+            ).toEqual([["report-layout-conflict", "error"]]);
+            expect(
+               all(
+                  `## artifact { layout=linear kind=notebook }\n${SOURCE}`,
+               ).map((f) => f.code),
+            ).toEqual(["report-kind-deprecated"]);
+         });
       });
 
       it("errors on a layout= it does not know", () => {
@@ -739,7 +747,7 @@ describe("notebook lint", () => {
    });
 
    describe("a notebook written as tiles", () => {
-      const TILES = `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] }\n`;
+      const TILES = `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v"] }\n`;
       const BLOCK = "##|(markdown) intro\nhi\n|##\n";
       const TILES_12 = TILES.replace("\n", " dashboard { columns=12 }\n");
       const TILES_1 = TILES.replace("\n", " dashboard { columns=1 }\n");
@@ -786,7 +794,7 @@ describe("notebook lint", () => {
 
       it("reads an unquoted source -> view entry as a layout and says how to quote it", () => {
          const found = lint(
-            `## artifact { kind=notebook tiles=[intro { kind=text }, orders_tiles -> headline] }\n${SOURCE}${BLOCK}`,
+            `## artifact { layout=linear tiles=[intro { kind=text }, orders_tiles -> headline] }\n${SOURCE}${BLOCK}`,
          );
          expect(found.map((f) => f.code)).toEqual([
             "notebook-artifact-unparsed",
@@ -794,13 +802,13 @@ describe("notebook lint", () => {
          expect(found[0].message).toContain(
             'every `source -> view` entry in `tiles` is a quoted string (`"orders_tiles -> headline"`)',
          );
-         expect(found[0].message).not.toContain("kind=notebook }`.");
+         expect(found[0].message).not.toContain("layout=linear }`.");
       });
 
       it("says a bare entry naming a block needs kind=text", () => {
          expect(
             lint(
-               `## artifact { kind=notebook tiles=[intro, "a -> v"] }\n${SOURCE}${BLOCK}`,
+               `## artifact { layout=linear tiles=[intro, "a -> v"] }\n${SOURCE}${BLOCK}`,
             ),
          ).toEqual([
             {
@@ -815,7 +823,7 @@ describe("notebook lint", () => {
       it("warns that colspan and break mean nothing on a one-column notebook", () => {
          expect(
             lint(
-               `## artifact { kind=notebook tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE}${BLOCK}`,
+               `## artifact { layout=linear tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE}${BLOCK}`,
             ),
          ).toEqual([
             {
@@ -828,7 +836,7 @@ describe("notebook lint", () => {
       });
 
       it("reads the artifact tag written as a ##| block", () => {
-         const block = `##| artifact { kind=notebook\n  tiles=[\n    intro { kind=text },\n    "a -> v"\n  ]\n}\n|##\n`;
+         const block = `##| artifact { layout=linear\n  tiles=[\n    intro { kind=text },\n    "a -> v"\n  ]\n}\n|##\n`;
          expect(lint(`${block}${SOURCE}${BLOCK}`)).toEqual([]);
          expect(
             lint(`${block}${SOURCE}${BLOCK}${RUN}`).map((f) => f.code),
@@ -859,17 +867,21 @@ describe("notebook lint", () => {
       });
    });
 
-   // Retired with `notebook-other-folder`: a kind's folder means nothing.
-   it("says nothing of a kind=notebook file under dashboards/ or a kind=dashboard one under notebooks/", () => {
-      expect(
-         lint(
-            `## artifact { kind=notebook tiles=[a] }\n${SOURCE}`,
-            "dashboards/d.malloy",
-         ),
-      ).toEqual([]);
-      expect(
-         lint(`## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE}`),
-      ).toEqual([]);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `kind=` in an artifact tag (see RELEASE_NOTES deprecations).
+   describe("deprecated: kind= in an artifact tag", () => {
+      // Retired with `notebook-other-folder`: a kind's folder means nothing.
+      it("says nothing of a kind=notebook file under dashboards/ or a kind=dashboard one under notebooks/", () => {
+         expect(
+            lint(
+               `## artifact { kind=notebook tiles=[a] }\n${SOURCE}`,
+               "dashboards/d.malloy",
+            ),
+         ).toEqual([]);
+         expect(
+            lint(`## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE}`),
+         ).toEqual([]);
+      });
    });
 
    it("flags an unknown kind under dashboards, and the tile kind text on the dashboard itself", () => {
@@ -1036,13 +1048,17 @@ describe("notebook lint", () => {
       ).toEqual([]);
    });
 
-   it("still lints a single-query dashboard whose artifact tag sits on its query", () => {
-      expect(
-         lint(
-            `${SOURCE}##| markdown\nhi\n|##\n# artifact { title="One" }\nquery: q is a -> { select: x }\n`,
-            "dashboards/d.malloy",
-         ).map((f) => f.code),
-      ).toEqual(["notebook-markdown-opener"]);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
+   describe("deprecated: query-level # artifact", () => {
+      it("still lints a single-query dashboard whose artifact tag sits on its query", () => {
+         expect(
+            lint(
+               `${SOURCE}##| markdown\nhi\n|##\n# artifact { title="One" }\nquery: q is a -> { select: x }\n`,
+               "dashboards/d.malloy",
+            ).map((f) => f.code),
+         ).toEqual(["notebook-markdown-opener"]);
+      });
    });
 
    it("leaves the dashboard_columns alias out of a single-query artifact, which has no grid", () => {

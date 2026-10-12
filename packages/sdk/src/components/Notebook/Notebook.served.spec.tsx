@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { beforeEach, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
    clearCache,
@@ -108,18 +108,22 @@ it("puts the copy-link icon on the first markdown cell, not on a leading definit
    expect(screen.getAllByTestId("LinkOutlinedIcon")).toHaveLength(1);
 });
 
-it("keeps the copy-link icon off a .malloynb that opens with a code cell", async () => {
-   current = {
-      format: "malloynb",
-      notebookCells: [
-         { type: "code", text: "import { orders } from '../orders.malloy'" },
-         { type: "markdown", text: "Legacy prose" },
-      ],
-   } as RawNotebook;
-   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+describe("deprecated: .malloynb notebooks", () => {
+   it("keeps the copy-link icon off a .malloynb that opens with a code cell", async () => {
+      current = {
+         format: "malloynb",
+         notebookCells: [
+            { type: "code", text: "import { orders } from '../orders.malloy'" },
+            { type: "markdown", text: "Legacy prose" },
+         ],
+      } as RawNotebook;
+      render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
 
-   await screen.findByText("Legacy prose");
-   expect(screen.queryAllByTestId("LinkOutlinedIcon")).toHaveLength(0);
+      await screen.findByText("Legacy prose");
+      expect(screen.queryAllByTestId("LinkOutlinedIcon")).toHaveLength(0);
+   });
 });
 
 it("renders a query cell's markdown above its caption, without repeating it in the code", async () => {

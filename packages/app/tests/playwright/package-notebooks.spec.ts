@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
+// this file is about that deprecated feature.
+
 import { expect, test } from "@playwright/test";
 import fs from "fs/promises";
 import path from "path";

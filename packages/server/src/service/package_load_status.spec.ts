@@ -408,11 +408,9 @@ describe("Package.status: serving and loading", () => {
          resource: null as unknown as string,
          location: null as unknown as string,
          manifestLocation: null,
-         queryableSources: null as unknown as "declared",
       });
 
       expect(after.name).toBe("pkg");
-      expect(after.queryableSources).toBe("declared");
       expect(after.description).toBe("first");
       expect(after.resource).toBe("/api/v0/environments/testEnv/packages/pkg");
       expect(after.location).toBe("gs://bucket/pkg.zip");
@@ -643,33 +641,37 @@ describe("Package.status: serving and loading", () => {
       expect(added?.getPackageMetadata().location).toBeUndefined();
    });
 
-   it("records the location even when the tree's own explores name a missing model", async () => {
-      // An explores entry that does not resolve is a warning at load. The
-      // metadata an install applies afterwards does not touch explores, so it
-      // must not fail on that warning after the swap, which would leave the
-      // new tree serving with no record and no binding.
-      const env = await Environment.create("testEnv", envPath, []);
-      const fixture = path.join(rootDir, "fixture");
-      await writePackageDir(fixture);
-      await fs.writeFile(
-         path.join(fixture, "publisher.json"),
-         JSON.stringify({ name: "pkg", explores: ["missing.malloy"] }),
-      );
-      const location = "gs://bucket/pkg___1.0.0.zip";
-      const installed = await env.installPackage(
-         "pkg",
-         (stagingPath) => copyDir(fixture, stagingPath),
-         undefined,
-         { update: { location } },
-      );
-      expect(installed.getPackageMetadata().location).toBe(location);
-      const record = JSON.parse(
-         await fs.readFile(
-            path.join(envPath, ".install-records", "pkg.json"),
-            "utf-8",
-         ),
-      );
-      expect(record.location).toBe(location);
+   // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
+   // RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("records the location even when the tree's own explores name a missing model", async () => {
+         // An explores entry that does not resolve is a warning at load. The
+         // metadata an install applies afterwards does not touch explores, so it
+         // must not fail on that warning after the swap, which would leave the
+         // new tree serving with no record and no binding.
+         const env = await Environment.create("testEnv", envPath, []);
+         const fixture = path.join(rootDir, "fixture");
+         await writePackageDir(fixture);
+         await fs.writeFile(
+            path.join(fixture, "publisher.json"),
+            JSON.stringify({ name: "pkg", explores: ["missing.malloy"] }),
+         );
+         const location = "gs://bucket/pkg___1.0.0.zip";
+         const installed = await env.installPackage(
+            "pkg",
+            (stagingPath) => copyDir(fixture, stagingPath),
+            undefined,
+            { update: { location } },
+         );
+         expect(installed.getPackageMetadata().location).toBe(location);
+         const record = JSON.parse(
+            await fs.readFile(
+               path.join(envPath, ".install-records", "pkg.json"),
+               "utf-8",
+            ),
+         );
+         expect(record.location).toBe(location);
+      });
    });
 
    it("a metadata PATCH never changes where a package was installed from", async () => {

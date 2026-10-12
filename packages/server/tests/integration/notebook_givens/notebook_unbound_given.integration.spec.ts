@@ -71,42 +71,40 @@ describe("a notebook cell reading a given with no default (HTTP E2E)", () => {
       await env?.stop();
    });
 
-   async function queryCellIndex(): Promise<number> {
-      const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
+   /** The report's one query cell, off `GET …/reports/{path}`. */
+   async function queryCellText(): Promise<string> {
+      const res = await fetch(pkgUrl(`/reports/${NOTEBOOK}`));
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
-         notebookCells?: Array<{ kind?: string }>;
+         notebook?: { notebookCells?: Array<{ kind?: string; text?: string }> };
       };
-      const index = (body.notebookCells ?? []).findIndex(
+      const cell = (body.notebook?.notebookCells ?? []).find(
          (c) => c.kind === "query",
       );
-      expect(index).toBeGreaterThanOrEqual(0);
-      return index;
+      expect(cell?.text).toBeDefined();
+      return cell?.text ?? "";
    }
 
-   const runCell = (index: number, givens?: Record<string, unknown>) =>
-      fetch(
-         pkgUrl(
-            `/notebooks/${NOTEBOOK}/cells/${index}${
-               givens
-                  ? `?givens=${encodeURIComponent(JSON.stringify(givens))}`
-                  : ""
-            }`,
-         ),
-      );
+   /** Run the cell the way a viewer does: its text through the query route. */
+   const runCell = (text: string, givens?: Record<string, unknown>) =>
+      fetch(pkgUrl(`/models/${NOTEBOOK}/query`), {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify({ query: text, givens }),
+      });
 
    it("serves the notebook and its cell", async () => {
-      await queryCellIndex();
+      await queryCellText();
    });
 
    it("runs the cell when the given is supplied", async () => {
-      const res = await runCell(await queryCellIndex(), { ORG: 1 });
+      const res = await runCell(await queryCellText(), { ORG: 1 });
       expect(res.status).toBe(200);
       expect(cellCount((await res.json()) as { result?: string })).toBe(2);
    });
 
    it("refuses the cell when the given is not supplied", async () => {
-      const res = await runCell(await queryCellIndex());
+      const res = await runCell(await queryCellText());
       expect(res.status).toBe(400);
    });
 });

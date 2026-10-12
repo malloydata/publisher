@@ -60,11 +60,11 @@ describe("filter-literal givens in the artifact tag", () => {
    for (const [name, tag] of [
       [
          "line",
-         "## artifact { kind=notebook autorun=false givens { REGION=f'US' } }",
+         "## artifact { layout=linear autorun=false givens { REGION=f'US' } }",
       ],
       [
          "block",
-         "##| artifact { kind=notebook\n  autorun=false\n  givens { REGION=f'US' }\n}\n|##",
+         "##| artifact { layout=linear\n  autorun=false\n  givens { REGION=f'US' }\n}\n|##",
       ],
    ]) {
       it(`converts a legacy notebook with the ${name} tag and keeps the literal as written`, async () => {
@@ -80,7 +80,7 @@ describe("filter-literal givens in the artifact tag", () => {
    it("reads a legacy notebook with a filter literal as a legacy notebook", async () => {
       const read = await readDashboardDocument(
          LEGACY(
-            "## artifact { kind=notebook autorun=false givens { REGION=f'US' } }",
+            "## artifact { layout=linear autorun=false givens { REGION=f'US' } }",
          ),
       );
       if (!readFailed(read)) throw new Error("expected a refusal");

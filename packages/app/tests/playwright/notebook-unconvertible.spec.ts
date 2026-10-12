@@ -15,7 +15,7 @@ import {
  */
 
 const NOTEBOOK = `##! experimental.givens
-## artifact { kind=notebook title="Inline extend" }
+## artifact { layout=linear title="Inline extend" }
 import { order_items } from "../storefront.malloy"
 
 ##(markdown) Unconvertible notebook prose.

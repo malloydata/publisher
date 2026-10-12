@@ -9,7 +9,7 @@ import {
 } from "./legacyNotebook";
 
 const HEAD =
-   '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x")\n\n';
+   '## artifact { layout=linear }\nsource: a is duckdb.sql("select 1 as x")\n\n';
 
 async function read(text: string): Promise<NotebookSource> {
    const result = await readNotebookSource(text);

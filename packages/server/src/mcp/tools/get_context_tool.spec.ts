@@ -4262,7 +4262,9 @@ describe("get_context converged request shape", () => {
    });
 });
 
-describe("get_context filter_params", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `#(filter)` (see RELEASE_NOTES deprecations).
+describe("deprecated: #(filter) — get_context filter_params", () => {
    it("reports a source's #(filter) declarations, required ones included", async () => {
       // A required filter the caller cannot see is a query that fails the
       // moment they use the source. Publisher enforces #(filter) server-side

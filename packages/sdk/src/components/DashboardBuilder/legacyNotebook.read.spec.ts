@@ -159,7 +159,7 @@ describe("readNotebookSource: the server reader is the oracle", () => {
    ];
    for (const [name, prose] of LEGACY) {
       it(`reads the legacy ${name} spelling as a markdown cell`, async () => {
-         const text = `## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x")\n\n${prose}\nrun: a -> { select: x }\n`;
+         const text = `## artifact { layout=linear }\nsource: a is duckdb.sql("select 1 as x")\n\n${prose}\nrun: a -> { select: x }\n`;
          const mine = await expectMatchesOracle(text);
          expect(mine.cells.map((c) => c.kind)).toEqual([
             "definition",
@@ -171,7 +171,7 @@ describe("readNotebookSource: the server reader is the oracle", () => {
 
    it("keeps a non-prose note in the header before the first cell, and in the gap after it", async () => {
       const text = [
-         "## artifact { kind=notebook }",
+         "## artifact { layout=linear }",
          '## title="In the header"',
          "##(markdown) First cell.",
          '## title="A gap note"',
@@ -180,7 +180,7 @@ describe("readNotebookSource: the server reader is the oracle", () => {
       ].join("\n");
       const mine = await expectMatchesOracle(text);
       expect(text.slice(mine.header.start, mine.header.end)).toBe(
-         '## artifact { kind=notebook }\n## title="In the header"\n',
+         '## artifact { layout=linear }\n## title="In the header"\n',
       );
       expect(mine.cells.map((c) => c.markdown)).toEqual([
          "First cell.",
@@ -191,7 +191,7 @@ describe("readNotebookSource: the server reader is the oracle", () => {
 
    it("carries a comment block directly above a cell, and leaves one after a blank line in the gap", async () => {
       const text = [
-         "## artifact { kind=notebook }",
+         "## artifact { layout=linear }",
          'source: a is duckdb.sql("select 1 as x")',
          "",
          "// Stays in the gap.",
@@ -225,7 +225,7 @@ describe("readNotebookSource: the server reader is the oracle", () => {
 
    it("reads a block whose closer is followed only by whitespace", async () => {
       const text =
-         '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x")\n##|(markdown)\nBody.\n|##   \n#|(markdown)\nhi\n|# \t\nrun: a -> { select: x }\n';
+         '## artifact { layout=linear }\nsource: a is duckdb.sql("select 1 as x")\n##|(markdown)\nBody.\n|##   \n#|(markdown)\nhi\n|# \t\nrun: a -> { select: x }\n';
       const mine = await expectMatchesOracle(text);
       expect(mine.cells.map((c) => c.markdown)).toEqual([
          undefined,
@@ -236,7 +236,7 @@ describe("readNotebookSource: the server reader is the oracle", () => {
 
    it("measures spans in UTF-16 units past astral characters", async () => {
       const text =
-         '## artifact { kind=notebook }\n##(markdown) Rockets 🚀🚀 first.\n\nsource: a is duckdb.sql("select 1 as x")\n\nrun: a -> { select: x }\n';
+         '## artifact { layout=linear }\n##(markdown) Rockets 🚀🚀 first.\n\nsource: a is duckdb.sql("select 1 as x")\n\nrun: a -> { select: x }\n';
       const mine = await expectMatchesOracle(text);
       expect(text.slice(mine.cells[2].span.start, mine.cells[2].span.end)).toBe(
          "run: a -> { select: x }\n",
@@ -280,7 +280,7 @@ describe("readNotebookSource: refusals", () => {
    const REFUSE: [string, string, RegExp][] = [
       [
          "a syntax error",
-         "## artifact { kind=notebook }\nrun: a -> {\n",
+         "## artifact { layout=linear }\nrun: a -> {\n",
          /^Line \d+: Malloy could not parse this notebook .*Fix: correct the syntax/,
       ],
       [
@@ -290,42 +290,42 @@ describe("readNotebookSource: refusals", () => {
       ],
       [
          "a # tag that annotates nothing",
-         '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1")\n# bar_chart\n',
+         '## artifact { layout=linear }\nsource: a is duckdb.sql("select 1")\n# bar_chart\n',
          /^Line 3: a # tag that annotates no statement/,
       ],
       [
          "two statements on one line",
-         '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x"); run: a -> { select: x }\n',
+         '## artifact { layout=linear }\nsource: a is duckdb.sql("select 1 as x"); run: a -> { select: x }\n',
          /^Line 2: a line holding two statements.*Fix: put each statement and note on its own line\.$/,
       ],
       [
          "a block comment that straddles a cell's last line",
-         '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x") /* runs\non */\nrun: a -> { select: x }\n',
+         '## artifact { layout=linear }\nsource: a is duckdb.sql("select 1 as x") /* runs\non */\nrun: a -> { select: x }\n',
          /^Line 2: a comment that straddles a cell/,
       ],
       [
          "a lone carriage return",
-         "## artifact { kind=notebook }\r##(markdown) Prose.\n",
+         "## artifact { layout=linear }\r##(markdown) Prose.\n",
          /^Line 1: a carriage return/,
       ],
       [
          "words after a floating block's closer",
-         "## artifact { kind=notebook }\n##|(markdown)\nBody.\n|## more words\n",
+         "## artifact { layout=linear }\n##|(markdown)\nBody.\n|## more words\n",
          /^Line 4: the text after a block's closer \(`more words`\)/,
       ],
       [
          "a run: after a floating block's closer",
-         '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x")\n##|(markdown)\nBody.\n|## run: a -> { select: x }\n',
+         '## artifact { layout=linear }\nsource: a is duckdb.sql("select 1 as x")\n##|(markdown)\nBody.\n|## run: a -> { select: x }\n',
          /^Line 5: the text after a block's closer \(`run: a -> \{ select: x \}`\)/,
       ],
       [
          "words after an attached block's closer",
-         '## artifact { kind=notebook }\nsource: a is duckdb.sql("select 1 as x")\n#|(markdown)\nhi\n|# extra\nrun: a -> { select: x }\n',
+         '## artifact { layout=linear }\nsource: a is duckdb.sql("select 1 as x")\n#|(markdown)\nhi\n|# extra\nrun: a -> { select: x }\n',
          /^Line 5: the text after a block's closer \(`extra`\)/,
       ],
       [
          "words after a header block's closer",
-         '##|"\nDesc\n|## oops\n## artifact { kind=notebook }\n##(markdown) Prose.\n',
+         '##|"\nDesc\n|## oops\n## artifact { layout=linear }\n##(markdown) Prose.\n',
          /^Line 3: the text after a block's closer \(`oops`\)/,
       ],
    ];

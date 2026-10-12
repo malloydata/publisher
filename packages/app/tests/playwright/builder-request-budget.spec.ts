@@ -92,7 +92,7 @@ async function measure(
 const NOTEBOOK_PKG = "notebooks-malloyyo";
 const NOTEBOOK_FILE = "notebooks/browser_tour.malloy";
 const NOTEBOOK_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, "orders -> kpis"] }
+## artifact { layout=linear title="Browser tour" tiles=[first { kind=text }, "orders -> kpis"] }
 import "../models/orders.malloy"
 
 ##|(markdown) first

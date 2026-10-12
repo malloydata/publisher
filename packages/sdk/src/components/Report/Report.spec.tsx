@@ -206,29 +206,33 @@ describe("rendering by layout", () => {
       expect(getNotebook).not.toHaveBeenCalled();
    });
 
-   it("runs a .malloynb's cells through the deprecated notebooks cell route", async () => {
-      manifest = {
-         path: "legacy.malloynb",
-         name: "legacy",
-         layout: "linear",
-         editable: false,
-         notebook: {
-            format: "malloynb",
-            notebookCells: [
-               { type: "markdown", text: "Legacy prose" },
-               { type: "code", text: "run: orders -> by_month" },
-            ],
-         },
-      } as ReportManifest;
-      render(<Report resourceUri={URI} path="legacy.malloynb" />, {
-         wrapper: serverWrapper,
-      });
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("runs a .malloynb's cells through the deprecated notebooks cell route", async () => {
+         manifest = {
+            path: "legacy.malloynb",
+            name: "legacy",
+            layout: "linear",
+            editable: false,
+            notebook: {
+               format: "malloynb",
+               notebookCells: [
+                  { type: "markdown", text: "Legacy prose" },
+                  { type: "code", text: "run: orders -> by_month" },
+               ],
+            },
+         } as ReportManifest;
+         render(<Report resourceUri={URI} path="legacy.malloynb" />, {
+            wrapper: serverWrapper,
+         });
 
-      expect(await screen.findByText("Legacy prose")).toBeTruthy();
-      await waitFor(() => expect(executeNotebookCell).toHaveBeenCalled());
-      expect(
-         executeNotebookCell.mock.calls.map((call) => call.slice(0, 4)),
-      ).toEqual([["env", "pkg", "legacy.malloynb", 1]]);
-      expect(executeQueryModel).not.toHaveBeenCalled();
+         expect(await screen.findByText("Legacy prose")).toBeTruthy();
+         await waitFor(() => expect(executeNotebookCell).toHaveBeenCalled());
+         expect(
+            executeNotebookCell.mock.calls.map((call) => call.slice(0, 4)),
+         ).toEqual([["env", "pkg", "legacy.malloynb", 1]]);
+         expect(executeQueryModel).not.toHaveBeenCalled();
+      });
    });
 });

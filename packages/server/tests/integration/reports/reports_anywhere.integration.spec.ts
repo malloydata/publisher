@@ -119,7 +119,7 @@ describe("Reports anywhere in a package (E2E)", () => {
       expect(paths).not.toContain("public/hidden_report.malloy");
    });
 
-   it("serves both reports that share a basename, and the deprecated name route says which", async () => {
+   it("serves both reports that share a basename", async () => {
       const a = await getJson<Report & { tiles?: unknown[] }>(
          api("/reports/sales/summary.malloy"),
       );
@@ -128,19 +128,43 @@ describe("Reports anywhere in a package (E2E)", () => {
       );
       expect(a.title).toBe("Sales summary");
       expect(b.title).toBe("Finance summary");
-      const ambiguous = await fetch(api("/dashboards/summary"));
-      expect(ambiguous.status).toBe(409);
-      const message = ((await ambiguous.json()) as { message?: string })
-         .message;
-      expect(message).toContain("finance/summary.malloy");
-      expect(message).toContain("sales/summary.malloy");
-      // A unique basename still resolves on the deprecated route.
-      const q3 = await getJson<{ path: string; layout: string }>(
-         api("/dashboards/q3"),
-      );
-      expect(q3).toMatchObject({
-         path: "sales/2026/q3.malloy",
-         layout: "grid",
+   });
+
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the `…/dashboards` / `…/notebooks` routes (see RELEASE_NOTES deprecations).
+   describe("deprecated: the …/dashboards and …/notebooks routes", () => {
+      it("says on the deprecated name route which reports share a basename", async () => {
+         const ambiguous = await fetch(api("/dashboards/summary"));
+         expect(ambiguous.status).toBe(409);
+         const message = ((await ambiguous.json()) as { message?: string })
+            .message;
+         expect(message).toContain("finance/summary.malloy");
+         expect(message).toContain("sales/summary.malloy");
+         // A unique basename still resolves on the deprecated route.
+         const q3 = await getJson<{ path: string; layout: string }>(
+            api("/dashboards/q3"),
+         );
+         expect(q3).toMatchObject({
+            path: "sales/2026/q3.malloy",
+            layout: "grid",
+         });
+      });
+
+      it("lists the deprecated aliases by layout", async () => {
+         const dashboards = await getJson<{ path: string }[]>(
+            api("/dashboards"),
+         );
+         expect(dashboards.map((d) => d.path)).toContain(
+            "notebooks/grid_in_notebooks.malloy",
+         );
+         expect(dashboards.map((d) => d.path)).not.toContain(
+            "dashboards/linear_in_dashboards.malloy",
+         );
+         const notebooks = await getJson<{ path: string }[]>(api("/notebooks"));
+         expect(notebooks.map((n) => n.path).sort()).toEqual([
+            "dashboards/linear_in_dashboards.malloy",
+            "deep/story.malloy",
+         ]);
       });
    });
 
@@ -208,21 +232,6 @@ describe("Reports anywhere in a package (E2E)", () => {
       expect((await fetch(api("/reports/index.malloy"))).status).toBe(404);
    });
 
-   it("lists the deprecated aliases by layout", async () => {
-      const dashboards = await getJson<{ path: string }[]>(api("/dashboards"));
-      expect(dashboards.map((d) => d.path)).toContain(
-         "notebooks/grid_in_notebooks.malloy",
-      );
-      expect(dashboards.map((d) => d.path)).not.toContain(
-         "dashboards/linear_in_dashboards.malloy",
-      );
-      const notebooks = await getJson<{ path: string }[]>(api("/notebooks"));
-      expect(notebooks.map((n) => n.path).sort()).toEqual([
-         "dashboards/linear_in_dashboards.malloy",
-         "deep/story.malloy",
-      ]);
-   });
-
    it("keeps reports off the model listing of a curated package", async () => {
       const models = await getJson<{ path: string }[]>(api("/models"));
       expect(models.map((m) => m.path)).toEqual(["index.malloy"]);
@@ -244,24 +253,28 @@ describe("Reports anywhere in a package (E2E)", () => {
          );
       });
 
-      it("resolves a bare name one report has, warning with the path to write", () => {
-         const finding = drillFindings().find(
-            (w) => w.subject === "orders.region_name",
-         );
-         expect(finding).toMatchObject({
-            code: "drill-target-by-name",
-            severity: "warn",
+      // DEPRECATED FEATURE COVERAGE — delete together with
+      // bare-name `# drill` targets (see RELEASE_NOTES deprecations).
+      describe("deprecated: bare-name # drill targets", () => {
+         it("resolves a bare name one report has, warning with the path to write", () => {
+            const finding = drillFindings().find(
+               (w) => w.subject === "orders.region_name",
+            );
+            expect(finding).toMatchObject({
+               code: "drill-target-by-name",
+               severity: "warn",
+            });
+            expect(finding?.message).toContain('to="deep/story"');
          });
-         expect(finding?.message).toContain('to="deep/story"');
-      });
 
-      it("leaves a bare name two reports have unresolved, naming both", () => {
-         const finding = drillFindings().find(
-            (w) => w.subject === "orders.brand_upper",
-         );
-         expect(finding?.severity).toBe("error");
-         expect(finding?.message).toContain("finance/summary.malloy");
-         expect(finding?.message).toContain("sales/summary.malloy");
+         it("leaves a bare name two reports have unresolved, naming both", () => {
+            const finding = drillFindings().find(
+               (w) => w.subject === "orders.brand_upper",
+            );
+            expect(finding?.severity).toBe("error");
+            expect(finding?.message).toContain("finance/summary.malloy");
+            expect(finding?.message).toContain("sales/summary.malloy");
+         });
       });
    });
 

@@ -145,9 +145,11 @@ describe("Served notebook on a package with a surface (E2E)", () => {
    });
 
    it("withholds from the notebook GET a run over a source derived from a hidden one", async () => {
-      const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
+      const res = await fetch(pkgUrl(`/reports/${NOTEBOOK}`));
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { modelInfo?: string };
+      const body =
+         ((await res.json()) as { notebook?: { modelInfo?: string } })
+            .notebook ?? {};
       expect(body.modelInfo).not.toContain("secret_total");
       // Positive control: the runs over the surface and over a source derived from it.
       expect(runColumns(body.modelInfo)).toEqual([["order_count"], ["n"]]);
@@ -160,7 +162,7 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(body.sourceText).toBeUndefined();
    });
 
-   it("does not list the notebook as a model, and lists it as a notebook", async () => {
+   it("does not list the notebook as a model, and lists it as a report", async () => {
       const models = (await (await fetch(pkgUrl("/models"))).json()) as {
          path?: string;
       }[];
@@ -168,7 +170,7 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(models.map((m) => m.path)).toContain("index.malloy");
       expect(models.map((m) => m.path)).not.toContain(NOTEBOOK);
 
-      const notebooks = (await (await fetch(pkgUrl("/notebooks"))).json()) as {
+      const notebooks = (await (await fetch(pkgUrl("/reports"))).json()) as {
          path?: string;
          title?: string;
          description?: string;

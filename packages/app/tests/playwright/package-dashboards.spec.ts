@@ -117,33 +117,41 @@ test.describe("package-dashboards", () => {
       );
    });
 
-   test("lists notebooks by title, the way it lists dashboards", async ({
-      page,
-   }) => {
-      await gotoHome(page);
-      await openEnvironment(page, env);
-      await openPackage(page, env, PKG);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   test.describe("deprecated: .malloynb notebooks", () => {
+      test("lists notebooks by title, the way it lists dashboards", async ({
+         page,
+      }) => {
+         await gotoHome(page);
+         await openEnvironment(page, env);
+         await openPackage(page, env, PKG);
 
-      await expect(
-         page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
-      ).toBeVisible({ timeout: 60_000 });
+         await expect(
+            page.getByRole("heading", {
+               name: "Reports",
+               level: 6,
+               exact: true,
+            }),
+         ).toBeVisible({ timeout: 60_000 });
 
-      // An explicit `## title=`, and a title read from the first markdown
-      // heading. Both rows keep the filename as the secondary label, so the
-      // path a reader needs in order to find the file is never lost.
-      const titled = page.getByRole("button", {
-         name: /Orders in a window/,
+         // An explicit `## title=`, and a title read from the first markdown
+         // heading. Both rows keep the filename as the secondary label, so the
+         // path a reader needs in order to find the file is never lost.
+         const titled = page.getByRole("button", {
+            name: /Orders in a window/,
+         });
+         await expect(titled).toBeVisible();
+         await expect(titled).toContainText("orders-since.malloynb");
+         await expect(
+            page.getByRole("button", { name: /Brands/ }),
+         ).toContainText("brands.malloynb");
+
+         await titled.click();
+         await expect(page).toHaveURL(
+            new RegExp(`/${env}/${PKG}/orders-since.malloynb$`),
+         );
       });
-      await expect(titled).toBeVisible();
-      await expect(titled).toContainText("orders-since.malloynb");
-      await expect(page.getByRole("button", { name: /Brands/ })).toContainText(
-         "brands.malloynb",
-      );
-
-      await titled.click();
-      await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/orders-since.malloynb$`),
-      );
    });
 
    test("both lists are ordered by the name they show", async ({ page }) => {
@@ -762,129 +770,157 @@ test.describe("package-dashboards", () => {
       });
    });
 
-   test("a notebook cell drills into a dashboard", async ({ page }) => {
-      // The payoff of declaring drill on the dimension: `brands.malloynb` says
-      // nothing about drill, but its cell groups by `brand_name`, so the same
-      // click path works with no notebook-specific code.
-      await page.goto(`/${env}/${PKG}/brands.malloynb`);
-      await expect(page.getByRole("heading", { name: "Brands" })).toBeVisible({
-         timeout: 60_000,
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   test.describe("deprecated: .malloynb notebooks", () => {
+      test("a notebook cell drills into a dashboard", async ({ page }) => {
+         // The payoff of declaring drill on the dimension: `brands.malloynb` says
+         // nothing about drill, but its cell groups by `brand_name`, so the same
+         // click path works with no notebook-specific code.
+         await page.goto(`/${env}/${PKG}/brands.malloynb`);
+         await expect(
+            page.getByRole("heading", { name: "Brands" }),
+         ).toBeVisible({
+            timeout: 60_000,
+         });
+
+         await page
+            .getByText("Nike", { exact: true })
+            .first()
+            .click({ timeout: 60_000 });
+
+         await expect(page).toHaveURL(
+            new RegExp(`/${env}/${PKG}/dashboards/overview\\?BRAND=Nike$`),
+         );
+         await expect(
+            page.getByRole("heading", { name: "Business Overview" }),
+         ).toBeVisible({ timeout: 30_000 });
       });
-
-      await page
-         .getByText("Nike", { exact: true })
-         .first()
-         .click({ timeout: 60_000 });
-
-      await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/dashboards/overview\\?BRAND=Nike$`),
-      );
-      await expect(
-         page.getByRole("heading", { name: "Business Overview" }),
-      ).toBeVisible({ timeout: 30_000 });
    });
 
-   // A notebook and a dashboard run the same givens state, the same controls,
-   // and the same drill, so the interactivity a reader gets should not depend on
-   // which of the two an author reached for. These are the dashboard tests
-   // above, aimed at a notebook.
-   test("a notebook's parameters are URL state, batched behind Apply", async ({
-      page,
-   }) => {
-      // `orders-since.malloynb` carries `## autorun=false`, the notebook
-      // spelling of the dashboard's `# artifact { autorun=false }`.
-      await page.goto(`/${env}/${PKG}/orders-since.malloynb`);
-      await expect(
-         page.getByRole("heading", { name: "Orders since" }),
-      ).toBeVisible({ timeout: 60_000 });
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   test.describe("deprecated: .malloynb notebooks", () => {
+      // A notebook and a dashboard run the same givens state, the same controls,
+      // and the same drill, so the interactivity a reader gets should not depend on
+      // which of the two an author reached for. These are the dashboard tests
+      // above, aimed at a notebook.
+      test("a notebook's parameters are URL state, batched behind Apply", async ({
+         page,
+      }) => {
+         // `orders-since.malloynb` carries `## autorun=false`, the notebook
+         // spelling of the dashboard's `# artifact { autorun=false }`.
+         await page.goto(`/${env}/${PKG}/orders-since.malloynb`);
+         await expect(
+            page.getByRole("heading", { name: "Orders since" }),
+         ).toBeVisible({ timeout: 60_000 });
 
-      const applyButton = page.getByRole("button", { name: "Apply" });
-      await expect(applyButton).toBeVisible();
-      await expect(applyButton).toBeDisabled();
+         const applyButton = page.getByRole("button", { name: "Apply" });
+         await expect(applyButton).toBeVisible();
+         await expect(applyButton).toBeDisabled();
 
-      // The notebook's one cell counts orders on or after SINCE, which defaults
-      // to 2024-01-01, all six of them. Deliberately not `.first()`: the count
-      // is the only bare number on the page, so a second match means this is
-      // matching something other than the result, and should fail.
-      const count = (n: string) => page.getByText(n, { exact: true });
-      await expect(count("6")).toBeVisible({ timeout: 30_000 });
+         // The notebook's one cell counts orders on or after SINCE, which defaults
+         // to 2024-01-01, all six of them. Deliberately not `.first()`: the count
+         // is the only bare number on the page, so a second match means this is
+         // matching something other than the result, and should fail.
+         const count = (n: string) => page.getByText(n, { exact: true });
+         await expect(count("6")).toBeVisible({ timeout: 30_000 });
 
-      // The control's label comes from the given declaration, which is where a
-      // dashboard's comes from too.
-      await page
-         .getByRole("textbox", { name: "Ordered since" })
-         .fill("03/01/2024");
+         // The control's label comes from the given declaration, which is where a
+         // dashboard's comes from too.
+         await page
+            .getByRole("textbox", { name: "Ordered since" })
+            .fill("03/01/2024");
 
-      // Pending, not applied: the URL is untouched and the cell has not re-run,
-      // which is the whole point of batching.
-      await expect(applyButton).toBeEnabled();
-      expect(page.url()).not.toContain("SINCE");
-      await expect(count("6")).toBeVisible();
+         // Pending, not applied: the URL is untouched and the cell has not re-run,
+         // which is the whole point of batching.
+         await expect(applyButton).toBeEnabled();
+         expect(page.url()).not.toContain("SINCE");
+         await expect(count("6")).toBeVisible();
 
-      await applyButton.click();
-      await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
-      // Two of the six are on or after 2024-03-01. Getting here at all is the
-      // date codec working: a full ISO timestamp is rejected with a 400.
-      await expect(count("2")).toBeVisible({ timeout: 30_000 });
-      await expect(count("6")).toBeHidden();
+         await applyButton.click();
+         await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
+         // Two of the six are on or after 2024-03-01. Getting here at all is the
+         // date codec working: a full ISO timestamp is rejected with a 400.
+         await expect(count("2")).toBeVisible({ timeout: 30_000 });
+         await expect(count("6")).toBeHidden();
 
-      // And the link restores the value on a cold load.
-      await page.goto(`/${env}/${PKG}/orders-since.malloynb?SINCE=2024-03-01`);
-      await expect(
-         page.getByRole("textbox", { name: "Ordered since" }),
-      ).toHaveValue("03/01/2024", { timeout: 30_000 });
+         // And the link restores the value on a cold load.
+         await page.goto(
+            `/${env}/${PKG}/orders-since.malloynb?SINCE=2024-03-01`,
+         );
+         await expect(
+            page.getByRole("textbox", { name: "Ordered since" }),
+         ).toHaveValue("03/01/2024", { timeout: 30_000 });
+      });
    });
 
-   test("a notebook starts where `## givens` says, and a URL beats it", async ({
-      page,
-   }) => {
-      // `orders-start.malloynb` carries `## givens { SINCE="2024-03-01" }`, the
-      // notebook spelling of a dashboard's `# artifact { givens { … } }`.
-      await page.goto(`/${env}/${PKG}/orders-start.malloynb`);
-      const since = page.getByRole("textbox", { name: "Ordered since" });
-      await expect(since).toHaveValue("03/01/2024", { timeout: 60_000 });
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   test.describe("deprecated: .malloynb notebooks", () => {
+      test("a notebook starts where `## givens` says, and a URL beats it", async ({
+         page,
+      }) => {
+         // `orders-start.malloynb` carries `## givens { SINCE="2024-03-01" }`, the
+         // notebook spelling of a dashboard's `# artifact { givens { … } }`.
+         await page.goto(`/${env}/${PKG}/orders-start.malloynb`);
+         const since = page.getByRole("textbox", { name: "Ordered since" });
+         await expect(since).toHaveValue("03/01/2024", { timeout: 60_000 });
 
-      // Applied, not merely displayed: two of the six orders are in the window.
-      const count = (n: string) => page.getByText(n, { exact: true });
-      await expect(count("2")).toBeVisible({ timeout: 30_000 });
+         // Applied, not merely displayed: two of the six orders are in the window.
+         const count = (n: string) => page.getByText(n, { exact: true });
+         await expect(count("2")).toBeVisible({ timeout: 30_000 });
 
-      // And written into the URL, so what a reader copies out of the address bar
-      // is what they are looking at. A dashboard's starting values do the same
-      // (`dashboards/regions?REGION=US`).
-      await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
+         // And written into the URL, so what a reader copies out of the address bar
+         // is what they are looking at. A dashboard's starting values do the same
+         // (`dashboards/regions?REGION=US`).
+         await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
 
-      // A link overrides the file, so a shared URL shows the sender's view.
-      await page.goto(`/${env}/${PKG}/orders-start.malloynb?SINCE=2024-01-01`);
-      await expect(since).toHaveValue("01/01/2024", { timeout: 60_000 });
-      await expect(count("6")).toBeVisible({ timeout: 30_000 });
+         // A link overrides the file, so a shared URL shows the sender's view.
+         await page.goto(
+            `/${env}/${PKG}/orders-start.malloynb?SINCE=2024-01-01`,
+         );
+         await expect(since).toHaveValue("01/01/2024", { timeout: 60_000 });
+         await expect(count("6")).toBeVisible({ timeout: 30_000 });
+      });
    });
 
-   test("a notebook cell drills into the notebook itself", async ({ page }) => {
-      await page.goto(`/${env}/${PKG}/brands.malloynb`);
-      await expect(page.getByRole("heading", { name: "Brands" })).toBeVisible({
-         timeout: 60_000,
-      });
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   test.describe("deprecated: .malloynb notebooks", () => {
+      test("a notebook cell drills into the notebook itself", async ({
+         page,
+      }) => {
+         await page.goto(`/${env}/${PKG}/brands.malloynb`);
+         await expect(
+            page.getByRole("heading", { name: "Brands" }),
+         ).toBeVisible({
+            timeout: 60_000,
+         });
 
-      // Same tag, same menu as on the `combined` dashboard: `to=["regions",
-      // "self"]`, where self means this document.
-      await page
-         .getByText("EU", { exact: true })
-         .first()
-         .click({ timeout: 60_000 });
-      // The surface names itself: a notebook filtering itself is not "this
-      // dashboard", though the tag it came from is the same one.
-      await page.getByRole("menuitem", { name: "Filter this report" }).click();
+         // Same tag, same menu as on the `combined` dashboard: `to=["regions",
+         // "self"]`, where self means this document.
+         await page
+            .getByText("EU", { exact: true })
+            .first()
+            .click({ timeout: 60_000 });
+         // The surface names itself: a notebook filtering itself is not "this
+         // dashboard", though the tag it came from is the same one.
+         await page
+            .getByRole("menuitem", { name: "Filter this report" })
+            .click();
 
-      // Filtering in place is a URL change, not a navigation: still the
-      // notebook, now with the given set.
-      await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/brands\\.malloynb\\?REGION=EU$`),
-      );
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("EU", { exact: true })).toBeVisible({
-         timeout: 30_000,
+         // Filtering in place is a URL change, not a navigation: still the
+         // notebook, now with the given set.
+         await expect(page).toHaveURL(
+            new RegExp(`/${env}/${PKG}/brands\\.malloynb\\?REGION=EU$`),
+         );
+         const region = page.locator(".MuiAutocomplete-root", {
+            has: page.getByRole("combobox", { name: "Region" }),
+         });
+         await expect(region.getByText("EU", { exact: true })).toBeVisible({
+            timeout: 30_000,
+         });
       });
    });
 

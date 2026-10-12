@@ -185,7 +185,7 @@ describe("spliceDashboardDocument: imports", () => {
    });
 
    it("has nowhere to put a first import", async () => {
-      const source = `## artifact { kind=notebook title="T" tiles=[intro { kind=text }] }\n\n##|(markdown) intro\nHi\n|##\n`;
+      const source = `## artifact { layout=linear title="T" tiles=[intro { kind=text }] }\n\n##|(markdown) intro\nHi\n|##\n`;
       const reason = await refused(source, (d) => {
          d.imports.push({ kind: "names", names: ["x"], from: "../m.malloy" });
       });

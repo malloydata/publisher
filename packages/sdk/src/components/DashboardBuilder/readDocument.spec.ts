@@ -863,7 +863,7 @@ describe("a tag whose artifact property is not the first", () => {
 
    it("is refused, not converted, for a cell-format notebook", async () => {
       const open = await readForEditor(
-         `##! experimental.givens\n## dashboard { columns=2 } artifact { kind=notebook title="T" }\nrun: a -> by_cat`,
+         `##! experimental.givens\n## dashboard { columns=2 } artifact { layout=linear title="T" }\nrun: a -> by_cat`,
          "notebooks/n.malloy",
       );
       expect(open.ok === false && open.reason).toContain(

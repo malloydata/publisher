@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with
+// the query-level `# artifact` and `explores` (see RELEASE_NOTES deprecations). Every test in
+// this file is about that deprecated feature.
+
 /// <reference types="bun-types" />
 
 /**
@@ -13,7 +17,7 @@
  * it declares sources of its own. A model-level `## artifact` still always
  * makes a report (`report-on-surface`).
  *
- * Over real HTTP against `tests/fixtures/query-artifact-surface`.
+ * Over real HTTP against `tests/fixtures/deprecated-query-artifact-surface`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -22,7 +26,7 @@ import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const FIXTURE = path.resolve(
    __dirname,
-   "../../fixtures/query-artifact-surface",
+   "../../fixtures/deprecated-query-artifact-surface",
 );
 const ENV_NAME = "query-artifact-surface-env";
 const PKG = "query-artifact-surface";

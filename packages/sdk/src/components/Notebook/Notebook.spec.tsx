@@ -10,7 +10,7 @@
  * trailing optional argument, which is the kind that goes missing without a
  * test noticing, so it is asserted here rather than only on the hook.
  */
-import { beforeEach, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import {
@@ -161,23 +161,27 @@ it("opens a cell's 'Data sources' dialog with the notebook's current values", as
    );
 });
 
-it("renders a .malloynb as before: runs every code cell, no caption, no folded definition", async () => {
-   current = {
-      notebookCells: [
-         { type: "markdown", text: "Prose" },
-         { type: "code", text: "run: a -> b" },
-         { type: "code", text: '#" x\nrun: a -> c' },
-      ],
-   } as RawNotebook;
-   render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+describe("deprecated: .malloynb notebooks", () => {
+   it("renders a .malloynb as before: runs every code cell, no caption, no folded definition", async () => {
+      current = {
+         notebookCells: [
+            { type: "markdown", text: "Prose" },
+            { type: "code", text: "run: a -> b" },
+            { type: "code", text: '#" x\nrun: a -> c' },
+         ],
+      } as RawNotebook;
+      render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
 
-   await screen.findByText("Prose");
-   await waitFor(() => expect(executeNotebookCell).toHaveBeenCalledTimes(2));
-   expect(executeNotebookCell.mock.calls.map((call) => call[3])).toEqual([
-      1, 2,
-   ]);
-   expect(screen.queryByText("x")).toBeNull();
-   expect(
-      screen.queryByRole("button", { name: /^(run|source|import)/ }),
-   ).toBeNull();
+      await screen.findByText("Prose");
+      await waitFor(() => expect(executeNotebookCell).toHaveBeenCalledTimes(2));
+      expect(executeNotebookCell.mock.calls.map((call) => call[3])).toEqual([
+         1, 2,
+      ]);
+      expect(screen.queryByText("x")).toBeNull();
+      expect(
+         screen.queryByRole("button", { name: /^(run|source|import)/ }),
+      ).toBeNull();
+   });
 });

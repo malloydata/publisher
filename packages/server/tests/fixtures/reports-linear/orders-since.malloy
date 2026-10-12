@@ -1,0 +1,18 @@
+##! experimental.givens
+##" Order counts from a date the reader picks.
+## artifact { layout=linear title="Orders in a window" autorun=false }
+
+// A report surfaces the givens it imports, so the controls show these and
+// nothing else. `autorun=false` asks for an Apply button: one change re-runs
+// every cell. The explicit title beats the doc comment above the tag and the
+// heading below it.
+import { orders } from "orders.malloy"
+import { BRAND, MIN_AMOUNT, SINCE } from "givens.malloy"
+
+##|(markdown)
+# Orders since
+|##
+
+##(markdown) Orders in the window
+
+run: orders -> since_totals

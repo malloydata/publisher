@@ -11,7 +11,7 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 /**
  * End-to-end coverage for `#(authorize)` source gates in a notebook. The
  * storefront example ships no gated model, so the spec writes its own
- * .malloy + .malloynb into the `storefront` package, reloads, and cleans up.
+ * model and a linear report into the `storefront` package, reloads, and cleans up.
  *
  * The gate is a LOCK: `#(authorize)` asks whether the caller may reach the
  * source at all, so every way of not satisfying it is a 403 and the cell
@@ -33,7 +33,7 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  */
 
 const FIXTURE_MODEL = "authz_gate.malloy";
-const FIXTURE_NOTEBOOK = "authz_gate_notebook.malloynb";
+const FIXTURE_NOTEBOOK = "authz_gate_notebook.malloy";
 
 const PKG_DIR = path.resolve(
    path.dirname(fileURLToPath(import.meta.url)),
@@ -56,14 +56,15 @@ source: gated_products is duckdb.table('data/products.parquet') extend {
 }
 `;
 
-// Single malloy cell (index 0) so the cell-GET index is unambiguous. The cell
-// enables `experimental.givens` in its own compile scope: authorize validation
-// compiles a `$role` probe against the notebook model, which needs the flag set
-// here even though `role` itself is declared in the imported model.
-const NOTEBOOK_SOURCE = `>>>malloy
-##! experimental.givens
+// One query cell. The report enables `experimental.givens`: authorize
+// validation compiles a `$role` probe against the report's model, which needs
+// the flag set here even though `role` itself is declared in the imported model.
+const CELL = "run: gated_products -> spotlight";
+const NOTEBOOK_SOURCE = `##! experimental.givens
+## artifact { layout=linear }
 import "authz_gate.malloy"
-run: gated_products -> spotlight
+
+${CELL}
 `;
 
 async function reloadPackage(baseURL: string): Promise<void> {
@@ -89,12 +90,19 @@ test.describe("notebook-authorize", () => {
       await reloadPackage(baseURL!).catch(() => undefined);
    });
 
-   const cellUrl = (baseURL: string, givens?: Record<string, string>) => {
-      const base = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}/notebooks/${FIXTURE_NOTEBOOK}/cells/0`;
-      return givens
-         ? `${base}?givens=${encodeURIComponent(JSON.stringify(givens))}`
-         : base;
-   };
+   /** A report's cell runs through the query route, its text as the query. */
+   const QUERY_ROUTE = new RegExp(
+      `/models/${FIXTURE_NOTEBOOK.replace(".", "\\.")}/query`,
+   );
+   const runCell = (baseURL: string, givens?: Record<string, string>) =>
+      fetch(
+         `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}/models/${FIXTURE_NOTEBOOK}/query`,
+         {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: CELL, givens }),
+         },
+      );
 
    /** Rows out of a cell response, whose `result` is JSON text. */
    async function cellRows(res: Response): Promise<unknown[]> {
@@ -113,7 +121,7 @@ test.describe("notebook-authorize", () => {
       // The message must name the source and stop there — leaking either the
       // given's name or the literal it is compared against would tell an
       // outsider how to satisfy a lock they were just refused.
-      const res = await fetch(cellUrl(baseURL!));
+      const res = await runCell(baseURL!);
       expect(res.status).toBe(403);
       const body = (await res.json()) as { message?: string };
       expect(body.message).toContain("gated_products");
@@ -127,7 +135,7 @@ test.describe("notebook-authorize", () => {
       // The denial shape for a lock, and the case the whole route split exists
       // for: `intern` is refused outright rather than served an empty result
       // it could mistake for "this source holds no Jeans".
-      const res = await fetch(cellUrl(baseURL!, { role: "intern" }));
+      const res = await runCell(baseURL!, { role: "intern" });
       expect(res.status).toBe(403);
       const body = (await res.json()) as { message?: string };
       expect(body.message ?? "").not.toContain("analyst");
@@ -137,7 +145,7 @@ test.describe("notebook-authorize", () => {
       // Asserts the ROW, not just the 200: a 200 carrying zero rows is what a
       // silently-dropped gate produces, and it would pass a status-only
       // version of this test.
-      const res = await fetch(cellUrl(baseURL!, { role: "analyst" }));
+      const res = await runCell(baseURL!, { role: "analyst" });
       expect(res.status).toBe(200);
       const rows = await cellRows(res);
       expect(rows).toHaveLength(1);
@@ -148,8 +156,9 @@ test.describe("notebook-authorize", () => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
-      await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
-      await expect(page).toHaveURL(/authz_gate_notebook\.malloynb/);
+      // An untitled report is listed by its basename.
+      await page.getByText("authz_gate_notebook", { exact: true }).click();
+      await expect(page).toHaveURL(/\/authz_gate_notebook$/);
       await expect(page.getByLabel("role")).toBeVisible();
    }
 
@@ -161,11 +170,7 @@ test.describe("notebook-authorize", () => {
       // while the notebook is still executing, where the change is recorded
       // but not re-run.
       const deniedResponse = page.waitForResponse(
-         (r) =>
-            // A `.malloynb`'s cells run on the notebooks cell route.
-            /\/notebooks\/.*authz_gate_notebook\.malloynb\/cells\/0/.test(
-               r.url(),
-            ) && r.request().method() === "GET",
+         (r) => QUERY_ROUTE.test(r.url()) && r.request().method() === "POST",
          { timeout: 30_000 },
       );
       await openNotebook(page);
@@ -184,11 +189,11 @@ test.describe("notebook-authorize", () => {
    test("UI: a given supplied mid-execution is applied once the run finishes", async ({
       page,
    }) => {
-      // Hold the first (denied) cell GET so the notebook stays executing while
+      // Hold the first (denied) cell run so the report stays executing while
       // we fill `role`. This is the window where a given change used to be
-      // recorded but never re-run. Only the first /cells/0 request is held.
+      // recorded but never re-run. Only the first cell run is held.
       let held = false;
-      await page.route(/\/cells\/0/, async (route) => {
+      await page.route(QUERY_ROUTE, async (route) => {
          if (!held) {
             held = true;
             await new Promise((r) => setTimeout(r, 5000));
@@ -199,7 +204,7 @@ test.describe("notebook-authorize", () => {
       // Wait until the held request is actually in flight (notebook executing),
       // then fill — a deterministic "mid-execution" signal, no fixed delay.
       const firstCellRequest = page.waitForRequest(
-         (r) => /\/cells\/0/.test(r.url()),
+         (r) => QUERY_ROUTE.test(r.url()),
          { timeout: 30_000 },
       );
       await openNotebook(page);

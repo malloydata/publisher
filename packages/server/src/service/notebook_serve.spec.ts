@@ -74,52 +74,60 @@ describe("notebook predicates", () => {
       expect(layoutOfText(tag(""))).toBe("linear");
    });
 
-   it("reads the top-level kind off the artifact line, not a tile entry's", () => {
-      const text = (tag: string) => `${tag}\nrun: x`;
-      expect(
-         artifactKindInText(
-            text("## artifact { kind=notebook tiles=[a { kind=text }] }"),
-         ),
-      ).toBe("notebook");
-      expect(
-         artifactKindInText(text("## artifact { tiles=[a { kind=text }] }")),
-      ).toBeUndefined();
-      expect(artifactKindInText("run: x")).toBeUndefined();
-      expect(
-         artifactKindInText('##|"\n## artifact { kind=notebook }\n|##\nrun: x'),
-      ).toBeUndefined();
-   });
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `kind=` in an artifact tag (see RELEASE_NOTES deprecations).
+   describe("deprecated: kind= in an artifact tag", () => {
+      it("reads the top-level kind off the artifact line, not a tile entry's", () => {
+         const text = (tag: string) => `${tag}\nrun: x`;
+         expect(
+            artifactKindInText(
+               text("## artifact { kind=notebook tiles=[a { kind=text }] }"),
+            ),
+         ).toBe("notebook");
+         expect(
+            artifactKindInText(text("## artifact { tiles=[a { kind=text }] }")),
+         ).toBeUndefined();
+         expect(artifactKindInText("run: x")).toBeUndefined();
+         expect(
+            artifactKindInText(
+               '##|"\n## artifact { kind=notebook }\n|##\nrun: x',
+            ),
+         ).toBeUndefined();
+      });
 
-   it("reads the artifact tag written as a ##| block", () => {
-      const block =
-         '##| artifact { kind=notebook\n  tiles=[\n    a { kind=text },\n    "s -> v"\n  ]\n}\n|##\nrun: x';
-      expect(artifactKindInText(block)).toBe("notebook");
-      expect(claimsToBeANotebook(block)).toBe(true);
-      // The lexer takes the opener's whole line, so a same-line `|##` is tag text the tag cannot parse.
-      const sameLine = "##| artifact { kind=dashboard } |##\n}\n|##\nrun: x";
-      expect(claimsToBeANotebook(sameLine)).toBe(true);
-      expect(artifactKindInText(sameLine)).toBeUndefined();
-      expect(claimsToBeANotebook("##| artifacts\nprose\n|##\nrun: x")).toBe(
-         false,
-      );
-      expect(isArtifactNoteText("##| artifact { kind=notebook }")).toBe(true);
-   });
+      it("reads the artifact tag written as a ##| block", () => {
+         const block =
+            '##| artifact { kind=notebook\n  tiles=[\n    a { kind=text },\n    "s -> v"\n  ]\n}\n|##\nrun: x';
+         expect(artifactKindInText(block)).toBe("notebook");
+         expect(claimsToBeANotebook(block)).toBe(true);
+         // The lexer takes the opener's whole line, so a same-line `|##` is tag text the tag cannot parse.
+         const sameLine = "##| artifact { kind=dashboard } |##\n}\n|##\nrun: x";
+         expect(claimsToBeANotebook(sameLine)).toBe(true);
+         expect(artifactKindInText(sameLine)).toBeUndefined();
+         expect(claimsToBeANotebook("##| artifacts\nprose\n|##\nrun: x")).toBe(
+            false,
+         );
+         expect(isArtifactNoteText("##| artifact { kind=notebook }")).toBe(
+            true,
+         );
+      });
 
-   it("reads an artifact property anywhere among the tag's properties", () => {
-      const second = "## dashboard { columns=2 } artifact { kind=notebook }";
-      expect(isArtifactNoteText(second)).toBe(true);
-      expect(claimsToBeANotebook(`${second}\nrun: x`)).toBe(true);
-      expect(artifactKindInText(`${second}\nrun: x`)).toBe("notebook");
-      expect(
-         artifactKindInText(
-            "##| dashboard { columns=2 }\n  artifact { kind=notebook }\n|##\nrun: x",
-         ),
-      ).toBe("notebook");
-      expect(isArtifactNoteText('## dashboard { title="artifact" }')).toBe(
-         false,
-      );
-      expect(isArtifactNoteText("## dashboard { artifact {} }")).toBe(false);
-      expect(isArtifactNoteText("## title=artifact")).toBe(false);
+      it("reads an artifact property anywhere among the tag's properties", () => {
+         const second = "## dashboard { columns=2 } artifact { kind=notebook }";
+         expect(isArtifactNoteText(second)).toBe(true);
+         expect(claimsToBeANotebook(`${second}\nrun: x`)).toBe(true);
+         expect(artifactKindInText(`${second}\nrun: x`)).toBe("notebook");
+         expect(
+            artifactKindInText(
+               "##| dashboard { columns=2 }\n  artifact { kind=notebook }\n|##\nrun: x",
+            ),
+         ).toBe("notebook");
+         expect(isArtifactNoteText('## dashboard { title="artifact" }')).toBe(
+            false,
+         );
+         expect(isArtifactNoteText("## dashboard { artifact {} }")).toBe(false);
+         expect(isArtifactNoteText("## title=artifact")).toBe(false);
+      });
    });
 
    it("reads a file's layout off a tag whose artifact property is not first", () => {
@@ -131,24 +139,22 @@ describe("notebook predicates", () => {
    });
 
    it("follows Malloy's route rule: a sigil glued to a word is a route, not a tag", () => {
-      expect(isArtifactNoteText("##artifact { kind=notebook }")).toBe(false);
-      expect(isArtifactNoteText("##|artifact { kind=notebook }")).toBe(false);
-      expect(ANY_ARTIFACT_NOTE.test("##artifact { kind=notebook }")).toBe(
+      expect(isArtifactNoteText("##artifact { layout=linear }")).toBe(false);
+      expect(isArtifactNoteText("##|artifact { layout=linear }")).toBe(false);
+      expect(ANY_ARTIFACT_NOTE.test("##artifact { layout=linear }")).toBe(
          false,
       );
-      expect(ANY_ARTIFACT_NOTE.test("#artifact { kind=dashboard }")).toBe(
-         false,
-      );
-      expect(ANY_ARTIFACT_NOTE.test("# 2024 artifact { kind=dashboard }")).toBe(
+      expect(ANY_ARTIFACT_NOTE.test("#artifact { layout=grid }")).toBe(false);
+      expect(ANY_ARTIFACT_NOTE.test("# 2024 artifact { layout=grid }")).toBe(
          true,
       );
-      expect(ANY_ARTIFACT_NOTE.test("#|\n  artifact { kind=dashboard }")).toBe(
+      expect(ANY_ARTIFACT_NOTE.test("#|\n  artifact { layout=grid }")).toBe(
          true,
       );
       expect(ANY_ARTIFACT_NOTE.test("# Áartifact {}")).toBe(false);
       expect(
          hasArtifactLineOutsideBlocks(
-            "##|artifact { kind=dashboard }\n|##\nrun: x",
+            "##|artifact { layout=grid }\n|##\nrun: x",
             ANY_ARTIFACT_NOTE,
          ),
       ).toBe(false);
@@ -171,15 +177,21 @@ describe("notebook predicates", () => {
       }
    });
 
-   it("locates the artifact note by its line, and only the ## form", () => {
-      const notes = [
-         note('##" above\n', 0),
-         note("## artifact { kind=notebook }\n", 1),
-         note('##" below\n', 3),
-      ];
-      expect(artifactNoteLine(notes)).toBe(1);
-      expect(artifactNoteLine([note("## artifactual\n", 0)])).toBeUndefined();
-      expect(artifactNoteLine([note("# artifact {}\n", 0)])).toBeUndefined();
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // the query-level `# artifact` (see RELEASE_NOTES deprecations).
+   describe("deprecated: query-level # artifact", () => {
+      it("locates the artifact note by its line, and only the ## form", () => {
+         const notes = [
+            note('##" above\n', 0),
+            note("## artifact { layout=linear }\n", 1),
+            note('##" below\n', 3),
+         ];
+         expect(artifactNoteLine(notes)).toBe(1);
+         expect(
+            artifactNoteLine([note("## artifactual\n", 0)]),
+         ).toBeUndefined();
+         expect(artifactNoteLine([note("# artifact {}\n", 0)])).toBeUndefined();
+      });
    });
 
    it("keeps only the notes above the artifact line, and all when there is none", () => {
@@ -330,10 +342,9 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/tagged.malloy",
-         `## artifact { kind=notebook }\n${BASE}`,
+         `## artifact { layout=linear }\n${BASE}`,
       );
       write("notebooks/untagged.malloy", BASE);
-      write("notebooks/nested.malloynb", ">>>markdown\n# x");
       await withPackage(async (pkg) => {
          expect(pkg.getReportLayout("notebooks/tagged.malloy")).toBe("linear");
          expect(pkg.isServedReport("notebooks/untagged.malloy")).toBe(false);
@@ -372,7 +383,7 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/second.malloy",
-         `## dashboard { columns=2 } artifact { kind=notebook }\n${BASE}`,
+         `## dashboard { columns=2 } artifact { layout=linear }\n${BASE}`,
       );
       write(
          "notebooks/titled.malloy",
@@ -568,13 +579,17 @@ describe("served notebooks (worker path)", () => {
       });
    });
 
-   it("flags a served notebook listed in explores, as it flags a .malloynb", async () => {
-      manifest({ explores: ["notebooks/nb.malloy"] });
-      write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
-      await withPackage(async (pkg) => {
-         expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
-            "notebooks/nb.malloy",
-         ]);
+   // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
+   // RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("flags a served notebook listed in explores, as it flags a .malloynb", async () => {
+         manifest({ explores: ["notebooks/nb.malloy"] });
+         write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
+         await withPackage(async (pkg) => {
+            expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
+               "notebooks/nb.malloy",
+            ]);
+         });
       });
    });
 
