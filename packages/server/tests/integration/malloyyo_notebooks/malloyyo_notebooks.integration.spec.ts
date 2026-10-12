@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import path from "path";
+import { resetAuthorizeGuardTelemetryForTesting } from "../../../src/authorize_metrics";
 import { resetNotebookMetricsForTest } from "../../../src/notebook_metrics";
 import { resetReportMetricsForTest } from "../../../src/report_metrics";
 import {
@@ -192,6 +193,7 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
                harness = await startMetricsHarness();
                resetNotebookMetricsForTest();
                resetReportMetricsForTest();
+               resetAuthorizeGuardTelemetryForTesting();
             },
          },
       );
@@ -330,6 +332,19 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
             expect(body.find((nb) => nb.path === REFUSED)?.error).toContain(
                "Line 7:",
             );
+         });
+
+         it("answers the report GET with the error, naming the line, and no cells", async () => {
+            // The report route answers a report it cannot read with its
+            // error, as the listing does; only the deprecated notebook GET
+            // below fails the request (424).
+            const { status, body } = await getJson<{
+               error?: string;
+               notebook?: unknown;
+            }>(pkgUrl(PLAIN, `/reports/${REFUSED}`));
+            expect(status).toBe(200);
+            expect(body.error).toContain("Line 7:");
+            expect(body.notebook).toBeUndefined();
          });
 
          // DEPRECATED FEATURE COVERAGE — delete together with
@@ -541,6 +556,33 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
          expect(body.notebookCells?.[11].queryInfo).toBeUndefined();
          // Positive control: the cell over a curated source keeps its queryInfo.
          expect(body.notebookCells?.[5].queryInfo).toBeDefined();
+      });
+
+      it("answers 403 on a locked cell's query without the role, and runs it with the role", async () => {
+         // Either denial counts: the gate refusing a role it does not admit,
+         // or a gate it cannot decide (no ROLES given). Both answer 403.
+         const denied = async () =>
+            (await harness.collectCounter("publisher_authorize_lock_total", {
+               decision: "denied_by_lock",
+            })) +
+            (await harness.collectCounter("publisher_authorize_lock_total", {
+               decision: "denied_unresolvable",
+            }));
+         const before = await denied();
+         expect((await runCell(SURFACE, CELLS, 13)).status).toBe(403);
+         expect(
+            (
+               await runCell(SURFACE, CELLS, 13, {
+                  givens: { ROLES: ["viewer"] },
+               })
+            ).status,
+         ).toBe(403);
+         const allowed = await runCell(SURFACE, CELLS, 13, {
+            givens: { ROLES: ["admin"] },
+         });
+         expect(allowed.status).toBe(200);
+         expect(rowsOf(allowed.body.result)).toEqual([{ n: 6 }]);
+         expect((await denied()) - before).toBe(2);
       });
 
       // DEPRECATED FEATURE COVERAGE — delete together with
