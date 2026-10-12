@@ -20,8 +20,9 @@ import {
 } from "../test_helpers/metrics_harness";
 import { Environment } from "./environment";
 import type { Package } from "./package";
+import { linesMentioning } from "../test_helpers/log_lines";
 
-const PACKAGE = "tele";
+const PACKAGE = "report-discovery-telemetry";
 
 const FILES: Record<string, string> = {
    // Both keys deprecated; `"all"` keeps every source queryable, so the
@@ -45,9 +46,19 @@ const FILES: Record<string, string> = {
 };
 
 type Calls = { mock: { calls: unknown[][] } };
+/**
+ * The `message` lines this spec's package logged. Other spec files in the
+ * process load packages of their own while the spies are active, so a line
+ * is ours only when it names this package.
+ */
 const callsOf = (spy: Calls, message: string) =>
    spy.mock.calls
-      .filter(([text]) => text === message)
+      .filter(
+         ([text, meta]) =>
+            text === message &&
+            (meta as { packageName?: string } | undefined)?.packageName ===
+               PACKAGE,
+      )
       .map(([, meta]) => meta as Record<string, unknown>);
 
 describe("report discovery telemetry", () => {
@@ -130,7 +141,7 @@ describe("report discovery telemetry", () => {
       );
       // The per-finding `warn` is gone.
       expect(
-         warn.mock.calls.filter(([text]) =>
+         linesMentioning(warn, PACKAGE).filter(([text]) =>
             String(text).startsWith("Report lint"),
          ),
       ).toEqual([]);

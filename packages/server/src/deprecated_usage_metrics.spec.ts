@@ -30,6 +30,7 @@ import type { EnvironmentStore } from "./service/environment_store";
 import { isLegacyReportAlias } from "./service/legacy_report_views";
 import type { Model } from "./service/model";
 import type { Package } from "./service/package";
+import { linesMentioning } from "./test_helpers/log_lines";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -84,35 +85,29 @@ describe("publisher_deprecated_usage_total", () => {
       });
 
       it("logs a 404 once, at warn, never at error", async () => {
+         // `bun test` runs many spec files in one process, and their async
+         // work logs through this same logger while the spies are active
+         // (another file's "Environment env does not exist", say). Only lines
+         // naming this request's own environment are this request's.
+         const probe = "deprecated-404-probe";
+         const path = `/api/v0/environments/${probe}/packages/pkg/dashboards/sales`;
          const warn = spyOn(logger, "warn");
          const error = spyOn(logger, "error");
          try {
-            const res = await request(app()).get(`${pkg}/dashboards/sales`);
+            const res = await request(app()).get(path);
             expect(res.status).toBe(404);
-            // Filtered: other tests in the process log through the same logger.
-            const about = (calls: unknown[][]) =>
-               calls.filter((args) =>
-                  args.some((arg) =>
-                     String(
-                        (arg as Error | undefined)?.message ?? arg,
-                     ).includes("env does not exist"),
-                  ),
-               );
-            const refusals = (warn.mock.calls as unknown[][]).filter(
-               ([text]) => text === "Request refused",
-            );
-            expect(refusals).toEqual([
+            expect(linesMentioning(warn, probe)).toEqual([
                [
                   "Request refused",
                   {
-                     path: `${pkg}/dashboards/sales`,
+                     path,
                      packageName: "pkg",
                      status: 404,
-                     error: "Environment env does not exist",
+                     error: `Environment ${probe} does not exist`,
                   },
                ],
             ]);
-            expect(about(error.mock.calls as unknown[][])).toEqual([]);
+            expect(linesMentioning(error, probe)).toEqual([]);
          } finally {
             warn.mockRestore();
             error.mockRestore();
@@ -133,14 +128,10 @@ describe("publisher_deprecated_usage_total", () => {
             ).get(`${pkg}/dashboards/sales`);
             expect(fault.status).toBe(500);
 
-            const mentioning = (marker: string) =>
-               (error.mock.calls as unknown[][]).filter((args) =>
-                  JSON.stringify(args).includes(marker),
-               );
-            expect(mentioning("busy-503-marker").map(([text]) => text)).toEqual(
-               ["Request failed"],
-            );
-            expect(mentioning("fault-500-marker")).toHaveLength(1);
+            expect(
+               linesMentioning(error, "busy-503-marker").map(([text]) => text),
+            ).toEqual(["Request failed"]);
+            expect(linesMentioning(error, "fault-500-marker")).toHaveLength(1);
          } finally {
             error.mockRestore();
          }

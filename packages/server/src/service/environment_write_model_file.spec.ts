@@ -14,6 +14,7 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import { Environment } from "./environment";
+import { linesMentioning } from "../test_helpers/log_lines";
 
 /**
  * `writeModelFileTransactional`: the precondition, the write, the reload and
@@ -24,7 +25,8 @@ import { Environment } from "./environment";
  * both pass their check nor revert each other's text.
  */
 const PKG = "pkg";
-const FILE = "dashboards/overview.malloy";
+/** A path no other spec writes, so this file's log lines are told apart by it. */
+const FILE = "dashboards/write-model-file-probe.malloy";
 
 let root: string;
 let environment: Environment;
@@ -63,12 +65,12 @@ afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 const ok = async () => undefined;
 
 /**
- * The log lines a spy saw about a write or its rollback, by either name the
- * error mapping or this service gives them; other tests in the process log
- * through the same logger.
+ * The log lines a spy saw about this spec's write or its rollback, from this
+ * service or from the error mapping (whose lines carry the error, which names
+ * the file). Other spec files in the process log through the same logger.
  */
 const writeLines = (spy: { mock: { calls: unknown[][] } }) =>
-   spy.mock.calls.filter(([text]) => /write|rolled back/i.test(String(text)));
+   linesMentioning(spy, FILE);
 
 describe("Environment.writeModelFileTransactional", () => {
    it("writes a new file and reports that nothing was there", async () => {
