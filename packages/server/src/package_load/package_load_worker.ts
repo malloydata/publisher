@@ -113,6 +113,7 @@ import {
    type ExpandableRefSummary,
 } from "../service/gate_dimension";
 import { modelInfoOf } from "../service/model_info";
+import { planModelPreaggregation } from "../service/preaggregation_synthesis";
 import { type FilterDefinition } from "../service/filter";
 import {
    PackageMaterializationConfig,
@@ -975,7 +976,32 @@ async function compileMalloyModel(
          authorizeWarningCollection.warnings.length > 0
             ? authorizeWarningCollection.warnings
             : undefined,
+      buildPlanInputs: buildPlanInputsOf(compiled),
    };
+}
+
+/**
+ * The two facts `compilePackageBuildPlan` gates each model on, read the same
+ * way it reads them: the `##! experimental.persistence` flag off the compiled
+ * model's annotations, and whether `planModelPreaggregation` finds a rollup in
+ * its contents. Undefined when either check throws, so the main thread falls
+ * back to compiling the model for the plan and meets the same failure there.
+ */
+function buildPlanInputsOf(
+   compiled: Awaited<ReturnType<ModelMaterializer["getModel"]>>,
+): SerializedModel["buildPlanInputs"] {
+   try {
+      return {
+         persistence: compiled.modelAnnotations
+            .parseAsTag("!")
+            .tag.has("experimental", "persistence"),
+         preaggregate:
+            planModelPreaggregation(compiled._modelDef?.contents ?? {}).length >
+            0,
+      };
+   } catch {
+      return undefined;
+   }
 }
 
 async function compileNotebookModel(

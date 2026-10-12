@@ -878,9 +878,25 @@ export async function classifyPersistSourceGate(
    }
 }
 
+/** Options for {@link compilePackageBuildPlan}. */
+export interface CompileBuildPlanOptions {
+   /**
+    * Models known to contribute nothing to the plan, so they are not compiled
+    * for it. Only for a caller that already holds a compile of exactly these
+    * files and read off it the two facts this function gates every model on
+    * (the `experimental.persistence` flag and a usable `#@ preaggregate`; see
+    * `Model.mayContributeToBuildPlan`): a skipped model would otherwise reach
+    * one of the `continue`s below having produced nothing. The package load is
+    * that caller; a build, which may run against files edited since the load,
+    * is not, and compiles everything.
+    */
+   skipModel?: (modelPath: string) => boolean;
+}
+
 export async function compilePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
+   options?: CompileBuildPlanOptions,
 ): Promise<CompiledBuildPlan> {
    const allGraphs: MalloyBuildGraph[] = [];
    const allSources: Record<string, PersistSource> = {};
@@ -895,6 +911,7 @@ export async function compilePackageBuildPlan(
       // the notebook's `>>>` cell delimiter, which would abort the entire
       // package build plan and silently drop every persist source in it.
       if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+      if (options?.skipModel?.(modelPath)) continue;
       if (signal?.aborted) throw new Error("Build cancelled");
 
       const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
@@ -1324,6 +1341,7 @@ export function deriveBuildPlan(
 export async function computePackageBuildPlan(
    pkg: BuildPlanPackage,
    signal?: AbortSignal,
+   options?: CompileBuildPlanOptions,
 ): Promise<{
    plan: BuildPlan | null;
    droppedPersistSources: { name: string; modelPath: string }[];
@@ -1331,7 +1349,7 @@ export async function computePackageBuildPlan(
    colocatedSourceEligibility: ColocatedSourceEligibility;
    incrementalDeclarations: Record<string, IncrementalDeclaration>;
 }> {
-   const compiled = await compilePackageBuildPlan(pkg, signal);
+   const compiled = await compilePackageBuildPlan(pkg, signal, options);
    const droppedPersistSources = compiled.droppedPersistSources ?? [];
    const incrementalDeclarations = collectIncrementalDeclarations(
       compiled.sources,

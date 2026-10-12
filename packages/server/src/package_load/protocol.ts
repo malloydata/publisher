@@ -206,6 +206,17 @@ export interface SerializedModel {
     * constructed.
     */
    authorizeWarnings?: string[];
+   /**
+    * Whether this compiled `.malloy` model can add anything to the package's
+    * persist build plan, read off the same compiled model the build plan's own
+    * checks read (`compilePackageBuildPlan`): `persistence` is its
+    * `##! experimental.persistence` flag, `preaggregate` whether
+    * `planModelPreaggregation` finds a usable `#@ preaggregate`. A model with
+    * both false contributes nothing, so the load skips recompiling it for the
+    * plan. Absent (a notebook, a compile failure, or a check that threw) means
+    * unknown, and the model is compiled for the plan as before.
+    */
+   buildPlanInputs?: { persistence: boolean; preaggregate: boolean };
 }
 
 export interface SerializedNotebookCell {

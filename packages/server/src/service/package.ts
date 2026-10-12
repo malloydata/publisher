@@ -1294,8 +1294,11 @@ export class Package {
       // caller binds any configured manifest, so the surfaced plan reflects the
       // canonical build (not the manifest-rewritten SQL). Best-effort: a plan
       // failure is logged, not fatal — the package still serves; the plan is
-      // just absent. Recompiles the models (duplicate schema RPCs vs the worker
-      // compile); accepted for now.
+      // just absent. Recompiles the models that can contribute to the plan
+      // (duplicate schema RPCs vs the worker compile); accepted for now. A model
+      // the worker saw declare neither `##! experimental.persistence` nor a
+      // `#@ preaggregate` is skipped: the plan would compile it only to discard
+      // it, and that recompile was a third of a load for most packages.
       //
       // A failure also leaves `sourceEligibility` unknown, which refuses every
       // storage serve binding until a load succeeds (see
@@ -1315,7 +1318,10 @@ export class Package {
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
-         } = await computePackageBuildPlan(pkg);
+         } = await computePackageBuildPlan(pkg, undefined, {
+            skipModel: (modelPath) =>
+               models.get(modelPath)?.mayContributeToBuildPlan() === false,
+         });
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
          pkg.sourceEligibility = sourceEligibility;

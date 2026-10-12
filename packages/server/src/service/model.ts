@@ -774,6 +774,12 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
+   /**
+    * What the package-load worker read off this model's compile for the
+    * persist build plan (see `SerializedModel.buildPlanInputs`). Undefined when
+    * unknown: an in-process `Model.create`, a notebook, or a check that threw.
+    */
+   private buildPlanInputs: SerializedModel["buildPlanInputs"];
    private compiledReportFacts:
       | Promise<ReportModelFacts | undefined>
       | undefined;
@@ -4853,7 +4859,19 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
+      model.buildPlanInputs = data.buildPlanInputs;
       return model;
+   }
+
+   /**
+    * Whether the persist build plan has to compile this model: false only when
+    * the worker's compile showed it declares neither
+    * `##! experimental.persistence` nor a usable `#@ preaggregate`, the two
+    * things `compilePackageBuildPlan` reads a model for. Unknown counts as true.
+    */
+   public mayContributeToBuildPlan(): boolean {
+      const inputs = this.buildPlanInputs;
+      return inputs === undefined || inputs.persistence || inputs.preaggregate;
    }
 
    /**
