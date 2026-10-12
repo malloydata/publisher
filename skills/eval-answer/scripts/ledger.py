@@ -95,7 +95,12 @@ EVENTS: dict[str, dict[str, set[str]]] = {
         # searched for and drops a target that carried none. Without it the
         # bare-target rate is not recomputable from a run directory, only from
         # transcripts, and transcripts get pruned.
-        "optional": {"targets", "target_shapes", "scopes", "rankedSummary",
+        # `search_targets` is the request's targets as sent -- type, text and
+        # any example_values, one row each -- which is what a golden's
+        # `searchTargets` is scored against target by target
+        # (score_targets.py). `targets` and `target_shapes` each keep half.
+        "optional": {"targets", "target_shapes", "search_targets", "scopes",
+                     "rankedSummary",
                      "error", "traceId",
                      "query", "modelPath", "givens", "filterParams",
                      "retrieval_mode",

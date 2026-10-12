@@ -112,6 +112,83 @@ def holds_value(golden: dict[str, Any]) -> bool:
     return golden.get("value") is not None or "path" in golden
 
 
+# The entity kinds each get_context `target_type` can return. One definition,
+# pinned against the server by score_retrieval_test; its keys are the types
+# the server accepts.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]
+                       / "eval-answer" / "scripts"))
+from score_retrieval import KINDS_BY_TARGET  # noqa: E402
+
+TARGET_TYPES = tuple(KINDS_BY_TARGET)
+
+
+def search_target_findings(case: dict[str, Any], where: str,
+                           qid: Any) -> list[str]:
+    """The shape of an optional `searchTargets` list. Never its ids' existence.
+
+    Whether an id names a real entity is a question about the model, which
+    this script does not read; `check_findable.py` answers it. This catches
+    what would otherwise score silently wrong: a target type the server
+    rejects, a key that is not a `kind:source:name` id, a group written as a
+    bare string, which `score_targets.py` would read one letter at a time, and
+    a key the target's own type can never return. `target_type` is a hard
+    filter on the server, so a `dimension` target keyed to a measure scores a
+    miss on every run however the agent words it.
+    """
+    targets = case.get("searchTargets")
+    if targets is None:
+        return []
+    if not isinstance(targets, list):
+        return [f"{where} {qid}: `searchTargets` is not a list"]
+    out = []
+    for i, t in enumerate(targets, 1):
+        at = f"{where} {qid}: searchTargets[{i}]"
+        if not isinstance(t, dict):
+            out.append(f"{at} is not an object")
+            continue
+        if t.get("target_type") not in TARGET_TYPES:
+            out.append(f"{at}: `target_type` is {t.get('target_type')!r}, "
+                       f"expected one of {TARGET_TYPES}")
+        text = t.get("search_text")
+        if text is not None and not (isinstance(text, str) and text.strip()):
+            out.append(f"{at}: `search_text` must be a non-empty string, or "
+                       f"absent for a target that enumerates its type")
+        values = t.get("example_values")
+        if values is not None and not isinstance(values, list):
+            out.append(f"{at}: `example_values` must be a list")
+        exp = t.get("expectedEntities")
+        if exp is None:
+            continue
+        if not isinstance(exp, dict):
+            out.append(f"{at}: `expectedEntities` is not an object")
+            continue
+        req = [[r] for r in exp.get("required") or []]
+        for g in exp.get("requiredAnyOf") or []:
+            if not isinstance(g, list):
+                out.append(f"{at}: a `requiredAnyOf` group is "
+                           f"{type(g).__name__}, expected a list of ids. Fix: "
+                           f'[["measure:s:a", "measure:s:b"]]')
+                continue
+            req.append(g)
+        bad = False
+        for eid in [e for g in req for e in g] + list(exp.get("acceptable") or []):
+            parts = eid.split(":", 2) if isinstance(eid, str) else []
+            if len(parts) < 3 or not all(parts):
+                bad = True
+                out.append(f"{at}: {eid!r} is not a kind:source:name id. Fix: "
+                           f'"measure:order_items:total_sales"')
+        kinds = KINDS_BY_TARGET.get(t.get("target_type"))
+        if bad or kinds is None:
+            continue
+        for g in req:
+            if not any(e.split(":", 1)[0] in kinds for e in g):
+                out.append(f"{at}: a `{t['target_type']}` target can never "
+                           f"return {' | '.join(g)}, because `target_type` is "
+                           f"a hard filter. Fix: move it to a target of its "
+                           f"own kind")
+    return out
+
+
 def read_cases(path: pathlib.Path) -> tuple[list[dict[str, Any]], list[str]]:
     """Parsed cases, plus one finding per line that did not parse.
 
@@ -166,6 +243,8 @@ def check_case(case: dict[str, Any], where: str) -> tuple[list[str], list[str]]:
             "Either the question was edited after import, which is never "
             "allowed, or the stamp is wrong. Fix: restore the question, or "
             "give the new wording a new qid")
+
+    findings += search_target_findings(case, where, qid)
 
     golden = case.get("golden")
     if golden is None:

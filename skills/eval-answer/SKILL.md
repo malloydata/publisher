@@ -135,6 +135,29 @@ which is what makes this number worth having. It uses the search terms the answe
 attributes a failure *within* an arm and does not compare retrieval across arms
 -- that is the engine-side `eval-retrieval` skill, which does not ship here.
 
+Where a case names golden `searchTargets`, `scripts/score_targets.py` scores
+the same attempt one search target at a time, and answers three questions in
+order:
+
+1. **Did the agent ask for the right things?** Each golden target is paired
+   with the agent targets of the same type that share a content word with it,
+   or that returned its entities. A golden target the agent asked for under
+   another type is a type mismatch; one it never asked for is a decomposition
+   miss. Agent targets that match no golden target are listed as extras.
+2. **Did search return the right entities?** For each golden target the agent
+   asked for, recall and precision over the entities THAT target returned,
+   read from the server's `matched_targets` and kept to the kinds the
+   target's type can return (or by entity kind alone on a lexical run, which
+   can only over-credit). Then per attempt over everything
+   returned. A target never asked for gets no retrieval number, only whether
+   its entities arrived some other way.
+3. **Did it get the answer right?** The judge's verdict, unchanged, split by
+   whether the attempt asked for every golden target.
+
+`run_baseline.py` prints the three lines in its summary when any case has
+`searchTargets`. Precision here is a payload number for the same reason as
+above: one target routinely returns twenty or more entities.
+
 `scripts/check_coverage.py` measures the other half, and it is worth knowing
 which question each answers. Recall asks whether search surfaced the entities a
 case names. Coverage asks whether the model holds the concepts at all, decided
@@ -262,9 +285,11 @@ live in `reference/ledger-schema.md`.
 
 1. `attempt`: qid, sample, phase, question_sha, submitted, final_query,
    served revision, call counts, contamination verdict, transcript path.
-2. `tool_call`: one per MCP `get_context` / `execute_query`, with `traceId`
-   and the `rankedSummary` copied from the trace (per-target ranks included).
-   Do not copy full traces into the event; the trace store holds the body.
+2. `tool_call`: one per MCP `get_context` / `execute_query`, with `traceId`,
+   the `search_targets` the call sent, and the `rankedSummary` of what came
+   back (entity ids, and per hit the targets that matched it). There is no
+   rank; read `hits[].relevance`. Do not copy full traces into the event; the
+   trace store holds the body.
 3. `score`: the judge's verdict object plus `judge_version`, `rubric_sha`,
    `golden_revision`, `contaminated`, `gold_status`, and the judge output's
    artifact path.

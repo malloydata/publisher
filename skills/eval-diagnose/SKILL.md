@@ -140,11 +140,13 @@ For each `get_context` call, load the stored retrieval trace by the `traceId` on
 
 - **Asked:** every retrieval utterance, target types, scopes, and result counts,
   in order.
-- **Returned:** for each needed entity, whether it appeared, its best
-  within-target rank, and under which utterance. Read this off the
-  `rankedSummary` on the attempt's `tool_call` events (its `targets` list
-  carries per-target ranks); the full trace body is behind your host's
-  trace lookup.
+- **Returned:** for each needed entity, whether it appeared, its relevance,
+  and under which utterance. Read this off the `rankedSummary` on the
+  attempt's `tool_call` events: `hits[].matched_targets` names the search
+  texts that matched each entity, and `search_targets` is what the call sent.
+  Where the case has golden `searchTargets`, `score_targets.py` has already
+  paired them (`skill:eval-answer`, step 4). The full trace body is behind
+  your host's trace lookup.
   Count from the trace, never from recollection.
 - **Used:** sources and fields the final query referenced, and needed entities
   that were returned and then unused.

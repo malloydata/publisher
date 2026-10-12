@@ -182,7 +182,8 @@ import golden_rows  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 from mcp_payload import (doc_tokens, entity_hits,  # noqa: E402
-                         entity_ids, search_terms, target_shapes)
+                         entity_ids, search_targets, search_terms,
+                         target_shapes)
 from publisher_rest import package_identity, served_model_path, try_query  # noqa: E402
 from score_retrieval import (  # noqa: E402
     cascade, coverage_report_summary, load_coverage_report, score_case,
@@ -194,6 +195,7 @@ from check_must_not_use import judge_note as must_not_use_note  # noqa: E402
 import verify_goldens  # noqa: E402
 import verify_definitions  # noqa: E402
 import check_findable  # noqa: E402
+import score_targets  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
@@ -1716,7 +1718,8 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
                   evidence: dict | None = None,
                   coverage_report: dict | None = None,
                   cascade: dict | None = None,
-                  skill_uses: dict | None = None) -> list[str]:
+                  skill_uses: dict | None = None,
+                  targets: dict | None = None) -> list[str]:
     """The end-of-run report, in three layers.
 
     A run produces four different kinds of fact and they used to arrive in one
@@ -1828,6 +1831,9 @@ def summary_lines(*, out: pathlib.Path, set_dir: pathlib.Path, events_n: int,
 
     lines += ["", "COVERAGE & RETRIEVAL"]
     lines += cascade_lines(cascade)
+    # Per golden search target, when the set names any (score_targets.py).
+    # Empty otherwise, so a set without `searchTargets` prints what it did.
+    lines += score_targets.summary_lines(targets) if targets else []
     lines += [f"  retrieval     {retrieval_mode} (semantic {tally['semantic']},"
               f" lexical {tally['lexical']},"
               f" indexing {tally.get('indexing', 0)}, error {tally.get('error', 0)},"
@@ -2242,7 +2248,12 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
                             # no text, so the bare-target rate -- the whole of
                             # the "enumerates instead of searching" argument --
                             # could not be recomputed from a run directory.
-                            "target_shapes": target_shapes(c["input"])}
+                            "target_shapes": target_shapes(c["input"]),
+                            # The targets as sent, one row each, so a golden's
+                            # `searchTargets` can be paired with them
+                            # (score_targets.py). The two fields above each
+                            # keep only half of a target.
+                            "search_targets": search_targets(c["input"])}
                     elif (name.endswith("malloy_executeQuery")
                             or name.endswith("__execute_query")):
                         n_exec += 1
@@ -4002,6 +4013,8 @@ def main(argv: list[str] | None = None) -> int:
             coverage_report=coverage_report, cascade=funnel,
             skill_uses=skill_uses,
             answerer_cost=cost, judge_cost=judge_cost,
+            targets=score_targets.summarise(score_targets.score(
+                events, {c["qid"]: c for c in cases})),
 ):
         print(line)
 

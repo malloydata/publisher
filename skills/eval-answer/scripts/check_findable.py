@@ -39,9 +39,18 @@ not a verdict on the docs.
 It is also how an author learns what a question's entities are searchable AS,
 which is the thing they have to know in order to write `required` at all.
 
+GOLDEN SEARCH TARGETS
+
+A case's `searchTargets` add their own `expectedEntities` to the ids above, so
+each is checked the same two ways. Then each golden target is sent once AS
+WRITTEN, its own type and text, and its key must come back. That search is the
+one the set says a good agent makes, so a miss there caps every agent's recall
+on that target, however well it decomposes the question.
+
 EXIT CODES
 
-  0  every required entity is retrievable
+  0  every required entity is retrievable, and every golden search target
+     returns its own key
   1  at least one is not
   2  usage error
   3  the check could not run (no server, no scope); says nothing either way
@@ -393,16 +402,76 @@ def declared_findings(cases: list[dict[str, Any]],
 
 def required_ids(cases: list[dict[str, Any]]) -> dict[str, list[str]]:
     """Every required id, and the qids that require it. Deduped: the same
-    entity named by six cases is one search, not six."""
+    entity named by six cases is one search, not six.
+
+    A golden search target's own `expectedEntities` count too: an id there
+    that names nothing scores a retrieval miss on that target every run, the
+    same defect as one in the case's list.
+    """
     out: dict[str, list[str]] = {}
     for c in cases:
-        exp = c.get("expectedEntities") or {}
-        ids = list(exp.get("required") or [])
-        for group in exp.get("requiredAnyOf") or []:
-            ids += list(group)
-        for eid in ids:
+        keys = [c.get("expectedEntities") or {}] + [
+            t.get("expectedEntities") or {}
+            for t in c.get("searchTargets") or [] if isinstance(t, dict)]
+        ids: list[str] = []
+        for exp in keys:
+            ids += list(exp.get("required") or [])
+            for group in exp.get("requiredAnyOf") or []:
+                ids += list(group)
+        for eid in dict.fromkeys(ids):
             out.setdefault(eid, []).append(c.get("qid", "?"))
     return out
+
+
+def check_targets(cases: list[dict[str, Any]], mcp_url: str, environment: str,
+                  package: str) -> tuple[list[str], list[dict[str, Any]]]:
+    """Replay each golden search target as written, and check its key comes back.
+
+    `check` searches for each entity by its own name, the easiest query there
+    is. This sends the golden target's own `target_type` and `search_text`,
+    which is the search the set says a good agent makes. If that search does
+    not return the target's entities, no agent that decomposes the question
+    exactly as the golden says can score full recall on it: either the target
+    is worded unlike the model's docs, or the docs do not say what the words
+    ask. Fix one of them before reading that target's recall as the agent's.
+    """
+    findings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    for c in cases:
+        for i, t in enumerate(c.get("searchTargets") or [], 1):
+            if not isinstance(t, dict):
+                continue
+            exp = t.get("expectedEntities") or {}
+            req = [[r] for r in exp.get("required") or []] + [
+                list(g) for g in exp.get("requiredAnyOf") or []
+                if isinstance(g, list) and g]
+            if not req:
+                continue
+            sent = {"target_type": t.get("target_type")}
+            if t.get("search_text"):
+                sent["search_text"] = t["search_text"]
+            try:
+                payload = get_context(mcp_url, [sent], environment, package)
+            except (urllib.error.URLError, RuntimeError, OSError) as e:
+                raise SystemExit(f"get_context failed for {c.get('qid')} "
+                                 f"searchTargets[{i}]: {e}\nThe check did not "
+                                 f"run; this says nothing about the key.") from e
+            state = unavailable_state(payload)
+            if state:
+                raise Inconclusive(
+                    f"get_context answered `{state}` for {c.get('qid')} "
+                    f"searchTargets[{i}], so the server did not search.")
+            got = {h["entity_id"] for h in entity_hits(payload)}
+            missing = [" | ".join(g) for g in req
+                       if not any(e in got for e in g)]
+            rows.append({"qid": c.get("qid"), "index": i, **sent,
+                         "groups": len(req), "missing": missing})
+            if missing:
+                findings.append(
+                    f"{c.get('qid')} searchTargets[{i}]: a `{sent['target_type']}` "
+                    f"search for {sent.get('search_text')!r} does not return "
+                    f"{', '.join(missing)}")
+    return findings, rows
 
 
 def finding_id(message: str) -> str:
@@ -549,6 +618,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         findings, rows = check(cases, a.mcp_url, a.environment, a.package)
+        target_findings, target_rows = check_targets(
+            cases, a.mcp_url, a.environment, a.package)
     except Inconclusive as e:
         print(f"inconclusive: {e}", file=sys.stderr)
         return EXIT_INCONCLUSIVE
@@ -562,7 +633,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.out:
         pathlib.Path(a.out).write_text(json.dumps(
             {"set": str(a.set_dir), "environment": a.environment,
-             "package": a.package, "entities": rows}, indent=2))
+             "package": a.package, "entities": rows,
+             "searchTargets": target_rows}, indent=2))
 
     # Every distinct required id, not `len(rows)`. `rows` holds only the ids
     # that reached a search, while `findings` also carries the malformed and
@@ -573,16 +645,29 @@ def main(argv: list[str] | None = None) -> int:
     total = len(required_ids(cases))
     print(f"{total - len(findings)} of {total} required entities are "
           f"retrievable by a search of their own kind")
-    if not findings:
+    if target_rows:
+        print(f"{len(target_rows) - len(target_findings)} of {len(target_rows)} "
+              f"golden search targets return their own entities when sent as "
+              f"written")
+    if not findings and not target_findings:
         print("A pass is a floor, not a verdict on the docs: each was searched "
               "by its own name, the easiest query that could find it.")
         return 0
-    print(f"\n{len(findings)} NOT retrievable:")
-    for x in findings:
-        print(f"  {x}")
-    print("\nFix the key or the model before running an arm. Until then those "
-          "cases measure nothing: they report a retrieval miss on every run "
-          "and it reads as the model's fault.")
+    if findings:
+        print(f"\n{len(findings)} NOT retrievable:")
+        for x in findings:
+            print(f"  {x}")
+        print("\nFix the key or the model before running an arm. Until then "
+              "those cases measure nothing: they report a retrieval miss on "
+              "every run and it reads as the model's fault.")
+    if target_findings:
+        print(f"\n{len(target_findings)} golden search target(s) do not find "
+              f"their own entities:")
+        for x in target_findings:
+            print(f"  {x}")
+        print("\nReword the target, or fix the docs it should match, before "
+              "scoring the agent's searches against it. Until then an agent "
+              "that searches exactly as the golden says still scores a miss.")
     return 1
 
 

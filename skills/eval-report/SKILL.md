@@ -152,6 +152,21 @@ headline of the last one. Then the cascade: Covered? -> Retrieved? -> Correct?,
 with the per-arm numbers under each. Say in one clause what recall counts, then
 give the number.
 
+## Search targets          <-- only when the set has golden `searchTargets`
+
+Three lines, copied from the `search targets` block the run printed (or
+`score_targets.py --events <run>/events.jsonl --cases <set>/cases.jsonl`):
+
+1. **Asked:** N of M golden targets asked for; how many under the wrong type,
+   how many never asked, how many extra targets the agent sent.
+2. **Returned:** for the targets it asked for, recall and precision of what
+   each target returned; then per case.
+3. **Correct:** the pass count, split by whether the agent asked for every
+   golden target.
+
+Then one line per golden target that was never asked or asked as the wrong
+type, naming the target and what the agent sent instead.
+
 ## Model failures
 
 One entry per wrong answer. What it got wrong in plain words, then the
@@ -184,6 +199,8 @@ these in order and put every one that fires into the list, with its command:
 | any golden still `provisional` | re-derive and `verify_goldens.py --promote` |
 | a stale entity name warning | fix `expectedEntities`; it scores as a retrieval miss on every run until you do. A next step, not a section: it goes in this list and nowhere else in the report |
 | a passing case with recall below 1.0 | check whether `required` over-specifies one path |
+| the same golden search target never asked, or asked as the wrong type, on several cases | an `agent-skill` finding: the decomposition rule belongs in the skill the answerer reads before `get_context` (`malloy-phrase-detection`) |
+| a golden target asked for, with recall below 1.0 on that target | send it as written with `check_findable.py`; if that misses too, the target or the docs need fixing before the agent is blamed |
 | `truncated` non-empty | re-run those cases at a higher cap with `--from` |
 | diagnose did not run | run it, or say the failures have no owner yet |
 | a cluster with `owner: model` | `skill:eval-improve`, then the acceptance check |

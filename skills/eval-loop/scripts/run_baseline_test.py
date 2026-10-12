@@ -771,6 +771,15 @@ class AnUnreadableVerdictIsNotLost(unittest.TestCase):
         body = self.summary()
         self.assertIn("unreadable    0", body)
 
+    def test_golden_search_targets_print_their_three_lines(self):
+        import score_targets
+        s = score_targets.summarise([])
+        self.assertNotIn("search targets", self.summary(targets=s))
+        s.update(attempts=1, golden_targets=2, covered=1, never_asked=1)
+        body = self.summary(targets=s)
+        self.assertIn("1. asked?     1 of 2 golden targets asked for", body)
+        self.assertIn("3. correct?", body)
+
     def test_an_aborted_arm_suppresses_the_pass_rate(self):
         # The four-strikes abort fires, `run.json` says `aborted`, and the
         # headline still printed a percentage. Live: `passed 0 of 4 decided
@@ -2031,6 +2040,22 @@ class AnErroredGetContextIsUnmeasured(unittest.TestCase):
         [call] = got["calls"]
         self.assertIsNotNone(call["rankedSummary"])
         self.assertIsNone(call["error"])
+
+    def test_the_targets_are_recorded_as_sent(self):
+        # score_targets.py pairs these one by one with a golden's
+        # `searchTargets`; `targets` alone drops the bare target and the type
+        # of each one becomes part of a string.
+        use = self.use("t1")
+        use["input"] = {"search_targets": [
+            {"target_type": "measure", "search_text": "revenue"},
+            {"target_type": "source"}]}
+        body = json.dumps({"sources": [{"name": "orders", "relevance": 0.9}]})
+        got = self.rebuild([("assistant", [use]),
+                            ("user", [self.res("t1", body, False)])])
+        [call] = got["calls"]
+        self.assertEqual(call["search_targets"], [
+            {"target_type": "measure", "search_text": "revenue"},
+            {"target_type": "source", "search_text": None}])
 
 
 class NothingIsDefinedBelowTheMainGuard(unittest.TestCase):

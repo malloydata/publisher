@@ -151,6 +151,56 @@ class WhatIsReportedNotFailed(unittest.TestCase):
         self.assertEqual(review(c), [])
 
 
+class SearchTargets(unittest.TestCase):
+    """Optional golden search targets: shape only, never existence."""
+
+    def test_a_case_without_them_is_unchanged(self):
+        self.assertEqual(findings(case()), [])
+
+    def test_a_well_formed_target_is_silent(self):
+        c = case(searchTargets=[
+            {"target_type": "measure", "search_text": "revenue",
+             "expectedEntities": {
+                 "required": ["measure:order_items:total_sales"]}},
+            {"target_type": "dimension", "search_text": "category",
+             "expectedEntities": {
+                 "requiredAnyOf": [["dimension:order_items:category",
+                                    "dimension:products:category"]]}},
+            {"target_type": "source"}])
+        self.assertEqual(findings(c), [])
+
+    def test_a_type_the_server_rejects_is_a_finding(self):
+        f = findings(case(searchTargets=[{"target_type": "metric",
+                                          "search_text": "revenue"}]))
+        self.assertIn("searchTargets[1]: `target_type` is 'metric'", f[0])
+
+    def test_a_group_written_as_a_string_is_a_finding(self):
+        f = findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "revenue",
+             "expectedEntities": {"requiredAnyOf": ["measure:a:b"]}}]))
+        self.assertIn("a `requiredAnyOf` group is str", f[0])
+
+    def test_an_id_that_is_not_kind_source_name_is_a_finding(self):
+        f = findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "revenue",
+             "expectedEntities": {"required": ["total_sales"]}}]))
+        self.assertIn("'total_sales' is not a kind:source:name id", f[0])
+
+    def test_a_key_the_targets_own_type_cannot_return_is_a_finding(self):
+        f = findings(case(searchTargets=[
+            {"target_type": "dimension", "search_text": "revenue",
+             "expectedEntities": {"required": ["measure:order_items:total_sales"]}}]))
+        self.assertIn("a `dimension` target can never return "
+                      "measure:order_items:total_sales", f[0])
+
+    def test_a_group_with_one_returnable_member_is_fine(self):
+        self.assertEqual(findings(case(searchTargets=[
+            {"target_type": "measure", "search_text": "margin rate",
+             "expectedEntities": {"requiredAnyOf": [[
+                 "measure:order_items:margin_rate",
+                 "view:order_items:brand_performance"]]}}])), [])
+
+
 class AMalformedSealIsItsOwnFinding(unittest.TestCase):
     """Malformed is a finding about the SET, not a harness that could not run.
 
