@@ -19,6 +19,7 @@ import { alsoLikelyFields } from "./also_likely";
 import { connect } from "./connect";
 import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "./find";
 import {
+   dropBesideRoutes,
    judge,
    judgeMaxTokens,
    judgeOptions,
@@ -151,7 +152,7 @@ describe("route keys", () => {
 });
 
 describe("the judge's list with routes", () => {
-   it("pins the instructions: a route is the joining source's rows; both only when the question could mean either, never for sharing a query, never a second reading, never for rows the joining source lacks", () => {
+   it("pins the instructions: a route is the joining source's rows; both only when the question could mean either, never for sharing a query, never for rows the joining source lacks", () => {
       expect(DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS).toBe(
          `You choose which fields of a data model answer each part of a question.
 
@@ -165,9 +166,8 @@ You are shown the search targets the user's agent wrote and, for each target, ca
 - When several sources serve a target, prefer the one that can share a query with the other targets' picks: the same source, or a source its joins reach. Say in "caveats" which picks can be queried together.
 - Some fields are listed with routes: the same field reached from another listed source through that source's joins, each with its own number. A route counts the rows of the joining source. Through order_items, products.product_count counts the products that appear on order items, not every product. Each route line quotes what the joining source holds.
 - Pick the route when the target is about the joining source's rows: "products that were ordered", "customers who placed orders". Pick the field itself when the target is about every row of its own source: "all products we sell", "every customer on file".
-- Between a field and its routes, pick both only when the question could mean either set of rows, and say which is which in the reason. Otherwise pick exactly one of them.
+- Between a field and its routes, pick both only when the question could mean either set of rows, and say which is which in the reason.
 - Sharing a query never decides between a field and its route. Pick by the rows the target is about, then say in "caveats" how to query the picks together.
-- A route is never a second reading of an ambiguous word. It is the same field over fewer rows. When a word has two readings, pick the field for each reading.
 - A route has none of the rows its joining source lacks. When the target is about rows the joining source does not hold, the route does not answer it.
 - Pick nothing for a target no listed source can answer. Do not pick a candidate only because its name repeats a word of the target.
 
@@ -372,6 +372,109 @@ source: b2b_orders is duckdb.sql("select 1 as order_id") extend {
       expect(caps).toEqual([580, 560, 560]);
       expect(judgeMaxTokens(2, 10)).toBe(580);
       expect(judgeMaxTokens(1, 0)).toBe(420);
+   });
+});
+
+describe("dropRoutesAt", () => {
+   const CUSTOMERS_ROUTE = `route\u0000customers@deep.malloy\u0000region\u0000${REGION}`;
+   const SHIPMENTS_ROUTE = `route\u0000shipments@deep.malloy\u0000shipped_order.customer.region\u0000${REGION}`;
+   const NAME = "measure:parcels@deep.malloy:parcel_count";
+   const idOf = (key: string) => optionId(d.index.catalog, key);
+   const verdicts: JudgeVerdict[] = [
+      {
+         cluster: "list",
+         picks: [
+            // The field and three routes to it: the routes go.
+            {
+               target: 0,
+               keys: [
+                  REGION,
+                  CUSTOMERS_ROUTE,
+                  ORDERS_ROUTE,
+                  SHIPMENTS_ROUTE,
+                  NAME,
+               ],
+               reason: "region names",
+            },
+            // The field and two routes: below the threshold, kept.
+            { target: 1, keys: [REGION, ORDERS_ROUTE, PARCELS_ROUTE] },
+            // Four routes and not the field: each replaces it, kept.
+            {
+               target: 2,
+               keys: [
+                  CUSTOMERS_ROUTE,
+                  ORDERS_ROUTE,
+                  SHIPMENTS_ROUTE,
+                  PARCELS_ROUTE,
+               ],
+            },
+         ],
+         caveats: ["by region"],
+      },
+   ];
+
+   it("drops a target's routes when it holds 3 or more beside their own field, and keeps the field", () => {
+      // ORDERS_ROUTE goes from target 0, but target 1 keeps it, so the
+      // response still returns it, under target 1.
+      expect(dropBesideRoutes(verdicts, 3, idOf, new Set())).toEqual([
+         {
+            cluster: "list",
+            picks: [
+               {
+                  target: 0,
+                  keys: [REGION, NAME],
+                  reason: "region names",
+                  droppedRoutes: [
+                     CUSTOMERS_ROUTE,
+                     ORDERS_ROUTE,
+                     SHIPMENTS_ROUTE,
+                  ],
+               },
+               { target: 1, keys: [REGION, ORDERS_ROUTE, PARCELS_ROUTE] },
+               {
+                  target: 2,
+                  keys: [
+                     CUSTOMERS_ROUTE,
+                     ORDERS_ROUTE,
+                     SHIPMENTS_ROUTE,
+                     PARCELS_ROUTE,
+                  ],
+               },
+            ],
+            caveats: ["by region"],
+         },
+      ]);
+   });
+
+   it("counts the threshold exactly: at 2 the second target loses its routes too; at 4 nothing goes", () => {
+      const at2 = dropBesideRoutes(verdicts, 2, idOf, new Set());
+      expect(at2[0].picks.map((p) => [p.keys, p.droppedRoutes])).toEqual([
+         [
+            [REGION, NAME],
+            [CUSTOMERS_ROUTE, ORDERS_ROUTE, SHIPMENTS_ROUTE],
+         ],
+         [[REGION], [ORDERS_ROUTE, PARCELS_ROUTE]],
+         [
+            [CUSTOMERS_ROUTE, ORDERS_ROUTE, SHIPMENTS_ROUTE, PARCELS_ROUTE],
+            undefined,
+         ],
+      ]);
+      expect(dropBesideRoutes(verdicts, 4, idOf, new Set())).toEqual(verdicts);
+   });
+
+   it("keeps every pick at 0", () => {
+      expect(dropBesideRoutes(verdicts, 0, idOf, new Set())).toEqual(verdicts);
+   });
+
+   it("does not count a route whose id is a found candidate's own id, so that target falls below 3", () => {
+      expect(
+         dropBesideRoutes(
+            verdicts,
+            3,
+            idOf,
+            new Set(["dimension:orders:customer.region.region_name"]),
+         ),
+      ).toEqual(verdicts);
    });
 });
 
