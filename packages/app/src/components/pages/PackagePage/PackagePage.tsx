@@ -44,7 +44,7 @@ function PackagePage() {
          <Package
             onClickPackageFile={navigate}
             // The Console decides where reading and editing live: the
-            // report's path route, and the builder one segment under it.
+            // report's path route, and the builder at that route with `?edit`.
             onOpenDocument={({ path, mode }, event) =>
                navigate(
                   documentPath(environmentName, packageName, path, mode),
