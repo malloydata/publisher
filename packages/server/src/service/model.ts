@@ -776,6 +776,8 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
+   /** Settles once {@link ensureSharedQueryModel} has built the QueryModel. */
+   private sharedQueryModel: Promise<void> | undefined;
    private compiledReportFacts:
       | Promise<ReportModelFacts | undefined>
       | undefined;
@@ -4865,6 +4867,38 @@ export class Model {
    }
 
    /**
+   /**
+    * Build this model's Malloy `QueryModel` once, on the base model its
+    * materializer holds, so every query compiled against it reuses it.
+    *
+    * Malloy hands a query compiled from a model the base model's existing
+    * `QueryModel` when the query does not modify the model
+    * (`existingQueryModel` in `Malloy.compile`), but only if the base model
+    * already has one. A model hydrated from the worker's `ModelDef` never
+    * builds one, so before this every prepare (each render-tag target at load,
+    * each query) built a `QueryModel` over every source in the file and
+    * dropped it. A `QueryModel` is a function of the `ModelDef`, and the
+    * materializer and `ModelDef` are fixed for this Model's life (a reload
+    * builds new Models), so building it once is the same answer.
+    *
+    * A failure to build is swallowed: the query that needs it builds it again
+    * and fails the way it always did.
+    */
+   private ensureSharedQueryModel(): Promise<void> {
+      const materializer = this.modelMaterializer;
+      if (!materializer) return Promise.resolve();
+      this.sharedQueryModel ??= (async () => {
+         try {
+            const base = await materializer.getModel();
+            void base.queryModel;
+         } catch {
+            // Left to the compile that needs it; see the doc.
+         }
+      })();
+      return this.sharedQueryModel;
+   }
+
+   /**
     * Build a Model representing a compilation failure (no modelDef,
     * no materializer). Matches the shape `Model.create` returns when
     * it catches a `MalloyError`, so the rest of the system handles
@@ -6194,6 +6228,8 @@ export class Model {
       mm: ModelMaterializer,
       targets: RenderTagTarget[],
    ): Promise<{ label: string; result: Malloy.Result }[]> {
+      // One QueryModel for every prepare below, not one each.
+      await this.ensureSharedQueryModel();
       const prepared: { label: string; result: Malloy.Result }[] = [];
       for (const target of targets) {
          try {
@@ -7295,6 +7331,8 @@ export class Model {
       let preaggRouted = false;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
+      // Every compile against this model below reuses one QueryModel.
+      await this.ensureSharedQueryModel();
 
       // Per-query freshness gate (persistence.md §9.3): resolve the
       // freshness-filtered manifest once and thread it into both the prepare
