@@ -253,6 +253,8 @@ export interface LoadPackageResult {
       deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** The manifest's `retrieval` block, validated, with prompt files read. */
       retrieval?: PackageRetrievalSettings;
+      /** The manifest's `agents` value, unvalidated: the main thread validates it and warns instead of throwing. */
+      agents?: unknown;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */

@@ -253,6 +253,8 @@ export interface LoadPackageOutcome {
       deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
       retrieval?: PackageRetrievalSettings;
+      /** See {@link LoadPackageResult.packageMetadata.agents}. */
+      agents?: unknown;
    };
    replacementMatchedExisting?: boolean;
    models: Array<
