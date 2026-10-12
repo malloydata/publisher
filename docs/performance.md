@@ -320,8 +320,11 @@ The loaders themselves, during the second window: a reload of the queried packag
 - **Query throughput plateaus early.** storefront reaches ~210 cheap req/s (~530 total) at 4 VUs
   and gains nothing beyond. The generated package's 1M-row queries do not scale past one VU at all
   (~24 cheap req/s, ~60–68 total): latency grows linearly with VUs instead, to a p99 of up to 9 s
-  at 32 VUs.
+  at 32 VUs. The profile traces both plateaus to the package's single DuckDB connection.
 - **Loads disturb everything else.** While packages load, cheap-query p95 rises 12–27× and report
   reads, which are sub-millisecond work, rise 68–99× (p95 1–2 ms → 98–143 ms). Work that does no
   I/O slowing down that much points at the main thread being blocked during loads, not at
   contention for DuckDB.
+
+[performance-profile.md](performance-profile.md) attributes each of these to code, with the tooling
+to reproduce it, and ranks what to change.
