@@ -85,7 +85,7 @@ async function loadModel(boundary: boolean): Promise<Model> {
       new Map<string, Connection>([["duckdb", duck as Connection]]),
    );
    if (boundary) {
-      // What `Package` does for a package whose manifest lists `explores`.
+      // What `Package` does for a curated package (a root index.malloy).
       model.setDiscoveryCuration(true);
       model.setQueryBoundary({
          mode: "declared",

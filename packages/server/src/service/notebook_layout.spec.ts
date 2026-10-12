@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Notebooks written as a tile layout (`## artifact { kind=notebook tiles=[…] }`)
+ * Notebooks written as a tile layout (`## artifact { layout=linear tiles=[…] }`)
  * and the kind-from-tag rule, driven through `Package.create` on the
  * package-load worker pool, the way a real load runs.
  */
@@ -23,6 +23,11 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import {
+   getDashboard,
+   listDashboards,
+   listNotebooks,
+} from "./legacy_report_views";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
@@ -33,7 +38,7 @@ const SOURCE =
    `}\n`;
 
 const LAYOUT =
-   `## artifact { kind=notebook title="Tour" tiles=[intro { kind=text }, "base -> by_label"] }\n` +
+   `## artifact { layout=linear title="Tour" tiles=[intro { kind=text }, "base -> by_label"] }\n` +
    SOURCE +
    `\n##|(markdown) intro\n# Welcome\n\nRead **this** first.\n|##\n`;
 
@@ -92,13 +97,13 @@ describe("notebooks written as tiles (worker path)", () => {
          (warning) => warning.model === model,
       );
 
-   it("serves the layout on the notebook GET: text tile body, one column, kind notebook", async () => {
+   it("serves the layout on the notebook GET: text tile body, one column, linear", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
-         expect(pkg.isServedNotebook("notebooks/tour.malloy")).toBe(true);
+         expect(pkg.getReportLayout("notebooks/tour.malloy")).toBe("linear");
          const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
          expect(raw.dashboard).toMatchObject({
-            kind: "notebook",
+            layout: "linear",
             path: "notebooks/tour.malloy",
             title: "Tour",
             dashboardColumns: 1,
@@ -119,14 +124,14 @@ describe("notebooks written as tiles (worker path)", () => {
          "notebooks/tour.malloy",
          LAYOUT.replace(
             /^## artifact .*\n/,
-            `##| artifact { kind=notebook title="Tour"\n  tiles=[\n    intro { kind=text },\n    "base -> by_label"\n  ]\n}\n|##\n`,
+            `##| artifact { layout=linear title="Tour"\n  tiles=[\n    intro { kind=text },\n    "base -> by_label"\n  ]\n}\n|##\n`,
          ),
       );
       await withPackage(async (pkg) => {
-         expect(pkg.isServedNotebook("notebooks/tour.malloy")).toBe(true);
+         expect(pkg.getReportLayout("notebooks/tour.malloy")).toBe("linear");
          const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
          expect(raw.dashboard).toMatchObject({
-            kind: "notebook",
+            layout: "linear",
             title: "Tour",
             tiles: [
                { kind: "text", name: "intro" },
@@ -164,9 +169,9 @@ describe("notebooks written as tiles (worker path)", () => {
    it("is a notebook, not a dashboard: unlisted as one, and a notebook listing carries it", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
-         expect(pkg.listDashboards()).toEqual([]);
-         expect(pkg.getDashboard("tour")).toBeUndefined();
-         expect((await pkg.listNotebooks()).map((n) => n.path)).toEqual([
+         expect(listDashboards(pkg, "env")).toEqual([]);
+         expect(await getDashboard(pkg, "env", "tour")).toBeUndefined();
+         expect((await listNotebooks(pkg, "env")).map((n) => n.path)).toEqual([
             "notebooks/tour.malloy",
          ]);
       });
@@ -175,7 +180,7 @@ describe("notebooks written as tiles (worker path)", () => {
    it("keeps a notebook written as cells free of a layout", async () => {
       write(
          "notebooks/cells.malloy",
-         `## artifact { kind=notebook }\n${SOURCE}run: base -> by_label\n`,
+         `## artifact { layout=linear }\n${SOURCE}run: base -> by_label\n`,
       );
       await withPackage(async (pkg) => {
          const raw = await pkg
@@ -192,7 +197,7 @@ describe("notebooks written as tiles (worker path)", () => {
    it("serves a notebook with no tiles yet as a layout", async () => {
       write(
          "notebooks/empty.malloy",
-         `## artifact { kind=notebook tiles=[] }\n${SOURCE}`,
+         `## artifact { layout=linear tiles=[] }\n${SOURCE}`,
       );
       await withPackage(async (pkg) => {
          const raw = await pkg
@@ -223,52 +228,58 @@ describe("notebooks written as tiles (worker path)", () => {
       });
    });
 
-   it("serves the kind the tag names, whichever folder holds the file", async () => {
+   it("serves the layout the tag names, whichever folder holds the file", async () => {
       write(
          "dashboards/in_dashboards.malloy",
          LAYOUT.replace("Tour", "Misfiled"),
       );
       write(
          "notebooks/in_notebooks.malloy",
-         `## artifact { kind=dashboard tiles=["base -> by_label"] }\n${SOURCE}`,
+         `## artifact { layout=grid tiles=["base -> by_label"] }\n${SOURCE}`,
       );
       await withPackage(async (pkg) => {
-         expect(pkg.isServedNotebook("dashboards/in_dashboards.malloy")).toBe(
-            true,
+         expect(pkg.getReportLayout("dashboards/in_dashboards.malloy")).toBe(
+            "linear",
          );
-         expect(pkg.isServedNotebook("notebooks/in_notebooks.malloy")).toBe(
-            false,
+         expect(pkg.getReportLayout("notebooks/in_notebooks.malloy")).toBe(
+            "grid",
          );
-         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
             "notebooks/in_notebooks.malloy",
          ]);
-         expect(pkg.getDashboard("in_notebooks")).toMatchObject({
+         expect(await getDashboard(pkg, "env", "in_notebooks")).toMatchObject({
             kind: "dashboard",
          });
          const raw = await pkg
             .getModel("dashboards/in_dashboards.malloy")!
             .getNotebook();
-         expect(raw.dashboard?.kind).toBe("notebook");
+         expect(raw.dashboard?.layout).toBe("linear");
       });
    });
 
-   it("serves one dashboard per name and reports the file that lost it", async () => {
+   // Ported from "one dashboard per name": identity is the path, so two
+   // reports sharing a basename are both served, and neither shadows the
+   // other (`docs/reports-design.md` §3). Only the deprecated by-name route
+   // has to say which one it means, and it says it cannot.
+   it("serves two reports that share a basename, both, by path", async () => {
       const dashboard = `## artifact { tiles=["base -> by_label"] }\n${SOURCE}`;
       write("dashboards/same.malloy", dashboard);
       write(
          "notebooks/same.malloy",
-         dashboard.replace("{ tiles", "{ kind=dashboard tiles"),
+         dashboard.replace("{ tiles", "{ layout=grid tiles"),
       );
       await withPackage(async (pkg) => {
-         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
             "dashboards/same.malloy",
+            "notebooks/same.malloy",
          ]);
-         expect(
-            warningsOf(pkg, "notebooks/same.malloy").map((w) => w.message),
-         ).toEqual(
-            expect.arrayContaining([
-               expect.stringContaining("already holds the dashboard name"),
-            ]),
+         expect(pkg.listReports().map((r) => r.path)).toEqual([
+            "dashboards/same.malloy",
+            "notebooks/same.malloy",
+         ]);
+         expect(warningsOf(pkg, "notebooks/same.malloy")).toEqual([]);
+         expect(getDashboard(pkg, "env", "same")).rejects.toThrow(
+            /dashboards\/same\.malloy, notebooks\/same\.malloy/,
          );
       });
    });

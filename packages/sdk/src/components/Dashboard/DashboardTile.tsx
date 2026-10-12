@@ -3,6 +3,7 @@
 
 import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
+import { useEffect } from "react";
 import {
    MOTION_FAST,
    reducedMotionSx,
@@ -15,6 +16,7 @@ import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { failureCategory, useReportEvents } from "../Report/telemetry";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
 import { TileFilterTag } from "./TileFilterTag";
@@ -87,6 +89,8 @@ export interface DashboardTileProps {
    preamble?: string;
    /** The server marked this tile unreadable for the viewer: nothing is run. */
    restricted?: boolean;
+   /** Its position in the report, for the `report.query_failed` it reports. */
+   index?: number;
 }
 
 /**
@@ -137,6 +141,7 @@ export function DashboardTile({
    ignoredFilters,
    preamble,
    restricted,
+   index,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
    // A tile far below the fold waits to be scrolled near before it runs: its
@@ -168,6 +173,18 @@ export function DashboardTile({
       // Restricted tiles never run; the rest wait to come near the viewport.
       { enabled: nearViewport && restricted !== true },
    );
+   // Each failed run once: the error is drawn in place, and the report's host
+   // hears of it when one is listening.
+   const { emit } = useReportEvents();
+   const failure = state.isError ? state.error : undefined;
+   useEffect(() => {
+      if (failure === undefined) return;
+      emit({
+         type: "report.query_failed",
+         ...(index !== undefined ? { tile: index } : {}),
+         category: failureCategory(failure),
+      });
+   }, [failure, emit, index]);
    // A 403 is the viewer's access, which only text-source mode runs as them.
    const noAccess =
       restricted === true ||

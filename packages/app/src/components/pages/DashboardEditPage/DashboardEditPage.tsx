@@ -3,87 +3,71 @@
 
 import {
    encodeResourceUri,
-   type DashboardEvent,
    Loading,
    LOADING_COPY,
    NarrowEditGate,
+   type ReportLayout,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
-import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
-import {
-   logDashboardEvent,
-   logNotebookEvent,
-} from "../../../utils/consoleTelemetry";
+import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
 
 /**
  * The builder's entry is loaded here and nowhere else. It carries the Malloy
  * parser (440 KB gzipped), which most Console users never need, so it stays out
  * of every other page's chunk and downloads the first time someone opens a
- * dashboard for editing.
+ * report for editing.
  */
-const DashboardEditor = React.lazy(() =>
+const ReportEditor = React.lazy(() =>
    import("@malloy-publisher/sdk/builder").then((module) => ({
-      default: module.DashboardEditor,
+      default: module.ReportEditor,
    })),
 );
 
 export interface DashboardEditPageProps {
    environmentName: string;
    packageName: string;
-   /** The document's slug: `overview`, not `dashboards/overview.malloy`. */
-   dashboardName: string;
-   /** A notebook is the same editor with one column; default `dashboard`. */
-   kind?: "dashboard" | "notebook";
-   /** The file within the package, when the route's folder is not the whole story. */
-   path?: string;
+   /** The report's package path, `sales/q3.malloy`: what the editor is keyed by. */
+   path: string;
+   /** The layout the report opens with, from the listing or the host's draft; default grid. */
+   layout?: ReportLayout;
 }
 
 /**
- * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/dashboards/<slug>/edit`,
- * and `/<env>/<pkg>/notebooks/<slug>/edit` with `kind="notebook"`.
- * Close returns to the document itself, one segment up.
+ * The Console's host for the SDK `ReportEditor`: `/<env>/<pkg>/<path>?edit`,
+ * either layout. View in the header returns to the report itself, the same
+ * route without `?edit`.
  */
 export default function DashboardEditPage({
    environmentName,
    packageName,
-   dashboardName,
-   kind = "dashboard",
    path,
+   layout = "grid",
 }: DashboardEditPageProps) {
    const guard = useLeaveGuard();
-   const onEvent = useMemo(() => {
-      if (kind === "dashboard")
-         return logDashboardEvent({
-            environmentName,
-            packageName,
-            dashboardName,
-         }) as (event: DashboardEvent | NotebookEvent) => void;
-      return logNotebookEvent({
-         environmentName,
-         packageName,
-         notebookName: dashboardName,
-      }) as (event: DashboardEvent | NotebookEvent) => void;
-   }, [kind, environmentName, packageName, dashboardName]);
+   // Each event names the report by path and carries its layout as it stands.
+   const onEvent = useMemo(
+      () => logReportEvent({ environmentName, packageName }),
+      [environmentName, packageName],
+   );
    return (
-      // The reader's page width and edges, the same for a dashboard and a
-      // notebook, so the margins do not move between modes or kinds.
+      // The reader's page width and edges, the same for either layout, so the
+      // margins do not move between modes.
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <NarrowEditGate>
             <Suspense
                fallback={<Loading text={LOADING_COPY.opening("builder")} />}
             >
-               <DashboardEditor
-                  // Remounts on a route change so another dashboard starts from a fresh read.
-                  key={`${environmentName}/${packageName}/${kind}/${dashboardName}`}
+               <ReportEditor
+                  // Remounts on a route change so another report starts from a fresh read.
+                  key={`${environmentName}/${packageName}/${path}`}
                   resourceUri={encodeResourceUri({
                      environmentName,
                      packageName,
                   })}
-                  dashboard={dashboardName}
-                  kind={kind}
                   path={path}
+                  layout={layout}
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />

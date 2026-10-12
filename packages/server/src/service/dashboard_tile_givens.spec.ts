@@ -15,6 +15,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import { getDashboard } from "./legacy_report_views";
 
 const DASHBOARD = `##! experimental.givens
 given:
@@ -46,7 +47,7 @@ source: open_orders is duckdb.sql("select 1 as id, 'x' as region") extend {
   view: plain is { aggregate: n is count() }
 }
 
-## artifact { kind=KIND tiles=["orders -> by_join", "orders -> by_dim", "orders -> multi", "orders -> plain", "orders -> plain + { where: cat = $CAT }", "open_orders -> plain", "open_orders -> nothing_here"] }
+## artifact { layout=LAYOUT tiles=["orders -> by_join", "orders -> by_dim", "orders -> multi", "orders -> plain", "orders -> plain + { where: cat = $CAT }", "open_orders -> plain", "open_orders -> nothing_here"] }
 `;
 
 const EXPECTED: Record<string, string[] | undefined> = {
@@ -96,12 +97,12 @@ async function tileGivens(
       fs.mkdirSync(path.join(dir, folder));
       fs.writeFileSync(
          path.join(dir, folder, "d.malloy"),
-         DASHBOARD.replace("KIND", kind),
+         DASHBOARD.replace("LAYOUT", kind === "dashboard" ? "grid" : "linear"),
       );
       const pkg = await Package.create("env", "pkg", dir, malloyConfig);
       const tiles: Tile[] | undefined =
          kind === "dashboard"
-            ? pkg.getDashboard("d")?.tiles
+            ? (await getDashboard(pkg, "env", "d"))?.tiles
             : (await pkg.getModel("notebooks/d.malloy")?.getNotebook())
                  ?.dashboard?.tiles;
       expect(tiles).toBeDefined();

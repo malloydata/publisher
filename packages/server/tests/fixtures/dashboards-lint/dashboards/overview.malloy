@@ -2,10 +2,10 @@
 import { orders } from '../orders.malloy'
 import { BRAND } from '../givens.malloy'
 
-// The one well-formed dashboard here: it exists so a `# drill { to=["overview"] }`
+// The one well-formed dashboard here: it exists so a `# drill { to=["dashboards/overview"] }`
 // has something real to resolve to. Its only finding is BRAND's suggest, which
 // names a query nothing defines.
-# artifact { title="Overview" }
+## artifact { layout=grid title="Overview" tiles=["overview"] }
 query: overview is orders -> {
    where: brand_name ~ $BRAND
    group_by: brand_name

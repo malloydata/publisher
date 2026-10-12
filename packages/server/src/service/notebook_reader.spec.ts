@@ -134,7 +134,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Revenue review" }\n',
+         '## artifact { layout=linear title="Revenue review" }\n',
       ],
    },
    // A notebook written as tiles: the reader still sees a named block as a markdown cell, without its name.
@@ -154,7 +154,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          '##" A notebook written as one column of tiles.\n',
-         '## artifact { kind=notebook title="Layout" tiles=[intro { kind=text }, "orders_tiles -> headline", "orders -> by_month"] }\n',
+         '## artifact { layout=linear title="Layout" tiles=[intro { kind=text }, "orders_tiles -> headline", "orders -> by_month"] }\n',
       ],
    },
    "notebooks/definitions_only.malloy": {
@@ -169,7 +169,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Definitions only" }\n',
+         '## artifact { layout=linear title="Definitions only" }\n',
       ],
    },
    "notebooks/adjacent_blocks.malloy": {
@@ -185,7 +185,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Adjacent blocks" }\n',
+         '## artifact { layout=linear title="Adjacent blocks" }\n',
       ],
    },
    "notebooks/imported_prose.malloy": {
@@ -197,7 +197,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       annotations: [
          "##! experimental.givens\n",
          '##" Order totals, described above the artifact tag.\n',
-         '## artifact { kind=notebook title="Imported prose" }\n',
+         '## artifact { layout=linear title="Imported prose" }\n',
       ],
    },
    "notebooks/prose_lines.malloy": {
@@ -209,7 +209,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Prose lines" }\n',
+         '## artifact { layout=linear title="Prose lines" }\n',
       ],
    },
    "notebooks/tagged_runs.malloy": {
@@ -227,7 +227,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Tagged runs" }\n',
+         '## artifact { layout=linear title="Tagged runs" }\n',
       ],
    },
    "notebooks/attached_prose.malloy": {
@@ -267,7 +267,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Attached prose" }\n',
+         '## artifact { layout=linear title="Attached prose" }\n',
       ],
    },
    "notebooks/named_runs.malloy": {
@@ -282,7 +282,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Named runs" }\n',
+         '## artifact { layout=linear title="Named runs" }\n',
       ],
    },
    "notebooks/structure.malloy": {
@@ -303,7 +303,7 @@ const EXPECTED: Record<string, { cells: unknown[]; annotations: string[] }> = {
       ],
       annotations: [
          "##! experimental.givens\n",
-         '## artifact { kind=notebook title="Structure" }\n',
+         '## artifact { layout=linear title="Structure" }\n',
          '## title="A non-prose note after the tag"\n',
          '##(filters) ["orders.region"]\n',
       ],

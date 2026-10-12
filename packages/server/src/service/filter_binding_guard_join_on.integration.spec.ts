@@ -378,14 +378,18 @@ describe("filter binding guard — a join whose ON or where: inputs are not reco
       ).toThrow(/ON or where: inputs are not recorded/);
    });
 
-   it("denies a #(filter) dimension that reaches through the join", () => {
-      expect(() =>
-         assertFilterDimensionBindsToDeclaringSource(
-            unrecordedOn,
-            unrecordedOn,
-            "child_org",
-         ),
-      ).toThrow(/#\(filter\) dimension .*not recorded/);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `#(filter)` (see RELEASE_NOTES deprecations).
+   describe("deprecated: #(filter)", () => {
+      it("denies a #(filter) dimension that reaches through the join", () => {
+         expect(() =>
+            assertFilterDimensionBindsToDeclaringSource(
+               unrecordedOn,
+               unrecordedOn,
+               "child_org",
+            ),
+         ).toThrow(/#\(filter\) dimension .*not recorded/);
+      });
    });
 });
 
@@ -590,13 +594,16 @@ source: gated_min is duckdb.table('orgtable') extend {
       );
    });
 
-   it("a notebook cell over a gated source whose joined source has its own where:", async () => {
-      const duckdb = await newDuckdb();
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbg-join-on-nb-"));
-      try {
-         fs.writeFileSync(
-            path.join(dir, "nb.malloynb"),
-            `>>>malloy
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("a notebook cell over a gated source whose joined source has its own where:", async () => {
+         const duckdb = await newDuckdb();
+         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbg-join-on-nb-"));
+         try {
+            fs.writeFileSync(
+               path.join(dir, "nb.malloynb"),
+               `>>>malloy
 ##! experimental.givens
 
 given:
@@ -616,23 +623,31 @@ source: gated_active is duckdb.table('orgtable') extend {
 >>>malloy
 run: gated_active -> { group_by: id, child.org_id; order_by: id }
 `,
-         );
-         const model = await Model.create(
-            "test-pkg",
-            dir,
-            "nb.malloynb",
-            new Map<string, Connection>([["duckdb", duckdb]]),
-         );
-         const result = await model.executeNotebookCell(1, undefined, false, {
-            GROUPS: [1, 2],
-         });
-         const served = (
-            JSON.parse(result.result!) as { data?: { array_value?: unknown[] } }
-         ).data?.array_value?.length;
-         expect(served).toBe(2);
-      } finally {
-         await duckdb.close();
-         fs.rmSync(dir, { recursive: true, force: true });
-      }
+            );
+            const model = await Model.create(
+               "test-pkg",
+               dir,
+               "nb.malloynb",
+               new Map<string, Connection>([["duckdb", duckdb]]),
+            );
+            const result = await model.executeNotebookCell(
+               1,
+               undefined,
+               false,
+               {
+                  GROUPS: [1, 2],
+               },
+            );
+            const served = (
+               JSON.parse(result.result!) as {
+                  data?: { array_value?: unknown[] };
+               }
+            ).data?.array_value?.length;
+            expect(served).toBe(2);
+         } finally {
+            await duckdb.close();
+            fs.rmSync(dir, { recursive: true, force: true });
+         }
+      });
    });
 });

@@ -108,7 +108,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 
 **Present choices as A/B/C.** When asking the user to choose, use lettered options with one-line descriptions. Mark your recommendation.
 
-**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. **Every source you write gets a source-level `#(doc)` description and a stated grain (`primary_key:` or "one row per ..."), including intermediate steps such as a de-duplication or clean-up source. Or fold the clean-up into the one source it feeds, so there is nothing undescribed left in the package.** Build a dashboard or notebook only when the user asks for one.
+**Complete all workflow steps.** Once modeling begins, complete through Review and propose Curate. A field without documentation is not finished. If you lose track, re-read the model and your notes. **Every source you write gets a source-level `#(doc)` description and a stated grain (`primary_key:` or "one row per ..."), including intermediate steps such as a de-duplication or clean-up source. Or fold the clean-up into the one source it feeds, so there is nothing undescribed left in the package.** Build a report (a dashboard or a notebook) only when the user asks for one.
 
 ## Route by Intent
 
@@ -117,7 +117,7 @@ Publishing is out of scope for open-source v1. Self-hosters move a finished mode
 | "Model my data", "create a model" | 8-step workflow (`skill:malloy-discover`) |
 | "Model from LookML" | 8-step with prior art via `skill:malloy-lookml-review` |
 | "Explore this data", "what's interesting?", "show me the top X" | `skill:malloy-analysis` (no specific question) |
-| "Build a dashboard", "create views" on existing model | `skill:malloy-dashboards` for a saved dashboard; `skill:malloy-charts` for views in the model. A notebook (`skill:malloy-notebooks`) only when the user asks for one or the package already has them |
+| "Build a dashboard", "build a notebook", "create views" on existing model | `skill:malloy-reports` for a saved report (`layout=grid` for a dashboard, `layout=linear` for a notebook), written at the package root; `skill:malloy-charts` for views in the model |
 | "Build a model but not sure what metrics" | `skill:malloy-model-as-you-go`: answer their first real question, codify what it assumed, repeat |
 
 **If the user's first message is a data question** (not "build me a model"), route to `skill:malloy-model-as-you-go`. It answers with `skill:malloy-analysis` and grows the model from what each answer assumed, so there is nothing to formalize afterwards.
