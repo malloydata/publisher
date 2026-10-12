@@ -535,9 +535,11 @@ source: t is base -> { group_by: a }
    });
 
    it("loads a package whose compile fits the job timeout, with the work for this thread on top", async () => {
-      // The compile waits once on its table, and so does the companion's
-      // compile, with the worker's schema cache off: about 2 × 1000 ms of a
-      // job whose compile alone takes about 1000 ms, under a 1500 ms timeout.
+      // With the worker's schema cache off, the compile waits 1000 ms on its
+      // table and the companion's compile then waits 3500 ms on it again. The
+      // compile fits a 4000 ms timeout with room to spare before the worker's
+      // deadline at three quarters of it (3000 ms), and the job, at 4500 ms or
+      // more, runs past the timeout itself.
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental { persistence composite_sources }
@@ -550,10 +552,14 @@ source: orders is duckdb.table('limit_t') extend {
       );
       const cacheBytes = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
       process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES = "0";
+      let limitFetches = 0;
       const { duckdb, tableFetches, load, tearDown } = await setUp(
-         (tables) =>
-            tables.includes("limit_t") ? sleep(1000) : Promise.resolve(),
-         { jobTimeoutMs: 1500 },
+         (tables) => {
+            if (!tables.includes("limit_t")) return Promise.resolve();
+            limitFetches += 1;
+            return sleep(limitFetches === 1 ? 1000 : 3500);
+         },
+         { jobTimeoutMs: 4000 },
       );
       try {
          await duckdb.runSQL(
@@ -577,7 +583,7 @@ source: orders is duckdb.table('limit_t') extend {
          }
          await tearDown();
       }
-   });
+   }, 20000);
 
    it("sends a load retried after a timeout to a new worker, not to the one that timed out", async () => {
       fs.writeFileSync(
