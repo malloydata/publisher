@@ -428,6 +428,15 @@ export function validateVerdict(
    };
 }
 
+/**
+ * The judge reply's output cap: a reason per target (120 tokens), the JSON around it (300), and room to list every
+ * offered number once (4 tokens each, with its comma and space). A cap by targets alone cut long replies off
+ * mid-list once a list carried route options: a reply ended without its closing bracket.
+ */
+export function judgeMaxTokens(targets: number, options: number): number {
+   return 120 * targets + 300 + 4 * options;
+}
+
 /** Judge every cluster, `concurrency` calls at a time. Throws on a failed call. */
 export async function judge(args: {
    index: FcjIndex;
@@ -460,7 +469,7 @@ export async function judge(args: {
             options,
             cap,
          ),
-         maxTokens: 120 * args.targets.length + 300,
+         maxTokens: judgeMaxTokens(args.targets.length, options.length),
          validate: validateVerdict(args.targets, options),
       });
       const shown = options.filter((o) => o.route).length;
