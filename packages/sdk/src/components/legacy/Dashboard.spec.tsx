@@ -250,7 +250,7 @@ describe("a failed manifest fetch", () => {
    const manifest: DashboardManifest = {
       name: "ops",
       path: "dashboards/ops.malloy",
-      query: "overview",
+      tiles: [{ kind: "query", query: "overview" }],
       givens: [{ name: "REGION", type: "string" }],
    };
 
