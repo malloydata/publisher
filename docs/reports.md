@@ -36,9 +36,9 @@ files.
 ```malloy
 ##! experimental.givens
 ## artifact { layout=grid title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend"] } dashboard { columns=12 }
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 source: overview is order_items extend {
@@ -293,9 +293,9 @@ A grid report lays its tiles out across `columns` by each tile's `colspan` and `
   ]
 } dashboard { columns=12 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 # label="Ordered since"
 given: SINCE :: date is @2023-01-01
@@ -404,10 +404,10 @@ for a narrative: a question framed in prose, a query that answers it, the next q
   ]
 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 #(description="Narrow to one product category")
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##|(markdown) intro
@@ -450,7 +450,7 @@ as tiles; maintain a cell report in its own form until someone converts it.
 ##! experimental.givens
 ##" One category at a time.
 ## artifact { layout=linear title="Category review" }
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 ##|(markdown)
 ## Category review
@@ -458,7 +458,7 @@ import { order_items, products } from "storefront.malloy"
 Pick a **Category** in the controls above.
 |##
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##(markdown) How is revenue trending for the selected category?
@@ -530,7 +530,7 @@ are its control contract:
 ```malloy
 ##! experimental.givens
 
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 # label="Brand" control=multiselect suggest { query=brand_suggest dimension=brand }

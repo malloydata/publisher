@@ -20,10 +20,10 @@ A report with `layout=linear` renders its tiles one column wide, top to bottom, 
   ]
 }
 |##
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 #(description="Narrow to one product category")
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##|(markdown) intro
@@ -82,7 +82,7 @@ Definition cells render folded; only query cells run. Earlier spellings are stil
 ##! experimental.givens
 ##" One category at a time: how it sells across the year and which brands carry it.
 ## artifact { layout=linear title="Category review" }
-import { order_items, products } from "storefront.malloy"
+import { order_items } from "storefront.malloy"
 
 ##|(markdown)
 ## Category review
@@ -92,7 +92,7 @@ Leave the control empty to read the whole catalog.
 |##
 
 #(description="Narrow to one product category")
-# label="Category" control=select suggest { source=products dimension=category }
+# label="Category" control=select suggest { source=order_items dimension=category }
 given: CATEGORY :: filter<string> is f''
 
 ##(markdown) How is revenue trending for the selected category?
