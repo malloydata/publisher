@@ -212,7 +212,8 @@ export interface CatalogInput {
     */
    joinedCopies?: "indexed" | "routes";
    /**
-    * PROVISIONAL (`retrieval.fcj.unservedCopies`), 0 when absent. Above 0, a
+    * PROVISIONAL (`retrieval.fcj.unservedCopies`, 3 by default there), 0
+    * when absent from this input. Above 0, a
     * field whose own source is not served (an unpublished source, or a raw
     * table or SQL join) gets a joined copy on each served source that reaches
     * it, at any depth up to JOIN_WALK_MAX_HOPS joins (JOIN_WALK_MAX_PATHS
