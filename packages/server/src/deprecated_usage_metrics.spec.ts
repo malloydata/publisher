@@ -27,7 +27,10 @@ import {
    recordDeprecatedManifestKeys,
 } from "./service/deprecated/manifest_keys";
 import type { EnvironmentStore } from "./service/environment_store";
-import { isLegacyReportAlias } from "./service/legacy_report_views";
+import {
+   isLegacyReportAlias,
+   recordConsoleAliasUse,
+} from "./service/legacy_report_views";
 import type { Model } from "./service/model";
 import type { Package } from "./service/package";
 import { linesMentioning } from "./test_helpers/log_lines";
@@ -138,15 +141,51 @@ describe("publisher_deprecated_usage_total", () => {
       });
    });
 
-   it("counts the Console alias only when it resolves to a report", async () => {
+   describe("the Console alias", () => {
+      const paths = [
+         "deep/sales.malloy",
+         "dashboards/q3.malloy",
+         "a/my q.malloy",
+      ];
       const pkg = {
-         servedReportPaths: () => ["deep/sales.malloy"].values(),
+         servedReportPaths: () => paths.values(),
+         isServedReport: (path: string) => paths.includes(path),
       } as unknown as Package;
-      expect(isLegacyReportAlias(pkg, "dashboards/sales")).toBe(true);
-      expect(isLegacyReportAlias(pkg, "notebooks/sales")).toBe(true);
-      expect(isLegacyReportAlias(pkg, "dashboards/missing")).toBe(false);
-      expect(isLegacyReportAlias(pkg, "sales")).toBe(false);
-      expect(await used("console_alias")).toBe(2);
+      const packageOf = (environmentName: string, packageName: string) =>
+         environmentName === "env" && packageName === "pkg" ? pkg : undefined;
+
+      it("counts each app route that is the alias of a report, once", async () => {
+         for (const route of [
+            "/env/pkg/dashboards/sales",
+            "/env/pkg/notebooks/sales",
+            "/env/pkg/dashboards/my%20q",
+         ])
+            recordConsoleAliasUse(route, packageOf);
+         expect(await used("console_alias")).toBe(3);
+      });
+
+      it("does not count a route that is no alias in use", async () => {
+         for (const route of [
+            // No report has the name.
+            "/env/pkg/dashboards/missing",
+            // A report's own route, not an alias of it.
+            "/env/pkg/dashboards/q3",
+            // Not the alias shape.
+            "/env/pkg/sales",
+            "/env/pkg/dashboards/deep/sales",
+            "/env/pkg",
+            // A package that is not loaded.
+            "/env/other/dashboards/sales",
+         ])
+            recordConsoleAliasUse(route, packageOf);
+         expect(await used("console_alias")).toBe(0);
+      });
+
+      it("leaves the counting to the route: asking whether a path is an alias counts nothing", async () => {
+         expect(isLegacyReportAlias(pkg, "dashboards/sales")).toBe(true);
+         expect(isLegacyReportAlias(pkg, "dashboards/q3")).toBe(false);
+         expect(await used("console_alias")).toBe(0);
+      });
    });
 
    describe("the #(filter) request fields", () => {

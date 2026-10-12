@@ -25,6 +25,7 @@ const fakePackage = (reports: Listed[]) =>
    ({
       getPackageName: () => "pkg",
       servedReportPaths: () => reports.map((r) => r.path).values(),
+      isServedReport: (path: string) => reports.some((r) => r.path === path),
       listReports: () =>
          reports.map((r) => ({
             ...r,

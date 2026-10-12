@@ -239,12 +239,42 @@ function hasReportNamed(pkg: Package, name: string): boolean {
  * Whether a Console route under the package is the deprecated
  * `dashboards/<name>` or `notebooks/<name>` alias of a report named `<name>`,
  * wherever it lives. Only when one exists, so `public/dashboards/` files stay
- * reachable.
+ * reachable; and never when a report lives at `<routePath>.malloy`, since that
+ * is the report's own route. Counts nothing: {@link recordConsoleAliasUse} does.
  */
 export function isLegacyReportAlias(pkg: Package, routePath: string): boolean {
    const alias = /^(?:dashboards|notebooks)\/([^/]+)$/.exec(routePath);
-   const resolves = alias !== null && hasReportNamed(pkg, alias[1]);
-   // Counted only when it resolves: anything else is not the alias in use.
-   if (resolves) recordDeprecatedUsage("console_alias");
-   return resolves;
+   return (
+      alias !== null &&
+      !pkg.isServedReport(`${routePath}.malloy`) &&
+      hasReportNamed(pkg, alias[1])
+   );
+}
+
+/**
+ * Count a Console page load at `requestPath` (`/<env>/<pkg>/<route>`, still
+ * percent-encoded) that is the deprecated alias of a report, once per load:
+ * the SPA fallback calls this for every request it answers with the app, which
+ * is where an old link or bookmark arrives. Anything else is not the alias in
+ * use, so it is not counted.
+ */
+export function recordConsoleAliasUse(
+   requestPath: string,
+   packageOf: (
+      environmentName: string,
+      packageName: string,
+   ) => Package | undefined,
+): void {
+   const segments = requestPath.split("/").filter((s) => s.length > 0);
+   if (segments.length !== 4) return;
+   let decoded: string[];
+   try {
+      decoded = segments.map((segment) => decodeURIComponent(segment));
+   } catch {
+      return;
+   }
+   const [environmentName, packageName, ...route] = decoded;
+   const pkg = packageOf(environmentName, packageName);
+   if (pkg && isLegacyReportAlias(pkg, route.join("/")))
+      recordDeprecatedUsage("console_alias");
 }

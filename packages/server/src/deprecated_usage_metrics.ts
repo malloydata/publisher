@@ -9,8 +9,10 @@
  * seam deletes its counting, and its value here goes with it:
  *
  * - A request: the legacy report routes (`routes/deprecated.ts`), one per
- *   route family; the Console's `/dashboards/<name>` alias, when the server
- *   resolves it (`service/legacy_report_views.ts`); and a query carrying
+ *   route family; a Console page load on a `dashboards/<name>` or
+ *   `notebooks/<name>` alias of a report, counted by the server's app
+ *   fallback (`service/legacy_report_views.ts`; not under a development
+ *   server, where Vite serves the app); and a query carrying
  *   `filterParams` / `filter_params` or `bypassFilters` / `bypass_filters`
  *   (`filter_deprecation.ts`), on REST and MCP alike.
  * - A package load or reload: per package that sets `explores` or

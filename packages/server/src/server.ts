@@ -97,7 +97,10 @@ import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { resolveSpaFallback, type LoadedRoutes } from "./spa_fallback";
 import { timeReportRead } from "./report_metrics";
-import { isLegacyReportAlias } from "./service/legacy_report_views";
+import {
+   isLegacyReportAlias,
+   recordConsoleAliasUse,
+} from "./service/legacy_report_views";
 import { registerDeprecatedRoutes } from "./routes/deprecated";
 import { reportWriteRoute } from "./routes/report_write";
 import {
@@ -2146,6 +2149,7 @@ if (!isDevelopment) {
             );
          return;
       }
+      recordConsoleAliasUse(req.path, loadedPackage);
       res.sendFile(SPA_INDEX, (err) => {
          if (!err) return;
          // The SPA bundle isn't built. This happens when running directly
