@@ -47,6 +47,29 @@ describe("BrowserDocumentStorage", () => {
       expect(await store.listDocuments(local)).toEqual([switched]);
    });
 
+   it("reads one document's layout by its path, without listing, and rejects when absent", async () => {
+      const store = new BrowserDocumentStorage();
+      await store.saveDocument(linear, "b");
+      store.listDocuments = () => {
+         throw new Error("listed");
+      };
+      expect(
+         await store.getDocumentType({
+            workspace: "Local",
+            path: linear.path,
+         }),
+      ).toBe("linear");
+      const absent = store.getDocumentType({
+         workspace: "Local",
+         path: grid.path,
+      });
+      await expect(absent).rejects.toThrow(/No report/);
+      await expect(absent).rejects.toHaveProperty(
+         "name",
+         "DocumentNotFoundError",
+      );
+   });
+
    it("keeps a path containing a colon intact", async () => {
       const store = new BrowserDocumentStorage();
       const odd = { ...grid, path: "env/pkg/dashboards/a:b.malloy" };

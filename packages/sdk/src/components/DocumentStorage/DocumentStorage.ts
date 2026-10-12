@@ -130,6 +130,18 @@ export interface DocumentStorage {
    getDocument(locator: DocumentLocator): Promise<string>;
 
    /**
+    * Optional. The layout the last save recorded for the document at
+    * `locator.path`, read for that document alone. Rejects with a
+    * {@link DocumentNotFoundError} when there is no document there, and with
+    * anything else when the backend could not be asked. Left out, the SDK
+    * finds the layout in {@link listDocuments}, which reads the whole
+    * workspace to answer for one document.
+    */
+   getDocumentType?(
+      locator: Pick<DocumentLocator, "workspace" | "path">,
+   ): Promise<DocumentType>;
+
+   /**
     * Write the content at `locator.path`, creating the document or replacing
     * it, and record `locator.type` as its layout.
     *

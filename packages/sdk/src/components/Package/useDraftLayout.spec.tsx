@@ -34,6 +34,23 @@ describe("findDraftLayout", () => {
       ).toBe("grid");
    });
 
+   it("reads the browser store's one document rather than listing them all", async () => {
+      const storage = new BrowserDocumentStorage();
+      await storage.saveDocument(
+         locatorFor("linear", "Local", "env", "pkg", "story.malloy"),
+         "x",
+      );
+      storage.listDocuments = () => {
+         throw new Error("listed");
+      };
+      expect(await findDraftLayout(storage, "env", "pkg", "story.malloy")).toBe(
+         "linear",
+      );
+      expect(
+         await findDraftLayout(storage, "env", "pkg", "absent.malloy"),
+      ).toBeUndefined();
+   });
+
    it("is undefined when the host keeps no copy, or keeps it for another package", async () => {
       const storage = new BrowserDocumentStorage();
       await storage.saveDocument(

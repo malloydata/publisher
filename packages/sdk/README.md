@@ -983,6 +983,10 @@ interface DocumentStorage {
       type?: DocumentType,
    ): Promise<DocumentLocator[]>;
    getDocument(locator: DocumentLocator): Promise<string>;
+   /** Optional: the layout recorded for the one document at locator.path, without listing the workspace. */
+   getDocumentType?(
+      locator: Pick<DocumentLocator, "workspace" | "path">,
+   ): Promise<DocumentType>;
    saveDocument(locator: DocumentLocator, content: string): Promise<void>;
    deleteDocument(locator: DocumentLocator): Promise<void>;
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
@@ -1001,7 +1005,10 @@ documents somewhere else, for example every grid report under `dashboards/<basen
 the package already has, and returns that path as `CreatedDocument.path`. A store without it is assumed to
 write at the path asked for, as before.
 
-`getDocument`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
+`getDocumentType` is optional too: the SDK uses it to learn a draft's layout before opening it, and
+falls back to `listDocuments` (which reads the whole workspace) when a store leaves it out.
+
+`getDocument`, `getDocumentType`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
 when the document is not there, and with anything else when the backend could not be
 asked. The distinction is load-bearing rather than cosmetic: a failed read reported as
 "there is no document" reads as "the package is the only copy", and saving on that

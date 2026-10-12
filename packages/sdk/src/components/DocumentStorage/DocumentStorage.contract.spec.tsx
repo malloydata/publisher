@@ -204,6 +204,53 @@ describe("DocumentStorage contract: find a draft's layout", () => {
          ["listDocuments", "record", undefined],
       ]);
    });
+
+   it("asks a store that reads one document's layout for that document alone, never listing", async () => {
+      const { storage, calls } = recordingStorage(
+         [SCRATCH, RECORD],
+         [
+            locator("record", "linear", "env/pkg/story.malloy"),
+            locator("scratch", "grid", "env/pkg/story.malloy"),
+         ],
+      );
+      const documents = [locator("record", "linear", "env/pkg/story.malloy")];
+      storage.getDocumentType = async (at) => {
+         calls.push(["getDocumentType", at]);
+         const found = documents.find(
+            (d) => d.workspace === at.workspace && d.path === at.path,
+         );
+         if (!found) throw new DocumentNotFoundError("absent");
+         return found.type;
+      };
+      expect(await findDraftLayout(storage, "env", "pkg", "story.malloy")).toBe(
+         "linear",
+      );
+      expect(
+         await findDraftLayout(storage, "env", "pkg", "missing.malloy"),
+      ).toBeUndefined();
+      expect(calls).toEqual([
+         ["listWorkspaces", false],
+         [
+            "getDocumentType",
+            { workspace: "record", path: "env/pkg/story.malloy" },
+         ],
+         ["listWorkspaces", false],
+         [
+            "getDocumentType",
+            { workspace: "record", path: "env/pkg/missing.malloy" },
+         ],
+      ]);
+   });
+
+   it("passes on a store's failure to answer, which is not absence", async () => {
+      const { storage } = recordingStorage([RECORD]);
+      storage.getDocumentType = async () => {
+         throw new Error("backend down");
+      };
+      await expect(
+         findDraftLayout(storage, "env", "pkg", "story.malloy"),
+      ).rejects.toThrow("backend down");
+   });
 });
 
 describe("DocumentStorage contract: open (the host's copy)", () => {

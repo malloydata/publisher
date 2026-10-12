@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { chooseWorkspace } from "../ReportBuilder/documentSession";
 import { draftKey } from "../DocumentCreate/documentPath";
 import {
+   isDocumentNotFound,
    useOptionalDocumentStorage,
    type DocumentStorage,
 } from "../DocumentStorage";
@@ -26,6 +27,17 @@ export async function findDraftLayout(
    const workspace = chooseWorkspace(await storage.listWorkspaces(false));
    if (!workspace) return undefined;
    const key = draftKey(environmentName, packageName, path);
+   if (storage.getDocumentType) {
+      try {
+         return await storage.getDocumentType({
+            workspace: workspace.name,
+            path: key,
+         });
+      } catch (error) {
+         if (isDocumentNotFound(error)) return undefined;
+         throw error;
+      }
+   }
    return (await storage.listDocuments(workspace)).find(
       (locator) => locator.path === key,
    )?.type;

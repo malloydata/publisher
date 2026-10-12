@@ -104,6 +104,15 @@ export class BrowserDocumentStorage implements DocumentStorage {
       return stored.content;
    }
 
+   async getDocumentType(
+      locator: Pick<DocumentLocator, "workspace" | "path">,
+   ): Promise<DocumentType> {
+      this.migrate();
+      const stored = read(keyOf(locator.path));
+      if (stored === undefined) throw missing(locator);
+      return stored.type;
+   }
+
    async saveDocument(
       locator: DocumentLocator,
       content: string,
@@ -128,7 +137,7 @@ export class BrowserDocumentStorage implements DocumentStorage {
    }
 }
 
-function missing(locator: DocumentLocator): Error {
+function missing(locator: Pick<DocumentLocator, "workspace" | "path">): Error {
    return new DocumentNotFoundError(
       `No report at ${locator.workspace}/${locator.path}`,
    );
