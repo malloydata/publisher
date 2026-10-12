@@ -61,7 +61,7 @@ import {
    type HeldResult,
 } from "./pages";
 import { respond } from "./respond";
-import { routesOf } from "./routes";
+import { optionId, routesOf } from "./routes";
 import { toUnit } from "./vectors";
 
 export type TraceMode = "none" | "summary" | "full";
@@ -339,6 +339,7 @@ export async function runFcjQuery(args: {
                  }
                : {}),
             concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
+            listRoutes: settings.listRoutes,
          });
       } catch (error) {
          logger.warn("[get_context fcj] The judge failed", {
@@ -442,12 +443,14 @@ export async function runFcjQuery(args: {
                        cluster: v.cluster,
                        picks: v.picks.map((p) => ({
                           target_index: p.target,
-                          ids: p.keys.map(
-                             (k) => index.catalog.nodes.get(k)?.id,
-                          ),
+                          // A picked route has the id it has on the joining source.
+                          ids: p.keys.map((k) => optionId(index.catalog, k)),
                           ...(p.reason ? { reason: p.reason } : {}),
                        })),
                        caveats: v.caveats,
+                       ...(v.routeOptions !== undefined
+                          ? { route_options: v.routeOptions }
+                          : {}),
                     })),
                     also_likely: alsoLikely.map((a) => ({
                        id: a.id,

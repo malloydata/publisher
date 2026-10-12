@@ -33,7 +33,7 @@ import type { ConnectResult } from "./connect";
 import type { FindResult } from "./find";
 import type { FcjIndex } from "./index_build";
 import type { JudgeVerdict } from "./judge";
-import { routesOf } from "./routes";
+import { fieldKeyOf, routesOf } from "./routes";
 
 /** The rank an extra (a structural addition with no rank) sorts at. */
 const EXTRA_RANK = 999;
@@ -139,7 +139,9 @@ export function alsoLikelyFields(args: {
    for (const v of verdicts) {
       for (const p of v.picks) {
          for (const k of p.keys) {
-            const id = nodes.get(k)?.id;
+            // A picked route is a pick of its field: the field's own id is
+            // then never added beside it (it is the other population).
+            const id = nodes.get(fieldKeyOf(k))?.id;
             if (id && !pickIds.includes(id)) pickIds.push(id);
          }
       }

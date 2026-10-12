@@ -15,6 +15,11 @@
  * judge is told that a candidate matched the phrase's value and how, never
  * the stored string; authored expressions are not sent at all.
  *
+ * In a list with `listRoutes` above 0, each candidate field is followed by up
+ * to that many routes to it from the other listed sources, shortest first,
+ * each a numbered option of its own. A picked route is the joining source's
+ * rows, and respond puts it on that source's card under the route's id.
+ *
  * A target with no pick in any cluster is returned as unresolved by name,
  * which is the agent's signal to ask or to search again.
  */
@@ -22,6 +27,7 @@
 import {
    DEFAULT_JUDGE_INSTRUCTIONS,
    DEFAULT_JUDGE_LIST_INSTRUCTIONS,
+   DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS,
    JUDGE_REPLY_FORMAT,
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
@@ -30,7 +36,7 @@ import { humanizeName } from "../tools/embedding_index";
 import { runPooled } from "../tools/get_context_llm";
 import type { CatalogNode } from "./catalog";
 import type { Cluster } from "./connect";
-import { routesFrom } from "./routes";
+import { routeKey, routeOptions, routesFrom, type RouteOption } from "./routes";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
 
@@ -41,6 +47,8 @@ export interface JudgeOption {
    /** Targets it is listed under; an extra is listed under none. */
    targets: number[];
    extra?: string;
+   /** A route to a listed field from another listed source; `key` is its routeKey. */
+   route?: RouteOption;
 }
 
 export interface JudgePick {
@@ -53,6 +61,8 @@ export interface JudgeVerdict {
    cluster: string;
    picks: JudgePick[];
    caveats: string[];
+   /** Route options the judge was shown (`listRoutes`), for the trace. */
+   routeOptions?: number;
 }
 
 /** Doc text the judge reads for one candidate; long docs are cut here, not dropped. */
@@ -90,8 +100,17 @@ function routeOf(
    index: FcjIndex,
    cluster: Cluster,
    node: CatalogNode,
+   routeCap: number,
 ): string | undefined {
    if (cluster.peers) {
+      // With route options, a route is a numbered line of its own; a joined
+      // copy (a field of a join whose source is not served, or a raw table)
+      // is a route already, and says so.
+      if (routeCap > 0) {
+         if (!node.joinPath) return undefined;
+         const rel = node.relationship ? `, join_${node.relationship}` : "";
+         return `a route from ${node.source} through ${node.joinPath}${rel}: only the rows ${node.source} reaches`;
+      }
       if (index.catalog.joinedCopies !== "routes") return undefined;
       return routesLine(
          index,
@@ -108,11 +127,24 @@ function routeOf(
    return `through ${paths.join(" or ")} (a left join from ${home})`;
 }
 
+/**
+ * One route option, under its field: `[5] order_items.products.product_count
+ * (route from order_items through products, join_one): only the products rows
+ * order_items reaches`.
+ */
+function routeOptionLine(index: FcjIndex, option: JudgeOption): string {
+   const r = option.route!;
+   const node = index.catalog.nodes.get(r.node)!;
+   const from = index.catalog.sources.get(r.from)?.name ?? r.from;
+   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, join_${r.fanout}): only the ${node.source} rows ${from} reaches`;
+}
+
 function optionLine(
    index: FcjIndex,
    cluster: Cluster,
    option: JudgeOption,
    valueNote: string | undefined,
+   routeCap = 0,
 ): string {
    const node = index.catalog.nodes.get(option.key)!;
    const kind = node.dataType ? `${node.kind}, ${node.dataType}` : node.kind;
@@ -121,7 +153,7 @@ function optionLine(
       doc.length > JUDGE_DOC_MAX_CHARS
          ? `${doc.slice(0, JUDGE_DOC_MAX_CHARS)}…`
          : doc;
-   const route = routeOf(index, cluster, node);
+   const route = routeOf(index, cluster, node, routeCap);
    const parts = [
       `[${option.number}] ${node.name} (${kind}; source ${node.source}${route ? `; ${route}` : ""})`,
       cut
@@ -137,14 +169,44 @@ function optionLine(
 export function judgeOptions(
    cluster: Cluster,
    targets: readonly FindTarget[],
+   /**
+    * With `connect: "list"`: number each field's `cap` shortest routes from
+    * the other listed sources right after the field (`listRoutes`).
+    */
+   routes?: { index: FcjIndex; cap: number },
 ): JudgeOption[] {
    const byKey = new Map<string, JudgeOption>();
    let n = 0;
+   const cap = cluster.peers && routes ? routes.cap : 0;
+   const peers = new Set((cluster.peers ?? []).map((p) => p.source));
    for (const t of targets) {
       for (const c of cluster.candidates.get(t.index) ?? []) {
          const prev = byKey.get(c.key);
-         if (prev) prev.targets.push(t.index);
-         else byKey.set(c.key, { number: ++n, key: c.key, targets: [t.index] });
+         if (prev) {
+            prev.targets.push(t.index);
+            for (const o of byKey.values())
+               if (o.route?.node === c.key) o.targets.push(t.index);
+            continue;
+         }
+         byKey.set(c.key, { number: ++n, key: c.key, targets: [t.index] });
+         if (cap === 0) continue;
+         const node = routes!.index.catalog.nodes.get(c.key);
+         if (!node) continue;
+         for (const r of routeOptions(
+            routes!.index.catalog,
+            node,
+            peers,
+            cap,
+         )) {
+            const key = routeKey(r);
+            if (byKey.has(key)) continue;
+            byKey.set(key, {
+               number: ++n,
+               key,
+               targets: [t.index],
+               route: r,
+            });
+         }
       }
    }
    for (const e of cluster.extras) {
@@ -174,6 +236,8 @@ export function renderJudgePrompt(
    cluster: Cluster,
    targets: readonly FindTarget[],
    options: readonly JudgeOption[],
+   /** `listRoutes`: above 0, a list shows route options and marks joined copies as routes. */
+   routeCap = 0,
 ): string {
    const full = getEgressPreset() === "full";
    const nameOf = (s: string) => index.catalog.sources.get(s)?.name ?? s;
@@ -219,7 +283,13 @@ export function renderJudgePrompt(
             owner = source;
             lines.push(`  From ${nameOf(source)}:`);
          }
-         lines.push(`    ${optionLine(index, cluster, o, noteOf(t, o))}`);
+         lines.push(
+            `    ${optionLine(index, cluster, o, noteOf(t, o), routeCap)}`,
+         );
+         for (const r of listed) {
+            if (r.route?.node === c.key)
+               lines.push(`        ${routeOptionLine(index, r)}`);
+         }
       }
    });
    lines.push("</targets>");
@@ -227,7 +297,7 @@ export function renderJudgePrompt(
    if (extras.length > 0) {
       lines.push("", "Also in this group:");
       for (const o of extras)
-         lines.push(`  ${optionLine(index, cluster, o, undefined)}`);
+         lines.push(`  ${optionLine(index, cluster, o, undefined, routeCap)}`);
    }
    lines.push("", JUDGE_REPLY_FORMAT);
    return lines.join("\n");
@@ -366,19 +436,38 @@ export async function judge(args: {
    chat: ChatModel;
    instructions?: string;
    concurrency: number;
+   /** `listRoutes`: routes shown per field in a list (0, the default, shows none). */
+   listRoutes?: number;
 }): Promise<JudgeVerdict[]> {
    return runPooled(args.clusters, args.concurrency, async (cluster) => {
-      const options = judgeOptions(cluster, args.targets);
+      const cap = cluster.peers ? (args.listRoutes ?? 0) : 0;
+      const options = judgeOptions(cluster, args.targets, {
+         index: args.index,
+         cap,
+      });
       const reply = await args.chat.completeJson({
          system:
             args.instructions ??
             (cluster.peers
-               ? DEFAULT_JUDGE_LIST_INSTRUCTIONS
+               ? cap > 0
+                  ? DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS
+                  : DEFAULT_JUDGE_LIST_INSTRUCTIONS
                : DEFAULT_JUDGE_INSTRUCTIONS),
-         prompt: renderJudgePrompt(args.index, cluster, args.targets, options),
+         prompt: renderJudgePrompt(
+            args.index,
+            cluster,
+            args.targets,
+            options,
+            cap,
+         ),
          maxTokens: 120 * args.targets.length + 300,
          validate: validateVerdict(args.targets, options),
       });
-      return { cluster: cluster.home, ...reply.value };
+      const shown = options.filter((o) => o.route).length;
+      return {
+         cluster: cluster.home,
+         ...reply.value,
+         ...(cap > 0 ? { routeOptions: shown } : {}),
+      };
    });
 }
