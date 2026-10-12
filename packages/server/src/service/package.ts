@@ -3813,6 +3813,11 @@ export class Package {
       return warnings;
    }
 
+   /** The path of every served report, of either layout, in path order. */
+   public servedReportPaths(): IterableIterator<string> {
+      return this.reports.keys();
+   }
+
    /** Whether discovery made this file a served report, of either layout. */
    public isServedReport(modelPath: string): boolean {
       return this.reports.has(modelPath);

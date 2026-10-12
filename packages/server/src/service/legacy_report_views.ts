@@ -24,7 +24,7 @@ import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import { ConflictError } from "../errors";
 import type { CompiledDocument } from "./compile_document";
 import type { Package } from "./package";
-import type { ReportLayout } from "./report";
+import { reportName, type ReportLayout } from "./report";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
@@ -224,10 +224,15 @@ export function withLegacyDocumentKind(
 /**
  * Whether any served report, of either layout, has the basename `name`: what
  * the Console's `dashboards/<name>` and `notebooks/<name>` alias routes
- * resolve, so the SPA fallback keeps those URLs in the app.
+ * resolve, so the SPA fallback keeps those URLs in the app. Read from the
+ * report paths rather than the listing, which the fallback would otherwise
+ * build on every candidate request.
  */
 function hasReportNamed(pkg: Package, name: string): boolean {
-   return pkg.listReports().some((report) => report.name === name);
+   for (const path of pkg.servedReportPaths()) {
+      if (reportName(path) === name) return true;
+   }
+   return false;
 }
 
 /**

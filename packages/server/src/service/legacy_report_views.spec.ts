@@ -24,6 +24,7 @@ type Listed = { path: string; name: string; layout: "grid" | "linear" };
 const fakePackage = (reports: Listed[]) =>
    ({
       getPackageName: () => "pkg",
+      servedReportPaths: () => reports.map((r) => r.path).values(),
       listReports: () =>
          reports.map((r) => ({
             ...r,
@@ -126,6 +127,21 @@ describe("legacy report views", () => {
       expect(isLegacyReportAlias(pkg, "dashboards/absent")).toBe(false);
       expect(isLegacyReportAlias(pkg, "dashboards/a/overview")).toBe(false);
       expect(isLegacyReportAlias(pkg, "overview")).toBe(false);
+   });
+
+   // The SPA fallback asks this on every candidate request, so it reads the
+   // report paths rather than building the listing.
+   it("answers the alias without building the report listing", () => {
+      const pkg = {
+         ...(fakePackage([
+            { path: "deep/overview.malloy", name: "overview", layout: "grid" },
+         ]) as object),
+         listReports: () => {
+            throw new Error("listReports called");
+         },
+      } as unknown as Package;
+      expect(isLegacyReportAlias(pkg, "dashboards/overview")).toBe(true);
+      expect(isLegacyReportAlias(pkg, "dashboards/absent")).toBe(false);
    });
 
    it("adds kind to a compiled document and its manifest, and to a notebook's tile layout", () => {

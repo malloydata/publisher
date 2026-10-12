@@ -140,7 +140,7 @@ describe("publisher_deprecated_usage_total", () => {
 
    it("counts the Console alias only when it resolves to a report", async () => {
       const pkg = {
-         listReports: () => [{ name: "sales" }],
+         servedReportPaths: () => ["deep/sales.malloy"].values(),
       } as unknown as Package;
       expect(isLegacyReportAlias(pkg, "dashboards/sales")).toBe(true);
       expect(isLegacyReportAlias(pkg, "notebooks/sales")).toBe(true);
