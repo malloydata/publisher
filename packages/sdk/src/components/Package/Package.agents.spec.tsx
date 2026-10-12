@@ -21,11 +21,10 @@ mockServerProvider(
                data: { name: "pkg", ...(agents ? { agents } : {}) },
             }),
       },
-      notebooks: { listNotebooks: () => Promise.resolve({ data: [] }) },
+      reports: { listReports: () => Promise.resolve({ data: [] }) },
       models: { listModels: () => Promise.resolve({ data: [] }) },
       databases: { listDatabases: () => Promise.resolve({ data: [] }) },
       dataApps: { listDataApps: () => Promise.resolve({ data: [] }) },
-      dashboards: { listDashboards: () => Promise.resolve({ data: [] }) },
       materializations: { listMaterializations: pending },
    },
    { mutable: true },
@@ -72,6 +71,6 @@ it("lists each agent with its description, a non-default model, and its schedule
 it("shows no section for a package that declares no agents", async () => {
    mount();
 
-   await screen.findByRole("region", { name: "Semantic Models" });
+   await screen.findByRole("region", { name: "Models" });
    expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
 });

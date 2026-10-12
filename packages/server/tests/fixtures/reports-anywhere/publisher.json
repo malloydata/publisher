@@ -1,0 +1,5 @@
+{
+   "name": "reports-anywhere",
+   "version": "1.0.0",
+   "description": "Fixture for reports anywhere in a package: layout by tags, identity by path, drills by path"
+}

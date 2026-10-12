@@ -4,6 +4,7 @@
 import { UnsavedChangesDialog } from "@malloy-publisher/sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useBlocker } from "react-router-dom";
+import { isEditSearch } from "../common/documentRoutes";
 
 /**
  * Guards an editor page against leaving with unsaved edits, by a link, Back,
@@ -29,12 +30,16 @@ export function useLeaveGuard() {
             currentLocation,
             nextLocation,
          }: {
-            currentLocation: { pathname: string };
-            nextLocation: { pathname: string };
+            currentLocation: { pathname: string; search: string };
+            nextLocation: { pathname: string; search: string };
          }) =>
             dirtyRef.current &&
             !leavingRef.current &&
-            currentLocation.pathname !== nextLocation.pathname,
+            // Another page, or the same report without `?edit` (View): either
+            // leaves the builder. A query change that keeps `?edit` stays.
+            (currentLocation.pathname !== nextLocation.pathname ||
+               isEditSearch(currentLocation.search) !==
+                  isEditSearch(nextLocation.search)),
          [],
       ),
    );

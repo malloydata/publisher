@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with `.malloynb` notebooks
+// and `#(filter)` (see RELEASE_NOTES deprecations). Every test in this file
+// is about those deprecated features.
+
 /**
  * A package on a deprecated format reports it in `getPackageMetadata().warnings`:
  * one warning per `.malloynb` notebook, and one per source declaring `#(filter)`
@@ -115,7 +119,7 @@ describe("warnings for content on a deprecated format", () => {
          code: "deprecated-malloynb-notebook",
          severity: "warn",
          message:
-            "README.malloynb is a .malloynb notebook, a deprecated format. Convert it to a .malloy notebook under notebooks/.",
+            "README.malloynb is a .malloynb notebook, a deprecated format. Convert it to a .malloy report.",
       });
 
       const filters = filterWarnings(found);
@@ -147,7 +151,7 @@ describe("warnings for content on a deprecated format", () => {
       write("models/regional.malloy", GIVENS_MODEL);
       write(
          "notebooks/overview.malloy",
-         `##! experimental.givens\n## artifact { kind=notebook title="Overview" }\nimport "../models/regional.malloy"\n\nrun: regional -> { aggregate: n }\n`,
+         `##! experimental.givens\n## artifact { layout=linear title="Overview" }\nimport "../models/regional.malloy"\n\nrun: regional -> { aggregate: n }\n`,
       );
 
       const found = await warnings();

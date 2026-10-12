@@ -12,7 +12,7 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
-import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
+import { filterPublisherOwnedRenderLogs } from "../../service/report_manifest";
 import { EnvironmentStore } from "../../service/environment_store";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {
@@ -25,6 +25,7 @@ import { buildQueryEnvelope } from "../query_envelope";
 import { mintCorrelationId } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
+import { recordDeprecatedFilterUsage } from "../../filter_deprecation";
 
 /**
  * Malloy's two ways of saying a name is not in the model's namespace: a bare
@@ -285,6 +286,7 @@ export function registerExecuteQueryTool(
                        ),
                getQueryTimeoutMs(),
             );
+            recordDeprecatedFilterUsage({ filterParams });
 
             // Render-tag validation reads the FULL Malloy result: the tags live
             // in its schema annotations, which the flat rows do not carry. It
@@ -294,7 +296,7 @@ export function registerExecuteQueryTool(
             );
             const renderLogs = filterPublisherOwnedRenderLogs(
                validateRenderTags(result),
-               modelPath,
+               pkg.getModel(modelPath)?.carriesReportTag() ?? false,
             );
 
             const resultUri = buildMalloyUri(

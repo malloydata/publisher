@@ -51,7 +51,7 @@ test.describe("layout notebooks", () => {
          "Notebook",
          "Layout notebook",
       );
-      const file = `notebooks/${slug}.malloy`;
+      const file = `${slug}.malloy`;
 
       // A text tile, written where it is shown.
       await addTextTile(page);
@@ -68,7 +68,7 @@ test.describe("layout notebooks", () => {
 
       // The title is edited where it is shown.
       await page.getByRole("heading", { level: 5 }).getByRole("button").click();
-      const title = page.getByLabel("Notebook title");
+      const title = page.getByLabel("Report title");
       await title.fill("Layout notebook, edited");
       await title.press("Enter");
       await expect(
@@ -87,11 +87,12 @@ test.describe("layout notebooks", () => {
       expect(saved).not.toContain('##"\n');
       expect(saved).toContain("A note added in place.");
       expect(saved).toContain('title="Layout notebook, edited"');
-      expect(saved).toContain("kind=notebook");
+      expect(saved).toContain("layout=linear");
+      expect(saved).not.toContain("kind=notebook");
 
       // The reader draws every tile with no card around it.
       const reader = await context.newPage();
-      await reader.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}`);
+      await reader.goto(`/${pe.env}/${pe.pkg}/${slug}`);
       await expect(reader.getByText("A note added in place.")).toBeVisible({
          timeout: 60_000,
       });
@@ -116,14 +117,14 @@ test.describe("layout notebooks", () => {
       page,
       context,
    }) => {
-      const file = "notebooks/category-review.malloy";
+      const file = "category-review.malloy";
       const original = await pe.readSource(file);
 
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/category-review/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/category-review?edit`);
       await editorOpen(page);
       await expect(
          page.getByText(
-            /This notebook is in the cell format\. Saving rewrites it/,
+            /This report is in the cell format\. Saving rewrites it/,
          ),
       ).toBeVisible();
       // Nothing was edited, and Save is already on: the conversion is the change.
@@ -134,7 +135,7 @@ test.describe("layout notebooks", () => {
       // The first save asks, because the builder cannot take a conversion back.
       await save.click();
       const confirm = page.getByRole("dialog", {
-         name: "Convert this notebook?",
+         name: "Convert this report?",
       });
       await expect(confirm).toBeVisible();
       await confirm
@@ -150,7 +151,7 @@ test.describe("layout notebooks", () => {
 
       // The converted notebook reads: its three queries still draw.
       const reader = await context.newPage();
-      await reader.goto(`/${pe.env}/${pe.pkg}/notebooks/category-review`);
+      await reader.goto(`/${pe.env}/${pe.pkg}/category-review`);
       await expect(reader.locator("[data-malloy-render-as]")).toHaveCount(3, {
          timeout: 60_000,
       });

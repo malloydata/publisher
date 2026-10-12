@@ -4,14 +4,14 @@ import { REGION } from './givens.malloy'
 source: orders is duckdb.table('data/orders.csv') extend {
    // Drill is declared on the dimension, so these targets are a package-wide
    // concern: one points at a dashboard that exists, one at nothing.
-   # drill { to=["overview"] }
+   # drill { to=["dashboards/overview"] }
    dimension: brand_name is brand
 
    // Points at `dashboards/v1.2.malloy`, whose name is outside the documented
    // pattern but which IS served, so this drill resolves and must NOT be
    // reported. It is here to pin that the advisory naming warning does not
    // leak into the drill lint.
-   # drill { to=["v1.2"] }
+   # drill { to=["dashboards/v1.2"] }
    dimension: unconventional_target is brand
 
    # drill { to=["no_such_dashboard"] }

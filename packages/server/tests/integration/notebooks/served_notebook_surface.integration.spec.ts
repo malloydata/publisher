@@ -12,20 +12,14 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const ENV_NAME = "served-notebook-env";
 const PACKAGE_NAME = "notebooks-malloyyo-surface";
 const NOTEBOOK = "notebooks/local.malloy";
-
-const fixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/notebooks-malloyyo-surface",
-);
 
 interface Named {
    name?: string;
@@ -42,50 +36,17 @@ interface ModelBody {
 }
 
 describe("Served notebook on a package with a surface (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-
-   const pkgUrl = (sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`;
-   const post = (sub: string, body: object) =>
-      fetch(pkgUrl(sub), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(body),
-      });
+   let env: PackageEnv;
+   const pkgUrl = (sub: string) => env.api(sub);
+   const post = (sub: string, body: object) => env.post(pkgUrl(sub), body);
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
-            connections: [],
-         }),
+      env = await startPackageEnv("served-notebook-env", {
+         [PACKAGE_NAME]: fixture(PACKAGE_NAME),
       });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-   });
+   }, 300_000);
 
-   afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
-      await env?.stop();
-      env = null;
-   });
+   afterAll(() => env?.stop());
 
    const getModel = async (): Promise<ModelBody> => {
       const res = await fetch(pkgUrl(`/models/${NOTEBOOK}`));
@@ -145,9 +106,11 @@ describe("Served notebook on a package with a surface (E2E)", () => {
    });
 
    it("withholds from the notebook GET a run over a source derived from a hidden one", async () => {
-      const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
+      const res = await fetch(pkgUrl(`/reports/${NOTEBOOK}`));
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { modelInfo?: string };
+      const body =
+         ((await res.json()) as { notebook?: { modelInfo?: string } })
+            .notebook ?? {};
       expect(body.modelInfo).not.toContain("secret_total");
       // Positive control: the runs over the surface and over a source derived from it.
       expect(runColumns(body.modelInfo)).toEqual([["order_count"], ["n"]]);
@@ -160,7 +123,7 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(body.sourceText).toBeUndefined();
    });
 
-   it("does not list the notebook as a model, and lists it as a notebook", async () => {
+   it("does not list the notebook as a model, and lists it as a report", async () => {
       const models = (await (await fetch(pkgUrl("/models"))).json()) as {
          path?: string;
       }[];
@@ -168,7 +131,7 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(models.map((m) => m.path)).toContain("index.malloy");
       expect(models.map((m) => m.path)).not.toContain(NOTEBOOK);
 
-      const notebooks = (await (await fetch(pkgUrl("/notebooks"))).json()) as {
+      const notebooks = (await (await fetch(pkgUrl("/reports"))).json()) as {
          path?: string;
          title?: string;
          description?: string;

@@ -1,4 +1,4 @@
-## artifact { kind=notebook title="Clean" }
+## artifact { layout=linear title="Clean" }
 source: a is duckdb.sql("select 1 as x")
 
 ##|(markdown)

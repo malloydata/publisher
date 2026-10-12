@@ -88,6 +88,7 @@ import type {
    PackageScope,
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -248,6 +249,8 @@ export interface LoadPackageOutcome {
       scope?: PackageScope;
       /** See {@link LoadPackageResult.packageMetadata.manifestWarnings}. */
       manifestWarnings?: string[];
+      /** Deprecated publisher.json keys the manifest declares, at any value. */
+      deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
       retrieval?: PackageRetrievalSettings;
       /** See {@link LoadPackageResult.packageMetadata.agents}. */

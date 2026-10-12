@@ -5,9 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import {
    recordNotebookCellExecution,
-   recordNotebookDiscovery,
    resetNotebookMetricsForTest,
-   type NotebookDiscoveryOutcome,
 } from "./notebook_metrics";
 import {
    startMetricsHarness,
@@ -25,26 +23,6 @@ describe("notebook_metrics", () => {
    afterEach(async () => {
       resetNotebookMetricsForTest();
       await harness.shutdown();
-   });
-
-   it("counts one per recorded discovery, labelled by format and outcome", async () => {
-      const outcomes: NotebookDiscoveryOutcome[] = ["ok", "refused", "broken"];
-      for (const outcome of outcomes)
-         recordNotebookDiscovery("malloy", outcome);
-      recordNotebookDiscovery("malloynb", "ok");
-      for (const outcome of outcomes) {
-         expect(
-            await harness.collectCounter("publisher_notebook_discovery_total", {
-               format: "malloy",
-               outcome,
-            }),
-         ).toBe(1);
-      }
-      expect(
-         await harness.collectCounter("publisher_notebook_discovery_total", {
-            format: "malloynb",
-         }),
-      ).toBe(1);
    });
 
    it("counts a cell run by format, kind and outcome, and times it by format and outcome", async () => {

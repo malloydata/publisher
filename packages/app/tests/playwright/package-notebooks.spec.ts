@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
+// this file is about that deprecated feature.
+
 import { expect, test } from "@playwright/test";
 import fs from "fs/promises";
 import path from "path";
@@ -81,7 +85,7 @@ test.describe("package-notebooks", () => {
       await reloadPackage(baseURL!, PACKAGES.governed).catch(() => undefined);
    });
 
-   test("Artifacts section lists .malloynb files", async ({ page }) => {
+   test("Reports section lists .malloynb files", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
@@ -92,7 +96,7 @@ test.describe("package-notebooks", () => {
       // check: toHaveCount(0) is already satisfied while the page is blank, so
       // on its own it would pin nothing.
       await expect(
-         page.getByRole("heading", { name: "Artifacts" }),
+         page.getByRole("heading", { name: "Reports", exact: true }),
       ).toBeVisible();
       await expect(
          page.getByRole("heading", { name: "Governed Reports" }),

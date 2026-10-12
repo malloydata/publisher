@@ -1,0 +1,5 @@
+// An ordinary model index.malloy imports, which imports a report: the report is
+// on the surface through it, so the package says so (report-on-surface).
+import { reached } from "shared/reached_report.malloy"
+
+source: hop is reached

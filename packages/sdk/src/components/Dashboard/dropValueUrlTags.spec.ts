@@ -158,10 +158,7 @@ describe("dropValueUrlTags", () => {
 // One case table for this list and the server's `renderTagRefusal`, whose spec reads the same file.
 const { cases } = JSON.parse(
    fs.readFileSync(
-      path.join(
-         import.meta.dir,
-         "../DashboardBuilder/testing/urlRenderTags.json",
-      ),
+      path.join(import.meta.dir, "../ReportBuilder/testing/urlRenderTags.json"),
       "utf8",
    ),
 ) as { cases: { name: string; annotation: string; offends: boolean }[] };

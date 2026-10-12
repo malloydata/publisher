@@ -264,7 +264,9 @@ const QUERY_URL =
 const DEPRECATION_LINK_RE =
   /docs\/givens\.md.*rel="deprecation".*type="text\/markdown"/;
 
-test.describe("Deprecation headers on POST /query", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with `filterParams` /
+// `bypassFilters` (see RELEASE_NOTES deprecations).
+test.describe("deprecated: filterParams/bypassFilters — Deprecation headers on POST /query", () => {
   test("fires Deprecation+Link when filterParams is present", async ({
     request,
   }) => {

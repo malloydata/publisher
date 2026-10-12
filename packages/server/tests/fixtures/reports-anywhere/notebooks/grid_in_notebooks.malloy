@@ -1,0 +1,2 @@
+## artifact { layout=grid title="Grid in notebooks" tiles=["orders -> by_region"] }
+import { orders } from "../orders.malloy"

@@ -47,34 +47,40 @@ Concretely:
   close registration on a deployment where that matters. A `.zip` environment or package that
   contains a symlink entry is refused, and nothing from it is left on disk, because the
   extractor would otherwise follow the link out of the destination directory.
-- **Writing a dashboard or a notebook is an operator action too.** `PUT …/models/{path}` — the
-  builder's save — writes a file into a package and reloads it. It accepts two path shapes and
-  nothing else, `dashboards/<slug>.malloy` and `notebooks/<slug>.malloy`, compiles the text before
-  writing, and is gated by `frozenConfig` like package registration; it has no authentication of
-  its own, so on a reachable server it sits behind the same gateway or is closed by the same
-  setting. An attacker who can reach it can already register a package, so it opens no door that
-  was shut. What a document is comes from the `kind` in its `## artifact` tag; the path only
-  confines where it may live, to the top of those two directories, so a notebook can sit in
-  `dashboards/` and a dashboard in `notebooks/` and the confinement is unchanged. Notebook paths
-  carry one gate the dashboard paths do not: the text must carry an `## artifact` tag (an untagged
-  file there is a shared include that other models import, and is refused with 400), and a tagged
-  write over an existing `notebooks/` file the package does not serve as a notebook is refused with
-  400, including one whose only tag is commented out, so a shared include cannot be overwritten
-  into a notebook. Both path shapes then share the same post-write check: after the reload the
-  compiled model must carry the `## artifact` tag and no other file may hold the name, read as
-  discovery reads it, off the compiled model (off the text only for a file that does not compile);
-  a tagged dashboard with no tiles saves and is not served until it has one. An untagged
-  `dashboards/` file, one with no `# artifact` or `## artifact` tag in its text (an `artifact`
-  property anywhere on a tag line, outside a string), is refused with 400 before compiling. A write
-  whose only `## artifact` sits inside a `/* */` block comment passes that text check and compile
-  and is then rolled back with a 500, so no untagged file lands in either folder; and
-  a dashboard whose name another file already holds is refused with 409 before anything is
-  written, since the name is its URL and its `# drill` target. The compile-first gate is per file,
-  and the reload verify checks only the written model, so a model that imports the written file is
-  not checked; the editor's own edits are invisible to an importer, since markdown and `run:` order
-  define nothing. The text goes through the same caller-text guard as `/compile`, so a save that
-  declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with 400;
-  gates live in the model file.
+- **Writing a report is an operator action too.** `PUT …/models/{path}` — the builder's save —
+  writes a report file into a package and reloads it. It compiles the text before writing, and is
+  gated by `frozenConfig` like package registration; it has no authentication of its own, so on a
+  reachable server it sits behind the same gateway or is closed by the same setting. An attacker
+  who can reach it can already register a package, so it opens no door that was shut. A report may
+  live anywhere in the package (its layout comes from its tags, never its folder), so the endpoint
+  is confined by what a file is rather than where it is:
+  - **Create** (no `expectedHash`) is allowed at any `.malloy` path that does not exist yet, under
+    the same lexical path check as every other route (no `..`, no leading `/`, no dotfile segment),
+    outside `public/`, and never at the root `index.malloy`. The text must carry an artifact tag
+    (an `artifact` property on a `#` or `##` tag line, outside a string), or it is refused with 400
+    before compiling. Missing directories are created inside the package root only: the nearest
+    directory that already exists, and the file itself when it is a link, is resolved through
+    `realpath` before anything is read through it and must lie inside the resolved package root
+    and outside `public/`, so a symlink cannot carry a write out of the package or read a file
+    outside it into the precondition. The root `index.malloy` is refused whatever its case. A
+    create that is rolled back removes the directories it made; a rollback that itself fails is
+    logged as an error and answered 500, saying the package may serve the new text.
+  - **Replace** (with `expectedHash`) is allowed only for a file the package currently reads as a
+    report (a tagged `.malloy`, including a tagged grid report with no tiles yet) whose text on
+    disk still carries the tag. A model, an untagged file, a `.malloynb`, the root `index.malloy`
+    and anything in `public/` cannot be overwritten, wherever they live, and are refused with 400,
+    including a file whose only tag is commented out. So the endpoint can add files in more places
+    than before, but can modify only what it could already modify: reports.
+  - The tag is read off the text by the same reader discovery uses on the compiled model (its
+    model-level notes), so a write whose only `## artifact` sits inside a `/* */` block comment or a
+    string is refused with 400 before it compiles. After the reload the written file must be a
+    report (served, or a grid report with no tiles yet), or the write is rolled back, so no
+    untagged file lands anywhere. Two reports may share a
+    basename, since a report is identified by its path, so no name is refused. The compile-first
+    gate is per file, and the reload verify checks only the written model, so a model that imports
+    the written file is not checked. The text goes through the same caller-text guard as
+    `/compile`, so a save that declares a real `#(authorize)` or `#(access_filter)` gate outside
+    prose is refused with 400; gates live in the model file.
 - **Error bodies name the server's own paths, deliberately.** A filesystem access the server
   cannot make (`EACCES`, `EPERM`, `EROFS`) answers 500 naming the errno, the operation and the
   path, and `/api/v0/status` names the config path in `initError` and the failing path in a
@@ -162,8 +168,8 @@ same origin as the REST API. The consequences follow from that and are all inten
 - The routes are unauthenticated, and only `public/` is reachable. Path traversal is blocked
   lexically and again through `realpath`, and a symlink escaping the directory returns 403.
 
-**Notebooks and dashboards carry no author-written JavaScript file.** A notebook (`notebooks/*.malloy`, or a
-legacy `.malloynb`) is markdown and Malloy cells; a `dashboards/*.malloy` is Malloy plus renderer tags. Both are declarative, which
+**Reports carry no author-written JavaScript file.** A report (a tagged `.malloy`, of either
+layout, or a legacy `.malloynb`) is Malloy, markdown and renderer tags. It is declarative, which
 is what makes them reviewable in a pull request and agent-authorable. Keeping them that way is a
 deliberate property, not an accident of scope. It is not absolute today: gap 3 below is where a
 declarative artifact still carries author-controlled HTML.
