@@ -328,3 +328,151 @@ The loaders themselves, during the second window: a reload of the queried packag
 
 [performance-profile.md](performance-profile.md) attributes each of these to code, with the tooling
 to reproduce it, and ranks what to change.
+
+## After quick wins 1–5
+
+Recorded on 2026-10-12 with the same commands as the [baseline](#baseline), on the same machine, after
+quick wins #1–#5 from the [profile](performance-profile.md#quick-wins) (branch `perf/quick-wins`,
+`37fd67934ab3`, production build):
+
+1. the persist build plan compiles only models with `##! experimental.persistence` or a usable
+   `#@ preaggregate`, as the worker's own compile reports;
+2. each hydrated model builds its Malloy `QueryModel` once, and every render-tag prepare and query
+   reuses it;
+3. render-tag validation, the build plan and model hydration yield to the event loop every 10 ms;
+4. a model's report facts (`carriesReportTag`) are derived once;
+5. a new histogram, `publisher_package_load_phase_duration_ms{phase}`, covers the whole load.
+
+**Machine load was higher than for the baseline.** 1-minute load average: `perf:baseline` 3.28 at
+the start → 7.23 at the end (baseline: 2.66 → 4.45); small loads 5.1 → 4.75; large loads 4.37 →
+5.68, with other sessions pushing it to ~14 during the large reload runs. Other sessions were open
+throughout. Every run finished with 0 % errors and no dropped iterations. Treat differences under
+~10 %, and the large reload rows, as noise; the load and mixed changes below are far larger.
+
+### Loads
+
+`req/s` · avg · p95 (ms, s where noted), before → after.
+
+| preset | op       | c1                                      | c2                                        | c4                                              |
+| ------ | -------- | --------------------------------------- | ----------------------------------------- | ----------------------------------------------- |
+| small  | register | 6.38 · 154 · 179 → 7.34 · 131 · 244     | 7.56 · 243 · 301 → 7.65 · 253 · 532       | 7.55 · 514 · 755 → 9.78 · 398 · 495             |
+| small  | reload   | 7.02 · 142 · 172 → 10.1 · 99 · 131      | 9.44 · 212 · 247 → 15.6 · 128 · 150       | 9.56 · 417 · 566 → 15.2 · 263 · 326             |
+| medium | register | 1.05 · 950 · 1027 → 1.77 · 563 · 611    | 1.31 · 1377 · 1618 → 2.18 · 911 · 956     | 1.42 · 2687 · 3584 → 2.19 · 1809 · 2739         |
+| medium | reload   | 1.06 · 940 · 1025 → 1.83 · 547 · 583    | 1.33 · 1497 · 1674 → 2.07 · 961 · 1106    | 1.44 · 2766 · 3636 → 2.25 · 1759 · 2657         |
+| large  | register | 0.18 · 5560 · 5849 → 0.35 · 2821 · 3124 | 0.22 · 8547 · 9446 → 0.37 · 5408 · 6534   | 0.23 · 16.9 s · 23.3 s → 0.34 · 11.5 s · 19.2 s |
+| large  | reload   | 0.17 · 5810 · 6560 → 0.29 · 3402 · 3973 | 0.20 · 9714 · 10.9 s → 0.39 · 5115 · 6198 | 0.20 · 19.5 s · 28.1 s → 0.40 · 9782 · 15.7 s   |
+
+storefront (medium run): register 4.09 / 4.64 / 5.14 → 6.74 / 8.07 / 8.15 req/s at c1 / c2 / c4 (avg
+241 / 408 / 747 → 145 / 242 / 466 ms); reload 4.62 / 5.34 / 5.77 → 7.41 / 10.57 / 10.50 req/s (avg
+216 / 374 / 691 → 135 / 189 / 380 ms).
+
+A single medium load is 41 % faster (950 → 563 ms) and a single large one 49 % (5.56 → 2.82 s), and
+throughput rose 48–95 % at every concurrency for the medium and large presets. The small preset's
+register p95 got worse at c1 and c2 while its average improved; that run started at a load average
+of 5.1 and the p95 is a handful of slow outliers, so it is read as noise, not a regression.
+
+### Where a load's time goes now
+
+`publisher_package_load_phase_duration_ms` averages per register at c1, against the unchanged
+`malloy_package_load_duration` and the server-side HTTP time:
+
+| phase (ms)                     | storefront | gen medium | gen large |
+| ------------------------------ | ---------: | ---------: | --------: |
+| `worker`                       |       60.4 |        449 |      2384 |
+| `hydrate`                      |        1.7 |        2.1 |       6.1 |
+| `render_validation`            |       44.9 |       93.2 |       385 |
+| `discovery`                    |        8.1 |        3.5 |       9.1 |
+| `lint`                         |        9.4 |        1.9 |       2.2 |
+| `build_plan`                   |        0.0 |        0.0 |       0.0 |
+| `total`                        |        126 |        554 |      2806 |
+| `malloy_package_load_duration` |        107 |        544 |      2775 |
+| HTTP (server-side)             |        145 |        562 |      2820 |
+
+The build plan, 330 ms of a medium load and 1.6 s of a large one, is gone for packages that do not
+persist. Render-tag validation fell from 167 to 93 ms (medium) and from 1.5 s to 385 ms (large),
+from the shared `QueryModel`. The worker is now ~80 % of every gen load. `total` is within 2–20 ms of
+the HTTP time. The old metric is close to it now only because the build plan it never saw is gone;
+it still misses discovery and lint.
+
+### Event loop during loads
+
+The profile's probe (`ctl.ts loads … register`, sequential, no CPU profiler; see
+[method](performance-profile.md#method)):
+
+| window              | p99           | p99.9         | max                | stalls > 100 ms | loop blocked | avg load       |
+| ------------------- | ------------- | ------------- | ------------------ | --------------: | -----------: | -------------- |
+| 10 medium registers | 14.4 → 8.3 ms | 118 → 20.8 ms | **135 → 42.6 ms**  |          11 → 0 |    49 → 18 % | 953 → 560 ms   |
+| 4 large registers   | 23.7 → 9.1 ms | 49 → 22.4 ms  | **1142 → 48.5 ms** |           8 → 0 |    57 → 17 % | 5365 → 2774 ms |
+
+The longest remaining stalls are the worker result's hand-off (structured clone, ~47 ms per large
+load) and single render-tag prepares on the large `index.malloy`.
+
+### Queries
+
+Closed loop, 60 s per row: total req/s and each op's p95 (ms), before → after. The baseline section
+recorded p95 per op only, so avg and p99 are after-only (below, and in the run's `report.md`).
+
+| target     | VUs | total req/s | query_cheap p95 | query_medium p95 | query_heavy p95 | report_get p95 |
+| ---------- | --: | ----------: | --------------: | ---------------: | --------------: | -------------: |
+| storefront |   1 |   357 → 337 |       1.5 → 1.6 |        2.3 → 2.6 |     18.5 → 19.5 |      0.3 → 0.4 |
+| storefront |   4 |   507 → 499 |     19.5 → 19.8 |      20.1 → 20.6 |     34.1 → 33.8 |      1.4 → 1.6 |
+| storefront |  16 |   522 → 504 |     59.6 → 62.3 |      60.5 → 63.3 |     63.5 → 73.2 |      2.4 → 2.4 |
+| storefront |  32 |   532 → 504 |       141 → 147 |        146 → 152 |       150 → 152 |    54.2 → 50.7 |
+| gen        |   1 |     59 → 58 |       5.8 → 5.5 |      15.6 → 17.0 |       106 → 113 |      0.3 → 0.3 |
+| gen        |   4 |     68 → 60 |       128 → 146 |        138 → 158 |       206 → 167 |      0.4 → 0.6 |
+| gen        |  16 |     64 → 55 |       438 → 463 |        441 → 498 |       463 → 557 |      1.0 → 0.6 |
+| gen        |  32 |     56 → 53 |     1087 → 1233 |      1011 → 1096 |      971 → 1091 |      1.4 → 650 |
+
+After, at 32 VUs: storefront avg 63 / 67 / 70 ms and p99 198 / 206 / 200 ms (cheap / medium /
+heavy); gen avg 642 / 598 / 608 ms and p99 1.6 / 1.5 / 1.4 s (baseline gen p99: 1.7 / 7.3 s for
+cheap / medium).
+
+As the profile predicted, query throughput did not move: both plateaus are each package's single
+DuckDB connection (#6). The 3–12 % lower totals and slightly higher p95s line up with the heavier
+machine load (load average 5–8 during these rows, against 3–4 for the baseline). The per-query
+main-thread savings of #2 and #4 are a fraction of a millisecond per request and do not show at the
+HTTP layer while DuckDB is the bottleneck. The gen `report_get` p95 at 32 VUs (1.4 → 650 ms, 79
+requests) is a few samples queued behind 32 one-second queries; `report_list` at the same point went
+433 → 352 ms.
+
+### Mixed
+
+Queries at 10 req/s, then the same with loads: p95 under load, and the under-load / baseline ratios,
+before → after.
+
+| target     | op           | p95 under load (ms) |       p95 × |      avg × |
+| ---------- | ------------ | ------------------: | ----------: | ---------: |
+| storefront | query_cheap  |          167 → 28.2 |  26.7 → 4.1 | 9.6 → 1.95 |
+| storefront | query_medium |          163 → 27.3 |  18.1 → 2.6 | 7.0 → 1.31 |
+| storefront | query_heavy  |          174 → 41.7 |  4.5 → 0.85 | 2.7 → 0.85 |
+| storefront | report_list  |         97.9 → 11.1 |  68.0 → 4.4 | 23.5 → 2.0 |
+| storefront | report_get   |          124 → 15.2 |  72.9 → 9.9 | 26.0 → 3.4 |
+| gen        | query_cheap  |          169 → 32.3 | 12.2 → 0.91 | 5.3 → 0.71 |
+| gen        | query_medium |          181 → 38.1 |  6.5 → 0.84 | 2.6 → 0.70 |
+| gen        | query_heavy  |           229 → 127 |  2.0 → 0.71 | 1.6 → 0.78 |
+| gen        | report_list  |          143 → 19.3 |  88.3 → 2.5 | 37.8 → 2.2 |
+| gen        | report_get   |          107 → 17.8 |  98.9 → 8.4 | 33.0 → 6.4 |
+
+The loaders themselves: a reload of the queried package 581 → 358 ms (storefront) and 1227 → 671 ms
+(gen); registering a copy of the other package 1167–1224 → 667–704 ms. gen's ratios below 1.0 come
+from a noisy baseline window (its cheap-query p99 there was 94 ms), not from loads speeding queries
+up.
+
+### Against the profile's prediction
+
+| prediction                                            | result                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| medium load ~950 → ~570 ms                            | **Met:** 950 → 563 ms register, 940 → 547 ms reload.                                                                                                                                                                                                                                      |
+| large load ~5.6 → ~3 s                                | **Met for register** (5.56 → 2.82 s); reload 5.81 → 3.40 s, measured while the load average was ~14.                                                                                                                                                                                      |
+| mixed under-load ratios down by an order of magnitude | **Mostly.** Query p95 ratios fell 3–13× (to 0.7–4.1×) and report-list ratios 15–35×, but report reads still reach 8–10× (p95 15–18 ms against a 1.5–2 ms baseline). What is left on the main thread is render-tag validation's prepares and the worker hand-off; #8 would move the first. |
+| longest event-loop stall: tens of ms                  | **Met:** 135 → 43 ms (medium), 1142 → 49 ms (large); no stall over 100 ms in either window.                                                                                                                                                                                               |
+| query throughput unchanged                            | **As predicted:** unchanged within noise (3–12 % lower under a heavier machine load); DuckDB-bound until #6.                                                                                                                                                                              |
+
+Memory cost of #2, measured standalone (every model file compiled and hydrated as Publisher does,
+heap after a full GC, then one `QueryModel` per model and one query per fact source): +4.8 MB of heap
+for the medium package (12 files, 33.6 → 38.4 MB) and +13.9 MB for the large one (28 files, 67.2 →
+81.2 MB), retained while the package is loaded. Before, the same structures were built per prepare
+or query and dropped.
+
+Result directories (git-ignored): `results/perf-2026-10-12T04-37-01` (`perf:baseline`),
+`perf-2026-10-12T05-03-12` (small loads) and `perf-2026-10-12T05-09-52` (large loads).

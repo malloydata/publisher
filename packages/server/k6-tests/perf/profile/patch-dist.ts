@@ -52,12 +52,12 @@ const PHASES: Array<[string, string]> = [
       `        warnings = await __ph("validateRenderTags", () => model.validateRenderTags());`,
    ],
    [
-      `    await pkg.discoverReports("load");`,
-      `    await __ph("discoverReports", () => pkg.discoverReports("load"));`,
+      `    const reportTimings = await pkg.discoverReports("load");`,
+      `    const reportTimings = await __ph("discoverReports", () => pkg.discoverReports("load"));`,
    ],
    [
-      `} = await computePackageBuildPlan(pkg);`,
-      `} = await __ph("buildPlan", () => computePackageBuildPlan(pkg));`,
+      `} = await computePackageBuildPlan(pkg, undefined, {\n        skipModel: (modelPath) => models.get(modelPath)?.mayContributeToBuildPlan() === false\n      });`,
+      `} = await __ph("buildPlan", () => computePackageBuildPlan(pkg, undefined, {\n        skipModel: (modelPath) => models.get(modelPath)?.mayContributeToBuildPlan() === false\n      }));`,
    ],
    [
       `      if (options.update !== undefined) {\n        await this._updatePackageLocked(packageName, options.update, {\n          recordLocation: true\n        });\n      }`,
