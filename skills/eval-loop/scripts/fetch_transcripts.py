@@ -509,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
                          "case's `source`. A list writes one run directory "
                          "per position under --out (attempt-1, attempt-2 ...)")
     ap.add_argument("--mcp-url", required=True)
-    ap.add_argument("--hosted-mcp-server", default="credible",
+    ap.add_argument("--hosted-mcp-server", default="hosted",
                     help="also the OAuth cache key, so it must match the name "
                          "you authenticated under")
     ap.add_argument("--logs-scope", required=True,
