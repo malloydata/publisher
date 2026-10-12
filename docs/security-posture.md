@@ -238,8 +238,8 @@ caller-supplied Malloy constructs before they reach compile.** Malloy's restrict
 mechanism -- it refuses `.sql()`, `.table()`, direct SQL function calls and the `sql_*` functions,
 `import`, and `##!` flags (which also keeps out `given:` declarations) -- and the query path already
 uses it via `loadRestrictedQuery`. It does not stop a query from defining or extending sources, so
-a caller can still read an `internal:` field (`include { public: f }`); keep data callers must not
-read `private:` or behind an `#(authorize)` gate.
+a caller can still read an `internal:` field (`include { public: f }`); keep any data callers must
+not read in `private:` fields or behind an `#(authorize)` gate.
 An egress policy denying link-local is the network-layer
 backstop that survives a restricted-mode bypass.
 
