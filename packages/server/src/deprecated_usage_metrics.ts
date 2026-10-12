@@ -8,8 +8,9 @@
  * Each feature is counted inside the seam that keeps it alive, so deleting the
  * seam deletes its counting, and its value here goes with it:
  *
- * - A request: the legacy report routes (`routes/deprecated.ts`), one per
- *   route family; a Console page load on a `dashboards/<name>` or
+ * - A request: the legacy report routes, one per route family, counted in
+ *   their controller (`controller/legacy_report.controller.ts`) so the
+ *   environment and project paths count alike; a Console page load on a `dashboards/<name>` or
  *   `notebooks/<name>` alias of a report, counted by the server's app
  *   fallback (`service/legacy_report_views.ts`; not under a development
  *   server, where Vite serves the app); and a query carrying

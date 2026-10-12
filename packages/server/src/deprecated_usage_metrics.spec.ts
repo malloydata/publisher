@@ -21,6 +21,7 @@ import {
 } from "./filter_deprecation";
 import { logger } from "./logger";
 import { registerDeprecatedRoutes } from "./routes/deprecated";
+import { registerLegacyRoutes, type LegacyControllerSet } from "./server-old";
 import { recordDeprecatedFormatUsage } from "./service/deprecated/lints";
 import {
    declaredDeprecatedManifestKeys,
@@ -85,6 +86,35 @@ describe("publisher_deprecated_usage_total", () => {
          expect(await used("notebooks_list")).toBe(1);
          expect(await used("notebook_get")).toBe(1);
          expect(await used("notebook_cell")).toBe(1);
+      });
+
+      it("counts the project-path notebook routes under the same features, once each", async () => {
+         const store = {
+            getEnvironment: async (name: string) => {
+               throw new EnvironmentNotFoundError(
+                  `Environment ${name} does not exist`,
+               );
+            },
+         } as unknown as EnvironmentStore;
+         const server = express();
+         registerDeprecatedRoutes(server, "/api/v0", store);
+         registerLegacyRoutes(server, {
+            environmentStore: store,
+         } as unknown as LegacyControllerSet);
+         const project = "/api/v0/projects/env/packages/pkg";
+         await request(server).get(`${project}/notebooks`);
+         await request(server).get(`${project}/notebooks/tour.malloynb`);
+         await request(server).get(
+            `${project}/notebooks/tour.malloynb/cells/0`,
+         );
+         // And the environment-path routes beside them, still once each.
+         await request(server).get(`${pkg}/notebooks`);
+         await request(server).get(`${pkg}/notebooks/tour.malloynb`);
+         await request(server).get(`${pkg}/notebooks/tour.malloynb/cells/0`);
+
+         expect(await used("notebooks_list")).toBe(2);
+         expect(await used("notebook_get")).toBe(2);
+         expect(await used("notebook_cell")).toBe(2);
       });
 
       it("logs a 404 once, at warn, never at error", async () => {

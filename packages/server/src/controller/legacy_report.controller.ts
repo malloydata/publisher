@@ -4,6 +4,7 @@
 import type { GivenValue } from "@malloydata/malloy";
 import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
+import { recordDeprecatedUsage } from "../deprecated_usage_metrics";
 import { DashboardNotFoundError, ModelNotFoundError } from "../errors";
 import { logger } from "../logger";
 import { runWithQueryTimeout } from "../query_timeout";
@@ -27,6 +28,9 @@ type ApiRawNotebook = components["schemas"]["RawNotebook"];
  * that still read them. Each answers from the report API through the
  * projections in `service/legacy_report_views.ts`; `routes/deprecated.ts`
  * registers them, and `server-old.ts` serves the same on its legacy paths.
+ *
+ * Each method counts one use of its feature as it starts, whatever it then
+ * answers, so every route that reaches it — on either path — counts once.
  */
 export class LegacyReportController {
    private environmentStore: EnvironmentStore;
@@ -47,6 +51,7 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
    ): Promise<ApiDashboard[]> {
+      recordDeprecatedUsage("dashboards_list");
       return listDashboards(
          await this.packageOf(environmentName, packageName),
          environmentName,
@@ -58,6 +63,7 @@ export class LegacyReportController {
       packageName: string,
       dashboardName: string,
    ): Promise<ApiDashboardManifest> {
+      recordDeprecatedUsage("dashboard_get");
       // Throws AmbiguousReportNameError (409) when two grid reports share it.
       const dashboard = await getDashboard(
          await this.packageOf(environmentName, packageName),
@@ -76,6 +82,7 @@ export class LegacyReportController {
       environmentName: string,
       packageName: string,
    ): Promise<ApiNotebook[]> {
+      recordDeprecatedUsage("notebooks_list");
       return listNotebooks(
          await this.packageOf(environmentName, packageName),
          environmentName,
@@ -87,6 +94,7 @@ export class LegacyReportController {
       packageName: string,
       notebookPath: string,
    ): Promise<ApiRawNotebook> {
+      recordDeprecatedUsage("notebook_get");
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
@@ -112,6 +120,7 @@ export class LegacyReportController {
       bypassFilters?: boolean,
       givens?: Record<string, GivenValue>,
    ): Promise<NotebookCellRunResult> {
+      recordDeprecatedUsage("notebook_cell");
       const environment = await this.environmentStore.getEnvironment(
          environmentName,
          false,
