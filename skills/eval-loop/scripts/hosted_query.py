@@ -14,9 +14,12 @@ spawns it for data.
 
 THE AGENT IS A TRANSPORT, NOT A JUDGE
 
-It is told to make one `execute_query` call and nothing else, it holds no other
-tool, and the ROWS ARE READ OUT OF ITS TRANSCRIPT rather than out of its prose
--- the same `resource_json` the answerer parser uses. Nothing it says is
+It is told to make one `execute_query` call and nothing else. Its only MCP
+server is the target (`--strict-mcp-config`), and `execute_query` is the only
+tool pre-approved; that does not take the others away, it leaves them
+unapproved, and `claude -p` refuses an unapproved call rather than asking. The
+ROWS ARE READ OUT OF ITS TRANSCRIPT rather than out of its prose -- the same
+`resource_json` the answerer parser uses. Nothing it says is
 trusted or parsed. An LLM in the data path would be a place for the data to
 change, and this keeps it out of one.
 
@@ -37,8 +40,8 @@ sys.path.insert(0, str(HERE))
 from agent_harness import run_cli  # noqa: E402
 from run_baseline import resource_json, result_text  # noqa: E402
 
-# One call, nothing else. The agent holds no other tool, so there is no second
-# thing it could do with the credential it is being handed.
+# One call, nothing else. Only `execute_query` is pre-approved, so a headless
+# run refuses any other call the agent tries with the credential.
 PROMPT = """Call the `execute_query` tool exactly once, with these
 arguments and no others. Do not explain, summarise, or reformat the result.
 Do not call any other tool. Reply with the single word DONE.
@@ -93,7 +96,12 @@ def result_from_transcript(events: list[dict[str, Any]]
     Read from tool results, never from prose. A result the host marked as an
     error is returned as the error, so a query the host REJECTED is not read
     as a query that returned nothing -- the two mean opposite things to a
-    golden check. ([], False, None) means the call never happened.
+    golden check.
+
+    A transcript with no `execute_query` result is an error too: the agent
+    replied without making the call (no OAuth login, or a server name that
+    does not match the login, both end in a prose reply). Read as an empty
+    result, that turned every golden into drift.
     """
     for e in events:
         if e.get("type") != "user":
@@ -110,7 +118,10 @@ def result_from_transcript(events: list[dict[str, Any]]
             got = payload_rows(payload)
             if got is not None:
                 return got[0], got[1], None
-    return [], False, None
+    return [], False, NO_RESULT
+
+
+NO_RESULT = "no execute_query result in the transcript: the call never happened"
 
 
 def query(target: Target, package: str, model_path: str, malloy: str, *,
@@ -135,7 +146,11 @@ def query(target: Target, package: str, model_path: str, malloy: str, *,
          "--mcp-config", str(cfg), "--allowedTools", tool],
         cwd=str(target.workdir), timeout=target.timeout)
     rows, cut, err = result_from_transcript(events)
-    if err is None and not rows and not events:
-        err = (f"no transcript from claude -p ({stderr.strip()[:200]}). Is "
-               f"`{target.server}` authenticated? `claude`, then /mcp")
+    if err == NO_RESULT:
+        seen = ("no transcript from claude -p" if not events
+                else "claude -p replied without calling execute_query")
+        detail = f" ({stderr.strip()[:200]})" if stderr.strip() else ""
+        err = (f"{seen}{detail}. Is the MCP server authenticated under the "
+               f"name `{target.server}` (--hosted-mcp-server)? Run `claude`, "
+               f"then /mcp, and authenticate under that name")
     return rows, cut, err
