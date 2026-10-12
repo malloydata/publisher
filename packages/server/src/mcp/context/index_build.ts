@@ -21,7 +21,10 @@
  */
 
 import type { ChatModel, EmbeddingModel } from "../../providers/types";
-import type { FcjSettings } from "../../service/package_retrieval";
+import {
+   DEFAULT_FCJ_SETTINGS,
+   type FcjSettings,
+} from "../../service/package_retrieval";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { logger } from "../../logger";
@@ -189,7 +192,8 @@ export async function buildFcjIndex(args: {
       ...(await catalogInputOf(args.pkgIndex)),
       collapseCopies: settings.collapseCopies,
       joinedCopies: settings.joinedCopies ?? "indexed",
-      unservedCopies: settings.unservedCopies ?? 0,
+      unservedCopies:
+         settings.unservedCopies ?? DEFAULT_FCJ_SETTINGS.unservedCopies,
    });
    // A folded copy is never searched, so it gets no row and no keyword text.
    const searched = [...catalog.nodes.values()].filter((n) => !n.copyOf);

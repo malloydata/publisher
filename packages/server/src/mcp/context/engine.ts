@@ -50,7 +50,7 @@ import {
 } from "./find";
 import type { FcjIndex } from "./index_build";
 import { connect, type ConnectResult } from "./connect";
-import { judge, type JudgeVerdict } from "./judge";
+import { dropBesideRoutes, judge, type JudgeVerdict } from "./judge";
 import {
    FCJ_MAX_CHARS,
    FCJ_RESERVE_CHARS,
@@ -347,6 +347,18 @@ export async function runFcjQuery(args: {
          });
          return judgeFailure(uri, error, stages);
       }
+      verdicts = dropBesideRoutes(
+         verdicts,
+         settings.dropRoutesAt,
+         (key) => optionId(index.catalog, key),
+         new Set(
+            found.flatMap((r) =>
+               r.candidates
+                  .map((c) => index.catalog.nodes.get(c.key)?.id)
+                  .filter((id): id is string => id !== undefined),
+            ),
+         ),
+      );
       const now = meter.snapshot();
       stages.push({
          name: "judge",
@@ -446,6 +458,13 @@ export async function runFcjQuery(args: {
                           // A picked route has the id it has on the joining source.
                           ids: p.keys.map((k) => optionId(index.catalog, k)),
                           ...(p.reason ? { reason: p.reason } : {}),
+                          ...(p.droppedRoutes
+                             ? {
+                                  dropped_routes: p.droppedRoutes.map((k) =>
+                                     optionId(index.catalog, k),
+                                  ),
+                               }
+                             : {}),
                        })),
                        caveats: v.caveats,
                        ...(v.routeOptions !== undefined
