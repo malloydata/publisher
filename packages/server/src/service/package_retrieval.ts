@@ -200,6 +200,17 @@ export interface FcjSettings {
     * shows none and keeps the list as it was.
     */
    listRoutes: number;
+   /**
+    * PROVISIONAL, 0 (off) by default. Above 0, a field whose own source is
+    * not served (an unpublished source, or a raw table or SQL join) gets a
+    * searchable joined copy on each served source that reaches it, at any
+    * depth up to the join walk's guard (8 joins, 1,000 paths per source), at
+    * most this many copies per field, shortest path first. The shipped index
+    * stops at two joins, so a field of an unpublished source three or more
+    * joins away cannot be found without it. Fields of served sources keep
+    * their behaviour: found once on their own source, reached by routes.
+    */
+   unservedCopies: number;
 }
 
 export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
@@ -242,6 +253,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    alsoLikelyTwins: 2,
    joinedCopies: "indexed",
    listRoutes: 3,
+   unservedCopies: 0,
 };
 
 export interface PackageRetrievalSettings {
@@ -601,6 +613,7 @@ function parseFcj(raw: unknown): FcjSettings {
       alsoLikelyTwins: int("alsoLikelyTwins", 0, 10),
       joinedCopies: fcjJoinedCopies(obj),
       listRoutes: int("listRoutes", 0, 20),
+      unservedCopies: int("unservedCopies", 0, 20),
    };
 }
 

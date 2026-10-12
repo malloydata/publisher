@@ -54,6 +54,9 @@ describe("catalog", () => {
          deepestJoinPath: 3,
          joinPathsCapped: 0,
          joinedCopiesDropped: 0,
+         unservedCopiesAdded: 0,
+         unservedCopiesCapped: 0,
+         unservedWalkCapped: 0,
       });
    });
 
