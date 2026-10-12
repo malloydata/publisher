@@ -56,9 +56,12 @@ ${DATA_LINE}`;
 
 /**
  * With `connect: "list"` and `listRoutes` above 0: the list instructions plus
- * the rule for routes. Under a field, the list shows its routes: the same
+ * the rules for routes. Under a field, the list shows its routes: the same
  * field reached from another listed source through that source's joins, each
- * with its own number.
+ * with its own number and the first sentence of the joining source's doc.
+ * The rules keep a field and its route apart: both only when the question
+ * could mean either set of rows, never chosen for sharing a query, never a
+ * second reading of a word, and never for rows the joining source lacks.
  */
 export const DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS = `You choose which fields of a data model answer each part of a question.
 
@@ -70,8 +73,12 @@ ${THING_RULE}
 ${DOC_RULE}
 ${CAVEAT_FILTER_RULE}
 - When several sources serve a target, prefer the one that can share a query with the other targets' picks: the same source, or a source its joins reach. Say in "caveats" which picks can be queried together.
-- Some fields are listed with routes: the same field reached from another listed source through that source's joins, each with its own number. A route counts the rows of the joining source. Through order_items, products.product_count counts the products that appear on order items, not every product.
-- Pick the route when the target is about the joining source's rows: "products that were ordered", "customers who placed orders". Pick the field itself when the target is about every row of its own source: "all products we sell", "every customer on file". When you cannot tell, pick both and say why in the reason.
+- Some fields are listed with routes: the same field reached from another listed source through that source's joins, each with its own number. A route counts the rows of the joining source. Through order_items, products.product_count counts the products that appear on order items, not every product. Each route line quotes what the joining source holds.
+- Pick the route when the target is about the joining source's rows: "products that were ordered", "customers who placed orders". Pick the field itself when the target is about every row of its own source: "all products we sell", "every customer on file".
+- Between a field and its routes, pick both only when the question could mean either set of rows, and say which is which in the reason. Otherwise pick exactly one of them.
+- Sharing a query never decides between a field and its route. Pick by the rows the target is about, then say in "caveats" how to query the picks together.
+- A route is never a second reading of an ambiguous word. It is the same field over fewer rows. When a word has two readings, pick the field for each reading.
+- A route has none of the rows its joining source lacks. When the target is about rows the joining source does not hold, the route does not answer it.
 - Pick nothing for a target no listed source can answer. ${NAME_RULE}
 
 ${DATA_LINE}`;
