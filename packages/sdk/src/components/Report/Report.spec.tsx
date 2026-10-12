@@ -9,7 +9,7 @@
  * routes: a `.malloynb` is the deprecated `Notebook`'s to render.
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
    clearCache,
@@ -18,6 +18,7 @@ import {
    serverWrapper,
 } from "../../../test/serverProvider";
 import type { ReportManifest } from "../../client";
+import { globalQueryClient } from "../../utils/queryClient";
 
 let manifest = {} as ReportManifest;
 const getReport = mock(
@@ -128,6 +129,43 @@ describe("the manifest fetch", () => {
          screen.getByText(/must name an environment and a package/),
       ).toBeTruthy();
       expect(getReport).not.toHaveBeenCalled();
+   });
+
+   it("keeps a rendered report when a refetch fails", async () => {
+      // The manifest stays in the cache when a background refetch fails, and
+      // the reader was looking at it. Swapping it for an error card threw it
+      // away over a request the reader never made, and it was not a failed
+      // load, so no `report.load_failed` goes to the host.
+      manifest = { ...TILES, layout: "grid" };
+      const onEvent = mock((_event: { type: string }) => {});
+      render(
+         <Report resourceUri={URI} path="sales/q3.malloy" onEvent={onEvent} />,
+         { wrapper: serverWrapper },
+      );
+      expect(await screen.findByText("Third quarter")).toBeTruthy();
+
+      getReport.mockImplementation(() =>
+         Promise.reject(new Error("Network Error")),
+      );
+      try {
+         await act(() =>
+            globalQueryClient.refetchQueries({ queryKey: ["report"] }),
+         );
+
+         expect(
+            await screen.findByText(/Could not refresh this report/),
+         ).toBeTruthy();
+         expect(screen.getByText(/Network Error/)).toBeTruthy();
+         expect(screen.getByText("Third quarter")).toBeTruthy();
+         expect(getReport).toHaveBeenCalledTimes(2);
+         expect(onEvent.mock.calls.map(([e]) => e.type)).toEqual([
+            "report.opened",
+         ]);
+      } finally {
+         getReport.mockImplementation(() =>
+            Promise.resolve({ data: manifest }),
+         );
+      }
    });
 });
 

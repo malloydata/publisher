@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] - SDK views keep what they showed when a refresh fails, and a failed request says why
 
-A background refetch that failed used to replace a view the reader was already looking at with an error card, even though the last good data was still cached. A dashboard, notebook, model, package page, environment list, connection list, result panel and materializations list now keep showing what they had. Only a view with nothing to show yet shows the error. The dashboard and the materializations list add a small warning that the refresh failed.
+A background refetch that failed used to replace a view the reader was already looking at with an error card, even though the last good data was still cached. A report (`Report`), the deprecated `Dashboard` and `Notebook`, a model, the package page and its report listing, the environment list, connection list, result panel and materializations list now keep showing what they had. Only a view with nothing to show yet shows the error. `Report`, `Dashboard` and the materializations list add a small warning that the refresh failed, and `Report` sends `report.load_failed` only for a report that never loaded.
 
 `ApiErrorDisplay` used to say "Unknown error" for any failure without a server response body: a network error, a timeout, an aborted request, an empty 502, a token the host could not fetch. It now shows the error's own message and the HTTP status when there is one. A server's message still comes first.
 
