@@ -172,6 +172,7 @@ function table(headers: string[], rows: string[][]): string {
 /** Histogram families worth cross-checking client timings against. */
 const SERVER_HISTOGRAMS = [
    /^malloy_package_load/,
+   /^publisher_package_load_phase_duration/,
    /^malloy_model_query_duration/,
    /^publisher_report_(discovery|read)_duration/,
    /^http_server_request_duration_ms/,

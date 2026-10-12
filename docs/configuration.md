@@ -797,6 +797,21 @@ Under the same `publisher` meter. Labels are bounded enumerations; none is a pac
 text could not be put back, so the package may be serving either. `publisher_deprecated_usage_total`
 reaching zero for a feature across a release is the signal that it can be removed.
 
+## Package load metrics
+
+Under the same `publisher` meter, in milliseconds, with buckets up to 5 minutes. None is labelled by
+path; only `malloy_package_load_duration` carries the package name.
+
+| Metric                                                                                                                 | Type       | What it measures                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `malloy_package_load_duration{malloy_package_name,status}`                                                             | Histogram  | A load up to the point its models are hydrated and validated. Recorded before report discovery and the persist build plan run, so it reads below the time a caller waits for a load; unchanged for continuity.                                                                                                                                                                                                                        |
+| `malloy_package_load_compile_duration{status}`, `_schema_fetch_duration{status}`, `malloy_package_load_schema_fetches` | Histograms | Inside the package-load worker: Malloy compile time, time waiting on proxied schema fetches, and how many there were.                                                                                                                                                                                                                                                                                                                 |
+| `publisher_package_load_phase_duration_ms{phase}`                                                                      | Histogram  | Each stage of a load that succeeded, one sample per stage per load: `worker` (the worker's job as the main thread waits for it), `hydrate` (building the served models from its output), `render_validation`, `discovery` and `lint` (the package's reports), `build_plan` (the persist build plan; absent when it failed) and `total` (the whole load, main-thread tail included). Every stage but `worker` runs on the main thread. |
+
+`total` minus `malloy_package_load_duration` is the main-thread tail the older metric does not see.
+A `render_validation` or `build_plan` that grows with package size is main-thread time, during which
+every other request on the server waits.
+
 ## MCP settings (`mcp`)
 
 The `mcp` block of `publisher.config.json` holds settings for the MCP server. It has one key:

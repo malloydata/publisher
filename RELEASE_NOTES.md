@@ -21,6 +21,17 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Server: faster package loads that no longer stall other requests, and a load-phase metric
+
+Package loads do less on the main thread and share it with other requests while they run. Nothing an API or MCP caller sees changes: the same plans, findings, warnings and answers.
+
+- The persist build plan compiles only the models that can contribute to it (a `##! experimental.persistence` flag or a usable `#@ preaggregate`, as the load's own compile reports). It used to recompile every model file a second time and discard the result for every model without them, which was about a third of a load for most packages.
+- Each loaded model builds its Malloy query model once and reuses it for every render-tag check and every query, where each one used to build and drop its own. Memory rises by that one structure per loaded model: about 5 MB of heap for the medium generated test package (8 model files) and 14 MB for the large one (24).
+- Render-tag validation, model hydration and the build plan yield to the event loop every 10 ms, so a request that arrives during a load waits for at most one step rather than for the whole load.
+- A model's report facts are derived once rather than on every query.
+
+**New metric:** `publisher_package_load_phase_duration_ms{phase}`, one sample per stage of a successful load: `worker`, `hydrate`, `render_validation`, `discovery`, `lint`, `build_plan` and `total`. `malloy_package_load_duration` is unchanged and still stops before report discovery and the build plan; `total` is the whole load. See `docs/configuration.md`.
+
 ## [Unreleased] — Reports: one document type, anywhere in a package, with a `layout`
 
 Dashboards and notebooks are now one document type, the **report**, and a report can live anywhere in a package. A report is any `.malloy` file outside `public/` that carries a model-level `## artifact` tag, other than the root `index.malloy`; a `.malloynb` is a linear report wherever it is. `dashboards/` and `notebooks/` are now ordinary directory names: nothing about a file depends on which directory holds it, and a report two directories deep is served like one at the root. Every file served from those two directories before is classified the same way by its tags alone, with one exception, listed under "What may change" below.

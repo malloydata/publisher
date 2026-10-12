@@ -64,6 +64,7 @@ import {
 } from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
+   recordPackageLoadPhaseDurations,
    recordPackageLoadPhases,
    type PackageLoadStatus,
 } from "../package_load_metrics";
@@ -897,10 +898,13 @@ export class Package {
    ): Promise<{
       models: Map<string, Model>;
       renderTagWarnings: ApiPackageWarning[];
+      /** Wall-clock ms in hydration and in render-tag validation, summed over models. */
+      timings: { hydrateMs: number; renderValidationMs: number };
    }> {
       const { packageName, packagePath, malloyConfig, buildManifest } = ctx;
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
+      const timings = { hydrateMs: 0, renderValidationMs: 0 };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -942,6 +946,7 @@ export class Package {
             continue;
          }
          let model: Model;
+         const hydrateStart = performance.now();
          try {
             model = Model.fromSerialized(
                packageName,
@@ -982,8 +987,11 @@ export class Package {
                ),
             );
             continue;
+         } finally {
+            timings.hydrateMs += performance.now() - hydrateStart;
          }
          let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
+         const validationStart = performance.now();
          try {
             warnings = await model.validateRenderTags();
          } catch (renderErr) {
@@ -1014,6 +1022,8 @@ export class Package {
             }
             models.set(sm.modelPath, placeholder(sm, err));
             continue;
+         } finally {
+            timings.renderValidationMs += performance.now() - validationStart;
          }
          for (const w of warnings) {
             renderTagWarnings.push({
@@ -1027,10 +1037,12 @@ export class Package {
                severity: w.severity,
             });
          }
+         const afterHydrateStart = performance.now();
          await afterHydrate?.(sm);
+         timings.hydrateMs += performance.now() - afterHydrateStart;
          models.set(sm.modelPath, model);
       }
-      return { models, renderTagWarnings };
+      return { models, renderTagWarnings, timings };
    }
 
    /**
@@ -1227,8 +1239,13 @@ export class Package {
       // placeholders instead.)
       let models: Map<string, Model>;
       let renderTagWarnings: ApiPackageWarning[];
+      let hydrationTimings: { hydrateMs: number; renderValidationMs: number };
       try {
-         ({ models, renderTagWarnings } = await Package.hydrateWorkerModels(
+         ({
+            models,
+            renderTagWarnings,
+            timings: hydrationTimings,
+         } = await Package.hydrateWorkerModels(
             outcome,
             { packageName, packagePath, malloyConfig },
             "throw",
@@ -1285,7 +1302,7 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
-      await pkg.discoverReports("load");
+      const reportTimings = await pkg.discoverReports("load");
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       pkg.recordDeprecatedUsage(outcome);
       pkg.retrievalSettings =
@@ -1315,6 +1332,8 @@ export class Package {
       // PERSIST_STORAGE_MODE, so this silently reverts EVERY colocated binding
       // for the package to live recompute (see bindColocatedServeManifest and
       // its recordColocatedBindDropped("build_plan_unavailable") counter).
+      let buildPlanMs: number | undefined;
+      const buildPlanPhaseStart = performance.now();
       try {
          const buildPlanStart = Date.now();
          const {
@@ -1344,6 +1363,7 @@ export class Package {
                declaration: incrementalDeclarations[sourceID],
             }));
          recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
+         buildPlanMs = performance.now() - buildPlanPhaseStart;
       } catch (err) {
          recordBuildPlanComputeFailed();
          logger.warn(
@@ -1465,6 +1485,15 @@ export class Package {
       await pkg.pushPreaggregateServeModels();
       pkg.logEmptyDiscoveryWarnings();
 
+      recordPackageLoadPhaseDurations({
+         worker: workerDoneTime - dispatchTime,
+         hydrate: hydrationTimings.hydrateMs,
+         render_validation: hydrationTimings.renderValidationMs,
+         discovery: reportTimings.discoveryMs,
+         lint: reportTimings.lintMs,
+         build_plan: buildPlanMs,
+         total: performance.now() - startTime,
+      });
       return pkg;
    }
 
@@ -3187,12 +3216,15 @@ export class Package {
     */
    private async discoverReports(
       during: Exclude<ReportDiscoveryDuring, "reload">,
-   ): Promise<void> {
+   ): Promise<{ discoveryMs: number; lintMs: number }> {
       const started = performance.now();
       const discovery = await this.discoverReportsIn(this.models, during);
       this.installReports(discovery);
+      const linting = performance.now();
       await this.relintReports({ textLint: during !== "compile" });
-      this.reportDiscovered(during, discovery, performance.now() - started);
+      const finished = performance.now();
+      this.reportDiscovered(during, discovery, finished - started);
+      return { discoveryMs: linting - started, lintMs: finished - linting };
    }
 
    /**
