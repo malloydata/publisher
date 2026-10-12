@@ -129,6 +129,57 @@ export function recordPackageLoadPhases(
 }
 
 /**
+ * The stages of a package load, as `publisher_package_load_phase_duration_ms`
+ * labels them. `malloy_package_load_duration` is recorded once the models are
+ * hydrated and validated, before report discovery and the persist build plan
+ * run, so it reads well under the time a caller waits; these cover the whole
+ * load, main-thread tail included, without changing what that metric means.
+ *
+ * - `worker`: the package-load worker's job (manifest, compile, extraction) as
+ *   the main thread waits for it, with the database scan it overlaps.
+ * - `hydrate`: building the main thread's Models from the worker's output.
+ * - `render_validation`: render-tag validation of every model.
+ * - `discovery`: reading the package's reports.
+ * - `lint`: linting them.
+ * - `build_plan`: computing the persist build plan.
+ * - `total`: the load end to end, as `Package.create` runs it.
+ */
+export type PackageLoadPhase =
+   | "worker"
+   | "hydrate"
+   | "render_validation"
+   | "discovery"
+   | "lint"
+   | "build_plan"
+   | "total";
+
+let phaseDuration: Histogram | null = null;
+
+/**
+ * Record the stage durations of one load that succeeded. Labels: `phase` only,
+ * a fixed enumeration, so cardinality stays at seven series whatever the
+ * number of packages. A stage that did not run is left out rather than
+ * recorded as zero.
+ */
+export function recordPackageLoadPhaseDurations(
+   durations: Partial<Record<PackageLoadPhase, number>>,
+): void {
+   phaseDuration ??= publisherMeter().createHistogram(
+      "publisher_package_load_phase_duration_ms",
+      {
+         description:
+            "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, total).",
+         unit: "ms",
+         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
+      },
+   );
+   for (const [phase, ms] of Object.entries(durations)) {
+      if (ms === undefined) continue;
+      phaseDuration.record(ms, { phase });
+   }
+}
+
+/**
  * Visible for tests. Drops cached instruments so a fresh `MeterProvider`
  * (installed via `startMetricsHarness`) captures future emissions. Do NOT call
  * from production code.
@@ -137,4 +188,5 @@ export function resetPackageLoadMetricsForTesting(): void {
    compileDuration = null;
    schemaFetchDuration = null;
    schemaFetches = null;
+   phaseDuration = null;
 }
