@@ -210,7 +210,8 @@ export function timeReportRead(route: ReportReadRoute): express.RequestHandler {
  * - `refused` — the request was refused before anything was written; `reason`
  *   says why.
  * - `rolled_back` — it compiled and was written, the package would not reload
- *   with it, and the previous text was put back.
+ *   with it, and the previous text was put back (even when reloading that
+ *   failed: the file is restored, and what is left is a reload).
  * - `rollback_failed` — as `rolled_back`, but putting the previous text back
  *   failed too, so the package may serve the new text or none.
  */

@@ -10,6 +10,7 @@ import {
    internalErrorToHttpError,
    InvalidModelPathError,
    WriteRollbackFailedError,
+   WriteRolledBackError,
    WriteVerifyError,
 } from "../errors";
 import { logger } from "../logger";
@@ -480,13 +481,20 @@ describe("Environment.writeModelFileTransactional", () => {
 
    it("says so, and logs it, when putting the previous text back fails too", async () => {
       fs.writeFileSync(target(), "good");
-      (
-         environment as unknown as {
-            _loadOrGetPackageLocked: () => Promise<unknown>;
-         }
-      )._loadOrGetPackageLocked = async () => {
+      let writes = 0;
+      const env = environment as unknown as {
+         _writeModelFileLocked: (t: string, s: string) => Promise<void>;
+         _loadOrGetPackageLocked: () => Promise<unknown>;
+      };
+      const write = env._writeModelFileLocked.bind(environment);
+      env._writeModelFileLocked = async (t, s) => {
+         writes += 1;
+         if (writes === 2) throw new Error("restore failed");
+         await write(t, s);
+      };
+      env._loadOrGetPackageLocked = async () => {
          reloads += 1;
-         throw new Error(reloads === 1 ? "reload failed" : "restore failed");
+         throw new Error("reload failed");
       };
       const warn = spyOn(logger, "warn");
       const logError = spyOn(logger, "error");
@@ -518,7 +526,59 @@ describe("Environment.writeModelFileTransactional", () => {
       }
       expect(error).toBeInstanceOf(WriteRollbackFailedError);
       expect(error?.message).toContain("putting the previous text back failed");
-      // The restore itself was written; it is the reload of it that failed.
+      // The new text is still on disk: the restore never landed.
+      expect(read()).toBe("bad");
+      expect(reloads).toBe(1);
+   });
+
+   /**
+    * The previous text is back on disk, so the write was rolled back; only the
+    * reload of it failed, which is a different thing to tell an operator than
+    * "the restore failed" — the fix is a reload, not an edit.
+    */
+   it("is a rollback, not a failed one, when the restore landed but its reload failed", async () => {
+      fs.writeFileSync(target(), "good");
+      (
+         environment as unknown as {
+            _loadOrGetPackageLocked: () => Promise<unknown>;
+         }
+      )._loadOrGetPackageLocked = async () => {
+         reloads += 1;
+         throw new Error(
+            reloads === 1 ? "reload failed" : "restore reload failed",
+         );
+      };
+      const warn = spyOn(logger, "warn");
+      const logError = spyOn(logger, "error");
+      let error: Error | undefined;
+      try {
+         error = await environment
+            .writeModelFileTransactional(PKG, FILE, "bad", () => undefined, ok)
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         expect(internalErrorToHttpError(error!).status).toBe(500);
+         expect(writeLines(warn)).toEqual([
+            [
+               "Report write rolled back",
+               {
+                  packageName: PKG,
+                  model: FILE,
+                  error: "reload failed",
+                  reloadError: "restore reload failed",
+               },
+            ],
+         ]);
+         expect(writeLines(logError)).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         logError.mockRestore();
+      }
+      expect(error).toBeInstanceOf(WriteRolledBackError);
+      expect(error).not.toBeInstanceOf(WriteRollbackFailedError);
+      expect(error?.message).toContain("previous text was put back");
+      expect(error?.message).toContain("may need a reload");
       expect(read()).toBe("good");
       expect(reloads).toBe(2);
    });

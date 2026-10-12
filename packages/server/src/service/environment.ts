@@ -2295,7 +2295,9 @@ export class Environment {
     * {@link WriteRolledBackError}. When putting it back fails too, that is
     * logged as an error and raised as {@link WriteRollbackFailedError}: the
     * package may then serve the new text, so the caller must not read it as
-    * "nothing changed".
+    * "nothing changed". A restore that lands but whose reload fails is still a
+    * rollback — the previous text is on disk — and its message says the
+    * package may need a reload.
     *
     * Where the path really leads (through any link, into the package and out
     * of `public/`) is settled before the file is read, so nothing outside the
@@ -2357,7 +2359,6 @@ export class Environment {
                   // The directories this create made, emptied by the removal.
                   await this._removeCreatedDirsLocked(createdDirs);
                }
-               await this._loadOrGetPackageLocked(packageName, true);
             } catch (restoreError) {
                // The one log line for this write: the route and the error
                // mapping leave both rollback outcomes to this method.
@@ -2375,10 +2376,21 @@ export class Environment {
                   { cause: restoreError },
                );
             }
+            // The previous text is on disk again, so this is a rollback even
+            // when reloading it fails: what is left is a reload, not an edit.
+            let reloadError: unknown;
+            try {
+               await this._loadOrGetPackageLocked(packageName, true);
+            } catch (e) {
+               reloadError = e;
+            }
             logger.warn("Report write rolled back", {
                packageName,
                model: modelPath,
                error: errMessage(error),
+               ...(reloadError === undefined
+                  ? {}
+                  : { reloadError: errMessage(reloadError) }),
             });
             // Only a refusal worded for the caller is echoed; anything else can carry a server path.
             const reason =
@@ -2386,7 +2398,10 @@ export class Environment {
             throw new WriteRolledBackError(
                `The package did not reload with the new \`${modelPath}\`` +
                   `${reason ? ` (${reason})` : ""}, so the previous text was ` +
-                  `put back and nothing changed.`,
+                  (reloadError === undefined
+                     ? `put back and nothing changed.`
+                     : `put back, but the package did not reload it and may ` +
+                       `need a reload.`),
                { cause: error },
             );
          }
