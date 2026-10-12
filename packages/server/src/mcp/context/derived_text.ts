@@ -105,7 +105,7 @@ function extendsLine(
  * path, declared on its own source or on the catalog source the rest of the
  * path reaches. Undefined when that hop is on a raw table.
  */
-function joinNodeOf(
+export function joinNodeOf(
    catalog: Catalog,
    node: CatalogNode,
 ): CatalogNode | undefined {
