@@ -99,6 +99,7 @@ import { resolveSpaFallback, type LoadedRoutes } from "./spa_fallback";
 import { timeReportRead } from "./report_metrics";
 import { isLegacyReportAlias } from "./service/legacy_report_views";
 import { registerDeprecatedRoutes } from "./routes/deprecated";
+import { reportWriteRoute } from "./routes/report_write";
 import {
    jsonRoute,
    setVersionIdError,
@@ -1794,39 +1795,7 @@ app.put(
    // while holding no slot, so slot-holding compiles on that package pile up
    // behind it.
    queryConcurrency(),
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-      try {
-         // Express stores wildcard matches in params['0'].
-         const result = await reportController.putReportSource(
-            req.params.environmentName,
-            req.params.packageName,
-            (req.params as Record<string, string>)["0"],
-            req.body,
-         );
-         // 201 for a file that did not exist, the way a created materialization
-         // answers; 200 for one that was replaced.
-         res.status(result.created ? 201 : 200).json(result);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         // A refused write is the endpoint working: a stale hash, a report
-         // that does not compile, a path that is not a report. It is logged at
-         // `warn`, so `error` keeps meaning a fault. A 5xx is already logged
-         // once: a rollback where it happened, anything else by the mapping.
-         if (status < 500) {
-            logger.warn("Report write refused", {
-               packageName: req.params.packageName,
-               model: (req.params as Record<string, string>)["0"],
-               status,
-               error: (error as Error).message,
-            });
-         }
-         res.status(status).json(json);
-      }
-   },
+   reportWriteRoute(reportController),
 );
 
 app.get(
