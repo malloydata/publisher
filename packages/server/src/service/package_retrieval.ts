@@ -201,7 +201,15 @@ export interface FcjSettings {
     */
    listRoutes: number;
    /**
-    * PROVISIONAL, 0 (off) by default. Above 0, a field whose own source is
+    * PROVISIONAL, 3 by default; read with `listRoutes` above 0. After the
+    * judge, when one target's picks hold this many routes or more beside
+    * their own fields (the field and a route to it both picked), those routes
+    * are dropped and the fields kept. A route picked in place of its field is
+    * never dropped. 0 keeps every pick.
+    */
+   dropRoutesAt: number;
+   /**
+    * PROVISIONAL, 3 by default. Above 0, a field whose own source is
     * not served (an unpublished source, or a raw table or SQL join) gets a
     * searchable joined copy on each served source that reaches it, at any
     * depth up to the join walk's guard (8 joins, 1,000 paths per source), at
@@ -253,7 +261,8 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    alsoLikelyTwins: 2,
    joinedCopies: "indexed",
    listRoutes: 3,
-   unservedCopies: 0,
+   dropRoutesAt: 3,
+   unservedCopies: 3,
 };
 
 export interface PackageRetrievalSettings {
@@ -613,6 +622,7 @@ function parseFcj(raw: unknown): FcjSettings {
       alsoLikelyTwins: int("alsoLikelyTwins", 0, 10),
       joinedCopies: fcjJoinedCopies(obj),
       listRoutes: int("listRoutes", 0, 20),
+      dropRoutesAt: int("dropRoutesAt", 0, 20),
       unservedCopies: int("unservedCopies", 0, 20),
    };
 }

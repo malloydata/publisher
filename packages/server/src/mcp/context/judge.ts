@@ -40,7 +40,13 @@ import { runPooled } from "../tools/get_context_llm";
 import type { CatalogNode } from "./catalog";
 import type { Cluster } from "./connect";
 import { firstSentence, joinNodeOf } from "./derived_text";
-import { routeKey, routeOptions, routesFrom, type RouteOption } from "./routes";
+import {
+   parseRouteKey,
+   routeKey,
+   routeOptions,
+   routesFrom,
+   type RouteOption,
+} from "./routes";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
 
@@ -59,6 +65,8 @@ export interface JudgePick {
    target: number;
    keys: string[];
    reason?: string;
+   /** Route keys the judge picked and `dropRoutesAt` took out, for the trace. */
+   droppedRoutes?: string[];
 }
 
 export interface JudgeVerdict {
@@ -479,6 +487,48 @@ export function validateVerdict(
  */
 export function judgeMaxTokens(targets: number, options: number): number {
    return 120 * targets + 300 + 4 * options;
+}
+
+/**
+ * `dropRoutesAt`: when one target's picks hold `at` or more routes beside
+ * their own fields (the field and a route to it both picked for that
+ * target), drop those routes and keep the fields. A judge that lists a
+ * field and then every route to it, target after target, multiplies the
+ * response's size for the same fields. A route
+ * picked in place of its field, and a target with fewer such routes, are
+ * left alone. A route whose id is also a found candidate's own id (an
+ * indexed joined copy under that id) is that candidate, not a route, and is
+ * never dropped. `at` 0 keeps every pick. A dropped route another target
+ * kept is still returned, under that target.
+ */
+export function dropBesideRoutes(
+   verdicts: readonly JudgeVerdict[],
+   at: number,
+   /** The wire id of an option key (optionId). */
+   idOf: (key: string) => string | undefined,
+   /** Wire ids of every candidate the find stage returned. */
+   foundIds: ReadonlySet<string>,
+): JudgeVerdict[] {
+   if (at <= 0) return [...verdicts];
+   return verdicts.map((v) => ({
+      ...v,
+      picks: v.picks.map((p) => {
+         const picked = new Set(p.keys);
+         const beside = p.keys.filter((k) => {
+            const route = parseRouteKey(k);
+            if (!route || !picked.has(route.node)) return false;
+            const id = idOf(k);
+            return id === undefined || !foundIds.has(id);
+         });
+         if (beside.length < at) return p;
+         const drop = new Set(beside);
+         return {
+            ...p,
+            keys: p.keys.filter((k) => !drop.has(k)),
+            droppedRoutes: beside,
+         };
+      }),
+   }));
 }
 
 /** Judge every cluster, `concurrency` calls at a time. Throws on a failed call. */
