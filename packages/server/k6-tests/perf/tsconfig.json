@@ -1,0 +1,6 @@
+{
+   // The perf harness typechecks on its own: the rest of k6-tests imports
+   // clients generated from the OpenAPI spec, which are not checked in.
+   "extends": "../tsconfig.json",
+   "include": ["./**/*.ts", "../utils/logger.ts"]
+}
