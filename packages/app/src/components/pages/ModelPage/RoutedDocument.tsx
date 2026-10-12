@@ -9,6 +9,7 @@ import {
    useReportListing,
 } from "@malloy-publisher/sdk";
 import { Alert, Box, Button } from "@mui/material";
+import { useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { legacyEditBase, withEdit } from "../../common/documentRoutes";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
@@ -47,22 +48,33 @@ export default function RoutedDocument({
    /** Draw `notFound` rather than a retry when the listing cannot be read. */
    notFoundOnError?: boolean;
 }) {
-   const { reports, settled, isError, refetch } = useReportListing(
+   const { reports, settled, isFetching, isError, refetch } = useReportListing(
       environmentName,
       packageName,
    );
    const { search } = useLocation();
    const path = `${routePath}.malloy`;
    const report = settled ? locateReport(path, reports) : undefined;
+   // "No report at this path" is read only from a listing no request is
+   // refreshing: right after a create invalidates it, the cached copy predates
+   // the file this route was opened for. Once a current listing has been seen
+   // for the path the decision holds, so a later background refetch never
+   // swaps an open editor for a spinner.
+   const current = settled && !isFetching;
+   const [seenCurrent, setSeenCurrent] = useState<string>();
+   useEffect(() => {
+      if (current) setSeenCurrent(path);
+   }, [current, path]);
+   const decided = report !== undefined || current || seenCurrent === path;
    // An unlisted report opened for editing is the host's draft, or nothing
    // yet: the layout its store recorded is the one the listing cannot say.
    const draft = useDraftLayout(
       environmentName,
       packageName,
       path,
-      edit && settled && !report,
+      edit && decided && !report,
    );
-   if (!settled) return <Loading text={LOADING_COPY.opening()} />;
+   if (!decided) return <Loading text={LOADING_COPY.opening()} />;
    if (isError && notFoundOnError) return <>{notFound}</>;
    // A listing that failed says nothing about what is at this route, so it
    // is not "nothing here": say so, and offer to ask again.

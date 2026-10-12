@@ -16,6 +16,7 @@ type Listed = { path: string; layout: string; editable?: boolean };
 let listing: {
    reports: Listed[];
    settled: boolean;
+   isFetching: boolean;
    isError: boolean;
    refetch: () => void;
 };
@@ -54,7 +55,11 @@ function Where() {
 
 function mount(routePath: string, edit = false, search = "") {
    const at = `/env/pkg/${routePath}${search || (edit ? "?edit" : "")}`;
-   return render(
+   return render(tree(at, routePath, edit));
+}
+
+function tree(at: string, routePath: string, edit: boolean) {
+   return (
       <MemoryRouter initialEntries={[at]}>
          <Routes>
             <Route
@@ -73,12 +78,18 @@ function mount(routePath: string, edit = false, search = "") {
                }
             />
          </Routes>
-      </MemoryRouter>,
+      </MemoryRouter>
    );
 }
 
 beforeEach(() => {
-   listing = { reports: [], settled: true, isError: false, refetch };
+   listing = {
+      reports: [],
+      settled: true,
+      isFetching: false,
+      isError: false,
+      refetch,
+   };
    draft = { layout: undefined, settled: true };
    draftCalls.length = 0;
    refetch.mockClear();
@@ -111,6 +122,45 @@ describe("RoutedDocument", () => {
       mount("story");
       expect(screen.queryByTestId("report")).toBeNull();
       expect(screen.queryByTestId("not-found")).toBeNull();
+   });
+
+   it("opens a just-created linear report as linear, not as an unlisted grid draft, while the cached listing is refetched", () => {
+      // The create invalidated the listing and navigated here: the cached
+      // copy predates the new file and a refetch is in flight.
+      listing.reports = [{ path: "old.malloy", layout: "grid" }];
+      listing.isFetching = true;
+      const view = mount("by-category", true);
+      expect(screen.queryByTestId("editor")).toBeNull();
+      expect(draftCalls.every((call) => call[3] === false)).toBe(true);
+      listing = {
+         ...listing,
+         isFetching: false,
+         reports: [
+            ...listing.reports,
+            { path: "by-category.malloy", layout: "linear" },
+         ],
+      };
+      view.rerender(tree("/env/pkg/by-category?edit", "by-category", true));
+      expect(screen.getByTestId("editor").textContent).toBe(
+         "edit by-category.malloy as linear",
+      );
+   });
+
+   it("keeps an open unlisted editor through a later background refetch", () => {
+      const view = mount("drafts/new", true);
+      expect(screen.getByTestId("editor")).toBeDefined();
+      listing = { ...listing, isFetching: true };
+      view.rerender(tree("/env/pkg/drafts/new?edit", "drafts/new", true));
+      expect(screen.getByTestId("editor").textContent).toBe(
+         "edit drafts/new.malloy as grid",
+      );
+   });
+
+   it("opens a listed report at once, whatever a refetch is doing", () => {
+      listing.reports = [{ path: "story.malloy", layout: "linear" }];
+      listing.isFetching = true;
+      mount("story");
+      expect(screen.getByTestId("report")).toBeDefined();
    });
 
    it("says a failed listing cannot tell, and retries on request", () => {
