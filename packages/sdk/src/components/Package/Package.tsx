@@ -123,8 +123,9 @@ export default function Package({
    const [creating, setCreating] = useState(false);
    const narrow = useNarrowScreen();
 
-   // Reports the host keeps for this package and the package does not have: the builder's drafts, listed so they are found rather than
-   // stumbled on.
+   // Every report the host keeps for this package in a writeable workspace: the
+   // builder's drafts, both of reports the package does not have yet and of
+   // reports it does, listed so they are found rather than stumbled on.
    // Each carries the workspace's own description, because where a document is
    // kept is the backend's to say and only one host's answer is "this browser".
    const storage = useOptionalDocumentStorage()?.documentStorage;

@@ -382,7 +382,9 @@ test.describe("package-dashboards", () => {
       await expect(page.getByRole("option")).toHaveCount(offered);
    });
 
-   test("a not a report renders one panel per tile", async ({ page }) => {
+   test("a grid report spanning views renders one panel per tile, with the union of their controls", async ({
+      page,
+   }) => {
       await openDashboard(page, "combined");
 
       await expect(page.getByRole("heading", { name: "Combined" })).toBeVisible(
