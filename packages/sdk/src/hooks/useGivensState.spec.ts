@@ -346,17 +346,17 @@ describe("useGivensState: swapping documents", () => {
                onParamsChange: (next) => reported.push(next),
                autorun: true,
             }),
-         { initialProps: { doc: "a.malloynb", params: {} } },
+         { initialProps: { doc: "a.malloy", params: {} } },
       );
 
       act(() => result.current.setGiven("REGION", "West"));
       expect(entries(result.current.applied)).toEqual({ REGION: "West" });
 
       // The host writes it to the URL and feeds it straight back in.
-      rerender({ doc: "a.malloynb", params: { REGION: "West" } });
+      rerender({ doc: "a.malloy", params: { REGION: "West" } });
       expect(entries(result.current.applied)).toEqual({ REGION: "West" });
 
-      rerender({ doc: "b.malloynb", params: {} });
+      rerender({ doc: "b.malloy", params: {} });
       expect(entries(result.current.applied)).toEqual({});
       expect(reported.at(-1)).toEqual({});
    });
@@ -372,7 +372,7 @@ describe("useGivensState: swapping documents", () => {
             useGivensState({
                declaredTypes: props.types,
                startingValues: { STATUS: "open" },
-               documentKey: "orders.malloynb",
+               documentKey: "orders.malloy",
                autorun: true,
             }),
          {
@@ -408,7 +408,7 @@ describe("useGivensState: swapping documents", () => {
                   ["B", "string"],
                ]),
                params: props.params,
-               documentKey: "orders.malloynb",
+               documentKey: "orders.malloy",
                autorun: true,
             }),
          { initialProps: { params: { A: "1", B: "2" } } },
@@ -433,17 +433,17 @@ describe("useGivensState: swapping documents", () => {
                documentKey: props.doc,
                autorun: true,
             }),
-         { initialProps: { doc: "a.malloynb", params: {} } },
+         { initialProps: { doc: "a.malloy", params: {} } },
       );
 
       act(() => result.current.setGiven("REGION", "East"));
       // The host echoes it into the URL, then the reader navigates away.
-      rerender({ doc: "a.malloynb", params: { REGION: "East" } });
-      rerender({ doc: "b.malloynb", params: {} });
+      rerender({ doc: "a.malloy", params: { REGION: "East" } });
+      rerender({ doc: "b.malloy", params: {} });
       expect(entries(result.current.applied)).toEqual({});
 
       // Back to the first notebook from a link carrying no query string.
-      rerender({ doc: "a.malloynb", params: {} });
+      rerender({ doc: "a.malloy", params: {} });
       expect(entries(result.current.applied)).toEqual({});
    });
 });

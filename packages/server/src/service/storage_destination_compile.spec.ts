@@ -233,25 +233,32 @@ describe("a storage destination is not in the namespace a tenant authors in", ()
       expect(why).toContain(NOT_IN_CONFIG);
    });
 
-   it("fails to compile a notebook cell that names the destination", async () => {
-      // The second authoring surface, and a distinct compile: notebook cells go
-      // through `loadQuery`, not the restricted variant a query string gets, so
-      // restricted mode is not what stops this one.
-      const environment = makeEnvironment();
-      writeModel(
-         "names_destination.malloynb",
-         [
-            ">>>markdown",
-            "# Reaching for the destination",
-            "",
-            ">>>malloy",
-            `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
-         ].join("\n"),
-      );
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("fails to compile a notebook cell that names the destination", async () => {
+         // The second authoring surface, and a distinct compile: notebook cells go
+         // through `loadQuery`, not the restricted variant a query string gets, so
+         // restricted mode is not what stops this one.
+         const environment = makeEnvironment();
+         writeModel(
+            "names_destination.malloynb",
+            [
+               ">>>markdown",
+               "# Reaching for the destination",
+               "",
+               ">>>malloy",
+               `run: ${DESTINATION_NAME}.sql('SELECT 1 AS x') -> { select: x }`,
+            ].join("\n"),
+         );
 
-      const why = await whyItFails(environment, "names_destination.malloynb");
+         const why = await whyItFails(
+            environment,
+            "names_destination.malloynb",
+         );
 
-      expect(why).toContain(NOT_IN_CONFIG);
+         expect(why).toContain(NOT_IN_CONFIG);
+      });
    });
 
    it("rejects an ad-hoc query naming the destination", async () => {

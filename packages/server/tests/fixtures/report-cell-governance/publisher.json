@@ -1,0 +1,5 @@
+{
+   "name": "report-cell-governance",
+   "version": "1.0.0",
+   "description": "Fixture for a .malloy report written as run: cells, read through a surface, #(authorize) and a row-level gate"
+}

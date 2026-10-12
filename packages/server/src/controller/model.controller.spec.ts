@@ -155,7 +155,7 @@ describe("ModelController.getModel", () => {
       });
 
       await expect(
-         controller.getModel("env", "faa", "README.malloynb"),
+         controller.getModel("env", "faa", "README.malloy"),
       ).rejects.toBeInstanceOf(ModelNotFoundError);
       expect(getModelFileText.called).toBe(false);
    });

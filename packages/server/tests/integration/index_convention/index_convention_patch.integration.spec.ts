@@ -169,22 +169,26 @@ describe("a metadata PATCH against a convention-derived surface", () => {
       expect(readServedManifest()).not.toHaveProperty("explores");
    });
 
-   it("a PATCH that declares a different surface persists it and takes effect", async () => {
-      const res = await fetch(pkgApi(), {
-         method: "PATCH",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: PACKAGE_NAME,
-            explores: ["orders.malloy"],
-         }),
-      });
-      expect(res.status).toBe(200);
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `explores` (see RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("a PATCH that declares a different surface persists it and takes effect", async () => {
+         const res = await fetch(pkgApi(), {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+               name: PACKAGE_NAME,
+               explores: ["orders.malloy"],
+            }),
+         });
+         expect(res.status).toBe(200);
 
-      // The control for the test above: a body that genuinely names a surface
-      // is honored immediately and written through, so the no-op behavior of a
-      // name-only PATCH is about the ABSENT key rather than about PATCH being
-      // unable to change the surface at all.
-      expect(await listedModels()).toEqual(["orders.malloy"]);
-      expect(readServedManifest().explores).toEqual(["orders.malloy"]);
+         // The control for the test above: a body that genuinely names a surface
+         // is honored immediately and written through, so the no-op behavior of a
+         // name-only PATCH is about the ABSENT key rather than about PATCH being
+         // unable to change the surface at all.
+         expect(await listedModels()).toEqual(["orders.malloy"]);
+         expect(readServedManifest().explores).toEqual(["orders.malloy"]);
+      });
    });
 });

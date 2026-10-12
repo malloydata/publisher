@@ -35,7 +35,7 @@ export const RELOAD_FAILURE_IS_SAFE =
 
 const RELOAD_DESCRIPTION = `Reload a package so edits to its model files on disk are picked up, making newly added or changed sources, views, and named queries resolvable by execute_query WITHOUT restarting the server. Publisher compiles each configured package at boot and serves that cached model, so a source or view you add afterwards is not queryable by name until the package is reloaded. Use this to close the edit -> run loop after saving a model change.
 
-${RELOAD_FAILURE_IS_SAFE} Running compile_model at scope "package" first is the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload. It reports the compile errors, render-tag findings and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface and discovery warnings, among others) appears only here.
+${RELOAD_FAILURE_IS_SAFE} Running compile_model at scope "package" first is the faster way to see diagnostics, and it keeps a broken model from ever reaching the reload. It reports the compile errors, render-tag findings and dashboard findings a reload would; every other package warning (storage, persist, materialization, explores, surface and discovery warnings, and deprecated-format warnings for .malloynb notebooks and #(filter) sources, among others) appears only here.
 
 ## Parameters
 - environmentName, packageName (required): the package to recompile. Use the names get_context returns.

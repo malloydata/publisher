@@ -133,6 +133,7 @@ export function useDrill({
          }
          onNavigate?.(
             {
+               path: destination,
                dashboard: destination,
                givens: { [intent.given]: intent.value },
             },

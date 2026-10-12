@@ -2,58 +2,119 @@
 // SPDX-License-Identifier: MIT
 
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { useServer } from "../ServerProvider";
+import { useServer, type ApiClients } from "../ServerProvider";
 import {
-   locateDocument,
-   type DocumentKind,
+   locateReport,
+   type ListedReport,
    type LocatedDocument,
 } from "./documentLocation";
 
+/** The query key of a package's report listing, so every reader shares one request and one invalidation. */
+const reportsQueryKey = (
+   environmentName: string,
+   packageName: string,
+   versionId?: string,
+) => ["reports", environmentName, packageName, versionId];
+
 /**
- * Where a routed document really lives, from the package's listings.
+ * `GET …/reports`, as the array every reader of {@link reportsQueryKey} caches.
+ * An older server with no such route (404) is a package with no reports to
+ * list rather than an error. Anything else, including no answer at all, is
+ * raised: every reader caches this listing, and an empty one standing in for
+ * a failure would say "nothing here" about a package that has reports.
+ */
+export async function fetchReportListing(
+   apiClients: ApiClients,
+   environmentName: string,
+   packageName: string,
+   versionId?: string,
+): Promise<ListedReport[]> {
+   try {
+      return (
+         await apiClients.reports.listReports(
+            environmentName,
+            packageName,
+            versionId,
+         )
+      ).data;
+   } catch (e) {
+      const status = (e as { response?: { status?: number } })?.response
+         ?.status;
+      if (status === 404) return [];
+      throw e;
+   }
+}
+
+/**
+ * The package's reports, from `GET …/reports`: one listing for both layouts.
  *
- * `settled` is false until both listings have answered; a document neither
- * lists (a draft, or an older server) has a `location` of undefined and the
- * caller falls back to the folder its route names.
+ * `settled` is false until it has answered. An older server with no such
+ * route answers 404, which reads as a package with no reports rather than an
+ * error, so a host still renders. Any other failure is `isError`, with
+ * `refetch` to try again: a caller shows it rather than an empty listing.
+ * `isLoadingError` is the same failure when no listing has loaded yet; a
+ * failed refetch keeps the cached `reports`, so it is not one.
+ * `isFetching` is true while a request is in flight, including the refetch
+ * that follows a write's invalidation, when the cached `reports` predate it.
+ */
+export function useReportListing(
+   environmentName: string,
+   packageName: string,
+   versionId?: string,
+   enabled = true,
+) {
+   const { apiClients } = useServer();
+   const query = useQueryWithApiError({
+      queryKey: reportsQueryKey(environmentName, packageName, versionId),
+      queryFn: () =>
+         fetchReportListing(
+            apiClients,
+            environmentName,
+            packageName,
+            versionId,
+         ),
+      enabled,
+      // One request per page however many readers mount: the route, the
+      // header's Edit button, drill and the builder all read this listing, and
+      // a save invalidates it.
+      staleTime: 60_000,
+   });
+   return {
+      reports: (query.data ?? []) as ListedReport[],
+      settled: query.isSuccess || query.isError,
+      isFetching: query.isFetching,
+      isError: query.isError,
+      isLoadingError: query.isLoadingError,
+      error: query.error,
+      refetch: query.refetch,
+   };
+}
+
+/**
+ * The report at a package path, from the package's listing, matched exactly.
+ *
+ * `settled` is false until the listing has answered; a path the listing does
+ * not have (a draft, a model, or an older server) has a `location` of
+ * undefined, and the caller decides what that path is instead.
  */
 export function useDocumentLocation(
    environmentName: string,
    packageName: string,
-   kind: DocumentKind,
-   slug: string,
+   path: string,
    versionId?: string,
-): { location: LocatedDocument | undefined; settled: boolean } {
-   const { apiClients } = useServer();
-   const dashboards = useQueryWithApiError({
-      queryKey: ["dashboards", environmentName, packageName, versionId],
-      queryFn: () =>
-         apiClients.dashboards.listDashboards(
-            environmentName,
-            packageName,
-            versionId,
-         ),
-   });
-   const notebooks = useQueryWithApiError({
-      queryKey: ["notebooks", environmentName, packageName, versionId],
-      queryFn: () =>
-         apiClients.notebooks.listNotebooks(
-            environmentName,
-            packageName,
-            versionId,
-         ),
-   });
-   const settled = [dashboards, notebooks].every(
-      (query) => query.isSuccess || query.isError,
+): {
+   location: LocatedDocument | undefined;
+   settled: boolean;
+   reports: readonly ListedReport[];
+} {
+   const { reports, settled } = useReportListing(
+      environmentName,
+      packageName,
+      versionId,
    );
    return {
       settled,
-      location: settled
-         ? locateDocument({
-              kind,
-              slug,
-              dashboards: dashboards.data?.data ?? [],
-              notebooks: notebooks.data?.data ?? [],
-           })
-         : undefined,
+      reports,
+      location: settled ? locateReport(path, reports) : undefined,
    };
 }

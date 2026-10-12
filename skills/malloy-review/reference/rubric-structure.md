@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 **Dimension:** `structure`
 **Rules:** 5
 
-Applies to the organization of `.malloy` files within a package. Skip a file for structural review if it's a notebook (a `.malloynb`, or a `notebooks/*.malloy` with an `## artifact { kind=notebook … }` tag, whether written as a `tiles=[…]` layout or as `run:` cells), which has its own conventions, or a one-off sandbox script.
+Applies to the organization of `.malloy` files within a package. Skip a file for structural review if it's a report (a `.malloy` file anywhere in the package whose model-level notes carry an `## artifact` tag, of either layout, `layout=grid` or `layout=linear` or the deprecated `kind=`, written as `tiles=[…]` or as `run:` cells; a legacy query-level `# artifact` on a `query:`; or a `.malloynb`), which has its own conventions (the `malloy-reports` skill), or a one-off sandbox script. Do not flag a report for where it sits: no directory is required for one, and the package root is the default.
 
 For every rule, the linked instruction-skill section is the canonical source for rationale and examples.
 

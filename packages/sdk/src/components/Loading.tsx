@@ -9,7 +9,7 @@ import { Box, CircularProgress, Typography } from "@mui/material";
  * document rather than a mix of "Fetching", "Loading" and "Opening".
  */
 export const LOADING_COPY = {
-   /** A document being fetched: "Opening the dashboard…", or "Opening…". */
+   /** A document being fetched: "Opening the report…", or "Opening…". */
    opening: (noun?: string) => (noun ? `Opening the ${noun}…` : "Opening…"),
    /** A query on its way to a result. */
    running: "Running…",

@@ -1,0 +1,194 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { Alert } from "@mui/material";
+import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { parseResourceUri } from "../../utils/formatting";
+import { ApiErrorDisplay, apiErrorMessage } from "../ApiErrorDisplay";
+import type { DrillNavigation } from "../drill";
+import { Loading, LOADING_COPY } from "../Loading";
+import { useServer } from "../ServerProvider";
+import { DashboardView } from "../Dashboard/DashboardView";
+import {
+   ReportEventsContext,
+   useReportEmitter,
+   type ReportEventHandler,
+} from "../Report/telemetry";
+import type { TileChrome } from "../Dashboard/TileCard";
+
+export interface DashboardProps {
+   /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
+   resourceUri: string;
+   /** The report's basename, as listed by the deprecated dashboards endpoint. */
+   dashboard: string;
+   /**
+    * Control values from the host, typically its URL query parameters. These
+    * beat the dashboard's own starting values, so a shared link shows what the
+    * sender was looking at.
+    */
+   givens?: Record<string, string>;
+   /**
+    * Applied control values, for a host that wants them in its URL. Fires with
+    * what the results reflect, not with every keystroke.
+    *
+    * `managed` is every given this dashboard declares, whether or not it
+    * currently holds a value, and a host writing to a shared query string needs
+    * it. `givens` alone says which parameters to write but not which to REMOVE,
+    * so a host that guesses by deleting everything it did not just receive
+    * deletes the unrelated parameters it has no business touching. Same contract
+    * as `Notebook`, so a host can treat the two surfaces alike.
+    */
+   onGivensChange?: (
+      givens: Record<string, string>,
+      managed: readonly string[],
+   ) => void;
+   /**
+    * Where to go when a `# drill` cell is clicked. Without it, drilling to
+    * another dashboard is inert: `to=self` still filters in place, since that
+    * never leaves the component.
+    */
+   onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
+   /**
+    * Height cap for a result panel. Left unset, each form gets the cap that
+    * suits its shape: {@link TILE_MAX_HEIGHT} per tile for the composite form,
+    * and no cap at all for the single-query form, where the one result IS the
+    * dashboard and a cap would clip the page rather than tidy it. Set it to
+    * hold a dashboard to a fixed box, as an embedding host might.
+    */
+   height?: number;
+   maxResultSize?: number;
+   /**
+    * The rows shown and failed tile queries, for the host to log or count;
+    * see `ReportEvent`. `path` is the manifest's model path.
+    */
+   onEvent?: ReportEventHandler;
+   /**
+    * `card` (default) draws each tile as a panel; `none` draws them bare, a
+    * document that reads top to bottom.
+    */
+   chrome?: TileChrome;
+}
+
+/**
+ * A grid report by its basename: a control row over one or more query
+ * results, declared entirely by the file's tags.
+ *
+ * @deprecated Render `Report` with the file's path instead. This reads the
+ * deprecated `GET …/dashboards/{name}`, which resolves a basename only when one
+ * grid report has it, and draws the result with the same renderer as `Report`.
+ * Kept for hosts that still mount it.
+ *
+ * Host-agnostic on purpose. It takes props rather than reading a router, and
+ * hands navigation and URL state back to whoever mounted it, so the Publisher
+ * Console and an external React app render the same component and differ only
+ * in what they do with `onNavigate` and `onGivensChange`.
+ */
+export function Dashboard({
+   resourceUri,
+   dashboard,
+   givens,
+   onGivensChange,
+   onNavigate,
+   height,
+   maxResultSize,
+   onEvent,
+   chrome,
+}: DashboardProps) {
+   const parsed = parseResourceUri(resourceUri);
+   const { apiClients } = useServer();
+
+   // Degraded, not thrown: a throw in the render body takes the embedding
+   // host's whole tree down with it, which is a white screen rather than a
+   // message.
+   const environmentName = parsed.environmentName ?? "";
+   const packageName = parsed.packageName ?? "";
+   const versionId = parsed.versionId;
+   const uriNamesBoth = !!parsed.environmentName && !!parsed.packageName;
+
+   const {
+      data: manifestResponse,
+      isLoadingError,
+      isRefetchError,
+      error,
+   } = useQueryWithApiError({
+      // Every value the request is built from, so the key cannot drift out of
+      // step with it. A version that reached the request alone would leave two
+      // versions of one dashboard on a single cache entry, each able to serve
+      // the other's manifest.
+      queryKey: [
+         "dashboard",
+         environmentName,
+         packageName,
+         versionId,
+         dashboard,
+      ],
+      queryFn: () =>
+         apiClients.dashboards.getDashboard(
+            environmentName,
+            packageName,
+            dashboard,
+            versionId,
+         ),
+      // No point asking for a dashboard under a name the URI never carried.
+      enabled: uriNamesBoth,
+   });
+   const manifest = manifestResponse?.data;
+   const events = useReportEmitter(
+      { path: manifest?.path ?? dashboard, layout: "grid" },
+      onEvent,
+   );
+
+   if (!uriNamesBoth) {
+      return (
+         <Alert severity="error">
+            A dashboard resource URI must name an environment and a package.
+            Received: {resourceUri}
+         </Alert>
+      );
+   }
+
+   // Only a failure with nothing to show replaces the dashboard. A failed
+   // background refetch leaves the last manifest in the cache, and swapping a
+   // dashboard the reader is looking at for an error card throws that away.
+   if (isLoadingError) {
+      return (
+         <ApiErrorDisplay
+            context={`${environmentName} > ${packageName} > ${dashboard}`}
+            error={error}
+         />
+      );
+   }
+   if (!manifest) {
+      return <Loading text={LOADING_COPY.opening("report")} />;
+   }
+
+   const view = (
+      <ReportEventsContext.Provider value={events}>
+         <DashboardView
+            manifest={manifest}
+            environmentName={environmentName}
+            packageName={packageName}
+            versionId={versionId}
+            documentName={dashboard}
+            givens={givens}
+            onGivensChange={onGivensChange}
+            onNavigate={onNavigate}
+            height={height}
+            maxResultSize={maxResultSize}
+            chrome={chrome}
+         />
+      </ReportEventsContext.Provider>
+   );
+   if (!isRefetchError) return view;
+   return (
+      <>
+         <Alert severity="warning" sx={{ mb: 2 }}>
+            Could not refresh this dashboard ({apiErrorMessage(error)}). Showing
+            the version loaded earlier.
+         </Alert>
+         {view}
+      </>
+   );
+}
+
+export default Dashboard;

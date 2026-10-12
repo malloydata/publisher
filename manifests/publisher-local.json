@@ -1,6 +1,6 @@
 {
   "name": "publisher-local",
-  "description": "Every skill a local Malloy Publisher ships: building and reviewing models, answering data questions, authoring notebooks, dashboards and in-package HTML data apps, and operating a package.",
+  "description": "Every skill a local Malloy Publisher ships: building and reviewing models, answering data questions, authoring reports (linear or grid) and in-package HTML data apps, and operating a package.",
   "trigger_hint": "when the user asks about modeling data, building a semantic model, creating Malloy sources, answering a data question over a model, or mentions Malloy",
   "auto_discovered": [
     "eval-answer",
@@ -30,6 +30,7 @@
     "malloy-powerbi-review",
     "malloy-publish",
     "malloy-queries",
+    "malloy-reports",
     "malloy-review",
     "malloy-source-unreachable"
   ],
@@ -41,8 +42,7 @@
       "malloy-phrase-detection",
       "malloy-queries",
       "malloy-charts",
-      "malloy-notebooks",
-      "malloy-dashboards",
+      "malloy-reports",
       "malloy-source-unreachable",
       "malloy-analysis-report"
     ],
@@ -54,7 +54,7 @@
       "malloy-define",
       "malloy-discover",
       "malloy-charts",
-      "malloy-notebooks",
+      "malloy-reports",
       "malloy-lookml-review",
       "malloy-powerbi-review",
       "malloy-gotchas-modeling",
@@ -65,7 +65,6 @@
       "malloy-queries",
       "malloy-phrase-detection",
       "malloy-html-data-apps",
-      "malloy-dashboards",
       "malloy-getting-started",
       "malloy-source-unreachable",
       "malloy-analysis-report"
