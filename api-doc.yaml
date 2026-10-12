@@ -3799,7 +3799,11 @@ components:
                   notebook, the deprecated cell format (one per file, `model`
                   naming it). `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
-                  `model` naming its file and `subject` the source). The per-file
+                  `model` naming its file and `subject` the source).
+                  `report-name-ambiguous`: two or more grid reports share a
+                  basename, so the deprecated `GET …/dashboards/{name}` route
+                  answers 409 for it (one per name, `subject` naming it and the
+                  message every path; `warn`). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
                   curation findings (`report-on-surface`,
                   `index-is-not-a-report`). The message wording may change; the

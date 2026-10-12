@@ -122,6 +122,20 @@ describe("Reports anywhere in a package (E2E)", () => {
          });
       });
 
+      it("warns at load about the shared basename the name route answers 409 for", () => {
+         const shared = warningsByCode(warnings, "report-name-ambiguous");
+         expect(shared).toHaveLength(1);
+         expect(shared[0]).toMatchObject({
+            model: "finance/summary.malloy",
+            subject: "summary",
+            severity: "warn",
+         });
+         expect(shared[0].message).toContain(
+            "finance/summary.malloy, sales/summary.malloy",
+         );
+         expect(shared[0].message).toContain("rename one of the files");
+      });
+
       it("lists the deprecated aliases by layout", async () => {
          const dashboards = await getJson<{ path: string }[]>(
             api("/dashboards"),

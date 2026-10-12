@@ -118,6 +118,7 @@ import {
    deprecatedFormatWarnings,
    recordDeprecatedFormatUsage,
 } from "./deprecated/lints";
+import { ambiguousDashboardNameWarnings } from "./legacy_report_views";
 import { recordDeprecatedManifestKeys } from "./deprecated/manifest_keys";
 import { isMalloynbPath } from "./deprecated/malloynb";
 import {
@@ -1652,6 +1653,9 @@ export class Package {
          // is advisory; it rides the API so a client can say so on the package
          // rather than leave it to the server log.
          ...deprecatedFormatWarnings(this.models),
+         // A grid basename two reports share: the deprecated by-name route
+         // answers 409 for it.
+         ...ambiguousDashboardNameWarnings(this),
          // The whole surface failed to compile, so every model in the package
          // is refused by name. Rides the API for the same reason as the line
          // above, and more urgently: the 404s it causes name models that are

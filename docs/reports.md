@@ -856,6 +856,10 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
 
   The warning leaves the source unnamed when the package gates anything with `#(authorize)`.
 
+- **A shared grid basename.** Two or more grid reports with the same file name in different directories
+  (`report-name-ambiguous`, warn, one per name, naming the paths): the deprecated `…/dashboards/{name}`
+  route answers 409 for that name. The report routes address by path and are unaffected. Fix: rename one of
+  the files.
 - **Tags that did not parse**, on the report or on a `given:` declaration, and renderer tags the validator
   rejects.
 
@@ -891,7 +895,8 @@ everywhere else. A tile's `query` is an expression, so send it as `{"query": "ru
 [ai-agents.md](ai-agents.md) has the REST playbook.
 
 **Deprecated aliases.** `GET …/dashboards` and `GET …/dashboards/{name}` answer with the grid reports, the
-item resolving a unique basename and answering `409` naming every match when it is ambiguous;
+item resolving a unique basename and answering `409` naming every match when it is ambiguous (the package
+warns about each such name at load, `report-name-ambiguous`);
 `GET …/notebooks`, `…/notebooks/{path}` and `…/notebooks/{path}/cells/{i}` answer for the linear reports. An
 old Console link `/<env>/<pkg>/dashboards/<name>` or `/notebooks/<name>` still opens: a file that is there
 opens at its path, and otherwise a unique basename redirects to the report's path. All of these are removed

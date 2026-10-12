@@ -14,7 +14,8 @@
  * - `kind`, the layout in the old vocabulary (`dashboard` for grid,
  *   `notebook` for linear), synthesized here and nowhere else;
  * - addressing a grid report by its basename, which is not an identity: two
- *   reports sharing it are a 409 naming both ({@link AmbiguousReportNameError}).
+ *   reports sharing it are a 409 naming both ({@link AmbiguousReportNameError}),
+ *   warned at load ({@link ambiguousDashboardNameWarnings}).
  */
 
 import { components } from "../api";
@@ -30,6 +31,9 @@ type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
 type ApiNotebook = components["schemas"]["Notebook"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 type ApiReport = components["schemas"]["Report"];
+type ApiPackageWarning = NonNullable<
+   components["schemas"]["Package"]["warnings"]
+>[number];
 
 /** The old name of a layout. */
 export type LegacyKind = "dashboard" | "notebook";
@@ -88,6 +92,38 @@ export function listDashboards(
       description: report.description,
       error: report.error,
    }));
+}
+
+/** `PackageWarning.code` of a basename two grid reports share. */
+const REPORT_NAME_AMBIGUOUS = "report-name-ambiguous";
+
+/**
+ * One load-time warning per basename two or more grid reports share, naming
+ * the paths: the deprecated `…/dashboards/{name}` route answers 409 for that
+ * name ({@link getDashboard}), and nothing else would say so before a client
+ * asks. The report routes address by path and are unaffected.
+ */
+export function ambiguousDashboardNameWarnings(
+   pkg: Package,
+): ApiPackageWarning[] {
+   const pathsByName = new Map<string, string[]>();
+   for (const report of gridReports(pkg))
+      pathsByName.set(report.name, [
+         ...(pathsByName.get(report.name) ?? []),
+         report.path,
+      ]);
+   return Array.from(pathsByName)
+      .filter(([, paths]) => paths.length > 1)
+      .map(([name, paths]) => ({
+         model: paths[0],
+         subject: name,
+         code: REPORT_NAME_AMBIGUOUS,
+         severity: "warn" as const,
+         message:
+            `Reports ${paths.join(", ")} share the file name "${name}", so the ` +
+            `deprecated GET …/dashboards/${name} route answers 409 for it. ` +
+            `Fix: rename one of the files.`,
+      }));
 }
 
 /**

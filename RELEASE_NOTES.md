@@ -68,7 +68,7 @@ Logs: report lint findings are no longer logged at `warn` on every load, reload 
 - `GET …/dashboards` and `…/dashboards/{name}` (the grid reports) and `GET …/notebooks`, `…/notebooks/{path}` and `…/cells/{i}` (the linear reports). `…/dashboards/{name}` resolves a basename only when exactly one grid report has it, and answers 409 naming every match when several do. Move to `…/reports`.
 
   These deprecated routes still answer, but their contracts are wider than before, and a client of them should check:
-  - `GET …/dashboards/{name}` can now answer **409** (several grid reports share the basename). It never did before.
+  - `GET …/dashboards/{name}` can now answer **409** (several grid reports share the basename). It never did before. The package warns about each such basename at load (`report-name-ambiguous`, `warn`, naming the paths); fix it by renaming one of the files.
   - `GET …/dashboards` and `GET …/notebooks` now list reports from **anywhere** in the package, not only files directly under `dashboards/` or `notebooks/`: a `path` may be `sales/q3.malloy` or `a/b/c.malloy`, and a grid report in `notebooks/` is listed by `…/dashboards`, a linear one in `dashboards/` by `…/notebooks`.
   - `Dashboard.name` is still the basename, but it is **no longer unique** in the listing; key on `path`.
   - The SDK's `DrillNavigation.path` (what a `# drill` click hands a host; `dashboard` before, see below) is the tag's `to=`, which is now usually a **path containing `/`** (`sales/overview`) rather than a single-segment slug. Resolve it with `resolveDrillTarget` against `GET …/reports` rather than putting it into a URL as one segment.

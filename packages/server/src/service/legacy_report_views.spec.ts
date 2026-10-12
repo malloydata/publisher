@@ -8,6 +8,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    AmbiguousReportNameError,
+   ambiguousDashboardNameWarnings,
    getDashboard,
    isLegacyReportAlias,
    legacyKindOf,
@@ -88,6 +89,32 @@ describe("legacy report views", () => {
          AmbiguousReportNameError,
       );
       expect(await getDashboard(pkg, "env", "absent")).toBeUndefined();
+   });
+
+   it("warns once per basename two grid reports share, naming the paths", () => {
+      const pkg = fakePackage([
+         { path: "a/overview.malloy", name: "overview", layout: "grid" },
+         { path: "b/overview.malloy", name: "overview", layout: "grid" },
+         { path: "c/overview.malloy", name: "overview", layout: "grid" },
+         // A linear report sharing a grid name is not served by the route.
+         { path: "q3.malloy", name: "q3", layout: "grid" },
+         { path: "notes/q3.malloy", name: "q3", layout: "linear" },
+      ]);
+      expect(ambiguousDashboardNameWarnings(pkg)).toEqual([
+         {
+            model: "a/overview.malloy",
+            subject: "overview",
+            code: "report-name-ambiguous",
+            severity: "warn",
+            message:
+               'Reports a/overview.malloy, b/overview.malloy, c/overview.malloy share the file name "overview", so the deprecated GET …/dashboards/overview route answers 409 for it. Fix: rename one of the files.',
+         },
+      ]);
+      expect(
+         ambiguousDashboardNameWarnings(
+            fakePackage([{ path: "x.malloy", name: "x", layout: "grid" }]),
+         ),
+      ).toEqual([]);
    });
 
    it("reads a dashboards/<name> or notebooks/<name> route as an alias only when a report has the name", () => {
