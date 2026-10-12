@@ -126,6 +126,7 @@ import {
 } from "./materialization_config_validation";
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
+import { createEventLoopYielder } from "./event_loop_yield";
 import { CELLS_UNREADABLE } from "./notebook";
 import {
    deprecatedFormatWarnings,
@@ -1070,7 +1071,11 @@ export class Package {
                ? ctx.replacement.source
                : undefined,
          );
+      // Hydration and validation run on the main thread, one model after
+      // another; let other requests in between models.
+      const yielder = createEventLoopYielder();
       for (const sm of outcome.models) {
+         await yielder.maybeYield();
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
             if (onCompileError === "throw") {

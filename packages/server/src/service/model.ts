@@ -185,6 +185,7 @@ import {
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
 import { onlyParseFailures } from "./compile_restriction";
+import { createEventLoopYielder } from "./event_loop_yield";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -6164,7 +6165,11 @@ export class Model {
       // without an await, so a call per result held the event loop for the
       // number of results times the model's size.
       const carriesReportTag = this.carriesReportTag();
+      // Nothing below does I/O, so without this the whole loop is one
+      // macrotask: a large model's validation held the event loop for ~1 s.
+      const yielder = createEventLoopYielder();
       for (const { label, result } of prepared) {
+         await yielder.maybeYield();
          // Keep both severities. The renderer reports a tag that is well-formed
          // but inert as `warn`, not `error` -- `# colspan` outside columns mode
          // ("Ignored # colspan ... colspan only applies in columns mode"), or a
@@ -6230,8 +6235,10 @@ export class Model {
    ): Promise<{ label: string; result: Malloy.Result }[]> {
       // One QueryModel for every prepare below, not one each.
       await this.ensureSharedQueryModel();
+      const yielder = createEventLoopYielder();
       const prepared: { label: string; result: Malloy.Result }[] = [];
       for (const target of targets) {
+         await yielder.maybeYield();
          try {
             const result = await mm
                .loadQuery(target.queryString)
