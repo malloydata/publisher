@@ -12,7 +12,7 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  * End-to-end coverage for the Notebook "Filters" panel that surfaces
  * Malloy `given:` runtime parameters. The publisher's storefront
  * fixture set doesn't ship a model with `given:` declarations, so the
- * spec writes its own .malloy + .malloynb into the `storefront` package directory
+ * spec writes its own model and linear report into the `storefront` package directory
  * before the suite runs, triggers a package reload, and cleans up after.
  *
  * Run this against a normal server, not one started with `--watch-env examples`:
@@ -21,7 +21,7 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  */
 
 const FIXTURE_MODEL = "test_givens.malloy";
-const FIXTURE_NOTEBOOK = "test_givens_notebook.malloynb";
+const FIXTURE_NOTEBOOK = "test_givens_notebook.malloy";
 
 const PKG_DIR = path.resolve(
    path.dirname(fileURLToPath(import.meta.url)),
@@ -48,13 +48,14 @@ source: products_with_given is duckdb.table('data/products.parquet') extend {
 }
 `;
 
-const NOTEBOOK_SOURCE = `>>>markdown
-# Test Givens Notebook
-
->>>malloy
+const NOTEBOOK_SOURCE = `##! experimental.givens
+## artifact { layout=linear }
 import "test_givens.malloy"
 
->>>malloy
+##|(markdown)
+# Test Givens Notebook
+|##
+
 run: products_with_given -> by_code
 `;
 
@@ -86,7 +87,7 @@ test.describe("notebook-givens", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
       await page.getByText(FIXTURE_NOTEBOOK, { exact: true }).click();
-      await expect(page).toHaveURL(/test_givens_notebook\.malloynb/);
+      await expect(page).toHaveURL(/\/test_givens_notebook$/);
    }
 
    test("server surfaces declared givens on the notebook response", async ({
@@ -95,13 +96,18 @@ test.describe("notebook-givens", () => {
       // Sanity-check the wire shape before driving the UI: if this fails,
       // the test fixture is wrong or the introspection regressed, not the
       // SDK widgets.
-      const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}/notebooks/${FIXTURE_NOTEBOOK}`;
+      const url = `${baseURL}/api/v0/environments/${DEFAULT_ENV}/packages/${PACKAGES.storefront}/reports/${FIXTURE_NOTEBOOK}`;
       const res = await fetch(url);
       expect(res.ok).toBe(true);
       const body = (await res.json()) as {
-         sources?: Array<{ name?: string; givens?: Array<{ name?: string }> }>;
+         notebook?: {
+            sources?: Array<{
+               name?: string;
+               givens?: Array<{ name?: string }>;
+            }>;
+         };
       };
-      const givens = body.sources?.[0]?.givens ?? [];
+      const givens = body.notebook?.sources?.[0]?.givens ?? [];
       const names = givens.map((g) => g.name);
       expect(names).toContain("target_code");
       expect(names).toContain("cutoff");
@@ -162,7 +168,7 @@ test.describe("notebook-givens", () => {
       await input.fill("Tops");
       await expect(page.getByText("Aurora Boxy Blouse").first()).toBeVisible();
 
-      const clearBtn = page.getByRole("button", { name: "clear value" });
+      const clearBtn = page.getByRole("button", { name: "Clear value" });
       await expect(clearBtn).toBeVisible();
       await clearBtn.click();
 
@@ -207,7 +213,7 @@ test.describe("notebook-givens", () => {
 
       // The × is present even though the field is empty — an override is active,
       // distinct from unset. Clicking it reverts to the model default.
-      const clearBtn = page.getByRole("button", { name: "clear value" });
+      const clearBtn = page.getByRole("button", { name: "Clear value" });
       await expect(clearBtn).toBeVisible();
       await clearBtn.click();
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
@@ -230,7 +236,7 @@ test.describe("notebook-givens", () => {
       await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
 
       // Revert (×) → drop the override, back to the default (checked).
-      await page.getByRole("button", { name: "clear value" }).click();
+      await page.getByRole("button", { name: "Clear value" }).click();
       await expect(box).toBeChecked();
       await expect(page.getByRole("button", { name: "Reset" })).toBeHidden();
    });

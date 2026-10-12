@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
+// this file is about that deprecated feature.
+
 // Harness pattern from authorize_import_hop.integration.spec.ts.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { MalloyError, type Connection } from "@malloydata/malloy";

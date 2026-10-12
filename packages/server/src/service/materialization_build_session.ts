@@ -729,6 +729,16 @@ export interface StorageBuildResult {
     * into a delta, so it has to reach the manifest entry.
     */
    seededThrough?: WatermarkBound;
+   /**
+    * For a source that reads a persisted upstream: whether its rows were
+    * computed from the upstream's STORED table in the destination (`reused`),
+    * or by recomputing the upstream from the source warehouse with it inlined
+    * (`recomputed`). Absent for a source with no persisted upstream, whose only
+    * build reads the warehouse.
+    */
+   upstreamReuse?: "reused" | "recomputed";
+   /** Why the stored upstream was not read, when `upstreamReuse` is `recomputed`. */
+   upstreamRecomputeReason?: string;
 }
 
 /** What an in-place refresh did, for the manifest entry to report. */
@@ -1176,6 +1186,13 @@ export async function buildDownstreamIntoStorage(params: {
             message: `Chained build model did not compile over the rebound parents: ${errMessage(err)}`,
          });
       }
+      // `getBuildPlan`, not `getBuildTargets`, and not by oversight: a target
+      // carries its SQL, so `getBuildTargets` renders every persist source's SQL
+      // as it plans, and the rebound parents are virtual sources that cannot
+      // render without the `virtualMap` — which that call has no way to take.
+      // The plan lists the sources and leaves `getSQL` to the caller, which hands
+      // the map in below. Moving this call is the port's to do once targets can
+      // take one.
       const plan = model.getBuildPlan();
       let downstream: PersistSource | undefined;
       for (const ps of Object.values(plan.sources)) {
@@ -1225,6 +1242,7 @@ export async function buildDownstreamIntoStorage(params: {
          // nothing to account for. Null here means "did not spend", which is the
          // one place in this file where it does.
          readCost: null,
+         upstreamReuse: "reused",
       };
    } finally {
       await dispose();

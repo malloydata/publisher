@@ -111,6 +111,26 @@ class CompactJson(unittest.TestCase):
         self.assertIs(payload["compactJson"], True)
         self.assertEqual(payload["query"], "run: x -> { ... }")
 
+    def test_givens_travel_in_the_request_body(self):
+        seen = {}
+
+        class Resp:
+            def read(self_): return b'{"result": "[]"}'
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): return False
+
+        def fake(req, timeout=None):
+            seen["payload"] = json.loads(req.data.decode())
+            return Resp()
+
+        with unittest.mock.patch.object(publisher_rest.urllib.request,
+                                        "urlopen", fake):
+            publisher_rest.query("http://x", "e", "p", "m.malloy", "run: x",
+                                 givens={"region": "West"})
+            self.assertEqual(seen["payload"]["givens"], {"region": "West"})
+            publisher_rest.query("http://x", "e", "p", "m.malloy", "run: x")
+            self.assertNotIn("givens", seen["payload"])
+
     def test_a_nest_keeps_its_field_names(self):
         # What the server returns under compactJson: `result` is a JSON
         # STRING of plain rows, nested names intact.

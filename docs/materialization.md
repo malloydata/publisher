@@ -27,7 +27,7 @@ source: order_summary is raw_orders -> {
 }
 ```
 
-`name=` is the physical table Publisher writes. Persist the sources that are expensive to compute and reused by many queries; leave cheap or rarely-read sources unpersisted. The [`malloy-materialization-tuning`](../skills/malloy-materialization-tuning/SKILL.md) skill helps decide.
+`name=` is the physical table Publisher writes. Persist the sources that are expensive to compute and reused by many queries; leave cheap or rarely-read sources unpersisted. The [materialization tuning guide](../skills/malloy-materialization/reference/tuning.md) helps decide.
 
 `name=` may also name the container the table goes in — `name="analytics.order_summary"` writes `order_summary` into the `analytics` schema/dataset rather than the connection's default one. The container must already exist; Publisher does not create it. On BigQuery a dataset is required, since a table cannot live outside one.
 
@@ -143,10 +143,10 @@ would not, the predicate is read-time and is re-applied per caller.**
 query — `raw -> { select: * }` — and then refine it. That is not stylistic: a source
 written as a plain extension of a table, `source: orders is raw extend { where: org_id =
 $ORG_ID }`, stays type `table`, and only a query-shaped source is treated as a build
-root. `#@ persist` on one is a **silent no-op** — nothing is built, no error is raised,
-and the source is served live exactly as if the annotation were absent. Publisher warns
-on the package when it sees an annotated source missing from the build plan, which is
-the only signal you get, so reach for the `-> { select: * }` form first.
+root. `#@ persist` on one is refused rather than ignored: the package loads with a
+warning naming the source, and a materialization run that covers it (a whole-package
+run, or one that names it) fails with an error naming it, so nothing is built until the
+annotation moves or goes. Reach for the `-> { select: * }` form first.
 
 ```malloy
 given:
@@ -572,7 +572,7 @@ malloy-pub delete materialization <id> --environment <env> --package <pkg> --dro
 
 The `schedule` commands share the server's publish-gate validation: an invalid cron or an illegal scope/freshness combination is rejected, so a rejection means the change was unsafe.
 
-> **`--drop-tables` drops _every_ physical table in that run's manifest**, not just one source's. Auto-run assigns stable table names and carries unchanged sources forward, so an old run's manifest names tables a newer manifest still serves. To remove a persisted source, drop the old run **first, then `materialize --wait`** so every still-persisted source is re-created; dropping a run whose tables the current serving manifest depends on, without rebuilding, breaks queries.
+> **`--drop-tables` drops the physical tables in that run's manifest, except any that a still-ready run also names.** Auto-run assigns stable table names and carries unchanged sources forward, so an old run's manifest names tables a newer manifest still serves, and those survive the delete. Deleting a run also re-derives the package's serve bindings from the latest remaining ready run (or clears them, so queries compute live), so a delete does not break queries — it can leave a table behind. To remove a persisted source, delete its annotation, `materialize --wait`, then delete the old runs that name its table; a table no ready run names is dropped.
 
 ## Standalone vs. hosted (control-plane) deployments
 
@@ -591,7 +591,7 @@ The same package definition behaves differently depending on who drives material
 
 ## Tune for cost and performance
 
-The materialization history (`list` + `get` above) records per-run timings and how many sources were built vs. reused — enough to decide what to persist, what to stop persisting, and how to schedule it. The [`malloy-materialization-tuning`](../skills/malloy-materialization-tuning/SKILL.md) skill walks an agent through reading those signals and proposing (recommendations-only) changes.
+The materialization history (`list` + `get` above) records per-run timings and how many sources were built vs. reused — enough to decide what to persist, what to stop persisting, and how to schedule it. The [materialization tuning guide](../skills/malloy-materialization/reference/tuning.md) walks an agent through reading those signals and proposing (recommendations-only) changes.
 
 ## Pre-aggregation
 

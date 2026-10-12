@@ -324,12 +324,70 @@ run: daily -> { select: total }
          "t",
       );
       const step = parsed.steps[0] as {
-         sources: { src: string; name: string; dest: string; failed: boolean }[];
+         sources: {
+            src: string;
+            name: string;
+            dest: string;
+            failed: boolean;
+         }[];
       };
       expect(step.sources).toEqual([
          { src: "a", name: "t_a", dest: "lake", failed: false },
          { src: "b", name: "nosuch.t_b", dest: "lake", failed: true },
       ]);
+   });
+
+   it("reads per-source (reused) / (recomputed) on an orchestrated build", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Build (orchestrated)\n\n- a -> t_a @ lake (reused)\n- b -> t_b @ lake (recomputed)\n- c -> t_c @ lake\n`,
+         "t",
+      );
+      const step = parsed.steps[0] as {
+         sources: { src: string; upstreams?: string }[];
+      };
+      expect(step.sources.map((s) => [s.src, s.upstreams])).toEqual([
+         ["a", "reused"],
+         ["b", "recomputed"],
+         ["c", undefined],
+      ]);
+   });
+
+   // A source cannot have read its upstream's table AND recomputed it, and a
+   // failed source built nothing to describe. Accepting either pair would keep
+   // one assertion and silently drop the other.
+   it("rejects (reused) with (recomputed), and either with (failed)", () => {
+      for (const attrs of [
+         "reused, recomputed",
+         "failed, reused",
+         "recomputed, failed",
+      ]) {
+         expect(() =>
+            parseMarkdownForTest(
+               `${FRONT}\n## Build (orchestrated)\n\n- a -> t_a @ lake (${attrs})\n`,
+               "t",
+            ),
+         ).toThrow(/## Build \(orchestrated\)/);
+      }
+   });
+
+   it("reads expect upstreams: on a publish, and rejects a mode it does not know", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}\n## Publish\n\nexpect upstreams: rollup -> reused\nexpect upstreams: other -> recomputed\n`,
+         "t",
+      );
+      const step = parsed.steps[0] as {
+         upstreams: { source: string; mode: string }[];
+      };
+      expect(step.upstreams).toEqual([
+         { source: "rollup", mode: "reused" },
+         { source: "other", mode: "recomputed" },
+      ]);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Publish\n\nexpect upstreams: rollup -> stacked\n`,
+            "t",
+         ),
+      ).toThrow(/unknown mode "stacked"/);
    });
 
    it("rejects a misspelled orchestrated source attribute", () => {
@@ -375,7 +433,10 @@ run: daily -> { select: total }
          `${FRONT}\n## Build refusals\n\nExpect:\n\n| source |\n| ------ |\n`,
          "t",
       );
-      const step = parsed.steps[0] as { kind: string; expect: { rows: unknown[] } };
+      const step = parsed.steps[0] as {
+         kind: string;
+         expect: { rows: unknown[] };
+      };
       expect(step.kind).toBe("buildRefusals");
       expect(step.expect.rows).toEqual([]);
    });

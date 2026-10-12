@@ -4,7 +4,14 @@
 import "@malloydata/malloy-explorer/styles.css";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
-import { Box, Snackbar, Stack, Tooltip, Typography } from "@mui/material";
+import {
+   Box,
+   IconButton,
+   Snackbar,
+   Stack,
+   Tooltip,
+   Typography,
+} from "@mui/material";
 import React, { useState } from "react";
 import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -146,15 +153,15 @@ export default function Model({
                         >
                            Sources
                         </Typography>
-                        <Tooltip title="Click to copy link">
-                           <LinkOutlinedIcon
-                              sx={{
-                                 fontSize: "24px",
-                                 color: "text.secondary",
-                                 cursor: "pointer",
-                              }}
+                        <Tooltip title="Copy link">
+                           <IconButton
+                              size="small"
+                              aria-label="Copy link"
                               onClick={copyToClipboard}
-                           />
+                              sx={{ color: "text.secondary" }}
+                           >
+                              <LinkOutlinedIcon fontSize="small" />
+                           </IconButton>
                         </Tooltip>
                      </Box>
 

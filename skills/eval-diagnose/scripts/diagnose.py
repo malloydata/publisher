@@ -62,6 +62,7 @@ from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
 import config  # noqa: E402
 import ledger  # noqa: E402
 import cluster_failures  # noqa: E402
+import golden_rows  # noqa: E402
 import score_retrieval  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
 
@@ -131,7 +132,8 @@ def skill_codes() -> set[str]:
 
 def evidence_for(qid: str, case: dict[str, Any],
                  events: list[dict[str, Any]],
-                 passed_elsewhere: dict[str, Any] | None = None) -> dict[str, Any]:
+                 passed_elsewhere: dict[str, Any] | None = None,
+                 set_dir: pathlib.Path | None = None) -> dict[str, Any]:
     """Everything the ladder's Step 1 asks for: asked, returned, used.
 
     Assembled here rather than letting the agent read the ledger, for two
@@ -166,7 +168,10 @@ def evidence_for(qid: str, case: dict[str, Any],
     return {
         "qid": qid,
         "question": case.get("question"),
-        "golden": {"kind": golden.get("kind"), "value": golden.get("value"),
+        # A rows golden may keep its rows in `golden.path`; read as `value`
+        # alone it looked keyless.
+        "golden": {"kind": golden.get("kind"),
+                   "value": golden_rows.key_value_or_note(golden, set_dir, qid),
                    "rubric": golden.get("rubric"),
                    "status": golden.get("status")},
         "coverage": case.get("coverage") or golden.get("coverage"),
@@ -178,6 +183,9 @@ def evidence_for(qid: str, case: dict[str, Any],
         "answerText": (attempt.get("answer_text") or "")[:4000],
         "queriesRun": attempt.get("queries") or
         ([attempt["final_query"]] if attempt.get("final_query") else []),
+        # The runtime parameters the final query ran under. The text alone
+        # reads as an unfiltered query beside rows the givens filtered.
+        "finalGivens": attempt.get("final_givens"),
         # The matched pair, when another arm of the SAME model answered this
         # question correctly. Same question, same model, one right answer and
         # one wrong one: the diff between the two queries isolates the cause,
@@ -215,7 +223,9 @@ the scope it searched UNDER, and `returnedInRankOrder` is what came back.
 model answered this question correctly. That is a matched pair: same question,
 same model, one right answer and one wrong one, and the diff between the two
 queries usually names the cause outright. Read `finalQuery` there against
-`queriesRun` here and say what the passing arm did differently.
+`queriesRun` here and say what the passing arm did differently. The givens
+each query ran under (`finalGivens` there and here) are part of the query: the
+same text under different givens is a different query.
 
 A case that flips is not noise to be averaged away. It is a case where the
 agent found two paths and the model did not make one of them obviously right,
@@ -294,7 +304,7 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
             tools_name="the hosted platform" if platform else "Publisher",
             scope_line=scope_line + correct_line,
             evidence=json.dumps(evidence_for(qid, case, events,
-                                             passed_elsewhere),
+                                             passed_elsewhere, a.set_dir),
                                 indent=2)[:14000]),
         skills=["eval-diagnose", *a.role_skills], skills_root=a.roots,
         model=a.model,
@@ -911,7 +921,8 @@ def main(argv: list[str] | None = None) -> int:
             v = theirs.get(q)
             if v and v.get("passed"):
                 other_arm[q] = {"arm": label, "verdict": v["verdict"],
-                                "finalQuery": v.get("final_query")}
+                                "finalQuery": v.get("final_query"),
+                                "finalGivens": v.get("final_givens")}
         print(f"  --compare-run {label}: {len(other_arm)} of "
               f"{len(to_diagnose)} case(s) passed there, so they are "
               f"diagnosed as matched pairs")

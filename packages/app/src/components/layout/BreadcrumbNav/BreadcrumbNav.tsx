@@ -59,7 +59,9 @@ function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
 
 export default function BreadcrumbNav() {
    const params = useParams();
-   const modelPath = params["*"];
+   // The builder is `?edit`, a mode, not a place: the path names the document
+   // in either mode, and a report may be named `edit`.
+   const modelPath = params["*"] ? params["*"].replace(/\/$/, "") : undefined;
    const navigate = useRouterClickHandler();
 
    if (!params.environmentName && !params.packageName && !modelPath) {

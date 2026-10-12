@@ -2,18 +2,17 @@
 // SPDX-License-Identifier: MIT
 
 import { type LogMessage } from "@malloydata/malloy";
+import { isUnparsedReportTagFinding } from "./report_manifest";
 import {
    attachedNowhereFix,
    callAccessor,
    codePointMap,
-   DASHBOARDS_DIR,
-   documentKind,
    isArtifactNoteText,
-   isDocumentModelPath,
    isMarkdownNote,
    isRuleNode,
    MARKDOWN_ROUTE,
-   NOTEBOOKS_DIR,
+   modelNoteBody,
+   modelNotesOfParse,
    parseMarkdownOpener,
    readMarkdownBlocks,
    routeOfNote,
@@ -30,22 +29,27 @@ import {
    tagNumeric,
    tagText,
 } from "./motly";
+import {
+   isReportEligiblePath,
+   mayCarryArtifactTag,
+   readReportTag,
+} from "./report";
 
-/** One finding on a file under `notebooks/` or `dashboards/`. */
+/** One finding on a report file (`report.ts`), wherever it lives. */
 export interface NotebookLintFinding {
    /** 1-based. */
    line: number;
    code: string;
    /** Starts with `Line N:` and ends with the fix. */
    message: string;
-   /** An error is a file that cannot do what it says; a warn is one that does something other than it reads as. */
+   /**
+    * An error is a file that cannot do what it says; a warn is one that does
+    * something other than it reads as, or a deprecated spelling that still
+    * reads as written. There is no third severity: strict clients of
+    * `PackageWarning` and `CompileProblem` accept only these.
+    */
    severity: "warn" | "error";
 }
-
-/** `text` is reserved for the dashboard text tile; it is not an unknown kind. */
-const KNOWN_KINDS = ["notebook", "dashboard", "text"];
-
-const ARTIFACT_KIND_FIX = "Fix: write `## artifact { kind=notebook }`.";
 
 const TILE_ENTRY_FIX =
    'Fix: every `source -> view` entry in `tiles` is a quoted string (`"orders_tiles -> headline"`), and a text entry is a bare name followed by `{ kind=text }` (`intro { kind=text }`).';
@@ -67,16 +71,24 @@ const tileBlockFix = (name: string, body: string) =>
    `write \`##|(markdown) ${name}\`, put \`${body}\` on the line below it, and list \`${name} { kind=text }\` in \`tiles\``;
 
 /**
- * Findings that explain why a notebook or dashboard file will not show what its
- * author wrote, read off Malloy's parse tree and token stream. Reads the parse
- * step only, so a file that does not compile still gets the fix-it for the
- * mistake behind its compile error.
+ * Findings that explain why a report file will not show what its author wrote,
+ * read off Malloy's parse tree and token stream. Reads the parse step only, so a
+ * file that does not compile still gets the fix-it for the mistake behind its
+ * compile error.
+ *
+ * Any `.malloy` that can be a report (`isReportEligiblePath`) is linted: a file
+ * with no artifact tag returns nothing, so where it lives does not matter.
  */
 export function lintNotebookText(
    modelPath: string,
    text: string,
 ): NotebookLintFinding[] {
-   if (!isDocumentModelPath(modelPath)) return [];
+   if (
+      !modelPath.endsWith(".malloy") ||
+      !isReportEligiblePath(modelPath) ||
+      !mayCarryArtifactTag(text)
+   )
+      return [];
    let parse;
    try {
       parse = translateToParse(text).parse;
@@ -103,34 +115,19 @@ export function lintNotebookText(
    const map = codePointMap(text);
    const tokenText = (token: ParseToken) =>
       text.slice(map[token.startIndex], map[token.stopIndex + 1]);
-   // The artifact tag decides what the file is; the folder only when the tag names no kind.
-   let tagKind: string | undefined;
-   let hasTiles = false;
-   for (let i = 0; i < tokens.length; i++) {
-      const name = symbolOf(tokens[i]);
-      if (name !== "DOC_ANNOTATION" && name !== "DOC_BLOCK_ANNOTATION_BEGIN")
-         continue;
-      let note = tokenText(tokens[i]);
-      for (
-         let j = i + 1;
-         name === "DOC_BLOCK_ANNOTATION_BEGIN" &&
-         j < tokens.length &&
-         symbolOf(tokens[j]) === "BLOCK_ANNOTATION_TEXT";
-         j++
-      )
-         note += tokenText(tokens[j]);
-      if (!isArtifactNoteText(note)) continue;
-      const tag = motlyTag([note])?.tag("artifact");
-      tagKind = tagText(tag, "kind");
-      // A tag that does not parse still says `tiles=`, and the layout lint explains its parse error.
-      hasTiles = (tag?.has("tiles") ?? false) || /\btiles\s*=/.test(note);
-      break;
-   }
-   const kind = documentKind(modelPath, tagKind);
-   // The cell format only: a notebook written as tiles is read and linted like a dashboard.
-   const inNotebooks = kind === "notebook" && !hasTiles;
-   const layoutNotebook = kind === "notebook" && hasTiles;
-   const page = kind === "notebook" ? "notebook" : "dashboard";
+   // The artifact tag decides what the file is and which layout it has
+   // (`report.ts`), read by the same reader discovery uses.
+   const tagNotes = modelNotesOfParse(parse, text);
+   const tag = readReportTag(tagNotes);
+   if (tag.status === "none") return [];
+   const hasTiles =
+      tag.status === "report" &&
+      motlyTag(tagNotes)?.tag("artifact")?.has("tiles") === true;
+   const linear = tag.status === "report" && tag.layout === "linear";
+   // The cell format only: a linear report written as tiles is read and linted like a grid one.
+   const inNotebooks = linear && !hasTiles;
+   const layoutNotebook = linear && hasTiles;
+   const page = linear ? "notebook" : "dashboard";
    const nodeText = (node: ParseNode) =>
       node.start && node.stop
          ? text.slice(map[node.start.startIndex], map[node.stop.stopIndex + 1])
@@ -194,7 +191,7 @@ export function lintNotebookText(
             const route = routeOfNote(noteText);
             const first = noteText.split("\n", 1)[0];
             // A block note ends at its closer, which is not part of the tag text.
-            const bodyText = noteText.replace(/\r?\n\|##[^\n]*\n?$/, "");
+            const bodyText = modelNoteBody(noteText);
             modelNotes.push(bodyText);
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
@@ -286,16 +283,10 @@ export function lintNotebookText(
       }
    });
 
-   // A query-level `# artifact` also makes a dashboard, so only a file with neither tag is a helper.
-   const queryLevelArtifact =
-      !inNotebooks &&
-      (tokens as ParseToken[]).some(
-         (token) =>
-            symbolOf(token) !== "DOC_ANNOTATION" &&
-            /^#\s*artifact\b/.test(tokenText(token)),
-      );
-   // A helper model's lines would only be noise to quote.
-   if (!artifact && !queryLevelArtifact) return [];
+   if (!artifact) return [];
+   // A tag that makes no report is reported alone: what the rest of the lint
+   // would say depends on a layout the file does not have.
+   if (tag.status !== "report") return [tagFinding(artifact)];
    const belowTag = (line: number) =>
       artifact !== undefined && line > artifact.line;
    // Where a statement's own leading notes sit: the only place a `(markdown)` note is read.
@@ -732,6 +723,54 @@ export function lintNotebookText(
       );
    }
 
+   /**
+    * The layout half of the tag (`report.ts`, §2): `layout=` is the spelling,
+    * and a tag that names none and lists no tiles is linear only by default.
+    */
+   function lintLayout(line: number, declaredLayout: string | undefined): void {
+      if (
+         declaredLayout !== undefined &&
+         declaredLayout !== "grid" &&
+         declaredLayout !== "linear"
+      ) {
+         add(
+            line,
+            "report-layout-unknown",
+            `\`layout=${declaredLayout}\` is not a layout Publisher knows (grid, linear), so the tag's other properties decide it. Fix: write \`layout=grid\` or \`layout=linear\`.`,
+            "error",
+         );
+      }
+      if (tag.status === "report" && tag.decidedBy === "default") {
+         add(
+            line,
+            "report-layout-implicit",
+            "this artifact tag names no `layout` and lists no tiles, so the report is linear only by default. Fix: write `## artifact { layout=linear }` (or `layout=grid` with `tiles=[…]`).",
+         );
+      }
+   }
+
+   /** The one finding for a tag that makes no report: it does not parse, or it sets the removed `kind=`. */
+   function tagFinding(tagNote: {
+      text: string;
+      line: number;
+   }): NotebookLintFinding {
+      const [parseError] = motlyParseErrors([tagNote.text]);
+      const kind = tag.status === "kind-removed" ? tag.kind : undefined;
+      const message =
+         kind !== undefined
+            ? `\`kind=${kind}\` is no longer read, so this file is not a report. Fix: remove \`kind=${kind}\` and write \`layout=grid\` or \`layout=linear\`.`
+            : `the \`## artifact\` tag does not parse${parseError !== undefined ? ` (${parseError})` : ""}, so its properties are not read and this file is not a report. ${/\btiles\s*=/.test(tagNote.text) ? TILE_ENTRY_FIX : "Fix: correct the tag so it parses."}`;
+      return {
+         line: tagNote.line,
+         code:
+            kind !== undefined
+               ? "report-kind-removed"
+               : "notebook-artifact-unparsed",
+         severity: "error",
+         message: `Line ${tagNote.line}: ${message}`,
+      };
+   }
+
    /** A `(markdown)` block is a tile only when `tiles` names it with `{ kind=text }`. */
    function lintUnreferencedMarkdownBlocks(tagNote: { text: string }): void {
       if (motlyParseErrors([tagNote.text])[0] !== undefined) return;
@@ -762,54 +801,16 @@ export function lintNotebookText(
          add(
             tagNote.line,
             "notebook-artifact-unparsed",
-            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${/\btiles\s*=/.test(tagNote.text) ? TILE_ENTRY_FIX : inNotebooks ? ARTIFACT_KIND_FIX : "Fix: correct the tag so it parses."}`,
+            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${/\btiles\s*=/.test(tagNote.text) ? TILE_ENTRY_FIX : "Fix: correct the tag so it parses."}`,
             "error",
          );
          return;
       }
       const tag = motlyTag([tagNote.text])?.tag("artifact");
       if (!tag) return;
-      const declared = tagText(tag, "kind");
       const properties = Object.keys(tag.dict ?? {});
-      const home = kind === "notebook" ? NOTEBOOKS_DIR : DASHBOARDS_DIR;
-      if (!modelPath.startsWith(`${home}/`)) {
-         add(
-            tagNote.line,
-            "notebook-other-folder",
-            `this ${kind} is served from ${modelPath.split("/")[0]}/, where the other kind is created. It works either way. Fix: move it to ${home}/ if you want folders to match kinds.`,
-         );
-      }
-      if (inNotebooks) {
-         if (declared === undefined) {
-            add(
-               tagNote.line,
-               "notebook-kind-missing",
-               `this notebook's artifact tag has no \`kind\`. ${ARTIFACT_KIND_FIX}`,
-            );
-         } else if (declared !== "notebook") {
-            add(
-               tagNote.line,
-               "notebook-kind-unknown",
-               KNOWN_KINDS.includes(declared)
-                  ? `\`kind=${declared}\` is not a notebook kind. ${ARTIFACT_KIND_FIX}`
-                  : `\`kind=${declared}\` is not a kind Publisher knows (dashboard, notebook). ${ARTIFACT_KIND_FIX}`,
-            );
-         }
-         return;
-      }
-      if (declared === "text") {
-         add(
-            tagNote.line,
-            "notebook-kind-text-on-dashboard",
-            "`kind=text` marks a tile entry, so it does not mark this document. Fix: remove `kind`, or write `kind=dashboard` or `kind=notebook`.",
-         );
-      } else if (declared !== undefined && !KNOWN_KINDS.includes(declared)) {
-         add(
-            tagNote.line,
-            "notebook-kind-unknown",
-            `\`kind=${declared}\` is not a kind Publisher knows (dashboard, notebook). Fix: remove \`kind\`.`,
-         );
-      }
+      lintLayout(tagNote.line, tagText(tag, "layout"));
+      if (inNotebooks) return;
       if (layoutNotebook) {
          for (const entry of tag.array("tiles") ?? []) {
             const ignored = ["colspan", "break"].filter((p) => entry.has(p));
@@ -832,7 +833,7 @@ export function lintNotebookText(
             );
          }
       }
-      // A single query has no grid, and dashboard.ts already says so.
+      // A single query has no grid, and report_manifest.ts already says so.
       if (
          properties.includes("dashboard_columns") &&
          properties.includes("tiles")
@@ -862,6 +863,30 @@ export function lintNotebookText(
          }
       }
    }
+}
+
+/**
+ * True for a notebook-lint finding that the dashboard lint also reported for
+ * the same file, in its own words: an `## artifact` tag that does not parse. A
+ * caller that runs both lints drops this copy, so the file is reported once.
+ *
+ * Decided by what the dashboard lint actually reported: a file that did not
+ * compile gets no dashboard finding, and the notebook lint's is then the only
+ * one.
+ */
+export function reportedByDashboardLint(
+   finding: { code?: string },
+   modelPath: string,
+   dashboardFindings: readonly { model?: string; message?: string }[],
+): boolean {
+   return (
+      finding.code === "notebook-artifact-unparsed" &&
+      dashboardFindings.some(
+         (f) =>
+            f.model === modelPath &&
+            isUnparsedReportTagFinding(f.message ?? ""),
+      )
+   );
 }
 
 /** The findings as compile problems, at their lines, for a /compile of a notebook or dashboard file. */

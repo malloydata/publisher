@@ -41,7 +41,7 @@ export function renderGivenDefault(
       // a plain string, so only unquote when it's a single simple quoted literal
       // (`f'WN'` -> `WN`); leave a compound expression (`f'WN','AA'`) verbatim
       // rather than mangling it by stripping the outermost quotes.
-      const expr = literal.replace(/^f/, "");
+      const expr = literal.replace(/^f(?=['"])/, "");
       const single = expr.match(/^'([^'\\]*)'$/) ?? expr.match(/^"([^"\\]*)"$/);
       return single ? single[1] : expr;
    }

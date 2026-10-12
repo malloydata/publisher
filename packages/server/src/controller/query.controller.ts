@@ -15,7 +15,7 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
-import { filterPublisherOwnedRenderLogs } from "../service/dashboard";
+import { filterPublisherOwnedRenderLogs } from "../service/report_manifest";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
@@ -58,6 +58,8 @@ export class QueryController {
       bypassAuthorize?: boolean,
       /** Lift the package's surface for this request (see {@link Model.getQueryResults}). */
       includeHiddenFilesAndSources?: boolean,
+      /** Aborted when the HTTP client disconnects: cancels the query with it. */
+      clientSignal?: AbortSignal,
    ): Promise<ApiQuery> {
       let requestMetadata: QueryMetadata | undefined;
       let queryClass: QueryClass | undefined;
@@ -156,10 +158,11 @@ export class QueryController {
                   includeHiddenFilesAndSources,
                ),
             getQueryTimeoutMs(),
+            clientSignal,
          );
          const renderLogs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            modelPath,
+            p.getModel(modelPath)?.carriesReportTag() ?? false,
          );
          return {
             // Already serialized by the model, which was told which shape this

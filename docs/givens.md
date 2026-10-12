@@ -226,7 +226,7 @@ Callers use this metadata to render input widgets without out-of-band knowledge 
 }
 ```
 
-**Execute a notebook cell** — `GET /api/v0/environments/:env/packages/:package/notebooks/:path/cells/:index`
+**Execute a report cell** — a `.malloy` report's `run:` cell runs through the query endpoint above, its `text` as the `query` and the report's path as the model, with `givens` in the body. A legacy `.malloynb`'s cell runs at the deprecated `GET /api/v0/environments/:env/packages/:package/notebooks/:path/cells/:index`
 
 Query parameter `givens` accepts URL-encoded JSON:
 
@@ -320,6 +320,10 @@ link's values, and Reset discards those too.
 `implicit`, or a date or number range: each of those has a `given:` form, listed
 below. Existing `#(filter)` models still run, and this section is for migrating
 them.
+
+A package with a source that declares `#(filter)` lists that source in its
+package `warnings` (one warning per source), as it lists each `.malloynb`
+notebook, so a client can say on the package what is left to migrate.
 
 The notebook's Filters panel is gone, so a model that relied on `#(filter)` or
 `##(filters)` annotations is no longer filterable from a notebook, and one with

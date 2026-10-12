@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PALETTE } from "../components/styles";
+import { accentFor, legibleOn } from "./accent";
 import { DEFAULT_THEME } from "./defaults";
 import { PER_MODE_COLOR_KEYS, type PerModeColorKey } from "./keys";
 import type { ResolvedTheme, Theme, ThemeMode } from "./types";
@@ -14,10 +14,10 @@ import type { ResolvedTheme, Theme, ThemeMode } from "./types";
  * (a layer that sets only `palette.tile.dark` doesn't clobber the
  * instance-level `palette.tile.light`).
  *
- * The derived fields on ResolvedTheme (border, cardBorder, pinnedBorder,
- * valueColor, foreground, axisFaint) are computed once here from the
- * active mode so the three builders that consume the theme stop
- * recomputing them with duplicated hex literals.
+ * The chrome fields on ResolvedTheme (border, cardBorder, pinnedBorder,
+ * valueColor, foreground, axisFaint, gridline) are resolved once here from
+ * the per-mode palette keys (border, cardBorder, value, chartText, axis,
+ * gridline) so the builders that consume the theme never branch on mode.
  */
 export function resolveTheme(
    layers: Array<Theme | undefined>,
@@ -30,6 +30,7 @@ export function resolveTheme(
    };
 
    let series: string[] = [...((defaultPalette.series as string[]) ?? [])];
+   let seriesSet = false;
    let fontFamily: string = defaultFont.family ?? "sans-serif";
    let fontSize: number = defaultFont.size ?? 12;
 
@@ -43,17 +44,33 @@ export function resolveTheme(
       tile: { ...(defaultPalette.tile ?? {}) },
       tileTitle: { ...(defaultPalette.tileTitle ?? {}) },
       mapColor: { ...(defaultPalette.mapColor ?? {}) },
+      border: { ...(defaultPalette.border ?? {}) },
+      cardBorder: { ...(defaultPalette.cardBorder ?? {}) },
+      axis: { ...(defaultPalette.axis ?? {}) },
+      gridline: { ...(defaultPalette.gridline ?? {}) },
+      chartText: { ...(defaultPalette.chartText ?? {}) },
+      value: { ...(defaultPalette.value ?? {}) },
    };
 
+   // Which per-mode colours a layer set for each mode, as against the
+   // defaults: a colour set for light alone is carried into dark (lifted to
+   // read there) rather than dropped for the default.
+   const setFor: Record<ThemeMode, Set<PerModeColorKey>> = {
+      light: new Set(),
+      dark: new Set(),
+   };
    for (const layer of layers) {
       if (!layer) continue;
       if (Array.isArray(layer.palette?.series)) {
          series = [...(layer.palette.series as string[])];
+         seriesSet = true;
       }
       for (const key of PER_MODE_COLOR_KEYS) {
          const override = layer.palette?.[key];
          if (override) {
             perMode[key] = { ...perMode[key], ...override };
+            if (override.light !== undefined) setFor.light.add(key);
+            if (override.dark !== undefined) setFor.dark.add(key);
          }
       }
       if (typeof layer.font?.family === "string") {
@@ -69,9 +86,22 @@ export function resolveTheme(
       perMode[key][mode] ?? (defaultPalette[key]?.[mode] as string);
 
    const background = pick("background");
+   // The map's brand end, set for light only: lifted into dark rather than
+   // swapped for the default blue, so a themed map stays the operator's hue.
+   const mapColor =
+      isDark && setFor.light.has("mapColor") && !setFor.dark.has("mapColor")
+         ? legibleOn(perMode.mapColor.light as string, background)
+         : pick("mapColor");
    return {
       mode,
-      series,
+      // One series list for both modes, picked against a light page: in dark,
+      // an operator's colour too dark to see on the canvas is lifted until it
+      // reads. The defaults are drawn as they always were.
+      series:
+         isDark && seriesSet
+            ? series.map((c) => legibleOn(c, background))
+            : series,
+      ...accentFor(series[0], mode, background),
       font: { family: fontFamily, size: fontSize },
       background,
       tableHeader: pick("tableHeader"),
@@ -79,25 +109,34 @@ export function resolveTheme(
       tableBody: pick("tableBody"),
       tile: pick("tile"),
       tileTitle: pick("tileTitle"),
-      mapColor: pick("mapColor"),
+      mapColor,
       // Table interior follows the operator's chart background so
       // tables and chart canvases share a single "viz surface" colour.
       tableBackground: background,
-      // Derived, mode-keyed defaults. Operators don't edit these in
-      // v1; they're consistent borders / readable foreground text for
-      // each mode. If a user later asks to customise them, expose them
-      // on the schema and the editor and replace the literals below.
-      border: isDark ? "1px solid #334155" : "1px solid #e2e8f0",
+      // Chrome colours. Each is a per-mode palette key (defaults in
+      // DEFAULT_THEME); unlike mapColor, a value set only for light is not
+      // carried into dark: dark falls back to its own default, because a
+      // light-mode rule or text colour rarely reads on the dark ground.
+      border: `1px solid ${pick("border")}`,
       // A card's edge, one stop darker than a table's gridline on the same
       // slate ramp. See `cardBorder` on ResolvedTheme for why the two are not
       // the same value.
-      cardBorder: isDark ? "1px solid #475569" : "1px solid #cbd5e1",
-      // Slate, not the teal-cast `#daedf3` this was: a pinned table header
-      // outlined in a hue no longer anywhere else on the page.
-      pinnedBorder: isDark ? "1px solid #475569" : "1px solid #cbd5e1",
-      valueColor: isDark ? "#f1f5f9" : "#0f172a",
-      foreground: isDark ? "#e2e8f0" : "#0f172a",
-      axisFaint: isDark ? "#475569" : "#cbd5e1",
+      cardBorder: `1px solid ${pick("cardBorder")}`,
+      // The pinned table header's rule is the card edge's colour.
+      pinnedBorder: `1px solid ${pick("cardBorder")}`,
+      valueColor: pick("value"),
+      foreground: pick("chartText"),
+      axisFaint: pick("axis"),
+      gridline: pick("gridline"),
+      shadow: isDark
+         ? {
+              lift: "0 2px 12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.08)",
+              drag: "0 12px 32px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.12)",
+           }
+         : {
+              lift: "0 2px 10px rgba(0, 0, 0, 0.10)",
+              drag: "0 12px 32px rgba(0, 0, 0, 0.22)",
+           },
       // Dashboard panel background (the area BETWEEN tiles). The page's own
       // ground in both modes, so the panel, the cards on it and the canvases
       // inside them are one surface that borders divide up — see
@@ -110,7 +149,9 @@ export function resolveTheme(
       // Drill link hover: the palette's anchor blue, so a drill reads as the
       // same affordance as every other primary action; dark lightens it for
       // contrast on the slate panel.
-      drillLink: isDark ? "#60a5fa" : PALETTE.blue,
+      // The Console's default accent, not the palette's: a drill reads as a
+      // link whatever the operator picked for the data.
+      drillLink: accentFor(undefined, mode).accent,
    };
 }
 

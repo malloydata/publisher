@@ -15,7 +15,7 @@
  * are filter syntax rather than numbers.
  */
 
-import type { GivenValue } from "../../hooks/givenValue";
+import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { isFilterType } from "./filterValue";
 
 /**
@@ -459,6 +459,32 @@ export function givensToRequest(
             : value;
    }
    return request;
+}
+
+/**
+ * The host-set givens a request carries, added AFTER {@link givensToRequest}
+ * because that drops arrays and a host's list-valued given must reach the server.
+ * A name already in `request` is a control's and keeps its value; `only` narrows
+ * to the names a query reads, as it does there.
+ */
+export function withHostGivens(
+   request: Record<string, unknown>,
+   host: Readonly<Record<string, HostGivenValue>> | undefined,
+   only?: readonly string[],
+): Record<string, unknown> {
+   if (!host) return request;
+   const names = only ? new Set(only) : undefined;
+   const merged = { ...request };
+   for (const [name, value] of Object.entries(host)) {
+      if (names && !names.has(name)) continue;
+      if (name in merged || value === null || value === undefined) continue;
+      merged[name] = Array.isArray(value)
+         ? [...value]
+         : value instanceof Date
+           ? dateToRequest(value, undefined)
+           : value;
+   }
+   return merged;
 }
 
 /**

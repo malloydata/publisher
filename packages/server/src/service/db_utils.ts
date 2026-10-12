@@ -240,6 +240,7 @@ async function getSchemasForBigQuery(
       );
       throw new Error(
          `Failed to get schemas for BigQuery connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -279,6 +280,7 @@ async function getSchemasForPostgres(
       );
       throw new Error(
          `Failed to get schemas for Postgres connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -529,6 +531,7 @@ async function getSchemasForSnowflake(
       );
       throw new Error(
          `Failed to get schemas for Snowflake connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -623,6 +626,7 @@ async function getSchemasForTrino(
       );
       throw new Error(
          `Failed to get schemas for Trino connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -715,6 +719,7 @@ async function getSchemasForDatabricks(
       );
       throw new Error(
          `Failed to get schemas for Databricks connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -808,6 +813,7 @@ async function getSchemasForDuckDB(
       );
       throw new Error(
          `Failed to get schemas for DuckDB connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -849,6 +855,7 @@ async function getSchemasForMotherDuck(
       );
       throw new Error(
          `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -883,6 +890,7 @@ async function getSchemasForDuckLake(
       );
       throw new Error(
          `Failed to get schemas for DuckLake connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -961,6 +969,9 @@ async function fetchFromPublisherDataplane<T>(
       throw new Error(
          `Publisher dataplane request to ${redactUrlCredentials(url)} failed ` +
             `for connection "${connection.name}": ${reason}`,
+         // Keeps fetch's socket code reachable, so a dataplane that refused
+         // the connection answers 502 CONNECTION_FAILED rather than 500.
+         { cause: error },
       );
    }
 
@@ -1443,6 +1454,7 @@ async function listTablesForBigQuery(
       );
       throw new Error(
          `Failed to get tables for BigQuery schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1470,6 +1482,7 @@ async function listTablesForMySQL(
       );
       throw new Error(
          `Failed to get tables for MySQL schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1499,6 +1512,7 @@ async function listTablesForPostgres(
       );
       throw new Error(
          `Failed to get tables for Postgres schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1552,6 +1566,7 @@ async function listTablesForSnowflake(
       if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Snowflake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1607,6 +1622,7 @@ async function listTablesForTrino(
       if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Trino schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1662,6 +1678,7 @@ async function listTablesForDatabricks(
       if (error instanceof BadRequestError) throw error;
       throw new Error(
          `Failed to get tables for Databricks schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1760,6 +1777,7 @@ async function listTablesForDuckDB(
       );
       throw new Error(
          `Failed to get tables for DuckDB schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1787,6 +1805,7 @@ async function listTablesForMotherDuck(
       );
       throw new Error(
          `Failed to get tables for MotherDuck schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }
@@ -1819,6 +1838,7 @@ async function listTablesForDuckLake(
       );
       throw new Error(
          `Failed to get tables for DuckLake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
       );
    }
 }

@@ -40,6 +40,7 @@ TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "eval-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "eval-answer" / "scripts"))
 import config  # noqa: E402
+import golden_rows  # noqa: E402
 from score_retrieval import delivery, groups, score_case  # noqa: E402
 from flip_table import counts_toward_score, outcome  # noqa: E402  (same directory)
 
@@ -101,13 +102,19 @@ def split_entity(eid: str) -> tuple[str, str, str]:
     return "", "", eid or ""
 
 
-def golden_display(g: dict[str, Any]) -> str:
-    """One short human-readable line for the golden, whatever its shape."""
+def golden_display(g: dict[str, Any], rows: list[dict[str, Any]] | None = None
+                   ) -> str:
+    """One short human-readable line for the golden, whatever its shape.
+
+    `rows` are a rows golden's rows when they live in a file, not in `value`.
+    """
     if not g:
         return ""
     if g.get("kind") == "unanswerable":
         return "(unanswerable -- the model cannot answer this)"
     v = g.get("value")
+    if v is None and rows is not None:
+        v = rows
     if v is None:
         return "(unanswerable -- the model cannot answer this)"
     if isinstance(v, dict):
@@ -255,15 +262,23 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
     for c in cases:
         g = c.get("golden") or {}
         exp = c.get("expectedEntities") or {}
+        # A rows golden may keep its rows in a file; an unreadable one is shown
+        # as it was before (no value) and reported by the run itself.
+        try:
+            file_rows = (golden_rows.load_rows(g, set_dir, c["qid"])
+                         if g.get("kind") == "rows" else None)
+        except golden_rows.GoldenRowsError:
+            file_rows = None
+        shown = g.get("value") if g.get("value") is not None else file_rows
         case_rows.append({
             "qid": c["qid"], "question": c.get("question"),
             "split": c.get("split"), "coverage": c.get("coverage"),
             "coverage_note": c.get("coverageNote"),
             "golden_kind": g.get("kind"), "golden_status": g.get("status"),
             "golden_revision": c.get("goldenRevision"),
-            "golden_display": golden_display(g),
-            "golden_value": json.dumps(g.get("value"))[:40000]
-            if g.get("value") is not None else "",
+            "golden_display": golden_display(g, file_rows),
+            "golden_value": json.dumps(shown)[:40000]
+            if shown is not None else "",
             "rubric": (g.get("rubric") or "")[:2000],
             "must_state": g.get("mustState"),
             "n_required": len(exp.get("required") or []),
@@ -504,7 +519,7 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
         "attempt_key", "run_id", "qid", "sample", "phase", "submitted", "final_query",
         "answer_text", "n_get_context", "n_execute", "n_execute_errors",
         "host_tool_uses", "mcp_tool_uses", "reported_calls", "contaminated",
-        "final_query_source", "servedRevision",
+        "final_query_source", "final_givens", "servedRevision",
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
         "cost_usd",
         "num_turns", "wall_seconds", "run_error", "transcriptPath",

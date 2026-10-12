@@ -27,6 +27,27 @@ export function getNotFoundError(resourceUriOrContext: string): ErrorDetails {
 }
 
 /**
+ * An unknown environment, named, with the ones that do exist. getNotFoundError
+ * cannot say which part of "env/package" was wrong, so an agent that guessed
+ * the environment name had nothing to correct it with.
+ */
+export function getEnvironmentNotFoundError(lookup: {
+   environmentName: string;
+   availableEnvironments: string[];
+}): ErrorDetails {
+   const available =
+      lookup.availableEnvironments.length > 0
+         ? `Available environments: ${lookup.availableEnvironments.join(", ")}.`
+         : "This server has no environments loaded.";
+   return {
+      message: `Environment '${lookup.environmentName}' not found. ${available} Use a name from list_packages.`,
+      suggestions: [
+         "Environment names must match exactly, including case. Retrying with the same name fails the same way.",
+      ],
+   };
+}
+
+/**
  * Generates generic error details for internal server errors.
  *
  * A `ConnectionError` is withheld from the caller here for the same reason

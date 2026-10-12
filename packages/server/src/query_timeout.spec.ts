@@ -15,6 +15,41 @@ import {
 } from "./test_helpers/metrics_harness";
 
 describe("runWithQueryTimeout", () => {
+   it("aborts fn's signal when the client goes away, with or without a timeout", async () => {
+      for (const timeoutMs of [0, 60_000]) {
+         const client = new AbortController();
+         let seen: AbortSignal | undefined;
+         const running = runWithQueryTimeout(
+            (signal) =>
+               new Promise<never>((_, reject) => {
+                  seen = signal;
+                  signal.addEventListener("abort", () =>
+                     reject(signal.reason as Error),
+                  );
+               }),
+            timeoutMs,
+            client.signal,
+         );
+         client.abort(new Error("client disconnected"));
+         await expect(running).rejects.toThrow("client disconnected");
+         expect(seen?.aborted).toBe(true);
+      }
+   });
+
+   it("starts aborted when the client is already gone", async () => {
+      const client = new AbortController();
+      client.abort(new Error("gone"));
+      let aborted: boolean | undefined;
+      await runWithQueryTimeout(
+         async (signal) => {
+            aborted = signal.aborted;
+         },
+         60_000,
+         client.signal,
+      );
+      expect(aborted).toBe(true);
+   });
+
    it("returns the inner result when fn finishes before the timeout", async () => {
       const result = await runWithQueryTimeout(async (signal) => {
          expect(signal).toBeInstanceOf(AbortSignal);

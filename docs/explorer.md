@@ -51,8 +51,9 @@ can be explored from the Console instead of refusing with a 403.
   values, and so can browser history and server access logs, so keep an identifier you would not
   share out of a link. The link does not grant the recipient your view: the server decides what
   their request may see.
-- **Explore from here** on a dashboard tile, and a notebook cell's **Data sources** dialog, open the
-  Explorer with that document's current values. Reset there returns to those values.
+- A notebook cell's **Data sources** dialog, and **Explore from here** on a dashboard tile in a host
+  that passes the SDK's `onExplore`, open the Explorer with that document's current values. Reset
+  there returns to those values.
 - A refused query, such as an `#(authorize)` expression that evaluates false, shows the server's
   message in the Results Panel.
 

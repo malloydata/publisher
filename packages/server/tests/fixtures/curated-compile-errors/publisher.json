@@ -1,0 +1,4 @@
+{
+   "name": "curated-compile-errors",
+   "description": "A curated package with nothing gated: index.malloy exports orders and hides stores."
+}

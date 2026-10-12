@@ -42,8 +42,8 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g,
 /* Escape a value for a single-quoted Malloy string literal. Backslashes FIRST,
  * then quotes: the other order re-escapes the backslash the quote escape just
  * introduced, so a qid ending in a backslash closes the literal early and the
- * rest of it parses as Malloy. This is the form the malloy-html-data-app-runtime
- * skill prescribes for in-package apps. */
+ * rest of it parses as Malloy. This is the form the malloy-html-data-apps
+ * skill (reference/runtime.md) prescribes for in-package apps. */
 const lit = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 const pct = x => x == null ? '—' : (100 * x).toFixed(0) + '%';
 const num = (x, d = 0) => x == null ? '—' : Number(x).toLocaleString(undefined,

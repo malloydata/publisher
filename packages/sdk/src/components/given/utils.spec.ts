@@ -36,6 +36,11 @@ describe("renderGivenDefault", () => {
       );
    });
 
+   it("keeps an unwrapped filter body that happens to start with f", () => {
+      expect(renderGivenDefault("filter<string>", "fall")).toBe("fall");
+      expect(renderGivenDefault("filter<string>", "f'all'")).toBe("all");
+   });
+
    it("shows numbers and booleans verbatim", () => {
       expect(renderGivenDefault("number", "2003")).toBe("2003");
       expect(renderGivenDefault("boolean", "true")).toBe("true");

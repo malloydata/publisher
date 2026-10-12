@@ -15,7 +15,7 @@ import {
  */
 
 const NOTEBOOK = `##! experimental.givens
-## artifact { kind=notebook title="Inline extend" }
+## artifact { layout=linear title="Inline extend" }
 import { order_items } from "../storefront.malloy"
 
 ##(markdown) Unconvertible notebook prose.
@@ -43,16 +43,16 @@ test.describe("an unconvertible notebook", () => {
    test("opens read-only in the builder with the reason, and still reads", async ({
       page,
    }) => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/inline-extend/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/inline-extend?edit`);
       const refusal = page.getByRole("alert");
       await expect(refusal).toContainText(
-         "This notebook cannot be opened in the builder",
+         "This report cannot be opened in the builder",
          { timeout: 60_000 },
       );
       await expect(refusal).toContainText("extends its source inline");
       await expect(refusal).toContainText(/line \d+/i);
       await expect(
-         page.getByRole("button", { name: "Save changes" }),
+         page.getByRole("button", { name: /^(Save|Saved|Saving…)$/ }),
       ).toHaveCount(0);
 
       // The read view is unaffected by the refusal.

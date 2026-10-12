@@ -151,7 +151,7 @@ Found in real Microsoft-published TMDL and not covered by any table above. Count
 | `CALCULATETABLE` | 7 | A filtered table expression; usually collapses into the surrounding query's `where:`. With a Boolean filter argument it overwrites the column's filter like `CALCULATE` does, and routes to `FC1` |
 | `GROUPBY` | 7 | A `group_by:` stage |
 | `VALUES` | 5 | The distinct values of a column; `group_by:` or `count(c)` depending on use |
-| `PERCENTILE.INC` | 5 | No direct equivalent; use the dialect's percentile via `fn!()` |
+| `PERCENTILE.INC` | 5 | No measure equivalent. A raw-SQL percentile through `fn!()` does not compile as a measure (`skill:malloy-gotchas-modeling`). Compute it as a query with the **Tier boundaries** pattern in `skill:malloy-discover`, or list it as a gap. That pattern is nearest-rank, and `PERCENTILE.INC` interpolates, so the two can differ when the rank falls between two values |
 | `ADDCOLUMNS` / `SUMMARIZE` | 5 / 5 | A query stage, not a measure |
 | `CONCATENATEX` | 5 | `string_agg(expr, sep)`, native - no `fn!()` needed; usually report-layer |
 | `STDEV.P` | 2 | `stddev()` where the dialect has it |

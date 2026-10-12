@@ -76,9 +76,8 @@ jobs:
           PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json"
 
           # Rewriting the top-level "version" field in each workspace
-          # package.json now lives in scripts/set-version.mjs, because
-          # `gh-release` needs the same thing on the post-release stamp branch
-          # and a shell function cannot be shared between jobs. It kept this
+          # package.json lives in scripts/set-version.mjs rather than a shell
+          # function here, so it can be tested. It kept this
           # function's reasoning with it — the short version being that
           # `npm version --workspaces` rejects this repo's `workspace:*`
           # protocol with EUNSUPPORTEDPROTOCOL, so the replace is hand-rolled
@@ -130,11 +129,18 @@ jobs:
 
           # A version is taken once its release branch or release tag exists, so
           # reruns don't collide with a previously prepared release.
+          #
+          # Release branches were named `release/sdk-<v>` through 0.9.6. A
+          # release that failed before its tag left only that branch, so an
+          # explicit `-f version=` naming such a number must still be refused.
           version_taken() {
             local v="$1"
-            if git ls-remote --exit-code --heads origin "release/sdk-${v}" >/dev/null 2>&1; then
-              return 0
-            fi
+            local branch
+            for branch in "release/v${v}" "release/sdk-${v}"; do
+              if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+                return 0
+              fi
+            done
             if git ls-remote --exit-code --tags origin "v${v}" >/dev/null 2>&1; then
               return 0
             fi
@@ -147,7 +153,7 @@ jobs:
             NEW_VERSION="$(echo "$NEW_VERSION" | tr -d '[:space:]')"
             echo "::notice title=Version::Using provided version $NEW_VERSION"
             if version_taken "$NEW_VERSION"; then
-              echo "::error title=Version::release/sdk-${NEW_VERSION} or tag v${NEW_VERSION} already exists"
+              echo "::error title=Version::a release branch (release/v${NEW_VERSION} or release/sdk-${NEW_VERSION}) or tag v${NEW_VERSION} already exists"
               exit 1
             fi
           else
@@ -164,11 +170,12 @@ jobs:
             esac
             echo "::notice title=Version::No version provided — performing ${BUMP} bump"
 
-            # The floor is what npm holds, not what main declares. Release
-            # branches are never merged back, so packages/sdk/package.json lags
-            # the registry permanently, and walking up from it stops at the
-            # first version whose branch and tag are FREE — which is not the
-            # same as one above `latest`. Skip a number (any explicit
+            # The floor is what npm holds, not only what main declares. Main's
+            # packages/sdk/package.json catches up only when a release's PR
+            # merges (and lagged npm by 41 patches before that PR existed), and
+            # walking up from a stale number stops at the first version whose
+            # branch and tag are FREE — which is not the same as one above
+            # `latest`. Skip a number (any explicit
             # `-f version=` that jumps ahead does) and the walk later drops into
             # the gap, publishes below `latest`, and moves the dist-tag
             # BACKWARDS with nothing failing.
@@ -213,7 +220,7 @@ jobs:
             # bumping the minor again would abandon the whole 0.3.x line and
             # burn a minor per collision.
             while version_taken "$NEW_VERSION"; do
-              echo "::notice title=Version::release/sdk-${NEW_VERSION} already exists — bumping the patch again"
+              echo "::notice title=Version::${NEW_VERSION} already has a release branch or tag — bumping the patch again"
               NEW_VERSION="$(bump_version patch "$NEW_VERSION")"
             done
           fi
@@ -225,38 +232,53 @@ jobs:
           # shellcheck disable=SC2086
           node scripts/set-version.mjs "$NEW_VERSION" $PKGS >/dev/null
 
-          # Annotate the no-diff case, which used to be unreachable and is not
-          # any more. `main` permanently lagged npm, so these three files always
-          # differed from the version being released; now the post-release stamp
-          # PR resets them, and `main` declaring a real version is ordinary. If it
-          # declares THIS one, `git add` stages nothing and `git commit` exits
-          # non-zero, killing the step under `set -euo pipefail` with a bare
-          # "nothing to commit" and no annotation — the only failure path in this
-          # step without one.
-          #
-          # It fails closed either way, so this only buys a readable message. It
-          # is reachable when `main` declares the requested version and neither
-          # `release/sdk-<v>` nor `v<v>` exists: a hand-edit of those three files,
-          # or a release branch AND its tag both deleted. `version_taken` above
-          # catches every other route here.
+          # A release whose version main already declares has nothing to bump.
+          # It is reachable when neither `release/v<v>` nor `v<v>` exists: a
+          # hand-edit of those three files, or a release branch AND its tag both
+          # deleted. `version_taken` above catches every other route here. It
+          # would fail closed regardless, so this buys a readable message.
           # shellcheck disable=SC2086
           if git diff --quiet -- $PKGS; then
             echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those three package.json files were edited by hand. Pick the next free version instead."
             exit 1
           fi
 
-          BRANCH_NAME="release/sdk-${NEW_VERSION}"
+          # Stamp this release's narrative in the same commit as the version.
+          # Merging this branch back into main is then the whole post-release
+          # step, and `gh-release` reads the narrative from exactly the tree
+          # that npm and Docker published. A section merged to main while this
+          # release runs is not on this branch, so it stays `[Unreleased]` and
+          # ships next time.
+          #
+          # A prerelease or `+build` version skips the stamp. It gets no GitHub
+          # release and no PR back to main, so its number must not label a
+          # section; `+` is included because `sort -V` ranks `0.4.0+ci` above
+          # `0.4.0`, and the floor above refuses anything that is not a plain
+          # major.minor.patch.
+          STAMPED=0
+          if [[ "$NEW_VERSION" != *[-+]* ]]; then
+            if ! STAMPED="$(node scripts/release-notes.mjs stamp "$NEW_VERSION")"; then
+              echo "::error title=Release notes::could not stamp RELEASE_NOTES.md with ${NEW_VERSION} (logged above). Nothing has been published."
+              exit 1
+            fi
+          fi
+
+          BRANCH_NAME="release/v${NEW_VERSION}"
           git checkout -b "$BRANCH_NAME"
 
-          git add $PKGS
-          git commit -s -m "Release SDK/App version ${NEW_VERSION}"
+          # The title is what main's history records: the repo squash-merges,
+          # and a one-commit PR's squash title is the commit's title.
+          # shellcheck disable=SC2086
+          git add $PKGS RELEASE_NOTES.md
+          git commit -s -m "chore(release): ${NEW_VERSION}" \
+            -m "Stamps ${STAMPED} release-note section(s) and sets sdk, app and server to ${NEW_VERSION}."
 
           git push origin "$BRANCH_NAME"
 
           echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
           echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
 
-          echo "::notice title=Prepared Release::Version ${NEW_VERSION} on branch ${BRANCH_NAME}"
+          echo "::notice title=Prepared Release::Version ${NEW_VERSION} on branch ${BRANCH_NAME}, stamping ${STAMPED} release-note section(s)"
 
   publish-npm:
     needs: prepare
@@ -405,10 +427,14 @@ jobs:
     needs: [ prepare, publish-npm, publish-docker ]
     runs-on: ubuntu-latest
     permissions:
-      # `contents: write` covers everything this job does: the tag, the release,
-      # and the stamp branch. It does NOT need `pull-requests: write`, because
-      # the stamp step deliberately stops at pushing a branch — see the long
-      # comment on that step for why a bot-opened PR is the wrong shape here.
+      # `contents: write` covers the tag and the release. No
+      # `pull-requests: write`: this job links the PR for release/v<v>
+      # into main and a person (or the agent driving the publisher-release
+      # skill, on their credentials) opens it. A PR opened with GITHUB_TOKEN
+      # triggers no workflows, so main's required checks would sit at
+      # `expected` and only an admin could merge it; opening one also needs
+      # the off-by-default "Allow GitHub Actions to create and approve pull
+      # requests" setting.
       contents: write
     steps:
       - uses: actions/checkout@v4
@@ -426,13 +452,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.prepare.outputs.new_version }}
           BRANCH: ${{ needs.prepare.outputs.branch_name }}
-          # The list of narrative headings this step puts on the release page,
-          # handed to the stamp step below. Under $RUNNER_TEMP and not in the
-          # repo: the stamp step checks out a fresh branch from `origin/main`,
-          # which would discard an in-tree file before it could be read. Note
-          # this file does not survive the run, which is why the manual recovery
-          # in the publisher-release skill cannot simply pass `--titles`.
-          TITLES_FILE: ${{ runner.temp }}/release-notes-titles.txt
+          COMPARE_BASE: ${{ github.server_url }}/${{ github.repository }}/compare
         run: |
           TAG="v${VERSION}"
 
@@ -466,16 +486,9 @@ jobs:
           # 0.0.243 through 0.0.247.
           #
           # Read from this checkout, which is the release branch: `prepare`
-          # touches only the three package.json files, so its RELEASE_NOTES.md is
-          # main's. Empty output is the normal case and adds nothing.
-          #
-          # `--titles` records the exact heading lines that go on the page, so
-          # the stamp step can rewrite those and only those. Without it, `extract`
-          # reads the release branch's snapshot and `stamp` rewrites whatever main
-          # became several minutes later, and a section merged inside that window
-          # is stamped with a version it never shipped in — off this page, and
-          # ineligible for every later one, because its heading no longer says
-          # [Unreleased].
+          # stamped those sections `[<version>]` on it, so the page carries
+          # exactly the sections this commit ships. Empty output is the normal
+          # case and adds nothing.
           #
           # Read through `if !`, not a bare assignment. This step has no `set -e`
           # of its own, but the runner's default shell is `bash -e {0}`, so a
@@ -491,18 +504,15 @@ jobs:
           # page.
           EXTRACT_LOG="$(mktemp)"
           EXTRACT_OK=1
-          if ! NARRATIVE="$(node scripts/release-notes.mjs extract --titles "$TITLES_FILE" 2>"$EXTRACT_LOG")"; then
+          if ! NARRATIVE="$(node scripts/release-notes.mjs extract "$VERSION" 2>"$EXTRACT_LOG")"; then
             # Prefixed, not inlined: this is untrusted-shaped output on the
             # failure path, and a line of it starting with `::` would otherwise be
             # read by the runner as a workflow command.
             sed 's/^/[release-notes] /' "$EXTRACT_LOG"
-            echo "::warning title=Release notes::could not read RELEASE_NOTES.md (logged above); this release's page carries the generated PR list only, and nothing is stamped on main"
-            echo "- release notes: narrative NOT attached and nothing stamped — \`release-notes.mjs extract\` failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Release notes::could not read RELEASE_NOTES.md (logged above); this release's page carries the generated PR list only. The sections are still stamped on ${BRANCH}; paste them onto the release page by hand."
+            echo "- release notes: narrative NOT attached — \`release-notes.mjs extract ${VERSION}\` failed; the sections are stamped on \`${BRANCH}\`" >> "$GITHUB_STEP_SUMMARY"
             NARRATIVE=""
             EXTRACT_OK=0
-            # An empty titles file, so the stamp step below finds no sections to
-            # rewrite instead of failing to read the artifact at all.
-            : > "$TITLES_FILE"
           elif [ -s "$EXTRACT_LOG" ]; then
             sed 's/^/[release-notes] /' "$EXTRACT_LOG"
           fi
@@ -513,7 +523,7 @@ jobs:
             # Only when the file was actually read. Saying "no sections" after a
             # failed read describes the wrong situation, and it is the one a
             # reader is most likely to skim past.
-            echo "::notice title=Release notes::no [Unreleased] sections; the generated PR list stands alone"
+            echo "::notice title=Release notes::no sections stamped ${VERSION}; the generated PR list stands alone"
           fi
 
           if [[ "$VERSION" == *-* ]]; then
@@ -524,10 +534,11 @@ jobs:
           fi
 
           # Pin the changelog base to the immediately preceding release tag.
-          # Each release is cut from a fresh release/sdk-* branch that is never
-          # merged back to main, so prior release tags are not ancestors of this
-          # release's commit. Left to --generate-notes alone, GitHub's ancestor
-          # walk skips every diverged sibling tag and lands on the last tag still
+          # Each release is cut from a fresh release/v* branch that returns
+          # to main only as a squash commit, so prior release tags are not
+          # ancestors of this release's commit. Left to --generate-notes alone,
+          # GitHub's ancestor walk skips every diverged sibling tag and lands on
+          # the last tag still
           # in the mainline ancestry, producing a changelog spanning hundreds of
           # PRs. Selecting the previous tag by version sort and passing it as the
           # explicit start tag scopes the notes to just this release's changes.
@@ -555,62 +566,22 @@ jobs:
           echo "## 🏷️ GitHub Release" >> $GITHUB_STEP_SUMMARY
           echo "Created release [\`${TAG}\`](https://github.com/${{ github.repository }}/releases/tag/${TAG})" >> $GITHUB_STEP_SUMMARY
 
-      # Prepare the stamp for the sections this release just shipped.
-      #
-      # Deliberately AFTER `gh release create`: the stamp records what shipped,
-      # so a release that failed to cut must not leave main claiming a version
-      # that does not exist. Two things enforce that ordering, and neither is a
-      # `set -e` in the step above — it has none. The runner's default shell is
-      # `bash -e {0}`, so a failing command there exits the step non-zero; and
-      # this step's `if:` has no `always()`, so its implicit `success()` is what
-      # keeps it from running. Adding `always()` to that condition — or
-      # `continue-on-error` to the step above — removes the guarantee while this
-      # comment still claims it.
-      #
-      # Failure here is not made fatal. The release is already public and correct
-      # by this point, and reddening a finished release over a docs commit would
-      # send someone hunting a publishing problem that does not exist. But the
-      # cost is NOT just a heading that still reads [Unreleased]. That heading is
-      # what the next release's `extract` matches, so the next release re-appends
-      # this release's narrative to its own page, and so does every release after
-      # it, until someone notices. Hence the annotations and summary lines below:
-      # a skipped stamp has to be visible without opening the logs.
-      #
-      # A note on timing that is invisible from this job: `publish-packages` is
-      # NOT in this job's `needs`, so it may still be polling npm while the step
-      # below runs, and its "main moved during this release" guard aborts a
-      # dispatch when main moves under a watched path.
-      #
-      # The step below, and merging the PR it opens, cannot trip that guard
-      # either way: it only resets packages/{sdk,app,server}/package.json and
-      # stamps RELEASE_NOTES.md, and neither is a path skills' or
-      # create-malloy-package's guard watches — those two no longer have a
-      # version committed ahead of time for this step to move, so there is
-      # nothing here left to collide with an in-flight publish-packages run.
-      # `+` as well as `-`, because the two guards otherwise disagree about what
-      # counts as a prerelease. `scripts/set-version.mjs` accepts a `+build`
-      # suffix (it is valid semver and nothing is computed from it), so
-      # `-f version=0.4.0+ci` is not "a prerelease" to a `-`-only test and the
-      # reset would write `0.4.0+ci` into main's three manifests. `prepare`'s
-      # floor guard then requires a plain major.minor.patch, and `sort -V` ranks
-      # `0.4.0+ci` above `0.4.0`, so it wins the max and is immediately refused —
-      # wedging every derived dispatch until someone hand-edits main. Nobody
-      # dispatches a `+build` version, which is exactly why this would be
-      # discovered the hard way.
-      - name: Push a branch stamping the shipped sections and version
-        if: ${{ !contains(needs.prepare.outputs.new_version, '-') && !contains(needs.prepare.outputs.new_version, '+') }}
-        # A backstop, not the error handling: every failure below is reported
-        # explicitly, as a ::warning and a job-summary line, because a stamp that
-        # silently did not happen is re-shipped as narrative on the next release.
-        # This only keeps an unanticipated one from reddening a finished release.
-        continue-on-error: true
-        env:
-          VERSION: ${{ needs.prepare.outputs.new_version }}
-          # Written by the step above: the exact heading lines that reached the
-          # release page. See that step for why it lives under $RUNNER_TEMP.
-          TITLES_FILE: ${{ runner.temp }}/release-notes-titles.txt
-          COMPARE_BASE: ${{ github.server_url }}/${{ github.repository }}/compare
-          # The commit's author. Through env because the script is no longer an
-          # expression template, so a `${{ }}` in it would reach git verbatim.
-          ACTOR: ${{ github.actor }}
-        run: scripts/stamp-release-notes.sh
+          # The one step the release leaves to a person: merging the release
+          # branch back. It carries the version bump and the stamped notes, so
+          # until it merges main still reads [Unreleased] for what just shipped,
+          # and release-sync.yml fails on main and on every PR. Not
+          # for a `+build` version: merging it would write
+          # `0.4.0+ci` into main's manifests, which the next `prepare` refuses as
+          # a floor, so that version never goes back to main.
+          if [[ "$VERSION" == *+* ]]; then
+            echo "Not merged back to main: \`${VERSION}\` is a build-metadata version." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          COMPARE_URL="${COMPARE_BASE}/main...${BRANCH}?expand=1"
+          echo "::notice title=Merge the release back::open a pull request from ${BRANCH} into main titled 'chore(release): ${VERSION}' and merge it before the next release: ${COMPARE_URL}"
+          {
+            echo
+            echo "## 🔀 Merge the release back into main"
+            echo
+            echo "👉 **[Open the pull request](${COMPARE_URL})** from \`${BRANCH}\` into \`main\`, titled \`chore(release): ${VERSION}\`, and merge it. It carries the version bump and this release's stamped \`RELEASE_NOTES.md\` headings. Until it merges, the \`Release sync\` check fails on every pull request."
+          } >> "$GITHUB_STEP_SUMMARY"

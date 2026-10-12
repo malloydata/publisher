@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { PALETTE } from "@malloy-publisher/sdk";
+import { MONO_FONT_FAMILY, PALETTE } from "@malloy-publisher/sdk";
 
 /**
  * The Console's neutrals and status colours.
@@ -42,8 +42,8 @@ export const colors = {
    },
 } as const;
 
-export const MONO_FONT_FAMILY =
-   '"JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", monospace';
+/** One definition, in the SDK; re-exported for the Console's own imports. */
+export { MONO_FONT_FAMILY };
 export const SANS_FONT_FAMILY =
    '"Inter", "Helvetica Neue", "Arial", sans-serif';
 

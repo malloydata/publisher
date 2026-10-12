@@ -322,4 +322,4 @@ A rollup is a table Publisher builds and refreshes, so it is worth being deliber
 - **Prefer several small grains to one combined grain** when the combination is large but each dimension is small, as above.
 - **A package with no `#@ preaggregate` pays nothing.** Publisher derives rollups from the compiled model in memory and stops as soon as it finds no annotations, so an unannotated package plans, builds, and serves exactly as it did before.
 
-The [`malloy-materialization-tuning`](../skills/malloy-materialization-tuning/SKILL.md) skill helps decide what is worth storing.
+The [materialization tuning guide](../skills/malloy-materialization/reference/tuning.md) helps decide what is worth storing.

@@ -65,10 +65,12 @@ import {
    type TableSourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
+import { MalloySQLStatementType } from "@malloydata/malloy-sql";
+import { parseMalloynb } from "../service/deprecated/malloynb";
 import {
-   MalloySQLParser,
-   MalloySQLStatementType,
-} from "@malloydata/malloy-sql";
+   declaredDeprecatedManifestKeys,
+   type DeprecatedManifestKey,
+} from "../service/deprecated/manifest_keys";
 import * as fs from "fs";
 import * as path from "path";
 import { parentPort, threadId } from "node:worker_threads";
@@ -78,8 +80,11 @@ import { fileURLToPath, pathToFileURL } from "url";
 import {
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
+   installRecordPath,
+   normalizeModelPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
+import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import {
    recordAuthorizeAdmitAllGate,
    recordRowLevelGateRejected,
@@ -87,6 +92,7 @@ import {
 import { HackyDataStylesAccumulator } from "../data_styles";
 import { PackageManifestError } from "../errors";
 import { deserializeError, serializeError } from "./error_wire";
+import { translatorMalloyError } from "../service/translator_error";
 import {
    assertNoLegacyStringGate,
    assertNoMisplacedAuthorizeAnnotations,
@@ -454,18 +460,77 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
  * root holds an `index.malloy` and declares no `explores` takes its surface
  * from that file. See {@link resolveExplores}.
  */
+/** The install location the server recorded for the package, if any. */
+async function readInstallRecord(
+   packagePath: string,
+): Promise<string | undefined> {
+   try {
+      const raw = await fs.promises.readFile(
+         installRecordPath(
+            path.dirname(packagePath),
+            path.basename(packagePath),
+         ),
+         "utf8",
+      );
+      const record: unknown = JSON.parse(raw);
+      const location =
+         typeof record === "object" && record !== null
+            ? (record as { location?: unknown }).location
+            : undefined;
+      return typeof location === "string" && location !== ""
+         ? location
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * Which `explores` entries are reports, by the one report tag reader
+ * (`report.ts`) over each file's text: what discovery reads off the compiled
+ * file. Read here, before the compile, because the manifest is resolved
+ * first. Only the declared entries are read. Never throws.
+ */
+async function declaredReportPaths(
+   packagePath: string,
+   declared: unknown,
+   modelPaths: readonly string[],
+): Promise<Set<string>> {
+   const reports = new Set<string>();
+   if (!Array.isArray(declared)) return reports;
+   const known = new Set(modelPaths);
+   for (const entry of declared) {
+      if (typeof entry !== "string") continue;
+      const modelPath = normalizeModelPath(entry);
+      if (!known.has(modelPath) || !isReportEligiblePath(modelPath)) continue;
+      try {
+         const text = await fs.promises.readFile(
+            path.join(packagePath, modelPath),
+            "utf8",
+         );
+         if (readReportTagOfText(text).status === "report")
+            reports.add(modelPath);
+      } catch {
+         // Unreadable: not a report as far as the advice goes.
+      }
+   }
+   return reports;
+}
+
 async function readPackageMetadata(
    packagePath: string,
    modelPaths: readonly string[],
 ): Promise<{
    name?: string;
    description?: string;
+   location?: string;
    explores?: string[];
    queryableSources?: "declared" | "all";
    manifestLocation?: string | null;
    materialization?: PackageMaterializationConfig | null;
    scope?: PackageScope;
    manifestWarnings?: string[];
+   deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
@@ -473,6 +538,7 @@ async function readPackageMetadata(
    let parsed: {
       name?: string;
       description?: string;
+      location?: unknown;
       explores?: string[];
       queryableSources?: unknown;
       manifestLocation?: unknown;
@@ -519,6 +585,11 @@ async function readPackageMetadata(
       declaredExplores: parsed.explores,
       declaredQueryableSources: parsed.queryableSources,
       modelPaths,
+      reportPaths: await declaredReportPaths(
+         packagePath,
+         parsed.explores,
+         modelPaths,
+      ),
    });
    const manifestWarnings = [
       ...scope.warnings,
@@ -535,6 +606,12 @@ async function readPackageMetadata(
    return {
       name: parsed.name,
       description: parsed.description,
+      // Where the package was installed from, from the server's own record
+      // outside the package directory (see Environment.writePackageManifest).
+      // Nothing inside the tree is read as one, neither a `location` in
+      // publisher.json nor a record file shipped with the content: a reload
+      // re-fetches from this value, so only the server may set it.
+      location: await readInstallRecord(packagePath),
       explores: explores.explores,
       // Default + invalid fall back to "declared" (fail-safe: queryable ==
       // discoverable). Only an explicit "all" opts out of the query boundary.
@@ -556,6 +633,7 @@ async function readPackageMetadata(
       scope: scope.scope,
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
+      deprecatedManifestKeys: declaredDeprecatedManifestKeys(parsed),
       // How this package is searched and indexed. Validated here so a bad key
       // or an unreadable prompt file stops the load with a message naming it,
       // and read here so a prompt edit takes effect on reload.
@@ -916,7 +994,7 @@ async function compileNotebookModel(
    const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
-   const parse = MalloySQLParser.parse(fileContents, modelPath);
+   const parse = parseMalloynb(fileContents, modelPath);
 
    // Build the extendModel chain synchronously so per-cell materializers
    // line up with statement order. Matches the in-process flow in
@@ -1147,7 +1225,13 @@ async function compileOneModel(
       return {
          modelPath,
          modelType,
-         compilationError: serializeError(error),
+         // Classified here, before serializing: the check reads the stack, and
+         // a plain Error crosses as a bare Error that the main thread answers
+         // as an outage. As a MalloyError it crosses as a compile problem,
+         // the same as Model.create's in-process path.
+         compilationError: serializeError(
+            translatorMalloyError(error) ?? error,
+         ),
       };
    }
 }

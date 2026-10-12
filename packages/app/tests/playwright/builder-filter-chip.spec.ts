@@ -8,7 +8,7 @@ import {
    registerPackageEnv,
    type PackageEnv,
 } from "./helpers/packageEnv";
-import { saveChanges, undoSave } from "./helpers/save";
+import { saveChanges } from "./helpers/save";
 
 /**
  * The x on a filter chip removes the filter from the file: its declaration and
@@ -34,12 +34,12 @@ test.describe("filter chip", () => {
    test("removing a filter takes its declaration and its bindings out of the file, and the reader loses the control", async ({
       page,
    }) => {
-      const file = "dashboards/overview.malloy";
+      const file = "overview.malloy";
       const original = await pe.readSource(file);
       expect(original).toContain("given: CATEGORY");
       expect(original).toContain("$CATEGORY");
 
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/overview/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/overview?edit`);
       await editorOpen(page);
       await expect(queryTiles(page)).toHaveCount(5, { timeout: 60_000 });
 
@@ -56,7 +56,7 @@ test.describe("filter chip", () => {
       expect(saved).toContain("$BRAND");
 
       const reader = await page.context().newPage();
-      await reader.goto(`/${pe.env}/${pe.pkg}/dashboards/overview`);
+      await reader.goto(`/${pe.env}/${pe.pkg}/overview`);
       await expect(reader.getByRole("combobox", { name: "Brand" })).toBeVisible(
          { timeout: 60_000 },
       );
@@ -64,8 +64,5 @@ test.describe("filter chip", () => {
          reader.getByRole("combobox", { name: "Category" }),
       ).toHaveCount(0);
       await reader.close();
-
-      await undoSave(page);
-      expect(await pe.readSource(file)).toBe(original);
    });
 });

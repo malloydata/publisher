@@ -111,7 +111,7 @@ The rubric files set the default severity per rule. Defaults (can be overridden 
 | Compile-breaking syntax (parse errors, missing colons / arrows, `as` vs `is`, bare `join:`, reserved-word collisions, redefined query-source columns, trailing commas, etc.) | `blocker` | `blocking`, **handled exclusively by IDE diagnostic pre-pass; not in the rubrics** |
 | Declared `primary_key:` is not actually unique in the data (C-12, verified by `execute_query` in SKILL.md step 3) | `critical` | `blocking` |
 | Chart view with >1 aggregate (Q-01, silent render bug) | `major` | `non-blocking` |
-| `!= null` vs `is not null` (C-01), contradicts the Malloy compiler's own warning, see rule for context | `major` | `non-blocking` |
+| `!= null` vs `is not null` (C-01), both compile and return the same rows; the compiler warns on `!= null` | `major` | `non-blocking` |
 | Safe division / boolean-quote (C-03, C-05) | `major` | `blocking` |
 | `#(doc)` missing on public field (D-01) | `major` | `blocking` (public) / `non-blocking` (internal) |
 | One-tag-per-line (D-04) | `minor` | `if-minor` |

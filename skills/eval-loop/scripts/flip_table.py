@@ -84,6 +84,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
     """qid -> the scored outcome, for cases this run actually scored."""
     out: dict[str, dict[str, Any]] = {}
     queries: dict[str, str | None] = {}
+    givens: dict[str, Any] = {}
     for line in (run / "events.jsonl").read_text().splitlines():
         if not line.strip():
             continue
@@ -95,6 +96,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             # was not read here, so the richest evidence in the run was the one
             # thing the flip table did not print.
             queries[e["qid"]] = e.get("final_query")
+            givens[e["qid"]] = e.get("final_givens")
             continue
         if e.get("kind") != "score":
             continue
@@ -104,6 +106,7 @@ def verdicts(run: Path) -> dict[str, dict[str, Any]]:
             "confidence": e.get("confidence"),
             "reason": (e.get("reason") or "")[:200],
             "final_query": queries.get(e["qid"]),
+            "final_givens": givens.get(e["qid"]),
             # near_match and needs_human are neither: counting either as a fail
             # would manufacture a flip every time the judge hedged in one run
             # and not the other.
@@ -127,14 +130,22 @@ def query_diff(a: dict[str, Any], b: dict[str, Any], la: str, lb: str) -> str:
     query, in the judge or in the data, and that is a different search.
     """
     qa, qb = (a.get("final_query") or "").strip(), (b.get("final_query") or "").strip()
+    ga, gb = a.get("final_givens") or None, b.get("final_givens") or None
     if not qa and not qb:
         return "     (neither arm recorded a final query)"
-    if qa == qb:
+    if qa == qb and ga == gb:
         return ("     both arms ran the SAME query, so the flip is downstream "
                 "of it:\n     the judge, the rubric, or non-determinism in the "
                 "data.")
-    return (f"     {la} ran:\n       " + qa.replace("\n", "\n       ") +
-            f"\n     {lb} ran:\n       " + qb.replace("\n", "\n       "))
+
+    def shown(q: str, g: Any) -> str:
+        # Givens are an argument beside the text: the same text under other
+        # givens is a different query, so they are printed with it.
+        out = q.replace("\n", "\n       ")
+        return out + (f"\n       givens: {json.dumps(g, sort_keys=True)}"
+                      if g else "")
+    return (f"     {la} ran:\n       " + shown(qa, ga) +
+            f"\n     {lb} ran:\n       " + shown(qb, gb))
 
 
 def cost(run: Path) -> dict[str, float]:

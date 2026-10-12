@@ -72,9 +72,33 @@ package format, see [packages.md](packages.md).
 
 ## Environment-level DuckDB connections
 
-You can also declare a top-level DuckDB connection at the environment level. Publisher intentionally exposes only data-source intent for these — database files, working directories, filesystem/network policy, extension loading, temp directories, and resource knobs are all owned by Publisher. The only configuration available is **attached databases**, where you declare foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) that the DuckDB instance should `ATTACH` so queries can reference them.
+You can also declare a top-level DuckDB connection at the environment level. Publisher owns the low-level DuckDB settings: the database file, working directory, filesystem and network policy, extension loading, temp directories, and resource limits. A connection declares only what the DuckDB instance should read, in one or both of two ways:
 
-An env-level DuckDB connection must declare at least one attached database. If you don't need to attach any foreign databases, you don't need to declare an env-level DuckDB connection at all — each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+- **`attachedDatabases`** declares foreign databases (BigQuery, Snowflake, Postgres, GCS, S3, Azure) for the DuckDB instance to `ATTACH`, so queries can reference them. Publisher writes the `ATTACH` and the secrets for you.
+- **`setupSQL`** is a script of DuckDB statements that runs when the connection is set up, for anything `attachedDatabases` does not cover, such as a DuckLake catalog kept in a local file. It is off by default; see below.
+
+An env-level DuckDB connection must declare at least one of the two. If you need neither, you don't need an env-level DuckDB connection at all: each loaded package already gets a per-package `duckdb` sandbox automatically (see above), which covers the plain in-memory use case.
+
+### `setupSQL`
+
+`setupSQL` runs arbitrary DuckDB statements on the server, which can write files on the host and install and load extensions, so a deployment has to turn it on. Set `PUBLISHER_ALLOW_DUCKDB_SETUP_SQL=true` ([configuration.md](configuration.md)) to accept it. Unset, a connection carrying `setupSQL` is refused at config load, on create and update, and by the connection test. Under `EXTENSION_FETCH_POLICY=local-only` it is refused either way.
+
+```json
+{
+  "name": "orca",
+  "type": "duckdb",
+  "duckdbConnection": {
+    "setupSQL": "ATTACH 'ducklake:/srv/lake/orca.ducklake' AS lake (READ_ONLY);\nUSE lake.marts;"
+  }
+}
+```
+
+The script runs whenever the connection is opened, and again after it has been idle, so keep every statement safe to run more than once. A few things trip people up:
+
+- **Put each statement on its own line.** The script is split into statements at a `;` followed by a newline.
+- **Use absolute paths.** A relative path resolves against the directory the server was started from, not the environment directory. A read-write `ATTACH` of a path that does not exist there does not fail: DuckDB creates a new, empty database, and queries then run against no tables. Attach with `READ_ONLY` where you can, so a wrong path fails instead.
+- **Don't name an attachment after the connection.** The connection's own database already has its name, so `ATTACH … AS orca` on a connection named `orca` fails with `database with name "orca" already exists`.
+- **The script is withheld from API responses**, as credentials are, since it may hold them. Reads list it in `withheldFields` as `duckdbConnection.setupSQL`. An update that leaves it out keeps the stored script; to remove it, send `"setupSQL": ""`. See [Credentials in API responses](#credentials-in-api-responses).
 
 ## DuckLake connections (`type: "ducklake"`)
 
@@ -301,7 +325,7 @@ control on the tunnel itself, and is required unless the deployment opts out.
 ### TLS to the database through the tunnel
 
 A proxied connection sets its TLS mode per-connection via `postgresConnection.sslmode`
-(the non-proxied path keeps using the environment's `PGSSLMODE`). The driver connects to the
+(a direct connection can set it too - see below). The driver connects to the
 local forward endpoint (`127.0.0.1`), not the real database host, so the certificate
 **hostname** can't be checked from the tunnel address alone. The supported modes:
 
@@ -321,11 +345,45 @@ endpoint as `hostaddr` while `host` stays the database's own name, so `verify-fu
 certificate against the real host through the tunnel, with the same trust set the query path
 uses.
 
+### TLS and statement timeout per connection
+
+A direct (non-proxied) Postgres connection, a DuckDB `attachedDatabases` Postgres entry, and a
+federated Postgres source accept the same two per-connection settings. A proxied connection also
+applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described above.
+
+- `sslmode` - the same four modes as above, applied against the configured host. When unset,
+  the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
+  the string's own `sslmode` applies and the field is ignored, with a warning logged.
+- `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. An
+  integer from 1 to 2147483647, Postgres's own limit. When unset, the database's own
+  `statement_timeout` applies. The query driver sets it on each session with
+  `SET statement_timeout`; a DuckDB attach passes it to libpq as a server option
+  (`options='-c statement_timeout=N'`). When a `connectionString` already carries `options`, the
+  timeout is merged into them, so its other server settings are kept; a `statement_timeout`
+  already in them is replaced by this field, with a warning logged. A connection pooler in
+  transaction mode may not carry a session setting from one statement to the next. The timeout
+  bounds every statement on the connection, including persisted-source builds: a colocated
+  `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
+  for the longest build, not only for interactive queries.
+
+Neither setting is applied to a DuckLake catalog connection.
+
+#### Effect on persisted sources
+
+A persisted source's identity includes its connection's identity. A connection that carries a
+`fingerprint` uses it as that identity, so neither setting affects it. A connection without one
+derives its identity from its configuration, and both settings are part of it: setting or
+changing `statementTimeoutMilliseconds`, or an `sslmode` that changes the connection string,
+gives that connection's persisted sources new identities, and they are built again on the next
+build. A connection that sets neither keeps the identity it had before. Together with the build
+bound above, this means raising a timeout that cancelled a build also rebuilds every persisted
+source on a connection without a `fingerprint`.
+
 ## Credentials in API responses
 
 A connection's credentials are write-only. `password`, `connectionString`, `serviceAccountKeyJson`,
 `privateKey`, `privateKeyPass`, `token`, `oauthClientSecret`, `accessToken`, `peakaKey`,
-`secretAccessKey`, `sessionToken`, `secret`, `clientSecret` and `sasUrl` are accepted when you create
+`secretAccessKey`, `sessionToken`, `secret`, `clientSecret`, `sasUrl` and a DuckDB connection's `setupSQL` are accepted when you create
 or update a connection, and no read returns them. The connection, environment and status endpoints
 return the non-secret fields only: host, port, database, user, region, an object store's key ID, a
 bastion's public host key.

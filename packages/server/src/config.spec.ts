@@ -1546,6 +1546,58 @@ describe("getMaxConcurrentQueries", () => {
    });
 });
 
+describe("getPostgresPoolMax", () => {
+   beforeEach(() => {
+      delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
+   });
+   afterEach(() => {
+      delete process.env.PUBLISHER_POSTGRES_POOL_MAX;
+   });
+
+   it("returns DEFAULT_POSTGRES_POOL_MAX when the env var is unset", async () => {
+      const { getPostgresPoolMax } = await import("./config");
+      const { DEFAULT_POSTGRES_POOL_MAX } = await import("./constants");
+      expect(DEFAULT_POSTGRES_POOL_MAX).toBe(5);
+      expect(getPostgresPoolMax()).toBe(DEFAULT_POSTGRES_POOL_MAX);
+   });
+
+   it("returns DEFAULT_POSTGRES_POOL_MAX when the env var is empty", async () => {
+      process.env.PUBLISHER_POSTGRES_POOL_MAX = "";
+      const { getPostgresPoolMax } = await import("./config");
+      expect(getPostgresPoolMax()).toBe(5);
+   });
+
+   it("returns the override when the env var is set", async () => {
+      process.env.PUBLISHER_POSTGRES_POOL_MAX = "12";
+      const { getPostgresPoolMax } = await import("./config");
+      expect(getPostgresPoolMax()).toBe(12);
+   });
+
+   it("rejects 0, which would leave the pool unable to open a session", async () => {
+      process.env.PUBLISHER_POSTGRES_POOL_MAX = "0";
+      const { getPostgresPoolMax } = await import("./config");
+      expect(() => getPostgresPoolMax()).toThrow(
+         "PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got 0)",
+      );
+   });
+
+   it("rejects a negative override", async () => {
+      process.env.PUBLISHER_POSTGRES_POOL_MAX = "-1";
+      const { getPostgresPoolMax } = await import("./config");
+      expect(() => getPostgresPoolMax()).toThrow(
+         "PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got -1)",
+      );
+   });
+
+   it("rejects a non-integer override", async () => {
+      process.env.PUBLISHER_POSTGRES_POOL_MAX = "1.5";
+      const { getPostgresPoolMax } = await import("./config");
+      expect(() => getPostgresPoolMax()).toThrow(
+         "Invalid value for PUBLISHER_POSTGRES_POOL_MAX",
+      );
+   });
+});
+
 describe("getPublisherConfigDir", () => {
    const testRoot = path.join(process.cwd(), "test-temp-config-dir");
    const elsewhere = path.join(testRoot, "elsewhere");

@@ -384,19 +384,6 @@ describe("service/package", () => {
                   error: undefined,
                },
             ]);
-
-            const notebooks = await packageInstance.listNotebooks();
-            // No `@ts-expect-error` here, unlike listModels above: the
-            // `Notebook` schema now declares `environmentName`, which the
-            // response has always sent (issue #979).
-            expect(notebooks).toEqual([
-               {
-                  environmentName: "testProject",
-                  packageName: "testPackage",
-                  path: "model2.malloynb",
-                  error: "This is the error",
-               },
-            ]);
          });
       });
 

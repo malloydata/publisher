@@ -698,7 +698,7 @@ export function useDimensionalFilterRangeData(
          versionId,
          activeFilters,
       ],
-      queryFn: async () => {
+      queryFn: async ({ signal }) => {
          if (!shouldExecuteQuery) {
             // Return empty map if no query needed (using composite keys)
             const emptyMap = new Map<string, DimensionValue[]>();
@@ -721,6 +721,8 @@ export function useDimensionalFilterRangeData(
                      versionId: versionId,
                      bypassFilters: true,
                   },
+                  undefined,
+                  { signal },
                );
                return {
                   config,

@@ -12,7 +12,12 @@ interface TablePreviewProps {
    headerBackground: string;
    /** Body cell text color. */
    bodyColor: string;
+   /** Gridline between rows, as a border shorthand. */
    border: string;
+   /** The card's edge, as a border shorthand. */
+   cardBorder: string;
+   /** The rule under the (pinned) header row, as a border shorthand. */
+   pinnedBorder: string;
    /** Padding/wrapper around the table (the dashboard tile colour). */
    tileBackground: string;
    fontFamily: string;
@@ -38,6 +43,7 @@ export function TablePreview(props: TablePreviewProps) {
             // Outer wrapper paints the tile colour around the table to
             // mirror what the operator sees on the actual package page.
             backgroundColor: props.tileBackground,
+            border: props.cardBorder,
             padding: 1.5,
             borderRadius: 1.5,
             display: "inline-block",
@@ -70,7 +76,7 @@ export function TablePreview(props: TablePreviewProps) {
                         fontWeight: 600,
                         px: 1.5,
                         py: 1,
-                        borderBottom: props.border,
+                        borderBottom: props.pinnedBorder,
                      }}
                   >
                      {h}

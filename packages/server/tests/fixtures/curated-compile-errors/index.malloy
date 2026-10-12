@@ -1,0 +1,8 @@
+import "base.malloy"
+
+source: orders is duckdb.sql("select 1 as id, 1 as store_id, 100 as amt, 'web' as channel, DATE '2025-03-01' as d") extend {
+  join_one: stores with store_id
+  measure: total is amt.sum()
+}
+
+export { orders }

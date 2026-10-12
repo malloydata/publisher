@@ -3,7 +3,11 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { classifySpaFallback } from "./spa_fallback";
+import {
+   classifySpaFallback,
+   resolveSpaFallback,
+   type LoadedRoutes,
+} from "./spa_fallback";
 
 const API_PREFIX = "/api/v0";
 const classify = (path: string) => classifySpaFallback(path, API_PREFIX);
@@ -49,28 +53,32 @@ describe("classifySpaFallback", () => {
          });
       });
 
-      it("keeps a dashboard whose slug ends in an asset extension", () => {
-         // A slug is a FILENAME with `.malloy` removed, so
-         // `dashboards/report.csv.malloy` publishes the slug `report.csv`
-         // through no choice of the reader's. Measured before this entry
-         // existed: that dashboard was listed on the package page, served by
-         // the API, and reachable by in-app navigation, while a deep link or a
-         // refresh 302d to the static route and answered 404.
+      // `dashboards/` and `notebooks/` mean nothing any more: a report's
+      // route is its path without `.malloy`, at any depth. Whether an
+      // asset-shaped path is a report is the loaded package's answer, so the
+      // classifier hands back a redirect CANDIDATE with the path, and the
+      // caller (server.ts) serves the app when `<reportPath>.malloy` is a
+      // served report. A package's own `public/dashboards/` file is a redirect
+      // again.
+      it("leaves `dashboards/` and `notebooks/` to the caller's report check", () => {
          expect(classify("/examples/storefront/dashboards/report.csv")).toEqual(
             {
-               kind: "spa",
+               kind: "redirect",
+               location:
+                  "/environments/examples/packages/storefront/dashboards/report.csv",
+               environmentName: "examples",
+               packageName: "storefront",
+               reportPath: "dashboards/report.csv",
             },
          );
-         // The ordinary shape reaches the app without needing this set at all,
-         // asserted so a regression that removes the entry is distinguishable
-         // from one that breaks the whole route.
+         expect(classify("/examples/storefront/sales/q3/report.csv").kind).toBe(
+            "redirect",
+         );
+         // The ordinary shape reaches the app with no check at all.
          expect(classify("/examples/storefront/dashboards/overview")).toEqual({
             kind: "spa",
          });
-      });
-
-      it("keeps a served notebook whose slug ends in an asset extension", () => {
-         expect(classify("/examples/storefront/notebooks/report.csv")).toEqual({
+         expect(classify("/examples/storefront/sales/q3")).toEqual({
             kind: "spa",
          });
       });
@@ -105,6 +113,7 @@ describe("classifySpaFallback", () => {
             location: "/environments/examples/packages/storefront/index.html",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "index.html",
          });
       });
 
@@ -115,6 +124,7 @@ describe("classifySpaFallback", () => {
                "/environments/examples/packages/storefront/assets/app.js",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "assets/app.js",
          });
       });
 
@@ -129,6 +139,7 @@ describe("classifySpaFallback", () => {
             location: "/environments/examples/packages/storefront/index.html",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "public/index.html",
          });
       });
 
@@ -139,6 +150,7 @@ describe("classifySpaFallback", () => {
             location: "/environments/examples/packages/storefront/public.html",
             environmentName: "examples",
             packageName: "storefront",
+            reportPath: "public.html",
          });
       });
 
@@ -265,5 +277,69 @@ describe("classifySpaFallback", () => {
          expect(classify("/api-doc.yaml").kind).not.toBe("apiNotFound");
          expect(classify("/api-doc.html").kind).not.toBe("apiNotFound");
       });
+   });
+});
+
+describe("resolveSpaFallback", () => {
+   /** One environment `examples` holding `storefront` and `report.html`, with the reports given. */
+   const loaded = (reportRoutes: string[] = []): LoadedRoutes => ({
+      hasEnvironment: (env) => env === "examples",
+      hasPackage: (env, pkg) =>
+         env === "examples" && (pkg === "storefront" || pkg === "report.html"),
+      isReportRoute: (env, pkg, routePath) =>
+         env === "examples" &&
+         pkg === "storefront" &&
+         reportRoutes.includes(routePath),
+   });
+   const resolve = (path: string, routes?: string[]) =>
+      resolveSpaFallback(path, API_PREFIX, loaded(routes));
+
+   it("redirects a package file addressed on the app route when both names are loaded", () => {
+      expect(resolve("/examples/storefront/data/orders.csv")).toMatchObject({
+         kind: "redirect",
+      });
+   });
+
+   it("serves the app for a report whose route ends in an asset extension", () => {
+      expect(resolve("/examples/storefront/q3.json", ["q3.json"])).toEqual({
+         kind: "spa",
+      });
+      // Its segments are decoded before they are looked up.
+      expect(
+         resolve("/examples/storefront/a%20b/c.csv", ["a b/c.csv"]),
+      ).toEqual({ kind: "spa" });
+   });
+
+   it("answers 404 rather than redirecting when the environment or package is not loaded", () => {
+      for (const path of [
+         "/assets/foo/bar.js",
+         "/examples/nope/data/orders.csv",
+         "/nope/storefront/data/orders.csv",
+      ]) {
+         expect(resolve(path)).toEqual({
+            kind: "assetNotFound",
+            path,
+            appRouteCandidate: null,
+         });
+      }
+   });
+
+   it("does not take a report route for a package that is not loaded", () => {
+      expect(resolve("/examples/nope/q3.json", ["q3.json"])).toMatchObject({
+         kind: "assetNotFound",
+      });
+   });
+
+   it("serves the app for an environment or package whose name ends in an extension, only when loaded", () => {
+      expect(resolve("/examples/report.html")).toEqual({ kind: "spa" });
+      expect(resolve("/examples/style.css")).toMatchObject({
+         kind: "assetNotFound",
+      });
+      expect(resolve("/nope.html")).toMatchObject({ kind: "assetNotFound" });
+   });
+
+   it("leaves app routes and API paths as the classifier decided", () => {
+      expect(resolve("/examples/storefront")).toEqual({ kind: "spa" });
+      expect(resolve("/api/v0/nope")).toMatchObject({ kind: "apiNotFound" });
    });
 });

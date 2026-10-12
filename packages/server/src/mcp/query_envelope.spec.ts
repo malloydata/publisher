@@ -47,6 +47,48 @@ describe("buildQueryEnvelope", () => {
       expect(e._meta.model_annotations).toEqual([{ value: "# dashboard" }]);
    });
 
+   it("lists each model and source annotation line once, keeping the last copy", () => {
+      // Malloy returns one copy per imported file. Keeping the last copy keeps
+      // the order tags fold in, so x=1 still wins below.
+      const e = buildQueryEnvelope(rows(1), 1000, {
+         ...result(),
+         model_annotations: [
+            { value: "##! experimental.access_modifiers\n" },
+            { value: "## x=1\n" },
+            { value: "##! experimental.access_modifiers\n" },
+            { value: "## x=2\n" },
+            { value: "## x=1\n" },
+         ],
+         source_annotations: [{ value: "# a\n" }, { value: "# a\n" }],
+      } as Malloy.Result);
+      expect(e._meta.model_annotations).toEqual([
+         { value: "##! experimental.access_modifiers\n" },
+         { value: "## x=2\n" },
+         { value: "## x=1\n" },
+      ]);
+      expect(e._meta.source_annotations).toEqual([{ value: "# a\n" }]);
+   });
+
+   it("drops no copy across a clone line, which reads what precedes it", () => {
+      const lines = [
+         "## a { x=1 }\n",
+         "## b := $a\n",
+         "## a { y=2 }\n",
+         "## a { x=1 }\n",
+         "## b := $a\n",
+         "## c=1\n",
+         "## c=1\n",
+      ];
+      const e = buildQueryEnvelope(rows(1), 1000, {
+         ...result(),
+         model_annotations: lines.map((value) => ({ value })),
+      } as Malloy.Result);
+      // Only the duplicate after the last clone line goes.
+      expect(e._meta.model_annotations).toEqual(
+         lines.slice(0, 6).map((value) => ({ value })),
+      );
+   });
+
    it("omits metadata keys the result did not carry", () => {
       const e = buildQueryEnvelope(rows(1), 1000, result());
       expect("query_timezone" in e._meta).toBe(false);

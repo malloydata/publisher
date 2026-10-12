@@ -85,6 +85,40 @@ export const DEFAULT_THEME: Required<Theme> = {
          light: PALETTE.blue,
          dark: PALETTE.blue,
       },
+      // Table gridlines and row rules: a hairline, because a table has dozens
+      // of them and they only have to separate rows.
+      border: {
+         light: "#e2e8f0",
+         dark: "#334155",
+      },
+      // A dashboard card's edge (and a pinned table header's rule), one stop
+      // darker than `border` on the same slate ramp: a card's edge has to say
+      // where the card stops on a page whose ground and tile are one colour.
+      cardBorder: {
+         light: "#cbd5e1",
+         dark: "#475569",
+      },
+      // Chart axis domain and tick lines.
+      axis: {
+         light: "#cbd5e1",
+         dark: "#475569",
+      },
+      // Chart gridlines. The same value as `axis` by default; separate so a
+      // host can draw a quieter grid than its axis rule.
+      gridline: {
+         light: "#cbd5e1",
+         dark: "#475569",
+      },
+      // Chart text: axis labels and titles, legends, chart and header titles.
+      chartText: {
+         light: "#0f172a",
+         dark: "#e2e8f0",
+      },
+      // The big-value (KPI) number in a dashboard tile.
+      value: {
+         light: "#0f172a",
+         dark: "#f1f5f9",
+      },
    },
    font: {
       family: DEFAULT_FONT_FAMILY,

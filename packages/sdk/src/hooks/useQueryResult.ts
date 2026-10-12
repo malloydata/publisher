@@ -76,7 +76,11 @@ export function useQueryResult(
    const { apiClients } = useServer();
    return useQueryWithApiError({
       queryKey: queryResultKey(spec),
-      queryFn: () =>
+      // The signal cancels a run the page no longer wants: a tile whose givens
+      // changed under it, or one that unmounted. react-query reverts a
+      // cancelled query to its previous state rather than to an error, so an
+      // abort never reaches `ResultPanel`'s failed state.
+      queryFn: ({ signal }) =>
          apiClients.models.executeQueryModel(
             spec.environmentName,
             spec.packageName,
@@ -88,6 +92,8 @@ export function useQueryResult(
                givens: spec.givens,
                versionId: spec.versionId,
             },
+            undefined,
+            { signal },
          ),
       enabled,
       ...CHART_RESULT_QUERY_OPTIONS,

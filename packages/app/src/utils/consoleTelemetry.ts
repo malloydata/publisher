@@ -1,61 +1,59 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { ConsoleEvent, DashboardEvent } from "@malloy-publisher/sdk";
-import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
-
-/** Which dashboard an event is about; the surface itself does not know. */
-export interface DashboardContext {
-   environmentName: string;
-   packageName: string;
-   dashboardName: string;
-}
-
-/** Which notebook an event is about; the editor itself does not know. */
-export interface NotebookContext {
-   environmentName: string;
-   packageName: string;
-   notebookName: string;
-}
-
-const DASHBOARD_PREFIX = "[publisher.dashboard]";
-const NOTEBOOK_PREFIX = "[publisher.notebook]";
-const CONSOLE_PREFIX = "[publisher.console]";
+import type { ConsoleEvent, ReportEvent } from "@malloy-publisher/sdk";
 
 /**
- * The Console's telemetry sink for the dashboard surfaces: one structured
- * line per event, at `warn` when something was refused or failed and `info`
- * otherwise, so a browser console (or whatever a deployment forwards it to)
- * can be filtered on the prefix and the `type`. Durations ride on the event.
+ * Where a report event happened. The event names the report by its package
+ * path; the environment and package are the host's to add.
  */
-export function logDashboardEvent(
-   context: DashboardContext,
-): (event: DashboardEvent) => void {
-   return (event) => {
-      const failed =
-         event.type.endsWith("_refused") ||
-         (event.type === "dashboard.rows_shown" && !event.ok);
-      const line = { ...context, ...event, at: new Date().toISOString() };
-      if (failed) console.warn(DASHBOARD_PREFIX, line);
-      else console.info(DASHBOARD_PREFIX, line);
-   };
+export interface ReportSinkContext {
+   environmentName: string;
+   packageName: string;
 }
 
-/** The notebook editor's sink: the dashboard sink's shape, under its own prefix. */
-export function logNotebookEvent(
-   context: NotebookContext,
-): (event: NotebookEvent) => void {
+const REPORT_PREFIX = "[publisher.report]";
+const CONSOLE_PREFIX = "[publisher.console]";
+
+/** Whether an event is an outcome someone should look at. */
+export function reportEventFailed(event: ReportEvent): boolean {
+   switch (event.type) {
+      case "report.load_failed":
+      case "report.query_failed":
+      case "report.save_refused":
+      case "report.save_undo_refused":
+      case "report.create_refused":
+         return true;
+      case "report.rows_shown":
+         return !event.ok;
+      case "report.drill":
+         return event.outcome === "unresolved" || event.outcome === "malformed";
+      default:
+         return false;
+   }
+}
+
+/**
+ * The Console's one sink for every `report.*` event, from the reader's view,
+ * the builder and the New report dialog alike: one structured line per event,
+ * at `warn` when something was refused or failed and `info` otherwise, so a
+ * browser console (or whatever a deployment forwards it to) can be filtered
+ * on the prefix and the `type`. Durations ride on the event.
+ */
+export function logReportEvent(
+   context: ReportSinkContext,
+): (event: ReportEvent) => void {
    return (event) => {
       const line = { ...context, ...event, at: new Date().toISOString() };
-      if (event.type.endsWith("_refused")) console.warn(NOTEBOOK_PREFIX, line);
-      else console.info(NOTEBOOK_PREFIX, line);
+      if (reportEventFailed(event)) console.warn(REPORT_PREFIX, line);
+      else console.info(REPORT_PREFIX, line);
    };
 }
 
 /**
  * The Console's sink for its own writes, installed once at boot.
  *
- * Same shape as the dashboard sink: one structured line, `warn` when the write
+ * Same shape as the report sink: one structured line, `warn` when the write
  * failed and `info` when it landed, filterable on the prefix. A failed write
  * is the line worth keeping — before this, a delete that failed left no trace
  * once its six-second snackbar had gone.

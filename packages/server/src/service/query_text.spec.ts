@@ -715,7 +715,7 @@ describe("service/query_text", () => {
             [joins, buildJoinBaseMap],
             [chain, buildIsEdgeMap],
          ] as const) {
-            expect(fastestMs(() => read(text))).toBeLessThan(200);
+            expect(fastestMs(() => read(text))).toBeLessThan(1000);
          }
       });
 

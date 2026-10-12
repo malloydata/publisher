@@ -85,12 +85,12 @@ to move, on their next release, and neither is urgent: the scaffolder has no
 dependents, and the Python client has no published versions at all.
 
 `bun.lock` is a fourth reader of these numbers and is deliberately left alone. It
-records `0.0.209` for the three workspace packages, so once the stamp PR resets
-`main` it will disagree with the manifests it locked. That is benign — the entries
+records `0.0.209` for the three workspace packages, so once a release PR merges
+`main` disagrees with the manifests it locked. That is benign — the entries
 are workspace links, not registry resolutions, and `bun install --frozen-lockfile`
-does not compare them — so the stamp does not touch the lockfile, which keeps the
+does not compare them — so `prepare` does not touch the lockfile, which keeps the
 release out of the business of regenerating it. If a future bun makes that a hard
-error, the fix is to add `bun.lock` to `PKGS`' sibling staging in the stamp step,
+error, the fix is to rewrite those `bun.lock` entries beside `PKGS` in `prepare`,
 not to make `prepare` run an install.
 
 The point of the policy is that a consumer can write a range. Verified with
@@ -218,107 +218,77 @@ Requiring it means first giving it an always-run gate job that reports success w
 not match.
 
 `release.yml` is `workflow_dispatch`-only and is the single place a release starts. Its `prepare` job
-bumps sdk/app/server, commits to a fresh `release/sdk-<version>` branch, and pushes it; `npm-sdk.yml`
-and `docker-image.yml` are then called with that ref. `publish-packages` triggers the other three
-trains (see below). `gh-release` cuts the tag, and only after npm and Docker have both succeeded.
+bumps sdk/app/server, stamps the release notes, commits both to a fresh `release/v<version>`
+branch cut from `main`, and pushes it; `npm-sdk.yml` and `docker-image.yml` are then called with that
+ref. `publish-packages` triggers the other three trains (see below). `gh-release` cuts the tag, and
+only after npm and Docker have both succeeded.
 
-`gh-release` also owns the release notes. It appends every `## [Unreleased]` section of
-`RELEASE_NOTES.md` to the release body (via `scripts/release-notes.mjs`) and then pushes a
-`release-notes-stamp-<version>` branch stamping those headings with the shipped version, printing a
-compare link for a human to open as a PR. Both used to be manual post-release steps and were reliably
-skipped — 0.0.243 through 0.0.247 shipped with none of their narrative.
-
-**That branch carries the version reset too, despite its name**: `scripts/set-version.mjs` over the
-three `packages/{sdk,app,server}/package.json` files, so `main` ends the release declaring what
-shipped. It does **not** touch `packages/skills/package.json` or
+**The release branch is also the post-release PR.** `prepare` rewrites every `## [Unreleased]`
+heading in `RELEASE_NOTES.md` as `## [<version>]` (`scripts/release-notes.mjs stamp`) in the same
+commit that sets the three `packages/{sdk,app,server}/package.json` versions
+(`scripts/set-version.mjs`). `gh-release` then puts the sections headed `[<version>]` on the release
+page (`release-notes.mjs extract <version>`) and prints a compare link. A person opens
+`release/v<version>` into `main` as a PR, titled `chore(release): <version>`, and merges it; that
+one PR is the whole post-release step. It does **not** touch `packages/skills/package.json` or
 `packages/create-malloy-package/package.json`: those two carry a fixed `0.0.0-dev` placeholder and
 their published version is decided at release time from npm's own state (see *Skills and
-create-malloy-package version at release time* above), so there is nothing for the stamp to move
-ahead of any more. The notes and the sdk/app/server reset can each legitimately be zero; only when
-both are zero is no branch pushed, and the summary says so. The name is unchanged because it is
-the identifier the `publisher-release` skill and this file both tell a releaser to look for.
+create-malloy-package version at release time* above). Both halves used to be manual post-release
+steps and were reliably skipped: 0.0.243 through 0.0.247 shipped with none of their narrative.
 
-**The version reset cannot move into `prepare`,** which is the obvious place for it. `prepare` stages
-exactly those three files and commits them, so once this reset works — meaning `main` already declares
-the version being released — there would be no diff, `git commit` would exit non-zero, and that step
-would die under `set -euo pipefail` before pushing anything. It has to happen after the release, where
-a no-op is allowed, which is why `set_version` was extracted into a script both jobs can call.
+Why this shape, and not the ones it replaced:
 
-**Only the first half is automatic, and the reasons the second half stops at a branch are the whole
-story of this step.** It has been written three ways; two of them are wrong and look right.
+- **One tree.** The stamp, the version and the narrative on the release page all come from the
+  commit npm and Docker published. An earlier design extracted from the release branch and stamped a
+  fresh branch cut from `main` minutes later, which needed a `--titles` artifact to keep the two
+  agreeing about which sections shipped. A section merged to `main` while a release runs is simply
+  not on the release branch, stays `[Unreleased]`, and ships next time.
+- **A release that fails stamps nothing that matters.** The stamped branch reaches `main` only by a PR
+  someone opens after the release succeeded. A failed release leaves its branch unmerged, and the
+  next dispatch walks past it (`version_taken`) and cuts a new one from `main`, which still reads
+  `[Unreleased]`.
+- **Not a push to `main`.** `main` is protected and requires a pull request; until 0.0.250 the stamp
+  step pushed there and every attempt was rejected with `GH006`.
+- **Not `gh pr create` from the workflow.** Opening a PR with `GITHUB_TOKEN` needs the off-by-default
+  "Allow GitHub Actions to create and approve pull requests" setting, which only an admin can read.
+  Worse, a bot-authored PR triggers no workflows, so `main`'s required checks sit at `expected` and
+  only an admin can merge it. A PR opened by a person (or by an agent on that person's credentials,
+  which is what the `publisher-release` skill does) runs its checks and any maintainer can merge it.
 
-*Not a push to `main`,* which is what it did until 0.0.250 and which never once worked. `main` is
-protected and requires a pull request, so every attempt was rejected with `GH006`, retry included.
-0.0.249 is the worked example: six sections on its release page, none stamped, and nobody noticed
-until the next release was being cut.
+**`release-sync.yml` fails while a release's PR is unmerged.** It compares npm's `latest` for
+`@malloy-publisher/sdk` with the version `packages/sdk/package.json` declares, on every PR, every
+push to `main`, and right after each `release.yml` run (`workflow_run`, against `main`'s head, so
+`main` reads red as soon as there is a release PR to merge). It is its own workflow rather than a
+`build.yml` job because it is not about the build: it changes state when npm does, not when the
+code does. `main`'s version moves only when a release PR merges, so npm ahead
+of it means a release published and its PR has not merged. The next release would then stamp that
+release's still-`[Unreleased]` sections a second time under the new number. The fix is to merge
+`release/v<npm latest>` into `main`, which is also the only thing that clears the check; the
+release PR itself passes because its tree declares the new version. It reads npm rather than the
+git tags because a release whose npm publish succeeded and whose `gh-release` failed has no tag
+but did ship.
 
-*Not `gh pr create` either,* which is the obvious replacement and was the first fix attempted.
-Opening a PR with `GITHUB_TOKEN` requires the repo/org setting **"Allow GitHub Actions to create and
-approve pull requests", which is off by default**, and reading that setting needs admin — so from a
-`maintain` account it cannot be confirmed. Depending on an unverifiable permission is precisely how
-the `GH006` bug was written in the first place: that code assumed a push it was never allowed to
-make, and the comment above it admitted the assumption was unconfirmed. The same shape would have
-failed the same way, silently, at the next release.
+**Expect it red on unrelated PRs.** Because it runs on every PR, contributors see it fail from the
+moment a release publishes until that release's PR merges, on changes that have nothing to do with
+the release. That is deliberate, and it is meant to be a **required status check** on `main`, so
+in that window nothing else merges and the release PR is the next thing to land. It gates merges,
+not dispatches: `release.yml` does not consult it.
 
-*A branch push, then.* It is **proven** on this token — `prepare` pushes `release/sdk-<version>`
-every release — and needs no permission beyond the `contents: write` the job already has. Letting a
-person open the PR is not merely the safe option, it is the better one: a PR opened by a human
-triggers `pull_request`, so its checks run and **any maintainer can merge it**, where a bot-authored
-PR triggers no workflows at all, leaving required checks at `expected` forever and an admin as the
-only possible merger. The cost is one click, and it buys back the check suite.
+**A prerelease is never stamped.** `prepare` skips the stamp for any version with a `-` or `+`, so
+`release-notes.mjs extract <prerelease>` finds nothing (it accepts the version, and there is no
+`[<prerelease>]` heading to match), and `main`'s `[Unreleased]` sections stay unstamped and ship
+with the next ordinary release. A prerelease gets no GitHub release page in any case.
 
-There is a cheaper fix available to an admin, and it is worth checking before anyone assumes this
-shape is permanent. Classic protection exposes *"Allow specified actors to bypass required pull
-requests"* (`required_pull_request_reviews.bypass_pull_request_allowances`), which accepts apps and
-may accept `github-actions`; a ruleset with a bypass actor is the other route, and enabling the
-Actions-can-create-PRs setting would at least allow the bot-PR shape. None of the three is verifiable
-from a `maintain` account, which is why none is assumed here. Each also trades away something real:
-a bypass widens the surface flagged under *Hardening that is not in place yet*, since `release.yml`
-carries no ref guard, and a GitHub App token adds a stored credential to a repo that deliberately has
-none for npm.
+**Merging it back usually needs a conflict resolved.** `main` requires branches to be up to date, and
+a new `[Unreleased]` section merged during or after the release is normally inserted directly above
+the first stamped heading. Git treats those adjacent lines as one hunk, so `RELEASE_NOTES.md`
+conflicts. Keep both sides: `main`'s new `[Unreleased]` sections as they are, and the release branch's
+`[<version>]` headings. The version lines do not conflict, since only release PRs change them.
+**Do not push to the release branch until the release has finished**, because `npm-sdk.yml` and
+`docker-image.yml` check out the branch by name, not by commit.
 
-Two things about that pair are easy to get wrong.
-
-**The two halves must agree on which sections shipped.** `extract` runs against the release branch's
-snapshot of the file; `stamp` runs minutes later against whatever `main` has become, and recent
-releases take 4–10 minutes. So `extract --titles` writes the exact heading lines it consumed to a
-file under `$RUNNER_TEMP`, and `stamp --titles` rewrites only those. Unscoped, a section merged
-inside that window was stamped with a version it never shipped in — off that release's page, and off
-every later one, because its heading no longer said `[Unreleased]`. The titles file lives in
-`$RUNNER_TEMP` and not the repo because the stamp step checks out a fresh branch from `origin/main`,
-which would discard an in-tree file first.
-
-**A stamp that does not land is not cheap, and "opened a PR" is not "landed."** The stamp step is
-`continue-on-error` — by then the release is public and correct, and a failed docs commit must not
-redden it — but the cost is *not* merely a heading that still reads `[Unreleased]` for the next
-release to pick up. That heading is exactly what the next release's `extract` matches, so the next
-release re-appends **this** release's narrative to its own page, and so does the one after that,
-until a human notices. That is why every failure path in the step emits a `::warning` and a
-job-summary line naming the fix, rather than relying on `continue-on-error` alone.
-
-Ending at a branch shrinks that failure window without closing it, and moves the last inch of it
-onto a person: the consequence is identical whether the branch was never pushed or was pushed and
-never opened. **So the stamp is part of releasing, not paperwork after it** — open and merge it before
-the next dispatch, and check for a stale one before dispatching. Three things about that:
-
-- **Every outcome writes a job-summary line, including the no-ops.** "No sections to stamp" and
-  "already stamped" say so explicitly, because an empty *Release notes and version* section in the summary is
-  indistinguishable from the step dying before it wrote anything — and telling a releaser to "read
-  the summary" is useless if silence is ambiguous.
-- **The branch is pushed without `--force`.** A stamp branch already on the remote may carry a
-  human's conflict resolution, which is the documented fix when `main` moved under
-  `RELEASE_NOTES.md`; recomputing the stamp and forcing over it would discard that silently. A
-  rejected push is therefore inspected, and an existing branch is reported and left alone.
-- **A re-run of `gh-release` is not a recovery path for a missed stamp.** `gh release create` has no
-  `--clobber`, so on a re-run it fails on the existing tag, and the stamp step's implicit `success()`
-  means it never runs at all. Recovery is manual; step 3 of the `publisher-release` skill has it.
-
-One trap in that manual recovery, because the obvious command is destructive: `release-notes.mjs
-stamp <version>` **without `--titles` rewrites every `[Unreleased]` section in the file**, including
-ones the *upcoming* release is about to ship — mislabelling them and erasing them from the next
-release's page, which is the exact failure `--titles` was added to prevent. The titles file lives in
-`$RUNNER_TEMP` and does not survive the run, so a manual stamp has to re-establish the scope; the
-skill spells out how.
+**`delete_branch_on_merge` is on, so merging the PR deletes `release/v<version>`.** The tag keeps
+the commit, `version_taken` checks the tag as well as the branch, and the release page's
+"Release branch" line is the only thing left pointing at a name that no longer exists.
 
 `scripts/release-notes.mjs` and `scripts/set-version.mjs` both have unit coverage —
 `release-notes.spec.ts` and `set-version.spec.ts` — run by `build.yml`'s `lint_format` job on every PR
@@ -330,15 +300,15 @@ rename or a reformat that moved it out of reach fails a PR rather than a release
 itself is dispatch-only and cannot be exercised in CI, so the shell in the changed steps was verified
 out of band instead: each `run:` body extracted from the YAML and executed against a scratch repo with
 `npm`, `npx` and `curl` stubbed, which is how the version-resolution steps, the server-pin
-substitution, the `--host` check and the stamp step were each covered. That harness is a one-off and
+substitution, the `--host` check, `prepare`'s stamp and `release-sync.yml`'s comparison were each covered. That harness is a one-off and
 is **not** in this repo — it is worth rebuilding rather than trusting, because a later edit to any of
 those bodies has nothing automated behind it.
 
-The stamp step cannot collide with `publish-packages`, and merging the stamp PR cannot either: it
-only resets `packages/{sdk,app,server}/package.json` and stamps `RELEASE_NOTES.md`, neither of which
-`publish_indep_pkg`'s "main moved" guard watches for skills or create-malloy-package, so there is no
-merge-order hazard between the stamp PR and an in-flight `publish-packages` run. It can still be
-merged any time after the release.
+Merging the release PR cannot collide with `publish-packages`: it changes only
+`packages/{sdk,app,server}/package.json` and `RELEASE_NOTES.md`, neither of which
+`publish_indep_pkg`'s "main moved" guard watches for skills or create-malloy-package. The reason to
+wait for the run to finish before touching the PR is the release branch itself (above), not this
+guard.
 
 npm publishing uses **GitHub Actions OIDC trusted publishing**, not a stored token. There is no
 `NPM_TOKEN` in this repo and one should not be added back. The Docker and PyPI paths do use secrets
@@ -421,14 +391,13 @@ everything in this file that follows from them changes with it.
 - **OIDC auto-enables provenance, which requires `repository.url`** in each published `package.json`.
   A package missing it fails to publish with a `422 ... provenance` error. This is the likely failure
   when adding a new package.
-- **`main` carries the released sdk/app/server version only if the last stamp PR merged.** Release
-  branches are still never merged back; instead `gh-release`'s stamp branch resets those three
-  `package.json` files to the shipped version, and a human merges it. Before that mechanism `main` sat
-  41 patches behind npm. So the file is now *usually* truthful and never *reliably* so, which is why
-  `prepare`'s floor is `max(npm latest, main declared)` and fails closed when the registry will not
-  answer. **Do not "simplify" that to reading the file** — an unmerged stamp PR is exactly the thing
-  that gets missed, and the max is correct either way. `prepare` then walks forward from the floor
-  until it finds a version whose release branch and tag are both free.
+- **`main` carries the released sdk/app/server version only once that release's PR merges.** Before
+  release branches were merged back, `main` sat 41 patches behind npm. `release-sync.yml`
+  reports when it lags, but nothing stops a dispatch, so `prepare`'s floor is
+  still `max(npm latest, main declared)` and fails closed when the registry will not answer. **Do
+  not "simplify" that to reading the file** — an unmerged release PR leaves the file behind npm, and
+  the max is correct either way. `prepare` then walks forward from the floor until it finds a
+  version whose release branch and tag are both free.
 - **Publish steps need scripts enabled.** `prepack` is what copies `skills/` into the skills package
   and what builds the scaffolder's `dist/`. A publish run with `--ignore-scripts`, or with
   `ignore-scripts=true` in the publisher's own npmrc, ships a package with the contents missing and

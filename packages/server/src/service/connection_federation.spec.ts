@@ -526,6 +526,18 @@ describe("buildProxiedPgAttachString", () => {
       );
    });
 
+   it("carries the connection's statement timeout as a libpq server option", () => {
+      expect(
+         buildProxiedPgAttachString(
+            "c",
+            { ...pg(undefined), statementTimeoutMilliseconds: 5000 },
+            endpoint,
+         ),
+      ).toBe(
+         "host=real.example hostaddr=127.0.0.1 port=6000 dbname=d user=u password=p sslmode=require options='-c statement_timeout=5000'",
+      );
+   });
+
    it("maps disable and no-verify", () => {
       expect(
          buildProxiedPgAttachString("c", pg("disable"), endpoint),

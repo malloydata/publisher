@@ -13,20 +13,14 @@ const RETRY = path.join(
    import.meta.dir,
    "components/DocumentCreate/canRetry.ts",
 );
-const MODULE = path.join(
-   import.meta.dir,
-   "components/DashboardBuilder/malloyText.ts",
-);
+const MODULE = path.join(import.meta.dir, "utils/malloyText.ts");
 
 describe("@malloy-publisher/sdk/text", () => {
    // Hosts import this in vitest's plain node environment, where they also mock the main entry.
    it("re-exports two modules, which import nothing", () => {
       const entry = fs.readFileSync(ENTRY, "utf8");
       expect([...entry.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1])).toEqual(
-         [
-            "./components/DashboardBuilder/malloyText",
-            "./components/DocumentCreate/canRetry",
-         ],
+         ["./utils/malloyText", "./components/DocumentCreate/canRetry"],
       );
       expect(fs.readFileSync(RETRY, "utf8")).not.toMatch(
          /^\s*(import|export\s.*\sfrom)\b|\brequire\(|\bimport\(/m,
@@ -50,7 +44,7 @@ describe("@malloy-publisher/sdk/text", () => {
          fs.writeFileSync(
             path.join(dir, "check.mjs"),
             `import { artifactTag, splitSourceLines } from "./text.mjs";
-const tag = artifactTag(splitSourceLines("x\\r\\n## artifact { kind=notebook }\\r\\nrun: a"));
+const tag = artifactTag(splitSourceLines("x\\r\\n## artifact { layout=linear }\\r\\nrun: a"));
 console.log(JSON.stringify({ tag, document: typeof document }));`,
          );
          const run = Bun.spawnSync(["node", "check.mjs"], { cwd: dir });
@@ -60,7 +54,7 @@ console.log(JSON.stringify({ tag, document: typeof document }));`,
                from: 1,
                to: 1,
                block: false,
-               text: "## artifact { kind=notebook }",
+               text: "## artifact { layout=linear }",
             },
             document: "undefined",
          });
@@ -91,28 +85,28 @@ describe("artifactTag", () => {
    const tagOf = (source: string) => artifactTag(splitSourceLines(source));
 
    it("finds a one-line tag and a block tag, by line", () => {
-      expect(tagOf("##! x\n## artifact { kind=dashboard }\nrun: a")).toEqual({
+      expect(tagOf("##! x\n## artifact { layout=grid }\nrun: a")).toEqual({
          from: 1,
          to: 1,
          block: false,
-         text: "## artifact { kind=dashboard }",
+         text: "## artifact { layout=grid }",
       });
-      expect(tagOf("##| artifact { kind=notebook\n}\n|##\nrun: a")).toEqual({
+      expect(tagOf("##| artifact { layout=linear\n}\n|##\nrun: a")).toEqual({
          from: 0,
          to: 2,
          block: true,
-         text: "##| artifact { kind=notebook\n}",
+         text: "##| artifact { layout=linear\n}",
       });
    });
 
    it("reads the same tag from CRLF text", () => {
       expect(
-         tagOf("##| artifact { kind=notebook\r\n}\r\n|##\r\nrun: a"),
-      ).toEqual(tagOf("##| artifact { kind=notebook\n}\n|##\nrun: a"));
+         tagOf("##| artifact { layout=linear\r\n}\r\n|##\r\nrun: a"),
+      ).toEqual(tagOf("##| artifact { layout=linear\n}\n|##\nrun: a"));
    });
 
    it("finds none in an untagged file or inside another block", () => {
       expect(tagOf("source: a is b")).toBeUndefined();
-      expect(tagOf('##|"\n## artifact { kind=notebook }\n|##')).toBeUndefined();
+      expect(tagOf('##|"\n## artifact { layout=linear }\n|##')).toBeUndefined();
    });
 });

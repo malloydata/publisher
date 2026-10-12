@@ -4,7 +4,11 @@
 import { describe, expect, it } from "bun:test";
 import { formatDiagnosticsText, registerCompileTool } from "./compile_tool";
 import type { EnvironmentStore } from "../../service/environment_store";
-import { PackageNotFoundError, ServiceUnavailableError } from "../../errors";
+import {
+   EnvironmentNotFoundError,
+   PackageNotFoundError,
+   ServiceUnavailableError,
+} from "../../errors";
 
 // Capture the handler registerCompileTool passes to McpServer.tool, so it can
 // be exercised against a mocked EnvironmentStore. The tool builds a
@@ -159,6 +163,44 @@ describe("compile_model tool", () => {
       expect(parsed.diagnostics[0].severity).toBe("warn");
    });
 
+   it("fails a package-scope compile on an error-severity dashboard finding", async () => {
+      // The package-scope findings a reload would report carry no position.
+      // One at error severity is a dashboard that is really broken, so it
+      // fails the compile; a warn-severity render tag alone would not.
+      const handler = captureHandler(
+         storeReturning([
+            {
+               severity: "warn",
+               message: "Unknown render tag 'hidden' on field 'min_value'",
+               code: "render-tag",
+               model: "dashboards/x.malloy",
+            },
+            {
+               severity: "error",
+               message:
+                  'given "DEPARTMENT" suggests options from "sales -> ' +
+                  'products.department", but that source has no field ' +
+                  '"products.department".',
+               code: "dashboard-lint",
+               model: "dashboards/x.malloy",
+            },
+         ]),
+      );
+      const result = await handler({
+         ...args,
+         scope: "package",
+         source: undefined,
+      });
+      expect(result.isError).toBe(true);
+      expect(parse(result).status).toBe("error");
+      expect(textBlock(result)).toBe(
+         "Compile failed with 1 error (positions are 0-based):\n\n" +
+            '- dashboards/x.malloy: given "DEPARTMENT" suggests options from ' +
+            '"sales -> products.department", but that source has no field ' +
+            '"products.department". [dashboard-lint]',
+      );
+   });
+
    it("passes scope through to compileSource, defaulting to append", async () => {
       const scopes: unknown[] = [];
       const handler = captureHandler({
@@ -223,6 +265,26 @@ describe("compile_model tool", () => {
       expect(result.isError).toBe(true);
       const parsed = parse(result);
       expect(parsed.error).toBeDefined();
+   });
+
+   it("names an unknown environment and the ones that exist", async () => {
+      const handler = captureHandler({
+         getEnvironment: async () => {
+            throw new EnvironmentNotFoundError(
+               'Environment "analytics" could not be resolved to a path.',
+               {
+                  environmentName: "analytics",
+                  availableEnvironments: ["default"],
+               },
+            );
+         },
+      });
+      const parsed = parse(
+         await handler({ ...args, environmentName: "analytics" }),
+      );
+      expect(parsed.error).toBe(
+         "Environment 'analytics' not found. Available environments: default. Use a name from list_packages.",
+      );
    });
 
    it("reports a missing package as not-found, not as a Malloy syntax problem", async () => {

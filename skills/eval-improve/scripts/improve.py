@@ -64,6 +64,7 @@ from agent_harness import default_manifest, manifest_skills, skills_roots, spawn
 import config  # noqa: E402
 import ledger  # noqa: E402
 from ledger import read_jsonl  # noqa: E402
+import golden_rows  # noqa: E402
 
 SKILLS_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 IMPROVE_TOOLS = ("mcp__publisher__get_context",
@@ -233,6 +234,22 @@ def verify_goldens(a: argparse.Namespace, d: pathlib.Path,
             "tail": (p.stdout or p.stderr or "").strip().splitlines()[-25:]}
 
 
+def cluster_members(issue: dict[str, Any], cases: dict[str, Any],
+                    set_dir: pathlib.Path | None) -> list[dict[str, Any]]:
+    """Each case in the cluster with its question, key and rubric.
+
+    The key comes through `golden_rows`, so a rows golden kept in
+    `golden.path` reaches the improver as its rows rather than as no key.
+    """
+    out = []
+    for q in issue.get("qids", []):
+        g = (cases.get(q) or {}).get("golden") or {}
+        out.append({"qid": q, "question": (cases.get(q) or {}).get("question"),
+                    "golden": golden_rows.key_value_or_note(g, set_dir, q),
+                    "rubric": g.get("rubric")})
+    return out
+
+
 def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
                     a: argparse.Namespace, art: pathlib.Path) -> dict[str, Any]:
     cid = issue["issue_id"]
@@ -255,10 +272,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
     helper.write_text(SYNC_SCRIPT.format(sync=sync, reload=reload_cmd))
     helper.chmod(0o755)
 
-    members = [{"qid": q, "question": (cases.get(q) or {}).get("question"),
-                "golden": ((cases.get(q) or {}).get("golden") or {}).get("value"),
-                "rubric": ((cases.get(q) or {}).get("golden") or {}).get("rubric")}
-               for q in issue.get("qids", [])]
+    members = cluster_members(issue, cases, a.set_dir)
 
     r = spawn_agent(
         IMPROVE_PROMPT.format(

@@ -1,0 +1,14 @@
+##! experimental.givens
+// A doc comment and no `title=`, so the title is the comment's first line
+// rather than the "Volumes" heading below: the middle step of the chain.
+##" Carrier volumes
+##" Shipments per carrier, refreshed nightly.
+## artifact { layout=linear }
+
+import "orders.malloy"
+
+##|(markdown)
+# Volumes
+|##
+
+run: orders -> since_totals

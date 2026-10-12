@@ -228,5 +228,24 @@ class TruthEnvironment(unittest.TestCase):
             getattr(ns, "truth_environment", None) or ns.environment, "samples")
 
 
+
+class ClusterMembers(unittest.TestCase):
+    """The improver sees each case's key. A rows golden kept in
+    `golden.path` used to reach it as no key at all."""
+
+    def test_a_path_held_golden_reaches_the_improver_as_its_rows(self):
+        set_dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, set_dir, True)
+        (set_dir / "gold").mkdir()
+        (set_dir / "gold" / "q1.csv").write_text("region,n\nWest,3\n")
+        cases = {"q1": {"question": "how many?",
+                        "golden": {"kind": "rows", "path": "gold/q1.csv",
+                                   "rubric": "West has 3."}}}
+        self.assertEqual(
+            improve.cluster_members({"qids": ["q1"]}, cases, set_dir),
+            [{"qid": "q1", "question": "how many?",
+              "golden": [{"region": "West", "n": 3}],
+              "rubric": "West has 3."}])
+
 if __name__ == "__main__":
     unittest.main()

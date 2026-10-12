@@ -5,13 +5,13 @@ SPDX-License-Identifier: MIT
 
 # Starting from Analysis
 
-When you've been doing analysis, writing queries, building views, creating notebooks, and want to formalize the work into a reusable semantic model, follow this process.
+When you've been doing analysis, writing queries, building views, creating reports, and want to formalize the work into a reusable semantic model, follow this process.
 
 **The model emerges from your analysis.** You don't design sources top-down, you identify what's worth encoding as reusable building blocks.
 
 ## Step 1: IDENTIFY, what belongs in a model?
 
-Scan your analysis `.malloy` files and notebooks (`notebooks/*.malloy`, or an existing `.malloynb`). A `notebooks/*.malloy` with an `## artifact { kind=notebook … }` tag (a `tiles=[…]` layout, or `run:` cells) is a notebook, not a model file to restructure: lift its reusable definitions into a model and leave the notebook to import them. For each dimension, measure, join, or calculation, ask: **is this a reusable building block?**
+Scan your analysis `.malloy` files and reports (any `.malloy` with an `## artifact` tag, wherever it sits, or an existing `.malloynb`). A report (a `tiles=[…]` layout or `run:` cells, of either layout) is not a model file to restructure: lift its reusable definitions into a model and leave the report to import them. For each dimension, measure, join, or calculation, ask: **is this a reusable building block?**
 
 A measure or dimension belongs in a model if it meets ANY of these criteria:
 
@@ -83,5 +83,5 @@ Don't formalize too early. Good signals:
 - You've answered 3+ distinct questions and keep redefining the same measures
 - You find yourself copy-pasting dimensions or joins between queries
 - Someone else needs to use your analysis patterns
-- You want a notebook or dashboard that should survive data refreshes
+- You want a report that should survive data refreshes
 - You built something non-trivial (regex, window function, multi-step logic) that would be painful to recreate

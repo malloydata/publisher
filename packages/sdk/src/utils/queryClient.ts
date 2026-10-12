@@ -7,8 +7,16 @@ import { QueryClient } from "@tanstack/react-query";
 export const globalQueryClient = new QueryClient({
    defaultOptions: {
       queries: {
+         // Not retried: `useQueryWithApiError` surfaces a failure the moment it
+         // happens, and the SDK's specs and error states are written for that.
          retry: false,
          throwOnError: false,
+         // Returning to the tab is not a reason to re-read: navigation, a
+         // mutation's invalidation or a hook's own polling is. Without this,
+         // every query on the page (a dashboard's tiles among them, billed by
+         // the warehouse) refetched on each refocus once stale. A query whose
+         // data changes while the reader is away opts back in.
+         refetchOnWindowFocus: false,
       },
       mutations: {
          retry: false,

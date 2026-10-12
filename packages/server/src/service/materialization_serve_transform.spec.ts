@@ -18,6 +18,16 @@ import { MaterializationEligibilityError } from "../errors";
 import {
    assertServesInDuckDB,
    buildChainedStorageBuildModel,
+   documentFlagLines,
+   liftDerivedSources,
+   missingPersistedTables,
+   reachedPersistedSources,
+   type SourceRefinement,
+   REFINEMENT_TIER_KINDS,
+   buildOverTiers,
+   authorModelLiftContext,
+   documentFlagsForLifts,
+   type DerivedSourceLift,
    buildServeShapeModel,
    buildServeShapeModelForBindings,
    extractSourceFilters,
@@ -1284,6 +1294,920 @@ describe("buildChainedStorageBuildModel (stack-on-parent transient build model)"
          ]),
       );
       expect(byMonth).toEqual({ "2026-01": 375, "2026-02": 99 });
+   });
+});
+
+describe("buildChainedStorageBuildModel with intermediates and the author's flags", () => {
+   const parent: ServeBinding = {
+      sourceName: "daily",
+      destinationName: "lake",
+      virtualHandle: "daily_h",
+      tablePath: "daily__mabc",
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "total", type: "DOUBLE" },
+      ],
+   };
+   // A non-persisted source between the downstream and its stored parent: the
+   // downstream never names `daily`, so without this in the model it does not
+   // compile.
+   const wide: DerivedSourceLift = {
+      sourceName: "daily_wide",
+      base: "daily",
+      refinements: [],
+      text: "daily_wide is daily -> { select: * } extend {\n  dimension: order_month is order_date.month\n}",
+   };
+   const downstreamDefText =
+      "monthly is daily_wide -> {\n" +
+      "  group_by: order_month\n" +
+      "  aggregate: monthly_total is total.sum()\n}";
+
+   function compile(model: string, tag: string) {
+      const conn = new DuckDBConnection("lake", ":memory:");
+      const root = `file:///${tag}/`;
+      const url = `${root}m.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, model]])),
+         connections: new FixedConnectionMap(new Map([["lake", conn]]), "lake"),
+      });
+      return runtime
+         .loadModel(new URL(url), { importBaseURL: new URL(root) })
+         .getModel();
+   }
+
+   it("emits the intermediates after the parents and before the downstream", () => {
+      const model = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText,
+         destinationName: "lake",
+         derived: [wide],
+      });
+      const parentAt = model.indexOf("source: daily is lake.virtual");
+      const wideAt = model.indexOf("source: daily_wide is daily ->");
+      const downstreamAt = model.indexOf("source: monthly is daily_wide ->");
+      expect(parentAt).toBeGreaterThan(-1);
+      expect(wideAt).toBeGreaterThan(parentAt);
+      expect(downstreamAt).toBeGreaterThan(wideAt);
+   });
+
+   it("a downstream reading a stored parent only through an intermediate compiles, and its SQL reads the parent's table", async () => {
+      const model = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText,
+         destinationName: "lake",
+         derived: [wide],
+      });
+      const compiled = await compile(model, "t4-intermediate");
+      const downstream = Object.values(compiled.getBuildPlan().sources).find(
+         (s) => s.name === "monthly",
+      );
+      expect(downstream).toBeDefined();
+      const sql = downstream!.getSQL({ virtualMap: buildVirtualMap([parent]) });
+      expect(sql).toContain("daily__mabc");
+   });
+
+   it("without the intermediate the same downstream does not compile — the shape miss the lift exists to remove", async () => {
+      const model = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText,
+         destinationName: "lake",
+      });
+      await expect(compile(model, "t4-no-intermediate")).rejects.toThrow(
+         /undefined object 'daily_wide'/,
+      );
+   });
+
+   it("carries the author file's ##! flags, so a declaration compiled under them compiles here too", async () => {
+      // `include {}` needs `access_modifiers`; the author's file enabled it.
+      const gated: DerivedSourceLift = {
+         sourceName: "daily_public",
+         base: "daily",
+         refinements: [],
+         text: "daily_public is daily -> { select: * } include { public: order_date }",
+      };
+      const def =
+         "monthly is daily_public -> { group_by: order_date; aggregate: n is count() }";
+      const withFlags = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText: def,
+         destinationName: "lake",
+         derived: [gated],
+         documentFlags: ["##! experimental { persistence, access_modifiers }"],
+      });
+      expect(
+         withFlags.startsWith(
+            "##! experimental { persistence, access_modifiers }\n##! experimental { persistence virtual_source }\n",
+         ),
+      ).toBe(true);
+      await compile(withFlags, "t4-flags");
+      const withoutFlags = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText: def,
+         destinationName: "lake",
+         derived: [gated],
+      });
+      await expect(compile(withoutFlags, "t4-no-flags")).rejects.toThrow(
+         /access_modifiers/,
+      );
+   });
+});
+
+describe("buildChainedStorageBuildModel declares the author's givens", () => {
+   const parent: ServeBinding = {
+      sourceName: "daily",
+      destinationName: "lake",
+      virtualHandle: "daily_h",
+      tablePath: "daily__mabc",
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "region", type: "VARCHAR" },
+         { name: "total", type: "DOUBLE" },
+      ],
+   };
+   // The intermediate's text reads a given the downstream never touches.
+   const wide: DerivedSourceLift = {
+      sourceName: "daily_wide",
+      base: "daily",
+      refinements: [],
+      text:
+         "daily_wide is daily -> { select: * } extend {\n" +
+         "  dimension: is_focus is pick 'yes' when region = $REGION else 'no'\n}",
+   };
+   const def =
+      "monthly is daily_wide -> { aggregate: grand_total is total.sum() }";
+
+   function compile(model: string, tag: string) {
+      const conn = new DuckDBConnection("lake", ":memory:");
+      const root = `file:///${tag}/`;
+      const url = `${root}m.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, model]])),
+         connections: new FixedConnectionMap(new Map([["lake", conn]]), "lake"),
+      });
+      return runtime
+         .loadModel(new URL(url), { importBaseURL: new URL(root) })
+         .getModel();
+   }
+
+   it("a carried intermediate that reads a given compiles when the given is declared, and not otherwise", async () => {
+      const declared = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText: def,
+         destinationName: "lake",
+         derived: [wide],
+         givens: [{ name: "REGION", type: "string" }],
+      });
+      expect(declared).toContain(
+         "##! experimental { persistence virtual_source givens }\n",
+      );
+      expect(declared).toContain("given:\n  REGION :: string\n");
+      await compile(declared, "t5-givens");
+      const undeclared = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText: def,
+         destinationName: "lake",
+         derived: [wide],
+      });
+      await expect(compile(undeclared, "t5-no-givens")).rejects.toThrow(
+         /REGION/,
+      );
+   });
+
+   it("carries the author's default as a source literal", () => {
+      const model = buildChainedStorageBuildModel({
+         upstreams: [parent],
+         downstreamName: "monthly",
+         downstreamDefText: def,
+         destinationName: "lake",
+         givens: [{ name: "ORG_ID", type: "number", defaultText: "1" }],
+      });
+      expect(model).toContain("given:\n  ORG_ID :: number is 1\n");
+   });
+});
+
+describe("buildServeShapeModelForBindings carries the author files' flags", () => {
+   const binding: ServeBinding = {
+      sourceName: "daily",
+      destinationName: "lake",
+      virtualHandle: "daily_h",
+      tablePath: "daily__mabc",
+      schema: [
+         { name: "order_date", type: "DATE" },
+         { name: "total_amount", type: "DOUBLE" },
+      ],
+   };
+   const wrapper: DerivedSourceLift = {
+      sourceName: "daily_public",
+      base: "daily",
+      refinements: [],
+      text: "daily_public is daily -> { select: * } include {\n  public:\n    order_date\n    total_amount\n}",
+   };
+
+   function compile(model: string, tag: string) {
+      const conn = new DuckDBConnection("lake", ":memory:");
+      const root = `file:///${tag}/`;
+      const url = `${root}m.malloy`;
+      const runtime = new Runtime({
+         urlReader: new InMemoryURLReader(new Map([[url, model]])),
+         connections: new FixedConnectionMap(new Map([["lake", conn]]), "lake"),
+      });
+      return runtime
+         .loadModel(new URL(url), { importBaseURL: new URL(root) })
+         .getModel();
+   }
+
+   it("a lifted include {} wrapper compiles under its file's flags, and not without them", async () => {
+      const flagged = buildServeShapeModelForBindings(
+         [binding],
+         [],
+         [],
+         [wrapper],
+         ["##! experimental { persistence, access_modifiers }"],
+      ).modelText;
+      expect(
+         flagged.startsWith(
+            "##! experimental { persistence, access_modifiers }\n##! experimental.virtual_source\n",
+         ),
+      ).toBe(true);
+      await compile(flagged, "s1-flags");
+      const bare = buildServeShapeModelForBindings(
+         [binding],
+         [],
+         [],
+         [wrapper],
+      ).modelText;
+      await expect(compile(bare, "s1-no-flags")).rejects.toThrow(
+         /access_modifiers/,
+      );
+   });
+
+   it("with no flags the text is what it was", () => {
+      const { modelText } = buildServeShapeModelForBindings([binding]);
+      expect(modelText.startsWith("##! experimental.virtual_source\n")).toBe(
+         true,
+      );
+   });
+});
+
+describe("documentFlagsForLifts", () => {
+   it("collects each carried file's flags once, in first-seen order", () => {
+      const files: Record<string, string> = {
+         "file:///a.malloy":
+            "##! experimental { persistence, access_modifiers }\nsource: x is y",
+         "file:///b.malloy":
+            "##! experimental.persistence\n##! experimental { persistence, access_modifiers }\n",
+      };
+      const flags = documentFlagsForLifts(
+         [{ sourceName: "p" }, { sourceName: "q" }, { sourceName: "r" }],
+         {
+            contents: {
+               p: { location: { url: "file:///a.malloy" } },
+               q: { location: { url: "file:///b.malloy" } },
+               r: undefined,
+            },
+            fileText: (url) => files[url],
+         },
+      );
+      expect(flags).toEqual([
+         "##! experimental { persistence, access_modifiers }",
+         "##! experimental.persistence",
+      ]);
+   });
+});
+
+describe("extractRefinements carries ungrouped aggregates as measures", () => {
+   it("all(...) over a measure is a measure", () => {
+      expect(
+         extractRefinements([
+            {
+               name: "share",
+               code: "total.sum() / all(total.sum())",
+               expressionType: "ungrouped_aggregate",
+            },
+            {
+               name: "rk",
+               code: "rank()",
+               expressionType: "aggregate_analytic",
+            },
+         ]),
+      ).toEqual([
+         {
+            kind: "measure",
+            name: "share",
+            code: "total.sum() / all(total.sum())",
+         },
+      ]);
+   });
+});
+
+describe("documentFlagLines", () => {
+   it("returns the ##! lines in order and nothing else", () => {
+      const text =
+         "// header\n##! experimental.persistence\n\n##! experimental { givens, access_modifiers }\n## materialization.freshness.window = 1h\nsource: a is b\n";
+      expect(documentFlagLines(text)).toEqual([
+         "##! experimental.persistence",
+         "##! experimental { givens, access_modifiers }",
+      ]);
+   });
+});
+
+// A compiled model's `contents`, reduced to what the walk and the lift read.
+// sourceIDs are the names with an `@` suffix so a wrong lookup is visible in a
+// failure. Which names are persist sources is the PLAN's to say (the
+// `isPersisted` argument), never a definition's: `#@ persist` is inherited, a
+// plain extension or rename of a persisted source is a persist source sharing
+// the base's table, and the compiler copies the base's note onto an extension,
+// so no definition can tell an inheritor from the source that wrote the
+// annotation — and the design does not ask it to.
+const modelId = (name: string) => `${name}@m`;
+const tableDef = (name: string) => ({ sourceID: modelId(name), type: "table" });
+const persistedDef = (name: string, base: string) => ({
+   sourceID: modelId(name),
+   type: "query_source",
+   persistent: true,
+   query: { structRef: modelId(base) },
+});
+const queryDef = (name: string, base: string, joins: string[] = []) => ({
+   sourceID: modelId(name),
+   type: "query_source",
+   query: {
+      structRef: modelId(base),
+      pipeline: joins.map((j) => ({ join: "one", sourceID: modelId(j) })),
+   },
+});
+const joinField = (j: string) => ({
+   name: j,
+   join: "one",
+   sourceID: modelId(j),
+});
+/**
+ * An `extend`. Of a persisted base it inherits `persistent: true` and the
+ * base's table; `joins` are the ones it adds, `inherited` the base's it carries
+ * again on its own field list, as the compiler lays them out.
+ */
+const extendDef = (
+   name: string,
+   base: string,
+   opts: { joins?: string[]; inherited?: string[]; persistent?: boolean } = {},
+) => ({
+   sourceID: modelId(name),
+   type: "query_source",
+   extends: modelId(base),
+   ...(opts.persistent ? { persistent: true } : {}),
+   fields: [...(opts.inherited ?? []), ...(opts.joins ?? [])].map(joinField),
+});
+function modelCtx(contents: Record<string, unknown>) {
+   const sourceNameById = new Map<string, string>();
+   for (const [name, def] of Object.entries(contents)) {
+      sourceNameById.set((def as { sourceID: string }).sourceID, name);
+   }
+   return {
+      contents: contents as Parameters<
+         typeof reachedPersistedSources
+      >[0]["contents"],
+      sourceNameById,
+   };
+}
+// The walk's predicate sees a definition's `sourceID`; these fixtures use
+// `modelId(name)`, so a name list is the set of ids the plan would hold.
+const persistedIn =
+   (...names: string[]) =>
+   (_name: string, sourceID: string) =>
+      names.map(modelId).includes(sourceID);
+/** The walk's report of a stop: the model's name for it and its id. */
+const stop = (name: string) => ({ name, sourceID: modelId(name) });
+
+describe("authorModelLiftContext sees the registry's hidden dependencies", () => {
+   it("adds a hidden dependency under its declared name, namespace winning a clash", () => {
+      const ctx = authorModelLiftContext(
+         {
+            contents: {
+               weekly: {
+                  sourceID: "weekly@file:///p/orders.malloy",
+                  type: "query_source",
+                  query: { structRef: "daily@file:///p/orders.malloy" },
+               },
+            },
+            sourceRegistry: {
+               "weekly@file:///p/orders.malloy": {
+                  entry: { type: "source_registry_reference", name: "weekly" },
+               },
+               "daily@file:///p/orders.malloy": {
+                  entry: {
+                     type: "query_source",
+                     as: "daily",
+                     name: "QuerySource-uuid",
+                     sourceID: "daily@file:///p/orders.malloy",
+                     query: { structRef: "t@file:///p/orders.malloy" },
+                  },
+               },
+               "t@file:///p/orders.malloy": {
+                  entry: {
+                     type: "sql_select",
+                     as: "t",
+                     name: "sql://x",
+                     sourceID: "t@file:///p/orders.malloy",
+                  },
+               },
+               "weekly@file:///p/other.malloy": {
+                  entry: {
+                     type: "query_source",
+                     as: "weekly",
+                     name: "QuerySource-other",
+                     sourceID: "weekly@file:///p/other.malloy",
+                  },
+               },
+            },
+         },
+         () => undefined,
+      );
+      expect(Object.keys(ctx.contents).sort()).toEqual([
+         "daily",
+         "t",
+         "weekly",
+      ]);
+      expect(ctx.sourceNameById.get("daily@file:///p/orders.malloy")).toBe(
+         "daily",
+      );
+      expect(ctx.sourceNameById.get("weekly@file:///p/orders.malloy")).toBe(
+         "weekly",
+      );
+      expect(
+         ctx.sourceNameById.get("weekly@file:///p/other.malloy"),
+      ).toBeUndefined();
+   });
+});
+
+describe("reachedPersistedSources through an import", () => {
+   it("stops at a hidden-dependency persist source the registry carries", () => {
+      const ctx = authorModelLiftContext(
+         {
+            contents: {
+               weekly: {
+                  sourceID: "weekly@file:///p/orders.malloy",
+                  type: "query_source",
+                  persistent: true,
+                  query: { structRef: "daily@file:///p/orders.malloy" },
+               },
+            },
+            sourceRegistry: {
+               "daily@file:///p/orders.malloy": {
+                  entry: {
+                     type: "query_source",
+                     as: "daily",
+                     persistent: true,
+                     sourceID: "daily@file:///p/orders.malloy",
+                     query: { structRef: "t@file:///p/orders.malloy" },
+                  },
+               },
+               "t@file:///p/orders.malloy": {
+                  entry: {
+                     type: "sql_select",
+                     as: "t",
+                     sourceID: "t@file:///p/orders.malloy",
+                  },
+               },
+            },
+         },
+         () => undefined,
+      );
+      const out = reachedPersistedSources(
+         ctx,
+         "weekly",
+         (_n, id) => id.startsWith("daily@") || id.startsWith("weekly@"),
+      );
+      expect(out.persisted).toEqual([
+         { name: "daily", sourceID: "daily@file:///p/orders.malloy" },
+      ]);
+      expect(out.raw).toBe(false);
+   });
+
+   it("an id with no definition that the plan knows as a persist source is a stop, and a raw leaf never carries the model URL", () => {
+      const c = modelCtx({
+         monthly: {
+            sourceID: modelId("monthly"),
+            type: "query_source",
+            persistent: true,
+            query: { structRef: "weekly@file:///srv/models/orders.malloy" },
+         },
+      });
+      const stop = reachedPersistedSources(c, "monthly", (_n, id) =>
+         id.startsWith("weekly@"),
+      );
+      expect(stop).toMatchObject({
+         persisted: [
+            {
+               name: "weekly",
+               sourceID: "weekly@file:///srv/models/orders.malloy",
+            },
+         ],
+         raw: false,
+      });
+      const raw = reachedPersistedSources(c, "monthly", () => false);
+      expect(raw.raw).toBe(true);
+      expect(raw.rawLeaves).toEqual(["weekly"]);
+      expect(JSON.stringify(raw)).not.toContain("file:///");
+   });
+});
+
+describe("buildOverTiers", () => {
+   const retryOn = (e: unknown) => e instanceof MaterializationEligibilityError;
+   const binding = (refinements: SourceRefinement[]): ServeBinding => ({
+      sourceName: "daily",
+      destinationName: "lake",
+      virtualHandle: "daily_h",
+      tablePath: "daily__m",
+      schema: [{ name: "total", type: "DOUBLE" }],
+      refinements,
+   });
+   const all: SourceRefinement[] = [
+      { kind: "filter", code: "total > 60" },
+      {
+         kind: "join",
+         name: "r",
+         keyword: "join_one",
+         text: "r is regions on true",
+         dependsOn: "regions",
+      },
+      { kind: "dimension", name: "big", code: "total > 150" },
+      { kind: "view", name: "v", text: "v is { group_by: r.name }" },
+   ];
+
+   it("tries each distinct tier, richest first, and returns the first that succeeds", async () => {
+      const seen: string[][] = [];
+      const out = await buildOverTiers(
+         [binding(all)],
+         REFINEMENT_TIER_KINDS,
+         async ([p]) => {
+            const kinds = (p.refinements ?? []).map((r) => r.kind);
+            seen.push(kinds);
+            if (kinds.includes("view")) {
+               throw new MaterializationEligibilityError({
+                  message: "undefined r",
+               });
+            }
+            return kinds.join(",");
+         },
+         retryOn,
+      );
+      expect(out).toBe("filter,join,dimension");
+      expect(seen).toEqual([
+         ["filter", "join", "dimension", "view"],
+         ["filter", "join", "dimension"],
+      ]);
+   });
+
+   it("every tier keeps the filter, and the floor's error is the one thrown", async () => {
+      const seen: string[][] = [];
+      await expect(
+         buildOverTiers(
+            [binding(all)],
+            REFINEMENT_TIER_KINDS,
+            async ([p]) => {
+               const kinds = (p.refinements ?? []).map((r) => r.kind);
+               seen.push(kinds);
+               throw new MaterializationEligibilityError({
+                  message: `tier ${seen.length}`,
+               });
+            },
+            retryOn,
+         ),
+      ).rejects.toThrow("tier 4");
+      expect(seen.every((k) => k.includes("filter"))).toBe(true);
+      expect(seen[seen.length - 1]).toEqual(["filter"]);
+   });
+
+   it("skips a tier that changes nothing, and passes an unrecognized error through at once", async () => {
+      let attempts = 0;
+      await expect(
+         buildOverTiers(
+            [binding([{ kind: "filter", code: "total > 60" }])],
+            REFINEMENT_TIER_KINDS,
+            async () => {
+               attempts++;
+               throw new MaterializationEligibilityError({ message: "no" });
+            },
+            retryOn,
+         ),
+      ).rejects.toThrow("no");
+      expect(attempts).toBe(1);
+      attempts = 0;
+      await expect(
+         buildOverTiers(
+            [binding(all)],
+            REFINEMENT_TIER_KINDS,
+            async () => {
+               attempts++;
+               throw new Error("connection refused");
+            },
+            retryOn,
+         ),
+      ).rejects.toThrow("connection refused");
+      expect(attempts).toBe(1);
+   });
+});
+
+describe("liftDerivedSources candidateNames", () => {
+   it("lifts only the named candidates, leaving the rest as bases", () => {
+      const loc = {
+         url: "file:///m.malloy",
+         range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 4 },
+         },
+      };
+      const contents = {
+         daily: persistedDef("daily", "orders"),
+         hidden_wide: { ...queryDef("hidden_wide", "daily"), location: loc },
+         public_wide: { ...queryDef("public_wide", "daily"), location: loc },
+      };
+      const ctx = {
+         ...modelCtx(contents),
+         shapeSourceNames: new Set(["daily"]),
+         liftText: () => "x is daily -> { select: * }",
+      } as Parameters<typeof liftDerivedSources>[0];
+      expect(
+         liftDerivedSources(ctx)
+            .map((l) => l.sourceName)
+            .sort(),
+      ).toEqual(["hidden_wide", "public_wide"]);
+      expect(
+         liftDerivedSources({
+            ...ctx,
+            candidateNames: new Set(["public_wide"]),
+         }).map((l) => l.sourceName),
+      ).toEqual(["public_wide"]);
+   });
+});
+
+describe("liftDerivedSources through an inline parenthesized extend", () => {
+   // `hits is (daily extend { join_one: r is regions_kept … }) -> { … }`: the
+   // compiler embeds the parenthesized source as the structRef, with `extends`
+   // and its join fields but no sourceID of its own.
+   const inlineExtend = (base: string, joins: string[]) => ({
+      type: "query_source",
+      extends: modelId(base),
+      fields: joins.map((j) => ({ as: j, join: "one", sourceID: modelId(j) })),
+   });
+   const hitsDef = (joins: string[]) => ({
+      sourceID: modelId("hits"),
+      type: "query_source",
+      location: {
+         url: "file:///m.malloy",
+         range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 4 },
+         },
+      },
+      query: { structRef: inlineExtend("daily", joins), pipeline: [] },
+   });
+   const ctx = (contents: Record<string, unknown>, shape: string[]) => ({
+      ...modelCtx(contents),
+      shapeSourceNames: new Set(shape),
+      liftText: () =>
+         "hits is (daily extend { join_one: r is regions_kept on true }) -> { group_by: x }",
+   });
+
+   it("is carried when the inline base and its joins are all on the shape", () => {
+      const lifts = liftDerivedSources(
+         ctx(
+            {
+               daily: persistedDef("daily", "orders"),
+               regions_kept: persistedDef("regions_kept", "regions"),
+               hits: hitsDef(["regions_kept"]),
+            },
+            ["daily", "regions_kept"],
+         ) as Parameters<typeof liftDerivedSources>[0],
+      );
+      expect(lifts.map((l) => l.sourceName)).toEqual(["hits"]);
+      expect(lifts[0]?.base).toBe("daily");
+   });
+
+   it("is left off when a join the inline base declares is not on the shape", () => {
+      const lifts = liftDerivedSources(
+         ctx(
+            {
+               daily: persistedDef("daily", "orders"),
+               regions: tableDef("regions"),
+               hits: hitsDef(["regions"]),
+            },
+            ["daily"],
+         ) as Parameters<typeof liftDerivedSources>[0],
+      );
+      expect(lifts).toEqual([]);
+   });
+});
+
+describe("reachedPersistedSources", () => {
+   it("stops at the first persist source on each path, through any number of intermediates", () => {
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         daily: persistedDef("daily", "orders"),
+         daily_wide: queryDef("daily_wide", "daily"),
+         daily_wider: extendDef("daily_wider", "daily_wide"),
+         monthly: persistedDef("monthly", "daily_wider"),
+      });
+      expect(
+         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+      ).toEqual({
+         persisted: [stop("daily")],
+         raw: false,
+         rawLeaves: [],
+         rawVia: [],
+         visited: ["daily_wider", "daily_wide", "daily"],
+      });
+   });
+
+   it("stops at an extension of a persisted source under its own name, leaving the table to the caller", () => {
+      // `daily_regional is daily extend { … }` is a persist source in the plan
+      // (it inherits the annotation) and shares `daily`'s table. The walk
+      // records the name it reached; which table that is, and whether it is
+      // present, is answered from the plan's address groups.
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         daily: persistedDef("daily", "orders"),
+         daily_regional: extendDef("daily_regional", "daily", {
+            persistent: true,
+         }),
+         monthly: persistedDef("monthly", "daily_regional"),
+      });
+      expect(
+         reachedPersistedSources(
+            c,
+            "monthly",
+            persistedIn("daily", "daily_regional", "monthly"),
+         ),
+      ).toMatchObject({ persisted: [stop("daily_regional")], raw: false });
+   });
+
+   it("follows the joins an extension adds, which its table does not hold, and reports raw by them", () => {
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         regions: tableDef("regions"),
+         daily: persistedDef("daily", "orders"),
+         daily_regional: extendDef("daily_regional", "daily", {
+            joins: ["regions"],
+            persistent: true,
+         }),
+         monthly: persistedDef("monthly", "daily_regional"),
+      });
+      expect(
+         reachedPersistedSources(
+            c,
+            "monthly",
+            persistedIn("daily", "daily_regional", "monthly"),
+         ),
+      ).toEqual({
+         persisted: [stop("daily_regional")],
+         raw: true,
+         rawLeaves: ["regions"],
+         rawVia: ["daily_regional"],
+         visited: ["daily_regional", "regions"],
+      });
+   });
+
+   it("does not follow a join the extension inherits, which its base's table already answers for", () => {
+      // The base's join appears on the extension's field list too; it is the
+      // base's to account for, and the base is a stored table.
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         regions: tableDef("regions"),
+         daily: {
+            ...persistedDef("daily", "orders"),
+            fields: [joinField("regions")],
+         },
+         ext: extendDef("ext", "daily", {
+            inherited: ["regions"],
+            persistent: true,
+         }),
+         monthly: persistedDef("monthly", "ext"),
+      });
+      expect(
+         reachedPersistedSources(
+            c,
+            "monthly",
+            persistedIn("daily", "ext", "monthly"),
+         ),
+      ).toMatchObject({ persisted: [stop("ext")], raw: false });
+   });
+
+   it("collects every persist source an intermediate joins", () => {
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         daily: persistedDef("daily", "orders"),
+         sites: persistedDef("sites", "orders"),
+         joined: extendDef("joined", "daily", { joins: ["sites"] }),
+         monthly: persistedDef("monthly", "joined"),
+      });
+      expect(
+         reachedPersistedSources(
+            c,
+            "monthly",
+            persistedIn("daily", "sites", "monthly"),
+         ),
+      ).toMatchObject({
+         persisted: [stop("daily"), stop("sites")],
+         raw: false,
+      });
+   });
+
+   it("walks into a reference carried as the embedded definition", () => {
+      // `monthly is (daily extend { … }) -> { … }`: the inline extension has no
+      // name of its own, but its definition is embedded whole and reads `daily`.
+      const inline = extendDef("daily_inline", "daily", { persistent: true });
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         daily: persistedDef("daily", "orders"),
+         monthly: {
+            ...persistedDef("monthly", "daily"),
+            query: { structRef: { ...inline, sourceID: "anon" } },
+         },
+      });
+      expect(
+         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+      ).toMatchObject({ persisted: [stop("daily")], raw: false });
+   });
+
+   it("does not stop at the root, which is persisted by definition", () => {
+      const c = modelCtx({
+         orders: tableDef("orders"),
+         daily: persistedDef("daily", "orders"),
+      });
+      expect(
+         reachedPersistedSources(c, "daily", persistedIn("daily")),
+      ).toMatchObject({ persisted: [], raw: true, rawLeaves: ["orders"] });
+   });
+
+   it("treats a reference with no identity at all as raw", () => {
+      const c = modelCtx({
+         daily: persistedDef("daily", "orders"),
+         monthly: {
+            ...persistedDef("monthly", "daily"),
+            query: { structRef: 42 },
+         },
+      });
+      expect(
+         reachedPersistedSources(c, "monthly", persistedIn("daily", "monthly")),
+      ).toMatchObject({ persisted: [], raw: true });
+   });
+});
+
+describe("missingPersistedTables", () => {
+   const groups = {
+      daily: ["daily", "daily_regional", "renamed"],
+      daily_regional: ["daily", "daily_regional", "renamed"],
+      renamed: ["daily", "daily_regional", "renamed"],
+   };
+   it("a name's table is present when any name sharing it is bound", () => {
+      expect(
+         missingPersistedTables(["daily_regional"], groups, new Set(["daily"])),
+      ).toEqual([]);
+   });
+   it("and missing when none is", () => {
+      expect(
+         missingPersistedTables(["daily_regional", "sites"], groups, new Set()),
+      ).toEqual(["daily_regional", "sites"]);
+   });
+   it("a name in no group is its own table", () => {
+      expect(
+         missingPersistedTables(["sites"], groups, new Set(["sites"])),
+      ).toEqual([]);
+   });
+});
+
+describe("liftDerivedSources carrying a persist source that extends another", () => {
+   const contents = {
+      orders: tableDef("orders"),
+      daily: persistedDef("daily", "orders"),
+      daily_regional: extendDef("daily_regional", "daily", {
+         persistent: true,
+      }),
+   };
+   const ctx = {
+      ...modelCtx(contents),
+      shapeSourceNames: new Set(["daily"]),
+      liftText: () => "unused",
+   };
+
+   it("is left off by default, as the serve path binds it as an alias", () => {
+      expect(liftDerivedSources(ctx).map((l) => l.sourceName)).toEqual([]);
+   });
+
+   it("is carried over its base when asked, as the base plus what it adds", () => {
+      const lifts = liftDerivedSources({
+         ...ctx,
+         carryPersistExtensions: true,
+      });
+      expect(lifts.map((l) => [l.sourceName, l.base])).toEqual([
+         ["daily_regional", "daily"],
+      ]);
    });
 });
 

@@ -81,7 +81,7 @@ Do not hedge measured facts: `avg_energy is avg(energy)` needs no caveat. Hedge 
 
 `#(filter)` is also a `#(...)`-shaped annotation, but unlike `#(doc)` it's a **runtime/modeling construct**: it shapes governance, query latency, and correctness, not discoverability. How to read and migrate an existing one lives in `malloy-model` § Legacy: reading an existing `#(filter)` model.
 
-One rule worth knowing here: filters live on the source, never on the consumer. Ad-hoc reports and notebooks that import a source inherit its givens automatically; they do not (and cannot) declare new ones.
+One rule worth knowing here: a filter the model reads lives on the source, never on the consumer. Ad-hoc reports and notebooks that import a source inherit its givens automatically, and import them by name rather than re-declaring them. A notebook or dashboard may declare a `given:` of its own for a control only its own tiles read, and nothing else.
 
 ## `internal:` and `private:`: column-level access in a source
 

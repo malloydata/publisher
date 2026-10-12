@@ -10,6 +10,7 @@ import {
    DEFAULT_MAX_CONCURRENT_QUERIES,
    DEFAULT_MAX_QUERY_ROWS,
    DEFAULT_MAX_RESPONSE_BYTES,
+   DEFAULT_POSTGRES_POOL_MAX,
    DEFAULT_QUERY_ROW_LIMIT,
    DEFAULT_QUERY_TIMEOUT_MS,
    PUBLISHER_CONFIG_NAME,
@@ -123,6 +124,12 @@ export const PER_MODE_COLOR_KEYS = [
    "tile",
    "tileTitle",
    "mapColor",
+   "border",
+   "cardBorder",
+   "axis",
+   "gridline",
+   "chartText",
+   "value",
 ] as const;
 
 export type Package = {
@@ -143,9 +150,19 @@ export type Environment = {
    storageDestinations?: Connection[];
 };
 
+/** The `mcp` block of publisher.config.json: settings for the MCP server. */
+export type McpConfig = {
+   /**
+    * Offer `includeHiddenFilesAndSources` on MCP `execute_query`. Default false.
+    * See {@link isMcpIncludeHiddenFilesAndSources}.
+    */
+   includeHiddenFilesAndSources?: boolean;
+};
+
 export type PublisherConfig = {
    frozenConfig: boolean;
    theme?: Theme;
+   mcp?: McpConfig;
    retrieval?: RetrievalConfig;
    environments: Environment[];
 };
@@ -1059,6 +1076,24 @@ export const getMaxConcurrentQueries = (): number => {
 };
 
 /**
+ * Resolve the cap on open database sessions for one plain (non-proxied)
+ * Postgres connection in this process. Reads `PUBLISHER_POSTGRES_POOL_MAX`;
+ * falls back to {@link DEFAULT_POSTGRES_POOL_MAX} when unset or empty.
+ * Loud-failure on bad input, including `0`, which would leave the pool unable
+ * to open a session at all.
+ */
+export const getPostgresPoolMax = (): number => {
+   const raw = parseIntEnv("PUBLISHER_POSTGRES_POOL_MAX");
+   if (raw === undefined) return DEFAULT_POSTGRES_POOL_MAX;
+   if (raw < 1) {
+      throw new Error(
+         `PUBLISHER_POSTGRES_POOL_MAX must be a positive integer (got ${raw})`,
+      );
+   }
+   return raw;
+};
+
+/**
  * DuckDB extension-fetch policy. Governs whether Publisher's explicit extension
  * INSTALL step (see `installAndLoadExtension` in service/connection.ts) may
  * reach the DuckDB extension network.
@@ -1097,6 +1132,26 @@ export const getExtensionFetchPolicy = (): ExtensionFetchPolicy => {
       `Invalid value for EXTENSION_FETCH_POLICY: expected "on-demand" or "local-only", got "${raw}"`,
    );
 };
+
+export const ALLOW_DUCKDB_SETUP_SQL_ENV = "PUBLISHER_ALLOW_DUCKDB_SETUP_SQL";
+
+/**
+ * Whether environment-authored DuckDB connections may carry `setupSQL`. Off
+ * unless set.
+ *
+ * `setupSQL` runs arbitrary DuckDB statements when a session is set up:
+ * `COPY ... TO` a host path, `CREATE PERSISTENT SECRET` into the secret
+ * directory every DuckDB instance in the process reads, `INSTALL`/`LOAD` of
+ * community extensions. That is more than the query path can reach, and it
+ * comes from connection config, which Malloy's restricted mode never sees. It
+ * belongs only on a deployment whose connection authors are trusted with the
+ * host.
+ *
+ * Throws on an unrecognised value (see parseBoolEnv), so a misspelled opt-in
+ * fails the config load instead of reading as off.
+ */
+export const isDuckdbSetupSqlAllowed = (): boolean =>
+   parseBoolEnv(ALLOW_DUCKDB_SETUP_SQL_ENV) === true;
 
 /**
  * Where an `s3` connection may select `provider: credential_chain` — host-resolved
@@ -1481,6 +1536,14 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
       "publisher.config.json",
    );
 
+   const mcp = sanitizeMcpConfig(
+      processedConfig &&
+         typeof processedConfig === "object" &&
+         "mcp" in processedConfig
+         ? (processedConfig as { mcp: unknown }).mcp
+         : undefined,
+   );
+
    const retrieval = parseRetrievalConfig(
       processedConfig && typeof processedConfig === "object"
          ? (processedConfig as { retrieval?: unknown }).retrieval
@@ -1490,10 +1553,35 @@ export const getPublisherConfig = (serverRoot: string): PublisherConfig => {
    return {
       frozenConfig,
       ...(instanceTheme ? { theme: instanceTheme } : {}),
+      ...(mcp ? { mcp } : {}),
       ...(retrieval ? { retrieval } : {}),
       environments,
    } as PublisherConfig;
 };
+
+/**
+ * Read the `mcp` block. Like `theme`, a bad field is warned about and dropped,
+ * so it takes its default rather than failing the whole config.
+ */
+function sanitizeMcpConfig(raw: unknown): McpConfig | undefined {
+   if (raw === undefined) return undefined;
+   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      logger.warn(
+         `Invalid "mcp" in ${PUBLISHER_CONFIG_NAME}: expected an object. Ignoring.`,
+      );
+      return undefined;
+   }
+   const mcp: McpConfig = {};
+   const value = (raw as Record<string, unknown>).includeHiddenFilesAndSources;
+   if (typeof value === "boolean") {
+      mcp.includeHiddenFilesAndSources = value;
+   } else if (value !== undefined) {
+      logger.warn(
+         `Invalid "mcp.includeHiddenFilesAndSources" in ${PUBLISHER_CONFIG_NAME}: expected a boolean (got ${JSON.stringify(value)}). Ignoring field.`,
+      );
+   }
+   return Object.keys(mcp).length > 0 ? mcp : undefined;
+}
 
 /**
  * The entity cap for the semantic index: `retrieval.indexing.maxEntities`
@@ -1655,6 +1743,35 @@ export const isPublisherConfigFrozen = (serverRoot: string) => {
    } catch (error) {
       logger.error(
          `Error checking if ${PUBLISHER_CONFIG_NAME} is frozen. Defaulting to false.`,
+         { error: error instanceof Error ? error.message : String(error) },
+      );
+      return false;
+   }
+};
+
+/**
+ * Whether MCP `execute_query` offers `includeHiddenFilesAndSources`, from
+ * `mcp.includeHiddenFilesAndSources` in publisher.config.json (default false).
+ *
+ * The parameter runs what a package's index.malloy hides. An author testing a
+ * curated package needs that. An agent answering questions must stay on the
+ * curated surface, and Credible's execute_query has no such parameter. So an
+ * authoring server's config turns this on, and every other server, an eval's
+ * included, leaves it off. Off removes the parameter from the tool's schema
+ * rather than refusing it, so an agent is never offered it. REST's parameter
+ * of the same name is not affected.
+ */
+export const isMcpIncludeHiddenFilesAndSources = (
+   serverRoot: string,
+): boolean => {
+   try {
+      return (
+         getPublisherConfig(serverRoot).mcp?.includeHiddenFilesAndSources ===
+         true
+      );
+   } catch (error) {
+      logger.error(
+         `Error reading "mcp" from ${PUBLISHER_CONFIG_NAME}. Defaulting to off.`,
          { error: error instanceof Error ? error.message : String(error) },
       );
       return false;

@@ -10,7 +10,7 @@ import {
    tileByKey,
    tileOrder,
 } from "./helpers/builder";
-import { dragGrip } from "./helpers/drag";
+import { dragTile } from "./helpers/drag";
 import { saveChanges } from "./helpers/save";
 import {
    registerPackageEnv,
@@ -30,7 +30,7 @@ const PKG = "notebooks-malloyyo";
 const TOUR = "notebooks/browser_tour.malloy";
 
 const TOUR_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, second { kind=text }, third { kind=text }, "orders -> kpis", fourth { kind=text }, "orders -> by_month"] }
+## artifact { layout=linear title="Browser tour" tiles=[first { kind=text }, second { kind=text }, third { kind=text }, "orders -> kpis", fourth { kind=text }, "orders -> by_month"] }
 import "../models/orders.malloy"
 
 ##|(markdown) first
@@ -52,7 +52,7 @@ Fourth note.
 `;
 
 const AUTORUN_OFF = `##! experimental.givens
-## artifact { kind=notebook title="Autorun off" autorun=false givens { REGION=f'US' } }
+## artifact { layout=linear title="Autorun off" autorun=false givens { REGION=f'US' } }
 import "../models/orders.malloy"
 
 # label="Region" control=select suggest { source=orders dimension=region }
@@ -87,7 +87,7 @@ test.describe("notebook tiles", () => {
    });
 
    const open = async (page: Page, slug = "browser_tour") => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}?edit`);
       await editorOpen(page);
    };
 
@@ -113,9 +113,6 @@ test.describe("notebook tiles", () => {
       );
    };
 
-   const grip = (page: Page, name: string) =>
-      tileByKey(page, `text.${name}`).getByLabel(`Move ${name}`);
-
    test("a pointer drag reorders the tiles, and the file follows", async ({
       page,
    }) => {
@@ -129,14 +126,22 @@ test.describe("notebook tiles", () => {
       ]);
 
       // Third note onto the first.
-      await dragGrip(page, grip(page, "third"), tileByKey(page, "text.first"));
+      await dragTile(
+         page,
+         tileByKey(page, "text.third"),
+         tileByKey(page, "text.first"),
+      );
       await expect
          .poll(() => noteOrder(page))
          .toEqual(["third", "first", "second", "fourth"]);
       await settled(page, 2);
 
       // The page still takes a drag after one.
-      await dragGrip(page, grip(page, "fourth"), tileByKey(page, "text.first"));
+      await dragTile(
+         page,
+         tileByKey(page, "text.fourth"),
+         tileByKey(page, "text.first"),
+      );
       await expect
          .poll(() => noteOrder(page))
          .toEqual(["third", "fourth", "first", "second"]);
@@ -162,12 +167,8 @@ test.describe("notebook tiles", () => {
       await tileByKey(page, "text.second")
          .getByLabel("Settings for second")
          .click();
-      await page.getByRole("button", { name: "Remove tile" }).click();
+      await page.getByRole("button", { name: "Delete" }).click();
       await saveChanges(page);
-      // The drag-and-drop live region is a status too, so pick this one by its text.
-      await expect(
-         page.getByRole("status").filter({ hasText: "Removed 1 tile" }),
-      ).toBeVisible();
       let file = await pe.readSource(TOUR);
       expect(file).not.toContain("Second note");
       expect(file).not.toContain("second { kind=text }");
@@ -237,7 +238,7 @@ test.describe("notebook tiles", () => {
       expect(res.ok, await res.text()).toBe(true);
 
       await editText(tileByKey(page, "text.first"), "Mine.");
-      await page.getByRole("button", { name: "Save changes" }).click();
+      await page.getByRole("button", { name: "Save", exact: true }).click();
       await expect(page.getByRole("alert").first()).toBeVisible({
          timeout: 30_000,
       });
@@ -257,7 +258,7 @@ test.describe("notebook tiles", () => {
       await editorOpen(page);
       await editText(tileByKey(page, "text.first"), "Edited first.");
       await saveChanges(page);
-      await page.getByRole("button", { name: "Close", exact: true }).click();
+      await page.getByRole("button", { name: "View", exact: true }).click();
       await expect(page).toHaveURL(/\/notebooks\/browser_tour$/);
       await expect(page.getByText("Edited first.")).toBeVisible({
          timeout: 60_000,

@@ -69,6 +69,21 @@ def read_jsonl(p: pathlib.Path) -> list[dict]:
     return [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
 
 
+def fixture_attempt(prediction: dict) -> dict:
+    """The attempt a fixture's frozen prediction stands for, as run_judge
+    reads one.
+
+    The givens travel with the queries. Without them the judge is shown the
+    final query as if it ran unfiltered, and the re-execution runs it
+    unfiltered, so a fixture settled on filtered rows fails for that alone.
+    """
+    return {"answer_text": prediction.get("answer_text") or "",
+            "final_query": prediction.get("final_query") or "",
+            "queries": prediction.get("queries") or [],
+            "query_givens": prediction.get("query_givens"),
+            "final_givens": prediction.get("final_givens")}
+
+
 def gate_exit(n_fixtures: int, rows: list[dict], fails: list[dict],
               unresolved: list) -> int:
     """The exit code, with the one case a green `0/0` used to hide.
@@ -204,9 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         elif want_rev != have_rev:
             stale_pin.append((f["fixtureId"], want_rev, have_rev))
             continue
-        att = {"answer_text": f["prediction"].get("answer_text") or "",
-               "final_query": f["prediction"].get("final_query") or "",
-               "queries": f["prediction"].get("queries") or []}
+        att = fixture_attempt(f["prediction"])
         got = []
         for _ in range(a.repeat):
             # Fresh artifact root per judgement: run_judge caches the

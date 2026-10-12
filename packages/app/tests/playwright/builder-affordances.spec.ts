@@ -50,21 +50,21 @@ test.describe("builder affordances", () => {
          "dashboards-test",
          { "dashboards/solo.malloy": SOLO_DASHBOARD },
       );
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/solo/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/solo?edit`);
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       const tile = page.getByLabel("Tile order_tile");
       await expect(tile).toBeVisible();
 
       await page.getByRole("button", { name: /^Settings for / }).click();
-      const remove = page.getByRole("button", { name: "Remove tile" });
+      const remove = page.getByRole("button", { name: "Delete" });
       await expect(remove).toHaveAttribute("aria-disabled", "true");
       await expect(
-         page.getByText("A saved dashboard needs at least one tile."),
+         page.getByText("A saved report needs at least one tile."),
       ).toBeVisible();
       await expect(remove).toHaveAccessibleDescription(
-         "A saved dashboard needs at least one tile.",
+         "A saved report needs at least one tile.",
       );
 
       // Refused, not ignored: the click changes nothing.
@@ -82,8 +82,8 @@ test.describe("builder affordances", () => {
          "notebooks-malloyyo",
       );
       await page.setViewportSize({ width: 1280, height: 720 });
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/layout/edit`);
-      await expect(page.getByText("Editing", { exact: true })).toBeVisible({
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/layout?edit`);
+      await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
       await page.getByRole("button", { name: "Add tile", exact: true }).click();
@@ -98,7 +98,7 @@ test.describe("builder affordances", () => {
       expect(box!.y + box!.height).toBeLessThanOrEqual(720);
    });
 
-   test("an empty package offers New artifact, which opens the create dialog on the kind picked", async ({
+   test("an empty package offers New report, which opens the create dialog on the linear layout", async ({
       page,
    }, testInfo) => {
       pe = await registerPackageEnv(
@@ -115,17 +115,19 @@ test.describe("builder affordances", () => {
          ],
       );
       await page.goto(`/${pe.env}/${pe.pkg}`);
-      await expect(page.getByText("No artifacts yet")).toBeVisible({
+      await expect(page.getByText("No reports yet")).toBeVisible({
          timeout: 60_000,
       });
-      await page.getByRole("button", { name: "New artifact" }).click();
-      await page.getByRole("menuitem", { name: "Notebook" }).click();
-      await expect(
-         page.getByRole("dialog", { name: "New notebook" }),
-      ).toBeVisible();
+      // The empty row's action and the heading's are the same New report.
+      await page.getByRole("button", { name: "New report" }).last().click();
+      const dialog = page.getByRole("dialog", { name: "New report" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("combobox", { name: "Layout" })).toHaveText(
+         /Linear/,
+      );
    });
 
-   test("the Artifacts heading row carries New, whichever kind the package already has", async ({
+   test("the Reports heading row carries New report, whichever layout the package already has", async ({
       page,
    }, testInfo) => {
       pe = await registerPackageEnv(
@@ -137,12 +139,13 @@ test.describe("builder affordances", () => {
          ["dashboards"],
       );
       await page.goto(`/${pe.env}/${pe.pkg}`);
-      const section = page.getByRole("region", { name: "Artifacts" });
+      const section = page.getByRole("region", { name: "Reports" });
       await expect(section).toBeVisible({ timeout: 60_000 });
-      await section.getByRole("button", { name: "New", exact: true }).click();
-      await page.getByRole("menuitem", { name: "Dashboard" }).click();
+      await section
+         .getByRole("button", { name: "New report", exact: true })
+         .click();
       await expect(
-         page.getByRole("dialog", { name: "New dashboard" }),
+         page.getByRole("dialog", { name: "New report" }),
       ).toBeVisible();
    });
 });

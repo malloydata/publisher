@@ -4,7 +4,12 @@
 import type { GivenValue } from "@malloydata/malloy";
 import { BadRequestError } from "../errors";
 import { EnvironmentStore } from "../service/environment_store";
+import type { CompiledDocument } from "../service/compile_document";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";
+import {
+   withLegacyDocumentKind,
+   type LegacyKind,
+} from "../service/legacy_report_views";
 
 export class CompileController {
    private environmentStore: EnvironmentStore;
@@ -21,7 +26,12 @@ export class CompileController {
       includeSql: boolean = false,
       givens?: Record<string, GivenValue>,
       scope: CompileScope = "append",
-   ): Promise<{ status: string; problems: TaggedLogMessage[]; sql?: string }> {
+   ): Promise<{
+      status: string;
+      problems: TaggedLogMessage[];
+      sql?: string;
+      document?: CompiledDocument & { kind: LegacyKind };
+   }> {
       // A JSON body can send an object with its own `length`, which the text readers would loop to.
       let text: string | undefined;
       if (typeof source === "string") text = source;
@@ -31,7 +41,7 @@ export class CompileController {
          environmentName,
          false,
       );
-      const { problems, sql } = await environment.compileSource(
+      const { problems, sql, document } = await environment.compileSource(
          packageName,
          modelName,
          text,
@@ -47,6 +57,11 @@ export class CompileController {
          status: hasErrors ? "error" : "success",
          problems: problems,
          ...(sql !== undefined && { sql }),
+         // DEPRECATED: `document.kind`, the layout in the old vocabulary, which
+         // existing callers of this route read.
+         ...(document !== undefined && {
+            document: withLegacyDocumentKind(document),
+         }),
       };
    }
 }

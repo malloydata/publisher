@@ -163,6 +163,9 @@ class WriteContract(unittest.TestCase):
             ledger.event("score", qid="q1", sample=0, phase="baseline",
                          verdict="probably", reason="r")
 
+    # DEPRECATED FEATURE COVERAGE -- delete together with `filterParams`
+    # (see RELEASE_NOTES deprecations). The givens test below is the current
+    # form.
     def test_a_tool_call_records_the_filters_it_ran_under(self):
         """`query`, `modelPath` and `filterParams` are one fact about one call.
 
@@ -177,6 +180,17 @@ class WriteContract(unittest.TestCase):
                          modelPath="a.malloy",
                          filterParams={"report_id": "123"})
         self.assertEqual(e["filterParams"], {"report_id": "123"})
+
+    def test_a_tool_call_and_an_attempt_may_carry_givens(self):
+        g = {"region": "West"}
+        e = ledger.event("tool_call", qid="q1", sample=0, phase="baseline",
+                         tool="execute_query", query="run: x -> y",
+                         modelPath="a.malloy", givens=g)
+        self.assertEqual(e["givens"], g)
+        e = ledger.event("attempt", qid="q1", sample=0, phase="baseline",
+                         submitted=True, final_query="run: x -> y",
+                         answer_text="a", transcriptPath="t", final_givens=g)
+        self.assertEqual(e["final_givens"], g)
 
     def test_an_attempt_may_carry_cache_write_tokens(self):
         # The fourth token column. Without it the ledger held a cache-inclusive
