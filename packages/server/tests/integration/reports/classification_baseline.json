@@ -95,7 +95,6 @@
             "kind": "dashboard",
             "title": "Grid",
             "description": "Two cards over two tiles.",
-            "query": "grid",
             "dashboardColumns": 12,
             "autorun": true,
             "givens": [
@@ -111,6 +110,13 @@
                      "dimension": "brand"
                   }
                }
+            ],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "grid",
+                  "givenNames": ["BRAND"]
+               }
             ]
          },
          "overview": {
@@ -120,7 +126,6 @@
             "kind": "dashboard",
             "title": "Business Overview",
             "description": "Order health at a glance.",
-            "query": "overview",
             "dashboardColumns": 6,
             "autorun": true,
             "givens": [
@@ -145,6 +150,13 @@
                   "rangeMin": 0,
                   "rangeMax": 500
                }
+            ],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "overview",
+                  "givenNames": ["BRAND", "MIN_AMOUNT"]
+               }
             ]
          },
          "regions": {
@@ -153,7 +165,6 @@
             "path": "dashboards/regions.malloy",
             "kind": "dashboard",
             "title": "Orders by region",
-            "query": "regions",
             "startingGivens": {
                "REGION": "US"
             },
@@ -170,6 +181,13 @@
                      "query": "region_suggest",
                      "dimension": "region"
                   }
+               }
+            ],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "regions",
+                  "givenNames": ["REGION"]
                }
             ]
          },
@@ -456,7 +474,6 @@
             "path": "dashboards/unlisted.malloy",
             "kind": "dashboard",
             "title": "Unlisted",
-            "query": "unlisted",
             "autorun": true,
             "givens": [
                {
@@ -466,6 +483,13 @@
                   "annotations": [],
                   "label": "Brand"
                }
+            ],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "unlisted",
+                  "givenNames": ["BRAND"]
+               }
             ]
          },
          "w1.9": {
@@ -474,7 +498,6 @@
             "path": "dashboards/w1.9.malloy",
             "kind": "dashboard",
             "title": "Withheld And Unconventional",
-            "query": "withheld_unconventional",
             "autorun": true,
             "givens": [
                {
@@ -483,6 +506,13 @@
                   "default": "",
                   "annotations": [],
                   "label": "Brand"
+               }
+            ],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "withheld_unconventional",
+                  "givenNames": ["BRAND"]
                }
             ]
          }
@@ -500,7 +530,7 @@
             "message": "\"queryableSources\" in publisher.json does nothing. Fix: delete it."
          },
          {
-            "message": "\"explores\" in publisher.json is deprecated. Fix: add an index.malloy at the package root that imports orders.malloy and exports the sources you want to publish, then delete \"explores\"."
+            "message": "\"explores\" in publisher.json is deprecated. Fix: add an index.malloy at the package root that imports orders.malloy and dashboards/listed.malloy and exports the sources you want to publish, then delete \"explores\"."
          }
       ],
       "models": [
@@ -551,9 +581,15 @@
             "path": "dashboards/a#b.malloy",
             "kind": "dashboard",
             "title": "Hash In Name",
-            "query": "hash_in_name",
             "autorun": true,
-            "givens": []
+            "givens": [],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "hash_in_name",
+                  "givenNames": []
+               }
+            ]
          },
          "broken": {
             "packageName": "dashboards-lint",
@@ -590,7 +626,6 @@
             "path": "dashboards/overview.malloy",
             "kind": "dashboard",
             "title": "Overview",
-            "query": "overview",
             "autorun": true,
             "givens": [
                {
@@ -604,6 +639,13 @@
                      "query": "nowhere"
                   }
                }
+            ],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "overview",
+                  "givenNames": ["BRAND"]
+               }
             ]
          },
          "p%q": {
@@ -612,9 +654,15 @@
             "path": "dashboards/p%q.malloy",
             "kind": "dashboard",
             "title": "Percent In Name",
-            "query": "percent_in_name",
             "autorun": true,
-            "givens": []
+            "givens": [],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "percent_in_name",
+                  "givenNames": []
+               }
+            ]
          },
          "v1.2": {
             "packageName": "dashboards-lint",
@@ -622,9 +670,15 @@
             "path": "dashboards/v1.2.malloy",
             "kind": "dashboard",
             "title": "Versioned",
-            "query": "versioned",
             "autorun": true,
-            "givens": []
+            "givens": [],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "versioned",
+                  "givenNames": []
+               }
+            ]
          }
       },
       "notebooks": [
@@ -822,9 +876,15 @@
             "path": "dashboards/hidden.malloy",
             "kind": "dashboard",
             "title": "Hidden",
-            "query": "hidden",
             "autorun": true,
-            "givens": []
+            "givens": [],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "hidden",
+                  "givenNames": []
+               }
+            ]
          },
          "overview": {
             "packageName": "dashboards-convention",
@@ -832,9 +892,15 @@
             "path": "dashboards/overview.malloy",
             "kind": "dashboard",
             "title": "Overview",
-            "query": "overview",
             "autorun": true,
-            "givens": []
+            "givens": [],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "overview",
+                  "givenNames": []
+               }
+            ]
          },
          "tiles": {
             "packageName": "dashboards-convention",
@@ -874,7 +940,7 @@
          {
             "model": "dashboards/hidden.malloy",
             "subject": "hidden",
-            "message": "Dashboard hidden reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.",
+            "message": "Tile hidden on dashboard hidden reads orders_staging, which index.malloy doesn't export, so it won't load. Fix: add orders_staging to the export { ... } in index.malloy.",
             "severity": "error"
          },
          {
@@ -1712,9 +1778,15 @@
             "path": "dashboards/runs.malloy",
             "kind": "dashboard",
             "title": "Runs",
-            "query": "tile",
             "autorun": true,
-            "givens": []
+            "givens": [],
+            "tiles": [
+               {
+                  "kind": "query",
+                  "query": "tile",
+                  "givenNames": []
+               }
+            ]
          }
       },
       "notebooks": [

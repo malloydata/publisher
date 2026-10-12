@@ -3,18 +3,14 @@
 
 import {
    encodeResourceUri,
-   type DashboardEvent,
    Loading,
    LOADING_COPY,
    NarrowEditGate,
+   type ReportLayout,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
-import type { NotebookEvent } from "@malloy-publisher/sdk/builder";
-import {
-   logDashboardEvent,
-   logNotebookEvent,
-} from "../../../utils/consoleTelemetry";
+import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
 
 /**
@@ -23,9 +19,9 @@ import { useLeaveGuard } from "../useLeaveGuard";
  * of every other page's chunk and downloads the first time someone opens a
  * report for editing.
  */
-const DashboardEditor = React.lazy(() =>
+const ReportEditor = React.lazy(() =>
    import("@malloy-publisher/sdk/builder").then((module) => ({
-      default: module.DashboardEditor,
+      default: module.ReportEditor,
    })),
 );
 
@@ -34,12 +30,12 @@ export interface DashboardEditPageProps {
    packageName: string;
    /** The report's package path, `sales/q3.malloy`: what the editor is keyed by. */
    path: string;
-   /** The layout the report opened with, in the legacy vocabulary; default `dashboard` (grid). */
-   kind?: "dashboard" | "notebook";
+   /** The layout the report opens with, from the listing or the host's draft; default grid. */
+   layout?: ReportLayout;
 }
 
 /**
- * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/<path>?edit`,
+ * The Console's host for the SDK `ReportEditor`: `/<env>/<pkg>/<path>?edit`,
  * either layout. View in the header returns to the report itself, the same
  * route without `?edit`.
  */
@@ -47,23 +43,14 @@ export default function DashboardEditPage({
    environmentName,
    packageName,
    path,
-   kind = "dashboard",
+   layout = "grid",
 }: DashboardEditPageProps) {
    const guard = useLeaveGuard();
-   // Telemetry keys on the path: two reports may share a basename.
-   const onEvent = useMemo(() => {
-      if (kind === "dashboard")
-         return logDashboardEvent({
-            environmentName,
-            packageName,
-            dashboardName: path,
-         }) as (event: DashboardEvent | NotebookEvent) => void;
-      return logNotebookEvent({
-         environmentName,
-         packageName,
-         notebookName: path,
-      }) as (event: DashboardEvent | NotebookEvent) => void;
-   }, [kind, environmentName, packageName, path]);
+   // Each event names the report by path and carries its layout as it stands.
+   const onEvent = useMemo(
+      () => logReportEvent({ environmentName, packageName }),
+      [environmentName, packageName],
+   );
    return (
       // The reader's page width and edges, the same for either layout, so the
       // margins do not move between modes.
@@ -72,7 +59,7 @@ export default function DashboardEditPage({
             <Suspense
                fallback={<Loading text={LOADING_COPY.opening("builder")} />}
             >
-               <DashboardEditor
+               <ReportEditor
                   // Remounts on a route change so another report starts from a fresh read.
                   key={`${environmentName}/${packageName}/${path}`}
                   resourceUri={encodeResourceUri({
@@ -80,7 +67,7 @@ export default function DashboardEditPage({
                      packageName,
                   })}
                   path={path}
-                  kind={kind}
+                  layout={layout}
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />

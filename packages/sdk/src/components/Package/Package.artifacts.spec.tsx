@@ -165,20 +165,17 @@ it("treats a 404 on the reports list as none, without an error", async () => {
    expect(screen.queryByText(/Could not list/)).toBeNull();
 });
 
-it("lists host drafts by path whatever type they are filed as, each opening its editor", async () => {
-   const draft = (
-      type: "dashboard" | "notebook",
-      path: string,
-   ): DocumentLocator => ({
+it("lists host drafts by path whatever layout they record, each opening its editor", async () => {
+   const draft = (type: "grid" | "linear", path: string): DocumentLocator => ({
       workspace: "browser",
       type,
       path: `env/pkg/${path}`,
    });
    const stored = [
-      draft("dashboard", "d-one.malloy"),
-      draft("notebook", "team/n-one.malloy"),
+      draft("grid", "d-one.malloy"),
+      draft("linear", "team/n-one.malloy"),
       // Another package's draft is not this one's.
-      { workspace: "browser", type: "dashboard", path: "env/other/x.malloy" },
+      { workspace: "browser", type: "grid", path: "env/other/x.malloy" },
    ] as DocumentLocator[];
    const storage: DocumentStorage = {
       listWorkspaces: async () => [

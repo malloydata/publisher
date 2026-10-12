@@ -1,7 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { useMemo } from "react";
 import { useParams } from "react-router-dom";
+import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { documentPath } from "../../common/documentRoutes";
 import {
    encodeResourceUri,
@@ -12,6 +14,15 @@ import {
 function PackagePage() {
    const { environmentName, packageName } = useParams();
    const navigate = useRouterClickHandler();
+   // What the New report dialog created, or why it could not.
+   const onEvent = useMemo(
+      () =>
+         logReportEvent({
+            environmentName: environmentName ?? "",
+            packageName: packageName ?? "",
+         }),
+      [environmentName, packageName],
+   );
    if (!environmentName) {
       return (
          <div>
@@ -33,7 +44,7 @@ function PackagePage() {
          <Package
             onClickPackageFile={navigate}
             // The Console decides where reading and editing live: the
-            // report's path route, and the builder one segment under it.
+            // report's path route, and the builder at that route with `?edit`.
             onOpenDocument={({ path, mode }, event) =>
                navigate(
                   documentPath(environmentName, packageName, path, mode),
@@ -41,6 +52,7 @@ function PackagePage() {
                )
             }
             resourceUri={resourceUri}
+            onEvent={onEvent}
          />
       );
    }

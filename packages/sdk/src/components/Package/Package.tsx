@@ -20,7 +20,7 @@ import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
-import { chooseWorkspace } from "../DashboardBuilder/documentSession";
+import { chooseWorkspace } from "../ReportBuilder/documentSession";
 import { createRoute, type CreateTarget } from "../DocumentCreate";
 import type {
    DocumentLocator,
@@ -30,6 +30,7 @@ import { useOptionalDocumentStorage } from "../DocumentStorage/DocumentStoragePr
 import { Report } from "../Report";
 import { useServer } from "../ServerProvider";
 import { NewDocumentDialog } from "./NewDocumentDialog";
+import type { ReportEventHandler } from "../Report/telemetry";
 import { DataSchemaDialog, formatRowCount } from "./DataSchemaDialog";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { serverBaseUrl } from "../../utils/dataAppEmbed";
@@ -40,16 +41,17 @@ import ContentTypeIcon, {
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
 import { PackageSection } from "../PackageSection";
+import { draftKey } from "../DocumentCreate/documentPath";
 import {
    documentSlug,
-   kindOfLayout,
+   listedLayout,
    reportEditRoute,
    reportRoute,
-   type DocumentKind,
    type ListedReport,
    type ReportLayout,
 } from "./documentLocation";
-import { fetchReportListing, reportsQueryKey } from "./useDocumentLocation";
+import { invalidateReportQueries } from "./reportQueries";
+import { useReportListing } from "./useDocumentLocation";
 
 /**
  * The pinned README: a report at the package root whose basename is README,
@@ -62,17 +64,11 @@ const isRootReadme = (path: string | undefined) =>
    !path.includes("/") &&
    documentSlug(path)?.toLowerCase() === "readme";
 
-/** Drafts are keyed by the report's path under the package: `<env>/<pkg>/<path>`. */
-const draftPrefix = (environmentName: string, packageName: string) =>
-   `${environmentName}/${packageName}/`;
-
 /** A report the package page asks its host to open, and how. */
 export interface OpenDocumentRequest {
    /** The report's package path, `sales/q3.malloy`: its identity, and how to open it. */
    path: string;
    layout: ReportLayout;
-   /** @deprecated The layout's legacy name; read `layout`. */
-   kind: DocumentKind;
    /** @deprecated The basename, a label only: two reports may share it. Open by `path`. */
    slug: string;
    /** `edit` for a document just created or a draft picked up; `view` otherwise. */
@@ -92,12 +88,15 @@ interface PackageProps {
       event?: React.MouseEvent,
    ) => void;
    resourceUri: string;
+   /** What the New report dialog creates, or why it could not; see `ReportEvent`. */
+   onEvent?: ReportEventHandler;
 }
 
 export default function Package({
    onClickPackageFile,
    onOpenDocument,
    resourceUri,
+   onEvent,
 }: PackageProps) {
    const { apiClients, server, mutable } = useServer();
    const queryClient = useQueryClient();
@@ -124,8 +123,9 @@ export default function Package({
    const [creating, setCreating] = useState(false);
    const narrow = useNarrowScreen();
 
-   // Reports the host keeps for this package and the package does not have: the builder's drafts, listed so they are found rather than
-   // stumbled on.
+   // Every report the host keeps for this package in a writeable workspace: the
+   // builder's drafts, both of reports the package does not have yet and of
+   // reports it does, listed so they are found rather than stumbled on.
    // Each carries the workspace's own description, because where a document is
    // kept is the backend's to say and only one host's answer is "this browser".
    const storage = useOptionalDocumentStorage()?.documentStorage;
@@ -149,14 +149,11 @@ export default function Package({
       }
       setWorkspace({ state: "ready", chosen: chooseWorkspace(workspaces) });
       const found: { locator: DocumentLocator; where: string }[] = [];
-      // One listing per workspace, every type: a draft is found by its path under this package, whatever layout it was filed as.
+      // One listing per workspace, every layout: a draft is found by its path under this package.
+      const prefix = draftKey(environmentName, packageName, "");
       for (const candidate of workspaces.filter((w) => w.writeable))
          for (const locator of await storage.listDocuments(candidate))
-            if (
-               locator.path.startsWith(
-                  draftPrefix(environmentName, packageName),
-               )
-            )
+            if (locator.path.startsWith(prefix))
                found.push({ locator, where: candidate.description });
       setDrafts(found);
    }, [storage, environmentName, packageName]);
@@ -164,7 +161,7 @@ export default function Package({
       void refreshDrafts();
    }, [refreshDrafts]);
    const draftPath = (locator: DocumentLocator) =>
-      locator.path.slice(draftPrefix(environmentName, packageName).length);
+      locator.path.slice(draftKey(environmentName, packageName, "").length);
 
    const pkgQuery = useQueryWithApiError({
       queryKey: ["package", environmentName, packageName, versionId],
@@ -177,18 +174,12 @@ export default function Package({
          ),
    });
 
-   // One listing for both layouts, by path. Shares its cache entry with every
-   // other reader of the listing, so the shape is the shared fetcher's.
-   const reportsQuery = useQueryWithApiError({
-      queryKey: reportsQueryKey(environmentName, packageName, versionId),
-      queryFn: () =>
-         fetchReportListing(
-            apiClients,
-            environmentName,
-            packageName,
-            versionId,
-         ),
-   });
+   // One listing for both layouts, by path, shared with every other reader.
+   const reportListing = useReportListing(
+      environmentName,
+      packageName,
+      versionId,
+   );
 
    const modelsQuery = useQueryWithApiError({
       queryKey: ["models", environmentName, packageName, versionId],
@@ -241,7 +232,7 @@ export default function Package({
    });
    const dataApps = dataAppsQuery.data?.data ?? [];
 
-   const reports: ListedReport[] = (reportsQuery.data ?? []).filter(
+   const reports: ListedReport[] = reportListing.reports.filter(
       (r) => !!r.path,
    );
    const artifacts = reportRows(reports);
@@ -274,16 +265,15 @@ export default function Package({
            })
          : undefined;
    // A name is chosen against the listings, so New waits for both rather than offering names a still-loading listing would have taken.
-   const listingsSettled = [reportsQuery, modelsQuery].every(
-      (q) => q.isSuccess || q.isError,
-   );
+   const listingsSettled =
+      reportListing.settled && (modelsQuery.isSuccess || modelsQuery.isError);
    const canCreate = route !== undefined && listingsSettled;
    // The editors step aside on a narrow screen, so no entry point to one is offered there.
    const canNew = canCreate && !narrow;
    const createTarget = useMemo((): CreateTarget | undefined => {
       if (!canCreate) return undefined;
       const existing = [
-         ...(reportsQuery.data ?? []).flatMap((r) => (r.path ? [r.path] : [])),
+         ...reportListing.reports.flatMap((r) => (r.path ? [r.path] : [])),
          ...(modelsQuery.data?.data ?? []).flatMap((m) =>
             m.path ? [m.path] : [],
          ),
@@ -320,7 +310,7 @@ export default function Package({
       environmentName,
       packageName,
       apiClients,
-      reportsQuery.data,
+      reportListing.reports,
       modelsQuery.data,
    ]);
 
@@ -331,11 +321,11 @@ export default function Package({
    )?.path;
 
    // The models list is FILTERED by the report listing, so every section waits
-   // for it: gated on anything less, a listing that resolved after the models
-   // call showed a report under Models and then took it away. A
-   // FAILURE cannot hang the page, since the query turns a 404 or a transport
-   // failure into an empty list; the cost is one parallel request's latency.
-   const isLoading = !reportsQuery.isSuccess && !reportsQuery.isError;
+   // for it: gated on anything less, a late listing would show a report under
+   // Models and then take it away. A failure cannot hang the page, since the
+   // query turns a 404 or a transport failure into an empty list; the cost is
+   // one parallel request's latency.
+   const isLoading = !reportListing.settled;
 
    if (pkgQuery.isError) {
       return (
@@ -393,20 +383,19 @@ export default function Package({
                   : {})}
                onRetryModels={() => void modelsQuery.refetch()}
                target={createTarget}
+               {...(onEvent ? { onEvent } : {})}
                onClose={() => setCreating(false)}
                onCreated={(created) => {
                   setCreating(false);
-                  for (const key of [
-                     "reports",
-                     "dashboards",
-                     "notebooks",
-                     "models",
-                  ])
-                     void queryClient.invalidateQueries({ queryKey: [key] });
+                  invalidateReportQueries(
+                     queryClient,
+                     environmentName,
+                     packageName,
+                  );
+                  void queryClient.invalidateQueries({ queryKey: ["models"] });
                   openDocument({
                      path: created.path,
                      layout: created.layout,
-                     kind: created.kind,
                      slug: created.slug,
                      mode: "edit",
                   });
@@ -422,7 +411,7 @@ export default function Package({
                    else here would say a word, and one failed list hides only
                    half the artifacts. The 404 swallowed in each query is an
                    older Publisher with no route, which genuinely has none. */}
-               {reportsQuery.isError && (
+               {reportListing.isError && (
                   <Box sx={{ mb: 4 }}>
                      <Alert
                         severity="warning"
@@ -430,7 +419,7 @@ export default function Package({
                            <Button
                               color="inherit"
                               size="small"
-                              onClick={() => void reportsQuery.refetch()}
+                              onClick={() => void reportListing.refetch()}
                            >
                               Retry
                            </Button>
@@ -495,7 +484,6 @@ export default function Package({
                                       {
                                          path: artifact.path,
                                          layout: artifact.layout,
-                                         kind: kindOfLayout(artifact.layout),
                                          slug: artifact.slug,
                                          mode: "view",
                                       },
@@ -512,9 +500,7 @@ export default function Package({
                         <PackageItemRow
                            key={`${locator.workspace}:${locator.path}`}
                            type={
-                              locator.type === "dashboard"
-                                 ? "dashboard"
-                                 : "report"
+                              locator.type === "grid" ? "dashboard" : "report"
                            }
                            label={draftPath(locator)}
                            rightLabel={where}
@@ -522,11 +508,7 @@ export default function Package({
                               openDocument(
                                  {
                                     path: draftPath(locator),
-                                    layout:
-                                       locator.type === "dashboard"
-                                          ? "grid"
-                                          : "linear",
-                                    kind: locator.type,
+                                    layout: locator.type,
                                     slug:
                                        documentSlug(draftPath(locator)) ?? "",
                                     mode: "edit",
@@ -729,7 +711,7 @@ interface ReportRow {
 function reportRows(reports: readonly ListedReport[]): ReportRow[] {
    const rows = reports.map((r) => ({
       path: r.path ?? "",
-      layout: (r.layout === "linear" ? "linear" : "grid") as ReportLayout,
+      layout: listedLayout(r),
       slug: documentSlug(r.path) ?? r.path ?? "",
       title: r.title,
    }));

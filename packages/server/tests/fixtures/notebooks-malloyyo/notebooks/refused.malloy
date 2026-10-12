@@ -1,5 +1,5 @@
 ##! experimental { givens compilerTestExperimentParse compilerTestExperimentTranslate }
-## artifact { kind=notebook title="Refused" }
+## artifact { layout=linear title="Refused" }
 import "../models/orders.malloy"
 
 run: orders -> kpis

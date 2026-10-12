@@ -16,7 +16,7 @@ What changed, in one place:
 
 - A notebook is a **report** with `layout=linear`. A dashboard is the same report with `layout=grid`.
 - A report can live anywhere in the package. Write a new one at the package root, not in `notebooks/`.
-- Write `layout=linear` in the `## artifact` tag. `kind=notebook` is the deprecated spelling.
+- Write `layout=linear` in the `## artifact` tag. `kind=` is no longer read.
 - A `# drill { to=… }` target is the report's package path without `.malloy`.
 
 This name stays only so that hosts and installs that still ask for `malloy-notebooks` find the new skill.

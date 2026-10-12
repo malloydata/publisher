@@ -10,7 +10,7 @@ import {
 } from "./documentLocation";
 
 /** The query key of a package's report listing, so every reader shares one request and one invalidation. */
-export const reportsQueryKey = (
+const reportsQueryKey = (
    environmentName: string,
    packageName: string,
    versionId?: string,
@@ -52,6 +52,8 @@ export async function fetchReportListing(
  * route answers 404, which reads as a package with no reports rather than an
  * error, so a host still renders. Any other failure is `isError`, with
  * `refetch` to try again: a caller shows it rather than an empty listing.
+ * `isFetching` is true while a request is in flight, including the refetch
+ * that follows a write's invalidation, when the cached `reports` predate it.
  */
 export function useReportListing(
    environmentName: string,
@@ -78,6 +80,7 @@ export function useReportListing(
    return {
       reports: (query.data ?? []) as ListedReport[],
       settled: query.isSuccess || query.isError,
+      isFetching: query.isFetching,
       isError: query.isError,
       error: query.error,
       refetch: query.refetch,

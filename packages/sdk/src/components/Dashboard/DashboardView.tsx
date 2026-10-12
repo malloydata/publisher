@@ -26,7 +26,7 @@ import {
 } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
-import type { DashboardEventHandler } from "./telemetry";
+import { useReportEvents } from "../Report/telemetry";
 import { TileCard, type TileChrome } from "./TileCard";
 import { tileIgnoredFilterLabels } from "./TileFilterTag";
 
@@ -62,7 +62,6 @@ export interface DashboardViewProps {
    onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
    height?: number;
    maxResultSize?: number;
-   onEvent?: DashboardEventHandler;
    /** `none` renders tiles as a document, with no cards or title block. */
    chrome?: TileChrome;
    /**
@@ -99,7 +98,6 @@ export function DashboardView({
    onNavigate,
    height,
    maxResultSize,
-   onEvent,
    chrome = "card",
    controlsLayout = "bar",
    preamble,
@@ -153,6 +151,8 @@ export function DashboardView({
       ...(givens ? { hostGivens: givens } : {}),
    });
    const { applied, declaredTypes, canSelf, onSelf } = controls;
+   // Set by the `Report` around this view; silent anywhere else.
+   const events = useReportEvents();
 
    // A given only a gate reads is in a tile's `givenNames` but not the row, so
    // the host's value for it is sent as given: the row would drop it as undeclared.
@@ -251,23 +251,6 @@ export function DashboardView({
             <Alert severity="error">
                This dashboard has no model path, so there is nothing to run.
             </Alert>
-         ) : manifest.query !== undefined ? (
-            // Single-query form: one query whose result IS the dashboard. Its
-            // `# dashboard {columns=N}` tag is the renderer's business, so no
-            // grid is imposed here: doing so would nest a grid in a grid.
-            <DashboardTile
-               environmentName={environmentName}
-               packageName={packageName}
-               versionId={versionId}
-               modelPath={modelPath}
-               queryName={manifest.query}
-               givens={applied}
-               declaredTypes={declaredTypes}
-               height={height}
-               maxResultSize={maxResultSize}
-               drill={drill}
-               chrome={chrome}
-            />
          ) : tiles.length > 0 ? (
             // Composite form: each tile runs on its own and the results are
             // combined into one grid here, since no single Malloy result spans
@@ -284,12 +267,13 @@ export function DashboardView({
                keyOf={(tile, index) =>
                   `${index}:${tile.kind === "text" ? `text:${tile.name}` : tile.query}`
                }
-               renderTile={(tile) =>
+               renderTile={(tile, index) =>
                   // An absent `kind` is a query tile, as it was before text tiles.
                   tile.kind === "text" || tile.query === undefined ? (
                      <TextTile markdown={tile.markdown ?? ""} chrome={chrome} />
                   ) : (
                      <DashboardTile
+                        index={index}
                         environmentName={environmentName}
                         packageName={packageName}
                         versionId={versionId}
@@ -335,8 +319,8 @@ export function DashboardView({
                onClose={() => setRows(undefined)}
                onDone={(ok, durationMs) => {
                   if (rows)
-                     onEvent?.({
-                        type: "dashboard.rows_shown",
+                     events.emit({
+                        type: "report.rows_shown",
                         source: rows.source,
                         view: rows.view,
                         field: rows.field,

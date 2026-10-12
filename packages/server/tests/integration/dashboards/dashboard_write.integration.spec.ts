@@ -4,46 +4,32 @@
 /// <reference types="bun-types" />
 
 /**
- * `PUT …/models/dashboards/{slug}.malloy` over real HTTP.
+ * The report write endpoint, `PUT …/models/{path}`, over real HTTP: the route,
+ * its status codes and JSON bodies, and that a written file is served
+ * afterwards — the contract external callers and the skills depend on. What
+ * the controller refuses, and why, is `dashboard.controller.write.spec`'s;
+ * what the service does on disk is `environment_write_model_file.spec`'s.
  *
- * The write path had unit coverage at the controller (against a stubbed
- * environment) and at the service (against a real directory), and a browser
- * test that drives the builder. Nothing exercised the endpoint itself: the
- * route, the status codes, the JSON bodies, and the fact that a written file
- * is actually being served afterwards. Those are the contract external callers
- * and the skills depend on, and all of them were assertions nobody had made.
- *
- * Runs against a copy of the dashboards fixture, because these tests write to
- * the package and the fixture in the repository is not the place for that.
+ * Runs against a copy of the dashboards fixture, since these tests write to it.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { createHash } from "crypto";
 import fsSync from "fs";
 import fs from "fs/promises";
-import os from "os";
 import path from "path";
-import { fileURLToPath } from "url";
 import {
    conversionRefused,
    convertLegacyNotebook,
-} from "../../../../sdk/src/components/DashboardBuilder/legacyNotebook";
+} from "../../../../sdk/src/components/ReportBuilder/legacyNotebook";
 import { newNotebookSource } from "../../../../sdk/src/components/DocumentCreate/newNotebook";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   hashOf,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE = path.resolve(__dirname, "../../fixtures/dashboards-test");
-const ENV_NAME = "dashboard-write-env";
 const PKG = "dashboards-test";
-
-const hashOf = (text: string) =>
-   createHash("sha256").update(text, "utf8").digest("hex");
-
-/** An untagged file under notebooks/: a shared include, not a notebook. */
-const SHARED_INCLUDE = "##(markdown) A shared include other models import.\n";
-/** An include whose only tag is commented out: the text looks tagged, the compiled model has no note. */
-const COMMENTED_INCLUDE =
-   "/*\n## artifact { layout=linear }\n*/\n##(markdown) A shared include.\n";
 
 /** A dashboard that compiles against the fixture's `orders` model. */
 const dashboardSource = (title: string) => `##! experimental.givens
@@ -60,93 +46,39 @@ query: written is orders -> {
 `;
 
 describe("PUT model source: dashboards", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-   let location: string;
+   let env: PackageEnv;
    /** The hash of the text currently on disk, as the last write reported it. */
    let currentHash: string;
-
-   const modelsUrl = (modelPath: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/models/${modelPath}`;
+   const put = (modelPath: string, body: unknown) => env.put(modelPath, body);
+   const reportNames = async (): Promise<string[]> =>
+      (await env.getJson<{ name?: string }[]>(env.api("/reports"))).map(
+         (r) => r.name ?? "",
+      );
 
    /** A dashboard's title as the package currently serves it. */
-   const titleOf = async (name: string): Promise<string> => {
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports/dashboards/${name}.malloy`,
-      );
-      expect(res.status).toBe(200);
-      return ((await res.json()) as { title?: string }).title ?? "";
-   };
+   const titleOf = async (name: string): Promise<string> =>
+      (
+         await env.getJson<{ title?: string }>(
+            env.api(`/reports/dashboards/${name}.malloy`),
+         )
+      ).title ?? "";
 
-   /** The text the package holds for a file (its own copy, not the registered location), or undefined when it has none. */
+   /** The text the package holds for a file, or undefined when it has none. */
    const sourceOf = async (modelPath: string): Promise<string | undefined> => {
-      const res = await fetch(modelsUrl(modelPath));
+      const res = await fetch(env.api(`/models/${modelPath}`));
       if (!res.ok) return undefined;
       return ((await res.json()) as { sourceText?: string }).sourceText;
    };
 
-   const put = (modelPath: string, body: unknown) =>
-      fetch(modelsUrl(modelPath), {
-         method: "PUT",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(body),
-      });
-
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      location = await fs.mkdtemp(
-         path.join(os.tmpdir(), "publisher-write-e2e-"),
+      env = await startPackageEnv(
+         "dashboard-write-env",
+         { [PKG]: fixture(PKG) },
+         { copy: true },
       );
-      await fs.cp(FIXTURE, location, { recursive: true });
-      await fs.mkdir(path.join(location, "notebooks"), { recursive: true });
-      await fs.writeFile(
-         path.join(location, "notebooks/shared.malloy"),
-         SHARED_INCLUDE,
-      );
-      await fs.writeFile(
-         path.join(location, "notebooks/commented.malloy"),
-         COMMENTED_INCLUDE,
-      );
+   }, 300_000);
 
-      const created = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location }],
-            connections: [],
-         }),
-      });
-      if (!created.ok) {
-         throw new Error(
-            `Failed to create test environment (${created.status}): ${await created.text()}`,
-         );
-      }
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         try {
-            const res = await fetch(
-               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}`,
-            );
-            if (res.ok) break;
-         } catch {
-            // not ready yet
-         }
-         await new Promise((r) => setTimeout(r, 500));
-      }
-   });
-
-   afterAll(async () => {
-      if (baseUrl) {
-         await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-            method: "DELETE",
-         }).catch(() => undefined);
-      }
-      await env?.stop();
-      env = null;
-      if (location) await fs.rm(location, { recursive: true, force: true });
-   });
+   afterAll(() => env?.stop());
 
    it("creates a new dashboard with 201, and serves it immediately", async () => {
       const source = dashboardSource("Created");
@@ -164,19 +96,12 @@ describe("PUT model source: dashboards", () => {
       expect(body.contentHash).toBe(hashOf(source));
       currentHash = body.contentHash;
       expect(body.resource).toBe(
-         `/api/v0/environments/${ENV_NAME}/packages/${PKG}/models/dashboards/created.malloy`,
+         `/api/v0/environments/dashboard-write-env/packages/${PKG}/models/dashboards/created.malloy`,
       );
 
       // The point of reloading in place: the dashboard is discoverable and
       // running without anyone restarting or reloading the package.
-      const listed = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
-      );
-      expect(listed.status).toBe(200);
-      const names = ((await listed.json()) as Array<{ name?: string }>).map(
-         (d) => d.name,
-      );
-      expect(names).toContain("created");
+      expect(await reportNames()).toContain("created");
    });
 
    it("refuses to create over an existing file with 409, and changes nothing", async () => {
@@ -251,15 +176,33 @@ import { orders } from '../orders.malloy'
          expect(await sourceOf("dashboards/empty-start.malloy")).toBe(EMPTY);
       });
 
-      it("still rolls back an empty layout whose tag is inside a comment, and says why", async () => {
-         const res = await put("dashboards/commented-empty.malloy", {
-            source: "/*\n## artifact { layout=grid tiles=[] }\n*/\n",
+      // A tagged report with no tiles is not served yet, but it is still a
+      // report: a query run against it must drop the renderer's complaints
+      // about tile layout tags the same way the model's own check does.
+      it("runs a query in it with no spurious render warning for a tile tag", async () => {
+         const written = await put("dashboards/tileless-query.malloy", {
+            source: `##! experimental.givens
+import { orders } from '../orders.malloy'
+## artifact { title="Tileless" layout=grid tiles=[] }
+
+# colspan=6
+query: wide is orders -> { aggregate: order_count }
+`,
          });
-         expect(res.status).toBe(500);
-         expect(await res.text()).toContain("is not served as a report");
-         expect(await sourceOf("dashboards/commented-empty.malloy")).toBe(
-            undefined,
+         expect(written.status).toBe(201);
+         const res = await fetch(
+            env.api("/models/dashboards/tileless-query.malloy/query"),
+            {
+               method: "POST",
+               headers: { "Content-Type": "application/json" },
+               body: JSON.stringify({ query: "run: wide" }),
+            },
          );
+         expect(res.status).toBe(200);
+         const body = (await res.json()) as {
+            renderLogs?: { message?: string }[];
+         };
+         expect(body.renderLogs).toBeUndefined();
       });
    });
 
@@ -279,57 +222,7 @@ query: broken is orders -> { aggregate: no_such_measure }
       expect(text).toMatch(/line \d+:\d+/);
 
       // Nothing was written, so the package has no such dashboard to serve.
-      const listed = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
-      );
-      const names = ((await listed.json()) as Array<{ name?: string }>).map(
-         (d) => d.name,
-      );
-      expect(names).not.toContain("broken");
-   });
-
-   // Ported: a report may be created anywhere but public/ and the root
-   // index.malloy, and replace only what is already a report.
-   it("writes only reports, refusing a model, a .malloynb and public/ with 400", async () => {
-      for (const badPath of [
-         "orders.malloy",
-         "dashboards/notebook.malloynb",
-         "public/x.malloy",
-         "index.malloy",
-      ]) {
-         const res = await put(badPath, { source: dashboardSource("Nope") });
-         expect(res.status).toBe(400);
-      }
-   });
-
-   it("creates a report in a nested directory, and serves it", async () => {
-      const res = await put("dashboards/nested/deep.malloy", {
-         source: dashboardSource("Deep").replace(
-            "'../orders.malloy'",
-            "'../../orders.malloy'",
-         ),
-      });
-      expect(res.status).toBe(201);
-      expect(await dashboardPaths()).toContain("dashboards/nested/deep.malloy");
-   });
-
-   it("writes a tagged notebook under notebooks/ and serves it afterwards", async () => {
-      const source = `##! experimental.givens
-## artifact { layout=linear title="Written notebook" }
-
-##(markdown) Written by the write-path integration test.
-`;
-      const res = await put("notebooks/written.malloy", { source });
-      expect(res.status).toBe(201);
-      const body = (await res.json()) as { path: string; contentHash: string };
-      expect(body.path).toBe("notebooks/written.malloy");
-      expect(body.contentHash).toBe(hashOf(source));
-
-      const served = await fetch(modelsUrl("notebooks/written.malloy"));
-      expect(served.status).toBe(200);
-      expect(
-         ((await served.json()) as { sourceText?: string }).sourceText,
-      ).toBe(source);
+      expect(await reportNames()).not.toContain("broken");
    });
 
    it("creates the notebook the SDK writes for a new one, create-only", async () => {
@@ -345,159 +238,7 @@ query: broken is orders -> { aggregate: no_such_measure }
       );
       const res = await put("notebooks/sdk-created.malloy", { source });
       expect(res.status).toBe(201);
-      const again = await put("notebooks/sdk-created.malloy", { source });
-      expect(again.status).toBe(409);
-      const served = await fetch(modelsUrl("notebooks/sdk-created.malloy"));
-      expect(served.status).toBe(200);
-   });
-
-   it("refuses an untagged notebooks/ file, a shared include, with 400", async () => {
-      const res = await put("notebooks/untagged.malloy", {
-         source: "##(markdown) Just prose, no artifact tag.\n",
-      });
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain("## artifact");
-   });
-
-   it("refuses a tagged write over an existing untagged notebooks/ file with 400, leaving it intact", async () => {
-      const res = await put("notebooks/shared.malloy", {
-         source: "## artifact { layout=linear }\n",
-         expectedHash: hashOf(SHARED_INCLUDE),
-      });
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain("is not a report");
-      const served = await fetch(modelsUrl("notebooks/shared.malloy"));
-      expect(
-         ((await served.json()) as { sourceText?: string }).sourceText,
-      ).toBe(SHARED_INCLUDE);
-   });
-
-   it("refuses a tagged write over an include whose only tag is inside a block comment, leaving it intact", async () => {
-      const res = await put("notebooks/commented.malloy", {
-         source: "## artifact { layout=linear }\n",
-         expectedHash: hashOf(COMMENTED_INCLUDE),
-      });
-      expect(res.status).toBe(400);
-      expect(await res.text()).toContain("is not a report");
-      expect(await sourceOf("notebooks/commented.malloy")).toBe(
-         COMMENTED_INCLUDE,
-      );
-   });
-
-   it("rolls back a new notebook whose only tag is inside a block comment, so no unserved file lands", async () => {
-      const res = await put("notebooks/hidden_tag.malloy", {
-         source: "/*\n## artifact { layout=linear }\n*/\n##(markdown) Prose.\n",
-      });
-      expect(res.status).toBe(500);
-      expect(await sourceOf("notebooks/hidden_tag.malloy")).toBeUndefined();
-   });
-
-   it("rolls back a new notebook whose only tag is inside a string, so no unserved file lands", async () => {
-      const res = await put("notebooks/string_tag.malloy", {
-         source:
-            'import \'../orders.malloy\'\nrun: orders -> {\n  select: note is """\n## artifact { layout=linear }\n"""\n}\n',
-      });
-      expect(res.status).toBe(500);
-      expect(await sourceOf("notebooks/string_tag.malloy")).toBeUndefined();
-   });
-
-   /** A tile-layout report of the given layout, which compiles against the fixture's `orders`. */
-   const layoutSource = (layout: "grid" | "linear", title: string) =>
-      `##! experimental.givens\n## artifact { layout=${layout} title="${title}" tiles=["orders -> totals"] }\nimport { orders } from '../orders.malloy'\n`;
-
-   const dashboardPaths = async (): Promise<string[]> => {
-      const listed = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
-      );
-      return ((await listed.json()) as Array<{ path: string; layout: string }>)
-         .filter((d) => d.layout === "grid")
-         .map((d) => d.path);
-   };
-
-   describe("a slug another file already holds", () => {
-      const held = layoutSource("grid", "Holder");
-      let before: string[];
-
-      beforeAll(async () => {
-         const res = await put("dashboards/dup.malloy", { source: held });
-         expect(res.status).toBe(201);
-         before = await dashboardPaths();
-      });
-
-      // Ported from the name-collision 409: a report is identified by its
-      // path, so two may share a basename and both are served.
-      it("writes a notebooks/ file that declares layout=grid, and serves both", async () => {
-         const res = await put("notebooks/dup.malloy", {
-            source: layoutSource("grid", "Same name"),
-         });
-         expect(res.status).toBe(201);
-         expect(await dashboardPaths()).toEqual(
-            [...before, "notebooks/dup.malloy"].sort(),
-         );
-      });
-
-      it("flips a report of a held basename between layouts", async () => {
-         const grid = layoutSource("grid", "Same name");
-         const linear = layoutSource("linear", "Same name");
-         const res = await put("notebooks/dup.malloy", {
-            source: linear,
-            expectedHash: hashOf(grid),
-         });
-         expect(res.status).toBe(200);
-         expect(await dashboardPaths()).toEqual(before);
-         const back = await put("notebooks/dup.malloy", {
-            source: grid,
-            expectedHash: hashOf(linear),
-         });
-         expect(back.status).toBe(200);
-         expect(await dashboardPaths()).toContain("notebooks/dup.malloy");
-      });
-
-      it("still re-saves the holder, and flips a notebook of an unheld slug to a dashboard and back", async () => {
-         const resaved = layoutSource("grid", "Holder again");
-         const resave = await put("dashboards/dup.malloy", {
-            source: resaved,
-            expectedHash: hashOf(held),
-         });
-         expect(resave.status).toBe(200);
-
-         const notebook = layoutSource("linear", "Flip me");
-         expect(
-            (await put("notebooks/flip.malloy", { source: notebook })).status,
-         ).toBe(201);
-         const asDashboard = layoutSource("grid", "Flip me");
-         const flipped = await put("notebooks/flip.malloy", {
-            source: asDashboard,
-            expectedHash: hashOf(notebook),
-         });
-         expect(flipped.status).toBe(200);
-         expect(await dashboardPaths()).toContain("notebooks/flip.malloy");
-         const back = await put("notebooks/flip.malloy", {
-            source: notebook,
-            expectedHash: hashOf(asDashboard),
-         });
-         expect(back.status).toBe(200);
-         expect(await dashboardPaths()).not.toContain("notebooks/flip.malloy");
-      });
-
-      it("serves a notebook written into dashboards/ as a notebook, not a dashboard", async () => {
-         const res = await put("dashboards/as_notebook.malloy", {
-            source: layoutSource("linear", "Misfiled"),
-         });
-         expect(res.status).toBe(201);
-         expect(await dashboardPaths()).not.toContain(
-            "dashboards/as_notebook.malloy",
-         );
-         const listed = (await (
-            await fetch(
-               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
-            )
-         ).json()) as Array<{ path: string; layout: string }>;
-         expect(
-            listed.find((r) => r.path === "dashboards/as_notebook.malloy")
-               ?.layout,
-         ).toBe("linear");
-      });
+      expect(await reportNames()).toContain("sdk-created");
    });
 
    for (const [name, source] of [
@@ -519,12 +260,7 @@ query: broken is orders -> { aggregate: no_such_measure }
       it(`writes a legitimate ${name} notebook and serves it`, async () => {
          const res = await put(`notebooks/${name}.malloy`, { source });
          expect(res.status).toBe(201);
-         const listed = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/reports`,
-         );
-         expect(JSON.stringify(await listed.json())).toContain(
-            `notebooks/${name}.malloy`,
-         );
+         expect(await reportNames()).toContain(name);
       });
    }
 
@@ -554,12 +290,7 @@ query: broken is orders -> { aggregate: no_such_measure }
       expect(await sourceOf("notebooks/gate_real.malloy")).toBeUndefined();
    });
 
-   const query = (body: unknown) =>
-      fetch(`${modelsUrl("orders.malloy")}/query`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(body),
-      });
+   const query = (body: unknown) => env.query("orders.malloy", body);
 
    it("runs a query whose markdown block prose names #(authorize)", async () => {
       const res = await query({
@@ -593,14 +324,6 @@ import { orders } from '../orders.malloy'
       expect(await res.text()).toContain("does not compile");
    });
 
-   // Ported: a nested path is a report's path like any other.
-   it("creates a report at a nested notebooks/ path", async () => {
-      const res = await put("notebooks/nested/x.malloy", {
-         source: "## artifact { layout=linear }\n",
-      });
-      expect(res.status).toBe(201);
-   });
-
    it("refuses a body with no source, with 400", async () => {
       const res = await put("dashboards/nobody.malloy", { notSource: "x" });
       expect(res.status).toBe(400);
@@ -608,13 +331,10 @@ import { orders } from '../orders.malloy'
    });
 
    it("404s for a package that does not exist", async () => {
-      const res = await fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/no-such-package/models/dashboards/x.malloy`,
-         {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ source: dashboardSource("Nope") }),
-         },
+      const res = await env.put(
+         "dashboards/x.malloy",
+         { source: dashboardSource("Nope") },
+         "no-such-package",
       );
       expect(res.status).toBe(404);
    });
@@ -622,67 +342,24 @@ import { orders } from '../orders.malloy'
 
 /** The builder's conversion of each legacy cell notebook is written, served and run by a real environment, and restored byte for byte. */
 describe("PUT model source: notebooks written by the notebook builder", () => {
-   const NB_ENV = "notebook-write-env";
    const PLAIN = "notebooks-malloyyo";
    const SURFACE = "notebooks-malloyyo-surface";
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-   let root: string;
-
-   const pkgUrl = (pkg: string, sub: string) =>
-      `${baseUrl}/api/v0/environments/${NB_ENV}/packages/${pkg}${sub}`;
+   let env: PackageEnv;
+   const pkgUrl = (pkg: string, sub: string) => env.api(sub, pkg);
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      root = await fs.mkdtemp(
-         path.join(os.tmpdir(), "publisher-nb-write-e2e-"),
+      env = await startPackageEnv(
+         "notebook-write-env",
+         { [PLAIN]: fixture(PLAIN), [SURFACE]: fixture(SURFACE) },
+         { copy: true },
       );
-      for (const pkg of [PLAIN, SURFACE])
-         await fs.cp(
-            path.resolve(__dirname, `../../fixtures/${pkg}`),
-            path.join(root, pkg),
-            { recursive: true },
-         );
-      const created = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: NB_ENV,
-            packages: [PLAIN, SURFACE].map((name) => ({
-               name,
-               location: path.join(root, name),
-            })),
-            connections: [],
-         }),
-      });
-      if (!created.ok) {
-         throw new Error(
-            `Failed to create test environment (${created.status}): ${await created.text()}`,
-         );
-      }
-      for (const pkg of [PLAIN, SURFACE]) {
-         const loaded = await fetch(pkgUrl(pkg, ""));
-         if (!loaded.ok) {
-            throw new Error(`${pkg} did not load (${loaded.status})`);
-         }
-      }
-   });
+   }, 300_000);
 
-   afterAll(async () => {
-      if (baseUrl) {
-         await fetch(`${baseUrl}/api/v0/environments/${NB_ENV}`, {
-            method: "DELETE",
-         }).catch(() => undefined);
-      }
-      await env?.stop();
-      env = null;
-      if (root) await fs.rm(root, { recursive: true, force: true });
-   });
+   afterAll(() => env?.stop());
 
    /** Every cell-format notebook in the fixture; `layout` already lists its tiles and `refused` has a statement no cell can hold. */
    const CELL_NOTEBOOKS = fsSync
-      .readdirSync(path.resolve(__dirname, `../../fixtures/${PLAIN}/notebooks`))
+      .readdirSync(path.join(fixture(PLAIN), "notebooks"))
       .filter(
          (f) =>
             f.endsWith(".malloy") &&
@@ -693,11 +370,7 @@ describe("PUT model source: notebooks written by the notebook builder", () => {
       pkgUrl(PLAIN, `/models/${modelPath}`);
 
    const putPlain = (modelPath: string, body: unknown) =>
-      fetch(modelsUrl(modelPath), {
-         method: "PUT",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(body),
-      });
+      env.put(modelPath, body, PLAIN);
 
    const sourceOf = async (modelPath: string): Promise<string> =>
       (
@@ -729,14 +402,11 @@ describe("PUT model source: notebooks written by the notebook builder", () => {
          const tiles = report.tiles ?? [];
          expect(tiles).toHaveLength(converted.tiles);
          for (const tile of tiles.filter((t) => t.kind === "query")) {
-            const ran = await fetch(`${modelsUrl(modelPath)}/query`, {
-               method: "POST",
-               headers: { "Content-Type": "application/json" },
-               body: JSON.stringify({
-                  query: `run: ${tile.query}`,
-                  compactJson: true,
-               }),
-            });
+            const ran = await env.query(
+               modelPath,
+               { query: `run: ${tile.query}`, compactJson: true },
+               PLAIN,
+            );
             expect(ran.status).toBe(200);
          }
 
@@ -770,7 +440,10 @@ describe("PUT model source: notebooks written by the notebook builder", () => {
 
    it("hands the editor a curated package's notebook text when it asks for the hidden files", async () => {
       const file = "notebooks/cells.malloy";
-      const onDisk = await fs.readFile(path.join(root, SURFACE, file), "utf8");
+      const onDisk = await fs.readFile(
+         path.join(env.location(SURFACE), file),
+         "utf8",
+      );
       const withheld = await fetch(pkgUrl(SURFACE, `/models/${file}`));
       expect(withheld.status).toBe(200);
       expect(

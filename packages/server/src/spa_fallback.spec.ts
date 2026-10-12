@@ -3,7 +3,11 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { classifySpaFallback } from "./spa_fallback";
+import {
+   classifySpaFallback,
+   resolveSpaFallback,
+   type LoadedRoutes,
+} from "./spa_fallback";
 
 const API_PREFIX = "/api/v0";
 const classify = (path: string) => classifySpaFallback(path, API_PREFIX);
@@ -273,5 +277,69 @@ describe("classifySpaFallback", () => {
          expect(classify("/api-doc.yaml").kind).not.toBe("apiNotFound");
          expect(classify("/api-doc.html").kind).not.toBe("apiNotFound");
       });
+   });
+});
+
+describe("resolveSpaFallback", () => {
+   /** One environment `examples` holding `storefront` and `report.html`, with the reports given. */
+   const loaded = (reportRoutes: string[] = []): LoadedRoutes => ({
+      hasEnvironment: (env) => env === "examples",
+      hasPackage: (env, pkg) =>
+         env === "examples" && (pkg === "storefront" || pkg === "report.html"),
+      isReportRoute: (env, pkg, routePath) =>
+         env === "examples" &&
+         pkg === "storefront" &&
+         reportRoutes.includes(routePath),
+   });
+   const resolve = (path: string, routes?: string[]) =>
+      resolveSpaFallback(path, API_PREFIX, loaded(routes));
+
+   it("redirects a package file addressed on the app route when both names are loaded", () => {
+      expect(resolve("/examples/storefront/data/orders.csv")).toMatchObject({
+         kind: "redirect",
+      });
+   });
+
+   it("serves the app for a report whose route ends in an asset extension", () => {
+      expect(resolve("/examples/storefront/q3.json", ["q3.json"])).toEqual({
+         kind: "spa",
+      });
+      // Its segments are decoded before they are looked up.
+      expect(
+         resolve("/examples/storefront/a%20b/c.csv", ["a b/c.csv"]),
+      ).toEqual({ kind: "spa" });
+   });
+
+   it("answers 404 rather than redirecting when the environment or package is not loaded", () => {
+      for (const path of [
+         "/assets/foo/bar.js",
+         "/examples/nope/data/orders.csv",
+         "/nope/storefront/data/orders.csv",
+      ]) {
+         expect(resolve(path)).toEqual({
+            kind: "assetNotFound",
+            path,
+            appRouteCandidate: null,
+         });
+      }
+   });
+
+   it("does not take a report route for a package that is not loaded", () => {
+      expect(resolve("/examples/nope/q3.json", ["q3.json"])).toMatchObject({
+         kind: "assetNotFound",
+      });
+   });
+
+   it("serves the app for an environment or package whose name ends in an extension, only when loaded", () => {
+      expect(resolve("/examples/report.html")).toEqual({ kind: "spa" });
+      expect(resolve("/examples/style.css")).toMatchObject({
+         kind: "assetNotFound",
+      });
+      expect(resolve("/nope.html")).toMatchObject({ kind: "assetNotFound" });
+   });
+
+   it("leaves app routes and API paths as the classifier decided", () => {
+      expect(resolve("/examples/storefront")).toEqual({ kind: "spa" });
+      expect(resolve("/api/v0/nope")).toMatchObject({ kind: "apiNotFound" });
    });
 });

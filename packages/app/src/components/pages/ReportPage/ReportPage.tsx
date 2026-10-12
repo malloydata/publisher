@@ -3,6 +3,7 @@
 
 import {
    encodeResourceUri,
+   Notebook,
    Report,
    useGivenUrlParams,
    useNarrowScreen,
@@ -10,10 +11,10 @@ import {
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import { useEffect, useMemo } from "react";
-import { logDashboardEvent } from "../../../utils/consoleTelemetry";
+import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 
-export interface ReportPageProps {
+interface ReportPageProps {
    environmentName: string;
    packageName: string;
    /** The report's package path, `sales/q3.malloy` (or a legacy `.malloynb`). */
@@ -42,21 +43,16 @@ export default function ReportPage({
    const { params: givens, onGivensChange } = useGivenUrlParams();
    const onNavigate = useDrillNavigate(environmentName, packageName);
    const onLinkNavigate = useRouterClickHandler();
-   // Keyed by path: two reports may share a basename.
+   // The event names the report by path; the sink adds where it is.
    const onEvent = useMemo(
-      () =>
-         logDashboardEvent({
-            environmentName,
-            packageName,
-            dashboardName: path,
-         }),
-      [environmentName, packageName, path],
+      () => logReportEvent({ environmentName, packageName }),
+      [environmentName, packageName],
    );
 
-   // The builder is a lazy chunk carrying the Malloy parser, so the first Edit
-   // used to sit on a spinner while it downloaded. Fetch it while idle as soon
-   // as an editable report is on screen, so Edit is a re-render. Below 600px
-   // the editor steps aside, so there is nothing to warm.
+   // The builder is a lazy chunk carrying the Malloy parser. Fetch it while
+   // idle as soon as an editable report is on screen, so Edit is a re-render
+   // rather than a spinner. Below 600px the editor steps aside, so there is
+   // nothing to warm.
    const narrow = useNarrowScreen();
    useEffect(() => {
       if (!editable || narrow) return;
@@ -72,16 +68,32 @@ export default function ReportPage({
 
    return (
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
-         <Report
-            resourceUri={encodeResourceUri({ environmentName, packageName })}
-            path={path}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onNavigate={onNavigate}
-            onLinkNavigate={onLinkNavigate}
-            onEvent={onEvent}
-            maxResultSize={1024 * 1024}
-         />
+         {/* A legacy `.malloynb` runs only through the deprecated notebook routes, which `Notebook` reads. */}
+         {path.endsWith(".malloynb") ? (
+            <Notebook
+               resourceUri={encodeResourceUri({
+                  environmentName,
+                  packageName,
+                  modelPath: path,
+               })}
+               givens={givens}
+               onGivensChange={onGivensChange}
+               onNavigate={onLinkNavigate}
+               onDrillNavigate={onNavigate}
+               maxResultSize={1024 * 1024}
+            />
+         ) : (
+            <Report
+               resourceUri={encodeResourceUri({ environmentName, packageName })}
+               path={path}
+               givens={givens}
+               onGivensChange={onGivensChange}
+               onNavigate={onNavigate}
+               onLinkNavigate={onLinkNavigate}
+               onEvent={onEvent}
+               maxResultSize={1024 * 1024}
+            />
+         )}
       </Box>
    );
 }

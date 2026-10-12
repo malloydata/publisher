@@ -589,7 +589,7 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
       // surface two publisher features read. `service/given.ts` reads
       // `_internal.defaultText` (Malloy's private surface, as its own comment
       // says) to populate `ApiGiven.default`, which is what introspection
-      // reports and what `dashboard.ts` seeds a dashboard's given controls
+      // reports and what `report_manifest.ts` seeds a dashboard's given controls
       // from.
       //
       // Both degrade SILENTLY if the field moves: every `default` becomes

@@ -116,7 +116,7 @@ export function drillDestinations(field: DrillField | undefined): string[] {
    if (!drill) return [];
    // Malloyyo accepts a lone destination unbracketed (`to=overview`) as well as
    // the list form. The server grows the same leniency in `readDrillTag`
-   // (`service/dashboard.ts`) with the dashboard slice of this split; it is not
+   // (`service/report_manifest.ts`) with the dashboard slice of this split; it is not
    // in the tree yet, so keep the two in step when it lands.
    return (
       drill.textArray("to") ?? [drill.text("to")].filter(isNonEmpty)
@@ -160,14 +160,12 @@ export function drillGivenName(field: DrillField): string {
 export interface DrillNavigation {
    /**
     * The destination report, as the tag's `to=` names it: a package path
-    * without `.malloy` (`sales/overview`), or a deprecated bare name. Resolve
-    * it with `resolveDrillTarget` against `GET …/reports`. Named `dashboard`
-    * for the hosts that already read it.
-    *
-    * A change since reports: this used to be a dashboard's slug, a single
-    * segment. It may now contain `/`, so a host that put it into a URL as one
-    * segment (`/dashboards/${dashboard}`) must resolve it instead.
+    * without `.malloy` (`sales/overview`); a bare name is a file at the root.
+    * It may contain `/`, so resolve it with `resolveDrillTarget` against
+    * `GET …/reports` rather than using it as one URL segment.
     */
+   path: string;
+   /** @deprecated Use `path`; always the same value. */
    dashboard: string;
    /**
     * Control values to open it with: the clicked value seeded into the drill's

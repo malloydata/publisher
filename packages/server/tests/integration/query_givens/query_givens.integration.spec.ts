@@ -22,6 +22,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_NAME = "query-givens-env";
 const PKG = "query-givens";
 const MODEL = "model.malloy";
+/** A package of its own, so the live fixture carries no `#(filter)`. */
+const DEPRECATED_FILTER_PKG = "deprecated-filter-givens";
 
 type Row = Record<string, unknown>;
 
@@ -33,12 +35,19 @@ describe("givens forwarding on /query (HTTP E2E)", () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
       const fixtureDir = path.resolve(__dirname, "../../fixtures/query-givens");
+      const deprecatedFilterDir = path.resolve(
+         __dirname,
+         `../../fixtures/${DEPRECATED_FILTER_PKG}`,
+      );
       const createRes = await fetch(`${baseUrl}/api/v0/environments`, {
          method: "POST",
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
             name: ENV_NAME,
-            packages: [{ name: PKG, location: fixtureDir }],
+            packages: [
+               { name: PKG, location: fixtureDir },
+               { name: DEPRECATED_FILTER_PKG, location: deprecatedFilterDir },
+            ],
             connections: [],
          }),
       });
@@ -47,13 +56,15 @@ describe("givens forwarding on /query (HTTP E2E)", () => {
             `Failed to create test environment (${createRes.status}): ${await createRes.text()}`,
          );
       }
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}`,
-         );
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 250));
+      for (const pkg of [PKG, DEPRECATED_FILTER_PKG]) {
+         const deadline = Date.now() + 30_000;
+         while (Date.now() < deadline) {
+            const res = await fetch(
+               `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}`,
+            );
+            if (res.ok) break;
+            await new Promise((r) => setTimeout(r, 250));
+         }
       }
    });
 
@@ -64,9 +75,9 @@ describe("givens forwarding on /query (HTTP E2E)", () => {
       await env?.stop();
    });
 
-   const query = (body: Record<string, unknown>) =>
+   const query = (body: Record<string, unknown>, pkg = PKG) =>
       fetch(
-         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}/models/${MODEL}/query`,
+         `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${pkg}/models/${MODEL}/query`,
          {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -133,5 +144,24 @@ describe("givens forwarding on /query (HTTP E2E)", () => {
       const r = await rows(res);
       expect(r.length).toBe(1);
       expect(Number(r[0].order_count)).toBe(3);
+   });
+
+   // DEPRECATED FEATURE COVERAGE — delete together with `#(filter)` /
+   // `filterParams` (see RELEASE_NOTES deprecations).
+   describe("deprecated: filterParams", () => {
+      it("composes givens with filterParams", async () => {
+         // target_region=EU narrows to ids 4,5,6; filterParams status=active
+         // narrows further to ids 4,6 -> order_count=2.
+         const res = await query(
+            {
+               givens: { target_region: "EU" },
+               filterParams: { status: "active" },
+            },
+            DEPRECATED_FILTER_PKG,
+         );
+         const r = await rows(res);
+         expect(r.length).toBe(1);
+         expect(Number(r[0].order_count)).toBe(2);
+      });
    });
 });

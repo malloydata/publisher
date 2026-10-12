@@ -65,10 +65,12 @@ import {
    type TableSourceDef,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
+import { MalloySQLStatementType } from "@malloydata/malloy-sql";
+import { parseMalloynb } from "../service/deprecated/malloynb";
 import {
-   MalloySQLParser,
-   MalloySQLStatementType,
-} from "@malloydata/malloy-sql";
+   declaredDeprecatedManifestKeys,
+   type DeprecatedManifestKey,
+} from "../service/deprecated/manifest_keys";
 import * as fs from "fs";
 import * as path from "path";
 import { parentPort, threadId } from "node:worker_threads";
@@ -82,7 +84,7 @@ import {
    normalizeModelPath,
    PACKAGE_MANIFEST_NAME,
 } from "../constants";
-import { isReportEligiblePath, textClaimsToBeAReport } from "../service/report";
+import { isReportEligiblePath, readReportTagOfText } from "../service/report";
 import {
    recordAuthorizeAdmitAllGate,
    recordRowLevelGateRejected,
@@ -484,9 +486,9 @@ async function readInstallRecord(
 }
 
 /**
- * Which `explores` entries are reports, by the report rule's text test
- * (`report.ts`): the same test discovery applies to a file it has no compiled
- * tags for. Read here, before the compile, because the manifest is resolved
+ * Which `explores` entries are reports, by the one report tag reader
+ * (`report.ts`) over each file's text: what discovery reads off the compiled
+ * file. Read here, before the compile, because the manifest is resolved
  * first. Only the declared entries are read. Never throws.
  */
 async function declaredReportPaths(
@@ -506,7 +508,8 @@ async function declaredReportPaths(
             path.join(packagePath, modelPath),
             "utf8",
          );
-         if (textClaimsToBeAReport(text)) reports.add(modelPath);
+         if (readReportTagOfText(text).status === "report")
+            reports.add(modelPath);
       } catch {
          // Unreadable: not a report as far as the advice goes.
       }
@@ -527,6 +530,7 @@ async function readPackageMetadata(
    materialization?: PackageMaterializationConfig | null;
    scope?: PackageScope;
    manifestWarnings?: string[];
+   deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
@@ -629,6 +633,7 @@ async function readPackageMetadata(
       scope: scope.scope,
       manifestWarnings:
          manifestWarnings.length > 0 ? manifestWarnings : undefined,
+      deprecatedManifestKeys: declaredDeprecatedManifestKeys(parsed),
       // How this package is searched and indexed. Validated here so a bad key
       // or an unreadable prompt file stops the load with a message naming it,
       // and read here so a prompt edit takes effect on reload.
@@ -989,11 +994,7 @@ async function compileNotebookModel(
    const authorizeWarningCollection = authorizeWarningCollector();
 
    const fileContents = await fs.promises.readFile(modelURL, "utf8");
-   // The cell parser splits on "\n" alone; see Model's .malloynb load.
-   const parse = MalloySQLParser.parse(
-      fileContents.replace(/\r\n/g, "\n"),
-      modelPath,
-   );
+   const parse = parseMalloynb(fileContents, modelPath);
 
    // Build the extendModel chain synchronously so per-cell materializers
    // line up with statement order. Matches the in-process flow in

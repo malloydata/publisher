@@ -25,7 +25,7 @@ import { logger } from "../logger";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
-import { resetNotebookMetricsForTest } from "../notebook_metrics";
+import { resetReportMetricsForTest } from "../report_metrics";
 import {
    startMetricsHarness,
    type MetricsHarness,
@@ -92,16 +92,10 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
    });
 
    it("does not report a drill that resolves, even to an oddly named file", async () => {
-      // `v1.2` is served despite its name, so its drill is not dangling. This
-      // is the one the naming advisory must not leak into. A bare name is the
-      // deprecated form, so it says which path to write, and nothing worse.
+      // `dashboards/v1.2` is served despite its name, so its drill is not
+      // dangling. This is the one the naming advisory must not leak into.
       const joined = (await messages()).join("\n");
-      expect(joined).not.toContain(
-         'targets "v1.2", which is not a report in this package',
-      );
-      expect(joined).toContain(
-         '# drill on orders.unconventional_target targets "v1.2" by name, which is deprecated: a report is addressed by its path. Fix: write to="dashboards/v1.2".',
-      );
+      expect(joined).not.toContain("orders.unconventional_target");
    });
 
    it("reports a suggest naming a query nothing defines", async () => {
@@ -133,7 +127,8 @@ describe("compile_model, package scope: dashboard and render-tag findings", () =
    it("registers a what-if dashboard that does not compile, so a drill to it resolves", async () => {
       const { problems } = await env.compileSource(
          "dashboards-lint",
-         "dashboards/no_such_dashboard.malloy",
+         // A bare `to=` names a root file.
+         "no_such_dashboard.malloy",
          [
             '## artifact { title="Now exists" }',
             "source: broken is nonexistent_connection.table('nope')",
@@ -240,7 +235,7 @@ describe("compile_model, package scope: curation findings", () => {
       {
          model: "dashboards/hidden.malloy",
          severity: "error",
-         message: `hidden: Dashboard hidden reads orders_staging, ${REFUSAL_FIX}`,
+         message: `hidden: Tile hidden on dashboard hidden reads orders_staging, ${REFUSAL_FIX}`,
       },
       {
          model: "dashboards/tiles.malloy",
@@ -274,24 +269,9 @@ describe("compile_model, package scope: curation findings", () => {
       const { problems } = await compilePackage("dashboards-convention");
 
       // The fixture's artifact tags are well formed, so these are the only
-      // findings of any kind apart from the query-level form's deprecation. A
-      // malformed tag would add an "Unknown render tag" on the dashboard.
-      expect(
-         summarize(
-            problems.filter(
-               (p) =>
-                  (p as { code?: string }).code !== "query-artifact-deprecated",
-            ),
-         ),
-      ).toEqual(SAVED_REFUSALS);
-      expect(
-         problems
-            .filter(
-               (p) =>
-                  (p as { code?: string }).code === "query-artifact-deprecated",
-            )
-            .map((p) => p.model),
-      ).toEqual(["dashboards/hidden.malloy", "dashboards/overview.malloy"]);
+      // findings of any kind. A malformed tag would add an "Unknown render
+      // tag" on the dashboard.
+      expect(summarize(problems)).toEqual(SAVED_REFUSALS);
    });
 
    it("reports a render-tag finding from the what-if text, under its own code", async () => {
@@ -451,8 +431,9 @@ describe("compile_model, package scope: curation findings", () => {
 
 /**
  * The compile runs the load's discovery over a package nothing serves. The
- * notebook discovery counter means "a served package was discovered", so a
- * compile, which agents call in a loop, must leave it alone.
+ * discovery counters mean "a served package was discovered", so a compile,
+ * which agents call in a loop, must leave them alone; only its duration is
+ * recorded, under its own `during`.
  */
 describe("compile_model, package scope: telemetry", () => {
    let rootDir: string;
@@ -460,16 +441,16 @@ describe("compile_model, package scope: telemetry", () => {
 
    beforeEach(async () => {
       harness = await startMetricsHarness();
-      resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
    });
 
    afterEach(async () => {
-      resetNotebookMetricsForTest();
+      resetReportMetricsForTest();
       await harness.shutdown();
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
-   it("does not count a package-scope compile as a notebook discovery", async () => {
+   it("does not count a package-scope compile as a discovery", async () => {
       rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-nbmetric-"));
       const envPath = path.join(rootDir, "env");
       await fs.mkdir(envPath, { recursive: true });
@@ -484,9 +465,16 @@ describe("compile_model, package scope: telemetry", () => {
          );
       });
       const count = () =>
-         harness.collectCounter("publisher_notebook_discovery_total", {
-            format: "malloy",
+         harness.collectCounter("publisher_reports_discovered_total", {
+            layout: "linear",
          });
+      const timed = async (during: string) =>
+         (
+            await harness.collectHistogram(
+               "publisher_report_discovery_duration_ms",
+               { during },
+            )
+         ).count;
       const afterLoad = await count();
       // The control: loading the package did count, so the harness sees it.
       expect(afterLoad).toBeGreaterThan(0);
@@ -501,6 +489,8 @@ describe("compile_model, package scope: telemetry", () => {
       );
 
       expect(await count()).toBe(afterLoad);
+      expect(await timed("compile")).toBe(1);
+      expect(await timed("load")).toBeGreaterThan(0);
    });
 });
 

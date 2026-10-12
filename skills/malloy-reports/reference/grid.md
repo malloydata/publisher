@@ -39,26 +39,21 @@ The last two are upstream renderer behavior, cheap to work around in the model. 
 - A `dashboard_columns=` alias, an error when it disagrees with `columns`.
 - A text tile entry whose `colspan` is not a positive integer, or that carries a property other than `colspan` and `break`.
 
-## The deprecated single-query form
+## One query as the whole page
 
-An older package may carry `# artifact` on a `query:`, whose one result is the whole page, laid out by `@malloydata/render` from the query's own `# dashboard` tag. It is still served as a grid report, with `query-artifact-deprecated`, until a later release stops reading it. **Do not author one.** When you have to change one, rewrite it, since a tile can be a model-level named query:
+A `# dashboard` query lays out its one result itself: top-level `aggregate:` measures are KPI cards, each `nest:` a tile. List it as the report's one tile, a model-level named query:
 
 ```malloy
-// before
-# artifact { title="Overview" givens { REGION=f'US' } }
-query: overview is orders -> { … }
-
-// after
-## artifact { layout=grid title="Overview" givens { REGION=f'US' } tiles=["overview"] } dashboard { columns=12 }
+## artifact { layout=grid title="Overview" givens { REGION=f'US' } tiles=["overview"] }
+# dashboard { columns=12 }
 query: overview is orders -> { … }
 ```
 
-What to know while one still exists:
+A `# artifact` on the `query:` itself (the older single-query form) is not read: the file is an ordinary model. Move the tag to model level as above.
 
 - It cannot span sources, and a guessed field inside it fails the whole package load, where a bad tile fails alone.
-- A top-level `aggregate:` there is the KPI card; do not nest a `# big_value` view for it (that renders each measure as a full-width bar in one tile). Nest views for tiles; give each a `# colspan` and the first tile after the cards a `# break`. `# dashboard { gap=N table { max_height=N | none } }` are options only this form reads.
-- `# artifact` is read off a `query:`, never a `view:`.
+- A top-level `aggregate:` there is the KPI card; do not nest a `# big_value` view for it (that renders each measure as a full-width bar in one tile). Nest views for tiles; give each a `# colspan` and the first tile after the cards a `# break`. `# dashboard { gap=N table { max_height=N | none } }` are options only a `# dashboard` query reads.
 - **One plain nested table, every `# colspan` and `# break` dropped**: a `f'…'` filter literal in a `givens { … }` block shares a line with `# dashboard`. Put `# dashboard` on its own line.
 - **Nothing lines up**: `# colspan` without `columns=N`, so items flow at their natural widths.
 
-To tell those two apart, run the page's own query, `{"queryName": "<the manifest's query>"}`, and read `renderLogs` on the response: `Unknown render tag 'colspan'` means the renderer never saw a `# dashboard` tag (check both causes); `Ignored # colspan … only applies in columns mode` means it saw the tag but no count. Neither reaches the package warnings.
+To tell those two apart, run the tile, `{"query": "run: overview"}`, and read `renderLogs` on the response: `Unknown render tag 'colspan'` means the renderer never saw a `# dashboard` tag (check both causes); `Ignored # colspan … only applies in columns mode` means it saw the tag but no count. Neither reaches the package warnings.

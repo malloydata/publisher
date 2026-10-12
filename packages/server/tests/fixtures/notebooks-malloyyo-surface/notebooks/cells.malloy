@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Cells" }
+## artifact { layout=linear title="Cells" }
 import "../models/orders.malloy"
 import "../models/hidden.malloy"
 import "../models/secured.malloy"

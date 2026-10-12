@@ -71,11 +71,9 @@ tags:
       wherever it lives, with a linear or grid layout - their listing,
       manifests, and cells
   - name: notebooks
-    description:
-      Deprecated aliases for the linear reports. Use the `reports` routes.
+    description: Deprecated aliases for the linear reports. Use the `reports` routes.
   - name: dashboards
-    description:
-      Deprecated aliases for the grid reports. Use the `reports` routes.
+    description: Deprecated aliases for the grid reports. Use the `reports` routes.
   - name: data-apps
     description:
       In-package HTML data apps (static pages served from a package's public/
@@ -2040,6 +2038,144 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/reports:
+    get:
+      tags:
+        - reports
+      operationId: list-reports
+      summary: List package reports
+      description: |
+        Lists every report in the package, in path order. A report is a
+        `.malloy` file anywhere in the package, outside `public/`, that carries
+        an artifact tag: a model-level `## artifact`, or the deprecated
+        query-level `# artifact` on a `query:`. The package's root
+        `index.malloy` is never a report (it is the surface). A legacy
+        `.malloynb` is also a report, linear and read-only. Where a file lives
+        carries no meaning: `dashboards/` and `notebooks/` are ordinary
+        directory names. Everything else is an ordinary model, which a report
+        may import.
+
+        A report's `layout` is decided by its tags, first match wins: the
+        tag's `layout=` (`grid` or `linear`); else the deprecated `kind=`
+        (`dashboard` is grid, `notebook` is linear); else grid for a
+        query-level `# artifact`; else grid for a model-level tag that lists
+        `tiles` or carries a `dashboard { … }` grid tag; else linear.
+
+        A report is identified by its `path`. `name`, its basename, is a
+        display label only: two reports may share one.
+
+        Every report is listed whatever the package's surface; the surface
+        limits what its tiles and cells may read, not whether it is listed. A
+        report that failed to compile is listed with its `error`. A tagged grid
+        report with no tiles yet is not served and not listed.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: The reports in the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Report"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/reports/{path}:
+    get:
+      tags:
+        - reports
+      operationId: get-report
+      summary: Get a report manifest
+      description: |
+        Everything a viewer needs to render one report, addressed by its path in
+        the package, including its extension, exactly as list-reports gives
+        it (`sales/q3.malloy`). A report written as tiles, of either layout, carries the
+        manifest fields (`tiles` or `query`, `dashboardColumns`,
+        `startingGivens`, `autorun`, `givens`): its tiles run through the model
+        query endpoint with `givens`, using `path` as the model. A linear
+        report written as `run:` cells, or a `.malloynb`, carries `notebook`
+        instead: its cells as get-notebook returned them. A `.malloy` report's
+        cells run through the model query endpoint, each cell's `text` as
+        `query` and `path` as the model; a `.malloynb`'s through the
+        deprecated execute-notebook-cell.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: path
+          in: path
+          description: >-
+            The report's path within the package, including `.malloy` (or
+            `.malloynb`): the `path` list-reports returns.
+          required: true
+          schema:
+            type: string
+        - name: versionId
+          in: query
+          description: Version identifier for the package
+          required: false
+          schema:
+            $ref: "#/components/schemas/VersionIdPattern"
+      responses:
+        "200":
+          description: The report manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportManifest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # ── DEPRECATED ──────────────────────────────────────────────────────────
+  # The `…/dashboards*` and `…/notebooks*` routes, kept for clients that still
+  # read them, until a later release removes them. Use `…/reports*` above.
+  # Their schemas (`Dashboard`, `DashboardManifest`, `DashboardTile`,
+  # `Notebook`, `RawNotebook`) are in the deprecated section of the schemas;
+  # no report schema references them.
   /environments/{environmentName}/packages/{packageName}/dashboards:
     get:
       tags:
@@ -2442,138 +2578,6 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-
-  /environments/{environmentName}/packages/{packageName}/reports:
-    get:
-      tags:
-        - reports
-      operationId: list-reports
-      summary: List package reports
-      description: |
-        Lists every report in the package, in path order. A report is a
-        `.malloy` file anywhere in the package, outside `public/`, that carries
-        an artifact tag: a model-level `## artifact`, or the deprecated
-        query-level `# artifact` on a `query:`. The package's root
-        `index.malloy` is never a report (it is the surface). A legacy
-        `.malloynb` is also a report, linear and read-only. Where a file lives
-        carries no meaning: `dashboards/` and `notebooks/` are ordinary
-        directory names. Everything else is an ordinary model, which a report
-        may import.
-
-        A report's `layout` is decided by its tags, first match wins: the
-        tag's `layout=` (`grid` or `linear`); else the deprecated `kind=`
-        (`dashboard` is grid, `notebook` is linear); else grid for a
-        query-level `# artifact`; else grid for a model-level tag that lists
-        `tiles` or carries a `dashboard { … }` grid tag; else linear.
-
-        A report is identified by its `path`. `name`, its basename, is a
-        display label only: two reports may share one.
-
-        Every report is listed whatever the package's surface; the surface
-        limits what its tiles and cells may read, not whether it is listed. A
-        report that failed to compile is listed with its `error`. A tagged grid
-        report with no tiles yet is not served and not listed.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
-      responses:
-        "200":
-          description: The reports in the package
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Report"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/reports/{path}:
-    get:
-      tags:
-        - reports
-      operationId: get-report
-      summary: Get a report manifest
-      description: |
-        Everything a viewer needs to render one report, addressed by its path in
-        the package, including its extension, exactly as list-reports gives
-        it (`sales/q3.malloy`). A report written as tiles, of either layout, carries the
-        manifest fields (`tiles` or `query`, `dashboardColumns`,
-        `startingGivens`, `autorun`, `givens`): its tiles run through the model
-        query endpoint with `givens`, using `path` as the model. A linear
-        report written as `run:` cells, or a `.malloynb`, carries `notebook`
-        instead: its cells as get-notebook returned them. A `.malloy` report's
-        cells run through the model query endpoint, each cell's `text` as
-        `query` and `path` as the model; a `.malloynb`'s through the
-        deprecated execute-notebook-cell.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: path
-          in: path
-          description: >-
-            The report's path within the package, including `.malloy` (or
-            `.malloynb`): the `path` list-reports returns.
-          required: true
-          schema:
-            type: string
-        - name: versionId
-          in: query
-          description: Version identifier for the package
-          required: false
-          schema:
-            $ref: "#/components/schemas/VersionIdPattern"
-      responses:
-        "200":
-          description: The report manifest
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ReportManifest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "501":
-          $ref: "#/components/responses/NotImplemented"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
 
   /environments/{environmentName}/packages/{packageName}/databases:
     get:
@@ -3649,24 +3653,12 @@ components:
             does not resolve, a `# drill` naming a destination that is not a
             report, and a tile, single query or filter suggest that reads a
             source the surface does not export, so it won't load. A `# drill`
-            with no `/` is read as a path from the package root first; when no
-            report is there it falls back, during the deprecation, to the one
-            grid report with that basename or else the one report of either
-            layout with it, and is reported as `drill-target-by-name` (`warn`)
-            with the path to write; otherwise it is unresolved (`error`),
-            naming the candidates.
+            destination is a path from the package root (a bare name is a file
+            at the root); one that names no report is unresolved (`error`).
             Curation findings: a root `index.malloy` carrying an artifact tag,
-            which is ignored (`index-is-not-a-report`, `error`); a report that
-            `index.malloy` imports or `explores` lists (`report-on-surface`,
-            `warn`); a report made by the deprecated query-level
-            `# artifact` (`query-artifact-deprecated`, `warn`, with the
-            model-level tag to write instead); and a query-level `# artifact`
-            that is ignored because its file is on the surface (the root
-            `index.malloy` imports it, directly or through other files, or
-            `explores` lists it), whether or not it declares sources of its
-            own, so the file stays a model (`query-artifact-ignored`, `warn`,
-            naming the importer or `explores`, with the tag to put in a file
-            of its own if a report was meant). Two report findings are about
+            which is ignored (`index-is-not-a-report`, `error`); and a report
+            that `index.malloy` imports or `explores` lists
+            (`report-on-surface`, `warn`). Two report findings are about
             Publisher rather than about the package: one when a file carrying
             an artifact tag could not be read and so is not served at all, and
             one when the lint stops early, in which case the list must be read
@@ -3688,13 +3680,11 @@ components:
             with no statement to take it), `notebook-artifact-unparsed` (an
             `## artifact` tag does not parse), and `notebook-cells-unreadable`
             (the reader could not read a linear report's cells), plus
-            `report-layout-conflict` (`layout=` and `kind=` disagree; `layout=`
-            wins) and `report-layout-unknown` (a `layout=` other than `grid` or
-            `linear`). The rest are `warn` (a mistyped `(markdown)` opener,
-            `report-kind-deprecated` for a tag that spells its layout with the
-            deprecated `kind=`, which is still read, `dashboard` as grid and
-            `notebook` as linear, with the `layout=` to write,
-            `report-layout-implicit` for a tag that names no layout and lists
+            `report-kind-removed` (a tag that sets `kind=`, which is no longer
+            read, so the file is not a report; the finding names the `layout=`
+            to write) and `report-layout-unknown` (a `layout=` other than
+            `grid` or `linear`). The rest are `warn` (a mistyped `(markdown)`
+            opener, `report-layout-implicit` for a tag that names no layout and lists
             no tiles, a block that never closes, and similar).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
@@ -3809,12 +3799,15 @@ components:
                   notebook, the deprecated cell format (one per file, `model`
                   naming it). `deprecated-filter-annotation`: a source declaring
                   deprecated `#(filter)` annotations (one per declaring source,
-                  `model` naming its file and `subject` the source). The per-file
+                  `model` naming its file and `subject` the source).
+                  `report-name-ambiguous`: two or more grid reports share a
+                  basename, so the deprecated `GET …/dashboards/{name}` route
+                  answers 409 for it (one per name, `subject` naming it and the
+                  message every path; `warn`). The per-file
                   report findings (`notebook-…`, `report-…`) and the report
-                  curation and drill findings (`drill-target-by-name`,
-                  `report-on-surface`, `index-is-not-a-report`,
-                  `query-artifact-deprecated`, `query-artifact-ignored`). The
-                  message wording may change; the code does not.
+                  curation findings (`report-on-surface`,
+                  `index-is-not-a-report`). The message wording may change; the
+                  code does not.
               severity:
                 type: string
                 enum:
@@ -3822,8 +3815,8 @@ components:
                   - warn
                 description: >-
                   Finding severity, `error` or `warn` and nothing else; a
-                  deprecated spelling that still reads as written (such as
-                  `report-kind-deprecated`) is `warn`. Render-tag findings use both: `error` for
+                  deprecated form that still loads (such as
+                  `deprecated-malloynb-notebook`) is `warn`. Render-tag findings use both: `error` for
                   a tag malformed for the field it sits on, which renders as
                   "[object Object]" or an inline error at query time, and `warn`
                   for one that is well-formed but inert where it sits and so is
@@ -4422,11 +4415,323 @@ components:
           type: string
           description: Error message if the model failed to compile or load
 
+    Report:
+      type: object
+      required: [resource, packageName, path, name, layout, title, editable]
+      description: |
+        One report in a package, as list-reports lists it: a `.malloy` file
+        whose model-level `## artifact` tag makes it one, wherever it lives
+        outside `public/`, or a `.malloynb`. See ReportManifest for the detail a viewer needs to render
+        one.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the report (get-report)
+        packageName:
+          type: string
+          description: Name of the package containing this report
+        path:
+          type: string
+          description: >-
+            The report's path within its package, such as `sales/q3.malloy`.
+            Its identity, and the only thing that addresses it.
+        name:
+          type: string
+          description: >-
+            The file's basename without its extension. A display label only:
+            two reports in different directories may share it.
+        layout:
+          type: string
+          enum: [grid, linear]
+          description: >-
+            How its tiles are placed: `linear` top to bottom, one column, or
+            `grid` by `columns`, `colspan` and `break`. Decided by its tags (see
+            list-reports), never by where the file lives.
+        title:
+          type: string
+          description: >-
+            Human title: the artifact tag's `title`, else the first line of the
+            `"` notes above the tag, else,
+            for a linear report, its first markdown heading, else `name`.
+        description:
+          type: string
+          description: The report's doc comment, when it has one.
+        editable:
+          type: boolean
+          description: >-
+            Whether the builder opens it as it is: false for a `.malloynb` and
+            for a linear report written as `run:` cells.
+        error:
+          type: string
+          description: >-
+            Error message when the report failed to compile, or its cells could
+            not be read.
+
+    ReportManifest:
+      description: |
+        A `Report` plus what a viewer needs to draw it. A report written as
+        tiles, of either layout, carries `tiles`, `dashboardColumns`,
+        `startingGivens`, `autorun` and `givens`, whose tiles and suggest
+        queries run through `POST …/models/{path}/query` with `givens`. A
+        linear report written as `run:` cells, or a `.malloynb`, carries
+        `notebook` instead.
+      allOf:
+        - $ref: "#/components/schemas/Report"
+        - type: object
+          properties:
+            tiles:
+              type: array
+              description: >-
+                The report's tiles, each run as its own query (or shown as text),
+                in order. Absent on a `run:`-cell report.
+              items:
+                $ref: "#/components/schemas/ReportTile"
+            dashboardColumns:
+              type: integer
+              description: >-
+                Grid width, from the `# dashboard {columns=N}` tag beside the
+                artifact tag. 1 on a linear report. Absent means the viewer's
+                default.
+            startingGivens:
+              allOf:
+                - $ref: "#/components/schemas/EncodedGivenValues"
+              description: >-
+                Starting values for controls, from the artifact tag. URL
+                parameters override these.
+            autorun:
+              type: boolean
+              description: >-
+                False batches control changes behind an Apply button instead of
+                re-running on every change. Defaults to true.
+            givens:
+              type: array
+              description: >-
+                The control row: one entry per given the report's tiles run with
+                (less a given only a source's gate reads, which a host injects),
+                widened to every given the entry file surfaces when a tile cannot be
+                resolved (see `ReportTile.givenNames`). `default` is the value the
+                query endpoint takes, not the Malloy literal: a `filter<…>` given
+                declared `f'West'` publishes `West`.
+              items:
+                $ref: "#/components/schemas/Given"
+            notebook:
+              allOf:
+                - $ref: "#/components/schemas/ReportCells"
+              description: >-
+                For a linear report written as `run:` cells, or a `.malloynb`: its
+                cells and model. Run a `.malloy`
+                report's cell through the model query endpoint, its `text` as
+                `query`; a `.malloynb`'s with execute-notebook-cell. Absent on a
+                report written as tiles, and on a
+                report that failed to compile.
+
+    ReportTile:
+      type: object
+      description: >-
+        One tile of a report. A `query` tile (the default) runs a query; a
+        `text` tile shows markdown and runs nothing, so a caller that runs a
+        report's tiles skips the ones with `kind` `text`.
+      properties:
+        kind:
+          type: string
+          enum: [query, text]
+          description: >-
+            `query` runs `query` through the model query endpoint; `text` shows
+            `markdown`. Absent means `query`.
+        name:
+          type: string
+          description: >-
+            A text tile's name: the bare word in `tiles=[…]` and on its
+            `##|(markdown) name` block. Absent on a query tile.
+        markdown:
+          type: string
+          description: >-
+            A text tile's body, the text of its `##|(markdown) name` block
+            without the opener. Empty when the file has no such block. Absent on
+            a query tile.
+        query:
+          type: string
+          description: >-
+            Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example
+            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
+            the `query` field of a `POST …/models/{path}/query` body, prefixed
+            with `run:`.
+        restricted:
+          type: boolean
+          description: >-
+            Set on a tile of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. The tile carries its `query` and
+            nothing derived from the source: no `givenNames`, no layout tags.
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            Names of the givens this tile's compiled query reads: through its
+            view, its source's `where:`, a joined source's `where:`, a
+            dimension or measure it uses, and its source's `#(authorize)` and
+            `#(access_filter)` gates. A control not listed does not change the
+            tile, which is what a viewer's "Doesn't respond to" chip says. It
+            also tells a caller which tiles a changed control needs to re-run;
+            running a tile with the dashboard's whole control row also works,
+            because an unreferenced given is ignored. Absent when discovery
+            could not resolve the tile (its expression neither compiles nor is
+            a plain `source -> view` or named query the static walk reads), in
+            which case send the whole control row. One such tile
+            widens `ReportManifest.givens` to every given the entry file
+            surfaces, rather than the union over the resolvable tiles, so that
+            the row actually contains the givens that tile filters by.
+        label:
+          type: string
+          description: >-
+            Heading for the tile, from a `# label` on the view or query it names.
+            Absent when it carries none, in which case a viewer derives one from
+            the run expression.
+        subtitle:
+          type: string
+          description:
+            Second line under the heading, from a `# subtitle` on the view or
+            query it names.
+        colspan:
+          type: integer
+          description: >-
+            Grid columns this tile spans, from a `# colspan=N` on the view or
+            query it names, or from `colspan=N` on a text tile's entry in
+            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
+            means one column.
+        break:
+          type: boolean
+          description: >-
+            Start a new grid row at this tile, from a `# break` on the view or
+            query it names, or from `break` on a text tile's entry in
+            `tiles=[…]`. Named for the tag, so every per-tile field on this
+            schema is spelled the way an author writes it. A generated client
+            escapes the attribute where the word is reserved (the Python client
+            exposes `break_`) while the wire key stays `break`.
+        borderless:
+          type: boolean
+          description: >-
+            Draw the result with no card around it, from a `# borderless` on the
+            view or query it names. Together with `label`, `subtitle`, `colspan`
+            and `break` this is the whole per-child tag set `@malloydata/render`
+            resolves for a `# dashboard` nest child, read the same way here so one
+            view presents identically as a tile and as a nest.
+
+    ReportCells:
+      type: object
+      description: >-
+        A linear report written as cells, or a `.malloynb`: its cells, unexecuted,
+        and its model.
+      properties:
+        type:
+          type: string
+          description: Always `notebook`. Distinguishes the payload from the
+            compiled-model shape returned by the model endpoint.
+        packageName:
+          type: string
+          description: Name of the package containing this notebook
+        modelPath:
+          type: string
+          description: Relative path to the notebook file within its package directory
+        format:
+          type: string
+          enum: ["malloynb", "malloy"]
+          description:
+            The file format the notebook is written in. `malloynb` is the
+            cell-separated format; `malloy` is a linear `.malloy` report (see
+            list-reports), wherever it lives, whose cells are
+            its statements and its floating `(markdown)` notes in file order.
+        malloyVersion:
+          type: string
+          description: Version of the Malloy compiler used to generate the notebook data
+        modelInfo:
+          type: string
+          description: JSON string containing model metadata and structure information
+        notebookCells:
+          type: array
+          description: Array of notebook cells containing raw markdown and code content
+          items:
+            $ref: "#/components/schemas/NotebookCell"
+        annotations:
+          type: array
+          description:
+            Array of file-level (##) annotations attached to the notebook. For
+            a `.malloy` notebook, every own note that is not a floating
+            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
+            note below the `## artifact` tag is dropped and not listed.
+          items:
+            type: string
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Starting values for the notebook's controls. A `.malloy` notebook
+            declares them in its artifact tag (`## artifact { givens { … } }`),
+            a `.malloynb` in its file-level tags (`## givens { … }`). URL
+            parameters override these, which is why the two share a shape.
+            Omitted when the notebook declares none.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true. A `.malloy` notebook
+            reads it from its artifact tag (`## artifact { autorun=false }`), a
+            `.malloynb` from its file-level tags (`## autorun=false`). The same
+            flag, with the same default, that `DashboardManifest.autorun`
+            carries.
+        sources:
+          type: array
+          description: Sources defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Source"
+        queries:
+          type: array
+          description: Named queries defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Query"
+
+    DataApp:
+      type: object
+      description:
+        An in-package HTML data app within a Malloy package - a static page
+        served from the package's public/ directory
+      properties:
+        resource:
+          type: string
+          description:
+            Canonical URL to the served data app. Root-relative and does
+            NOT carry the /api/v0 prefix, because a data app is a static asset
+            served off the server root rather than an API resource.
+        packageName:
+          type: string
+          description: Name of the package containing this data app
+        path:
+          type: string
+          description: Relative path to the HTML file within its package directory
+        title:
+          type: string
+          description:
+            Title extracted from the file's <title> tag, or the path if
+            not present
+        fit:
+          type: string
+          enum:
+            - viewport
+          description:
+            Layout hint read from a <meta name="publisher:fit"> tag in the
+            page <head>. "viewport" tells the embedded viewer to fill the
+            available height instead of auto-sizing to the content height, for
+            full-screen apps like slide decks. Omitted for an ordinary
+            content-driven app, which keeps content-height auto-sizing.
+
+    # ── DEPRECATED ────────────────────────────────────────────────────────
+    # The shapes of the deprecated `…/dashboards*` and `…/notebooks*` routes.
+    # No report schema references them; each removal deletes its block here.
+
     Notebook:
       type: object
       deprecated: true
-      description:
-        DEPRECATED, use `Report`. A linear report as the deprecated
+      description: DEPRECATED, use `Report`. A linear report as the deprecated
         list-notebooks route lists it.
       properties:
         environmentName:
@@ -4563,22 +4868,11 @@ components:
             `dashboard` on `GET …/dashboards/{dashboardName}`; a linear
             report's manifest is the `dashboard` field of
             `GET …/notebooks/{path}`.
-        query:
-          type: string
-          description: >-
-            Name of the tagged query whose single result IS the page. Set when the
-            `# artifact` tag sits on a `query:`; a dashboard authored the ordinary
-            way carries `tiles` instead and leaves this absent. A NAME rather than
-            an expression, so it goes in the `queryName` field of a
-            `POST …/models/{path}/query` body. A tile's `query` is the other shape
-            and is not interchangeable with this one; see `DashboardTile.query`.
         tiles:
           type: array
           description: >-
             The dashboard's tiles, each run as its own query and combined into one
-            grid. This is how a dashboard is normally authored, and the only form
-            that can span sources. Absent when the `# artifact` tag sits on a
-            `query:` instead, in which case `query` is set.
+            grid. Absent on a dashboard listed with its compile `error`.
           items:
             $ref: "#/components/schemas/DashboardTile"
         dashboardColumns:
@@ -4634,354 +4928,32 @@ components:
             $ref: "#/components/schemas/Given"
 
     DashboardTile:
-      type: object
+      deprecated: true
       description: >-
-        One tile of a dashboard. A `query` tile (the default) runs a query; a
-        `text` tile shows markdown and runs nothing, so a caller that runs a
-        dashboard's tiles skips the ones with `kind` `text`.
-      properties:
-        kind:
-          type: string
-          enum: [query, text]
-          description: >-
-            `query` runs `query` through the model query endpoint; `text` shows
-            `markdown`. Absent means `query`.
-        name:
-          type: string
-          description: >-
-            A text tile's name: the bare word in `tiles=[…]` and on its
-            `##|(markdown) name` block. Absent on a query tile.
-        markdown:
-          type: string
-          description: >-
-            A text tile's body, the text of its `##|(markdown) name` block
-            without the opener. Empty when the file has no such block. Absent on
-            a query tile.
-        query:
-          type: string
-          description: >-
-            Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example
-            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
-            the `query` field of a `POST …/models/{path}/query` body, prefixed
-            with `run:`. Sending it in `queryName`, the field
-            `DashboardManifest.query` takes, is rejected.
-        restricted:
-          type: boolean
-          description: >-
-            Set on a tile of a compiled document (`CompileResult.document`) whose
-            source the caller may not read. The tile carries its `query` and
-            nothing derived from the source: no `givenNames`, no layout tags.
-        givenNames:
-          type: array
-          items:
-            type: string
-          description: |
-            Names of the givens this tile's compiled query reads: through its
-            view, its source's `where:`, a joined source's `where:`, a
-            dimension or measure it uses, and its source's `#(authorize)` and
-            `#(access_filter)` gates. A control not listed does not change the
-            tile, which is what a viewer's "Doesn't respond to" chip says. It
-            also tells a caller which tiles a changed control needs to re-run;
-            running a tile with the dashboard's whole control row also works,
-            because an unreferenced given is ignored. Absent when discovery
-            could not resolve the tile (its expression neither compiles nor is
-            a plain `source -> view` or named query the static walk reads), in
-            which case send the whole control row. One such tile
-            widens `DashboardManifest.givens` to every given the entry file
-            surfaces, rather than the union over the resolvable tiles, so that
-            the row actually contains the givens that tile filters by.
-        label:
-          type: string
-          description: >-
-            Heading for the tile, from a `# label` on the view or query it names.
-            Absent when it carries none, in which case a viewer derives one from
-            the run expression.
-        subtitle:
-          type: string
-          description:
-            Second line under the heading, from a `# subtitle` on the view or
-            query it names.
-        colspan:
-          type: integer
-          description: >-
-            Grid columns this tile spans, from a `# colspan=N` on the view or
-            query it names, or from `colspan=N` on a text tile's entry in
-            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
-            means one column.
-        break:
-          type: boolean
-          description: >-
-            Start a new grid row at this tile, from a `# break` on the view or
-            query it names, or from `break` on a text tile's entry in
-            `tiles=[…]`. Named for the tag, so every per-tile field on this
-            schema is spelled the way an author writes it. A generated client
-            escapes the attribute where the word is reserved (the Python client
-            exposes `break_`) while the wire key stays `break`.
-        borderless:
-          type: boolean
-          description: >-
-            Draw the result with no card around it, from a `# borderless` on the
-            view or query it names. Together with `label`, `subtitle`, `colspan`
-            and `break` this is the whole per-child tag set `@malloydata/render`
-            resolves for a `# dashboard` nest child, read the same way here so one
-            view presents identically as a tile and as a nest.
-
-    Report:
-      type: object
-      description: |
-        One report in a package, as list-reports lists it: a `.malloy` file
-        carrying an artifact tag, wherever it lives outside `public/`, or a
-        `.malloynb`. See ReportManifest for the detail a viewer needs to render
-        one.
-      properties:
-        resource:
-          type: string
-          description: Resource path to the report (get-report)
-        packageName:
-          type: string
-          description: Name of the package containing this report
-        path:
-          type: string
-          description: >-
-            The report's path within its package, such as `sales/q3.malloy`.
-            Its identity, and the only thing that addresses it.
-        name:
-          type: string
-          description: >-
-            The file's basename without its extension. A display label only:
-            two reports in different directories may share it.
-        layout:
-          type: string
-          enum: [grid, linear]
-          description: >-
-            How its tiles are placed: `linear` top to bottom, one column, or
-            `grid` by `columns`, `colspan` and `break`. Decided by its tags (see
-            list-reports), never by where the file lives.
-        title:
-          type: string
-          description: >-
-            Human title: the artifact tag's `title`, else the first line of the
-            `"` notes above the tag (a query-level tag's own `#"` notes), else,
-            for a linear report, its first markdown heading, else `name`.
-        description:
-          type: string
-          description: The report's doc comment, when it has one.
-        editable:
-          type: boolean
-          description: >-
-            Whether the builder opens it as it is: false for a `.malloynb`, for
-            a linear report written as `run:` cells, and for a report made by
-            the deprecated query-level `# artifact`.
-        error:
-          type: string
-          description: >-
-            Error message when the report failed to compile, or its cells could
-            not be read.
-
-    ReportManifest:
-      type: object
-      description: |
-        Everything a viewer needs to render one report. Every report carries
-        the `Report` fields. A report written as tiles, of either layout,
-        carries the manifest fields too (`tiles` or `query`,
-        `dashboardColumns`, `startingGivens`, `autorun`, `givens`), whose
-        tiles, single query and suggest queries run through
-        `POST …/models/{path}/query` with `givens`. A linear report written as
-        `run:` cells, or a `.malloynb`, carries `notebook` instead.
-      properties:
-        resource:
-          type: string
-          description: Resource path to the report
-        packageName:
-          type: string
-          description: Name of the package containing this report
-        path:
-          type: string
-          description: >-
-            The report's path within its package, its identity, and the model
-            its tiles and queries run against.
-        name:
-          type: string
-          description: The file's basename without its extension; a display label.
-        layout:
-          type: string
-          enum: [grid, linear]
-          description: >-
-            How its tiles are placed. A `linear` report is one column:
-            `dashboardColumns` is 1 whatever the file says.
-        title:
-          type: string
-          description: Human title, as `Report.title`.
-        description:
-          type: string
-          description: The report's doc comment, when it has one.
-        editable:
-          type: boolean
-          description: As `Report.editable`.
-        error:
-          type: string
-          description: Error message when the report failed to compile.
-        query:
-          type: string
-          description: >-
-            Name of the tagged query whose single result IS the page, for a
-            report made by the deprecated query-level `# artifact`. A NAME, so
-            it goes in the `queryName` field of a query body.
-        tiles:
-          type: array
-          description: >-
-            The report's tiles, each run as its own query (or shown as text),
-            in order. Absent on a `run:`-cell report and on the query-level form.
-          items:
-            $ref: "#/components/schemas/DashboardTile"
-        dashboardColumns:
-          type: integer
-          description: >-
-            Grid width, from the `# dashboard {columns=N}` tag beside the
-            artifact tag. 1 on a linear report. Absent means the viewer's
-            default.
-        startingGivens:
-          allOf:
-            - $ref: "#/components/schemas/EncodedGivenValues"
-          description: >-
-            Starting values for controls, from the artifact tag. URL
-            parameters override these.
-        autorun:
-          type: boolean
-          description: >-
-            False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true.
-        givens:
-          type: array
-          description: >-
-            The control row, as `DashboardManifest.givens` describes it.
-          items:
-            $ref: "#/components/schemas/Given"
-        notebook:
-          allOf:
-            - $ref: "#/components/schemas/RawNotebook"
-          description: >-
-            For a linear report written as `run:` cells, or a `.malloynb`: its
-            cells and model, as get-notebook returned them. Run a `.malloy`
-            report's cell through the model query endpoint, its `text` as
-            `query`; a `.malloynb`'s with execute-notebook-cell. Absent on a
-            report written as tiles, and on a
-            report that failed to compile.
-
-    DataApp:
-      type: object
-      description:
-        An in-package HTML data app within a Malloy package - a static page
-        served from the package's public/ directory
-      properties:
-        resource:
-          type: string
-          description:
-            Canonical URL to the served data app. Root-relative and does
-            NOT carry the /api/v0 prefix, because a data app is a static asset
-            served off the server root rather than an API resource.
-        packageName:
-          type: string
-          description: Name of the package containing this data app
-        path:
-          type: string
-          description: Relative path to the HTML file within its package directory
-        title:
-          type: string
-          description:
-            Title extracted from the file's <title> tag, or the path if
-            not present
-        fit:
-          type: string
-          enum:
-            - viewport
-          description:
-            Layout hint read from a <meta name="publisher:fit"> tag in the
-            page <head>. "viewport" tells the embedded viewer to fill the
-            available height instead of auto-sizing to the content height, for
-            full-screen apps like slide decks. Omitted for an ordinary
-            content-driven app, which keeps content-height auto-sizing.
+        DEPRECATED: `ReportTile`, under the name the deprecated dashboard
+        routes gave it.
+      allOf:
+        - $ref: "#/components/schemas/ReportTile"
 
     RawNotebook:
-      type: object
-      description: Raw Malloy notebook with unexecuted cell contents
-      properties:
-        type:
-          type: string
-          description: Always `notebook`. Distinguishes the payload from the
-            compiled-model shape returned by the model endpoint.
-        packageName:
-          type: string
-          description: Name of the package containing this notebook
-        modelPath:
-          type: string
-          description: Relative path to the notebook file within its package directory
-        format:
-          type: string
-          enum: ["malloynb", "malloy"]
-          description:
-            The file format the notebook is written in. `malloynb` is the
-            cell-separated format; `malloy` is a linear `.malloy` report (see
-            list-reports), wherever it lives, whose cells are
-            its statements and its floating `(markdown)` notes in file order.
-        malloyVersion:
-          type: string
-          description: Version of the Malloy compiler used to generate the notebook data
-        modelInfo:
-          type: string
-          description: JSON string containing model metadata and structure information
-        notebookCells:
-          type: array
-          description: Array of notebook cells containing raw markdown and code content
-          items:
-            $ref: "#/components/schemas/NotebookCell"
-        dashboard:
-          allOf:
-            - $ref: "#/components/schemas/DashboardManifest"
-          description: >-
-            The tile layout of a linear report written as one (`## artifact {
-            layout=linear tiles=[…] }`), in the shape a dashboard has, with
-            `layout` `linear` and one column. Absent on a notebook written as
-            cells. Its tiles run through the model query endpoint at
-            `modelPath`; `notebookCells` carries the same content as cells for
-            readers that do not draw a layout.
-        annotations:
-          type: array
-          description:
-            Array of file-level (##) annotations attached to the notebook. For
-            a `.malloy` notebook, every own note that is not a floating
-            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
-            note below the `## artifact` tag is dropped and not listed.
-          items:
-            type: string
-        startingGivens:
-          allOf:
-            - $ref: "#/components/schemas/EncodedGivenValues"
-          description:
-            Starting values for the notebook's controls. A `.malloy` notebook
-            declares them in its artifact tag (`## artifact { givens { … } }`),
-            a `.malloynb` in its file-level tags (`## givens { … }`). URL
-            parameters override these, which is why the two share a shape.
-            Omitted when the notebook declares none.
-        autorun:
-          type: boolean
-          description:
-            False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true. A `.malloy` notebook
-            reads it from its artifact tag (`## artifact { autorun=false }`), a
-            `.malloynb` from its file-level tags (`## autorun=false`). The same
-            flag, with the same default, that `DashboardManifest.autorun`
-            carries.
-        sources:
-          type: array
-          description: Sources defined in the notebook's model
-          items:
-            $ref: "#/components/schemas/Source"
-        queries:
-          type: array
-          description: Named queries defined in the notebook's model
-          items:
-            $ref: "#/components/schemas/Query"
+      deprecated: true
+      description: >-
+        DEPRECATED: `ReportCells`, as get-notebook answers them, plus the tile
+        layout of a linear report written as tiles.
+      allOf:
+        - $ref: "#/components/schemas/ReportCells"
+        - type: object
+          properties:
+            dashboard:
+              allOf:
+                - $ref: "#/components/schemas/DashboardManifest"
+              description: >-
+                The tile layout of a linear report written as one (`## artifact {
+                layout=linear tiles=[…] }`), in the shape a dashboard has, with
+                `layout` `linear` and one column. Absent on a notebook written as
+                cells. Its tiles run through the model query endpoint at
+                `modelPath`; `notebookCells` carries the same content as cells for
+                readers that do not draw a layout.
 
     CompiledModel:
       type: object
@@ -6176,8 +6148,7 @@ components:
           type: integer
           minimum: 1
           maximum: 2147483647
-          description:
-            Maximum run time of each statement on the database, in
+          description: Maximum run time of each statement on the database, in
             milliseconds. The database cancels a statement that exceeds it.
             When omitted, the database's own statement_timeout applies. Not
             applied to a DuckLake catalog connection.
@@ -6383,6 +6354,7 @@ components:
       required:
         - storage
         - catalog
+
     BigqueryConnection:
       type: object
       description: Google BigQuery database connection configuration
@@ -6600,6 +6572,7 @@ components:
         azureConnection:
           $ref: "#/components/schemas/AzureConnection"
     # TODO: What is this?  Can we remove it?
+
     SqlSource:
       type: object
       properties:
@@ -6927,8 +6900,7 @@ components:
           enum: [grid, linear]
           description: >-
             The report's layout, by the one rule every report follows: the
-            tag's `layout=`, else its deprecated `kind=` (`dashboard` is grid,
-            `notebook` is linear), else grid when it lists `tiles` or carries a
+            tag's `layout=`, else grid when it lists `tiles` or carries a
             `dashboard { … }` grid tag, else linear.
         kind:
           type: string
@@ -7324,6 +7296,7 @@ components:
             The given names this term reads, in first-seen order. A reader must
             bind these for the term to apply; binding none applies each given's
             declared default, as a live query would.
+
     JoinedTerms:
       type: object
       required: [alias, source, terms]
@@ -7346,6 +7319,7 @@ components:
           description: >-
             The joined source's own stripped terms, which its binding re-applies
             with the caller's values.
+
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]

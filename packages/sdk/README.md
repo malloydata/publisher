@@ -19,9 +19,10 @@ The Publisher SDK (`@malloy-publisher/sdk`) is a comprehensive React component l
 8. [Hooks](#hooks)
 9. [Utilities](#utilities)
 10.   [Document Storage](#document-storage)
-11.   [Styling](#styling)
-12.   [Building a Custom Data App](#building-a-custom-data-app)
-13.   [API Reference](#api-reference)
+11.   [Telemetry](#telemetry)
+12.   [Styling](#styling)
+13.   [Building a Custom Data App](#building-a-custom-data-app)
+14.   [API Reference](#api-reference)
 
 ---
 
@@ -949,8 +950,8 @@ store; a repo-backed host writes them to the package directory.
 ### DocumentStorage Interface
 
 ```tsx
-/** The kinds of document the SDK authors. */
-type DocumentType = "dashboard" | "notebook";
+/** A report's layout, recorded beside the document: metadata, not identity. */
+type DocumentType = "grid" | "linear";
 
 interface Workspace {
    name: string;
@@ -969,8 +970,10 @@ interface Workspace {
 
 interface DocumentLocator {
    workspace: string;
+   /** The report's layout: a save records it, a listing reports it. */
    type: DocumentType;
-   path: string; // as the backend spells it, e.g. "<env>/<pkg>/sales/overview.malloy"
+   /** The identity: "<env>/<pkg>/<package path>", e.g. "env/pkg/sales/overview.malloy". */
+   path: string;
 }
 
 interface DocumentStorage {
@@ -980,6 +983,10 @@ interface DocumentStorage {
       type?: DocumentType,
    ): Promise<DocumentLocator[]>;
    getDocument(locator: DocumentLocator): Promise<string>;
+   /** Optional: the layout recorded for the one document at locator.path, without listing the workspace. */
+   getDocumentType?(
+      locator: Pick<DocumentLocator, "workspace" | "path">,
+   ): Promise<DocumentType>;
    saveDocument(locator: DocumentLocator, content: string): Promise<void>;
    deleteDocument(locator: DocumentLocator): Promise<void>;
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
@@ -998,7 +1005,10 @@ documents somewhere else, for example every grid report under `dashboards/<basen
 the package already has, and returns that path as `CreatedDocument.path`. A store without it is assumed to
 write at the path asked for, as before.
 
-`getDocument`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
+`getDocumentType` is optional too: the SDK uses it to learn a draft's layout before opening it, and
+falls back to `listDocuments` (which reads the whole workspace) when a store leaves it out.
+
+`getDocument`, `getDocumentType`, `deleteDocument` and `moveDocument` reject with `DocumentNotFoundError`
 when the document is not there, and with anything else when the backend could not be
 asked. The distinction is load-bearing rather than cosmetic: a failed read reported as
 "there is no document" reads as "the package is the only copy", and saving on that
@@ -1006,13 +1016,24 @@ belief overwrites the copy that was actually there. Use `isDocumentNotFound(erro
 rather than `instanceof`, since the `es` and `cjs` builds carry their own copy of the
 class.
 
-A document is a string; the `type` on its locator says what kind so a backend can keep kinds apart
-and a listing can ask for one. Every method rejects when the document is not there, so a caller can
-tell "missing" from "empty".
+A document is a string, and **its path is its identity**: one path is one document. The `type` on
+its locator is the report's layout (`grid` or `linear`), metadata the store keeps beside the
+document. `saveDocument` and `moveDocument` record it (a layout switch saves the same path with the
+other layout, replacing the document), `listDocuments` reports it and may filter by it, and
+`getDocument` and `deleteDocument` find the document at `locator.path` whatever `type` says. Every
+method rejects when the document is not there, so a caller can tell "missing" from "empty".
+
+A store written against the earlier contract, which keyed a document by `type` and `path` together
+with `type` `"dashboard"` or `"notebook"`, keys by `path` alone and records the layout instead:
+`grid` for what was `dashboard`, `linear` for what was `notebook`.
 
 ### BrowserDocumentStorage
 
-The default: one workspace named `Local`, private to this browser and origin.
+The default: one workspace named `Local`, private to this browser and origin. A document is kept
+under `publisher:report:<path>` with its layout. A draft saved under the earlier type-keyed scheme
+(`publisher:document:<dashboard|notebook>:<path>`) is moved to its path the first time the store is
+used, so it is still found; where a document is already at that path, the older copy is left where
+it was rather than written over it.
 
 ```tsx
 import {
@@ -1029,8 +1050,8 @@ const storage = new BrowserDocumentStorage();
 
 ### A custom backend
 
-Implement the interface over whatever you have. For example, over a document API keyed by workspace,
-type and path:
+Implement the interface over whatever you have. For example, over a document API keyed by workspace
+and path, with the layout stored on the document:
 
 ```tsx
 class ApiDocumentStorage implements DocumentStorage {
@@ -1085,17 +1106,18 @@ class ApiDocumentStorage implements DocumentStorage {
 
 ### Hosts that file reports by layout
 
-The builder (`DashboardEditor` / `DashboardBuilder` from `@malloy-publisher/sdk/builder`) reads a report's
+The builder (`ReportEditor` / `ReportBuilder` from `@malloy-publisher/sdk/builder`; `DashboardEditor` / `DashboardBuilder` are deprecated aliases) reads a report's
 layout from its text alone, never from where the file lives, in the same order the server uses, first match
 wins:
 
 1. `layout=` in the model-level `## artifact` tag: `grid` or `linear`.
-2. Otherwise the deprecated `kind=`: `dashboard` is grid, `notebook` is linear.
-3. Otherwise grid when the tag lists `tiles` (an empty list counts) or a `dashboard { … }` grid tag sits beside it.
-4. Otherwise linear.
+2. Otherwise grid when the tag lists `tiles` (an empty list counts) or the file carries a model-level `dashboard { … }` grid tag.
+3. Otherwise linear.
 
-A file that writes `layout=` never depends on steps 2 to 4, and the builder and `createDocument` always
-write it. The toolbar's Linear / Grid switch rewrites `layout=` and nothing else, so a host that ties a
+A tag that sets the removed `kind=` makes no report, and the builder refuses to open it, naming the
+`layout=` to write. A file that writes `layout=` never depends on steps 2 and 3, and the builder and
+`createDocument` always write it. `readReportTagOfText(text)` from `@malloy-publisher/sdk/builder` gives
+the same answer for any text, for a host that files a document by its layout. The toolbar's Linear / Grid switch rewrites `layout=` and nothing else, so a host that ties a
 report's layout to where it keeps the file (every grid report under `dashboards/`, every linear one under
 `notebooks/`) passes `allowLayoutChange={false}` to hide the switch; otherwise an author can turn a file
 into the other layout without it moving. Default `true`. A document held as text (`textSource`) never
@@ -1116,14 +1138,62 @@ import {
 // Inside a component:
 function MyComponent() {
    const { documentStorage } = useDocumentStorage();
-   const dashboards = await documentStorage.listDocuments(
+   const grids = await documentStorage.listDocuments(
       { name: "Local", writeable: true, description: "" },
-      "dashboard",
+      "grid",
    );
 }
 ```
 
 ---
+
+## Telemetry
+
+The report surfaces report what happens on them through an `onEvent` prop, for the host to log or count:
+`Report` (every layout), `ReportEditor` and `ReportBuilder` from `@malloy-publisher/sdk/builder`,
+`NewDocumentDialog`, `Package` (for its New report dialog), and the deprecated `Dashboard`. Every event is a
+`ReportEvent`, named `report.*`, and carries the report's package `path` and its `layout`; the host knows the
+environment and package and adds them when it logs.
+
+| Event                      | Fields                                                                                | Emitted by                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `report.opened`            | `surface` (`view`/`edit`), `from` (`package`/`draft`/`record`), `tiles`, `durationMs` | `Report` once per report shown; the editor once per open                                         |
+| `report.load_failed`       | `surface`, `category`; `layout` only when known                                       | `Report`, the editor                                                                             |
+| `report.query_failed`      | `tile` (index; absent for the run as a whole), `category`                             | a grid or linear tile, a `run:` cell                                                             |
+| `report.rows_shown`        | `source`, `view`, `field`, `ok`, `durationMs`                                         | the rows behind a value, on a grid or linear report                                              |
+| `report.saved`             | `tiles`, `structural`, `where`, `workspace?`, `converted?`, `durationMs`              | the builder                                                                                      |
+| `report.save_refused`      | `reason`                                                                              | the builder                                                                                      |
+| `report.save_undone`       | `tiles`, `structural`, `where`, `workspace?`, `durationMs`                            | the builder (Undo save)                                                                          |
+| `report.save_undo_refused` | `reason`                                                                              | the builder                                                                                      |
+| `report.created`           | `where` (`package`/`host`), `durationMs`                                              | `createDocument`, so `NewDocumentDialog` and `Package`                                           |
+| `report.create_refused`    | `reason`                                                                              | `createDocument`                                                                                 |
+| `report.layout_changed`    | `from`, `to`                                                                          | the builder's Linear / Grid switch                                                               |
+| `report.drill`             | `to` (`self`/`report`), `outcome` (`resolved`/`unresolved`/`unverified`/`malformed`)  | `Report`: a `to=self` drill, or a drill to another report whose `onNavigate` returned an outcome |
+| `report.explored`          | `tile`                                                                                | reserved: nothing emits it yet                                                                   |
+
+`category` is a `ReportFailure` (`not_found`, `forbidden`, `invalid`, `unsupported`, `server`, `network`,
+`unknown`), never the error's message, which can carry a path or a value. A sink that throws is ignored, so
+telemetry never breaks a report. Inside a `Report`, a failed cell and a refused `to=self` drill are reported
+to `onEvent` instead of the browser console; with no `onEvent` they are still logged.
+
+```tsx
+import { Report, type ReportEvent } from "@malloy-publisher/sdk";
+
+const onEvent = (event: ReportEvent) =>
+   analytics.track(event.type, {
+      environment: "prod",
+      package: "sales",
+      ...event,
+   });
+
+<Report
+   resourceUri="publisher://environments/prod/packages/sales"
+   path="q3.malloy"
+   onEvent={onEvent}
+   // Return what the target resolved to and the drill is reported too.
+   onNavigate={(target) => (openReport(target) ? "resolved" : "unresolved")}
+/>;
+```
 
 ## Styling
 
@@ -1480,8 +1550,8 @@ function EnvironmentList() {
 | `QueryExplorerResult`    | Query builder result             |
 | `SourceAndPath`          | Source info with model path      |
 | `DocumentStorage`        | Document storage interface       |
-| `DocumentLocator`        | Workspace + type + path          |
-| `DocumentType`           | `"dashboard"` or `"notebook"`    |
+| `DocumentLocator`        | Workspace + path, with layout    |
+| `DocumentType`           | `"grid"` or `"linear"`           |
 | `Workspace`              | Workspace metadata               |
 | `ApiError`               | Standardized API error           |
 | `ModelExplorerProps`     | ModelExplorer props              |

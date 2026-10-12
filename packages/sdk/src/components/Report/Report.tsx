@@ -2,25 +2,35 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert } from "@mui/material";
-import type { DashboardManifest, ReportManifest } from "../../client";
+import { useCallback, useEffect, useRef } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { now } from "../../utils/clock";
 import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
 import { DashboardView } from "../Dashboard/DashboardView";
-import type { DashboardEventHandler } from "../Dashboard/telemetry";
 import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
-import { CellNotebook, LinearReport } from "../Notebook/Notebook";
 import { useServer } from "../ServerProvider";
+import { CellReport } from "./CellReport";
+import { LinearReport } from "./LinearReport";
+import {
+   failureCategory,
+   ReportEventsContext,
+   useReportEmitter,
+   type DrillOutcome,
+   type ReportEventHandler,
+} from "./telemetry";
 
 export interface ReportProps {
    /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
    resourceUri: string;
    /**
-    * The report's package path, including `.malloy` (or `.malloynb`), exactly
-    * as `GET …/reports` lists it: `sales/q3.malloy`. Its identity.
+    * The report's package path, including `.malloy`, exactly as
+    * `GET …/reports` lists it: `sales/q3.malloy`. Its identity. A `.malloynb`
+    * the listing also has is rendered by the deprecated `Notebook`, which runs
+    * its cells through the only routes that can.
     */
    path: string;
    /**
@@ -40,12 +50,17 @@ export interface ReportProps {
       managed: readonly string[],
    ) => void;
    /**
-    * Where to go when a `# drill` cell is clicked. `target.dashboard` is the
-    * tag's `to=` as written: a package path without `.malloy` (or, deprecated,
-    * a bare name), for the host to resolve against `GET …/reports`. Without
-    * it, drilling to another report is inert: `to=self` still filters in place.
+    * Where to go when a `# drill` cell is clicked. `target.path` is the
+    * tag's `to=` as written: a package path from the root, without `.malloy`,
+    * for the host to resolve against `GET …/reports` (`resolveDrillTarget`).
+    * Without it, drilling to another report is inert: `to=self` still filters
+    * in place. Return what the target resolved to and the drill is reported
+    * as a `report.drill` event; return nothing and it is not.
     */
-   onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
+   onNavigate?: (
+      target: DrillNavigation,
+      event?: MouseEvent,
+   ) => DrillOutcome | void;
    /**
     * An ordinary link inside a linear report's prose, for a host with its own
     * router. Omitted, links are plain anchors.
@@ -54,25 +69,19 @@ export interface ReportProps {
    /** Height cap for a grid tile's result panel; see `Dashboard`. */
    height?: number;
    maxResultSize?: number;
-   /** The rows shown and tiles explored on a grid report, for the host to log. */
-   onEvent?: DashboardEventHandler;
+   /**
+    * What the report does — opened, failed to load, a failed query, rows
+    * shown, a drill — for the host to log or count; see `ReportEvent`.
+    */
+   onEvent?: ReportEventHandler;
    /** A grid report's tile chrome: `card` (default) or `none`. */
    chrome?: TileChrome;
 }
 
-/** A report manifest as the dashboard renderer reads it: the same fields, with the legacy `kind`. */
-const asDashboardManifest = (manifest: ReportManifest): DashboardManifest => {
-   const { notebook: _cells, ...rest } = manifest;
-   return {
-      ...rest,
-      kind: manifest.layout === "linear" ? "notebook" : "dashboard",
-   } as DashboardManifest;
-};
-
 /**
  * A report of either layout, from `GET …/reports/{path}`: a grid drawn as a
  * dashboard, a linear report top to bottom, and a linear report written as
- * `run:` cells (or a `.malloynb`) cell by cell.
+ * `run:` cells cell by cell, each through the governed query endpoint.
  *
  * Host-agnostic, like `Dashboard`: it takes props rather than reading a
  * router, and hands navigation and URL state back to whoever mounted it.
@@ -118,6 +127,69 @@ export function Report({
       enabled: uriNamesBoth && path !== "",
    });
 
+   // The layout once the report has said; a `run:`-cell report reads top to bottom.
+   const layout = manifest
+      ? manifest.notebook
+         ? "linear"
+         : manifest.layout
+      : undefined;
+   const events = useReportEmitter({ path, layout }, onEvent);
+   // One open or one failure per report shown: a refetch is not another open,
+   // and the guard survives a development double-run of the effect.
+   const reportKey = `${resourceUri}|${path}`;
+   const reported = useRef<string | undefined>(undefined);
+   // Restarted for each report this mount shows, so "opened" times that one.
+   const started = useRef({ key: reportKey, at: now() });
+   if (started.current.key !== reportKey)
+      started.current = { key: reportKey, at: now() };
+   useEffect(() => {
+      if (reported.current === reportKey) return;
+      if (!uriNamesBoth) {
+         reported.current = reportKey;
+         events.emit({
+            type: "report.load_failed",
+            surface: "view",
+            category: "invalid",
+         });
+      } else if (isError) {
+         reported.current = reportKey;
+         events.emit({
+            type: "report.load_failed",
+            surface: "view",
+            category: failureCategory(error),
+         });
+      } else if (manifest?.notebook?.format === "malloynb") {
+         // Report does not run one; the host renders it with `Notebook`.
+         reported.current = reportKey;
+         events.emit({
+            type: "report.load_failed",
+            surface: "view",
+            category: "unsupported",
+         });
+      } else if (isSuccess && manifest) {
+         reported.current = reportKey;
+         events.emit({
+            type: "report.opened",
+            surface: "view",
+            from: "package",
+            tiles: manifest.notebook
+               ? (manifest.notebook.notebookCells?.length ?? 0)
+               : (manifest.tiles?.length ?? 0),
+            durationMs: now() - started.current.at,
+         });
+      }
+   }, [reportKey, uriNamesBoth, isError, error, isSuccess, manifest, events]);
+   // The host resolves a drill to another report; it says what that came to.
+   const navigate = useCallback(
+      (target: DrillNavigation, event?: MouseEvent) => {
+         const outcome = onNavigate?.(target, event);
+         if (outcome)
+            events.emit({ type: "report.drill", to: "report", outcome });
+      },
+      [onNavigate, events],
+   );
+   const drillNavigate = onNavigate ? navigate : undefined;
+
    if (!uriNamesBoth) {
       return (
          <Alert severity="error">
@@ -138,9 +210,18 @@ export function Report({
       return <Loading text={LOADING_COPY.opening("report")} />;
    }
 
-   if (manifest.notebook) {
+   if (manifest.notebook?.format === "malloynb") {
       return (
-         <CellNotebook
+         <Alert severity="info">
+            {path} is a .malloynb notebook, which Report does not run: render it
+            with Notebook.
+         </Alert>
+      );
+   }
+   let body;
+   if (manifest.notebook) {
+      body = (
+         <CellReport
             resourceUri={encodeResourceUri({
                environmentName,
                packageName,
@@ -152,40 +233,44 @@ export function Report({
             givens={givens}
             onGivensChange={onGivensChange}
             onNavigate={onLinkNavigate}
-            onDrillNavigate={onNavigate}
+            onDrillNavigate={drillNavigate}
          />
       );
-   }
-   if (manifest.layout === "linear") {
-      return (
+   } else if (manifest.layout === "linear") {
+      body = (
          <LinearReport
-            manifest={asDashboardManifest(manifest)}
+            manifest={manifest}
             environmentName={environmentName}
             packageName={packageName}
             versionId={versionId}
             documentName={path}
             givens={givens}
             onGivensChange={onGivensChange}
-            onDrillNavigate={onNavigate}
+            onDrillNavigate={drillNavigate}
             maxResultSize={maxResultSize}
+         />
+      );
+   } else {
+      body = (
+         <DashboardView
+            manifest={manifest}
+            environmentName={environmentName}
+            packageName={packageName}
+            versionId={versionId}
+            documentName={path}
+            givens={givens}
+            onGivensChange={onGivensChange}
+            onNavigate={drillNavigate}
+            height={height}
+            maxResultSize={maxResultSize}
+            chrome={chrome}
          />
       );
    }
    return (
-      <DashboardView
-         manifest={asDashboardManifest(manifest)}
-         environmentName={environmentName}
-         packageName={packageName}
-         versionId={versionId}
-         documentName={path}
-         givens={givens}
-         onGivensChange={onGivensChange}
-         onNavigate={onNavigate}
-         height={height}
-         maxResultSize={maxResultSize}
-         onEvent={onEvent}
-         chrome={chrome}
-      />
+      <ReportEventsContext.Provider value={events}>
+         {body}
+      </ReportEventsContext.Provider>
    );
 }
 

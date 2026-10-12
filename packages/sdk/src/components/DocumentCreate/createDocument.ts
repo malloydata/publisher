@@ -1,25 +1,21 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { saveTarget } from "../DashboardBuilder/documentSession";
+import { saveTarget } from "../ReportBuilder/documentSession";
 import {
    isDocumentNotFound,
    type DocumentLocator,
    type DocumentStorage,
-   type DocumentType,
    type Workspace,
 } from "../DocumentStorage/DocumentStorage";
-import {
-   kindOfLayout,
-   layoutOfKind,
-   type ReportLayout,
-} from "../Package/documentLocation";
+import type { ReportLayout } from "../Package/documentLocation";
 import {
    locatorFor,
    normalizeDirectory,
    reportPathForTitle,
 } from "./documentPath";
-import type { DocumentCreatedEvent } from "./events";
+import { reportEmitter, type ReportEventHandler } from "../Report/telemetry";
+import { now } from "../../utils/clock";
 import { newDocumentProblem, type NewDocument } from "./guards";
 import { newReportSource } from "./newNotebook";
 
@@ -62,8 +58,6 @@ export type CreateTarget =
      };
 
 export interface CreatedDocument {
-   /** The report's layout in the legacy vocabulary: what a host's store files it under. */
-   kind: DocumentType;
    layout: ReportLayout;
    /**
     * Package-relative, e.g. `sales.malloy`: the report's identity. At the
@@ -80,10 +74,8 @@ export interface CreatedDocument {
 }
 
 export interface CreateDocumentOptions {
-   /** The report's layout. Default: `kind`'s, else linear. */
+   /** The report's layout. Default linear. */
    layout?: ReportLayout;
-   /** @deprecated Pass `layout`. `dashboard` is grid, `notebook` linear. */
-   kind?: DocumentType;
    /**
     * Exactly where to write it, package-relative with `.malloy`. A path that is
     * taken is refused rather than renamed. Absent, the title's slug is used at
@@ -95,7 +87,8 @@ export interface CreateDocumentOptions {
    document: NewDocument;
    target: CreateTarget;
    onCreated?: (created: CreatedDocument) => void;
-   onEvent?: (event: DocumentCreatedEvent) => void;
+   /** `report.created` with where it landed, or `report.create_refused` with why not. */
+   onEvent?: ReportEventHandler;
 }
 
 const slugOf = (path: string) =>
@@ -112,7 +105,8 @@ export function reportPathProblem(path: string): string | undefined {
    // Without case: on a case-insensitive file system `Public/` is `public/`.
    if (segments[0].toLowerCase() === "public")
       return "A report cannot live under public/, which is served as plain files.";
-   if (path === "index.malloy")
+   // Without case too: on a case-insensitive file system it is the surface.
+   if (path.toLowerCase() === "index.malloy")
       return "The package's index.malloy is its surface, never a report.";
    return undefined;
 }
@@ -129,11 +123,35 @@ export function reportPathProblem(path: string): string | undefined {
 export async function createDocument(
    options: CreateDocumentOptions,
 ): Promise<CreatedDocument> {
-   const { document, target, onCreated, onEvent } = options;
-   const layout: ReportLayout =
-      options.layout ?? (options.kind ? layoutOfKind(options.kind) : "linear");
-   const kind = kindOfLayout(layout);
-   const problem = newDocumentProblem(kind, document);
+   const layout: ReportLayout = options.layout ?? "linear";
+   const startedAt = now();
+   let created: CreatedDocument;
+   try {
+      created = await writeNewReport(options, layout);
+   } catch (error) {
+      reportEmitter({ path: options.path ?? "", layout }, options.onEvent).emit(
+         {
+            type: "report.create_refused",
+            reason: error instanceof Error ? error.message : String(error),
+         },
+      );
+      throw error;
+   }
+   reportEmitter({ path: created.path, layout }, options.onEvent).emit({
+      type: "report.created",
+      where: options.target.route === "package" ? "package" : "host",
+      durationMs: now() - startedAt,
+   });
+   options.onCreated?.(created);
+   return created;
+}
+
+async function writeNewReport(
+   options: CreateDocumentOptions,
+   layout: ReportLayout,
+): Promise<CreatedDocument> {
+   const { document, target } = options;
+   const problem = newDocumentProblem(document);
    if (problem) throw new Error(problem);
    const directory = normalizeDirectory(options.directory);
    // The one path asked for, or the title's slug and its numbered variants. Taken is by path, and only by path.
@@ -153,7 +171,6 @@ export async function createDocument(
    // The import is relative to where the report lands, so each candidate gets its own text.
    const sourceAt = (path: string) => newReportSource(document, layout, path);
 
-   let created: CreatedDocument;
    if (target.route === "package") {
       const taken = new Set(target.existing);
       let path: string | undefined;
@@ -169,55 +186,46 @@ export async function createDocument(
          }
       }
       if (path === undefined) throw noFreeName(document.title, options.path);
-      created = { kind, layout, path, slug: slugOf(path) };
-   } else {
-      const { storage, workspace, environmentName, packageName } = target;
-      const inPackage = new Set(target.existing);
-      const listed = new Set(
-         (await storage.listDocuments(workspace, kind)).map((l) => l.path),
-      );
-      let found: CreatedDocument | undefined;
-      for (const requested of candidates) {
-         const locator = locatorFor(
-            kind,
-            workspace.name,
-            environmentName,
-            packageName,
-            requested,
-         );
-         // Where the file really lands: the text is rendered for that path, so its imports resolve there.
-         const path =
-            (await storage.resolveDocumentPath?.(locator)) ?? requested;
-         if (
-            listed.has(locator.path) ||
-            inPackage.has(requested) ||
-            inPackage.has(path)
-         )
-            continue;
-         let present = true;
-         try {
-            await storage.getDocument(locator);
-         } catch (error) {
-            // Only absence frees the name; a backend that could not answer says nothing about it.
-            if (!isDocumentNotFound(error)) throw error;
-            present = false;
-         }
-         if (!present) {
-            found = { kind, layout, path, slug: slugOf(path), locator };
-            break;
-         }
-      }
-      if (found === undefined) throw noFreeName(document.title, options.path);
-      await storage.saveDocument(found.locator!, sourceAt(found.path));
-      created = found;
+      return { layout, path, slug: slugOf(path) };
    }
-
-   onEvent?.({
-      type: `${kind}.created`,
-      where: target.route === "package" ? "package" : "host",
-   });
-   onCreated?.(created);
-   return created;
+   const { storage, workspace, environmentName, packageName } = target;
+   const inPackage = new Set(target.existing);
+   const listed = new Set(
+      (await storage.listDocuments(workspace)).map((l) => l.path),
+   );
+   let found: CreatedDocument | undefined;
+   for (const requested of candidates) {
+      const locator = locatorFor(
+         layout,
+         workspace.name,
+         environmentName,
+         packageName,
+         requested,
+      );
+      // Where the file really lands: the text is rendered for that path, so its imports resolve there.
+      const path = (await storage.resolveDocumentPath?.(locator)) ?? requested;
+      if (
+         listed.has(locator.path) ||
+         inPackage.has(requested) ||
+         inPackage.has(path)
+      )
+         continue;
+      let present = true;
+      try {
+         await storage.getDocument(locator);
+      } catch (error) {
+         // Only absence frees the name; a backend that could not answer says nothing about it.
+         if (!isDocumentNotFound(error)) throw error;
+         present = false;
+      }
+      if (!present) {
+         found = { layout, path, slug: slugOf(path), locator };
+         break;
+      }
+   }
+   if (found === undefined) throw noFreeName(document.title, options.path);
+   await storage.saveDocument(found.locator!, sourceAt(found.path));
+   return found;
 }
 
 const isConflict = (error: unknown) =>

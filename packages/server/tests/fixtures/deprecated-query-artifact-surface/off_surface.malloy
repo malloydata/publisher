@@ -1,6 +1,0 @@
-// Not imported by index.malloy and not in explores: still a report (grid),
-// with the deprecation warning and the `## artifact` rewrite.
-import { direct_src } from "models/direct.malloy"
-
-# artifact { title="Off surface" }
-query: off_overview is direct_src -> v

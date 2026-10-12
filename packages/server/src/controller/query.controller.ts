@@ -15,7 +15,7 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
-import { filterPublisherOwnedRenderLogs } from "../service/dashboard";
+import { filterPublisherOwnedRenderLogs } from "../service/report_manifest";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";
@@ -162,7 +162,7 @@ export class QueryController {
          );
          const renderLogs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            p.isServedReport(modelPath),
+            p.getModel(modelPath)?.carriesReportTag() ?? false,
          );
          return {
             // Already serialized by the model, which was told which shape this

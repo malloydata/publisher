@@ -1,3 +1,0 @@
-// Untagged: reaches deep.malloy, so deep.malloy is on the surface too.
-import { deep_src } from "deep.malloy"
-source: mid_src is deep_src extend { view: w is { select: y } }

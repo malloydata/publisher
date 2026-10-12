@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-export { Dashboard, type DashboardProps } from "./Dashboard";
 export {
    DashboardView,
    STICKY_CONTROLS_Z,
@@ -14,6 +13,5 @@ export {
    RESTRICTED_NOTICE,
    withPreamble,
 } from "./textSource";
-export type { DashboardEvent, DashboardEventHandler } from "./telemetry";
 export { TILE_MIN_HEIGHT, TileCard, TileHeading } from "./TileCard";
 export type { TileHeadingSlots } from "./TileCard";

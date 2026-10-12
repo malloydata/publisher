@@ -57,19 +57,23 @@ Concretely:
     outside `public/`, and never at the root `index.malloy`. The text must carry an artifact tag
     (an `artifact` property on a `#` or `##` tag line, outside a string), or it is refused with 400
     before compiling. Missing directories are created inside the package root only: the nearest
-    directory that already exists is resolved through `realpath` and must lie inside the resolved
-    package root, so a symlinked directory cannot carry a write out of the package. A create that
-    is rolled back removes the directories it made.
+    directory that already exists, and the file itself when it is a link, is resolved through
+    `realpath` before anything is read through it and must lie inside the resolved package root
+    and outside `public/`, so a symlink cannot carry a write out of the package or read a file
+    outside it into the precondition. The root `index.malloy` is refused whatever its case. A
+    create that is rolled back removes the directories it made; a rollback that itself fails is
+    logged as an error and answered 500, saying the package may serve the new text.
   - **Replace** (with `expectedHash`) is allowed only for a file the package currently reads as a
     report (a tagged `.malloy`, including a tagged grid report with no tiles yet) whose text on
     disk still carries the tag. A model, an untagged file, a `.malloynb`, the root `index.malloy`
     and anything in `public/` cannot be overwritten, wherever they live, and are refused with 400,
     including a file whose only tag is commented out. So the endpoint can add files in more places
     than before, but can modify only what it could already modify: reports.
-  - After the reload the written file must be a served report (or a tagged grid report with no
-    tiles yet), read as discovery reads it, off the compiled model; a write whose only
-    `## artifact` sits inside a `/* */` block comment passes the text check and compile and is
-    then rolled back with a 500, so no untagged file lands anywhere. Two reports may share a
+  - The tag is read off the text by the same reader discovery uses on the compiled model (its
+    model-level notes), so a write whose only `## artifact` sits inside a `/* */` block comment or a
+    string is refused with 400 before it compiles. After the reload the written file must be a
+    report (served, or a grid report with no tiles yet), or the write is rolled back, so no
+    untagged file lands anywhere. Two reports may share a
     basename, since a report is identified by its path, so no name is refused. The compile-first
     gate is per file, and the reload verify checks only the written model, so a model that imports
     the written file is not checked. The text goes through the same caller-text guard as

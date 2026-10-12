@@ -133,7 +133,6 @@ describe("NewDocumentDialog", () => {
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
       expect(onCreated.mock.calls[0][0]).toEqual({
-         kind: "dashboard",
          layout: "grid",
          path: "sales-by-region.malloy",
          slug: "sales-by-region",
@@ -146,7 +145,13 @@ describe("NewDocumentDialog", () => {
          'import { order_items } from "storefront.malloy"',
       );
       expect(onEvent.mock.calls).toEqual([
-         [{ type: "dashboard.created", where: "package" }],
+         [
+            expect.objectContaining({
+               type: "report.created",
+               where: "package",
+               layout: "grid",
+            }),
+         ],
       ]);
    });
 
@@ -166,7 +171,6 @@ describe("NewDocumentDialog", () => {
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));
       expect(onCreated.mock.calls[0][0]).toEqual({
-         kind: "notebook",
          layout: "linear",
          path: "by-category.malloy",
          slug: "by-category",
@@ -432,7 +436,7 @@ describe("NewDocumentDialog", () => {
          expect(saved).toEqual(["env/pkg/overview-2.malloy"]);
          expect(onCreated.mock.calls[0][0]).toMatchObject({
             slug: "overview-2",
-            locator: { workspace: "record", type: "notebook" },
+            locator: { workspace: "record", type: "linear" },
          });
       });
    });

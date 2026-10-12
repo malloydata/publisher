@@ -1,6 +1,0 @@
-source: direct_src is duckdb.sql("select 1 as x") extend {
-   view: v is { select: x }
-}
-
-# artifact { title="Direct" }
-query: direct_overview is direct_src -> v

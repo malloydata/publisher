@@ -23,10 +23,8 @@ import {
    type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
-import {
-   MalloySQLParser,
-   MalloySQLStatementType,
-} from "@malloydata/malloy-sql";
+import { MalloySQLStatementType } from "@malloydata/malloy-sql";
+import { parseMalloynb } from "./deprecated/malloynb";
 import { DataStyles } from "@malloydata/render";
 import { publisherMeter } from "../telemetry";
 import {
@@ -127,18 +125,16 @@ import {
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    compileTileGivens,
-   factsCarryArtifactTag,
-   readDashboardModelFacts,
-   type DashboardManifest,
-   type DashboardModelFacts,
-} from "./dashboard";
-import { isReportEligiblePath } from "./report";
+   factsReportTag,
+   readReportModelFacts,
+   type ServedReportManifest,
+   type ReportModelFacts,
+} from "./report_manifest";
+import { isReportEligiblePath, type ReportLayout } from "./report";
 import {
-   artifactKindOfNotes,
    docNotesAboveArtifact,
-   isArtifactNoteText,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
@@ -147,7 +143,6 @@ import {
 } from "./notebook";
 import {
    recordNotebookCellExecution,
-   type NotebookDiscoveryOutcome,
    type NotebookFormat,
 } from "../notebook_metrics";
 import {
@@ -170,7 +165,7 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
-import { filterPublisherOwnedRenderLogs } from "./dashboard";
+import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
    motlyTag,
@@ -779,11 +774,11 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
-   private compiledDashboardFacts:
-      | Promise<DashboardModelFacts | undefined>
+   private compiledReportFacts:
+      | Promise<ReportModelFacts | undefined>
       | undefined;
-   /** {@link compiledDashboardFacts} once settled, for the sync notebook reader. */
-   private settledCompiledDashboardFacts: DashboardModelFacts | undefined;
+   /** {@link compiledReportFacts} once settled, for the sync notebook reader. */
+   private settledCompiledReportFacts: ReportModelFacts | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -794,7 +789,7 @@ export class Model {
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
    /** The tile layout of a served notebook written as one; undefined for one written as cells. */
-   private notebookLayout: DashboardManifest | undefined;
+   private notebookLayout: ServedReportManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. Malloy's
@@ -866,15 +861,12 @@ export class Model {
        *  surface. Set by the Package, which knows whether the surface is an
        *  index.malloy or an explores list. See {@link notQueryable}. */
       offSurface?: OffSurfaceContext;
-      /** This file is a dashboard the package discovered. A dashboard is an
-       *  entry point, but like a notebook it admits nothing of its own: its
-       *  tiles read only the package surface. */
-      dashboard?: boolean;
-      /** This file is a served notebook: a `.malloy` under `notebooks/` with a
-       *  model-level `## artifact` note. It keeps `modelType` "model" and, like
-       *  a `.malloynb`, admits nothing of its own. */
-      notebook?: boolean;
-      /** The dashboard's or served notebook's own compiled file text, so a
+      /** This file is a served report with this layout: an entry point that,
+       *  like a `.malloynb`, admits nothing of its own, since a grid report's
+       *  tiles and a linear report's cells read only the package surface. A
+       *  linear report keeps `modelType` "model". */
+      layout?: ReportLayout;
+      /** The served report's own compiled file text, so a
        *  source it declares on top of a surface source
        *  (`source: big is orders extend {...}`) can be proven to derive from
        *  it. Author text, not caller text. */
@@ -5139,23 +5131,19 @@ export class Model {
    }
 
    /**
-    * The facts dashboard discovery reads off this model, or undefined when the
+    * The facts report discovery reads off this model, or undefined when the
     * model failed to compile.
     *
-    * Deliberately uncurated HERE: `explores` curation shapes the *discovery*
-    * surface agents see, and these facts are the raw material the manifest is
-    * built from, so filtering them at this level would lose information the
-    * lint needs. The curation decision is made by the caller instead:
-    * `Package.discoverReports` withholds a report whose entry file is not
-    * a query entry point, because its manifest would advertise names the query
-    * boundary refuses. See `service/dashboard.ts`.
+    * Deliberately uncurated: `explores` curation shapes the discovery surface
+    * agents see, and these facts are the raw material the manifest and the
+    * lint are built from. See `service/report_manifest.ts`.
     */
-   public getDashboardModelFacts(): DashboardModelFacts | undefined {
+   public getReportModelFacts(): ReportModelFacts | undefined {
       if (!this.modelDef) return undefined;
       // `this.givens` is the model's surfaced given list — the same surface
       // `filterGivensToModelSurface` enforces at query time, so a control the
       // manifest advertises is one a query will accept.
-      return readDashboardModelFacts(
+      return readReportModelFacts(
          this.modelPath,
          this.modelDef,
          (this.givens ?? [])
@@ -5181,7 +5169,7 @@ export class Model {
    }
 
    /**
-    * {@link getDashboardModelFacts} plus what each layout tile's compiled query
+    * {@link getReportModelFacts} plus what each layout tile's compiled query
     * reads (`compiledTileGivens`), for the manifest discovery serves.
     *
     * The static walk misses a given read through a joined source's `where:`, a
@@ -5190,24 +5178,22 @@ export class Model {
     * cached for this Model's life. A tile that fails to compile keeps the
     * static answer.
     */
-   public getCompiledDashboardModelFacts(): Promise<
-      DashboardModelFacts | undefined
-   > {
-      this.compiledDashboardFacts ??= this.compileDashboardModelFacts().then(
-         (facts) => (this.settledCompiledDashboardFacts = facts),
+   public getCompiledReportModelFacts(): Promise<ReportModelFacts | undefined> {
+      this.compiledReportFacts ??= this.compileReportModelFacts().then(
+         (facts) => (this.settledCompiledReportFacts = facts),
       );
-      return this.compiledDashboardFacts;
+      return this.compiledReportFacts;
    }
 
-   private async compileDashboardModelFacts(): Promise<
-      DashboardModelFacts | undefined
+   private async compileReportModelFacts(): Promise<
+      ReportModelFacts | undefined
    > {
-      const facts = this.getDashboardModelFacts();
+      const facts = this.getReportModelFacts();
       const materializer = this.modelMaterializer;
       if (!facts || !materializer) return facts;
       let tiles: string[];
       try {
-         tiles = (buildDashboardManifest(facts)?.tiles ?? []).flatMap((tile) =>
+         tiles = (buildReportManifest(facts)?.tiles ?? []).flatMap((tile) =>
             tile.kind === "query" ? [tile.query] : [],
          );
       } catch {
@@ -5254,8 +5240,7 @@ export class Model {
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
       offSurface?: OffSurfaceContext;
-      dashboard?: boolean;
-      notebook?: boolean;
+      layout?: ReportLayout;
       derivationText?: string;
    }): void {
       this.queryBoundary = policy;
@@ -5342,7 +5327,7 @@ export class Model {
               `import "${this.modelPath}" in a listed model, name the sources ` +
               `you want in that model's export { ... }, and address the ` +
               `query to that model.`;
-      } else if (!this.isNotebook() && !this.isDashboard()) {
+      } else if (!this.isNotebook() && !this.isGridReport()) {
          // This file is on the surface and already sees the name, so the only
          // edit is to export it here.
          fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
@@ -5354,7 +5339,7 @@ export class Model {
          const exporter = surface.indexModel
             ? `"${INDEX_MODEL_NAME}"`
             : `a listed model`;
-         const readdress = this.isDashboard()
+         const readdress = this.isGridReport()
             ? ""
             : surface.indexModel
               ? `, and address the query to "${INDEX_MODEL_NAME}"`
@@ -5438,7 +5423,7 @@ export class Model {
       // whether the source it reads is on the surface.
       if (
          !this.isNotebook() &&
-         !this.isDashboard() &&
+         !this.isGridReport() &&
          (this.getQueries() ?? []).some((q) => q.name === name)
       )
          return true;
@@ -5512,7 +5497,7 @@ export class Model {
          // over a hidden source does not.
          if (
             !sourceName &&
-            this.isDashboard() &&
+            this.isGridReport() &&
             (this.queries ?? []).some((q) => q.name === queryName)
          ) {
             return "deferred";
@@ -5825,7 +5810,7 @@ export class Model {
    public isNotebook(): boolean {
       return (
          this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
-         this.queryBoundary.notebook === true
+         this.queryBoundary.layout === "linear"
       );
    }
 
@@ -5836,39 +5821,20 @@ export class Model {
          : "malloy";
    }
 
-   /** Whether this compiled model has the own `## artifact` note that makes a
-    *  candidate under `notebooks/` a served notebook. */
-   public carriesNotebookArtifactNote(): boolean {
-      return (
-         this.modelDef !== undefined &&
-         ownModelNoteObjects(this.modelDef).some((note) =>
-            isArtifactNoteText(note.text),
-         )
-      );
-   }
-
    /**
-    * Whether this compiled file carries the artifact tag that makes it a
-    * report (`report.ts`), read off its own notes: a parsed model-level
-    * `## artifact`, or an own query's `# artifact`. For a check that runs
-    * before discovery has said; discovery's map is the answer after it.
+    * Whether this compiled file carries a model-level `## artifact` tag
+    * (`report.ts`), so the renderer's "unknown tag" findings for the tags
+    * Publisher owns are dropped. For a check that runs before discovery has
+    * said; discovery's map is the answer after it.
     */
    public carriesReportTag(): boolean {
       if (!isReportEligiblePath(this.modelPath)) return false;
-      const facts = this.getDashboardModelFacts();
-      return facts !== undefined && factsCarryArtifactTag(facts);
+      const facts = this.getReportModelFacts();
+      return facts !== undefined && factsReportTag(facts).status !== "none";
    }
 
-   /** The `kind` the model's own `## artifact` note declares, if any. */
-   public artifactKind(): string | undefined {
-      return (
-         this.modelDef &&
-         artifactKindOfNotes(ownModelNoteObjects(this.modelDef))
-      );
-   }
-
-   private isDashboard(): boolean {
-      return this.queryBoundary.dashboard === true;
+   private isGridReport(): boolean {
+      return this.queryBoundary.layout === "grid";
    }
 
    private ownCuratedSourceNames(): Set<string> {
@@ -5878,7 +5844,7 @@ export class Model {
       // query text sent to its path reach them. Only the package-wide surface
       // admits there. A source it declares on top of a surface source is
       // admitted by derivesFromCurated, not here.
-      if (this.isNotebook() || this.isDashboard()) return new Set();
+      if (this.isNotebook() || this.isGridReport()) return new Set();
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
@@ -6311,9 +6277,11 @@ export class Model {
    /**
     * Read a served notebook's cells out of `text`, the text this model compiled,
     * and attach them. A reader refusal becomes this notebook's error and leaves
-    * it with no cells; the model itself keeps serving.
+    * it with no cells; the model itself keeps serving. `ok` when its cells were
+    * read, `refused` when the reader refused them, `broken` when it did not
+    * compile and so has none.
     */
-   public attachServedNotebookCells(text: string): NotebookDiscoveryOutcome {
+   public attachServedNotebookCells(text: string): "ok" | "refused" | "broken" {
       this.notebookReaderRefusal = undefined;
       this.notebookAnnotations = undefined;
       this.notebookLayout = undefined;
@@ -6410,12 +6378,12 @@ export class Model {
    }
 
    /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
-   private readNotebookLayout(): DashboardManifest | undefined {
+   private readNotebookLayout(): ServedReportManifest | undefined {
       // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
       const facts =
-         this.settledCompiledDashboardFacts ?? this.getDashboardModelFacts();
-      const manifest = facts && buildDashboardManifest(facts);
-      return manifest?.kind === "notebook" && manifest.tiles
+         this.settledCompiledReportFacts ?? this.getReportModelFacts();
+      const manifest = facts && buildReportManifest(facts);
+      return manifest?.layout === "linear" && manifest.tiles
          ? manifest
          : undefined;
    }
@@ -6467,7 +6435,7 @@ export class Model {
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy under notebooks/ with a ## artifact note.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy with a model-level ## artifact { layout=linear } tag.`,
          );
       }
    }
@@ -8742,7 +8710,7 @@ export class Model {
       const names = new Set<string>(exports);
       const { mode, exploresDeclared } = this.queryBoundary;
       if (
-         !(this.isDashboard() || this.isNotebook()) ||
+         !(this.isGridReport() || this.isNotebook()) ||
          mode === "all" ||
          !exploresDeclared
       ) {
@@ -8826,7 +8794,7 @@ export class Model {
     * `includeHiddenFilesAndSources`.
     */
    public showsFileText(text: string): boolean {
-      if (this.isDashboard()) return true;
+      if (this.isGridReport()) return true;
       const published = this.publishedNames();
       if (!published) return true;
       const unpublished = new Set(
@@ -9062,7 +9030,6 @@ export class Model {
                name: this.notebookLayout.name,
                path: this.modelPath,
                layout: this.notebookLayout.layout,
-               kind: this.notebookLayout.kind,
                title: this.notebookLayout.title,
                description: this.notebookLayout.description,
                tiles: this.notebookLayout.tiles,
@@ -9818,12 +9785,7 @@ export class Model {
       }
 
       try {
-         // The cell parser splits on "\n" alone, so a CRLF file (any Windows
-         // checkout) would leave each cell's text starting with a stray line break.
-         parse = MalloySQLParser.parse(
-            fileContents.replace(/\r\n/g, "\n"),
-            modelPath,
-         );
+         parse = parseMalloynb(fileContents, modelPath);
       } catch {
          throw new Error("Could not parse model: " + modelPath);
       }

@@ -13,14 +13,13 @@ import {
    UnparseableTextError,
 } from "../errors";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    compileTileGivens,
-   factsLayout,
    normalizeTileExpression,
-   readDashboardModelFacts,
+   readReportModelFacts,
    readDocumentTileExpressions,
-   type DashboardManifest,
-} from "./dashboard";
+   type ServedReportManifest,
+} from "./report_manifest";
 import { gateGivenSource } from "./given";
 import {
    buildDerivationBaseMap,
@@ -29,15 +28,14 @@ import {
 } from "./query_text";
 import {
    cellOffsets,
-   claimsToBeANotebook,
-   type DocumentKind,
+   cellsUnreadableProblem,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
    type NotebookCellSpan,
 } from "./notebook";
 import { extractSourcesFromModelDef } from "./source_extraction";
-import { kindOfLayout, layoutOfText, type ReportLayout } from "./report";
+import { readReportTagOfText, type ReportLayout } from "./report";
 
 /**
  * Compile of a document: caller-submitted text that carries a model-level
@@ -94,9 +92,7 @@ export interface DocumentCell {
 
 export interface CompiledDocument {
    layout: ReportLayout;
-   /** `layout` in the old vocabulary (grid is `dashboard`), kept for older clients. */
-   kind: DashboardManifest["kind"];
-   manifest?: Omit<DashboardManifest, "entryFile" | "path">;
+   manifest?: Omit<ServedReportManifest, "entryFile" | "path">;
    cells: DocumentCell[];
 }
 
@@ -126,16 +122,6 @@ export function blankSpans(
       }
    }
    return units.join("");
-}
-
-/** The layout submitted text has, by the one report rule (`report.ts`, §2): its tag's `layout=`, else its `kind=`, else grid when it lists tiles or sets a grid width, else linear. */
-export function submittedTextLayout(source: string): ReportLayout {
-   return layoutOfText(source);
-}
-
-/** {@link submittedTextLayout} in the old vocabulary. The SDK reader applies the same rule to a document held as text; `documentKindRule.json` holds the two together. */
-export function submittedTextKind(source: string): DocumentKind {
-   return kindOfLayout(submittedTextLayout(source));
 }
 
 /** The names a definition statement declares itself: `source: a is …` or `query: q is …`, never a field inside it. */
@@ -201,28 +187,13 @@ export async function compileDocument(input: {
    gates: DocumentGates;
 }): Promise<DocumentCompileResult | undefined> {
    const { base, source, modelName, gates } = input;
-   if (!claimsToBeANotebook(source)) return undefined;
+   const tag = readReportTagOfText(source);
+   if (tag.status !== "report") return undefined;
    const parse = parseNotebookText(source);
    if (isNotebookReaderError(parse)) return undefined;
    const read = readNotebookCells(parse, undefined, source);
    if (read.error) {
-      const line = read.error.line - 1;
-      return {
-         problems: [
-            {
-               code: "notebook-cells-unreadable",
-               severity: "error",
-               message: read.error.message,
-               at: {
-                  url: "",
-                  range: {
-                     start: { line, character: 0 },
-                     end: { line, character: 0 },
-                  },
-               },
-            } as LogMessage,
-         ],
-      };
+      return { problems: [cellsUnreadableProblem(read.error, "")] };
    }
 
    // Phase 1: decide every unit by its text, in file order so a restricted
@@ -445,7 +416,7 @@ export async function compileDocument(input: {
    const slug = modelName.replace(/^.*\//, "").replace(/\.malloy$/, "");
    // Where the text would live decides nothing: its tags decide the layout.
    const path = `${slug}.malloy`;
-   const facts = readDashboardModelFacts(
+   const facts = readReportModelFacts(
       path,
       modelDef,
       Object.values(registry).map((given) => given.name),
@@ -462,7 +433,7 @@ export async function compileDocument(input: {
          ),
       ),
    );
-   const manifest = buildDashboardManifest(
+   const manifest = buildReportManifest(
       { ...facts, compiledTileGivens: compiledTiles },
       { restrictedTiles },
    );
@@ -487,18 +458,13 @@ export async function compileDocument(input: {
       });
    if (!manifest) {
       // Written as cells: no tile layout, so the file's own cells are the document.
-      const layout = factsLayout(facts);
-      return {
-         problems,
-         document: { layout, kind: kindOfLayout(layout), cells },
-      };
+      return { problems, document: { layout: tag.layout, cells } };
    }
    const { entryFile: _entry, ...rest } = manifest;
    return {
       problems,
       document: {
          layout: manifest.layout,
-         kind: manifest.kind,
          manifest: { ...rest, name: slug },
          cells,
       },

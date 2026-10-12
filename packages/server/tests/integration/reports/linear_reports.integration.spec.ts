@@ -13,11 +13,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const FIXTURE = path.resolve(__dirname, "../../fixtures/reports-linear");
-const ENV_NAME = "reports-linear-env";
 const PKG = "reports-linear";
 
 interface GivenSpec {
@@ -50,15 +51,9 @@ interface LinearReport {
 }
 
 describe("Linear reports written as run: cells (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-   const api = (sub = "") =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
-   const report = async (reportPath: string): Promise<LinearReport> => {
-      const res = await fetch(api(`/reports/${reportPath}`));
-      expect(res.status).toBe(200);
-      return (await res.json()) as LinearReport;
-   };
+   let env: PackageEnv;
+   const report = (reportPath: string) =>
+      env.getJson<LinearReport>(env.api(`/reports/${reportPath}`));
    /** The text of a report's one query cell, the way a viewer would run it. */
    const queryCellText = async (reportPath: string): Promise<string> => {
       const cells = (await report(reportPath)).notebook?.notebookCells ?? [];
@@ -67,42 +62,19 @@ describe("Linear reports written as run: cells (E2E)", () => {
       return queries[0].text ?? "";
    };
    const runCell = async (reportPath: string, since: string) =>
-      fetch(api(`/models/${reportPath}/query`), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            query: await queryCellText(reportPath),
-            givens: { SINCE: since },
-            compactJson: true,
-         }),
+      env.query(reportPath, {
+         query: await queryCellText(reportPath),
+         givens: { SINCE: since },
+         compactJson: true,
       });
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: FIXTURE }],
-            connections: [],
-         }),
+      env = await startPackageEnv("reports-linear-env", {
+         [PKG]: fixture(PKG),
       });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
    }, 300_000);
 
-   afterAll(async () => {
-      if (!env) return;
-      await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-         method: "DELETE",
-      });
-      await env.stop();
-   });
+   afterAll(() => env?.stop());
 
    it("carries each given's control contract on the report's sources", async () => {
       const body = await report("orders-since.malloy");
@@ -177,21 +149,13 @@ describe("Linear reports written as run: cells (E2E)", () => {
    });
 
    describe("titles in the package listing", () => {
-      const listed = async (reportPath: string) => {
-         const res = await fetch(api("/reports"));
-         expect(res.status).toBe(200);
-         const reports = (await res.json()) as LinearReport[];
-         const found = reports.find((r) => r.path === reportPath);
-         // A Windows checkout can leave a `\r` on text read off the fixture.
-         const lf = (s?: string) => s?.replace(/\r/g, "");
-         return (
-            found && {
-               ...found,
-               title: lf(found.title),
-               description: lf(found.description),
-            }
+      // Compared as served: a title or description never carries a `\r`,
+      // whatever line endings the checkout gave the fixture
+      // (`service/report_listing_crlf.spec.ts`).
+      const listed = async (reportPath: string) =>
+         (await env.getJson<LinearReport[]>(env.api("/reports"))).find(
+            (r) => r.path === reportPath,
          );
-      };
 
       it("prefers an explicit title= over everything else", async () => {
          expect(await listed("orders-since.malloy")).toMatchObject({

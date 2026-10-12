@@ -27,7 +27,6 @@ export * from "./Home";
 export * from "./Loading";
 export * from "./Materializations";
 export * from "./Model";
-export * from "./Notebook";
 export * from "./Package";
 export {
    Prose,
@@ -38,6 +37,7 @@ export {
 export * from "./QueryResult";
 export * from "./RenderedResult";
 export * from "./Report";
+export * from "./legacy";
 export { ServerProvider, useServer } from "./ServerProvider";
 export type { ServerContextValue, ServerProviderProps } from "./ServerProvider";
 export * from "./DocumentStorage";

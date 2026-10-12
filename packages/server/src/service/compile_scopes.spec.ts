@@ -15,6 +15,7 @@ import { Environment } from "./environment";
 // first and learn from the reload. scope "file" validates the edit pre-save at
 // true coordinates; scope "package" is a dry-run with reload's reach (imports
 // across files) and none of its effects on the served model.
+import { listDashboards } from "./legacy_report_views";
 
 const BASE_MODEL = `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
   measure: c is count()
@@ -263,7 +264,8 @@ source: sales is base_source extend {
   }
 }
 
-# artifact { title="X" }
+## artifact { layout=grid title="X" tiles=["x"] }
+# label="X"
 query: x is sales -> by_n
 `;
    const CLEAN_DASHBOARD = BROKEN_DASHBOARD.replace(
@@ -432,14 +434,10 @@ query: x is sales -> by_n
       }
    });
 
-   it("package: a clean dashboard adds no findings but its query-level form's deprecation", async () => {
+   it("package: a clean dashboard adds no findings", async () => {
       await writeDashboard(CLEAN_DASHBOARD);
       const { problems } = await compile("base.malloy", undefined, "package");
-      // The query-level `# artifact` is deprecated, and says so with the
-      // model-level tag to write; nothing else is wrong with the file.
-      expect(problems.map((p) => p.code)).toEqual([
-         "query-artifact-deprecated",
-      ]);
+      expect(problems.map((p) => p.code)).toEqual([]);
    });
 
    it("package: the dashboard lint leaves the served package untouched", async () => {
@@ -447,7 +445,7 @@ query: x is sales -> by_n
       const pkg = await env.getPackage("pkg", true);
       const before = pkg.getPackageMetadata().warnings;
       const servedModel = pkg.getModel("dashboards/x.malloy");
-      expect(pkg.listDashboards().map((d) => d.name)).toEqual(["x"]);
+      expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
 
       // A what-if that breaks the dashboard: compile reports it, and the
       // served package keeps its models, dashboards and warnings as they were.
@@ -460,7 +458,7 @@ query: x is sales -> by_n
       expect(await env.getPackage("pkg")).toBe(pkg);
       expect(pkg.getModel("dashboards/x.malloy")).toBe(servedModel);
       expect(pkg.getPackageMetadata().warnings).toEqual(before);
-      expect(pkg.listDashboards().map((d) => d.name)).toEqual(["x"]);
+      expect(listDashboards(pkg, "env").map((d) => d.name)).toEqual(["x"]);
       expect(env.getFailedPackages().size).toBe(0);
    });
 

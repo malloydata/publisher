@@ -3,7 +3,7 @@ import "../models/hidden.malloy"
 
 source: shown is orders extend { measure: shown_count is count() }
 
-# artifact { title="Runs" }
+## artifact { layout=grid title="Runs" tiles=["tile"] }
 query: tile is shown -> { aggregate: shown_count }
 
 run: shown -> { aggregate: shown_count }

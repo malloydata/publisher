@@ -23,6 +23,11 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import { Package } from "./package";
+import {
+   getDashboard,
+   listDashboards,
+   listNotebooks,
+} from "./legacy_report_views";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
@@ -92,13 +97,13 @@ describe("notebooks written as tiles (worker path)", () => {
          (warning) => warning.model === model,
       );
 
-   it("serves the layout on the notebook GET: text tile body, one column, kind notebook", async () => {
+   it("serves the layout on the notebook GET: text tile body, one column, linear", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
          expect(pkg.getReportLayout("notebooks/tour.malloy")).toBe("linear");
          const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
          expect(raw.dashboard).toMatchObject({
-            kind: "notebook",
+            layout: "linear",
             path: "notebooks/tour.malloy",
             title: "Tour",
             dashboardColumns: 1,
@@ -126,7 +131,7 @@ describe("notebooks written as tiles (worker path)", () => {
          expect(pkg.getReportLayout("notebooks/tour.malloy")).toBe("linear");
          const raw = await pkg.getModel("notebooks/tour.malloy")!.getNotebook();
          expect(raw.dashboard).toMatchObject({
-            kind: "notebook",
+            layout: "linear",
             title: "Tour",
             tiles: [
                { kind: "text", name: "intro" },
@@ -164,9 +169,9 @@ describe("notebooks written as tiles (worker path)", () => {
    it("is a notebook, not a dashboard: unlisted as one, and a notebook listing carries it", async () => {
       write("notebooks/tour.malloy", LAYOUT);
       await withPackage(async (pkg) => {
-         expect(pkg.listDashboards()).toEqual([]);
-         expect(pkg.getDashboard("tour")).toBeUndefined();
-         expect((await pkg.listNotebooks()).map((n) => n.path)).toEqual([
+         expect(listDashboards(pkg, "env")).toEqual([]);
+         expect(await getDashboard(pkg, "env", "tour")).toBeUndefined();
+         expect((await listNotebooks(pkg, "env")).map((n) => n.path)).toEqual([
             "notebooks/tour.malloy",
          ]);
       });
@@ -223,7 +228,7 @@ describe("notebooks written as tiles (worker path)", () => {
       });
    });
 
-   it("serves the kind the tag names, whichever folder holds the file", async () => {
+   it("serves the layout the tag names, whichever folder holds the file", async () => {
       write(
          "dashboards/in_dashboards.malloy",
          LAYOUT.replace("Tour", "Misfiled"),
@@ -239,16 +244,16 @@ describe("notebooks written as tiles (worker path)", () => {
          expect(pkg.getReportLayout("notebooks/in_notebooks.malloy")).toBe(
             "grid",
          );
-         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
             "notebooks/in_notebooks.malloy",
          ]);
-         expect(pkg.getDashboard("in_notebooks")).toMatchObject({
+         expect(await getDashboard(pkg, "env", "in_notebooks")).toMatchObject({
             kind: "dashboard",
          });
          const raw = await pkg
             .getModel("dashboards/in_dashboards.malloy")!
             .getNotebook();
-         expect(raw.dashboard?.kind).toBe("notebook");
+         expect(raw.dashboard?.layout).toBe("linear");
       });
    });
 
@@ -264,7 +269,7 @@ describe("notebooks written as tiles (worker path)", () => {
          dashboard.replace("{ tiles", "{ layout=grid tiles"),
       );
       await withPackage(async (pkg) => {
-         expect(pkg.listDashboards().map((d) => d.path)).toEqual([
+         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
             "dashboards/same.malloy",
             "notebooks/same.malloy",
          ]);
@@ -273,7 +278,7 @@ describe("notebooks written as tiles (worker path)", () => {
             "notebooks/same.malloy",
          ]);
          expect(warningsOf(pkg, "notebooks/same.malloy")).toEqual([]);
-         expect(() => pkg.getDashboard("same")).toThrow(
+         expect(getDashboard(pkg, "env", "same")).rejects.toThrow(
             /dashboards\/same\.malloy, notebooks\/same\.malloy/,
          );
       });

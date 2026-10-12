@@ -647,7 +647,7 @@ source: published is duckdb.sql("select 1 as id") extend {
             fsSync.readFileSync(
                path.resolve(
                   __dirname,
-                  "../../../sdk/src/components/DashboardBuilder/testing/urlRenderTags.json",
+                  "../../../sdk/src/components/ReportBuilder/testing/urlRenderTags.json",
                ),
                "utf8",
             ),

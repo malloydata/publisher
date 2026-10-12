@@ -123,27 +123,6 @@ describe("DashboardView tiles", () => {
          "One missing",
       );
    });
-
-   it("puts no warning on a single-query dashboard", async () => {
-      render(
-         <DashboardView
-            manifest={
-               {
-                  name: "ops",
-                  path: "dashboards/ops.malloy",
-                  query: "overview",
-                  givens: [{ name: "REGION", type: "string", label: "Region" }],
-               } as DashboardManifest
-            }
-            environmentName="env"
-            packageName="pkg"
-            documentName="ops"
-         />,
-         { wrapper: serverWrapper },
-      );
-      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
-      expect(screen.queryByTestId("tile-filter-tag")).toBeNull();
-   });
 });
 
 describe("DashboardView chrome", () => {

@@ -22,7 +22,7 @@ Everything else (filters, text tiles, drill, the builder, the lint, the write pa
 ## Where the file goes
 
 - **Write a new report at the package root**, as `<slug>.malloy`, unless the author asks for another location. No directory is required, and none is a convention: a report can live anywhere in the package except `public/`, and the root `index.malloy` is never a report. Do not create a `dashboards/` or `notebooks/` directory for it.
-- **Always write `layout=grid` or `layout=linear`** in the tag. A tag without one is read by a fallback rule, and a linear report that lists tiles without `layout=linear` is read as a grid. `kind=dashboard` / `kind=notebook` is the deprecated spelling of the same thing: write `layout=`, and fix a `kind=` when you edit a file anyway.
+- **Always write `layout=grid` or `layout=linear`** in the tag. A tag without one is read by a fallback rule, and a linear report that lists tiles without `layout=linear` is read as a grid. `kind=` is no longer read: a tag that sets it makes no report (`report-kind-removed`), so replace it with `layout=`.
 - **The package path is the report's identity.** `sales/q3.malloy` is the report `sales/q3`: its URL, its `GET …/reports/{path}` address, and its `# drill` target. Two reports may share a basename in different directories.
 - **Imports are relative to the report's own location.** At the root: `import { order_items } from "storefront.malloy"`. In a subdirectory: `"../storefront.malloy"`.
 - **An untagged `.malloy` file is an ordinary model**, wherever it lives. Shared definitions several reports import go in one.
@@ -155,7 +155,7 @@ dimension: category is products.category
 dimension: region is regions.region
 ```
 
-- **`to=<path>`** navigates to a report, of either layout, by its package path without `.malloy`, read from the package root: `to=category` is `category.malloy` at the root, `to="regions/west"` is `regions/west.malloy`. Quote a path with a `/`. **Always write a path.** A bare name that is not a path but matches one report's basename still resolves for now, with a `drill-target-by-name` warning giving the path to write.
+- **`to=<path>`** navigates to a report, of either layout, by its package path without `.malloy`, read from the package root: `to=category` is `category.malloy` at the root, `to="regions/west"` is `regions/west.malloy`. Quote a path with a `/`. **Always write the path from the package root**: a bare name is a root file, never a report of that name elsewhere.
 - **`to=self`** filters in place; two or more destinations pop a menu.
 - **Always write `given=`.** Without it the given is the dimension name verbatim, so `dimension: category` seeds `category`, not `CATEGORY`. `to=self` survives that (it folds case); `to=<path>` does not, and lands on an unfiltered page with nothing erroring.
 - **The destination needs a control for the given**, declared as `filter<T>`. No lint checks that half, so click it and look.
@@ -165,26 +165,24 @@ dimension: region is regions.region
 
 Package warnings after a reload are the report's test suite. Fix all of them, and read the text rather than the severity or the count. **"Dashboard lint stopped early, so this list is incomplete"** means the rest of the list is partial.
 
-| Finding                                                                       | Fix                                                                                                                                                                                    |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `# drill … targets "x", which is not a report in this package`                | A dead click. Write the target's path                                                                                                                                                  |
-| `drill-target-by-name`                                                        | The target resolved by basename. Write the path the warning gives                                                                                                                      |
-| `to=self, but no model in this package declares a given "X"`                  | The clicked value has nowhere to go. Declare the given, or fix `given=`                                                                                                                |
-| `given "X" suggests options from source "y", which this file does not define` | Import `y` into the report                                                                                                                                                             |
-| `filters by given "X", which this file does not import`                       | No control is shown for it. Import the given                                                                                                                                           |
-| A tile that does not resolve to a real view                                   | Fix the view name, or declare the view                                                                                                                                                 |
-| `notebook-artifact-unparsed`                                                  | The tag does not parse, usually an unquoted `source -> view` entry                                                                                                                     |
-| `notebook-layout-run`                                                         | A `run:` beside `tiles`. Make it a view, list it, delete the `run:`                                                                                                                    |
-| `notebook-tile-layout-ignored`                                                | `colspan` or `break` on a linear report. Remove them, or switch to `layout=grid`                                                                                                       |
-| `report-kind-deprecated`                                                      | Replace `kind=` with the `layout=` the finding gives                                                                                                                                   |
-| `report-layout-implicit`                                                      | A tag with no tiles and no `layout=`. Add `layout=`                                                                                                                                    |
-| `query-artifact-deprecated`                                                   | A `# artifact` on a `query:`. Rewrite as `## artifact { layout=grid … tiles=["<query>"] }` (`reference/grid.md`)                                                                       |
-| `query-artifact-ignored`                                                      | The `# artifact` is ignored: the file is on the surface (imported by `index.malloy`, or in `explores`), so it stays a model. Meant a report? Put it in its own file with `## artifact` |
-| `report-on-surface`                                                           | A model `index.malloy` imports (or `explores` lists) is tagged, so its sources left the surface. Untag it, or move the report out                                                      |
-| `index-is-not-a-report`                                                       | The root `index.malloy` carries a tag. Remove it; put the report in its own file                                                                                                       |
-| `Tile … reads <source>, which index.malloy doesn't export`                    | Add the source to the `export { ... }` in `index.malloy`. Never add an `explores` to `publisher.json`                                                                                  |
-| A grid's `columns`, `colspan`, or `dashboard_columns=` findings               | `reference/grid.md`                                                                                                                                                                    |
-| A statement or tag above the artifact tag; prose the reader cannot place      | `reference/linear.md`, the cell rules                                                                                                                                                  |
+| Finding                                                                       | Fix                                                                                                                               |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `# drill … targets "x", which is not a report in this package`                | A dead click. Write the target's path                                                                                             |
+| `to=self, but no model in this package declares a given "X"`                  | The clicked value has nowhere to go. Declare the given, or fix `given=`                                                           |
+| `given "X" suggests options from source "y", which this file does not define` | Import `y` into the report                                                                                                        |
+| `filters by given "X", which this file does not import`                       | No control is shown for it. Import the given                                                                                      |
+| A tile that does not resolve to a real view                                   | Fix the view name, or declare the view                                                                                            |
+| `notebook-artifact-unparsed`                                                  | The tag does not parse, usually an unquoted `source -> view` entry                                                                |
+| `notebook-layout-run`                                                         | A `run:` beside `tiles`. Make it a view, list it, delete the `run:`                                                               |
+| `notebook-tile-layout-ignored`                                                | `colspan` or `break` on a linear report. Remove them, or switch to `layout=grid`                                                  |
+| `report-kind-removed`                                                         | The tag sets `kind=`, which is no longer read, so the file is no report. Write the `layout=` the finding gives                    |
+| `report-layout-implicit`                                                      | A tag with no tiles and no `layout=`. Add `layout=`                                                                               |
+| `report-on-surface`                                                           | A model `index.malloy` imports (or `explores` lists) is tagged, so its sources left the surface. Untag it, or move the report out |
+| `index-is-not-a-report`                                                       | The root `index.malloy` carries a tag. Remove it; put the report in its own file                                                  |
+| `report-name-ambiguous`                                                       | Two grid reports share a file name, so the deprecated by-name dashboards route answers 409 for it. Rename one of the files        |
+| `Tile … reads <source>, which index.malloy doesn't export`                    | Add the source to the `export { ... }` in `index.malloy`. Never add an `explores` to `publisher.json`                             |
+| A grid's `columns`, `colspan`, or `dashboard_columns=` findings               | `reference/grid.md`                                                                                                               |
+| A statement or tag above the artifact tag; prose the reader cannot place      | `reference/linear.md`, the cell rules                                                                                             |
 
 **Read the status the reload itself returns, not the listing.** One report that fails to compile fails the whole package load (424), and a package already serving keeps its previous version, so the listing still looks healthy. `GET /api/v0/status` still knows: a package serving an older model than its files appears in `loadErrors` with `stale: true`. If the reload is 200 and your report is not listed, discovery skipped it: usually a missing or misspelled artifact tag, or a file under `public/`.
 
@@ -233,7 +231,7 @@ A person can open any report in the Console's builder (**Edit** on the report pa
 
 ## Reference
 
-- `reference/grid.md`: the grid recipe, its traps, and the deprecated single-query form with its rewrite.
+- `reference/grid.md`: the grid recipe, its traps, and one query as the whole page.
 - `reference/linear.md`: linear reports, `run:` cells, legacy `.malloynb`, style, and common mistakes.
 - `docs/reports.md`: the full guide this skill condenses.
 - `docs/givens.md`: the givens the controls are generated from.

@@ -131,8 +131,8 @@ export function NotebookCell({
    // same hook, the dashboard viewer uses.
    const { drill, drillMenu } = useDrill({
       // A `# drill { to=<report> }` from a cell is honoured: the host resolves
-      // the destination (a package path, or a deprecated bare name) and turns
-      // it and its seeded givens into the report's route, the Console's being
+      // the destination (a package path from the root) and turns it and its
+      // seeded givens into the report's route, the Console's being
       // `/{env}/{pkg}/<path>?GIVEN=value`. Passed through rather than built
       // here, because only the host knows its routing.
       //

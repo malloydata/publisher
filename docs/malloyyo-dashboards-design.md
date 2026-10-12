@@ -39,7 +39,7 @@ a shortcut for those, not an inventory of the design:
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | Given control contract, wire half         | the control fields on `Given` in `api-doc.yaml`                                                         |
 | Given control contract, derived from tags | `readGivenControlSpec` in `packages/server/src/service/given.ts`                                        |
-| `dashboards/` discovery and the manifest  | `packages/server/src/service/dashboard.ts`                                                              |
+| `dashboards/` discovery and the manifest  | `packages/server/src/service/report_manifest.ts`                                                        |
 | The artifact / MOTLY tag primitives       | `packages/server/src/service/motly.ts`                                                                  |
 | The dashboard REST surface                | `packages/server/src/controller/dashboard.controller.ts`, plus its `dashboards` paths in `api-doc.yaml` |
 | The viewer                                | `packages/sdk/src/components/Dashboard/`                                                                |
@@ -128,14 +128,14 @@ Requires `@malloydata/malloy` 0.0.423+ (earlier versions drop annotations on ref
 Publisher already had most of the foundation; the work was a discovery/manifest layer and a
 dashboard UI surface.
 
-| Foundation                                                        | Where                                                                                                                                                                                                                                         | Status                                           |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Dashboard files compile and are queryable                         | Publisher compiles every `.malloy` in a package; `POST …/models/dashboards/overview.malloy/query` with `queryName` + `givens` works today                                                                                                     | Have                                             |
-| Renderer grid (`# dashboard {columns}` / `# colspan` / `# break`) | `@malloydata/render` — the Publisher SDK is above the 0.0.423 floor Malloyyo requires (`^0.0.427` at the time of writing); `.malloy-dashboard` chrome is themed in `packages/sdk/src/components/RenderedResult/`                              | Have                                             |
-| Givens: declaration, REST forwarding, form UI                     | [givens.md](givens.md); `givens` on query/compile endpoints; `GivensPanel` / `GivenInput` / `useGivensState` in the SDK, shared by both surfaces                                                                                              | Have, control-tag enrichment included            |
-| Render-tag validation at load and query time                      | `@malloydata/render-validator` in the server                                                                                                                                                                                                  | Have                                             |
-| Iframe + postMessage plumbing                                     | `DataAppViewer` + `packages/sdk/src/utils/dataAppEmbed.ts` (HTML data apps)                                                                                                                                                                   | Have; unused by dashboards, which render in-page |
-| `# artifact` discovery, given/control specs                       | Ported from Malloyyo's `@malloyyo/mcp-engine` (`artifacts.ts`, `given-specs.ts`) into `service/dashboard.ts` + `service/motly.ts` + `service/given.ts`. Its `frame-runtime/` and `bundle.ts` are **not** ported (§Custom JSX components: cut) | Ported (MIT)                                     |
+| Foundation                                                        | Where                                                                                                                                                                                                                                               | Status                                           |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Dashboard files compile and are queryable                         | Publisher compiles every `.malloy` in a package; `POST …/models/dashboards/overview.malloy/query` with `queryName` + `givens` works today                                                                                                           | Have                                             |
+| Renderer grid (`# dashboard {columns}` / `# colspan` / `# break`) | `@malloydata/render` — the Publisher SDK is above the 0.0.423 floor Malloyyo requires (`^0.0.427` at the time of writing); `.malloy-dashboard` chrome is themed in `packages/sdk/src/components/RenderedResult/`                                    | Have                                             |
+| Givens: declaration, REST forwarding, form UI                     | [givens.md](givens.md); `givens` on query/compile endpoints; `GivensPanel` / `GivenInput` / `useGivensState` in the SDK, shared by both surfaces                                                                                                    | Have, control-tag enrichment included            |
+| Render-tag validation at load and query time                      | `@malloydata/render-validator` in the server                                                                                                                                                                                                        | Have                                             |
+| Iframe + postMessage plumbing                                     | `DataAppViewer` + `packages/sdk/src/utils/dataAppEmbed.ts` (HTML data apps)                                                                                                                                                                         | Have; unused by dashboards, which render in-page |
+| `# artifact` discovery, given/control specs                       | Ported from Malloyyo's `@malloyyo/mcp-engine` (`artifacts.ts`, `given-specs.ts`) into `service/report_manifest.ts` + `service/motly.ts` + `service/given.ts`. Its `frame-runtime/` and `bundle.ts` are **not** ported (§Custom JSX components: cut) | Ported (MIT)                                     |
 
 **Sourcing strategy:** port the small MIT-licensed Malloyyo modules (with attribution) rather
 than depending on `@malloyyo/mcp-engine`, which is a private workspace package. The grammar is the
@@ -361,7 +361,7 @@ opaque-origin iframe, is not ported (§Custom JSX components: cut).
 
 ### Discovery and manifest
 
-`packages/server/src/service/dashboard.ts`, run at package load:
+`packages/server/src/service/report_manifest.ts`, run at package load:
 
 1. Glob `dashboards/*.malloy`. Each file compiles **as its own entry** (Malloyyo "structure v2"
    — model annotations don't cross imports, so the artifact tag is only readable when the

@@ -12,16 +12,16 @@ source: orders is duckdb.sql("""
    # drill { to="sales/2026/q3" }
    dimension: brand_name is brand
 
-   // A bare name exactly one report has, not at the root: still resolves
-   // (deprecated), and the package says which path to write.
+   // A bare name exactly one report has, not at the root: a bare name is a
+   // root file, so this resolves to nothing.
    # drill { to=story }
    dimension: region_name is region
 
-   // A bare name two reports have: unresolved, naming both.
+   // A bare name two reports have, neither at the root: resolves to nothing.
    # drill { to=summary }
    dimension: brand_upper is upper(brand)
 
-   // A bare name that IS a path at the root: no deprecation.
+   // A bare name that IS a path at the root: resolves, with nothing said.
    # drill { to=overview }
    dimension: region_upper is upper(region)
 

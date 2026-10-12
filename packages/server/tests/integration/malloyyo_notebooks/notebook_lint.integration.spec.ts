@@ -11,12 +11,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+   type Warning,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const ENV_NAME = "notebook-lint-env";
 const PKG = "notebooks-lint";
 const LINTY = "notebooks/linty.malloy";
 const BROKEN_SOURCE =
@@ -24,7 +25,7 @@ const BROKEN_SOURCE =
 const CLEAN = "notebooks/clean.malloy";
 const WRONG_KIND = "dashboards/wrong_kind.malloy";
 
-const fixtureDir = path.resolve(__dirname, `../../fixtures/${PKG}`);
+const fixtureDir = fixture(PKG);
 
 interface Problem {
    severity: string;
@@ -35,85 +36,37 @@ interface Problem {
 }
 
 describe("notebook lint through the real server (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-
-   const pkgUrl = (sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
+   let env: PackageEnv;
+   const pkgUrl = (sub: string) => env.api(sub);
    const compile = async (
       model: string,
       scope: "append" | "file" | "package",
       source?: string,
    ) => {
-      const res = await fetch(pkgUrl(`/models/${model}/compile`), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            scope,
-            source:
-               source ?? fs.readFileSync(path.join(fixtureDir, model), "utf8"),
-         }),
+      const res = await env.post(pkgUrl(`/models/${model}/compile`), {
+         scope,
+         source:
+            source ?? fs.readFileSync(path.join(fixtureDir, model), "utf8"),
       });
       expect(res.status).toBe(200);
       return (await res.json()) as { status: string; problems: Problem[] };
    };
-   // The lint's warns, less the deprecated `kind=` spelling these fixtures still write.
+   // The lint's warns, at their lines.
    const lintOf = (problems: Problem[], model: string) =>
       problems.filter(
-         (p) =>
-            p.model === model &&
-            p.severity === "warn" &&
-            p.code !== "report-kind-deprecated" &&
-            p.at,
+         (p) => p.model === model && p.severity === "warn" && p.at,
       );
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: fixtureDir }],
-            connections: [],
-         }),
-      });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-      const loaded = await fetch(pkgUrl(""));
-      if (!loaded.ok) throw new Error(`${PKG} did not load (${loaded.status})`);
-   });
+      env = await startPackageEnv("notebook-lint-env", { [PKG]: fixtureDir });
+   }, 300_000);
 
-   afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
-      await env?.stop();
-      env = null;
-   });
+   afterAll(() => env?.stop());
 
    describe("the package's warnings", () => {
-      let warnings: {
-         model?: string;
-         message: string;
-         severity?: string;
-         code?: string;
-      }[];
+      let warnings: (Warning & { message: string })[];
       beforeAll(async () => {
-         const res = await fetch(pkgUrl(""));
-         warnings =
-            ((await res.json()) as { warnings?: typeof warnings }).warnings ??
-            [];
+         warnings = (await env.warnings()) as typeof warnings;
       });
 
       it("carries each finding as a warn with its line", () => {
@@ -129,18 +82,12 @@ describe("notebook lint through the real server (E2E)", () => {
             ["warn", 4],
             ["warn", 8],
          ]);
-         // `notebook-other-folder` is retired; what is left is the deprecated
-         // `kind=` spelling, as a warn.
-         expect(of(WRONG_KIND)).toEqual([["warn", 1]]);
+         // `kind=` is no longer read: the file is no report, and says so.
+         expect(of(WRONG_KIND)).toEqual([["error", 1]]);
       });
 
       it("says nothing about a clean notebook, and no notebook or dashboard draws an unknown-render-tag warning", () => {
-         // Only the deprecated `kind=` spelling, as a warn.
-         expect(
-            warnings
-               .filter((w) => w.model === CLEAN)
-               .map((w) => [w.code, w.severity]),
-         ).toEqual([["report-kind-deprecated", "warn"]]);
+         expect(warnings.filter((w) => w.model === CLEAN)).toEqual([]);
          // The malformed colspan in linty proves the validator visits these files at all.
          expect(
             warnings.filter((w) => /Invalid # colspan/.test(w.message)),
@@ -153,12 +100,7 @@ describe("notebook lint through the real server (E2E)", () => {
       it("carries a header statement, a column conflict and a bad text block as errors, and the alias and orphan block as warns", () => {
          const severityOf = (model: string) =>
             warnings
-               .filter(
-                  (w) =>
-                     w.model === model &&
-                     w.code !== "report-kind-deprecated" &&
-                     /^Line \d+:/.test(w.message),
-               )
+               .filter((w) => w.model === model && /^Line \d+:/.test(w.message))
                .map((w) => [w.severity, w.message.split(":")[0]]);
          expect(severityOf("notebooks/header_statement.malloy")).toEqual([
             ["error", "Line 1"],
@@ -233,6 +175,7 @@ describe("notebook lint through the real server (E2E)", () => {
                .map((p) => [p.model, p.code]),
          ).toEqual([
             ["dashboards/columns_conflict.malloy", "notebook-columns-conflict"],
+            ["dashboards/wrong_kind.malloy", "report-kind-removed"],
             [
                "notebooks/header_statement.malloy",
                "notebook-statement-above-artifact",
@@ -250,7 +193,7 @@ describe("notebook lint through the real server (E2E)", () => {
             problems
                .filter((p) => p.model === WRONG_KIND && p.at)
                .map((p) => [p.code, p.severity]),
-         ).toEqual([["report-kind-deprecated", "warn"]]);
+         ).toEqual([["report-kind-removed", "error"]]);
       });
 
       it("fails the compile of a notebook with a statement above its artifact tag, at that line", async () => {

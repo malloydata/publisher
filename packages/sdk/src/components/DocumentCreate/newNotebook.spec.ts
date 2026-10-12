@@ -3,11 +3,11 @@
 
 import { describe, expect, it } from "bun:test";
 import { lintNotebookText } from "../../../../server/src/service/notebook_lint";
-import { isQueryTile, isTextTile } from "../DashboardBuilder/document";
+import { isQueryTile, isTextTile } from "../ReportBuilder/document";
 import {
    readDashboardDocument,
    readFailed,
-} from "../DashboardBuilder/readDocument";
+} from "../ReportBuilder/readDocument";
 import { reportPathFor, reportPathForTitle, slugFor } from "./documentPath";
 import { newDocumentProblem } from "./guards";
 import { newNotebookSource, newReportSource } from "./newNotebook";
@@ -40,7 +40,7 @@ describe("newNotebookSource", () => {
       const result = await readDashboardDocument(text);
       if (readFailed(result)) throw new Error(result.reason);
       const { document } = result;
-      expect(document.kind).toBe("notebook");
+      expect(document.layout).toBe("linear");
       expect(
          document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
       ).toEqual(["text", "query"]);
@@ -114,7 +114,7 @@ describe("newReportSource", () => {
    it("reads back by its tag: grid as a dashboard, linear as a notebook", async () => {
       const grid = await readDashboardDocument(newReportSource(INPUT, "grid"));
       if (readFailed(grid)) throw new Error(grid.reason);
-      expect(grid.document.kind).toBeUndefined();
+      expect(grid.document.layout).toBe("grid");
       expect(grid.document.columns).toBe(12);
       expect(
          grid.document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
@@ -123,7 +123,7 @@ describe("newReportSource", () => {
          newReportSource(INPUT, "linear"),
       );
       if (readFailed(linear)) throw new Error(linear.reason);
-      expect(linear.document.kind).toBe("notebook");
+      expect(linear.document.layout).toBe("linear");
    });
 
    it("reads the same wherever the file would sit", async () => {
@@ -133,23 +133,22 @@ describe("newReportSource", () => {
             path,
          );
          if (readFailed(grid)) throw new Error(grid.reason);
-         expect(grid.document.kind).toBeUndefined();
+         expect(grid.document.layout).toBe("grid");
          const linear = await readDashboardDocument(
             newReportSource(INPUT, "linear"),
             path,
          );
          if (readFailed(linear)) throw new Error(linear.reason);
-         expect(linear.document.kind).toBe("notebook");
+         expect(linear.document.layout).toBe("linear");
       }
    });
 });
 
 describe("newDocumentProblem", () => {
    it("takes a name either layout back-quotes", () => {
-      for (const kind of ["dashboard", "notebook"] as const)
-         expect(
-            newDocumentProblem(kind, { ...INPUT, source: "order items" }),
-         ).toBeUndefined();
+      expect(
+         newDocumentProblem({ ...INPUT, source: "order items" }),
+      ).toBeUndefined();
    });
 
    it("back-quotes a source named like a keyword", () => {
@@ -161,9 +160,7 @@ describe("newDocumentProblem", () => {
       expect(text).toContain("import { `source` }");
       expect(text).toContain("view: is_tile is `is`");
       expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, source: "date" }),
-      ).toBeUndefined();
+      expect(newDocumentProblem({ ...INPUT, source: "date" })).toBeUndefined();
    });
 
    it("trims the title once, for the tag and the heading", () => {
@@ -173,17 +170,17 @@ describe("newDocumentProblem", () => {
    });
 
    it("refuses names that cannot be written", () => {
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, view: "a`b" }),
-      ).toMatch(/view name/);
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, modelPath: 'a".malloy' }),
-      ).toMatch(/model path/);
-      expect(newDocumentProblem("dashboard", INPUT)).toBeUndefined();
+      expect(newDocumentProblem({ ...INPUT, view: "a`b" })).toMatch(
+         /view name/,
+      );
+      expect(newDocumentProblem({ ...INPUT, modelPath: 'a".malloy' })).toMatch(
+         /model path/,
+      );
+      expect(newDocumentProblem(INPUT)).toBeUndefined();
       // Both layouts write the tag as a `##|` block, which `|##` would close.
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, title: "a |## b" }),
-      ).toMatch(/\|##/);
+      expect(newDocumentProblem({ ...INPUT, title: "a |## b" })).toMatch(
+         /\|##/,
+      );
    });
 });
 

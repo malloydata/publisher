@@ -4,9 +4,9 @@
 /**
  * `Report` renders a report of either layout from `GET …/reports/{path}`: a
  * grid as a dashboard of carded tiles, a linear report as bare tiles top to
- * bottom, and a report written as `run:` cells cell by cell: a `.malloy`
- * one through the governed query endpoint, a `.malloynb` through the
- * deprecated notebooks cell route.
+ * bottom, and a report written as `run:` cells cell by cell, through the
+ * governed query endpoint. It runs nothing through the deprecated notebooks
+ * routes: a `.malloynb` is the deprecated `Notebook`'s to render.
  */
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -19,7 +19,7 @@ import {
 } from "../../../test/serverProvider";
 import type { ReportManifest } from "../../client";
 
-let manifest: ReportManifest = {};
+let manifest = {} as ReportManifest;
 const getReport = mock(
    (
       _environmentName: string,
@@ -63,12 +63,12 @@ const { Report } = await import("./Report");
 
 const URI = "publisher://environments/env/packages/pkg";
 
-const TILES: ReportManifest = {
+const TILES = {
    path: "sales/q3.malloy",
    name: "q3",
    title: "Third quarter",
    tiles: [{ kind: "query", query: "orders -> by_month" }],
-};
+} as ReportManifest;
 
 beforeEach(() => {
    clearCache();
@@ -209,7 +209,7 @@ describe("rendering by layout", () => {
    // DEPRECATED FEATURE COVERAGE — delete together with
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
-      it("runs a .malloynb's cells through the deprecated notebooks cell route", async () => {
+      it("says a .malloynb is Notebook's to render, and runs nothing", async () => {
          manifest = {
             path: "legacy.malloynb",
             name: "legacy",
@@ -227,11 +227,11 @@ describe("rendering by layout", () => {
             wrapper: serverWrapper,
          });
 
-         expect(await screen.findByText("Legacy prose")).toBeTruthy();
-         await waitFor(() => expect(executeNotebookCell).toHaveBeenCalled());
          expect(
-            executeNotebookCell.mock.calls.map((call) => call.slice(0, 4)),
-         ).toEqual([["env", "pkg", "legacy.malloynb", 1]]);
+            await screen.findByText(/render it with Notebook/),
+         ).toBeTruthy();
+         expect(screen.queryByText("Legacy prose")).toBeNull();
+         expect(executeNotebookCell).not.toHaveBeenCalled();
          expect(executeQueryModel).not.toHaveBeenCalled();
       });
    });
