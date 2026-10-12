@@ -18,7 +18,10 @@
  * In a list with `listRoutes` above 0, each candidate field is followed by up
  * to that many routes to it from the other listed sources, shortest first,
  * each a numbered option of its own. A picked route is the joining source's
- * rows, and respond puts it on that source's card under the route's id.
+ * rows, and respond puts it on that source's card under the route's id. Each
+ * route line, and each joined copy's, quotes the first sentence of the
+ * joining source's doc (and a joined copy's join doc), so the judge can see
+ * which rows the route drops.
  *
  * A target with no pick in any cluster is returned as unresolved by name,
  * which is the agent's signal to ask or to search again.
@@ -36,6 +39,7 @@ import { humanizeName } from "../tools/embedding_index";
 import { runPooled } from "../tools/get_context_llm";
 import type { CatalogNode } from "./catalog";
 import type { Cluster } from "./connect";
+import { firstSentence, joinNodeOf } from "./derived_text";
 import { routeKey, routeOptions, routesFrom, type RouteOption } from "./routes";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
@@ -109,7 +113,11 @@ function routeOf(
       if (routeCap > 0) {
          if (!node.joinPath) return undefined;
          const rel = node.relationship ? `, join_${node.relationship}` : "";
-         return `a route from ${node.source} through ${node.joinPath}${rel}: only the rows ${node.source} reaches`;
+         const notes = [
+            holdsNote(index, node.sourceKey),
+            joinNote(index, node),
+         ].filter((n): n is string => n !== undefined);
+         return `a route from ${node.source} through ${node.joinPath}${rel}: only the rows ${node.source} reaches${notes.length > 0 ? ` (${notes.join("; ")})` : ""}`;
       }
       if (index.catalog.joinedCopies !== "routes") return undefined;
       return routesLine(
@@ -136,7 +144,43 @@ function routeOptionLine(index: FcjIndex, option: JudgeOption): string {
    const r = option.route!;
    const node = index.catalog.nodes.get(r.node)!;
    const from = index.catalog.sources.get(r.from)?.name ?? r.from;
-   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, join_${r.fanout}): only the ${node.source} rows ${from} reaches`;
+   const holds = holdsNote(index, r.from);
+   return `[${option.number}] ${from}.${r.path.join(".")}.${node.name} (route from ${from} through ${r.path.join(".")}, join_${r.fanout}): only the ${node.source} rows ${from} reaches${holds ? ` (${holds})` : ""}`;
+}
+
+/** Longest quoted doc sentence a route line carries. */
+const ROUTE_NOTE_MAX_CHARS = 200;
+
+function quoted(text: string): string {
+   const s = firstSentence(text);
+   return JSON.stringify(
+      s.length > ROUTE_NOTE_MAX_CHARS
+         ? `${s.slice(0, ROUTE_NOTE_MAX_CHARS)}…`
+         : s,
+   );
+}
+
+/**
+ * What a route's joining source holds, in its author's words: the first
+ * sentence of its own doc (`orders: "One row per order."`). A summary is not
+ * used, because it is written for search and can drop which rows are in.
+ * Undefined when the source has no doc.
+ */
+function holdsNote(index: FcjIndex, sourceKey: string): string | undefined {
+   const source = index.catalog.sources.get(sourceKey);
+   const doc = source?.node.doc.trim();
+   return source && doc ? `${source.name}: ${quoted(doc)}` : undefined;
+}
+
+/**
+ * For a field of a join whose source is not listed (a joined copy): the
+ * first sentence of the join's own doc, the only text that says what the
+ * joined rows are. Undefined for a raw-table join or a join with no doc.
+ */
+function joinNote(index: FcjIndex, node: CatalogNode): string | undefined {
+   const join = joinNodeOf(index.catalog, node);
+   const doc = join?.doc.trim();
+   return join && doc ? `join ${node.joinPath}: ${quoted(doc)}` : undefined;
 }
 
 function optionLine(

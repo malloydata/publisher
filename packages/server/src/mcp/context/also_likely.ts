@@ -33,7 +33,7 @@ import type { ConnectResult } from "./connect";
 import type { FindResult } from "./find";
 import type { FcjIndex } from "./index_build";
 import type { JudgeVerdict } from "./judge";
-import { fieldKeyOf, routesOf } from "./routes";
+import { fieldKeyOf, parseRouteKey, routesOf } from "./routes";
 
 /** The rank an extra (a structural addition with no rank) sorts at. */
 const EXTRA_RANK = 999;
@@ -200,20 +200,24 @@ export function alsoLikelyFields(args: {
       }
    }
 
-   // What the response already holds: every pick under any of its ids, and a
-   // card for each picked field's source.
+   // What the response already holds: every pick under any of its ids, and
+   // the card each pick is returned on. That is the field's own source for a
+   // field, and the joining source for a picked route (respond puts a route on
+   // that card, and returns no card for the field's own source).
    const have = new Set<string>();
    const hold = (id: string) => {
       have.add(id);
       for (const j of same.get(id) ?? []) have.add(j);
    };
-   for (const id of pickIds) {
-      hold(id);
-      const node = nodes.get(keyOfId.get(id) ?? "");
-      const owner = node
-         ? index.catalog.sources.get(node.sourceKey)
-         : undefined;
-      if (owner) hold(owner.node.id);
+   for (const id of pickIds) hold(id);
+   for (const v of verdicts) {
+      for (const p of v.picks) {
+         for (const k of p.keys) {
+            const card = parseRouteKey(k)?.from ?? nodes.get(k)?.sourceKey;
+            const source = card ? index.catalog.sources.get(card) : undefined;
+            if (source) hold(source.node.id);
+         }
+      }
    }
    for (const cluster of connected.clusters) {
       if (cluster.peers) continue;
