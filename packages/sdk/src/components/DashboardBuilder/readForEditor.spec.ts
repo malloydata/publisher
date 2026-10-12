@@ -9,7 +9,7 @@ import { readForEditor } from "./readForEditor";
 const REPO = path.resolve(import.meta.dir, "../../../../..");
 const LEGACY = fs
    .readFileSync(
-      path.join(REPO, "examples/storefront/notebooks/category-review.malloy"),
+      path.join(REPO, "examples/storefront/category-review.malloy"),
       "utf8",
    )
    .replace(/\r\n/g, "\n");
@@ -47,34 +47,60 @@ describe("readForEditor", () => {
       expect(result.ok).toBe(false);
    });
 
-   describe("a tag that names no kind takes the folder's, as the server does", () => {
+   describe("a report's layout is its tags', wherever the file lives", () => {
       const LAYOUT = `## artifact { title="D" tiles=["a -> x"] }\nsource: a is b extend {\n  view: x is v\n}\n`;
+      const PLACES = [
+         undefined,
+         "d.malloy",
+         "notebooks/d.malloy",
+         "dashboards/d.malloy",
+         "sales/q3/d.malloy",
+      ];
 
-      it("opens a kind-less layout file in notebooks/ as a notebook", async () => {
-         const result = await readForEditor(LAYOUT, "notebooks/d.malloy");
-         expect(result.ok && result.document.kind).toBe("notebook");
+      it("opens a tile list with no layout as a grid, in any directory", async () => {
+         for (const where of PLACES) {
+            const result = await readForEditor(LAYOUT, where);
+            expect([where, result.ok && result.document.kind]).toEqual([
+               where,
+               undefined,
+            ]);
+         }
       });
 
-      it("opens it as a dashboard in dashboards/, and when the tag says so in notebooks/", async () => {
-         const inDashboards = await readForEditor(
-            LAYOUT,
-            "dashboards/d.malloy",
-         );
-         expect(inDashboards.ok && inDashboards.document.kind).toBeUndefined();
-         const tagged = await readForEditor(
-            LAYOUT.replace("{ title", "{ kind=dashboard title"),
-            "notebooks/d.malloy",
-         );
-         expect(tagged.ok && tagged.document.kind).toBeUndefined();
+      it("opens it linear wherever layout=linear (or the legacy kind=notebook) says so", async () => {
+         for (const tag of ["layout=linear", "kind=notebook"])
+            for (const where of PLACES) {
+               const result = await readForEditor(
+                  LAYOUT.replace("{ title", `{ ${tag} title`),
+                  where,
+               );
+               expect([where, result.ok && result.document.kind]).toEqual([
+                  where,
+                  "notebook",
+               ]);
+            }
       });
 
-      it("converts a kind-less cell-format file in notebooks/ rather than refusing it", async () => {
-         const kindless = LEGACY.replace("kind=notebook ", "");
-         expect(kindless).not.toBe(LEGACY);
-         const result = await readForEditor(kindless, "notebooks/c.malloy");
+      it("converts a cell-format file with no layout rather than refusing it, in any directory", async () => {
+         const layoutless = LEGACY.replace("layout=linear ", "");
+         expect(layoutless).not.toBe(LEGACY);
+         for (const where of PLACES) {
+            const result = await readForEditor(layoutless, where);
+            if (result.ok === false) throw new Error(result.reason);
+            expect(result.conversion?.from).toBe(layoutless);
+         }
+      });
+
+      // KNOWN BUG, not yet fixed in source: the converter keeps the tag as
+      // written and adds `tiles=[…]`, so a cell report with no `layout=` (linear
+      // by the default rule) converts to a tile list with no `layout=`, which
+      // reads as GRID. The converter must write `layout=linear`.
+      it("converts a cell-format file with no layout into a LINEAR report", async () => {
+         const layoutless = LEGACY.replace("layout=linear ", "");
+         const result = await readForEditor(layoutless, "x.malloy");
          if (result.ok === false) throw new Error(result.reason);
-         expect(result.conversion?.from).toBe(kindless);
          expect(result.document.kind).toBe("notebook");
+         expect(result.conversion?.to).toContain("layout=linear");
       });
    });
 });

@@ -439,6 +439,8 @@ export function internalErrorToHttpError(
       return httpError(404, error.message);
    } else if (error instanceof DashboardNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof AmbiguousReportNameError) {
+      return httpError(409, error.message);
    } else if (error instanceof NotQueryableError) {
       return httpError(404, error.message);
    } else if (error instanceof QueryCompileError) {
@@ -646,6 +648,18 @@ export class ModelNotFoundError extends Error {
 export class DashboardNotFoundError extends Error {
    constructor(message: string) {
       super(message);
+   }
+}
+
+/**
+ * A basename that more than one report in the package has. A report is
+ * identified by its path; the deprecated `…/dashboards/{name}` route takes a
+ * basename and resolves it only when it is unique. 409, naming every match.
+ */
+export class AmbiguousReportNameError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "AmbiguousReportNameError";
    }
 }
 

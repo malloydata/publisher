@@ -18,34 +18,45 @@ import {
    type DashboardWriteOutcome,
 } from "../dashboard_write_metrics";
 import { assertSafeRelativeModelPath } from "../path_safety";
+import { INDEX_MODEL_NAME, MODEL_FILE_SUFFIX } from "../constants";
 import {
-   ANY_ARTIFACT_NOTE,
-   artifactKindInText,
-   claimsToBeANotebook,
-   documentKind,
-   hasArtifactLineOutsideBlocks,
-} from "../service/notebook";
-import { dashboardSlug, factsCarryArtifactTag } from "../service/dashboard";
+   isUnderPublicDir,
+   kindOfLayout,
+   layoutOfText,
+   textClaimsToBeAReport,
+} from "../service/report";
+import { factsCarryArtifactTag } from "../service/dashboard";
 import { formatProblem } from "../service/query_text";
 import { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
 
 type ApiDashboard = components["schemas"]["Dashboard"];
 type ApiDashboardManifest = components["schemas"]["DashboardManifest"];
+type ApiReport = components["schemas"]["Report"];
+type ApiReportManifest = components["schemas"]["ReportManifest"];
 type ApiModelSourceWrite = components["schemas"]["ModelSourceWriteRequest"];
 type ApiModelSourceWriteResult =
    components["schemas"]["ModelSourceWriteResult"];
 
-/** Tagged document as discovery judges it (a tag in a comment is no model note), and by its on-disk text too, which may postdate the load. */
-function currentIsATaggedDocument(
+/**
+ * Whether the file now at `modelPath` is one the write path may replace: a
+ * `.malloy` whose on-disk text, which may postdate the load, carries an
+ * artifact tag, and which the loaded package reads as a report (served, or a
+ * grid report with no tiles yet) or which claims to be one by its own
+ * `## artifact` note even though that tag does not parse. The last is still
+ * the author's report, and saving the fix is how it gets served again. A
+ * model, an untagged file, a `.malloy` whose only artifact tag is on a query,
+ * a `.malloynb`, the root `index.malloy` and anything in `public/` never
+ * qualify (the last three are refused by path before this runs).
+ */
+function currentIsAReport(
    current: string,
    loaded: Package | undefined,
    modelPath: string,
 ): boolean {
-   const model = loaded?.getModel(modelPath);
-   if (model?.getModelDef() && !model.carriesNotebookArtifactNote())
-      return false;
-   return claimsToBeANotebook(current);
+   if (!textClaimsToBeAReport(current)) return false;
+   if (loaded?.isWritableReport(modelPath)) return true;
+   return loaded?.getModel(modelPath)?.carriesNotebookArtifactNote() === true;
 }
 
 /**
@@ -65,8 +76,21 @@ function outcomeOf(error: Error): DashboardWriteOutcome {
    return "refused";
 }
 
-/** The only files the write endpoint accepts: a dashboard or a notebook, at the top of its directory. */
-const DASHBOARD_FILE = /^(dashboards|notebooks)\/[^/]+\.malloy$/;
+/**
+ * Where a report may be created: any `.malloy` path in the package outside
+ * `public/` (served raw to anyone who can reach the server) other than the
+ * root `index.malloy` (the surface, never a report). Where it lives otherwise
+ * decides nothing.
+ */
+function reportPathProblem(modelPath: string): string | undefined {
+   if (!modelPath.endsWith(MODEL_FILE_SUFFIX))
+      return `Only a report, a \`.malloy\` file, can be written here, not \`${modelPath}\`.`;
+   if (isUnderPublicDir(modelPath))
+      return `\`${modelPath}\` is in \`public/\`, which is served as raw static files, so a report cannot be written there.`;
+   if (modelPath === INDEX_MODEL_NAME)
+      return `\`${INDEX_MODEL_NAME}\` at the package root is the package's surface, never a report, so it cannot be written here.`;
+   return undefined;
+}
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */
 export const contentHashOf = (text: string): string =>
@@ -111,6 +135,7 @@ export class DashboardController {
          false,
       );
       const p = await environment.getPackage(packageName, false);
+      // Throws AmbiguousReportNameError (409) when two grid reports share it.
       const dashboard = p.getDashboard(dashboardName);
       if (!dashboard) {
          throw new DashboardNotFoundError(
@@ -120,17 +145,57 @@ export class DashboardController {
       return dashboard;
    }
 
+   /** Every report in the package, of either layout, by path. */
+   public async listReports(
+      environmentName: string,
+      packageName: string,
+   ): Promise<ApiReport[]> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
+      return p.listReports();
+   }
+
+   /** One report by its path in the package. */
+   public async getReport(
+      environmentName: string,
+      packageName: string,
+      reportPath: string,
+   ): Promise<ApiReportManifest> {
+      const environment = await this.environmentStore.getEnvironment(
+         environmentName,
+         false,
+      );
+      const p = await environment.getPackage(packageName, false);
+      const report =
+         typeof reportPath === "string" && reportPath.length > 0
+            ? await p.getReport(reportPath)
+            : undefined;
+      if (!report) {
+         throw new DashboardNotFoundError(
+            `Report ${reportPath} does not exist in package ${packageName}`,
+         );
+      }
+      return report;
+   }
+
    /**
-    * Write a dashboard or notebook file into the package and serve it: the builder's save.
+    * Write a report file into the package and serve it: the builder's save
+    * (`docs/reports-design.md` §7).
     *
-    * In order — refuse under `frozenConfig`; accept only `dashboards/<slug>.malloy`
-    * or a tagged `notebooks/<slug>.malloy`;
-    * compile the text AS the file and refuse with the problems when it does not
-    * compile, writing nothing; then, under one hold of the package lock, check
-    * the caller's precondition and write atomically; reload the package in
-    * place; and if the reloaded package does not compile this file, put the
-    * previous text back (or remove a new file) and reload again, so a save
-    * never leaves the package serving less than it did.
+    * In order — refuse under `frozenConfig`; accept a safe `.malloy` path
+    * outside `public/` and other than the root `index.malloy`, whose text
+    * carries an artifact tag; compile the text AS the file and refuse with the
+    * problems when it does not compile, writing nothing; then, under one hold
+    * of the package lock, check the caller's precondition (a create needs no
+    * file there; a replace needs a file the package reads as a report) and
+    * write atomically, creating missing directories inside the package root
+    * only; reload the package in place; and if the reloaded package does not
+    * serve this file as a report, put the previous text back (or remove a new
+    * file) and reload again, so a save never leaves the package serving less
+    * than it did.
     *
     * The precondition is `expectedHash`: the hash of the text the caller
     * opened, refused with 409 when the file has changed since, and nothing
@@ -152,17 +217,15 @@ export class DashboardController {
       // which are most of what is worth knowing here. Classified from the error
       // rather than at each throw site, so a branch added later cannot forget.
       const startedAt = Date.now();
-      // Tolerates a non-string path or source: the 400 for either comes from writeDashboardSource.
+      // Tolerates a non-string path or source: the 400 for either comes from
+      // writeDashboardSource. A body the cheap refusals turn away is never
+      // scanned, and counts as a grid write.
       const kind: DashboardWriteKind =
-         typeof modelPath === "string" && typeof body?.source === "string"
-            ? documentKind(
-                 modelPath,
-                 // A body the cheap refusals turn away is never scanned; its folder names the kind.
-                 this.environmentStore.publisherConfigIsFrozen ||
-                    !DASHBOARD_FILE.test(modelPath)
-                    ? undefined
-                    : artifactKindInText(body.source),
-              )
+         typeof modelPath === "string" &&
+         typeof body?.source === "string" &&
+         !this.environmentStore.publisherConfigIsFrozen &&
+         reportPathProblem(modelPath) === undefined
+            ? kindOfLayout(layoutOfText(body.source))
             : "dashboard";
       try {
          const result = await this.writeDashboardSource(
@@ -197,38 +260,25 @@ export class DashboardController {
    ): Promise<ApiModelSourceWriteResult> {
       if (this.environmentStore.publisherConfigIsFrozen) {
          throw new FrozenConfigError(
-            'Cannot write a dashboard or notebook: publisher.config.json has "frozenConfig": true.',
+            'Cannot write a report: publisher.config.json has "frozenConfig": true.',
          );
       }
       assertSafeRelativeModelPath(modelPath);
-      if (!DASHBOARD_FILE.test(modelPath)) {
-         throw new BadRequestError(
-            `Only a dashboard or a notebook file can be written here: ` +
-               `\`dashboards/<slug>.malloy\` or \`notebooks/<slug>.malloy\`, ` +
-               `not \`${modelPath}\`.`,
-         );
-      }
+      const pathProblem = reportPathProblem(modelPath);
+      if (pathProblem) throw new BadRequestError(pathProblem);
       if (typeof body?.source !== "string") {
          throw new BadRequestError(
             "The request body needs a `source`: the whole file's Malloy text.",
          );
       }
-      // An untagged file under notebooks/ is a shared include that other models import.
-      const inNotebooksFolder = modelPath.startsWith("notebooks/");
-      if (inNotebooksFolder && !claimsToBeANotebook(body.source)) {
+      // An untagged file is a model that other files may import, not a
+      // report. Either sigil passes (the query-level form is deprecated, not
+      // gone); a tag inside a block comment still reaches the reload verify.
+      if (!textClaimsToBeAReport(body.source)) {
          throw new BadRequestError(
-            `\`${modelPath}\` has no \`## artifact\` tag, so it is not a notebook. ` +
-               `Only a dashboard (\`dashboards/<slug>.malloy\`) or a tagged notebook ` +
-               `(\`notebooks/<slug>.malloy\`) can be written here.`,
-         );
-      }
-      // A dashboard may be tagged at the query level (`#`), so either sigil passes; a tag inside a block comment still reaches the reload verify.
-      if (
-         !inNotebooksFolder &&
-         !hasArtifactLineOutsideBlocks(body.source, ANY_ARTIFACT_NOTE)
-      ) {
-         throw new BadRequestError(
-            `\`${modelPath}\` has no \`# artifact\` tag, so it is not a dashboard.`,
+            `\`${modelPath}\` has no artifact tag (\`## artifact { layout=grid … }\` ` +
+               `or \`## artifact { layout=linear … }\`), so it is not a report. ` +
+               `Only a report can be written here.`,
          );
       }
       const environment = await this.environmentStore.getEnvironment(
@@ -264,34 +314,29 @@ export class DashboardController {
          modelPath,
          body.source,
          (current, loaded) => {
-            // The incoming text's tag is not enough: a tagged write must not turn an
-            // existing shared include into a notebook.
-            if (
-               inNotebooksFolder &&
-               current !== undefined &&
-               !currentIsATaggedDocument(current, loaded, modelPath)
-            )
-               throw new BadRequestError(
-                  `\`${modelPath}\` exists in the package without an \`## artifact\` tag: ` +
-                     `it is a shared include that other models import, not a document, ` +
-                     `so it was not overwritten.`,
-               );
-            const slug = dashboardSlug(modelPath);
-            const holder = loaded?.getDashboard(slug)?.path;
-            if (kind === "dashboard" && holder && holder !== modelPath)
-               throw new WriteConflictError(
-                  `\`${modelPath}\` would not be served: \`${holder}\` already holds the ` +
-                     `dashboard name "${slug}", which is the URL and the \`# drill\` target. ` +
-                     `Fix: rename one of the files. Nothing was written.`,
-               );
+            // A create needs the path free. Any file there, report or not,
+            // is a conflict, so a caller choosing a name can try the next.
             if (body.expectedHash === undefined) {
                if (current !== undefined)
                   throw new WriteConflictError(
-                     `\`${modelPath}\` already exists in the package. Send the ` +
-                        `\`expectedHash\` of the text you opened to replace it.`,
+                     `\`${modelPath}\` already exists in the package, so nothing ` +
+                        `was written. Choose another path, or, to replace a report, ` +
+                        `send the \`expectedHash\` of the text you opened.`,
                   );
                return;
             }
+            // The incoming text's tag is not enough: a tagged write must not
+            // turn an existing model into a report. Only a file the package
+            // reads as a report is replaced, wherever it lives.
+            if (
+               current !== undefined &&
+               !currentIsAReport(current, loaded, modelPath)
+            )
+               throw new BadRequestError(
+                  `\`${modelPath}\` exists in the package and is not a report: ` +
+                     `it is a model (or a file other models import), so it was ` +
+                     `not overwritten.`,
+               );
             const currentHash =
                current === undefined ? undefined : contentHashOf(current);
             if (currentHash !== body.expectedHash)
@@ -318,19 +363,18 @@ export class DashboardController {
                   { cause },
                );
             });
-            // The textual tag check can pass for a file discovery then drops (a tag in a comment, a slug another file holds).
-            let served: boolean;
-            if (kind === "dashboard") {
-               const holder = reloaded.getDashboard(dashboardSlug(modelPath));
-               // A tile-less dashboard yields no manifest, so the compiled tag is the evidence unless another file holds the slug.
-               const facts = written.getDashboardModelFacts();
-               served = holder
-                  ? holder.path === modelPath
-                  : facts !== undefined && factsCarryArtifactTag(facts);
-            } else served = reloaded.isServedNotebook(modelPath);
+            // The textual tag check can pass for a file discovery then drops
+            // (a tag in a comment). A tile-less grid report yields no
+            // manifest, so its compiled tag is the evidence there.
+            const facts = written.getDashboardModelFacts();
+            const served =
+               reloaded.isServedReport(modelPath) ||
+               (reloaded.isWritableReport(modelPath) &&
+                  facts !== undefined &&
+                  factsCarryArtifactTag(facts));
             if (!served)
                throw new WriteVerifyError(
-                  `\`${modelPath}\` is not served as a ${kind} once the package reloads`,
+                  `\`${modelPath}\` is not served as a report once the package reloads`,
                );
          },
       );

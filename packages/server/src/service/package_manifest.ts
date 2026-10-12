@@ -10,8 +10,6 @@
 
 import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
 import { PackageManifestError } from "../errors";
-import { isDashboardModelPath } from "./dashboard";
-import { isNotebookModelPath } from "./notebook";
 
 const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
@@ -435,8 +433,15 @@ export function resolveExplores(input: {
    declaredQueryableSources: unknown;
    /** Package-relative model paths, as produced by `filterModelPaths`. */
    modelPaths: readonly string[];
+   /**
+    * Which of the declared entries are reports (`report.ts`), by the same
+    * rule discovery applies. A report needs no `explores` entry and has no
+    * replacement to name. Absent means none are.
+    */
+   reportPaths?: ReadonlySet<string>;
 }): { explores: string[] | undefined; warnings: string[] } {
    const { declaredExplores, declaredQueryableSources, modelPaths } = input;
+   const reportPaths = input.reportPaths ?? new Set<string>();
    const hasIndexModel = modelPaths.includes(INDEX_MODEL_NAME);
    const warnings: string[] = [];
 
@@ -498,7 +503,9 @@ export function resolveExplores(input: {
                : EXPLORES_EMPTY_IS_UNCURATED,
          );
       } else {
-         warnings.push(exploresDeprecation(declared, hasIndexModel));
+         warnings.push(
+            exploresDeprecation(declared, hasIndexModel, reportPaths),
+         );
       }
       // Beside the deprecation, not instead of it: together they say "you are
       // using a deprecated key, and it is overriding the recommended one".
@@ -543,21 +550,19 @@ function listFiles(files: readonly string[]): string {
 
 /**
  * The deprecation for a non-empty `explores`, with the edit that replaces it.
- * Entries for index.malloy, for dashboards and for notebooks need no
- * replacement: the file is the surface, and every dashboard and notebook is
- * served. Dashboards and notebooks are recognized by path alone here. What is
- * left is what index.malloy has to import.
+ * Entries for index.malloy and for reports need no replacement: the file is
+ * the surface, and every report is served. Reports are recognized by the
+ * report rule (`reportPaths`), not by where they live. What is left is what
+ * index.malloy has to import.
  */
 function exploresDeprecation(
    declared: readonly string[],
    hasIndexModel: boolean,
+   reportPaths: ReadonlySet<string>,
 ): string {
    const lead = `"explores" in publisher.json is deprecated.`;
    const files = declared.filter(
-      (entry) =>
-         entry !== INDEX_MODEL_NAME &&
-         !isDashboardModelPath(entry) &&
-         !isNotebookModelPath(entry),
+      (entry) => entry !== INDEX_MODEL_NAME && !reportPaths.has(entry),
    );
    if (files.length > 0) {
       return hasIndexModel

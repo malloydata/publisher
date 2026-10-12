@@ -57,9 +57,14 @@ describe("notebook lint through the real server (E2E)", () => {
       expect(res.status).toBe(200);
       return (await res.json()) as { status: string; problems: Problem[] };
    };
+   // The lint's warns, less the deprecated `kind=` spelling these fixtures still write.
    const lintOf = (problems: Problem[], model: string) =>
       problems.filter(
-         (p) => p.model === model && p.severity === "warn" && p.at,
+         (p) =>
+            p.model === model &&
+            p.severity === "warn" &&
+            p.code !== "report-kind-deprecated" &&
+            p.at,
       );
 
    beforeAll(async () => {
@@ -98,7 +103,12 @@ describe("notebook lint through the real server (E2E)", () => {
    });
 
    describe("the package's warnings", () => {
-      let warnings: { model?: string; message: string; severity?: string }[];
+      let warnings: {
+         model?: string;
+         message: string;
+         severity?: string;
+         code?: string;
+      }[];
       beforeAll(async () => {
          const res = await fetch(pkgUrl(""));
          warnings =
@@ -119,11 +129,18 @@ describe("notebook lint through the real server (E2E)", () => {
             ["warn", 4],
             ["warn", 8],
          ]);
+         // `notebook-other-folder` is retired; what is left is the deprecated
+         // `kind=` spelling, as a warn.
          expect(of(WRONG_KIND)).toEqual([["warn", 1]]);
       });
 
       it("says nothing about a clean notebook, and no notebook or dashboard draws an unknown-render-tag warning", () => {
-         expect(warnings.filter((w) => w.model === CLEAN)).toEqual([]);
+         // Only the deprecated `kind=` spelling, as a warn.
+         expect(
+            warnings
+               .filter((w) => w.model === CLEAN)
+               .map((w) => [w.code, w.severity]),
+         ).toEqual([["report-kind-deprecated", "warn"]]);
          // The malformed colspan in linty proves the validator visits these files at all.
          expect(
             warnings.filter((w) => /Invalid # colspan/.test(w.message)),
@@ -136,7 +153,12 @@ describe("notebook lint through the real server (E2E)", () => {
       it("carries a header statement, a column conflict and a bad text block as errors, and the alias and orphan block as warns", () => {
          const severityOf = (model: string) =>
             warnings
-               .filter((w) => w.model === model && /^Line \d+:/.test(w.message))
+               .filter(
+                  (w) =>
+                     w.model === model &&
+                     w.code !== "report-kind-deprecated" &&
+                     /^Line \d+:/.test(w.message),
+               )
                .map((w) => [w.severity, w.message.split(":")[0]]);
          expect(severityOf("notebooks/header_statement.malloy")).toEqual([
             ["error", "Line 1"],
@@ -193,7 +215,7 @@ describe("notebook lint through the real server (E2E)", () => {
                p.at?.range.start.line,
             ]),
          ).toEqual([
-            ["notebook-kind-missing", 0],
+            ["report-layout-implicit", 0],
             ["notebook-markdown-opener", 3],
             ["notebook-comment-not-shown", 7],
          ]);
@@ -218,13 +240,15 @@ describe("notebook lint through the real server (E2E)", () => {
             ["dashboards/artifact_unparsed.malloy", "dashboard-lint"],
          ]);
          expect(lintOf(problems, LINTY).map((p) => p.code)).toEqual([
-            "notebook-kind-missing",
+            "report-layout-implicit",
             "notebook-markdown-opener",
             "notebook-comment-not-shown",
          ]);
-         expect(lintOf(problems, WRONG_KIND).map((p) => p.code)).toEqual([
-            "notebook-other-folder",
-         ]);
+         expect(
+            problems
+               .filter((p) => p.model === WRONG_KIND && p.at)
+               .map((p) => [p.code, p.severity]),
+         ).toEqual([["report-kind-deprecated", "warn"]]);
       });
 
       it("fails the compile of a notebook with a statement above its artifact tag, at that line", async () => {
@@ -277,13 +301,13 @@ describe("notebook lint through the real server (E2E)", () => {
             ).toEqual([["notebook-tile-layout-ignored", 0]]);
          });
 
-         it("says a dashboard served from notebooks/ works, and where the kinds are created", async () => {
+         it("says nothing about a grid report in notebooks/: no folder is a kind's home", async () => {
             expect(
                await findings(
                   "notebooks/tiles_dashboard.malloy",
-                  `## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE_LINE}`,
+                  `## artifact { layout=grid tiles=["a -> v"] }\n${SOURCE_LINE}`,
                ),
-            ).toEqual([["notebook-other-folder", 0]]);
+            ).toEqual([]);
          });
       });
 
@@ -320,11 +344,10 @@ describe("notebook lint through the real server (E2E)", () => {
                expect.objectContaining({ severity: "error" }),
             );
             expect(
-               problems
-                  .filter(
-                     (p) => p.model === CLEAN && p.severity === "warn" && p.at,
-                  )
-                  .map((p) => [p.code, p.at?.range.start.line]),
+               lintOf(problems, CLEAN).map((p) => [
+                  p.code,
+                  p.at?.range.start.line,
+               ]),
             ).toEqual([
                ["notebook-givens-not-enabled", 1],
                ["notebook-unterminated-block", 2],

@@ -30,12 +30,10 @@ import {
    artifactNoteLine,
    claimsToBeANotebook,
    docNotesAboveArtifact,
-   documentKind,
    hasArtifactLineOutsideBlocks,
    isArtifactNoteText,
-   isDocumentModelPath,
-   isNotebookModelPath,
 } from "./notebook";
+import { isReportEligiblePath, layoutOfText } from "./report";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
@@ -51,23 +49,29 @@ const note = (text: string, line: number) => ({
 });
 
 describe("notebook predicates", () => {
-   it("admits only a .malloy directly under notebooks/", () => {
-      expect(isNotebookModelPath("notebooks/a.malloy")).toBe(true);
-      expect(isNotebookModelPath("notebooks/a.malloynb")).toBe(false);
-      expect(isNotebookModelPath("notebooks/sub/a.malloy")).toBe(false);
-      expect(isNotebookModelPath("a/notebooks/a.malloy")).toBe(false);
-      expect(isNotebookModelPath("dashboards/a.malloy")).toBe(false);
+   // Ported from the folder predicates: a report may live at any depth.
+   it("admits a report anywhere outside public/, and never the root index.malloy", () => {
+      expect(isReportEligiblePath("notebooks/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("notebooks/a.malloynb")).toBe(true);
+      expect(isReportEligiblePath("notebooks/sub/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("a/notebooks/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("dashboards/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("models/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("public/a.malloy")).toBe(false);
+      expect(isReportEligiblePath("index.malloy")).toBe(false);
    });
 
-   it("takes the kind from the tag and falls back to the folder", () => {
-      expect(documentKind("dashboards/a.malloy", "notebook")).toBe("notebook");
-      expect(documentKind("notebooks/a.malloy", "dashboard")).toBe("dashboard");
-      expect(documentKind("notebooks/a.malloy", undefined)).toBe("notebook");
-      expect(documentKind("dashboards/a.malloy", "text")).toBe("dashboard");
-      expect(isDocumentModelPath("dashboards/a.malloy")).toBe(true);
-      expect(isDocumentModelPath("notebooks/a.malloy")).toBe(true);
-      expect(isDocumentModelPath("models/a.malloy")).toBe(false);
-      expect(isDocumentModelPath("notebooks/sub/a.malloy")).toBe(false);
+   it("takes the layout from the tag, never from the folder", () => {
+      const tag = (props: string) => `## artifact { ${props} }\nrun: x`;
+      expect(layoutOfText(tag("kind=notebook"))).toBe("linear");
+      expect(layoutOfText(tag("kind=dashboard"))).toBe("grid");
+      expect(layoutOfText(tag("layout=grid"))).toBe("grid");
+      expect(layoutOfText(tag('layout=linear tiles=["a -> b"]'))).toBe(
+         "linear",
+      );
+      expect(layoutOfText(tag('tiles=["a -> b"]'))).toBe("grid");
+      expect(layoutOfText(tag("kind=text"))).toBe("linear");
+      expect(layoutOfText(tag(""))).toBe("linear");
    });
 
    it("reads the top-level kind off the artifact line, not a tile entry's", () => {
@@ -118,17 +122,12 @@ describe("notebook predicates", () => {
       expect(isArtifactNoteText("## title=artifact")).toBe(false);
    });
 
-   it("reads a dashboards/ file's kind off a tag whose artifact property is not first", () => {
+   it("reads a file's layout off a tag whose artifact property is not first", () => {
       const source = "## x {} artifact { kind=notebook }\nrun: x";
-      expect(
-         documentKind("dashboards/a.malloy", artifactKindInText(source)),
-      ).toBe("notebook");
-      expect(
-         documentKind(
-            "dashboards/a.malloy",
-            artifactKindInText("## 2024_q1 {} artifact { kind=notebook }"),
-         ),
-      ).toBe("notebook");
+      expect(layoutOfText(source)).toBe("linear");
+      expect(layoutOfText("## 2024_q1 {} artifact { kind=notebook }")).toBe(
+         "linear",
+      );
    });
 
    it("follows Malloy's route rule: a sigil glued to a word is a route, not a tag", () => {
@@ -336,14 +335,36 @@ describe("served notebooks (worker path)", () => {
       write("notebooks/untagged.malloy", BASE);
       write("notebooks/nested.malloynb", ">>>markdown\n# x");
       await withPackage(async (pkg) => {
-         expect(pkg.isServedNotebook("notebooks/tagged.malloy")).toBe(true);
-         expect(pkg.isServedNotebook("notebooks/untagged.malloy")).toBe(false);
+         expect(pkg.getReportLayout("notebooks/tagged.malloy")).toBe("linear");
+         expect(pkg.isServedReport("notebooks/untagged.malloy")).toBe(false);
          const model = pkg.getModel("notebooks/tagged.malloy")!;
          expect(model.isNotebook()).toBe(true);
          expect(model.getModelType()).toBe("model");
          expect(pkg.getModel("notebooks/untagged.malloy")!.isNotebook()).toBe(
             false,
          );
+      });
+   });
+
+   it("reads a CRLF .malloynb into the same cells as an LF one", async () => {
+      manifest();
+      const cells = [
+         ">>>markdown",
+         "## Totals",
+         ">>>malloy",
+         BASE.trim(),
+         "run: base -> { aggregate: n is count() }",
+      ];
+      write("lf.malloynb", cells.join("\n"));
+      write("crlf.malloynb", cells.join("\r\n"));
+      await withPackage(async (pkg) => {
+         const textOf = async (p: string) =>
+            (await pkg.getReport(p))?.notebook?.notebookCells?.map(
+               (c) => c.text,
+            );
+         const lf = await textOf("lf.malloynb");
+         expect(lf?.[0]).toBe("## Totals");
+         expect(await textOf("crlf.malloynb")).toEqual(lf);
       });
    });
 
@@ -358,11 +379,11 @@ describe("served notebooks (worker path)", () => {
          `## dashboard { title="artifact" }\n${BASE}`,
       );
       await withPackage(async (pkg) => {
-         expect(pkg.isServedNotebook("notebooks/second.malloy")).toBe(true);
+         expect(pkg.getReportLayout("notebooks/second.malloy")).toBe("linear");
          expect(pkg.getModel("notebooks/second.malloy")!.isNotebook()).toBe(
             true,
          );
-         expect(pkg.isServedNotebook("notebooks/titled.malloy")).toBe(false);
+         expect(pkg.isServedReport("notebooks/titled.malloy")).toBe(false);
       });
    });
 
@@ -569,7 +590,7 @@ describe("served notebooks (worker path)", () => {
          const listed = await pkg.listNotebooks();
          expect(listed.map((n) => n.path)).toEqual(["notebooks/nb.malloy"]);
          expect(listed[0].error).toBeTruthy();
-         expect(pkg.isServedNotebook("notebooks/nb.malloy")).toBe(true);
+         expect(pkg.getReportLayout("notebooks/nb.malloy")).toBe("linear");
       });
    });
 

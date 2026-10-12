@@ -20,7 +20,7 @@ export { DashboardProse } from "./DashboardView";
 export interface DashboardProps {
    /** `publisher://environments/{env}/packages/{pkg}`, optionally `?versionId=`. */
    resourceUri: string;
-   /** The dashboard's slug, as listed by the dashboards endpoint. */
+   /** The report's basename, as listed by the deprecated dashboards endpoint. */
    dashboard: string;
    /**
     * Control values from the host, typically its URL query parameters. These
@@ -68,8 +68,13 @@ export interface DashboardProps {
 }
 
 /**
- * A Malloyyo-style dashboard: a control row over one or more query results,
- * declared entirely by tags in a package's `dashboards/*.malloy`.
+ * A grid report by its basename: a control row over one or more query
+ * results, declared entirely by the file's tags.
+ *
+ * @deprecated Render `Report` with the file's path instead. This reads the
+ * deprecated `GET …/dashboards/{name}`, which resolves a basename only when one
+ * grid report has it, and draws the result with the same renderer as `Report`.
+ * Kept for hosts that still mount it.
  *
  * Host-agnostic on purpose. It takes props rather than reading a router, and
  * hands navigation and URL state back to whoever mounted it, so the Publisher
@@ -145,7 +150,7 @@ export function Dashboard({
       );
    }
    if (!isSuccess || !manifest) {
-      return <Loading text={LOADING_COPY.opening("dashboard")} />;
+      return <Loading text={LOADING_COPY.opening("report")} />;
    }
 
    return (

@@ -62,7 +62,7 @@ test.describe("notebook-builder", () => {
       // The reader's Edit button leads into the editor.
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${SLUG}`);
       await page.getByRole("button", { name: "Edit", exact: true }).click();
-      await expect(page).toHaveURL(new RegExp(`/notebooks/${SLUG}/edit$`));
+      await expect(page).toHaveURL(new RegExp(`/notebooks/${SLUG}\\?edit$`));
       await editorOpen(page);
       await expect(page.getByText("Where revenue came from")).toBeVisible();
 

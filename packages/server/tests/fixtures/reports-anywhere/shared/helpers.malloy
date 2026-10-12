@@ -1,0 +1,3 @@
+// An untagged model: not a report, wherever it lives.
+import { orders } from "../orders.malloy"
+source: orders_by_brand is orders extend { view: top is { group_by: brand_name } }

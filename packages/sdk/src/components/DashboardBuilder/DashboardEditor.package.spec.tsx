@@ -55,8 +55,8 @@ mockServerProvider(
          executeQueryModel: mock(() => pending()),
          updateModelSource,
       },
-      dashboards: {
-         getDashboard: mock(() =>
+      reports: {
+         getReport: mock(() =>
             Promise.resolve({
                data: {
                   path: "dashboards/overview.malloy",
@@ -65,8 +65,16 @@ mockServerProvider(
                },
             }),
          ),
-         listDashboards: mock(() =>
-            Promise.resolve({ data: [{ name: "overview" }] }),
+         listReports: mock(() =>
+            Promise.resolve({
+               data: [
+                  {
+                     path: "dashboards/overview.malloy",
+                     name: "overview",
+                     layout: "grid",
+                  },
+               ],
+            }),
          ),
       },
    },
@@ -185,5 +193,41 @@ describe("DashboardEditor, when the server takes writes", () => {
          globalQueryClient.getQueryState(key("dashboards/other.malloy"))
             ?.isInvalidated,
       ).toBe(false);
+   });
+});
+
+describe("DashboardEditor's layout switch", () => {
+   const mountWith = (allowLayoutChange?: boolean) =>
+      render(
+         <DocumentStorageProvider
+            documentStorage={new BrowserDocumentStorage()}
+         >
+            <DashboardEditor
+               environmentName="env"
+               packageName="pkg"
+               dashboardName="overview"
+               {...(allowLayoutChange !== undefined
+                  ? { allowLayoutChange }
+                  : {})}
+            />
+         </DocumentStorageProvider>,
+         { wrapper: serverWrapper },
+      );
+
+   it("is offered for a file by default", async () => {
+      mountWith();
+      await screen.findByText("Storefront");
+      expect(button("Grid layout")).toBeDefined();
+   });
+
+   it("is hidden when the host passes allowLayoutChange={false}", async () => {
+      mountWith(false);
+      await screen.findByText("Storefront");
+      expect(
+         screen.queryByRole("button", { name: "Grid layout", hidden: true }),
+      ).toBeNull();
+      expect(
+         screen.queryByRole("button", { name: "Linear layout", hidden: true }),
+      ).toBeNull();
    });
 });

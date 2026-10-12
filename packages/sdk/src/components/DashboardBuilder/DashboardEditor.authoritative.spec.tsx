@@ -103,8 +103,8 @@ mockServerProvider(
          executeQueryModel: mock(() => pending()),
          updateModelSource,
       },
-      dashboards: {
-         getDashboard: mock(() =>
+      reports: {
+         getReport: mock(() =>
             Promise.resolve({
                data: {
                   path: "dashboards/overview.malloy",
@@ -113,8 +113,16 @@ mockServerProvider(
                },
             }),
          ),
-         listDashboards: mock(() =>
-            Promise.resolve({ data: [{ name: "overview" }] }),
+         listReports: mock(() =>
+            Promise.resolve({
+               data: [
+                  {
+                     path: "dashboards/overview.malloy",
+                     name: "overview",
+                     layout: "grid",
+                  },
+               ],
+            }),
          ),
       },
    },
@@ -272,7 +280,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
       expect(await screen.findByText("Recorded")).toBeDefined();
       expect(screen.queryByText("Storefront")).toBeNull();
       // Nothing is pending, so there is nothing to resume.
-      expect(screen.queryByText(/edits to this dashboard/)).toBeNull();
+      expect(screen.queryByText(/edits to this report/)).toBeNull();
       expect(onEvent.mock.calls[0][0]).toMatchObject({
          type: "dashboard.opened",
          from: "record",
@@ -285,7 +293,7 @@ describe("DashboardEditor, when the host's store is the record", () => {
       mount(storage);
 
       expect(await screen.findByText("Storefront")).toBeDefined();
-      expect(await screen.findByText(/edits to this dashboard/)).toBeDefined();
+      expect(await screen.findByText(/edits to this report/)).toBeDefined();
    });
 
    it("opens the package file when the record has no copy yet, and the first save keeps the history", async () => {
@@ -447,7 +455,7 @@ describe("DashboardEditor, when the copy is kept beside the package", () => {
       clearCache();
       serverContext.mutable = true;
       mount(storage);
-      expect(await screen.findByText(/edits to this dashboard/)).toBeDefined();
+      expect(await screen.findByText(/edits to this report/)).toBeDefined();
    });
 
    it("keeps a resumed copy on screen after saving it into the package, and splices the next save onto it", async () => {

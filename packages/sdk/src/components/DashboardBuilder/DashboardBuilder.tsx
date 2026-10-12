@@ -192,6 +192,14 @@ export interface DashboardBuilderProps {
    toolbar?: ReactNode;
    /** Leave the builder, opted into: draws Close, which asks first when edits are unsaved. */
    onExit?: () => void;
+   /**
+    * Whether the toolbar offers the Linear / Grid layout switch. Default
+    * true. A host that ties a report's layout to where it keeps the file
+    * (every grid report under `dashboards/`, say) passes false, so an author
+    * cannot change a layout the host files by. A document held as text never
+    * gets the switch.
+    */
+   allowLayoutChange?: boolean;
 }
 
 export function DashboardBuilder({
@@ -201,6 +209,7 @@ export function DashboardBuilder({
    onChange,
    onDirtyChange,
    onExit,
+   allowLayoutChange = true,
    renderTile,
    controls,
    givens,
@@ -373,6 +382,17 @@ export function DashboardBuilder({
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
+         {...(visibleSources === undefined && allowLayoutChange
+            ? {
+                 // A text-held document's layout is the host's record, so only a file gets the switch, and only when the host allows it.
+                 layout: notebook ? ("linear" as const) : ("grid" as const),
+                 onLayoutChange: (next: "grid" | "linear") =>
+                    editor.update((draft) => {
+                       if (next === "linear") draft.kind = "notebook";
+                       else delete draft.kind;
+                    }),
+              }
+            : {})}
       />
    );
    return (
@@ -401,8 +421,8 @@ export function DashboardBuilder({
             >
                {editor.pendingOpen && (
                   <Alert severity="info">
-                     This notebook is in the cell format. Saving rewrites it as
-                     a layout notebook, and a named query run once becomes that
+                     This report is in the cell format. Saving rewrites it as a
+                     layout notebook, and a named query run once becomes that
                      tile&apos;s view.
                   </Alert>
                )}
@@ -431,8 +451,7 @@ export function DashboardBuilder({
                         }}
                      >
                         <Typography variant="body2">
-                           This {notebook ? "notebook" : "dashboard"} is not
-                           served until it has a tile.
+                           This report is not served until it has a tile.
                         </Typography>
                         {catalog && (
                            <Button

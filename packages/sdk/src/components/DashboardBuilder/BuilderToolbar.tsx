@@ -11,6 +11,8 @@ import {
    Divider,
    IconButton,
    Stack,
+   ToggleButton,
+   ToggleButtonGroup,
    Tooltip,
 } from "@mui/material";
 import type { ReactNode, Ref } from "react";
@@ -58,6 +60,10 @@ export interface BuilderToolbarProps {
     * Console leaves from its own header and passes nothing.
     */
    onExit?: () => void;
+   /** The report's layout, for the switch. Absent, no switch is drawn. */
+   layout?: "grid" | "linear";
+   /** Switch the layout: rewrites `layout=` in the tag and nothing else. */
+   onLayoutChange?: (layout: "grid" | "linear") => void;
 }
 
 export function BuilderToolbar({
@@ -74,6 +80,8 @@ export function BuilderToolbar({
    actions,
    onAddTile,
    onExit,
+   layout,
+   onLayoutChange,
 }: BuilderToolbarProps) {
    return (
       <Stack
@@ -88,6 +96,31 @@ export function BuilderToolbar({
             "& .MuiButton-root": { whiteSpace: "nowrap" },
          }}
       >
+         {/* How the page is laid out: one property of the tag, switched in place. */}
+         {layout && onLayoutChange && (
+            <>
+               <Tooltip title="Layout: tiles side by side, or one after another">
+                  <ToggleButtonGroup
+                     size="small"
+                     exclusive
+                     value={layout}
+                     aria-label="Layout"
+                     onChange={(_event, next: "grid" | "linear" | null) => {
+                        if (next && next !== layout) onLayoutChange(next);
+                     }}
+                     sx={{ "& .MuiToggleButton-root": { py: 0.25, px: 1 } }}
+                  >
+                     <ToggleButton value="linear" aria-label="Linear layout">
+                        Linear
+                     </ToggleButton>
+                     <ToggleButton value="grid" aria-label="Grid layout">
+                        Grid
+                     </ToggleButton>
+                  </ToggleButtonGroup>
+               </Tooltip>
+               <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+            </>
+         )}
          {/* What the page is made of. */}
          {onAddTile && (
             <Button

@@ -10,7 +10,29 @@ import {
    type DashboardModelFacts,
 } from "./dashboard";
 import { translateToParse } from "./notebook";
-import { lintNotebookText, notebookLintProblems } from "./notebook_lint";
+import {
+   lintNotebookText as lintNotebookTextAll,
+   notebookLintProblems as notebookLintProblemsAll,
+} from "./notebook_lint";
+
+/**
+ * The layout findings (`report-kind-deprecated`, `report-layout-implicit`)
+ * fire on almost every fixture here, which spells its layout with the
+ * deprecated `kind=`. They have their own tests below; the rest of this file
+ * is about the other findings, so they are set aside here.
+ */
+const LAYOUT_CODES = new Set([
+   "report-kind-deprecated",
+   "report-layout-implicit",
+]);
+const lintNotebookText = (modelPath: string, text: string) =>
+   lintNotebookTextAll(modelPath, text).filter(
+      (finding) => !LAYOUT_CODES.has(finding.code),
+   );
+const notebookLintProblems = (modelPath: string, text: string, url: string) =>
+   notebookLintProblemsAll(modelPath, text, url).filter(
+      (problem) => !LAYOUT_CODES.has(problem.code ?? ""),
+   );
 
 const FIXTURES = path.resolve(__dirname, "../../tests/fixtures");
 
@@ -621,24 +643,97 @@ describe("notebook lint", () => {
       expect(orphan?.message).toContain("is followed by `more`");
    });
 
-   it("asks a notebook with no kind to add kind=notebook", () => {
-      expect(lint(`## artifact { title="x" }\n${SOURCE}`)).toEqual([
-         {
-            line: 1,
-            code: "notebook-kind-missing",
-            message:
-               "Line 1: this notebook's artifact tag has no `kind`. Fix: write `## artifact { kind=notebook }`.",
+   // `notebook-kind-missing` is replaced by `report-layout-implicit`, and it
+   // fires wherever the file lives (`docs/reports-design.md` §8).
+   describe("the layout findings", () => {
+      const all = (text: string, modelPath = "notebooks/n.malloy") =>
+         lintNotebookTextAll(modelPath, text).map(
+            ({ line, code, message, severity }) => ({
+               line,
+               code,
+               message,
+               severity,
+            }),
+         );
+
+      it.each([
+         "notebooks/n.malloy",
+         "dashboards/n.malloy",
+         "n.malloy",
+         "a/b/n.malloy",
+      ])(
+         "says a tag with no layout and no tiles is linear only by default, in %s",
+         (modelPath) => {
+            expect(
+               all(`## artifact { title="x" }\n${SOURCE}`, modelPath),
+            ).toEqual([
+               {
+                  line: 1,
+                  code: "report-layout-implicit",
+                  message:
+                     "Line 1: this artifact tag names no `layout` and lists no tiles, so the report is linear only by default. Fix: write `## artifact { layout=linear }` (or `layout=grid` with `tiles=[…]`).",
+                  severity: "warn",
+               },
+            ]);
          },
-      ]);
+      );
+
+      it("says nothing of a tag that writes layout=", () => {
+         expect(all(`## artifact { layout=linear }\n${SOURCE}`)).toEqual([]);
+         expect(
+            all(`## artifact { layout=grid tiles=["a -> v"] }\n${SOURCE}`),
+         ).toEqual([]);
+      });
+
+      it("gives the layout= to write for a kind=, as a warn", () => {
+         expect(all(`## artifact { kind=notebook }\n${SOURCE}`)).toEqual([
+            {
+               line: 1,
+               code: "report-kind-deprecated",
+               message:
+                  "Line 1: `kind=notebook` is the deprecated spelling of the layout, read as `layout=linear`. Fix: write `layout=linear` instead.",
+               severity: "warn",
+            },
+         ]);
+         expect(
+            all(
+               `## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE}`,
+            )[0],
+         ).toMatchObject({
+            code: "report-kind-deprecated",
+            message: expect.stringContaining("read as `layout=grid`"),
+         });
+      });
+
+      it("errors when layout= and kind= disagree, and reads layout=", () => {
+         expect(
+            all(
+               `## artifact { layout=grid kind=notebook tiles=["a -> v"] }\n${SOURCE}`,
+            ).map((f) => [f.code, f.severity]),
+         ).toEqual([["report-layout-conflict", "error"]]);
+         expect(
+            all(`## artifact { layout=linear kind=notebook }\n${SOURCE}`).map(
+               (f) => f.code,
+            ),
+         ).toEqual(["report-kind-deprecated"]);
+      });
+
+      it("errors on a layout= it does not know", () => {
+         expect(
+            all(`## artifact { layout=wide tiles=["a -> v"] }\n${SOURCE}`).map(
+               (f) => [f.code, f.severity],
+            ),
+         ).toEqual([["report-layout-unknown", "error"]]);
+      });
    });
 
-   it("flags an unknown kind under notebooks", () => {
+   it("flags an unknown kind on a linear report", () => {
       expect(lint(`## artifact { kind=report }\n${SOURCE}`)).toEqual([
          {
             line: 1,
             code: "notebook-kind-unknown",
             message:
-               "Line 1: `kind=report` is not a kind Publisher knows (dashboard, notebook). Fix: write `## artifact { kind=notebook }`.",
+               "Line 1: `kind=report` is not a kind Publisher knows (dashboard, notebook). Fix: remove `kind`, and write `layout=grid` or `layout=linear`.",
          },
       ]);
    });
@@ -755,42 +850,26 @@ describe("notebook lint", () => {
          ).toContain("a dashboard reads no attached note");
       });
 
-      it("is a layout from the tag, whichever folder holds it", () => {
+      // `notebook-other-folder` is retired: no folder is a kind's home.
+      it("is a layout from the tag, whichever folder holds it, with nothing said", () => {
          expect(
-            lint(`${TILES}${SOURCE}${BLOCK}`, "dashboards/n.malloy").map(
-               (f) => f.code,
-            ),
-         ).toEqual(["notebook-other-folder"]);
+            lint(`${TILES}${SOURCE}${BLOCK}`, "dashboards/n.malloy"),
+         ).toEqual([]);
+         expect(lint(`${TILES}${SOURCE}${BLOCK}`, "x/y/n.malloy")).toEqual([]);
       });
    });
 
-   it("says a kind=notebook file under dashboards/ works, and where kinds are created", () => {
+   // Retired with `notebook-other-folder`: a kind's folder means nothing.
+   it("says nothing of a kind=notebook file under dashboards/ or a kind=dashboard one under notebooks/", () => {
       expect(
          lint(
             `## artifact { kind=notebook tiles=[a] }\n${SOURCE}`,
             "dashboards/d.malloy",
          ),
-      ).toEqual([
-         {
-            line: 1,
-            code: "notebook-other-folder",
-            message:
-               "Line 1: this notebook is served from dashboards/, where the other kind is created. It works either way. Fix: move it to notebooks/ if you want folders to match kinds.",
-         },
-      ]);
-   });
-
-   it("says the same of a kind=dashboard file under notebooks/, and reads it as a dashboard", () => {
+      ).toEqual([]);
       expect(
          lint(`## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE}`),
-      ).toEqual([
-         {
-            line: 1,
-            code: "notebook-other-folder",
-            message:
-               "Line 1: this dashboard is served from notebooks/, where the other kind is created. It works either way. Fix: move it to dashboards/ if you want folders to match kinds.",
-         },
-      ]);
+      ).toEqual([]);
    });
 
    it("flags an unknown kind under dashboards, and the tile kind text on the dashboard itself", () => {
@@ -801,7 +880,7 @@ describe("notebook lint", () => {
             line: 1,
             code: "notebook-kind-text-on-dashboard",
             message:
-               "Line 1: `kind=text` marks a tile entry, so it does not mark this document. Fix: remove `kind`, or write `kind=dashboard` or `kind=notebook`.",
+               "Line 1: `kind=text` marks a tile entry, so it does not mark this report. Fix: remove `kind`, and write `layout=grid` or `layout=linear`.",
          },
       ]);
       expect(
@@ -811,7 +890,7 @@ describe("notebook lint", () => {
             line: 1,
             code: "notebook-kind-unknown",
             message:
-               "Line 1: `kind=report` is not a kind Publisher knows (dashboard, notebook). Fix: remove `kind`.",
+               "Line 1: `kind=report` is not a kind Publisher knows (dashboard, notebook). Fix: remove `kind`, and write `layout=grid` or `layout=linear`.",
          },
       ]);
    });
@@ -1109,10 +1188,18 @@ describe("notebook lint", () => {
       ]);
    });
 
-   it("ignores a file outside notebooks and dashboards", () => {
-      expect(
-         lint(`${HEADER}##| markdown\nhi\n|##\n`, "models/m.malloy"),
-      ).toEqual([]);
+   // Ported: a report lives anywhere, so a tagged file in any directory is
+   // linted; only public/ and the root index.malloy are never reports.
+   it("lints a tagged file in any directory, and never public/ or the root index.malloy", () => {
+      const text = `${HEADER}##| markdown\nhi\n|##\n`;
+      expect(lint(text, "models/m.malloy").map((f) => f.code)).toEqual([
+         "notebook-markdown-opener",
+      ]);
+      expect(lint(text, "m.malloy").map((f) => f.code)).toEqual([
+         "notebook-markdown-opener",
+      ]);
+      expect(lint(text, "public/m.malloy")).toEqual([]);
+      expect(lint(text, "index.malloy")).toEqual([]);
    });
 
    it('draws the spacing finding for a ##"word line too', () => {

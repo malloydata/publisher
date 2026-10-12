@@ -17,7 +17,7 @@ describe("a new dashboard", () => {
       expect(slugFor("***")).toBe("");
    });
 
-   it("is a file the builder opens, with the picked view as its first tile", async () => {
+   it("is a grid report the builder opens: an intro text tile, then the picked view", async () => {
       const text = newDashboardSource({
          title: 'Sales "West"',
          modelPath: "models/storefront.malloy",
@@ -25,22 +25,27 @@ describe("a new dashboard", () => {
          view: "by_category",
       });
       expect(text).toContain('title="Sales \\"West\\""');
+      // Written at the package root by default, so the import needs no `../`.
       expect(text).toContain(
-         'import { order_items } from "../models/storefront.malloy"',
+         'import { order_items } from "models/storefront.malloy"',
       );
+      expect(text).toContain("layout=grid");
+      expect(text).toContain("} dashboard { columns=12 }");
       const document = await openDocument(text);
       expect(document.title).toBe('Sales "West"');
       expect(document.sources).toEqual([
          { name: "order_items_tiles", base: "order_items" },
       ]);
+      expect(document.kind).toBeUndefined();
+      expect(document.columns).toBe(12);
       expect(document.tiles.map((tile) => tile.name)).toEqual([
+         "intro",
          "by_category_tile",
       ]);
-      expect(queryTile(document, 0).declaration).toEqual({
+      expect(queryTile(document, 1).declaration).toEqual({
          kind: "reference",
          from: "by_category",
       });
-      expect(document.tiles[0].colspan).toBe(6);
    });
 
    it("trims the title once, and refuses a source named like a keyword", () => {
@@ -51,6 +56,9 @@ describe("a new dashboard", () => {
          view: "v",
       };
       expect(newDashboardSource(base)).toContain('title="Sales"');
+      expect(newDashboardSource(base, "team/sales.malloy")).toContain(
+         'from "../m.malloy"',
+      );
       expect(newDashboardProblem({ ...base, source: "date" })).toContain(
          "cannot be written",
       );

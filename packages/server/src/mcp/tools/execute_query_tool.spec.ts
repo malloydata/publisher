@@ -120,6 +120,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
+               isServedReport: () => false,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),
@@ -167,6 +168,7 @@ function storeCapturingMetadata(
                // The tool reads the package's own declared bag as the
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
+               isServedReport: () => false,
                getModel: () => ({
                   getModelType: () => "model",
                   getModel: async () => ({}),

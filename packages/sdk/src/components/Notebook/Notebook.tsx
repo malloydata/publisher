@@ -5,7 +5,7 @@ import "@malloydata/malloy-explorer/styles.css";
 import { Box, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { planRun } from "./runPlan";
-import { RawNotebook } from "../../client";
+import { DashboardManifest, RawNotebook } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useModelGivens } from "../../hooks/useModelGivens";
@@ -45,7 +45,7 @@ function cellErrorMessage(error: unknown): string {
    return "The server did not say why.";
 }
 
-interface NotebookProps {
+export interface NotebookProps {
    resourceUri: string;
    maxResultSize?: number;
    /**
@@ -98,7 +98,7 @@ interface NotebookProps {
 }
 
 /** The raw notebook, one cache entry per URI however many components ask. */
-function useNotebookQuery(resourceUri: string) {
+function useNotebookQuery(resourceUri: string, enabled = true) {
    const { apiClients } = useServer();
    const {
       environmentName,
@@ -117,9 +117,76 @@ function useNotebookQuery(resourceUri: string) {
          );
          return response.data;
       },
+      enabled,
    });
 }
 
+/**
+ * A linear report written as tiles: a one-column dashboard, its prose drawn
+ * bare above the tiles. Shared by {@link Notebook} and `Report`.
+ */
+export function LinearReport({
+   manifest,
+   environmentName,
+   packageName,
+   versionId,
+   documentName,
+   givens,
+   onGivensChange,
+   onDrillNavigate,
+   maxResultSize,
+}: {
+   manifest: DashboardManifest;
+   environmentName: string;
+   packageName: string;
+   versionId: string | undefined;
+   documentName: string;
+   givens?: Record<string, string>;
+   onGivensChange?: NotebookProps["onGivensChange"];
+   onDrillNavigate?: NotebookProps["onDrillNavigate"];
+   maxResultSize?: number;
+}) {
+   const { title, description } = manifest;
+   return (
+      <CleanNotebookContainer>
+         <CleanNotebookSection>
+            {/* chrome="none" drops the view's own header, so the prose is drawn here. */}
+            {(title || description) && (
+               <Box sx={{ mb: 2 }}>
+                  <DashboardProse
+                     // A linear report's text tiles have no card; its description matches them.
+                     chrome="none"
+                     title={title ?? ""}
+                     {...(description ? { description } : {})}
+                  />
+               </Box>
+            )}
+            <DashboardView
+               manifest={manifest}
+               environmentName={environmentName}
+               packageName={packageName}
+               versionId={versionId}
+               documentName={documentName}
+               givens={givens}
+               onGivensChange={onGivensChange}
+               onNavigate={onDrillNavigate}
+               maxResultSize={maxResultSize}
+               chrome="none"
+               // A linear report's control panel, not a grid's bar.
+               controlsLayout="panel"
+            />
+         </CleanNotebookSection>
+      </CleanNotebookContainer>
+   );
+}
+
+/**
+ * A notebook by its package path.
+ *
+ * @deprecated Render `Report` with the file's path instead: it reads
+ * `GET …/reports/{path}` and renders either layout. Kept, as a thin wrapper
+ * over the same renderers, for hosts that still mount it.
+ */
 // Requires PackageProvider
 export default function Notebook(props: NotebookProps) {
    const { data: notebook } = useNotebookQuery(props.resourceUri);
@@ -127,50 +194,44 @@ export default function Notebook(props: NotebookProps) {
    if (notebook?.dashboard) {
       const { environmentName, packageName, versionId, modelPath } =
          parseResourceUri(props.resourceUri);
-      const { title, description } = notebook.dashboard;
       return (
-         <CleanNotebookContainer>
-            <CleanNotebookSection>
-               {/* chrome="none" drops the view's own header, so the prose is drawn here. */}
-               {(title || description) && (
-                  <Box sx={{ mb: 2 }}>
-                     <DashboardProse
-                        // A notebook's text tiles have no card; its description matches them.
-                        chrome="none"
-                        title={title ?? ""}
-                        {...(description ? { description } : {})}
-                     />
-                  </Box>
-               )}
-               <DashboardView
-                  manifest={notebook.dashboard}
-                  environmentName={environmentName}
-                  packageName={packageName}
-                  versionId={versionId}
-                  documentName={modelPath}
-                  givens={props.givens}
-                  onGivensChange={props.onGivensChange}
-                  onNavigate={props.onDrillNavigate}
-                  maxResultSize={props.maxResultSize}
-                  chrome="none"
-                  // A cell notebook's control panel, not a dashboard's bar.
-                  controlsLayout="panel"
-               />
-            </CleanNotebookSection>
-         </CleanNotebookContainer>
+         <LinearReport
+            manifest={notebook.dashboard}
+            environmentName={environmentName}
+            packageName={packageName}
+            versionId={versionId}
+            documentName={modelPath}
+            givens={props.givens}
+            onGivensChange={props.onGivensChange}
+            onDrillNavigate={props.onDrillNavigate}
+            maxResultSize={props.maxResultSize}
+         />
       );
    }
    return <CellNotebook {...props} />;
 }
 
-function CellNotebook({
+/**
+ * A linear report written as `run:` cells, or a `.malloynb`: each cell run on
+ * its own. `notebook` is the report's cells when the caller already holds
+ * them (`Report` reads them off `GET …/reports/{path}`). A held `.malloy`
+ * report's cells then run through the governed query endpoint the grid tiles
+ * use (`POST …/models/{path}/query`, the report's path as the model and the
+ * cell's text as the query), which holds a cell to the same surface,
+ * `#(authorize)` and row-level gates the cell route did; a held `.malloynb`'s
+ * through the deprecated `…/notebooks/{path}/cells/{i}`, which is the only
+ * route that runs one. Without `notebook`, the cells are read from the
+ * deprecated notebooks route, which runs them.
+ */
+export function CellNotebook({
    resourceUri,
    maxResultSize = 0,
    givens,
    onGivensChange,
    onNavigate,
    onDrillNavigate,
-}: NotebookProps) {
+   notebook: heldNotebook,
+}: NotebookProps & { notebook?: RawNotebook }) {
    const { apiClients } = useServer();
    const {
       environmentName,
@@ -179,13 +240,19 @@ function CellNotebook({
       modelPath: notebookPath,
    } = parseResourceUri(resourceUri);
 
-   // Fetch the raw notebook cells
-   const {
-      data: notebook,
-      isSuccess,
-      isError,
-      error,
-   } = useNotebookQuery(resourceUri);
+   // Fetch the raw notebook cells, unless the caller holds them.
+   const held = heldNotebook !== undefined;
+   const query = useNotebookQuery(resourceUri, !held);
+   // Held cells are handed over from the first render after mount, not on it,
+   // so the controls see the document ARRIVE as they do when this component
+   // fetches it: that arrival is what reports the file's starting values to
+   // the host's URL (`useGivensState` seeds its record from the first render).
+   const [mounted, setMounted] = useState(false);
+   useEffect(() => setMounted(true), []);
+   const notebook = held ? (mounted ? heldNotebook : undefined) : query.data;
+   const isSuccess = held ? mounted : query.isSuccess;
+   const isError = !held && query.isError;
+   const error = query.error;
 
    // State to store executed cells with results
    const [enhancedCells, setEnhancedCells] = useState<EnhancedNotebookCell[]>(
@@ -339,6 +406,8 @@ function CellNotebook({
          setExecutionError(null);
 
          const givensParam = buildGivens(givensToApply);
+         // A held `.malloy` report runs each cell as a query against itself.
+         const viaQuery = held && notebook.format === "malloy";
 
          try {
             // Build execution tasks for code cells
@@ -361,23 +430,46 @@ function CellNotebook({
                      // `required` filter, so a model that has one now fails
                      // here: visibly, via `error` below, rather than as the
                      // blank cell it used to be. See RELEASE_NOTES.
-                     const response =
-                        await apiClients.notebooks.executeNotebookCell(
-                           environmentName,
-                           packageName,
-                           notebookPath,
-                           cellIndex,
-                           versionId,
-                           undefined,
-                           undefined,
-                           givensParam,
-                           { signal: controller.signal },
-                        );
+                     const executedCell = viaQuery
+                        ? {
+                             result: (
+                                await apiClients.models.executeQueryModel(
+                                   environmentName,
+                                   packageName,
+                                   notebookPath,
+                                   {
+                                      query: rawCell.text,
+                                      givens: givensToRequest(
+                                         givensToApply,
+                                         declaredTypes,
+                                      ),
+                                      versionId,
+                                   },
+                                   undefined,
+                                   { signal: controller.signal },
+                                )
+                             ).data.result,
+                             newSources: undefined,
+                          }
+                        : (
+                             await apiClients.notebooks.executeNotebookCell(
+                                environmentName,
+                                packageName,
+                                notebookPath,
+                                cellIndex,
+                                versionId,
+                                undefined,
+                                undefined,
+                                givensParam,
+                                { signal: controller.signal },
+                             )
+                          ).data;
 
                      if (runIdRef.current !== runId) return;
 
-                     const executedCell = response.data;
                      const result = executedCell.result;
+                     // A `.malloy` report's cells carry their sources on the
+                     // manifest; a run adds none.
                      const newSources =
                         rawCell.newSources || executedCell.newSources;
 
@@ -459,7 +551,10 @@ function CellNotebook({
          packageName,
          notebookPath,
          versionId,
+         held,
+         declaredTypes,
          apiClients.notebooks,
+         apiClients.models,
       ],
    );
 
@@ -568,7 +663,7 @@ function CellNotebook({
 
                {/* Loading State */}
                {!isSuccess && !isError && (
-                  <Loading text={LOADING_COPY.opening("notebook")} />
+                  <Loading text={LOADING_COPY.opening("report")} />
                )}
 
                {/* Notebook Cells */}

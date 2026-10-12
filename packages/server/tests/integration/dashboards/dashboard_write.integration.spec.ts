@@ -256,7 +256,7 @@ import { orders } from '../orders.malloy'
             source: "/*\n## artifact { kind=dashboard tiles=[] }\n*/\n",
          });
          expect(res.status).toBe(500);
-         expect(await res.text()).toContain("is not served as a dashboard");
+         expect(await res.text()).toContain("is not served as a report");
          expect(await sourceOf("dashboards/commented-empty.malloy")).toBe(
             undefined,
          );
@@ -288,15 +288,29 @@ query: broken is orders -> { aggregate: no_such_measure }
       expect(names).not.toContain("broken");
    });
 
-   it("writes only dashboard files, refusing anything else with 400", async () => {
+   // Ported: a report may be created anywhere but public/ and the root
+   // index.malloy, and replace only what is already a report.
+   it("writes only reports, refusing a model, a .malloynb and public/ with 400", async () => {
       for (const badPath of [
          "orders.malloy",
-         "dashboards/nested/deep.malloy",
          "dashboards/notebook.malloynb",
+         "public/x.malloy",
+         "index.malloy",
       ]) {
          const res = await put(badPath, { source: dashboardSource("Nope") });
          expect(res.status).toBe(400);
       }
+   });
+
+   it("creates a report in a nested directory, and serves it", async () => {
+      const res = await put("dashboards/nested/deep.malloy", {
+         source: dashboardSource("Deep").replace(
+            "'../orders.malloy'",
+            "'../../orders.malloy'",
+         ),
+      });
+      expect(res.status).toBe(201);
+      expect(await dashboardPaths()).toContain("dashboards/nested/deep.malloy");
    });
 
    it("writes a tagged notebook under notebooks/ and serves it afterwards", async () => {
@@ -319,12 +333,16 @@ query: broken is orders -> { aggregate: no_such_measure }
    });
 
    it("creates the notebook the SDK writes for a new one, create-only", async () => {
-      const source = newNotebookSource({
-         title: "Created by the SDK",
-         modelPath: "orders.malloy",
-         source: "orders",
-         view: "totals",
-      });
+      // The template writes its import relative to where the report goes.
+      const source = newNotebookSource(
+         {
+            title: "Created by the SDK",
+            modelPath: "orders.malloy",
+            source: "orders",
+            view: "totals",
+         },
+         "notebooks/sdk-created.malloy",
+      );
       const res = await put("notebooks/sdk-created.malloy", { source });
       expect(res.status).toBe(201);
       const again = await put("notebooks/sdk-created.malloy", { source });
@@ -347,7 +365,7 @@ query: broken is orders -> { aggregate: no_such_measure }
          expectedHash: hashOf(SHARED_INCLUDE),
       });
       expect(res.status).toBe(400);
-      expect(await res.text()).toContain("shared include");
+      expect(await res.text()).toContain("is not a report");
       const served = await fetch(modelsUrl("notebooks/shared.malloy"));
       expect(
          ((await served.json()) as { sourceText?: string }).sourceText,
@@ -360,7 +378,7 @@ query: broken is orders -> { aggregate: no_such_measure }
          expectedHash: hashOf(COMMENTED_INCLUDE),
       });
       expect(res.status).toBe(400);
-      expect(await res.text()).toContain("shared include");
+      expect(await res.text()).toContain("is not a report");
       expect(await sourceOf("notebooks/commented.malloy")).toBe(
          COMMENTED_INCLUDE,
       );
@@ -406,28 +424,33 @@ query: broken is orders -> { aggregate: no_such_measure }
          before = await dashboardPaths();
       });
 
-      it("refuses a notebooks/ file that declares kind=dashboard, with 409 and nothing written", async () => {
+      // Ported from the name-collision 409: a report is identified by its
+      // path, so two may share a basename and both are served.
+      it("writes a notebooks/ file that declares kind=dashboard, and serves both", async () => {
          const res = await put("notebooks/dup.malloy", {
-            source: layoutSource("dashboard", "Shadowed"),
+            source: layoutSource("dashboard", "Same name"),
          });
-         expect(res.status).toBe(409);
-         expect(await res.text()).toContain("already holds the dashboard name");
-         expect(await sourceOf("notebooks/dup.malloy")).toBeUndefined();
-         expect(await dashboardPaths()).toEqual(before);
+         expect(res.status).toBe(201);
+         expect(await dashboardPaths()).toEqual(
+            [...before, "notebooks/dup.malloy"].sort(),
+         );
       });
 
-      it("refuses flipping a served notebook of that slug to kind=dashboard, leaving the notebook as it was", async () => {
-         const notebook = layoutSource("notebook", "Same slug");
-         expect(
-            (await put("notebooks/dup.malloy", { source: notebook })).status,
-         ).toBe(201);
+      it("flips a report of a held basename between layouts", async () => {
+         const grid = layoutSource("dashboard", "Same name");
+         const linear = layoutSource("notebook", "Same name");
          const res = await put("notebooks/dup.malloy", {
-            source: layoutSource("dashboard", "Flipped"),
-            expectedHash: hashOf(notebook),
+            source: linear,
+            expectedHash: hashOf(grid),
          });
-         expect(res.status).toBe(409);
-         expect(await sourceOf("notebooks/dup.malloy")).toBe(notebook);
+         expect(res.status).toBe(200);
          expect(await dashboardPaths()).toEqual(before);
+         const back = await put("notebooks/dup.malloy", {
+            source: grid,
+            expectedHash: hashOf(linear),
+         });
+         expect(back.status).toBe(200);
+         expect(await dashboardPaths()).toContain("notebooks/dup.malloy");
       });
 
       it("still re-saves the holder, and flips a notebook of an unheld slug to a dashboard and back", async () => {
@@ -567,11 +590,12 @@ import { orders } from '../orders.malloy'
       expect(await res.text()).toContain("does not compile");
    });
 
-   it("refuses a nested notebooks/ path with 400", async () => {
+   // Ported: a nested path is a report's path like any other.
+   it("creates a report at a nested notebooks/ path", async () => {
       const res = await put("notebooks/nested/x.malloy", {
-         source: "## artifact { kind=notebook }\n",
+         source: "## artifact { layout=linear }\n",
       });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(201);
    });
 
    it("refuses a body with no source, with 400", async () => {

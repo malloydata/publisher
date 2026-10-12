@@ -162,6 +162,7 @@ test.describe("notebook-authorize", () => {
       // but not re-run.
       const deniedResponse = page.waitForResponse(
          (r) =>
+            // A `.malloynb`'s cells run on the notebooks cell route.
             /\/notebooks\/.*authz_gate_notebook\.malloynb\/cells\/0/.test(
                r.url(),
             ) && r.request().method() === "GET",

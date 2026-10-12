@@ -47,6 +47,15 @@ const OPEN_PACKAGE = "dashboards-open";
 const CONVENTION_PACKAGE = "dashboards-convention";
 
 const fixtureDir = path.resolve(__dirname, "../../fixtures/dashboards-test");
+
+/** The report change's deprecation notes, which these fixtures draw on purpose. */
+const DEPRECATION_CODES = new Set([
+   "drill-target-by-name",
+   "report-kind-deprecated",
+   "query-artifact-deprecated",
+   "report-layout-implicit",
+   "report-on-surface",
+]);
 const noDashboardsFixtureDir = path.resolve(
    __dirname,
    "../../fixtures/html-data-apps-nopublic",
@@ -800,10 +809,17 @@ describe("Dashboard discovery (E2E)", () => {
          // The fixture keeps `.malloynb` notebooks, each of which the package
          // reports as a deprecated format (`legacyFormatWarnings`, keyed by the
          // notebook's path); none of the rest is a dashboard lint finding.
-         const warnings: Array<{ model?: string }> =
+         // Nor are the deprecation notes the report change added: the
+         // fixture's query-level `# artifact` tags and its bare-name drills
+         // still work, and say which spelling to write.
+         const warnings: Array<{ model?: string; code?: string }> =
             await packageWarnings(PACKAGE_NAME);
          expect(
-            warnings.filter((w) => !w.model?.endsWith(".malloynb")),
+            warnings.filter(
+               (w) =>
+                  !w.model?.endsWith(".malloynb") &&
+                  !DEPRECATION_CODES.has(w.code ?? ""),
+            ),
          ).toEqual([]);
       });
 
@@ -967,9 +983,9 @@ describe("Dashboard discovery (E2E)", () => {
             ),
          );
          // And the drill pointing at it resolves, because it is real and
-         // reachable, so there is no finding about it.
+         // reachable: the only thing said is that the bare name is deprecated.
          expect(messages).not.toContainEqual(
-            expect.stringContaining('targets "v1.2"'),
+            expect.stringContaining('targets "v1.2", which is not'),
          );
       });
 
@@ -1001,8 +1017,12 @@ describe("Dashboard discovery (E2E)", () => {
             warnings.find((w) => (w.message ?? "").includes(needle));
          const malformed = find("treated as a shared include");
          const missingView = find('no view "missing_view"');
-         const drillWarnings = warnings.filter((w) =>
-            (w.message ?? "").includes("# drill"),
+         // The deprecated bare-name drills that resolve are set aside; they
+         // have their own coverage (`tests/integration/reports`).
+         const drillWarnings = warnings.filter(
+            (w) =>
+               (w.message ?? "").includes("# drill") &&
+               (w as { code?: string }).code !== "drill-target-by-name",
          );
 
          expect(messages).toContainEqual(
@@ -1066,10 +1086,13 @@ describe("Dashboard discovery (E2E)", () => {
          expect(messages).not.toContainEqual(
             expect.stringContaining("by_brand + { limit: 2 }"),
          );
-         // `# drill { to=["overview"] }` resolves, so it is silent.
-         expect(messages).not.toContainEqual(
-            expect.stringContaining("orders.brand_name"),
-         );
+         // `# drill { to=["overview"] }` resolves, so it says only that the
+         // bare name is deprecated.
+         expect(
+            warnings
+               .filter((w) => (w.message ?? "").includes("orders.brand_name"))
+               .map((w) => (w as { code?: string }).code),
+         ).toEqual(["drill-target-by-name"]);
 
          // The silent case: a tag that does not parse is discarded whole, so the
          // file quietly stops being a dashboard.
@@ -1168,12 +1191,15 @@ describe("Dashboard discovery (E2E)", () => {
             .sort();
 
       it("lists every dashboard, including ones explores does not list", async () => {
+         // Not `listed`: its only tag is a query-level `# artifact` and
+         // `explores` lists it, so it is on the surface and stays a model
+         // (query-artifact-ignored). `composite` is listed too, but carries a
+         // model-level `## artifact`, which always makes a report.
          const res = await fetch(curatedUrl("/dashboards"));
          expect(res.status).toBe(200);
          const dashboards = (await res.json()) as DashboardItem[];
          expect(dashboards.map((d) => d.name).sort()).toEqual([
             "composite",
-            "listed",
             "unlisted",
             "w1.9",
          ]);
@@ -1205,15 +1231,22 @@ describe("Dashboard discovery (E2E)", () => {
          expect(res.status).toBe(200);
       });
 
-      it("still runs a listed dashboard through the ordinary query endpoint", async () => {
-         const manifest = (await (
-            await fetch(curatedUrl("/dashboards/listed"))
-         ).json()) as DashboardManifest;
-         const res = await post(curatedUrl(`/models/${manifest.path}/query`), {
-            queryName: manifest.query,
-            compactJson: true,
-         });
+      it("keeps a query-level dashboard that explores lists a model, still runnable, and says why", async () => {
+         expect((await fetch(curatedUrl("/dashboards/listed"))).status).toBe(
+            404,
+         );
+         const res = await post(
+            curatedUrl("/models/dashboards/listed.malloy/query"),
+            { queryName: "listed", compactJson: true },
+         );
          expect(res.status).toBe(200);
+         const ignored = (await warningsOf(curatedUrl(""))).filter(
+            (w) =>
+               w.model === "dashboards/listed.malloy" &&
+               (w as { code?: string }).code === "query-artifact-ignored",
+         );
+         expect(ignored).toHaveLength(1);
+         expect(ignored[0].message).toContain('"explores" lists it');
       });
 
       /**
@@ -1224,7 +1257,9 @@ describe("Dashboard discovery (E2E)", () => {
          const pkgUrl = curatedUrl("");
          expect(await wontLoad(pkgUrl)).toEqual([]);
          try {
-            // Take orders.malloy off the surface: nothing listed exports orders.
+            // Take orders.malloy off the surface: nothing listed exports
+            // orders. `listed.malloy` stays on it, a model, so the finding
+            // comes from a dashboard that is not listed.
             const patch = await fetch(pkgUrl, {
                method: "PATCH",
                headers: { "Content-Type": "application/json" },
@@ -1237,16 +1272,15 @@ describe("Dashboard discovery (E2E)", () => {
             expect(patch.ok).toBe(true);
             const after = await wontLoad(pkgUrl);
             expect(after).toContain(
-               `Dashboard listed reads orders, which no file "explores" lists ` +
-                  `exports, so it won't load. Fix: delete "explores" from ` +
-                  `publisher.json and add orders to the export { ... } in ` +
-                  `index.malloy.`,
+               `Dashboard unlisted reads orders, which no file "explores" lists ` +
+                  `exports, so it won't load. Fix: add orders to the export ` +
+                  `{ ... } in dashboards/listed.malloy.`,
             );
             // Still listed: the surface limits what it reads, not whether it shows.
             const listed = (await (
                await fetch(curatedUrl("/dashboards"))
             ).json()) as DashboardItem[];
-            expect(listed.map((d) => d.name)).toContain("listed");
+            expect(listed.map((d) => d.name)).toContain("unlisted");
          } finally {
             await fetch(pkgUrl, {
                method: "PATCH",
@@ -1271,7 +1305,14 @@ describe("Dashboard discovery (E2E)", () => {
          const messages = (await warningsOf(curatedUrl(""))).map(
             (w) => w.message ?? "",
          );
-         expect(messages.filter((m) => m.includes("unlisted"))).toEqual([]);
+         expect(
+            messages.filter(
+               (m) =>
+                  m.includes("# drill") &&
+                  m.includes("unlisted") &&
+                  !m.includes("by name, which is deprecated"),
+            ),
+         ).toEqual([]);
       });
 
       /**
@@ -1287,8 +1328,10 @@ describe("Dashboard discovery (E2E)", () => {
       });
 
       it("serves an unconventionally named dashboard and says only that", async () => {
-         const mine = (await warningsOf(curatedUrl(""))).filter((w) =>
-            (w.model ?? "").includes("w1.9"),
+         const mine = (await warningsOf(curatedUrl(""))).filter(
+            (w) =>
+               (w.model ?? "").includes("w1.9") &&
+               !DEPRECATION_CODES.has((w as { code?: string }).code ?? ""),
          );
          expect(mine).toHaveLength(1);
          expect(mine[0]?.message ?? "").toContain("is served, but");

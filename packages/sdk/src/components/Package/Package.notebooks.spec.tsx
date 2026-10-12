@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/** How the package page opens a report, and which one it pins as the README. */
 import { beforeEach, expect, it, mock } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
@@ -10,41 +11,39 @@ import {
    serverWrapper,
 } from "../../../test/serverProvider";
 
-let listed: { path: string; title?: string }[] = [];
+let listed: { path: string; layout?: string; title?: string }[] = [];
 
-const getNotebook = mock(
+const getReport = mock(
    (
       _environmentName: string,
       _packageName: string,
-      _notebookPath: string,
+      _path: string,
       _versionId?: string,
    ) => pending(),
 );
 
 mockServerProvider({
    packages: { getPackage: pending },
-   notebooks: {
-      listNotebooks: () => Promise.resolve({ data: listed }),
-      getNotebook,
-      executeNotebookCell: pending,
+   reports: {
+      listReports: () => Promise.resolve({ data: listed }),
+      getReport,
    },
    models: { listModels: pending },
    databases: { listDatabases: pending },
    dataApps: { listDataApps: pending },
-   dashboards: { listDashboards: () => Promise.resolve({ data: [] }) },
 });
 
 const { default: Package } = await import("./Package");
 
 beforeEach(() => {
    clearCache();
-   getNotebook.mockClear();
+   getReport.mockClear();
 });
 
-it("links a served notebook by slug and a .malloynb by path", async () => {
+it("opens a report by its path, and a .malloynb by its file", async () => {
    listed = [
-      { path: "notebooks/tour.malloy", title: "Tour" },
-      { path: "old.malloynb", title: "Old" },
+      { path: "sales/tour.malloy", layout: "linear", title: "Tour" },
+      { path: "old.malloynb", layout: "linear", title: "Old" },
    ];
    const onClick = mock((_to: string) => {});
    render(
@@ -59,13 +58,13 @@ it("links a served notebook by slug and a .malloynb by path", async () => {
    fireEvent.click(await screen.findByText("Old"));
 
    expect(onClick.mock.calls.map((call) => call[0])).toEqual([
-      "/env/pkg/notebooks/tour",
+      "/env/pkg/sales/tour",
       "/env/pkg/old.malloynb",
    ]);
 });
 
-it("links a notebook by its slug whichever folder holds it", async () => {
-   listed = [{ path: "dashboards/story.malloy", title: "Story" }];
+it("opens a report in dashboards/ by its path too: the directory means nothing", async () => {
+   listed = [{ path: "dashboards/story.malloy", layout: "linear" }];
    const onClick = mock((_to: string) => {});
    render(
       <Package
@@ -75,34 +74,47 @@ it("links a notebook by its slug whichever folder holds it", async () => {
       { wrapper: serverWrapper },
    );
 
-   fireEvent.click(await screen.findByText("Story"));
+   fireEvent.click(await screen.findByText("story"));
 
    expect(onClick.mock.calls.map((call) => call[0])).toEqual([
-      "/env/pkg/notebooks/story",
+      "/env/pkg/dashboards/story",
    ]);
 });
 
-it("pins notebooks/README.malloy to the front page, matching case-insensitively", async () => {
-   listed = [{ path: "notebooks/Readme.malloy" }];
+it("pins a root report named README to the front page, matching case-insensitively", async () => {
+   listed = [{ path: "Readme.malloy", layout: "linear" }];
    render(<Package resourceUri="publisher://environments/env/packages/pkg" />, {
       wrapper: serverWrapper,
    });
 
-   await waitFor(() => expect(getNotebook).toHaveBeenCalled());
-   expect(getNotebook.mock.calls[0]).toEqual([
+   await waitFor(() => expect(getReport).toHaveBeenCalled());
+   expect(getReport.mock.calls[0].slice(0, 4)).toEqual([
       "env",
       "pkg",
-      "notebooks/Readme.malloy",
+      "Readme.malloy",
       undefined,
    ]);
 });
 
-it("pins the root README.malloynb over notebooks/README.malloy when both exist", async () => {
-   listed = [{ path: "notebooks/README.malloy" }, { path: "README.malloynb" }];
+it("does not pin a README below the package root", async () => {
+   listed = [{ path: "notebooks/README.malloy", layout: "linear" }];
    render(<Package resourceUri="publisher://environments/env/packages/pkg" />, {
       wrapper: serverWrapper,
    });
 
-   await waitFor(() => expect(getNotebook).toHaveBeenCalled());
-   expect(getNotebook.mock.calls[0][2]).toBe("README.malloynb");
+   await screen.findByText("README");
+   expect(getReport).not.toHaveBeenCalled();
+});
+
+it("pins the root README.malloynb over a root README.malloy when both exist", async () => {
+   listed = [
+      { path: "README.malloy", layout: "linear" },
+      { path: "README.malloynb", layout: "linear" },
+   ];
+   render(<Package resourceUri="publisher://environments/env/packages/pkg" />, {
+      wrapper: serverWrapper,
+   });
+
+   await waitFor(() => expect(getReport).toHaveBeenCalled());
+   expect(getReport.mock.calls[0][2]).toBe("README.malloynb");
 });

@@ -13,7 +13,7 @@
  * and never touches a backend itself.
  *
  * A document is a string. The interface does not know whether it is a
- * `dashboards/*.malloy` file, a `.malloynb`, or something else; the
+ * report file, a `.malloynb`, or something else; the
  * {@link DocumentLocator.type} says what kind it is so a backend can keep the
  * kinds apart (a database column, a directory, a key prefix) and a listing can
  * ask for one kind. Everything else a backend may know about a document, who
@@ -53,9 +53,10 @@ export const isDocumentNotFound = (error: unknown): boolean =>
    (error instanceof Error && error.name === "DocumentNotFoundError");
 
 /**
- * The kinds of document the SDK authors. A `dashboard` is a
- * `dashboards/<slug>.malloy` file; a `notebook` is a
- * `notebooks/<slug>.malloy` file.
+ * The kinds of document the SDK authors: a report, filed by its layout in the
+ * legacy vocabulary. A `dashboard` is a grid report, a `notebook` a linear
+ * one, wherever in the package the file lives; its path, not its type, is
+ * its identity.
  */
 export type DocumentType = "dashboard" | "notebook";
 
@@ -100,7 +101,7 @@ export interface DocumentLocator {
    /**
     * The document's path within the workspace, spelled the way the backend
     * spells it. For a repo-backed store that is the file path relative to the
-    * package (`dashboards/overview.malloy`); a database store may use a slug.
+    * package (`sales/overview.malloy`); a database store may use a slug.
     */
    path: string;
 }
@@ -144,4 +145,16 @@ export interface DocumentStorage {
     * {@link DocumentNotFoundError} when `from` is missing.
     */
    moveDocument(from: DocumentLocator, to: DocumentLocator): Promise<void>;
+
+   /**
+    * Optional. The package-relative path at which {@link saveDocument} will
+    * put the file for `locator`, for a store that files a document somewhere
+    * other than the package path the SDK asked for (a store that keeps every
+    * grid report in `dashboards/`, say). `createDocument` asks before it
+    * renders a new report, so the report's imports are written relative to
+    * where the file really lands, and returns that path as the report's
+    * `path`. Left out, the SDK assumes the requested package path: the
+    * locator's `path` minus its `<environment>/<package>/` prefix.
+    */
+   resolveDocumentPath?(locator: DocumentLocator): string | Promise<string>;
 }

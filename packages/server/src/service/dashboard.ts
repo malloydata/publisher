@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Dashboard discovery: the Malloyyo `# artifact` grammar, read out of a
- * package's `dashboards/*.malloy` files into the manifest the REST surface
- * serves.
+ * Report manifests: the Malloyyo `# artifact` grammar, read out of a
+ * package's reports (any tagged `.malloy`, wherever it lives; see `report.ts`)
+ * into the manifest the REST surface serves.
  *
  * Ported from Malloyyo's `@malloyyo/mcp-engine` (`artifacts.ts`,
  * `given-specs.ts` — MIT) rather than depended on: that is a private workspace
@@ -27,8 +27,8 @@
  * Both read the same grid-width spelling and the same per-tile layout tags, so a
  * view carries its own layout whichever way it is consumed.
  *
- * A `dashboards/*.malloy` carrying neither tag is a shared include: skipped, not
- * an error.
+ * A `.malloy` carrying neither tag is an ordinary model, which a report may
+ * import: skipped, not an error.
  */
 
 import { isJoined, isSourceDef } from "@malloydata/malloy";
@@ -42,14 +42,19 @@ import type { Tag } from "@malloydata/malloy-tag";
 import { ownModelNoteObjects } from "./annotations";
 import { referencedGivenNames } from "./authorize";
 import {
-   DASHBOARDS_DIR,
    dashboardDescriptionNotes,
-   documentKind,
-   isDocumentModelPath,
    isMarkdownNote,
    parseMarkdownOpener,
    type DocumentKind,
 } from "./notebook";
+import {
+   kindOfLayout,
+   layoutFactsOfNotes,
+   queryNotesCarryArtifact,
+   reportName,
+   resolveReportLayout,
+   type ReportLayout,
+} from "./report";
 import {
    readGivenControlSpec,
    type GivenControlKind,
@@ -86,8 +91,6 @@ export {
    unwrapFilterLiteral,
 };
 
-export { DASHBOARDS_DIR };
-
 /** The widest grid the Console builder offers; matches `MAX_COLUMNS` in the SDK. */
 const MAX_BUILDER_COLUMNS = 24;
 
@@ -97,8 +100,6 @@ const MAX_BUILDER_COLUMNS = 24;
  * and ignored — see `unsupportedComponentWarnings`.
  */
 export const COMPONENT_FILE_SUFFIXES = [".jsx", ".tsx"] as const;
-
-const MODEL_FILE_SUFFIX = ".malloy";
 
 /**
  * The control contract is a property of the `given:` declaration, not of the
@@ -195,9 +196,11 @@ export interface DashboardTileLayout {
 }
 
 export interface DashboardManifest {
-   /** The filename basename — the slug, the `# drill` target, the URL segment. */
+   /** The filename basename: a display label, and the deprecated `…/dashboards/{name}` segment. Never the identity, which is `entryFile`. */
    name: string;
-   /** From the artifact tag's `kind`, the folder being only the default; a notebook lays out as one column. */
+   /** How the tiles are placed (`report.ts`, §2); a linear report lays out as one column. */
+   layout: ReportLayout;
+   /** `layout` as the deprecated routes name it: grid is `dashboard`, linear is `notebook`. */
    kind: DocumentKind;
    title: string;
    description?: string;
@@ -252,7 +255,7 @@ const PUBLISHER_OWNED_TAGS = ["artifact", "drill"];
  * tile is a standalone query, so without this every tile of every dashboard
  * answers `Unknown render tag 'colspan'` for a tag Publisher did consume.
  *
- * Dropped only ON THE TOP-LEVEL RESULT of a DASHBOARD file, which is the shape a
+ * Dropped only ON THE TOP-LEVEL RESULT of a REPORT file, which is the shape a
  * tile has and the only place a tile runs. A `# colspan` on a nest that is not a
  * dashboard child is still a real mistake nothing else reads, and it reports
  * against that nest's field name, so it survives. Nor is the renderer's own
@@ -275,12 +278,12 @@ const UNKNOWN_RENDER_TAG = /^Unknown render tag '([^']+)' on field '([^']*)'/;
  */
 export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    logs: T[],
-   /** The model this query ran against, which decides whether a tile could
-    * have produced it. Required rather than optional so a new call site cannot
-    * silently widen the suppression back to every query. */
-   modelPath: string,
+   /** Whether the model this query ran against is a served report, which
+    * decides whether a tile could have produced it (the package's report map,
+    * `Package.isServedReport`). Required rather than optional so a new call
+    * site cannot silently widen the suppression back to every query. */
+   couldBeATile: boolean,
 ): T[] {
-   const couldBeATile = isDocumentModelPath(modelPath);
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
@@ -293,24 +296,6 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
          field === "root"
       );
    });
-}
-
-/**
- * True for a package-relative path that discovery considers, i.e. a `.malloy`
- * directly inside the top-level `dashboards/` directory. Nested subdirectories
- * are deliberately excluded: the slug is the basename, so `dashboards/a/x.malloy`
- * and `dashboards/b/x.malloy` would collide on one URL and one `# drill` target.
- */
-export function isDashboardModelPath(modelPath: string): boolean {
-   if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) return false;
-   const segments = modelPath.split("/");
-   return segments.length === 2 && segments[0] === DASHBOARDS_DIR;
-}
-
-/** `dashboards/overview.malloy` → `overview`. */
-export function dashboardSlug(modelPath: string): string {
-   const basename = modelPath.slice(modelPath.lastIndexOf("/") + 1);
-   return basename.slice(0, -MODEL_FILE_SUFFIX.length);
 }
 
 /**
@@ -349,7 +334,8 @@ const COMPOSITE_ARTIFACT_PROPERTIES: readonly string[] = [
    "tiles",
    "givens",
    "autorun",
-   // Not read here: notebook_lint.ts judges `kind` on a model-level `## artifact`; this lint only stays quiet about it.
+   // Not read here: notebook_lint.ts judges `layout` and `kind` on a model-level `## artifact`; this lint only stays quiet about them.
+   "layout",
    "kind",
    // Deprecated spelling of `dashboard { columns }`, read below; notebook_lint.ts reports it.
    "dashboard_columns",
@@ -518,6 +504,11 @@ export interface DashboardModelFacts {
        * source is inlined in the query's own definition, which cannot dangle.
        */
       sourceName?: string;
+      /**
+       * Declared in this file rather than imported. Only an own query's
+       * `# artifact` makes the file a report. Absent means own.
+       */
+      own?: boolean;
    }[];
    /**
     * Given declarations this file can actually *bind*, keyed by name.
@@ -692,6 +683,9 @@ export function readDashboardModelFacts(
             .filter((name): name is string => name !== undefined),
          sourceName:
             typeof query.structRef === "string" ? query.structRef : undefined,
+         own:
+            query.location?.url === undefined ||
+            query.location.url === modelDef.modelID,
       }));
 
    const viewGivens = new Map<string, string[]>();
@@ -1009,9 +1003,26 @@ function givenSpec(
  */
 export function factsCarryArtifactTag(facts: DashboardModelFacts): boolean {
    if (motlyTag(facts.modelAnnotations)?.tag("artifact")) return true;
-   return facts.queries.some((query) =>
-      Boolean(motlyTag(query.annotations)?.tag("artifact")),
+   return ownQueries(facts).some((query) =>
+      queryNotesCarryArtifact(query.annotations),
    );
+}
+
+/** The named queries the file declares itself; an imported query's tag describes its own file. */
+export function ownQueries(
+   facts: DashboardModelFacts,
+): DashboardModelFacts["queries"] {
+   return facts.queries.filter((query) => query.own !== false);
+}
+
+/** A compiled file's layout by the report rule (`report.ts`, §2). */
+export function factsLayout(facts: DashboardModelFacts): ReportLayout {
+   return resolveReportLayout(
+      layoutFactsOfNotes(
+         facts.modelAnnotations,
+         ownQueries(facts).map((query) => query.annotations),
+      ),
+   ).layout;
 }
 
 /**
@@ -1029,7 +1040,7 @@ export function buildDashboardManifest(
       restrictedTiles?: ReadonlySet<string>;
    },
 ): DashboardManifest | undefined {
-   const name = dashboardSlug(facts.modelPath);
+   const name = reportName(facts.modelPath);
    const base = {
       name,
       entryFile: facts.modelPath,
@@ -1040,11 +1051,12 @@ export function buildDashboardManifest(
    const composite = modelTag
       ? readArtifactTag(modelTag, declaredType)
       : undefined;
-   const kind = documentKind(facts.modelPath, composite?.kind);
-   // A notebook with no tiles yet is still a layout, so the editor can open it.
+   const layout = factsLayout(facts);
+   const kind = kindOfLayout(layout);
+   // A linear report with no tiles yet is still a layout, so the editor can open it.
    if (
       composite?.tiles &&
-      (composite.tiles.length > 0 || kind === "notebook")
+      (composite.tiles.length > 0 || layout === "linear")
    ) {
       const blocks = readTextBlocks(facts.modelAnnotations);
       const tiles = composite.tiles.map((entry): DashboardTileSpec => {
@@ -1078,11 +1090,12 @@ export function buildDashboardManifest(
       );
       return {
          ...base,
+         layout,
          kind,
          title: doc.title ?? name,
          description: doc.description,
          tiles,
-         dashboardColumns: kind === "notebook" ? 1 : composite.dashboardColumns,
+         dashboardColumns: layout === "linear" ? 1 : composite.dashboardColumns,
          startingGivens: composite.givens,
          autorun: composite.autorun,
          // A composite's control row is the union across its tiles: each tile
@@ -1119,7 +1132,7 @@ export function buildDashboardManifest(
       };
    }
 
-   for (const query of facts.queries) {
+   for (const query of ownQueries(facts)) {
       const tag = motlyTag(query.annotations);
       const artifact = tag ? readArtifactTag(tag, declaredType) : undefined;
       if (!artifact) continue;
@@ -1129,6 +1142,7 @@ export function buildDashboardManifest(
       );
       return {
          ...base,
+         layout: "grid",
          kind: "dashboard",
          title: doc.title ?? name,
          description: doc.description,
@@ -1354,7 +1368,7 @@ export function lintDashboard(
    // columns mode" case to report — only a value the reader dropped, and one
    // wider than the grid, which renders clamped.
    // A notebook is one column, so no span means anything on it.
-   for (const { query: tile } of manifest.kind === "notebook"
+   for (const { query: tile } of manifest.layout === "linear"
       ? []
       : queryTiles(manifest.tiles)) {
       const tag = motlyTag(tileAnnotations(tile, facts) ?? []);
@@ -1643,7 +1657,7 @@ export function isUnparsedDashboardTagFinding(message: string): boolean {
 export function lintUndiscoveredDashboard(
    facts: DashboardModelFacts,
 ): DashboardLintFinding[] {
-   const subject = dashboardSlug(facts.modelPath);
+   const subject = reportName(facts.modelPath);
    // Deduplicated, like lintGivenTags and for the same reason: every finding
    // here carries the same subject (the file's slug), so two tags in the file
    // failing the same way produce byte-identical findings. The commonest shape
@@ -1702,7 +1716,7 @@ export function lintUndiscoveredDashboard(
 function lintArtifactOnView(
    facts: DashboardModelFacts,
 ): DashboardLintFinding[] {
-   const subject = dashboardSlug(facts.modelPath);
+   const subject = reportName(facts.modelPath);
    const findings: DashboardLintFinding[] = [];
    for (const [view, annotations] of facts.viewAnnotations) {
       if (!motlyTag(annotations)?.tag("artifact")) continue;
@@ -1778,19 +1792,95 @@ export function lintGivenTags(
 }
 
 /**
- * Validate every `# drill { to=… }` in the package against the set of
- * dashboards that exist, so a dead-ended click is caught at load.
+ * How a `# drill { to=… }` destination resolves against the package's reports
+ * (`docs/reports-design.md` §3). A report is identified by its package path,
+ * and `to=` names that path without `.malloy`, read from the package root, so
+ * `to="sales/overview"` is `sales/overview.malloy`, of either layout.
  *
- * Package-wide rather than per-dashboard because drill is declared on a model
- * *dimension*: the same tagged dimension is reachable from every dashboard that
+ * A bare name (no `/`) is first read as a root path. Failing that it is the
+ * deprecated basename form, which only ever named a dashboard, while a notebook
+ * was free to share a dashboard's basename (`dashboards/overview.malloy` beside
+ * `notebooks/overview.malloy`). So during the deprecation it resolves to the one
+ * GRID report with that basename, else to the one report of either layout with
+ * it, and says which path to write unless that report sits at the root (where
+ * the name already IS its path). Otherwise it is unresolved, naming the
+ * candidates.
+ *
+ * A target that is not a plain package path, one with a `.` or `..` segment,
+ * an empty segment, or a leading `/`, is unresolved before any lookup: the
+ * Console would otherwise build a route from it that leaves the package
+ * (`../../x`). The SDK's `resolveDrillTarget` refuses the same shapes.
+ */
+export type DrillResolution =
+   | { kind: "self" }
+   | { kind: "path"; path: string }
+   | { kind: "name"; path: string; rewrite?: string }
+   | { kind: "unresolved"; candidates: string[]; malformed?: true };
+
+/**
+ * Whether `to=` is a plain package path: non-empty segments, none `.` or `..`,
+ * and no leading `/`. Anything else could name a route outside the package.
+ */
+export function isDrillTargetPath(target: string): boolean {
+   if (target === "" || target.startsWith("/")) return false;
+   return target
+      .split("/")
+      .every(
+         (segment) => segment !== "" && segment !== "." && segment !== "..",
+      );
+}
+
+/** The `to=` form of a report path: the package path without `.malloy`. */
+export function drillPathOf(reportPath: string): string {
+   return reportPath.endsWith(".malloy")
+      ? reportPath.slice(0, -".malloy".length)
+      : reportPath;
+}
+
+export function resolveDrillDestination(
+   destination: string,
+   reportPaths: ReadonlySet<string>,
+   gridReportPaths: ReadonlySet<string> = new Set(),
+): DrillResolution {
+   if (destination === "self") return { kind: "self" };
+   if (!isDrillTargetPath(destination))
+      return { kind: "unresolved", candidates: [], malformed: true };
+   const target = destination;
+   for (const candidate of [`${target}.malloy`, target]) {
+      if (reportPaths.has(candidate)) return { kind: "path", path: candidate };
+   }
+   if (target.includes("/")) return { kind: "unresolved", candidates: [] };
+   const matches = Array.from(reportPaths)
+      .filter((path) => reportName(path) === target)
+      .sort();
+   const grid = matches.filter((path) => gridReportPaths.has(path));
+   const unique = grid.length === 1 ? grid : matches;
+   if (unique.length !== 1) return { kind: "unresolved", candidates: matches };
+   const [path] = unique;
+   return path.includes("/")
+      ? { kind: "name", path, rewrite: drillPathOf(path) }
+      : { kind: "name", path };
+}
+
+/**
+ * Validate every `# drill { to=… }` in the package against the reports that
+ * exist, so a dead-ended click is caught at load.
+ *
+ * Package-wide rather than per-report because drill is declared on a model
+ * *dimension*: the same tagged dimension is reachable from every report that
  * imports its source, and a single broken target should be reported once, not
  * once per importer. Keyed on the dimension and destination for that reason.
+ *
+ * `reportPaths` is every report path in the package, served or not (a report
+ * dropped because it could not be read is still where a drill points; its own
+ * finding states the cause).
  */
 export function lintDrillTargets(
    facts: readonly DashboardModelFacts[],
-   knownSlugs: ReadonlySet<string>,
-): DashboardLintFinding[] {
-   const findings = new Map<string, DashboardLintFinding>();
+   reportPaths: ReadonlySet<string>,
+   gridReportPaths: ReadonlySet<string> = new Set(),
+): (DashboardLintFinding & { code?: string })[] {
+   const findings = new Map<string, DashboardLintFinding & { code?: string }>();
    for (const file of facts) {
       for (const drill of file.drills) {
          const where = `${drill.source}.${drill.dimension}`;
@@ -1803,12 +1893,41 @@ export function lintDrillTargets(
             continue;
          }
          for (const destination of drill.to) {
-            if (destination === "self" || knownSlugs.has(destination)) continue;
+            const resolved = resolveDrillDestination(
+               destination,
+               reportPaths,
+               gridReportPaths,
+            );
+            if (resolved.kind === "self" || resolved.kind === "path") continue;
+            if (resolved.kind === "name") {
+               if (resolved.rewrite === undefined) continue;
+               findings.set(`${where}|${destination}`, {
+                  subject: where,
+                  code: "drill-target-by-name",
+                  message:
+                     `# drill on ${where} targets "${destination}" by name, ` +
+                     `which is deprecated: a report is addressed by its path. ` +
+                     `Fix: write to="${resolved.rewrite}".`,
+                  severity: "warn",
+               });
+               continue;
+            }
+            const { candidates } = resolved;
             findings.set(`${where}|${destination}`, {
                subject: where,
-               message:
-                  `# drill on ${where} targets "${destination}", which is not ` +
-                  `a dashboard in this package.`,
+               message: resolved.malformed
+                  ? `# drill on ${where} targets "${destination}", which is not ` +
+                    `a package path (a path from the package root with no "." ` +
+                    `or ".." segment, no empty segment and no leading "/"), so ` +
+                    `it resolves to no report. Fix: write the report's path ` +
+                    `from the package root, such as to="sales/overview".`
+                  : candidates.length > 1
+                    ? `# drill on ${where} targets "${destination}", which ` +
+                      `${candidates.length} reports in this package are named ` +
+                      `(${candidates.join(", ")}), so it resolves to none of ` +
+                      `them. Fix: write the path, to="${drillPathOf(candidates[0])}".`
+                    : `# drill on ${where} targets "${destination}", which is not ` +
+                      `a report in this package.`,
                severity: "error",
             });
          }

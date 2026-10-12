@@ -68,7 +68,7 @@ export async function syntaxErrors(text: string): Promise<string[]> {
 }
 
 /**
- * Write a change back into a `dashboards/*.malloy` file by PATCHING it.
+ * Write a change back into a report file by PATCHING it.
  *
  * The builder does not regenerate the file. It rewrites the bytes it owns and
  * leaves every other byte exactly where it was, which is what lets it edit a
@@ -153,8 +153,18 @@ function applyEdits(source: string, edits: Edit[]): string {
    // rewrite of the declaration it sits above — the replacement has to go
    // first, or the insertion shifts the text out from under its end offset and
    // the rewrite lands in the middle of what was just inserted.
-   for (const edit of [...edits].sort(
-      (a, b) => b.start - a.start || b.end - a.end,
+   //
+   // Two insertions at one point keep the order they were planned in: the
+   // later one is applied first, so the earlier lands in front of it. Without
+   // that, an import added after a file's last line (a file that ends on its
+   // import) landed BELOW the source extension written at the same point, and
+   // the extension read a source not yet imported.
+   const planned = edits.map((edit, index) => ({ edit, index }));
+   for (const { edit } of planned.sort(
+      (a, b) =>
+         b.edit.start - a.edit.start ||
+         b.edit.end - a.edit.end ||
+         b.index - a.index,
    ))
       out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
    return out;
@@ -281,10 +291,15 @@ function viewDeclarationLine(
 
 /** `# drill { to=… given=… }`, one line, as the reader spells it back. */
 function drillTagLine(drill: DashboardDrill): string {
+   // A path target (`sales/overview`) is not a bare tag value, so it is
+   // quoted, with `"` and `\` escaped as the tag parser reads them; a bare
+   // name or `self` stays as written.
+   const one = (d: string) =>
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(d) ? d : quoted(d);
    const to =
       drill.to.length === 1
-         ? drill.to[0]
-         : `[${drill.to.map((d) => `"${d}"`).join(", ")}]`;
+         ? one(drill.to[0])
+         : `[${drill.to.map(quoted).join(", ")}]`;
    return `# drill { to=${to}${drill.given ? ` given=${drill.given}` : ""} }`;
 }
 
@@ -336,7 +351,7 @@ interface SpliceContext extends TileMembership {
    edits: Edit[];
    /** The file's package path, when known. */
    modelPath?: string;
-   /** A kind switch writes `kind=` whichever way it goes; see {@link SpliceOptions.explicitKind}. */
+   /** @deprecated Unused: a layout switch always writes `layout=`. */
    explicitKind?: boolean;
 }
 
@@ -523,7 +538,7 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
       return {
          ok: false,
          reason:
-            "A dashboard with no tiles is not served, so the last tile cannot be removed. Add another tile first.",
+            "A grid report with no tiles is not served, so the last tile cannot be removed. Add another tile first.",
       };
    }
    const byKey = new Map<string, string>();
@@ -708,9 +723,14 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
          (edit) => edit.start === extent.start && edit.end === extent.end,
       );
       let line = already ? already.text.replace(/\n$/, "") : tag.text;
-      // Depth-aware, since a text tile's own `kind=text` sits inside the tag.
-      if (kindOf(current) !== kindOf(next))
-         line = removeArtifactProperty(line, "kind");
+      // The builder writes `layout=`, never `kind=`. A layout switch rewrites
+      // `layout=` and nothing else, and whenever the builder edits this tag a
+      // legacy `kind=` becomes the `layout=` it means. Depth-aware, since a
+      // text tile's own `kind=text` sits inside the tag.
+      const withoutKind = removeArtifactProperty(line, "kind");
+      const writeLayout =
+         kindOf(current) !== kindOf(next) || withoutKind !== line;
+      line = withoutKind;
       // The artifact tag's braces: everything up to the matching `}`.
       const open = line.indexOf("artifact");
       const braceOpen = line.indexOf("{", open);
@@ -753,14 +773,8 @@ function planSettings(ctx: SpliceContext): SpliceFailure | undefined {
             );
          else inner = append(`${key}=${value}`);
       };
-      if (kindOf(current) !== kindOf(next) && kindOf(next) === "notebook")
-         inner = append("kind=notebook");
-      // A tag with no kind takes its folder's, and the server's compile of text takes none: a switch that leaves it off lets the two disagree.
-      else if (
-         kindOf(current) !== kindOf(next) &&
-         (ctx.explicitKind || !ctx.modelPath?.startsWith("dashboards/"))
-      )
-         inner = append("kind=dashboard");
+      if (writeLayout)
+         setProperty("layout", kindOf(next) === "notebook" ? "linear" : "grid");
       if (current.title !== next.title)
          setProperty("title", next.title ? quoted(next.title) : undefined);
       if (current.autorun !== next.autorun)
@@ -1364,7 +1378,7 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
             ok: false,
             reason:
                `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
-               `not in this dashboard, so its presentation cannot be changed here.`,
+               `not in this report, so its presentation cannot be changed here.`,
          };
       }
 
@@ -1670,12 +1684,15 @@ function unwritable(
    next: DashboardDocument,
 ): string | undefined {
    const was = new Map(current.tiles.map((t) => [tileKey(t), t]));
+   // A linear report is one column, so the builder never SETS a width on one.
+   // A width the file already states is kept as written, a layout switch
+   // included: the switch rewrites `layout=` and nothing else.
    if (
       kindOf(next) === "notebook" &&
       next.columns !== undefined &&
-      (kindOf(current) !== "notebook" || next.columns !== current.columns)
+      next.columns !== current.columns
    )
-      return "A notebook is one column, so its width is not written. Clear the width when switching a dashboard to a notebook.";
+      return "A linear report is one column, so its width is not written.";
    const textNames = new Set<string>();
    for (const tile of next.tiles) {
       const before = was.get(tileKey(tile));
@@ -2073,11 +2090,11 @@ function planReferenceFilters(
 }
 
 export interface SpliceOptions {
-   /** Lets `requested.kind` differ from the file's: the one edit that switches a dashboard to a notebook or back. */
+   /** Lets `requested.kind` differ from the file's: the layout switch, the one edit that turns a grid report linear or back. */
    changeKind?: boolean;
-   /** The file's path within the package; a dashboard under `notebooks/` is tagged `kind=dashboard` rather than left untagged. */
+   /** The file's path within the package. Where a report lives never decides its layout; kept for callers. */
    modelPath?: string;
-   /** Write `kind=dashboard` too, whatever the folder: for a document held as text, which the server reads by its tags and not by a folder. */
+   /** @deprecated A switch always writes `layout=` now; kept for callers. */
    explicitKind?: boolean;
    /** The sources a document held as text sees without an `import`: its run model's. */
    visibleSources?: readonly string[];

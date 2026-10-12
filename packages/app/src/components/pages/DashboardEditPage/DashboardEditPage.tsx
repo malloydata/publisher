@@ -21,7 +21,7 @@ import { useLeaveGuard } from "../useLeaveGuard";
  * The builder's entry is loaded here and nowhere else. It carries the Malloy
  * parser (440 KB gzipped), which most Console users never need, so it stays out
  * of every other page's chunk and downloads the first time someone opens a
- * dashboard for editing.
+ * report for editing.
  */
 const DashboardEditor = React.lazy(() =>
    import("@malloy-publisher/sdk/builder").then((module) => ({
@@ -32,58 +32,55 @@ const DashboardEditor = React.lazy(() =>
 export interface DashboardEditPageProps {
    environmentName: string;
    packageName: string;
-   /** The document's slug: `overview`, not `dashboards/overview.malloy`. */
-   dashboardName: string;
-   /** A notebook is the same editor with one column; default `dashboard`. */
+   /** The report's package path, `sales/q3.malloy`: what the editor is keyed by. */
+   path: string;
+   /** The layout the report opened with, in the legacy vocabulary; default `dashboard` (grid). */
    kind?: "dashboard" | "notebook";
-   /** The file within the package, when the route's folder is not the whole story. */
-   path?: string;
 }
 
 /**
- * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/dashboards/<slug>/edit`,
- * and `/<env>/<pkg>/notebooks/<slug>/edit` with `kind="notebook"`.
- * Close returns to the document itself, one segment up.
+ * The Console's host for the SDK `DashboardEditor`: `/<env>/<pkg>/<path>?edit`,
+ * either layout. View in the header returns to the report itself, the same
+ * route without `?edit`.
  */
 export default function DashboardEditPage({
    environmentName,
    packageName,
-   dashboardName,
-   kind = "dashboard",
    path,
+   kind = "dashboard",
 }: DashboardEditPageProps) {
    const guard = useLeaveGuard();
+   // Telemetry keys on the path: two reports may share a basename.
    const onEvent = useMemo(() => {
       if (kind === "dashboard")
          return logDashboardEvent({
             environmentName,
             packageName,
-            dashboardName,
+            dashboardName: path,
          }) as (event: DashboardEvent | NotebookEvent) => void;
       return logNotebookEvent({
          environmentName,
          packageName,
-         notebookName: dashboardName,
+         notebookName: path,
       }) as (event: DashboardEvent | NotebookEvent) => void;
-   }, [kind, environmentName, packageName, dashboardName]);
+   }, [kind, environmentName, packageName, path]);
    return (
-      // The reader's page width and edges, the same for a dashboard and a
-      // notebook, so the margins do not move between modes or kinds.
+      // The reader's page width and edges, the same for either layout, so the
+      // margins do not move between modes.
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <NarrowEditGate>
             <Suspense
                fallback={<Loading text={LOADING_COPY.opening("builder")} />}
             >
                <DashboardEditor
-                  // Remounts on a route change so another dashboard starts from a fresh read.
-                  key={`${environmentName}/${packageName}/${kind}/${dashboardName}`}
+                  // Remounts on a route change so another report starts from a fresh read.
+                  key={`${environmentName}/${packageName}/${path}`}
                   resourceUri={encodeResourceUri({
                      environmentName,
                      packageName,
                   })}
-                  dashboard={dashboardName}
-                  kind={kind}
                   path={path}
+                  kind={kind}
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                />

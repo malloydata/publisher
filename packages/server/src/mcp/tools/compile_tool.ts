@@ -33,13 +33,13 @@ const compileShape = {
       .string()
       .optional()
       .describe(
-         "The Malloy source to validate; never executed. Required at scope append/file; optional at scope package (a what-if replacement for modelPath).",
+         "The Malloy source to validate; never executed. Required at scope append/file; optional at scope package (a what-if replacement for modelPath). Text with a model-level ## artifact tag is a report, wherever it lives (never public/ or the root index.malloy); its layout is the tag's layout=grid|linear, else the deprecated kind= (dashboard is grid, notebook linear), else grid when it lists tiles or has a dashboard { … } tag, else linear.",
       ),
    scope: z
       .enum(["append", "file", "package"])
       .optional()
       .describe(
-         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": dry-run a reload over all .malloy/.malloynb files without serving the result, including its render-tag and dashboard checks; an optional source replaces modelPath.',
+         'What source means. "append" (default): append to modelPath. "file": compile AS modelPath to validate an edit. "package": dry-run a reload over all .malloy/.malloynb files without serving the result, including its render-tag and report checks; an optional source replaces modelPath.',
       ),
    includeSql: z
       .boolean()
@@ -60,7 +60,7 @@ const COMPILE_DESCRIPTION = `Compile-check Malloy without running a query. Use t
 ## Scopes (the scope parameter)
 - "append" (default): append source to modelPath. Use for NEW definitions; existing definitions report "Cannot redefine". Positions refer to the concatenated file (a ## artifact document reads only your text, and no document is returned). Refused here, with a 400: import, connection.table(...), connection.sql(...), raw-SQL functions, given: declarations (reading the model's givens as $NAME is fine), ##! flags, and text that does not stand alone as top-level Malloy — a bare view:/dimension:/measure:, or anything parsing only as a continuation of the model's last statement. A ## artifact document also refuses # image, # link and @env.; plain text keeps them. Wrap a view body in a top-level query:, a field in a throwaway source: check is <source> extend { … }; use "file" or "package" for a model that declares data roots.
 - "file": compile source AS modelPath. Use to validate an EDIT before saving; positions match the submitted file.
-- "package": dry-run a reload of every .malloy/.malloynb file without serving the result, with its render-tag and dashboard checks (no position) but not its other warnings. A source replaces modelPath so importers see the edit. Diagnostics may name hidden files; no rows or SQL are returned, and authorize gates still apply to caller text. An unmatched path is warned and treated as new. Save, then reload_package to serve it.
+- "package": dry-run a reload of every .malloy/.malloynb file without serving the result, with its render-tag and report checks (no position) but not its other warnings. A source replaces modelPath so importers see the edit. Diagnostics may name hidden files; no rows or SQL are returned, and authorize gates still apply to caller text. An unmatched path is warned and treated as new. Save, then reload_package to serve it.
 
 ## Parameters
 - environmentName, packageName, modelPath: required. source: required at append/file, optional at package. Caller source may not declare an access-control gate outside prose — neither #(authorize) nor #(access_filter).

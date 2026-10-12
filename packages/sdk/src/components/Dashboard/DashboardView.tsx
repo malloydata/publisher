@@ -196,7 +196,7 @@ export function DashboardView({
       onNavigate,
       onSelf,
       canSelf,
-      selfLabel: "Filter this dashboard",
+      selfLabel: "Filter this report",
       ...(preamble === undefined ? { onRows } : {}),
    });
    // Each tile's clicks carry the tile they came from, so the rows behind a

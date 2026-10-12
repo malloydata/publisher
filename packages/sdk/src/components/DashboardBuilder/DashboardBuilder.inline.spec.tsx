@@ -169,7 +169,7 @@ describe("click-to-edit text", () => {
 
    it("edits the page's title and description in place", async () => {
       await mount();
-      editInline("Storefront", "Dashboard title", "Storefront, weekly");
+      editInline("Storefront", "Report title", "Storefront, weekly");
       expect(screen.getByText("Storefront, weekly")).toBeDefined();
       fireEvent.click(screen.getByText("Add a description"));
       const field = screen.getByLabelText("Markdown");
@@ -192,7 +192,7 @@ describe("click-to-edit text", () => {
       // There is no page settings window at all: the title and description
       // are edited on the page.
       expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
-      expect(screen.queryByLabelText("Dashboard title")).toBeNull();
+      expect(screen.queryByLabelText("Report title")).toBeNull();
    });
 });
 

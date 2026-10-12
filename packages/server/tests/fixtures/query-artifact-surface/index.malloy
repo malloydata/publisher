@@ -1,0 +1,8 @@
+// The surface. It imports one file directly and one through another file, and
+// each of those carries a query-level `# artifact`: the tag is ignored
+// (query-artifact-ignored) and both stay models that publish their sources.
+import { direct_src } from "models/direct.malloy"
+import { mid_src } from "models/mid.malloy"
+import { orders_by_tag } from "models/model_level.malloy"
+
+export { direct_src, mid_src, orders_by_tag }

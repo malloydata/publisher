@@ -209,7 +209,7 @@ describe("DashboardBuilder: the dashboard's filters", () => {
    // The convention, end to end through the surface: a filter added here is a
    // declaration in THIS file plus a binding on each ticked tile, and the save
    // writes exactly that.
-   it("adds a filter declared in this dashboard and writes it to the file", async () => {
+   it("adds a filter declared in this report and writes it to the file", async () => {
       let written: string | undefined;
       await mount((source) => {
          written = source;
@@ -571,7 +571,7 @@ describe("DashboardBuilder: the last tile", () => {
       const remove = screen.getByRole("button", { name: /^Delete/ });
       expect(remove.getAttribute("aria-disabled")).toBe("true");
       const reason = screen.getByText(
-         "A saved dashboard needs at least one tile.",
+         "A saved report needs at least one tile.",
       );
       expect(remove.getAttribute("aria-describedby")).toBe(reason.id);
       fireEvent.click(remove);
@@ -659,7 +659,7 @@ describe("DashboardBuilder: widths and the page's own settings", () => {
       fireEvent.keyDown(description, { key: "Escape" });
       expect(screen.getByText("What sold, and where.")).toBeDefined();
 
-      editInline("Storefront", "Dashboard title", "Storefront, weekly");
+      editInline("Storefront", "Report title", "Storefront, weekly");
       expect(screen.getByText("Storefront, weekly")).toBeDefined();
 
       fireEvent.click(button("Save"));
@@ -708,7 +708,7 @@ source: a is scoped_orders extend {
          screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
       );
       fireEvent.click(
-         screen.getByRole("option", { name: /This dashboard/, hidden: true }),
+         screen.getByRole("option", { name: /This report/, hidden: true }),
       );
       fireEvent.click(
          screen.getByRole("option", { name: /regions/, hidden: true }),

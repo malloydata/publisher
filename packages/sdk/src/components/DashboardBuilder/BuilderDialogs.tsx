@@ -100,7 +100,7 @@ export function BuilderDialogs({
             {...(editor.document.tiles.length === 1 &&
             editor.saved.tiles.length > 0
                ? {
-                    removeBlocked: "A saved dashboard needs at least one tile.",
+                    removeBlocked: "A saved report needs at least one tile.",
                  }
                : {})}
             view={menuView}
@@ -129,8 +129,8 @@ export function BuilderDialogs({
          <AppDialog
             open={confirmConversion !== undefined}
             onClose={() => confirmConversion?.stop()}
-            title="Convert this notebook?"
-            description="Saving rewrites this notebook in the tile layout. The builder cannot take that back; the file's history in your repository can."
+            title="Convert this report?"
+            description="Saving rewrites this report in the tile layout. The builder cannot take that back; the file's history in your repository can."
             actions={
                <>
                   <Button onClick={() => confirmConversion?.stop()}>

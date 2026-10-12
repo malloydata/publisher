@@ -41,13 +41,17 @@ const catalog = {
    ],
 };
 
-const mount = async (onSave: (source: string) => void) =>
+// One folder down, which is what its `../` imports say; `atRoot` is the same
+// report at the package root, reading its models from beside it.
+const AT_ROOT = NOTEBOOK.replace(/"\.\.\//g, '"');
+const mount = async (onSave: (source: string) => void, atRoot = false) =>
    render(
       <DashboardBuilder
-         source={NOTEBOOK}
-         document={await openDocument(NOTEBOOK)}
+         source={atRoot ? AT_ROOT : NOTEBOOK}
+         document={await openDocument(atRoot ? AT_ROOT : NOTEBOOK)}
          catalog={catalog}
          onSave={onSave}
+         modelPath={atRoot ? "review.malloy" : "notebooks/review.malloy"}
       />,
    );
 
@@ -73,11 +77,11 @@ const addTileOn = (name: string) => {
    );
 };
 
-const written = async (pick: string) => {
+const written = async (pick: string, atRoot = false) => {
    let text: string | undefined;
    await mount((source) => {
       text = source;
-   });
+   }, atRoot);
    addTileOn(pick);
    save();
    await waitFor(() => expect(text).toBeDefined());
@@ -107,6 +111,13 @@ describe("adding a tile brings its source in", () => {
       const text = await written("reports");
       expect(text).toContain(
          'import { spare } from "../spare.malloy"\nimport { reports } from "../reports.malloy"\n',
+      );
+   });
+
+   it("writes the import relative to a report at the package root, with no leading ../", async () => {
+      const text = await written("reports", true);
+      expect(text).toContain(
+         'import { spare } from "spare.malloy"\nimport { reports } from "reports.malloy"\n',
       );
    });
 

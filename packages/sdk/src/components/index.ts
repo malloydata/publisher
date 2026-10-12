@@ -37,6 +37,7 @@ export {
 } from "./Prose";
 export * from "./QueryResult";
 export * from "./RenderedResult";
+export * from "./Report";
 export { ServerProvider, useServer } from "./ServerProvider";
 export type { ServerContextValue, ServerProviderProps } from "./ServerProvider";
 export * from "./DocumentStorage";

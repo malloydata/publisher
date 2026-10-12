@@ -798,7 +798,7 @@ describe("readDashboardDocument: what it refuses", () => {
    it("refuses a file with no artifact tag", async () => {
       const r = await readDashboardDocument("source: a is b extend { }");
       expect(r.ok).toBe(false);
-      if (readFailed(r)) expect(r.reason).toContain("composite dashboard");
+      if (readFailed(r)) expect(r.reason).toContain("not a report");
    });
 
    it("refuses a tile that is not a source -> view expression", async () => {
@@ -882,11 +882,11 @@ describe("a tag whose artifact property is not the first", () => {
 
 /**
  * The tripwire. All-or-nothing refusal is only reasonable while real dashboards
- * open, so this asserts that every composite dashboard in the repository does.
+ * open, so this asserts that every not a report in the repository does.
  * If that stops being true, this fails in CI rather than in a support thread,
  * and it is the signal to reconsider opening files partially.
  */
-describe("every composite dashboard in the repository opens", () => {
+describe("every not a report in the repository opens", () => {
    const roots = ["examples", "packages/server/tests/fixtures"];
    const found: string[] = [];
    const walk = (dir: string) => {
@@ -975,19 +975,26 @@ describe("the kind of a document held as text", () => {
       });
    }
 
-   it("still takes the folder's kind when the host has a folder", async () => {
-      const source = "## artifact { }\nrun: q -> { aggregate: c }\n";
-      const inNotebooks = await readDashboardDocument(
-         source,
-         "notebooks/x.malloy",
-      );
-      expect(readFailed(inNotebooks) && inNotebooks.legacyNotebook).toBe(true);
-      const inDashboards = await readDashboardDocument(
-         source,
-         "dashboards/x.malloy",
-      );
-      expect(
-         readFailed(inDashboards) && inDashboards.legacyNotebook,
-      ).toBeFalsy();
+   it("reads the same layout wherever the file lives: the folder no longer matters", async () => {
+      const cases = [
+         ["## artifact { }\nrun: q -> { aggregate: c }\n", true],
+         [`## artifact { tiles=["a -> v"] }\n`, false],
+         [`## artifact { layout=linear tiles=["a -> v"] }\n`, true],
+         ["## artifact { layout=grid tiles=[] }\n", false],
+      ] as const;
+      for (const [source, linear] of cases)
+         for (const where of [
+            undefined,
+            "x.malloy",
+            "notebooks/x.malloy",
+            "dashboards/x.malloy",
+            "sales/q3/x.malloy",
+         ]) {
+            const result = await readDashboardDocument(source, where);
+            const isLinear = readFailed(result)
+               ? result.legacyNotebook === true
+               : result.document.kind === "notebook";
+            expect([where, isLinear]).toEqual([where, linear]);
+         }
    });
 });

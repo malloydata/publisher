@@ -432,10 +432,14 @@ query: x is sales -> by_n
       }
    });
 
-   it("package: a clean dashboard adds no findings", async () => {
+   it("package: a clean dashboard adds no findings but its query-level form's deprecation", async () => {
       await writeDashboard(CLEAN_DASHBOARD);
       const { problems } = await compile("base.malloy", undefined, "package");
-      expect(problems).toEqual([]);
+      // The query-level `# artifact` is deprecated, and says so with the
+      // model-level tag to write; nothing else is wrong with the file.
+      expect(problems.map((p) => p.code)).toEqual([
+         "query-artifact-deprecated",
+      ]);
    });
 
    it("package: the dashboard lint leaves the served package untouched", async () => {

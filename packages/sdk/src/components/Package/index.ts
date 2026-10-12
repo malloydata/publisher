@@ -5,10 +5,30 @@ export { default as Package, type OpenDocumentRequest } from "./Package";
 export {
    documentRoute,
    documentSlug,
+   isDrillTargetPath,
+   kindOfLayout,
+   layoutOfKind,
    locateDocument,
+   locateReport,
+   locateReportByName,
+   REPORT_EDIT_PARAM,
+   reportEditRoute,
+   reportRoute,
+   reportRoutePath,
+   resolveDrillTarget,
+   type DocumentKind,
+   type DrillTarget,
+   type ListedReport,
    type LocatedDocument,
+   type NameLookup,
+   type ReportLayout,
 } from "./documentLocation";
-export { useDocumentLocation } from "./useDocumentLocation";
+export {
+   reportsQueryKey,
+   useDocumentLocation,
+   useReportListing,
+} from "./useDocumentLocation";
+export { findDraftType, useDraftType } from "./useDraftType";
 export {
    NewDocumentDialog,
    type NewDocumentDialogProps,

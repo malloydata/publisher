@@ -17,10 +17,14 @@ describe("importPathOf", () => {
       expect(importPathOf("storefront.malloy", "notebooks/sub/x.malloy")).toBe(
          "../../storefront.malloy",
       );
+      // Beside it: the bare name, with no leading `./`.
       expect(importPathOf("models/m.malloy", "models/x.malloy")).toBe(
-         "./m.malloy",
+         "m.malloy",
       );
-      expect(importPathOf("m.malloy", "x.malloy")).toBe("./m.malloy");
+      expect(importPathOf("m.malloy", "x.malloy")).toBe("m.malloy");
+      expect(importPathOf("models/m.malloy", "x.malloy")).toBe(
+         "models/m.malloy",
+      );
    });
 });
 

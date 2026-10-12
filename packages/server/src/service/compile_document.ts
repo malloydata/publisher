@@ -15,6 +15,7 @@ import {
 import {
    buildDashboardManifest,
    compileTileGivens,
+   factsLayout,
    normalizeTileExpression,
    readDashboardModelFacts,
    readDocumentTileExpressions,
@@ -26,15 +27,9 @@ import {
    scanIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
-import { ownModelNoteObjects } from "./annotations";
-import { motlyTag } from "./motly";
 import {
-   artifactKindInText,
-   artifactKindOfNotes,
-   artifactTagText,
    cellOffsets,
    claimsToBeANotebook,
-   documentKind,
    type DocumentKind,
    isNotebookReaderError,
    parseNotebookText,
@@ -42,6 +37,7 @@ import {
    type NotebookCellSpan,
 } from "./notebook";
 import { extractSourcesFromModelDef } from "./source_extraction";
+import { kindOfLayout, layoutOfText, type ReportLayout } from "./report";
 
 /**
  * Compile of a document: caller-submitted text that carries a model-level
@@ -97,6 +93,8 @@ export interface DocumentCell {
 }
 
 export interface CompiledDocument {
+   layout: ReportLayout;
+   /** `layout` in the old vocabulary (grid is `dashboard`), kept for older clients. */
    kind: DashboardManifest["kind"];
    manifest?: Omit<DashboardManifest, "entryFile" | "path">;
    cells: DocumentCell[];
@@ -130,22 +128,14 @@ export function blankSpans(
    return units.join("");
 }
 
-/** A tag that names no kind takes its folder's and submitted text has none, so tiles or a grid width make it a dashboard. */
-function pathForKind(source: string, slug: string): string {
-   const line = artifactTagText(source);
-   const tags = line === undefined ? undefined : motlyTag([line]);
-   const dashboard =
-      tags?.tag("artifact")?.has("tiles") === true ||
-      tags?.tag("dashboard") !== undefined;
-   return `${dashboard ? "dashboards" : "notebooks"}/${slug}.malloy`;
+/** The layout submitted text has, by the one report rule (`report.ts`, §2): its tag's `layout=`, else its `kind=`, else grid when it lists tiles or sets a grid width, else linear. */
+export function submittedTextLayout(source: string): ReportLayout {
+   return layoutOfText(source);
 }
 
-/** The kind submitted text is: its tag's `kind`, else a dashboard when it lists tiles or sets a grid width, else a notebook. The SDK reader applies the same rule to a document held as text; `documentKindRule.json` holds the two together. */
+/** {@link submittedTextLayout} in the old vocabulary. The SDK reader applies the same rule to a document held as text; `documentKindRule.json` holds the two together. */
 export function submittedTextKind(source: string): DocumentKind {
-   return documentKind(
-      pathForKind(source, "document"),
-      artifactKindInText(source),
-   );
+   return kindOfLayout(submittedTextLayout(source));
 }
 
 /** The names a definition statement declares itself: `source: a is …` or `query: q is …`, never a field inside it. */
@@ -453,7 +443,8 @@ export async function compileDocument(input: {
    });
 
    const slug = modelName.replace(/^.*\//, "").replace(/\.malloy$/, "");
-   const path = pathForKind(source, slug);
+   // Where the text would live decides nothing: its tags decide the layout.
+   const path = `${slug}.malloy`;
    const facts = readDashboardModelFacts(
       path,
       modelDef,
@@ -496,16 +487,17 @@ export async function compileDocument(input: {
       });
    if (!manifest) {
       // Written as cells: no tile layout, so the file's own cells are the document.
-      const kind = documentKind(
-         path,
-         artifactKindOfNotes(ownModelNoteObjects(modelDef)),
-      );
-      return { problems, document: { kind, cells } };
+      const layout = factsLayout(facts);
+      return {
+         problems,
+         document: { layout, kind: kindOfLayout(layout), cells },
+      };
    }
    const { entryFile: _entry, ...rest } = manifest;
    return {
       problems,
       document: {
+         layout: manifest.layout,
          kind: manifest.kind,
          manifest: { ...rest, name: slug },
          cells,

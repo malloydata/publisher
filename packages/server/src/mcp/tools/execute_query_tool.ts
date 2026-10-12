@@ -294,7 +294,7 @@ export function registerExecuteQueryTool(
             );
             const renderLogs = filterPublisherOwnedRenderLogs(
                validateRenderTags(result),
-               modelPath,
+               pkg.isServedReport(modelPath),
             );
 
             const resultUri = buildMalloyUri(

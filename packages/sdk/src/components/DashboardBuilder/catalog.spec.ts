@@ -8,7 +8,7 @@ import {
    chartOf,
    docOf,
    filterableFields,
-   isDashboardModel,
+   isReportModel,
 } from "./catalog";
 
 /** A `modelInfo` exporting these sources, and a named query beside them. */
@@ -126,15 +126,33 @@ describe("buildCatalog", () => {
       expect(catalog.sources[0].views).toHaveLength(2);
    });
 
-   // Offering a dashboard's own tiles as things to put on a dashboard would be
-   // circular, and the endpoint lists dashboards because they are models too.
-   it("leaves dashboards out", () => {
-      expect(isDashboardModel("dashboards/overview.malloy")).toBe(true);
-      expect(isDashboardModel("data_app.malloy")).toBe(false);
-      const catalog = buildCatalog([
-         { ...MODEL, modelPath: "dashboards/overview.malloy" } as CompiledModel,
-      ]);
-      expect(catalog.sources).toEqual([]);
+   // Offering a report's own tiles as things to put on a report would be
+   // circular, and the endpoint lists reports because they are models too. The
+   // listed report paths decide it, never a directory name.
+   it("leaves the listed reports out, wherever they live", () => {
+      const reports = new Set(["overview.malloy", "sales/q3.malloy"]);
+      expect(isReportModel("overview.malloy", reports)).toBe(true);
+      expect(isReportModel("sales/q3.malloy", reports)).toBe(true);
+      expect(isReportModel("dashboards/overview.malloy", reports)).toBe(false);
+      expect(isReportModel("data_app.malloy", reports)).toBe(false);
+      expect(isReportModel(undefined, reports)).toBe(false);
+      for (const modelPath of ["overview.malloy", "sales/q3.malloy"])
+         expect(
+            buildCatalog([{ ...MODEL, modelPath } as CompiledModel], reports)
+               .sources,
+         ).toEqual([]);
+      // A model in a directory once named for dashboards is a model like any other.
+      expect(
+         buildCatalog(
+            [
+               {
+                  ...MODEL,
+                  modelPath: "dashboards/shared.malloy",
+               } as CompiledModel,
+            ],
+            reports,
+         ).sources,
+      ).toHaveLength(1);
    });
 
    // `sources` also lists names a model only imports; an import of one of

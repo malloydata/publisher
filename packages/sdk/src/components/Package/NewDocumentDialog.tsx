@@ -12,9 +12,10 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
    createDocument,
-   documentPathForTitle,
+   reportPathForTitle,
    MAX_SLUG_ATTEMPTS,
    newDocumentProblem,
+   reportPathProblem,
    useDocumentChoices,
    type CreatedDocument,
    type CreateTarget,
@@ -23,17 +24,22 @@ import {
 import { canRetryRequest } from "../DocumentCreate/canRetry";
 import type { DocumentType } from "../DocumentStorage/DocumentStorage";
 import { AppDialog } from "../AppDialog";
+import { layoutOfKind, type ReportLayout } from "./documentLocation";
 
-const KIND_LABEL: Record<DocumentType, string> = {
-   dashboard: "Dashboard",
-   notebook: "Notebook",
+const LAYOUT_LABEL: Record<ReportLayout, string> = {
+   linear: "Linear: read top to bottom",
+   grid: "Grid: tiles side by side",
 };
 
 export interface NewDocumentDialogProps {
    open: boolean;
-   /** Which kind the dialog opens on. */
-   kind: DocumentType;
-   /** Whether the reader may switch to the other kind. Default true. */
+   /** Which layout the dialog opens on. Default linear. */
+   layout?: ReportLayout;
+   /** @deprecated Pass `layout`: `dashboard` is grid, `notebook` linear. */
+   kind?: DocumentType;
+   /** Whether the reader may switch the layout. Default true. */
+   allowLayoutChange?: boolean;
+   /** @deprecated Pass `allowLayoutChange`. */
    allowKindChange?: boolean;
    environmentName: string;
    packageName: string;
@@ -56,14 +62,18 @@ export interface NewDocumentDialogProps {
 }
 
 /**
- * A new dashboard or notebook: pick the model, the view its first tile or
- * query shows, and a title. The file is the one the builder would write, so
- * everything after this is the builder's; the host opens it from `onCreated`.
+ * A new report: pick the model, the view its first query tile shows, a title
+ * and a layout. The file is written as `<slug>.malloy` at the package root, or
+ * at the location the author types instead. It is the file the builder would
+ * write, so everything after this is the builder's; the host opens it from
+ * `onCreated`.
  */
 export function NewDocumentDialog({
    open,
-   kind: initialKind,
-   allowKindChange = true,
+   layout: layoutProp,
+   kind: kindProp,
+   allowLayoutChange,
+   allowKindChange,
    environmentName,
    packageName,
    versionId,
@@ -77,7 +87,12 @@ export function NewDocumentDialog({
    onCreated,
    onEvent,
 }: NewDocumentDialogProps) {
-   const [kind, setKind] = useState<DocumentType>(initialKind);
+   const initialLayout: ReportLayout =
+      layoutProp ?? (kindProp ? layoutOfKind(kindProp) : "linear");
+   const canChangeLayout = allowLayoutChange ?? allowKindChange ?? true;
+   const [layout, setLayout] = useState<ReportLayout>(initialLayout);
+   /** The location as typed; undefined until the author edits it, and the title then names the file. */
+   const [location, setLocation] = useState<string | undefined>(undefined);
    const [modelPath, setModelPath] = useState("");
    /** The chosen view, as `source::view` — one value, so the pair is always valid. */
    const [tile, setTile] = useState("");
@@ -107,8 +122,8 @@ export function NewDocumentDialog({
    const chosen = tiles.find((t) => `${t.source}::${t.view}` === tile);
 
    useEffect(() => {
-      if (open) setKind(initialKind);
-   }, [open, initialKind]);
+      if (open) setLayout(initialLayout);
+   }, [open, initialLayout]);
 
    // Everything with one answer answers itself: a package with one usable
    // model, a model with one view, and a title taken from that view.
@@ -136,24 +151,41 @@ export function NewDocumentDialog({
       setTile("");
       setTitle("");
       setTouchedTitle(false);
+      setLocation(undefined);
       setAttempted(false);
       setFailure(undefined);
    }, [open]);
 
-   // The first name the package listing leaves free; the storage route checks
-   // each name against the store itself when it writes.
-   const path = useMemo(() => {
+   // The first name at the package root the listing leaves free; the storage
+   // route checks each name against the store itself when it writes.
+   const suggested = useMemo(() => {
       if (title.trim() === "") return undefined;
       for (let n = 1; n <= MAX_SLUG_ATTEMPTS; n++) {
-         const candidate = documentPathForTitle(kind, title, n);
+         const candidate = reportPathForTitle(title, n);
          if (!target.existing?.includes(candidate)) return candidate;
       }
       return undefined;
-   }, [kind, title, target]);
+   }, [title, target]);
+   const typed = location?.trim();
+   // A typed location is taken as written, `.malloy` added when it is left off.
+   const typedPath =
+      typed === undefined || typed === ""
+         ? undefined
+         : typed.endsWith(".malloy")
+           ? typed
+           : `${typed}.malloy`;
+   const path = typedPath ?? suggested;
+   const locationProblem =
+      typedPath === undefined
+         ? undefined
+         : (reportPathProblem(typedPath) ??
+           (target.existing?.includes(typedPath)
+              ? `${typedPath} already exists; choose another location.`
+              : undefined));
    const problem =
       chosen === undefined
          ? undefined
-         : newDocumentProblem(kind, {
+         : newDocumentProblem(layout === "grid" ? "dashboard" : "notebook", {
               title,
               modelPath,
               source: chosen.source,
@@ -180,14 +212,14 @@ export function NewDocumentDialog({
           : chosen === undefined
             ? "Pick a view to start from"
             : undefined;
-   const label = KIND_LABEL[kind].toLowerCase();
+   const label = "report";
    const createLabel = busy ? `Creating ${label}…` : `Create ${label}`;
-   const first = kind === "dashboard" ? "First tile" : "First query";
+   const first = "First query";
    const picked = tile !== "" && chosen === undefined && tiles.length > 0;
 
    const create = async () => {
       if (blocked !== undefined || chosen === undefined || busy) return;
-      if (titleProblem !== undefined) {
+      if (titleProblem !== undefined || locationProblem !== undefined) {
          setAttempted(true);
          return;
       }
@@ -195,7 +227,8 @@ export function NewDocumentDialog({
       setFailure(undefined);
       try {
          const created = await createDocument({
-            kind,
+            layout,
+            ...(typedPath !== undefined ? { path: typedPath } : {}),
             document: {
                title,
                modelPath,
@@ -230,11 +263,7 @@ export function NewDocumentDialog({
          // A write in flight is not abandoned by Escape or a backdrop click.
          onClose={busy ? () => {} : onClose}
          title={`New ${label}`}
-         description={
-            kind === "dashboard"
-               ? "A dashboard is a Malloy file in the package. Pick what its first tile shows; the rest is the builder."
-               : "A notebook is a Malloy file in the package that mixes text and queries. Pick what its first query runs; the rest is the builder."
-         }
+         description="A report is a Malloy file in the package that lays out text and queries, as a grid or top to bottom. Pick what its first query shows; the rest is the builder."
          actions={
             <>
                <Button onClick={onClose} disabled={busy}>
@@ -300,21 +329,22 @@ export function NewDocumentDialog({
                   </Alert>
                )
             )}
-            {allowKindChange && (
+            {canChangeLayout && (
                <TextField
                   select
                   size="small"
-                  label="Type"
-                  value={kind}
+                  label="Layout"
+                  value={layout}
                   disabled={busy}
                   onChange={(event) =>
-                     setKind(event.target.value as DocumentType)
+                     setLayout(event.target.value as ReportLayout)
                   }
-                  inputProps={{ "aria-label": "Type" }}
+                  inputProps={{ "aria-label": "Layout" }}
+                  helperText="Switch it any time in the builder."
                >
-                  {(Object.keys(KIND_LABEL) as DocumentType[]).map((k) => (
-                     <MenuItem key={k} value={k}>
-                        {KIND_LABEL[k]}
+                  {(["linear", "grid"] as const).map((l) => (
+                     <MenuItem key={l} value={l}>
+                        {LAYOUT_LABEL[l]}
                      </MenuItem>
                   ))}
                </TextField>
@@ -381,17 +411,31 @@ export function NewDocumentDialog({
                   setTouchedTitle(true);
                   setTitle(event.target.value);
                }}
-               inputProps={{ "aria-label": `${KIND_LABEL[kind]} title` }}
+               inputProps={{ "aria-label": "Report title" }}
                error={showTitleProblem}
                helperText={
                   showTitleProblem
                      ? titleProblem
-                     : path
-                       ? target.route === "package"
-                          ? `Written as ${path}, and opened in the builder.`
-                          : (savedAs ??
-                            `Saved as a new ${label} in the host's store, and opened in the builder.`)
-                       : "Names the file too."
+                     : target.route === "package"
+                       ? "Names the file too, unless you type a location."
+                       : (savedAs ??
+                         `Saved as a new ${label} in the host's store, and opened in the builder.`)
+               }
+            />
+            <TextField
+               size="small"
+               label="Location"
+               value={location ?? suggested ?? ""}
+               placeholder="report.malloy"
+               disabled={busy}
+               onChange={(event) => setLocation(event.target.value)}
+               inputProps={{ "aria-label": "Location" }}
+               error={locationProblem !== undefined}
+               helperText={
+                  locationProblem ??
+                  (path
+                     ? `Written as ${path} in the package, and opened in the builder.`
+                     : "A path in the package; the package root by default.")
                }
             />
             {failure && <Alert severity="error">{failure}</Alert>}

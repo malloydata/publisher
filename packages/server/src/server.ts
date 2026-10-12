@@ -1905,12 +1905,16 @@ app.get(
    },
 );
 
-// Execute notebook cell route must come BEFORE the general get notebook route
-// to avoid the wildcard matching incorrectly
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
-   queryConcurrency(),
-   async (req, res) => {
+/**
+ * Run one cell of a linear report by index: the deprecated
+ * `…/notebooks/{path}/cells/{i}`, kept for a `.malloynb` until the deprecated
+ * routes go. A `.malloy` report's cells run through
+ * `POST …/models/{path}/query` instead, which holds them to the same surface,
+ * `#(authorize)` and row-level gates
+ * (`tests/integration/reports/cell_query_parity.integration.spec.ts`).
+ */
+function executeReportCellHandler(): express.RequestHandler {
+   return async (req, res) => {
       if (req.query.versionId) {
          setVersionIdError(res);
          return;
@@ -1974,6 +1978,62 @@ app.get(
             bypassFilters,
          });
          res.status(200).json(result);
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   };
+}
+
+// The cell routes must come BEFORE the general get routes, so the wildcard
+// does not swallow `/cells/{i}`.
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
+   queryConcurrency(),
+   executeReportCellHandler(),
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.listReports(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports/*`,
+   async (req, res) => {
+      if (req.query.versionId) {
+         setVersionIdError(res);
+         return;
+      }
+
+      try {
+         res.status(200).json(
+            await dashboardController.getReport(
+               req.params.environmentName,
+               req.params.packageName,
+               // Express stores wildcard matches in params['0']
+               (req.params as Record<string, string>)["0"],
+            ),
+         );
       } catch (error) {
          logger.error(error);
          const { json, status } = internalErrorToHttpError(error as Error);
@@ -2306,10 +2366,26 @@ if (!isDevelopment) {
             decodeSegment(fallback.environmentName),
          );
          const packageName = decodeSegment(fallback.packageName);
-         const known = environment
+         const loadedPackage = environment
             ?.getLoadedPackages()
-            .some((pkg) => pkg.getPackageName() === packageName);
-         if (!known) {
+            .find((pkg) => pkg.getPackageName() === packageName);
+         const known = loadedPackage !== undefined;
+         // A report's route is its path without `.malloy`, so a report whose
+         // name ends in an asset extension is an app route, not a file.
+         const reportPath = fallback.reportPath
+            .split("/")
+            .map(decodeSegment)
+            .join("/");
+         // The deprecated `dashboards/<name>` and `notebooks/<name>` links are
+         // the Console's alias for a report named `<name>` wherever it lives;
+         // only when one exists, so `public/dashboards/` files stay reachable.
+         const alias = /^(?:dashboards|notebooks)\/([^/]+)$/.exec(reportPath);
+         if (
+            loadedPackage?.isServedReport(`${reportPath}.malloy`) ||
+            (alias !== null && loadedPackage?.hasReportNamed(alias[1]))
+         ) {
+            fallback = { kind: "spa" };
+         } else if (!known) {
             // Null, not the names: a redirect candidate whose names did not
             // resolve is not an app route either, so it must not be rescued into
             // the app shell by the branch below.

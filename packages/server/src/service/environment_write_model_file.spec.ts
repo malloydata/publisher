@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { WriteVerifyError } from "../errors";
+import { BadRequestError, WriteVerifyError } from "../errors";
 import { Environment } from "./environment";
 
 /**
@@ -242,5 +242,78 @@ describe("Environment.writeModelFileTransactional", () => {
       // to reload, and its own write survived the other's restore.
       expect(seen).toEqual(["good"]);
       expect(read()).toBe("next");
+   });
+
+   describe("the directories a create makes", () => {
+      const pkgPath = (...parts: string[]) => path.join(root, PKG, ...parts);
+
+      it("refuses a path through an existing file with a 400, creating nothing", async () => {
+         fs.writeFileSync(pkgPath("plain"), "a file, not a directory");
+         const error = await environment
+            .writeModelFileTransactional(
+               PKG,
+               "plain/deeper/x.malloy",
+               "text",
+               () => undefined,
+               ok,
+            )
+            .then(
+               () => undefined,
+               (e: Error) => e,
+            );
+         expect(error).toBeInstanceOf(BadRequestError);
+         expect(error?.message).toContain("plain");
+         expect(error?.message).toContain("is a file");
+         expect(fs.readFileSync(pkgPath("plain"), "utf8")).toBe(
+            "a file, not a directory",
+         );
+         expect(reloads).toBe(0);
+      });
+
+      it("removes every directory it created when the write itself fails", async () => {
+         (
+            environment as unknown as {
+               _writeModelFileLocked: () => Promise<void>;
+            }
+         )._writeModelFileLocked = async () => {
+            throw new Error("disk full");
+         };
+         await expect(
+            environment.writeModelFileTransactional(
+               PKG,
+               "made/here/x.malloy",
+               "text",
+               () => undefined,
+               ok,
+            ),
+         ).rejects.toThrow("disk full");
+         expect(fs.existsSync(pkgPath("made"))).toBe(false);
+         expect(reloads).toBe(0);
+      });
+
+      it("refuses a directory that resolves into public/, whatever its case", async () => {
+         fs.mkdirSync(pkgPath("public"));
+         // On a case-insensitive file system `Public` IS `public`; a symlink
+         // reaches it on any file system. Either way the write would land in
+         // the directory served as raw static files.
+         fs.symlinkSync(pkgPath("public"), pkgPath("mirror"));
+         for (const modelPath of ["mirror/x.malloy", "mirror/new/x.malloy"]) {
+            const error = await environment
+               .writeModelFileTransactional(
+                  PKG,
+                  modelPath,
+                  "text",
+                  () => undefined,
+                  ok,
+               )
+               .then(
+                  () => undefined,
+                  (e: Error) => e,
+               );
+            expect(error).toBeInstanceOf(BadRequestError);
+            expect(error?.message).toContain("public/");
+         }
+         expect(fs.readdirSync(pkgPath("public"))).toEqual([]);
+      });
    });
 });

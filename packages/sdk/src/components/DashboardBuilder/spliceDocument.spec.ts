@@ -1033,6 +1033,31 @@ source: a is one extend {
       expect(removed).toContain("  dimension: brand is products.brand");
    });
 
+   it("writes a path target quoted, and it reads back as the same path", async () => {
+      for (const to of ["sales/overview", "overview-story"]) {
+         const out = await spliced(WITH_DIMENSION, (d) => {
+            d.drills = [{ ...(d.drills ?? [])[0], to: [to] }];
+         });
+         expect(out).toContain(
+            `  # drill { to="${to}" given=BRAND }\n  dimension: brand is products.brand`,
+         );
+         const reread = await readDashboardDocument(out);
+         if (readFailed(reread)) throw new Error(reread.reason);
+         expect(reread.document.drills?.[0].to).toEqual([to]);
+      }
+   });
+
+   it("escapes a quote or backslash in a target, so it reads back unchanged", async () => {
+      for (const to of [[`odd "name"`], ["back\\slash/x"], [`a"b`, "c\\d"]]) {
+         const out = await spliced(WITH_DIMENSION, (d) => {
+            d.drills = [{ ...(d.drills ?? [])[0], to }];
+         });
+         const reread = await readDashboardDocument(out);
+         if (readFailed(reread)) throw new Error(reread.reason);
+         expect(reread.document.drills?.[0].to).toEqual(to);
+      }
+   });
+
    it("refuses a drill on a dimension the model declares", async () => {
       const r = await splice(WITH_DIMENSION, (d) => {
          d.drills = [
@@ -1126,7 +1151,7 @@ describe("spliceDashboardDocument: the page's own settings", () => {
    });
 
    describe('how many `##"` lines a description writes', () => {
-      const NB = `##" Old\n## artifact { kind=notebook title="T" tiles=["a -> x"] }\nimport "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
+      const NB = `##" Old\n## artifact { layout=linear title="T" tiles=["a -> x"] }\nimport "../m.malloy"\n\nsource: a is one extend {\n  view: x is vx\n}`;
 
       it("writes one line for a one-line description, however it ends", async () => {
          for (const description of [
@@ -1633,7 +1658,7 @@ function unmodelledTagsByDeclaration(text: string): Record<string, string[]> {
    return out;
 }
 
-describe("every composite dashboard survives an edit", () => {
+describe("every not a report survives an edit", () => {
    const found: string[] = [];
    const walk = (dir: string) => {
       if (!fs.existsSync(dir)) return;

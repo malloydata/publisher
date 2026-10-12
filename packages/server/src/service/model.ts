@@ -129,10 +129,12 @@ import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
    buildDashboardManifest,
    compileTileGivens,
+   factsCarryArtifactTag,
    readDashboardModelFacts,
    type DashboardManifest,
    type DashboardModelFacts,
 } from "./dashboard";
+import { isReportEligiblePath } from "./report";
 import {
    artifactKindOfNotes,
    docNotesAboveArtifact,
@@ -5144,7 +5146,7 @@ export class Model {
     * surface agents see, and these facts are the raw material the manifest is
     * built from, so filtering them at this level would lose information the
     * lint needs. The curation decision is made by the caller instead:
-    * `Package.discoverDashboards` withholds a dashboard whose entry file is not
+    * `Package.discoverReports` withholds a report whose entry file is not
     * a query entry point, because its manifest would advertise names the query
     * boundary refuses. See `service/dashboard.ts`.
     */
@@ -5845,6 +5847,18 @@ export class Model {
       );
    }
 
+   /**
+    * Whether this compiled file carries the artifact tag that makes it a
+    * report (`report.ts`), read off its own notes: a parsed model-level
+    * `## artifact`, or an own query's `# artifact`. For a check that runs
+    * before discovery has said; discovery's map is the answer after it.
+    */
+   public carriesReportTag(): boolean {
+      if (!isReportEligiblePath(this.modelPath)) return false;
+      const facts = this.getDashboardModelFacts();
+      return facts !== undefined && factsCarryArtifactTag(facts);
+   }
+
    /** The `kind` the model's own `## artifact` note declares, if any. */
    public artifactKind(): string | undefined {
       return (
@@ -6175,7 +6189,7 @@ export class Model {
          // narrowing below surfaces anything unexpected as `warn` instead.
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            this.modelPath,
+            this.carriesReportTag(),
          );
          if (logs.length > 0) {
             // An inert tag is not an invalid one, so don't call it "Invalid";
@@ -9047,6 +9061,7 @@ export class Model {
                packageName: this.packageName,
                name: this.notebookLayout.name,
                path: this.modelPath,
+               layout: this.notebookLayout.layout,
                kind: this.notebookLayout.kind,
                title: this.notebookLayout.title,
                description: this.notebookLayout.description,
@@ -9803,7 +9818,12 @@ export class Model {
       }
 
       try {
-         parse = MalloySQLParser.parse(fileContents, modelPath);
+         // The cell parser splits on "\n" alone, so a CRLF file (any Windows
+         // checkout) would leave each cell's text starting with a stray line break.
+         parse = MalloySQLParser.parse(
+            fileContents.replace(/\r\n/g, "\n"),
+            modelPath,
+         );
       } catch {
          throw new Error("Could not parse model: " + modelPath);
       }

@@ -8,9 +8,9 @@ import {
    readDashboardDocument,
    readFailed,
 } from "../DashboardBuilder/readDocument";
-import { documentPathFor, documentPathForTitle, slugFor } from "./documentPath";
+import { reportPathFor, reportPathForTitle, slugFor } from "./documentPath";
 import { newDocumentProblem } from "./guards";
-import { newNotebookSource } from "./newNotebook";
+import { newNotebookSource, newReportSource } from "./newNotebook";
 
 const INPUT = {
    title: 'Sales "West"',
@@ -54,7 +54,7 @@ describe("newNotebookSource", () => {
 
    it("writes the artifact tag as a block with a tile on each line, named for its view", () => {
       expect(newNotebookSource(INPUT)).toContain(
-         '##| artifact { kind=notebook title="Sales \\"West\\""\n  tiles=[\n    intro { kind=text },\n    "order_items_tiles -> by_category_tile"\n  ]\n}\n|##\n',
+         '##| artifact { layout=linear title="Sales \\"West\\""\n  tiles=[\n    intro { kind=text },\n    "order_items_tiles -> by_category_tile"\n  ]\n}\n|##\n',
       );
    });
 
@@ -66,9 +66,18 @@ describe("newNotebookSource", () => {
       expect(result.document.tiles.filter(isQueryTile)).toHaveLength(1);
    });
 
-   it("imports the one source by name", () => {
+   it("imports the one source by name, relative to the package root by default", () => {
       expect(newNotebookSource(INPUT)).toContain(
+         'import { order_items } from "models/storefront.malloy"',
+      );
+   });
+
+   it("imports relative to where the report is written", () => {
+      expect(newNotebookSource(INPUT, "team/sales.malloy")).toContain(
          'import { order_items } from "../models/storefront.malloy"',
+      );
+      expect(newNotebookSource(INPUT, "models/sales.malloy")).toContain(
+         'import { order_items } from "storefront.malloy"',
       );
    });
 
@@ -78,17 +87,72 @@ describe("newNotebookSource", () => {
    });
 });
 
-describe("newDocumentProblem", () => {
-   it("holds a dashboard to bare identifiers, as its writer does", () => {
-      expect(
-         newDocumentProblem("dashboard", { ...INPUT, source: "order items" }),
-      ).toMatch(/source name/);
-      expect(
-         newDocumentProblem("notebook", { ...INPUT, source: "order items" }),
-      ).toBeUndefined();
+describe("newReportSource", () => {
+   it("writes the two layouts from one template, differing only in layout= and the grid tag", () => {
+      const grid = newReportSource(INPUT, "grid").split("\n");
+      const linear = newReportSource(INPUT, "linear").split("\n");
+      expect(grid).toHaveLength(linear.length);
+      const differ = grid
+         .map((line, i) => [line, linear[i]])
+         .filter(([a, b]) => a !== b);
+      expect(differ).toEqual([
+         [
+            '##| artifact { layout=grid title="Sales \\"West\\""',
+            '##| artifact { layout=linear title="Sales \\"West\\""',
+         ],
+         ["} dashboard { columns=12 }", "}"],
+      ]);
    });
 
-   it("back-quotes a source named like a keyword, and a dashboard refuses it", () => {
+   it("never writes kind= for the layout", () => {
+      for (const layout of ["grid", "linear"] as const)
+         expect(newReportSource(INPUT, layout)).not.toMatch(
+            /kind=(dashboard|notebook)/,
+         );
+   });
+
+   it("reads back by its tag: grid as a dashboard, linear as a notebook", async () => {
+      const grid = await readDashboardDocument(newReportSource(INPUT, "grid"));
+      if (readFailed(grid)) throw new Error(grid.reason);
+      expect(grid.document.kind).toBeUndefined();
+      expect(grid.document.columns).toBe(12);
+      expect(
+         grid.document.tiles.map((t) => (isTextTile(t) ? "text" : "query")),
+      ).toEqual(["text", "query"]);
+      const linear = await readDashboardDocument(
+         newReportSource(INPUT, "linear"),
+      );
+      if (readFailed(linear)) throw new Error(linear.reason);
+      expect(linear.document.kind).toBe("notebook");
+   });
+
+   it("reads the same wherever the file would sit", async () => {
+      for (const path of ["dashboards/x.malloy", "notebooks/x.malloy"]) {
+         const grid = await readDashboardDocument(
+            newReportSource(INPUT, "grid"),
+            path,
+         );
+         if (readFailed(grid)) throw new Error(grid.reason);
+         expect(grid.document.kind).toBeUndefined();
+         const linear = await readDashboardDocument(
+            newReportSource(INPUT, "linear"),
+            path,
+         );
+         if (readFailed(linear)) throw new Error(linear.reason);
+         expect(linear.document.kind).toBe("notebook");
+      }
+   });
+});
+
+describe("newDocumentProblem", () => {
+   it("takes a name either layout back-quotes", () => {
+      for (const kind of ["dashboard", "notebook"] as const)
+         expect(
+            newDocumentProblem(kind, { ...INPUT, source: "order items" }),
+         ).toBeUndefined();
+   });
+
+   it("back-quotes a source named like a keyword", () => {
       const text = newNotebookSource({
          ...INPUT,
          source: "source",
@@ -99,7 +163,7 @@ describe("newDocumentProblem", () => {
       expect(lintNotebookText("notebooks/sales.malloy", text)).toEqual([]);
       expect(
          newDocumentProblem("dashboard", { ...INPUT, source: "date" }),
-      ).toMatch(/source name/);
+      ).toBeUndefined();
    });
 
    it("trims the title once, for the tag and the heading", () => {
@@ -116,41 +180,50 @@ describe("newDocumentProblem", () => {
          newDocumentProblem("dashboard", { ...INPUT, modelPath: 'a".malloy' }),
       ).toMatch(/model path/);
       expect(newDocumentProblem("dashboard", INPUT)).toBeUndefined();
+      // Both layouts write the tag as a `##|` block, which `|##` would close.
       expect(
          newDocumentProblem("dashboard", { ...INPUT, title: "a |## b" }),
-      ).toBeUndefined();
+      ).toMatch(/\|##/);
    });
 });
 
-describe("document paths", () => {
+describe("report paths", () => {
    it("always satisfy the server's write shape", () => {
       let seed = 7;
       const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
       const alphabet = "aZ09 -_/\\.\"'`#%\n\té中\u{1f600}*()[]";
-      const shape = /^(dashboards|notebooks)\/[^/]+\.malloy$/;
+      const shape = /^[^/]+\.malloy$/;
       for (let i = 0; i < 500; i++) {
          const length = next() % 40;
          let title = "";
          for (let j = 0; j < length; j++)
             title += [...alphabet][next() % [...alphabet].length];
-         for (const kind of ["dashboard", "notebook"] as const)
-            for (const suffix of [1, 2, 19])
-               expect(documentPathForTitle(kind, title, suffix)).toMatch(shape);
+         for (const suffix of [1, 2, 19]) {
+            expect(reportPathForTitle(title, suffix)).toMatch(shape);
+            expect(reportPathForTitle(title, suffix, "team")).toMatch(
+               /^team\/[^/]+\.malloy$/,
+            );
+         }
       }
    });
 
-   it("spells suffixes -2, -3 and names the kind's directory", () => {
-      expect(documentPathForTitle("notebook", "Sales")).toBe(
-         "notebooks/sales.malloy",
+   it("spells suffixes -2, -3 at the package root, or in a directory asked for", () => {
+      expect(reportPathForTitle("Sales")).toBe("sales.malloy");
+      expect(reportPathForTitle("Sales", 3)).toBe("sales-3.malloy");
+      expect(reportPathForTitle("***")).toBe("untitled.malloy");
+      expect(reportPathFor(slugFor("A b"))).toBe("a-b.malloy");
+      expect(reportPathFor("a-b", "/team//q3/")).toBe("team/q3/a-b.malloy");
+      expect(reportPathFor("a-b", "")).toBe("a-b.malloy");
+   });
+});
+describe("the builder entry", () => {
+   it("exports the report path helpers, and no longer the kind-folder ones", async () => {
+      const builder: Record<string, unknown> = await import(
+         "../../builder-entry"
       );
-      expect(documentPathForTitle("dashboard", "Sales", 3)).toBe(
-         "dashboards/sales-3.malloy",
-      );
-      expect(documentPathForTitle("dashboard", "***")).toBe(
-         "dashboards/untitled.malloy",
-      );
-      expect(documentPathFor("notebook", slugFor("A b"))).toBe(
-         "notebooks/a-b.malloy",
-      );
+      expect(typeof builder.reportPathFor).toBe("function");
+      expect(typeof builder.reportPathForTitle).toBe("function");
+      expect(builder.documentPathFor).toBeUndefined();
+      expect(builder.documentPathForTitle).toBeUndefined();
    });
 });

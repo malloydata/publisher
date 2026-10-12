@@ -1,5 +1,11 @@
 # Dashboard and notebook builders: research, gaps, and plan
 
+> **Superseded in part by [reports-design.md](reports-design.md) (2026-10-10).** Dashboards and
+> notebooks are now one document type, the **report**, with `layout=grid` or `layout=linear`, anywhere
+> in a package; one builder edits both with a layout switch, and New report writes at the package root.
+> The `dashboards/` and `notebooks/` paths below are the history of how the builder was built, not the
+> current rule; [reports.md](reports.md) is the current reference.
+
 _Design and planning doc. The dashboard builder is the SDK component that opens a
 `dashboards/*.malloy` file, lets a person arrange and filter it visually, and
 writes the file back; the notebook (§7, format decided 2026-09-29) is the

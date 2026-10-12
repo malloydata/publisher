@@ -202,22 +202,22 @@ export function useSaveChannel({
                   }),
                },
                { queryKey: ["dashboard-editor-manifest"] },
+               // The report viewer and listing, and the deprecated ones beside them: a layout switch moves a report from one old listing to the other.
+               { queryKey: ["report"] },
+               { queryKey: ["reports"] },
                { queryKey: ["dashboards"] },
+               { queryKey: ["notebooks"] },
                { queryKey: ["dashboard"] },
-               // The notebook viewer keys its read on the resource URI.
-               ...(notebook
-                  ? [
-                       {
-                          queryKey: [
-                             encodeResourceUri({
-                                environmentName,
-                                packageName,
-                                modelPath,
-                             }),
-                          ],
-                       },
-                    ]
-                  : []),
+               // The deprecated notebook viewer keys its read on the resource URI.
+               {
+                  queryKey: [
+                     encodeResourceUri({
+                        environmentName,
+                        packageName,
+                        modelPath,
+                     }),
+                  ],
+               },
             ],
          });
       },

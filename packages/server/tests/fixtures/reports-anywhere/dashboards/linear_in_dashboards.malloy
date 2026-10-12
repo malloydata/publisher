@@ -1,0 +1,6 @@
+## artifact { layout=linear title="Linear in dashboards" tiles=[intro { kind=text }, "orders -> by_brand"] }
+import { orders } from "../orders.malloy"
+
+##|(markdown) intro
+Read top to bottom.
+|##

@@ -1,0 +1,7 @@
+// Listed in explores: on the surface, so its query-level tag is ignored.
+source: listed_src is duckdb.sql("select 4 as w") extend {
+   view: v is { select: w }
+}
+
+# artifact { title="Listed" }
+query: listed_overview is listed_src -> v

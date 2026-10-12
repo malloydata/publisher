@@ -64,7 +64,7 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
                    },
         }),
 );
-const getDashboard = mock(() =>
+const getReport = mock(() =>
    Promise.resolve({
       data: {
          path: "dashboards/overview.malloy",
@@ -83,8 +83,16 @@ const updateModelSource = mock(
          },
       }),
 );
-const listDashboards = mock(() =>
-   Promise.resolve({ data: [{ name: "overview" }, { name: "regions" }] }),
+const listReports = mock(() =>
+   Promise.resolve({
+      data: [
+         {
+            path: "dashboards/overview.malloy",
+            name: "overview",
+            layout: "grid",
+         },
+      ],
+   }),
 );
 const executeQueryModel = mock(() => pending());
 // What the package publishes: the catalog is built from these, not from
@@ -95,7 +103,7 @@ const listModels = mock(() =>
 mockServerProvider(
    {
       models: { getModel, executeQueryModel, listModels, updateModelSource },
-      dashboards: { getDashboard, listDashboards },
+      reports: { getReport, listReports },
    },
    { mutable: true },
 );
@@ -105,7 +113,7 @@ const { DashboardEditor } = await import("./DashboardEditor");
 
 beforeEach(() => {
    clearCache();
-   getDashboard.mockClear();
+   getReport.mockClear();
    updateModelSource.mockClear();
 });
 
@@ -120,7 +128,7 @@ describe("DashboardEditor, starting empty", () => {
          { wrapper: serverWrapper },
       );
       await screen.findByText(/not served until it has a tile/);
-      expect(getDashboard).not.toHaveBeenCalled();
+      expect(getReport).not.toHaveBeenCalled();
 
       fireEvent.click(
          (
@@ -137,9 +145,9 @@ describe("DashboardEditor, starting empty", () => {
       );
 
       await waitFor(() => expect(updateModelSource).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(getDashboard).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(getReport).toHaveBeenCalledTimes(1));
       // Settled, and not asked again by a later render.
       await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(getDashboard).toHaveBeenCalledTimes(1);
+      expect(getReport).toHaveBeenCalledTimes(1);
    });
 });
