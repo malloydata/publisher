@@ -18,6 +18,7 @@
  * through `orders`.
  */
 
+import type { Relationship } from "@malloydata/malloy-interfaces";
 import { entityId } from "../tools/get_context_tool";
 import { ROUTE_MAX_DEPTH, type Catalog, type CatalogNode } from "./catalog";
 
@@ -34,7 +35,7 @@ export interface Route {
 
 const reverseCache = new WeakMap<
    Catalog,
-   Map<string, Array<{ from: string; path: string[] }>>
+   Map<string, Array<{ from: string; path: string[]; fanout: Relationship }>>
 >();
 
 /** For each source, every (source, path) that reaches it, shortest first. */
@@ -46,7 +47,7 @@ function reverseJoins(catalog: Catalog) {
       for (const hop of hops) {
          if (hop.to === from) continue;
          const list = rev.get(hop.to) ?? [];
-         list.push({ from, path: hop.path });
+         list.push({ from, path: hop.path, fanout: hop.fanout });
          rev.set(hop.to, list);
       }
    }
@@ -120,4 +121,91 @@ export function routesOf(catalog: Catalog, node: CatalogNode): string[] {
       out.push(copy.id, ...routeList(catalog, copy).map((r) => r.id));
    }
    return out;
+}
+
+/**
+ * With `connect: "list"` and `listRoutes` above 0: a route the judge may pick
+ * as an answer of its own. Picking it means the rows of the joining source
+ * (`order_items.products.product_count` counts the products order lines
+ * reach, not every product), so it is a different answer from the field.
+ */
+export interface RouteOption extends Route {
+   /** Catalog key of the field the route reaches. */
+   node: string;
+   /** Widest relationship on the path. */
+   fanout: Relationship;
+}
+
+/**
+ * The `cap` shortest routes to a dimension or measure from the given sources
+ * (the other sources in the judge's list), at any depth the join walk
+ * recorded. Ties go to the source key, then the path. None for a joined copy
+ * (it is a route already) or for another kind.
+ */
+export function routeOptions(
+   catalog: Catalog,
+   node: CatalogNode,
+   from: ReadonlySet<string>,
+   cap: number,
+): RouteOption[] {
+   if (cap <= 0) return [];
+   if (node.kind !== "dimension" && node.kind !== "measure") return [];
+   if (node.joinPath) return [];
+   const out: RouteOption[] = [];
+   for (const r of reverseJoins(catalog).get(node.sourceKey) ?? []) {
+      if (out.length >= cap) break;
+      if (r.from === node.sourceKey || !from.has(r.from)) continue;
+      const source = catalog.sources.get(r.from);
+      if (!source) continue;
+      out.push({
+         from: r.from,
+         path: r.path,
+         fanout: r.fanout,
+         node: node.key,
+         id: entityId(
+            node.kind,
+            source.name,
+            `${r.path.join(".")}.${node.name}`,
+         ),
+      });
+   }
+   return out;
+}
+
+const ROUTE_KEY = "route\u0000";
+
+/** The option key of a route. It never equals a catalog key. */
+export function routeKey(
+   r: Pick<RouteOption, "from" | "path" | "node">,
+): string {
+   return `${ROUTE_KEY}${r.from}\u0000${r.path.join(".")}\u0000${r.node}`;
+}
+
+/** A route option key read back; undefined for a catalog key. */
+export function parseRouteKey(
+   key: string,
+): { from: string; path: string[]; node: string } | undefined {
+   if (!key.startsWith(ROUTE_KEY)) return undefined;
+   const [from, path, node] = key.slice(ROUTE_KEY.length).split("\u0000");
+   if (!from || !path || !node) return undefined;
+   return { from, path: path.split("."), node };
+}
+
+/** The wire id of an option key: the field's own id, or its id through the route. */
+export function optionId(catalog: Catalog, key: string): string | undefined {
+   const route = parseRouteKey(key);
+   if (!route) return catalog.nodes.get(key)?.id;
+   const node = catalog.nodes.get(route.node);
+   const source = catalog.sources.get(route.from);
+   if (!node || !source) return undefined;
+   return entityId(
+      node.kind,
+      source.name,
+      `${route.path.join(".")}.${node.name}`,
+   );
+}
+
+/** The catalog key of the field an option key names: a route's field, or the key itself. */
+export function fieldKeyOf(key: string): string {
+   return parseRouteKey(key)?.node ?? key;
 }
