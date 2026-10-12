@@ -174,6 +174,7 @@ TOOL_COLUMNS = {"request_id": ("request_id",), "session_id": ("session_id",),
                 "outcome": ("outcome",),
                 "error": ("error_message", "response_body")}
 MESSAGE_COLUMNS = {"request_id": ("request_id",),
+                   "session_id": ("session_id",),
                    "turn_started_ms": ("turn_started_ms",), "seq": ("seq",),
                    "chunk": ("chunk",), "role": ("role",), "text": ("text",)}
 TURN_COLUMNS = {"request_id": ("request_id",), "session_id": ("session_id",),
