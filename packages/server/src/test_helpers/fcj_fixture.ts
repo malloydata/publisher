@@ -297,6 +297,12 @@ export async function compileFcjFixture(
       ...DEFAULT_PACKAGE_RETRIEVAL,
       engine: "fcj",
    },
+   /**
+    * The model files the package serves; absent means every file. A file left
+    * out still compiles, so a served file can import its sources, but they
+    * are not served (an unpublished source).
+    */
+   served?: readonly string[],
 ): Promise<FcjFixture> {
    const compiled = await compileModelFiles(files);
    const inner = compiled.pkg as {
@@ -306,7 +312,10 @@ export async function compileFcjFixture(
    const pkg = {
       getPackageName: () => FCJ_PACKAGE,
       getRetrievalSettings: () => retrieval,
-      listModels: inner.listModels,
+      listModels: served
+         ? async () =>
+              (await inner.listModels()).filter((m) => served.includes(m.path))
+         : inner.listModels,
       getModel: (path: string) => {
          const model = inner.getModel(path);
          const extra = imports[path] ?? [];
