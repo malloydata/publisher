@@ -204,29 +204,33 @@ describe("ownModelNotes", () => {
       expect(ownModelNotes(def)).toEqual(["## local"]);
    });
 
-   it("collects a notebook's cells, which are internal nodes rather than files", () => {
-      // A `.malloynb` compiles a cell at a time: its `##` lands on an
-      // `internal://loadModel` node, and the `internal://extendModel` node that
-      // `modelID` names inherits it with no notes of its own. Reading only
-      // `modelID` would find nothing on every notebook.
-      const def = makeModelDef("internal://extendModel/2", {
-         "internal://extendModel/2": {
-            ownNotes: {},
-            inheritsFrom: ["internal://loadModel/1"],
-         },
-         "internal://loadModel/1": {
-            ownNotes: { notes: ["## autorun=false", '## title="Orders"'] },
-            inheritsFrom: ["file:///pkg/orders.malloy"],
-         },
-         "file:///pkg/orders.malloy": {
-            ownNotes: { notes: ['## title="Not this one"'] },
-            inheritsFrom: [],
-         },
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("collects a notebook's cells, which are internal nodes rather than files", () => {
+         // A `.malloynb` compiles a cell at a time: its `##` lands on an
+         // `internal://loadModel` node, and the `internal://extendModel` node that
+         // `modelID` names inherits it with no notes of its own. Reading only
+         // `modelID` would find nothing on every notebook.
+         const def = makeModelDef("internal://extendModel/2", {
+            "internal://extendModel/2": {
+               ownNotes: {},
+               inheritsFrom: ["internal://loadModel/1"],
+            },
+            "internal://loadModel/1": {
+               ownNotes: { notes: ["## autorun=false", '## title="Orders"'] },
+               inheritsFrom: ["file:///pkg/orders.malloy"],
+            },
+            "file:///pkg/orders.malloy": {
+               ownNotes: { notes: ['## title="Not this one"'] },
+               inheritsFrom: [],
+            },
+         });
+         expect(ownModelNotes(def)).toEqual([
+            "## autorun=false",
+            '## title="Orders"',
+         ]);
       });
-      expect(ownModelNotes(def)).toEqual([
-         "## autorun=false",
-         '## title="Orders"',
-      ]);
    });
 
    it("returns an empty list for a model with no annotation registry", () => {

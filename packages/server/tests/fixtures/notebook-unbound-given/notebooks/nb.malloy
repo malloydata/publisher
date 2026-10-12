@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Unbound given" }
+## artifact { layout=linear title="Unbound given" }
 
 given: ORG :: number
 

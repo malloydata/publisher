@@ -44,7 +44,7 @@
 #     1.11.0; fixes for its advisories run to 1.20.0. Retire when the workspace moves
 #     to @malloydata/* 0.0.434 or later, where db-trino swaps trino-client for
 #     @trinodb/trino-js-client and the lockfile resolves axios 1.20 without this.
-#   packages/server/k6-tests/package.json  "orval": "^7.21.0", "handlebars": "^4.7.9"
+#   packages/server/k6-tests/package.json  "orval": "^7.21.0", "handlebars": "^4.7.10"
 #     Retire with the orval entries below, when k6-tests moves to an
 #     @grafana/openapi-to-k6 release that supports orval 8.
 #   packages/server/k6-tests/package.json  "js-yaml": "^4.3.2"

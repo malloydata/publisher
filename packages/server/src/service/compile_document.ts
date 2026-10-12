@@ -13,35 +13,29 @@ import {
    UnparseableTextError,
 } from "../errors";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    compileTileGivens,
    normalizeTileExpression,
-   readDashboardModelFacts,
+   readReportModelFacts,
    readDocumentTileExpressions,
-   type DashboardManifest,
-} from "./dashboard";
+   type ServedReportManifest,
+} from "./report_manifest";
 import { gateGivenSource } from "./given";
 import {
    buildDerivationBaseMap,
    scanIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
-import { ownModelNoteObjects } from "./annotations";
-import { motlyTag } from "./motly";
 import {
-   artifactKindInText,
-   artifactKindOfNotes,
-   artifactTagText,
    cellOffsets,
-   claimsToBeANotebook,
-   documentKind,
-   type DocumentKind,
+   cellsUnreadableProblem,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
    type NotebookCellSpan,
 } from "./notebook";
 import { extractSourcesFromModelDef } from "./source_extraction";
+import { readReportTagOfText, type ReportLayout } from "./report";
 
 /**
  * Compile of a document: caller-submitted text that carries a model-level
@@ -97,8 +91,8 @@ export interface DocumentCell {
 }
 
 export interface CompiledDocument {
-   kind: DashboardManifest["kind"];
-   manifest?: Omit<DashboardManifest, "entryFile" | "path">;
+   layout: ReportLayout;
+   manifest?: Omit<ServedReportManifest, "entryFile" | "path">;
    cells: DocumentCell[];
 }
 
@@ -128,24 +122,6 @@ export function blankSpans(
       }
    }
    return units.join("");
-}
-
-/** A tag that names no kind takes its folder's and submitted text has none, so tiles or a grid width make it a dashboard. */
-function pathForKind(source: string, slug: string): string {
-   const line = artifactTagText(source);
-   const tags = line === undefined ? undefined : motlyTag([line]);
-   const dashboard =
-      tags?.tag("artifact")?.has("tiles") === true ||
-      tags?.tag("dashboard") !== undefined;
-   return `${dashboard ? "dashboards" : "notebooks"}/${slug}.malloy`;
-}
-
-/** The kind submitted text is: its tag's `kind`, else a dashboard when it lists tiles or sets a grid width, else a notebook. The SDK reader applies the same rule to a document held as text; `documentKindRule.json` holds the two together. */
-export function submittedTextKind(source: string): DocumentKind {
-   return documentKind(
-      pathForKind(source, "document"),
-      artifactKindInText(source),
-   );
 }
 
 /** The names a definition statement declares itself: `source: a is …` or `query: q is …`, never a field inside it. */
@@ -211,28 +187,13 @@ export async function compileDocument(input: {
    gates: DocumentGates;
 }): Promise<DocumentCompileResult | undefined> {
    const { base, source, modelName, gates } = input;
-   if (!claimsToBeANotebook(source)) return undefined;
+   const tag = readReportTagOfText(source);
+   if (tag.status !== "report") return undefined;
    const parse = parseNotebookText(source);
    if (isNotebookReaderError(parse)) return undefined;
    const read = readNotebookCells(parse, undefined, source);
    if (read.error) {
-      const line = read.error.line - 1;
-      return {
-         problems: [
-            {
-               code: "notebook-cells-unreadable",
-               severity: "error",
-               message: read.error.message,
-               at: {
-                  url: "",
-                  range: {
-                     start: { line, character: 0 },
-                     end: { line, character: 0 },
-                  },
-               },
-            } as LogMessage,
-         ],
-      };
+      return { problems: [cellsUnreadableProblem(read.error, "")] };
    }
 
    // Phase 1: decide every unit by its text, in file order so a restricted
@@ -453,8 +414,9 @@ export async function compileDocument(input: {
    });
 
    const slug = modelName.replace(/^.*\//, "").replace(/\.malloy$/, "");
-   const path = pathForKind(source, slug);
-   const facts = readDashboardModelFacts(
+   // Where the text would live decides nothing: its tags decide the layout.
+   const path = `${slug}.malloy`;
+   const facts = readReportModelFacts(
       path,
       modelDef,
       Object.values(registry).map((given) => given.name),
@@ -471,7 +433,7 @@ export async function compileDocument(input: {
          ),
       ),
    );
-   const manifest = buildDashboardManifest(
+   const manifest = buildReportManifest(
       { ...facts, compiledTileGivens: compiledTiles },
       { restrictedTiles },
    );
@@ -496,17 +458,13 @@ export async function compileDocument(input: {
       });
    if (!manifest) {
       // Written as cells: no tile layout, so the file's own cells are the document.
-      const kind = documentKind(
-         path,
-         artifactKindOfNotes(ownModelNoteObjects(modelDef)),
-      );
-      return { problems, document: { kind, cells } };
+      return { problems, document: { layout: tag.layout, cells } };
    }
    const { entryFile: _entry, ...rest } = manifest;
    return {
       problems,
       document: {
-         kind: manifest.kind,
+         layout: manifest.layout,
          manifest: { ...rest, name: slug },
          cells,
       },

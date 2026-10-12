@@ -7,11 +7,10 @@
  * The catch-all exists so the single-page app can own its client-side routes:
  * any unmatched path returns `index.html` and React Router decides. The cost is
  * that a request for a *file* also gets `index.html`, with HTTP 200, and a 200
- * carrying HTML is indistinguishable from a working page. That has now misled a
- * reader three times: an unknown `/api/v0/...` answering 200 plus HTML, a
- * `/public/` segment that looked served, and `/<env>/<pkg>/index.html`, which
- * renders the app shell and then reports "Unrecognized file type: index.html",
- * a confident error about the wrong thing, since the path was what was wrong.
+ * carrying HTML is indistinguishable from a working page: an unknown
+ * `/api/v0/...` answering 200 plus HTML, or `/<env>/<pkg>/index.html` rendering
+ * the app shell and then "Unrecognized file type: index.html", a confident error
+ * about the wrong thing, since the path was what was wrong.
  *
  * So the shell is served only for paths that can plausibly BE app routes. A file
  * request gets a real answer instead:
@@ -42,7 +41,7 @@
  * most-used URLs.
  *
  * Also absent, and not an oversight: `yaml`/`yml`, `xml`, `md`, `wasm`,
- * `webmanifest`. Those fall through to the app, which now names the path and
+ * `webmanifest`. Those fall through to the app, which names the path and
  * links to the static URL, so the outcome is already reasonable and the list
  * stays short. `package-asset-urls.spec.ts` depends on `yaml` being absent to
  * exercise that app-side page, so adding it here breaks that test rather than
@@ -78,38 +77,21 @@ const ASSET_EXTENSIONS = new Set([
  * Third segments that belong to the app rather than to a package's `public/`
  * directory, so `/<env>/<pkg>/<here>/...` must keep reaching the SPA even when
  * the path ends in an asset extension. `data-apps/<file>.html` is the in-app
- * embedded data app viewer, `dashboards/<slug>` is the dashboard viewer, and
- * `notebooks/<slug>` is the served-notebook viewer.
+ * embedded data app viewer.
  *
- * `dashboards` is here because a slug is a FILENAME with its `.malloy` suffix
- * removed, so `dashboards/report.csv.malloy` publishes the slug `report.csv`,
- * which ends in an asset extension through no choice of the reader's. Without
- * this entry that dashboard is listed on the package page, served by the API,
- * and reachable by in-app navigation, but a deep link or a refresh 302s to the
- * static route and answers 404. Measured before adding it.
- *
- * `notebooks` is here for the same reason (`notebooks/report.csv.malloy`
- * publishes the slug `report.csv`) and carries the same cost for a package's
- * own `public/notebooks/` directory.
- *
- * The cost, worth stating: a package
- * that ships a `public/dashboards/` directory can no longer address those files
- * as `/<env>/<pkg>/dashboards/<file>`, since that shape now opens the dashboard
- * viewer, which reports that the package has no dashboard by that name.
- * `data-apps` has a viewer one
- * segment down that catches its own collision; this route has no equivalent, so
- * those files are reachable only on the static URL
- * `/environments/<env>/packages/<pkg>/dashboards/<file>`.
- *
- * `pages`, the pre-0.0.242 spelling of `data-apps`, was carried here for a while
- * so an old bookmark could reach the app and be redirected. That alias is gone:
- * a `pages/...` path is an ordinary path into the package's `public/` directory
- * again.
+ * A report is not a segment: its route is its path without `.malloy`
+ * (`docs/reports-design.md` §9), wherever it lives, so the caller asks the
+ * loaded package whether `<path>.malloy` is a served report (see `reportPath`
+ * on the redirect candidate). That keeps a report whose name ends in an asset
+ * extension (`sales/report.csv.malloy`) in the app, and a package's own
+ * `public/dashboards/<file>` reachable. The deprecated `dashboards/<name>` and
+ * `notebooks/<name>` alias links stay in the app only when a report is named
+ * `<name>`.
  */
-const SPA_OWNED_SEGMENTS = new Set(["dashboards", "data-apps", "notebooks"]);
+const SPA_OWNED_SEGMENTS = new Set(["data-apps"]);
 
 export type SpaFallbackAction =
-   /** Serve the app shell, as before. */
+   /** Serve the app shell. */
    | { kind: "spa" }
    /**
     * A package file addressed on the app route. A CANDIDATE only: the caller
@@ -122,6 +104,12 @@ export type SpaFallbackAction =
         location: string;
         environmentName: string;
         packageName: string;
+        /**
+         * The path after the package name, still percent-encoded: the caller
+         * serves the app shell instead when `<reportPath>.malloy` is a report
+         * the package serves, since that is the report's own route.
+         */
+        reportPath: string;
      }
    /**
     * A file request nothing served. `path` is safe to echo back.
@@ -206,6 +194,7 @@ export function classifySpaFallback(
       });
       if (!alreadyStaticForm && !traverses) {
          const [environmentName, packageName, ...rest] = segments;
+         const reportPath = rest.join("/");
          // A reader who knows the files live in `public/` guesses that segment,
          // but the static route joins the request path onto `<pkg>/public`, so
          // passing it through would resolve to `public/public/<file>` and 404.
@@ -222,6 +211,7 @@ export function classifySpaFallback(
             )}`,
             environmentName,
             packageName,
+            reportPath,
          };
       }
    }
@@ -239,4 +229,88 @@ export function classifySpaFallback(
               ? { environmentName: segments[0], packageName: segments[1] }
               : null,
    };
+}
+
+/** A percent-encoded path segment, decoded; a malformed escape compares as itself, a name that will not match. */
+function decodeSegment(segment: string | undefined): string {
+   if (segment === undefined) return "";
+   try {
+      return decodeURIComponent(segment);
+   } catch {
+      return segment;
+   }
+}
+
+/**
+ * What the fallback needs to know about what this server has loaded, by
+ * decoded name. In-memory only: the fallback answers unauthenticated traffic
+ * for any path nothing else claimed, so it must not do I/O a caller can trigger
+ * by guessing.
+ */
+export interface LoadedRoutes {
+   hasEnvironment(environmentName: string): boolean;
+   hasPackage(environmentName: string, packageName: string): boolean;
+   /**
+    * Whether `routePath` (decoded, under the package) is the Console route of a
+    * report the package serves: its path without `.malloy`, or a legacy alias.
+    */
+   isReportRoute(
+      environmentName: string,
+      packageName: string,
+      routePath: string,
+   ): boolean;
+}
+
+/**
+ * {@link classifySpaFallback}, with its candidates settled against what is
+ * loaded:
+ *
+ * - A redirect candidate is the app shell when its path is a report's route (a
+ *   report whose name ends in an asset extension is a route, not a file); a
+ *   404 when its environment or package is not loaded, since `/assets/foo/bar.js`
+ *   has the same shape and the static route would answer a bad name with JSON
+ *   that echoes it back; otherwise the redirect.
+ * - An `/<env>` or `/<env>/<pkg>` whose name merely ends in a servable
+ *   extension (`report.html` is a legal package name) is the app shell when
+ *   those names are loaded, and stays a 404 otherwise, which is what keeps
+ *   `/examples/style.css` a 404.
+ */
+export function resolveSpaFallback(
+   requestPath: string,
+   apiPrefix: string,
+   loaded: LoadedRoutes,
+): SpaFallbackAction {
+   const fallback = classifySpaFallback(requestPath, apiPrefix);
+   if (fallback.kind === "redirect") {
+      const environmentName = decodeSegment(fallback.environmentName);
+      const packageName = decodeSegment(fallback.packageName);
+      const routePath = fallback.reportPath
+         .split("/")
+         .map(decodeSegment)
+         .join("/");
+      if (!loaded.hasPackage(environmentName, packageName)) {
+         // Null, not the names: a candidate whose names did not resolve is
+         // not an app route either.
+         return {
+            kind: "assetNotFound",
+            path: requestPath,
+            appRouteCandidate: null,
+         };
+      }
+      return loaded.isReportRoute(environmentName, packageName, routePath)
+         ? { kind: "spa" }
+         : fallback;
+   }
+   if (fallback.kind === "assetNotFound" && fallback.appRouteCandidate) {
+      const environmentName = decodeSegment(
+         fallback.appRouteCandidate.environmentName,
+      );
+      const packageName = fallback.appRouteCandidate.packageName;
+      const isAppRoute =
+         loaded.hasEnvironment(environmentName) &&
+         (packageName === undefined ||
+            loaded.hasPackage(environmentName, decodeSegment(packageName)));
+      if (isAppRoute) return { kind: "spa" };
+   }
+   return fallback;
 }

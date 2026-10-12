@@ -1,0 +1,3 @@
+// Tagged, but public/ is served as raw files, so it is never a report.
+## artifact { layout=grid tiles=["orders -> by_brand"] }
+import { orders } from "../orders.malloy"

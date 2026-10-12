@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Contract test for the Malloy property explore visibility relies on when
-// `explores` is declared: `ModelDef.exports`. The within-file curation in
+// Contract test for the Malloy property explore visibility relies on when a
+// package is curated (a root index.malloy): `ModelDef.exports`. The within-file curation in
 // service/model.ts lists only the names in `exports`, so if a Malloy upgrade
 // changes this behavior the curation silently breaks — pin it here against
 // the real compiler (not a re-implementation). See explore_visibility.spec.ts
@@ -100,10 +100,9 @@ describe("Malloy ModelDef.exports contract (curation depends on this)", () => {
       // names — the imported `base_source` is omitted. This is the raw Malloy
       // `exports` behavior (mirrored by modelDefToModelInfo's modelInfo/
       // sourceInfos) that publisher's discovery curation relies on when it is
-      // active: a model that declares `explores` lists only this export
-      // closure (Model.curateForDiscovery), while every source stays
-      // resolvable for joins and fully queryable. (Without `explores`, curation
-      // is off and publisher lists the uncurated source set — see
+      // active: a surface file lists only this export closure
+      // (Model.curateForDiscovery), while every source stays resolvable for
+      // joins. (Without a surface, curation is off and publisher lists the uncurated source set — see
       // explore_visibility.spec.)
       expect(exports).toEqual(["local_one"]);
    });
