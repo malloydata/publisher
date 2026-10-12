@@ -346,7 +346,7 @@ run: gated -> { aggregate: c }`,
       ).resolves.toBeDefined();
    });
 
-   // Boundary: this package declares no `explores`, so the query boundary is
+   // Boundary: this package has no index.malloy, so the query boundary is
    // inert. These refusals are the lock, and they happen before compile.
    describe("a locked name is decided wherever it appears (append scope)", () => {
       const refused = [
@@ -675,9 +675,9 @@ describe("caller-annotation guard on markdown prose (compileSource)", () => {
 describe("compile-path is exempt from the query boundary (compileSource)", () => {
    // /compile is the authoring loop, and the boundary is discovery curation,
    // not access control. Gating compile made a curated package un-authorable:
-   // the QA session that set explores + queryableSources: "declared" (HANDOFF
-   // CR-5) watched every per-file compile 404 with "Query target is not
-   // queryable". The query path keeps the boundary in full (query_boundary
+   // a QA session that curated its package (HANDOFF CR-5) watched every
+   // per-file compile 404 with "Query target is not queryable". The surface
+   // here is the root index.malloy. The query path keeps the boundary in full (query_boundary
    // .spec.ts); authorize keeps gating compile (the suite above).
    let rootDir: string;
    let env: Environment;
@@ -691,11 +691,7 @@ describe("compile-path is exempt from the query boundary (compileSource)", () =>
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),
-            JSON.stringify({
-               name: "pkg",
-               explores: ["index.malloy"],
-               queryableSources: "declared",
-            }),
+            JSON.stringify({ name: "pkg" }),
          );
          await fs.writeFile(
             path.join(stagingPath, "base.malloy"),
@@ -717,7 +713,7 @@ export { customers }`,
       await fs.rm(rootDir, { recursive: true, force: true }).catch(() => {});
    });
 
-   it("compiles against a non-explores model file (the per-file authoring loop)", async () => {
+   it("compiles against a model file off the surface (the per-file authoring loop)", async () => {
       const { problems } = await env.compileSource(
          "pkg",
          "base.malloy",
@@ -727,7 +723,7 @@ export { customers }`,
       expect(problems).toBeDefined();
    });
 
-   it("compiles text targeting a non-exported source inside the explores file", async () => {
+   it("compiles text targeting a non-exported source inside the surface file", async () => {
       const { problems } = await env.compileSource(
          "pkg",
          "index.malloy",
@@ -770,13 +766,9 @@ describe("compile exemption is not an existence oracle (compileSource)", () => {
          await fs.mkdir(stagingPath, { recursive: true });
          await fs.writeFile(
             path.join(stagingPath, "publisher.json"),
-            JSON.stringify({
-               name: "pkg",
-               explores: ["index.malloy"],
-               queryableSources: "declared",
-            }),
+            JSON.stringify({ name: "pkg" }),
          );
-         // Hidden file (not in explores) holding a gated source.
+         // Hidden file (not imported by index.malloy's exports) holding a gated source.
          await fs.writeFile(
             path.join(stagingPath, "secret.malloy"),
             `##! experimental.givens
@@ -920,10 +912,10 @@ export { customers, visible_gated }`,
       // `denyHiddenAsNotQueryable` (environment.ts) runs the gate first and
       // only converts to `NotQueryableError` when the gate itself threw
       // `AccessDeniedError`. That is intended: the query boundary
-      // (`explores`/`queryableSources`, the *what* axis) deliberately does
-      // NOT apply to `/compile` — a boundary-enforcing `/compile` made a
-      // curated package un-authorable (QA HANDOFF CR-5 had every per-file
-      // compile 404 the moment `queryableSources: "declared"` was set). Only
+      // (the surface, the *what* axis) deliberately does NOT apply to
+      // `/compile` — a boundary-enforcing `/compile` made a curated package
+      // un-authorable (QA HANDOFF CR-5 had every per-file compile 404 the
+      // moment the package was curated). Only
       // `#(authorize)` (the *who* axis) gates `/compile`, and it still
       // applies here in full. Once the fold-in (model.ts) lets the on-disk
       // gate's `checkOnly` decidable escape admit on a supplied `$ROLE`, the

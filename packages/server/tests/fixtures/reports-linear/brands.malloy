@@ -1,0 +1,14 @@
+##! experimental.givens
+## artifact { layout=linear }
+
+// No title and no doc comment, so the listing takes the first markdown
+// heading; and no autorun, so it runs on every change.
+import "orders.malloy"
+
+##|(markdown)
+# Brands
+|##
+
+##(markdown) Amount by brand
+
+run: orders -> by_brand

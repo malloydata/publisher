@@ -163,6 +163,9 @@ class WriteContract(unittest.TestCase):
             ledger.event("score", qid="q1", sample=0, phase="baseline",
                          verdict="probably", reason="r")
 
+    # DEPRECATED FEATURE COVERAGE -- delete together with `filterParams`
+    # (see RELEASE_NOTES deprecations). The givens test below is the current
+    # form.
     def test_a_tool_call_records_the_filters_it_ran_under(self):
         """`query`, `modelPath` and `filterParams` are one fact about one call.
 

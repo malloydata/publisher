@@ -2,23 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { getQueryTimeoutMs } from "../config";
 import {
    ModelNotFoundError,
    NotQueryableError,
    PackageVersionError,
 } from "../errors";
 import { logger } from "../logger";
-import { runWithQueryTimeout } from "../query_timeout";
 import { EnvironmentStore } from "../service/environment_store";
-import type { FilterParams } from "../service/filter";
-import type { NotebookCellRunResult } from "../service/model";
-import type { GivenValue } from "@malloydata/malloy";
 
-type ApiNotebook = components["schemas"]["Notebook"];
 type ApiModel = components["schemas"]["Model"];
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
-type ApiRawNotebook = components["schemas"]["RawNotebook"];
 
 /**
  * `includeHiddenFilesAndSources`: also show the files a package's surface hides. It
@@ -51,19 +44,6 @@ export class ModelController {
          versionId: options.versionId,
       });
       return p.listModels(options);
-   }
-
-   public async listNotebooks(
-      environmentName: string,
-      packageName: string,
-      versionId?: unknown,
-   ): Promise<ApiNotebook[]> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const p = await environment.getPackage(packageName, false, { versionId });
-      return p.listNotebooks();
    }
 
    public async getModel(
@@ -141,94 +121,5 @@ export class ModelController {
             `Failed to get model ${modelPath} from package ${packageName} in environment ${environmentName}: ${error}`,
          );
       }
-   }
-
-   public async getNotebook(
-      environmentName: string,
-      packageName: string,
-      notebookPath: string,
-      versionId?: unknown,
-   ): Promise<ApiRawNotebook> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      const p = await environment.getPackage(packageName, false, { versionId });
-      const model = p.getModel(notebookPath);
-      if (!model) {
-         throw new ModelNotFoundError(`${notebookPath} does not exist`);
-      }
-      if (!model.isNotebook()) {
-         throw new ModelNotFoundError(`${notebookPath} is a model`);
-      }
-
-      return model.getNotebook();
-   }
-
-   public async executeNotebookCell(
-      environmentName: string,
-      packageName: string,
-      notebookPath: string,
-      cellIndex: number,
-      filterParams?: FilterParams,
-      bypassFilters?: boolean,
-      givens?: Record<string, GivenValue>,
-      versionId?: unknown,
-   ): Promise<NotebookCellRunResult> {
-      const environment = await this.environmentStore.getEnvironment(
-         environmentName,
-         false,
-      );
-      // Shed load before any disk / DB work; same rationale as
-      // QueryController.getQuery — already-loaded packages bypass the
-      // package-load admission gate.
-      environment.assertCanAdmitQuery();
-      const p = await environment.getPackage(packageName, false, { versionId });
-      const model = p.getModel(notebookPath);
-      if (!model) {
-         throw new ModelNotFoundError(`${notebookPath} does not exist`);
-      }
-      if (!model.isNotebook()) {
-         throw new ModelNotFoundError(`${notebookPath} is a model`);
-      }
-
-      return runWithQueryTimeout(
-         (abortSignal) =>
-            model.executeNotebookCell(
-               cellIndex,
-               filterParams,
-               bypassFilters,
-               givens,
-               abortSignal,
-               {
-                  environment: environmentName,
-                  // The package owns its manifest, so the least-specific
-                  // author-declared layer is read here; the model knows only its
-                  // own file and its package's NAME.
-                  packageDeclaration: p.getDeclaredQueryMetadata(),
-                  // The environment owns the connection configs, so the default
-                  // and enforced layers are read here rather than from the model.
-                  connectionMetadata: (connectionName) => {
-                     try {
-                        const connection =
-                           environment.getApiConnection(connectionName);
-                        return {
-                           default: connection.queryMetadata,
-                           enforced: connection.queryMetadataEnforced,
-                        };
-                     } catch (error) {
-                        // Fails open, and says so: what an unreadable
-                        // connection costs is the enforced layer.
-                        logger.debug(
-                           "No query-metadata layers for connection",
-                           { connectionName, error },
-                        );
-                        return null;
-                     }
-                  },
-               },
-            ),
-         getQueryTimeoutMs(),
-      );
    }
 }

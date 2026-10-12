@@ -1,6 +1,6 @@
 ##! experimental.givens
 ##" Reads the surface, and declares a source over a file the surface hides.
-## artifact { kind=notebook title="Surface probe" }
+## artifact { layout=linear title="Surface probe" }
 import "../models/orders.malloy"
 import "../models/hidden.malloy"
 

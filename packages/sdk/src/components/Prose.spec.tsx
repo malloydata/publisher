@@ -36,14 +36,14 @@ describe("Prose: links", () => {
             links={{
                environmentName: "env",
                packageName: "pkg",
-               sourcePath: "guides/intro.malloynb",
+               sourcePath: "guides/intro.malloy",
             }}
          >
-            {"[next](../sales.malloynb) [up](../../../etc/passwd)"}
+            {"[next](../sales.malloy) [up](../../../etc/passwd)"}
          </Prose>,
       );
       expect(screen.getByText("next").getAttribute("href")).toBe(
-         "/env/pkg/sales.malloynb",
+         "/env/pkg/sales.malloy",
       );
       // An escape past the package root is clamped at it, never above.
       expect(screen.getByText("up").getAttribute("href")).toBe(

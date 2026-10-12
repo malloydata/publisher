@@ -33,20 +33,20 @@ describe("parseResourceUri", () => {
 
    it("should parse a modelPath URI", () => {
       const resourceUri =
-         "publisher://environments/malloy-samples/packages/names/models/names1.malloynb";
+         "publisher://environments/malloy-samples/packages/names/models/names1.malloy";
       const parsedResource = parseResourceUri(resourceUri);
       expect(parsedResource).toEqual({
          environmentName: "malloy-samples",
          packageName: "names",
          connectionName: undefined,
-         modelPath: "names1.malloynb",
+         modelPath: "names1.malloy",
          versionId: undefined,
       });
    });
 
    it("should throw an error if the resource URI has the wrong protocol", () => {
       const resourceUri =
-         "http://environments/malloy-samples/packages/names/models/names1.malloynb";
+         "http://environments/malloy-samples/packages/names/models/names1.malloy";
       expect(() => parseResourceUri(resourceUri)).toThrow(
          `Failed to parse resource URI: ${resourceUri}`,
       );
@@ -118,11 +118,11 @@ describe("encodeResourceUri", () => {
          environmentName: "malloy-samples",
          packageName: "names",
          connectionName: undefined,
-         modelPath: "names1.malloynb",
+         modelPath: "names1.malloy",
          versionId: undefined,
       });
       expect(resourceUri).toEqual(
-         "publisher://environments/malloy-samples/packages/names/models/names1.malloynb",
+         "publisher://environments/malloy-samples/packages/names/models/names1.malloy",
       );
    });
 

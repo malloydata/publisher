@@ -38,15 +38,15 @@ every doc below points back to one of them, and each example's README points bac
 
 ## Use it
 
-| Doc                                            | Read it when you want to…                                                                            |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.                 |
-| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                                 |
-| [choosing-a-surface.md](choosing-a-surface.md) | Pick between a notebook, a dashboard, and an HTML data app.                                          |
-| [dashboards.md](dashboards.md)                 | Build a dashboard by dragging tiles in the Console, or write the `dashboards/*.malloy` file by hand. |
-| [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models.               |
-| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.                            |
-| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                                        |
+| Doc                                            | Read it when you want to…                                                                          |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| [console.md](console.md)                       | Navigate the Publisher Console, the built-in web UI, and see how constructs surface.               |
+| [explorer.md](explorer.md)                     | Build queries with the no-code visual query builder.                                               |
+| [choosing-a-surface.md](choosing-a-surface.md) | Pick between a report (and its layout, linear or grid) and an HTML data app.                       |
+| [reports.md](reports.md)                       | Build a report, linear or grid, by dragging tiles in the Console or by writing its `.malloy` file. |
+| [ai-agents.md](ai-agents.md)                   | Connect an AI agent, over MCP or (unattended) over REST, and ground it in your models.             |
+| [html-data-apps.md](html-data-apps.md)         | Ship a no-build HTML dashboard **inside a package**, hosted by Publisher.                          |
+| [embedded-data-apps.md](embedded-data-apps.md) | _Advanced/internal:_ the React SDK the Console is built from.                                      |
 
 ## Model & govern
 
@@ -82,8 +82,9 @@ there for the primitive, then follow the application you need.
 | [development.md](development.md)                               | Build and hack on Publisher from a clone.                                                                                                                                                          |
 | [agent-skills/](agent-skills/)                                 | Author or contribute the bundled agent skills.                                                                                                                                                     |
 | [../SECURITY.md](../SECURITY.md)                               | Report a security vulnerability, or check what's in scope.                                                                                                                                         |
-| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind native `dashboards/*.malloy` support.                                                                                                            |
+| [malloyyo-dashboards-design.md](malloyyo-dashboards-design.md) | _Design doc:_ the grammar and architecture behind Publisher's dashboards, now grid reports.                                                                                                        |
 | [dashboard-builder-plan.md](dashboard-builder-plan.md)         | _Plan:_ the dashboard builder and the `.malloy` notebook — research, gaps against the state of the art, how the builder is built, the notebook format and its builder, and the steps for each gap. |
+| [reports-design.md](reports-design.md)                         | _Design doc:_ dashboards and notebooks as one document type, the report, with a linear or grid layout, anywhere in a package.                                                                      |
 
 ## Full public docs
 

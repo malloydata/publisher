@@ -1,0 +1,2 @@
+## artifact { layout=grid title="Sales summary" tiles=["orders -> by_brand"] }
+import { orders } from "../orders.malloy"

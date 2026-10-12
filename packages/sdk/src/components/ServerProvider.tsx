@@ -23,6 +23,7 @@ import {
    NotebooksApi,
    PackagesApi,
    PublisherApi,
+   ReportsApi,
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
@@ -146,6 +147,7 @@ const getApiClients = (
       dashboards: new DashboardsApi(config, basePath, axiosInstance),
       dataApps: new DataAppsApi(config, basePath, axiosInstance),
       notebooks: new NotebooksApi(config, basePath, axiosInstance),
+      reports: new ReportsApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),
       databases: new DatabasesApi(config, basePath, axiosInstance),
       materializations: new MaterializationsApi(

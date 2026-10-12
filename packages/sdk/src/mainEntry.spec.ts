@@ -17,7 +17,7 @@ const SRC = import.meta.dir;
 
 /** Builder-only modules: they pull in the Malloy parser, which the main entry must not reach. */
 const BUILDER_ONLY =
-   /^components\/DashboardBuilder\/(legacyNotebook|DashboardEditor|NotebookEditor|readDocument|spliceDocument|malloyTree|InlineText|InlineMarkdown)\./;
+   /^components\/(ReportBuilder\/(legacyNotebook|ReportEditor|readDocument|spliceDocument|malloyTree|InlineText|InlineMarkdown)|legacy\/(NotebookEditor|builderNames))\./;
 
 const EXTENSIONS = [".ts", ".tsx", "/index.ts", "/index.tsx"];
 

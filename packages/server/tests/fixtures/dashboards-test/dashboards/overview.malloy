@@ -2,8 +2,8 @@
 import { orders } from '../orders.malloy'
 import { BRAND, MIN_AMOUNT } from '../givens.malloy'
 
-#" Order health at a glance.
-# artifact { title="Business Overview" } dashboard {columns=6}
+##" Order health at a glance.
+## artifact { layout=grid title="Business Overview" tiles=["overview"] } dashboard {columns=6}
 query: overview is orders -> {
    where: brand_name ~ $BRAND and amount ~ $MIN_AMOUNT
    # colspan=3

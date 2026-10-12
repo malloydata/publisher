@@ -18,7 +18,8 @@ import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
 import { PackageController } from "./package.controller";
 
-describe("PackageController.addPackage explores validation", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with `explores` (see RELEASE_NOTES deprecations).
+describe("deprecated: explores — PackageController.addPackage validation", () => {
    afterEach(() => {
       sinon.restore();
    });
@@ -219,9 +220,9 @@ describe("PackageController.addPackage persistence policy validation", () => {
    });
 
    it("rejects a publish whose persistence policy is invalid (no-location path)", async () => {
-      // Valid explores but an invalid persistence policy (e.g. a schedule on a
-      // package-scoped package): the publish must still 400 (strict-at-publish,
-      // same split as explores — load merely warns) and roll back via
+      // An invalid persistence policy (e.g. a schedule on a package-scoped
+      // package): the publish must 400 (strict-at-publish; load merely warns)
+      // and roll back via
       // unloadPackage.
       const cronMsg =
          'materialization.schedule (cron) in publisher.json requires "scope": ' +
@@ -421,7 +422,8 @@ describe("PackageController.addPackage incremental policy validation", () => {
    });
 });
 
-describe("PackageController.updatePackage explores validation", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with `explores` (see RELEASE_NOTES deprecations).
+describe("deprecated: explores — PackageController.updatePackage validation", () => {
    afterEach(() => {
       sinon.restore();
    });
