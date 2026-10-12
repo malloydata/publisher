@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — Reports: one document type, anywhere in a package, with a `layout`
+## [0.9.8] — Reports: one document type, anywhere in a package, with a `layout`
 
 Dashboards and notebooks are now one document type, the **report**, and a report can live anywhere in a package. A report is any `.malloy` file outside `public/` that carries a model-level `## artifact` tag, other than the root `index.malloy`; a `.malloynb` is a linear report wherever it is. `dashboards/` and `notebooks/` are now ordinary directory names: nothing about a file depends on which directory holds it, and a report two directories deep is served like one at the root. Every file served from those two directories before is classified the same way by its tags alone, with one exception, listed under "What may change" below.
 
