@@ -34,10 +34,18 @@ mock.module("@malloy-publisher/sdk", () => ({
       return draft;
    },
 }));
-mock.module("../DashboardEditPage/DashboardEditPage", () => ({
-   default: (props: { path: string; layout: string }) => (
+let editorMounts = 0;
+/** Stands in for the builder: counts mounts, so losing its unsaved state is visible. */
+function Editor(props: { path: string; layout: string }) {
+   useEffect(() => {
+      editorMounts++;
+   }, []);
+   return (
       <div data-testid="editor">{`edit ${props.path} as ${props.layout}`}</div>
-   ),
+   );
+}
+mock.module("../DashboardEditPage/DashboardEditPage", () => ({
+   default: Editor,
 }));
 mock.module("../ReportPage/ReportPage", () => ({
    default: (props: { path: string; editable: boolean }) => (
@@ -114,6 +122,7 @@ beforeEach(() => {
    draft = { layout: undefined, settled: true };
    draftCalls.length = 0;
    frameMounts = 0;
+   editorMounts = 0;
    refetch.mockClear();
 });
 
@@ -176,6 +185,45 @@ describe("RoutedDocument", () => {
       expect(screen.getByTestId("editor").textContent).toBe(
          "edit drafts/new.malloy as grid",
       );
+   });
+
+   // React Query keeps the last listing when a background refetch fails and
+   // sets isError beside it: the open editor must not be swapped for the
+   // "could not list" alert, which would drop its unsaved edits and undo.
+   it("keeps an open editor mounted when a background refetch of the listing fails", () => {
+      listing.reports = [{ path: "story.malloy", layout: "linear" }];
+      const view = mount("story", true);
+      expect(screen.getByTestId("editor")).toBeDefined();
+      listing = { ...listing, isFetching: true };
+      view.rerender(tree("/env/pkg/story?edit", "story", true));
+      listing = { ...listing, isFetching: false, isError: true };
+      view.rerender(tree("/env/pkg/story?edit", "story", true));
+      expect(screen.getByTestId("editor").textContent).toBe(
+         "edit story.malloy as linear",
+      );
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(editorMounts).toBe(1);
+   });
+
+   it("keeps an open unlisted draft editor mounted when a background refetch fails", () => {
+      const view = mount("drafts/new", true);
+      expect(screen.getByTestId("editor")).toBeDefined();
+      listing = { ...listing, isError: true };
+      view.rerender(tree("/env/pkg/drafts/new?edit", "drafts/new", true));
+      expect(screen.getByTestId("editor").textContent).toBe(
+         "edit drafts/new.malloy as grid",
+      );
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(editorMounts).toBe(1);
+   });
+
+   it("keeps an open report when a background refetch fails", () => {
+      listing.reports = [{ path: "story.malloy", layout: "linear" }];
+      const view = mount("story");
+      listing = { ...listing, isError: true };
+      view.rerender(tree("/env/pkg/story", "story", false));
+      expect(screen.getByTestId("report")).toBeDefined();
+      expect(screen.queryByRole("alert")).toBeNull();
    });
 
    it("opens a listed report at once, whatever a refetch is doing", () => {

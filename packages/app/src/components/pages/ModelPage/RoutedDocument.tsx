@@ -67,8 +67,9 @@ export default function RoutedDocument({
    // refreshing: right after a create invalidates it, the cached copy predates
    // the file this route was opened for. Once a current listing has been seen
    // for the path the decision holds, so a later background refetch never
-   // swaps an open editor for a spinner.
-   const current = settled && !isFetching;
+   // swaps an open editor for a spinner, nor for the error below when it
+   // fails (React Query keeps the last listing beside the error).
+   const current = settled && !isFetching && !isError;
    const [seenCurrent, setSeenCurrent] = useState<string>();
    useEffect(() => {
       if (current) setSeenCurrent(path);
@@ -97,16 +98,11 @@ export default function RoutedDocument({
       </LegacyAliasRoute>
    );
    const early = notFoundUntilListed && !edit && !report;
-   if (!decided)
-      return early ? (
-         unlisted(notFound)
-      ) : (
-         <Loading text={LOADING_COPY.opening()} />
-      );
-   if (isError && early) return unlisted(notFound);
-   // A listing that failed says nothing about what is at this route, so it
-   // is not "nothing here": say so, and offer to ask again.
-   if (isError)
+   if (!decided && early) return unlisted(notFound);
+   // A listing that failed, with no earlier answer for this path to decide
+   // from, says nothing about what is at this route, so it is not "nothing
+   // here": say so, and offer to ask again.
+   if (!decided && isError && !isFetching)
       return (
          <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
             <Alert
@@ -126,6 +122,7 @@ export default function RoutedDocument({
             </Alert>
          </Box>
       );
+   if (!decided) return <Loading text={LOADING_COPY.opening()} />;
 
    if (report) {
       if (edit)
