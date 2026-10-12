@@ -29,7 +29,11 @@ import {
    tagNumeric,
    tagText,
 } from "./motly";
-import { isReportEligiblePath, readReportTag } from "./report";
+import {
+   isReportEligiblePath,
+   mayCarryArtifactTag,
+   readReportTag,
+} from "./report";
 
 /** One finding on a report file (`report.ts`), wherever it lives. */
 export interface NotebookLintFinding {
@@ -79,7 +83,11 @@ export function lintNotebookText(
    modelPath: string,
    text: string,
 ): NotebookLintFinding[] {
-   if (!modelPath.endsWith(".malloy") || !isReportEligiblePath(modelPath))
+   if (
+      !modelPath.endsWith(".malloy") ||
+      !isReportEligiblePath(modelPath) ||
+      !mayCarryArtifactTag(text)
+   )
       return [];
    let parse;
    try {

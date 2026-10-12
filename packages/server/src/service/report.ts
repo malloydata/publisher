@@ -142,5 +142,17 @@ export function readReportTagOfText(text: string): ReportTag {
  * wrong reaches the compile and its findings rather than "not a report".
  */
 export function carriesArtifactTag(text: string): boolean {
-   return readReportTagOfText(text).status !== "none";
+   return (
+      mayCarryArtifactTag(text) && readReportTagOfText(text).status !== "none"
+   );
+}
+
+/**
+ * False only for text that cannot carry an artifact tag because the word is
+ * nowhere in it: a substring test, so the callers that would otherwise parse
+ * every model in a package (the compile lint, the write path) skip the parse
+ * for the untagged majority. True says nothing; the parse decides.
+ */
+export function mayCarryArtifactTag(text: string): boolean {
+   return text.includes("artifact");
 }

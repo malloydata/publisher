@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -9,7 +9,9 @@ import {
    lintReport,
    type ReportModelFacts,
 } from "./report_manifest";
+import * as notebook from "./notebook";
 import { translateToParse } from "./notebook";
+import { carriesArtifactTag } from "./report";
 import {
    lintNotebookText as lintNotebookTextAll,
    notebookLintProblems as notebookLintProblemsAll,
@@ -1831,5 +1833,26 @@ describe("notebook lint: a fix lints clean when applied literally", () => {
       expect(fixed).not.toBe(text);
       const after = lintNotebookText(modelPath, fixed).map((f) => f.code);
       expect(after).toEqual([]);
+   });
+});
+
+describe("the lint parses only text that can carry an artifact tag", () => {
+   it("returns nothing for an untagged model without parsing it, and still parses a tagged one", () => {
+      const parses = spyOn(notebook, "translateToParse");
+      try {
+         expect(lintNotebookTextAll("model.malloy", SOURCE + RUN)).toEqual([]);
+         expect(parses).not.toHaveBeenCalled();
+         expect(carriesArtifactTag(SOURCE + RUN)).toBe(false);
+         expect(parses).not.toHaveBeenCalled();
+         lintNotebookTextAll("report.malloy", HEADER + SOURCE + RUN);
+         expect(parses).toHaveBeenCalled();
+      } finally {
+         parses.mockRestore();
+      }
+   });
+
+   it("still reads an artifact tag written on a later ## line", () => {
+      const text = `## title="x"\n## artifact { layout=linear }\n${SOURCE}${RUN}`;
+      expect(carriesArtifactTag(text)).toBe(true);
    });
 });
