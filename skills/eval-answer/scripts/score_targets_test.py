@@ -182,6 +182,20 @@ class Retrieval(unittest.TestCase):
         self.assertEqual(t["n_returned"], 1)
         self.assertEqual(t["recall"], 1.0)
 
+    def test_server_attribution_credits_a_target_only_with_its_own_kind(self):
+        # The same text sent as a dimension and as a measure: attribution
+        # names the text, so each hit names both. The dimension target is
+        # credited with the dimension only, never with the measure.
+        g = case(target("dimension", "category", [CATEGORY]))
+        r = score_attempt(g, [call([("dimension", "category"),
+                                    ("measure", "category")],
+                                   [hit(CATEGORY, "category"),
+                                    hit(SALES, "category")])], KEY, "match")
+        t = r["targets"][0]
+        self.assertEqual(t["attribution"], "server")
+        self.assertEqual(t["n_returned"], 1)
+        self.assertEqual(t["precision"], 1.0)
+
     def test_a_source_target_is_credited_with_the_source_cards(self):
         g = case(target("source", "order items", [SRC]))
         r = score_attempt(g, [call([("source", "order items"),
