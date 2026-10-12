@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -76,15 +78,24 @@ class RowsFromTranscript(unittest.TestCase):
         events += self.transcript(json.dumps({"result": [{"a": 1}]}))
         self.assertEqual(rows_of(events), [{"a": 1}])
 
-    def test_prose_alone_yields_nothing(self):
-        # The agent is a transport. Nothing it SAYS is data, so a reply with no
-        # tool result is a miss, not a parse.
-        got = rows_of([{"type": "assistant", "message": {
-            "content": [{"type": "text", "text": "I found 3 rows: r1 r2 r3"}]}}])
-        self.assertEqual(got, [])
+    def test_prose_alone_is_an_error_not_an_empty_result(self):
+        # The agent is a transport. Nothing it SAYS is data, and a reply with no
+        # tool result means the call never happened -- not zero rows.
+        rows, _cut, err = hq.result_from_transcript([{
+            "type": "assistant", "message": {"content": [
+                {"type": "text", "text": "I found 3 rows: r1 r2 r3"}]}}])
+        self.assertEqual(rows, [])
+        self.assertEqual(err, hq.NO_RESULT)
 
-    def test_an_unreadable_result_is_a_miss_not_a_crash(self):
-        self.assertEqual(rows_of(self.transcript("{oops")), [])
+    def test_an_unreadable_result_is_an_error_not_a_crash(self):
+        rows, _cut, err = hq.result_from_transcript(self.transcript("{oops"))
+        self.assertEqual(rows, [])
+        self.assertEqual(err, hq.NO_RESULT)
+
+    def test_a_real_empty_result_is_rows_not_an_error(self):
+        rows, cut, err = hq.result_from_transcript(
+            self.transcript(json.dumps({"result": []})))
+        self.assertEqual((rows, cut, err), ([], False, None))
 
     def test_a_host_error_is_an_error_not_an_empty_result(self):
         # A rejected query and a query that returned nothing mean opposite
@@ -95,6 +106,46 @@ class RowsFromTranscript(unittest.TestCase):
         rows, _cut, err = hq.result_from_transcript(events)
         self.assertEqual(rows, [])
         self.assertIn("403", err)
+
+
+class Query(unittest.TestCase):
+    """query() turns a transcript with no execute_query result into an error
+    that names the server and the flag, so a missing login cannot read as
+    every golden drifting."""
+
+    def target(self):
+        return hq.Target(mcp_url="https://h/mcp", server="hosted",
+                         organization="o", environment="e",
+                         workdir=pathlib.Path(tempfile.mkdtemp(prefix="hq-")))
+
+    def run_with(self, events, stderr=""):
+        with mock.patch.object(hq, "run_cli",
+                               return_value=(events, "", stderr, 0, 0.0)):
+            return hq.query(self.target(), "p", "m.malloy", "run: x -> y")
+
+    def test_a_prose_reply_is_an_error_naming_the_server(self):
+        rows, cut, err = self.run_with([{"type": "assistant", "message": {
+            "content": [{"type": "text", "text": "I need you to log in."}]}}])
+        self.assertEqual((rows, cut), ([], False))
+        self.assertIn("replied without calling execute_query", err)
+        self.assertIn("`hosted` (--hosted-mcp-server)", err)
+
+    def test_no_transcript_at_all_says_so(self):
+        _rows, _cut, err = self.run_with([], stderr="boom")
+        self.assertIn("no transcript from claude -p (boom)", err)
+
+    def test_rows_pass_through(self):
+        events = RowsFromTranscript.transcript(json.dumps({"result": [{"a": 1}]}))
+        self.assertEqual(self.run_with(events), ([{"a": 1}], False, None))
+
+    def test_only_execute_query_is_pre_approved(self):
+        with mock.patch.object(hq, "run_cli",
+                               return_value=([], "", "", 0, 0.0)) as run:
+            hq.query(self.target(), "p", "m.malloy", "run: x -> y")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--allowedTools") + 1],
+                         "mcp__hosted__execute_query")
+        self.assertIn("--strict-mcp-config", argv)
 
 
 if __name__ == "__main__":
