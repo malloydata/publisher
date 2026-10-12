@@ -1289,6 +1289,28 @@ class ResolveConfig(unittest.TestCase):
         self.assertIsNone(a.truth_publisher)
         self.assertIsNone(a.truth_environment)
 
+    def test_two_truth_servers_are_refused(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, out=d / "o",
+                                      truth_publisher="http://localhost:4881",
+                                      truth_mcp_url="https://h/mcp"))
+        self.assertIn("--truth-mcp-url and --truth-publisher name two truth "
+                      "servers", str(e.exception))
+
+    def test_a_truth_server_from_eval_toml_also_counts(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n[truth]\n')
+        with self.assertRaises(SystemExit) as e:
+            rb.resolve_config(self.ns(d, out=d / "o",
+                                      truth_mcp_url="https://h/mcp"))
+        self.assertIn("[truth] section of eval.toml", str(e.exception))
+
+    def test_a_hosted_truth_alone_is_accepted(self):
+        d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
+        a = self.ns(d, out=d / "o", truth_mcp_url="https://h/mcp")
+        rb.resolve_config(a)
+        self.assertIsNone(a.truth_publisher)
+
     def test_a_platform_run_never_takes_its_organization_from_the_file(self):
         d = self.set_dir('[model]\nenvironment = "e"\npackage = "p"\n')
         with self.assertRaises(SystemExit) as e:

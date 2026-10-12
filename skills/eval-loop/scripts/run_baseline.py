@@ -3245,6 +3245,15 @@ def resolve_config(a: argparse.Namespace) -> config.Config:
     a.publisher = a.publisher or cfg.model_publisher()
     a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
     a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
+    # Two truth servers is a refusal, as in verify_goldens: the golden check
+    # would quietly pick one, and run.json could not say which it re-derived
+    # against.
+    if getattr(a, "truth_mcp_url", None) and a.truth_publisher:
+        raise SystemExit(
+            f"--truth-mcp-url and --truth-publisher name two truth servers "
+            f"({a.truth_mcp_url} and {a.truth_publisher}); pass one. A "
+            f"--truth-publisher you did not pass comes from the [truth] "
+            f"section of eval.toml.")
     a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
     if a.out is None:
         runs = cfg.workdir() / "runs"
