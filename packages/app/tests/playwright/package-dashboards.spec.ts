@@ -412,10 +412,10 @@ test.describe("package-dashboards", () => {
    test("the grid lines up: two rows of two, each pair equal and flush", async ({
       page,
    }) => {
-      await openDashboard(page, "grid");
-      await expect(page.getByRole("heading", { name: "Grid" })).toBeVisible({
-         timeout: 30_000,
-      });
+      await openDashboard(page, "tiled");
+      await expect(
+         page.getByRole("heading", { name: "Tiled", level: 5 }),
+      ).toBeVisible({ timeout: 30_000 });
 
       // Cards and tiles are the same kind of grid item, which is the point: two
       // cards at 6 and two tiles at 6 have to come out as two rows that end in
@@ -429,7 +429,7 @@ test.describe("package-dashboards", () => {
       // its own. That is the documented rule ("a break is for interrupting a row
       // that would otherwise be shared"), so pinning the break needs a fixture
       // whose first row does not fill, which this one deliberately is not.
-      const items = page.locator(".dashboard-item");
+      const items = page.locator(".MuiPaper-root:has(.malloy-render)");
 
       // Retried as a block, because waiting for the four items to EXIST is not
       // waiting for them to be laid out. The grid items are in the DOM before
@@ -654,7 +654,7 @@ test.describe("package-dashboards", () => {
          },
       );
 
-      // `# drill { to=overview given=BRAND }` on the brand_name dimension, which
+      // `# drill { to="dashboards/overview" given=BRAND }` on the brand_name dimension, which
       // no dashboard declares: the tile is clickable because it groups by it.
       await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
 
@@ -681,7 +681,7 @@ test.describe("package-dashboards", () => {
          },
       );
 
-      // `# drill { to=["regions", "self"] given=REGION }`: more than one
+      // `# drill { to=["dashboards/regions", "self"] given=REGION }`: more than one
       // destination is a choice, not a guess.
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
       // The destination reads as a sentence rather than as a filename, which is
@@ -1111,7 +1111,7 @@ test.describe("package-dashboards", () => {
          });
       });
 
-      // `grid` is the one-query form, so every card and cell on it is the
+      // `grid` is one tile holding a nested query, so every cell on it is the
       // renderer's own output rather than the SDK's tile chrome. The tile-title
       // half, which is Publisher's own `Typography`, is pinned by the test below
       // this one; it used to be the hole in this guard.
@@ -1208,18 +1208,9 @@ test.describe("package-dashboards", () => {
       );
    });
 
-   // The other card, and the last piece of the two that did not agree. Radius,
-   // padding, border, shadow and gap were reconciled already; the background was
-   // not, because the composite `Paper` left it unset and took MUI's white while
-   // the renderer card painted `theme.tile`. On a theme whose page is also white
-   // that is the difference between tiles that read as cards and tiles that read
-   // as nothing, and it is exactly the "they render differently" in #1069.
-   //
-   // Asserted across BOTH forms against one sentinel, rather than against a
-   // literal on the composite alone: the claim is that the two cards agree, so a
-   // test that only pins one of them would stay green if the renderer's card
-   // moved.
-   test("both dashboard forms paint their card with the theme's tile colour", async ({
+   // A tile's card takes the theme's tile colour rather than MUI's white, so on
+   // a theme whose page is also white the tiles still read as cards.
+   test("a tile paints its card with the theme's tile colour", async ({
       page,
    }) => {
       const TILE_COLOR = "rgb(4, 5, 6)";
@@ -1252,16 +1243,6 @@ test.describe("package-dashboards", () => {
             { timeout: 15_000 },
          )
          .toBe(TILE_COLOR);
-
-      await openDashboard(page, "grid");
-      const card = page.locator(".dashboard-item").first();
-      await expect(card).toBeVisible({ timeout: 30_000 });
-      await expect
-         .poll(
-            () => card.evaluate((el) => getComputedStyle(el).backgroundColor),
-            { timeout: 15_000 },
-         )
-         .toBe(TILE_COLOR);
    });
 
    // A dashboard's description is its narrative header, and it is MARKDOWN: the
@@ -1277,91 +1258,5 @@ test.describe("package-dashboards", () => {
          header.locator("strong", { hasText: "tiles" }),
       ).toBeVisible();
       expect(await header.innerText()).not.toContain("**");
-   });
-
-   // The claim the one-form decision rests on: a view laid out with `# colspan`
-   // and `# break` lands in the same place as a composite tile as it does nested
-   // under a `# dashboard` query. `tiled` is `grid` re-authored as tiles, so the
-   // two pages have to come out with the same grid shape.
-   //
-   // Compared as proportions of each page's own grid, not as page coordinates:
-   // the renderer draws its items inside its own padded container and Publisher
-   // draws its tiles straight into the page, so the two grids start at different
-   // x. What has to match is the colspans, which is the ratio.
-   //
-   // Without this, "Publisher reads the layout tags too" is only asserted on the
-   // manifest, which is where the two spellings of the grid width agreed with
-   // each other while disagreeing with the page.
-   test("a tiled dashboard lays out the same as the one-query grid", async ({
-      page,
-   }) => {
-      const shapeOf = async (slug: string, itemSelector: string) => {
-         await openDashboard(page, slug);
-         let boxes: Array<{
-            left: number;
-            right: number;
-            top: number;
-            height: number;
-         }> = [];
-         // Retried as a block for the same reason as the grid test above: the
-         // items are in the DOM before their results render, and in that window
-         // every top is 0, so a single measurement can see one row.
-         await expect(async () => {
-            const items = page.locator(itemSelector);
-            await expect(items).toHaveCount(4);
-            boxes = await items.evaluateAll((elements) =>
-               elements.map((element) => {
-                  const rect = element.getBoundingClientRect();
-                  return {
-                     left: Math.round(rect.left),
-                     right: Math.round(rect.right),
-                     top: Math.round(rect.top),
-                     height: Math.round(rect.height),
-                  };
-               }),
-            );
-            for (const box of boxes) expect(box.height).toBeGreaterThan(0);
-            expect(new Set(boxes.map((b) => b.top)).size).toBe(2);
-         }).toPass({ timeout: 30_000 });
-
-         // Normalized against the page's own grid: its leftmost left and its
-         // rightmost right. Heights are deliberately not compared, since a tile
-         // is capped and a card is not, and pinning them would make this a test
-         // about TILE_MAX_HEIGHT rather than about the colspans.
-         const origin = Math.min(...boxes.map((b) => b.left));
-         const span = Math.max(...boxes.map((b) => b.right)) - origin;
-         const rows = [...new Set(boxes.map((b) => b.top))].sort(
-            (a, b) => a - b,
-         );
-         return rows.map((top) =>
-            boxes
-               .filter((b) => b.top === top)
-               .sort((a, b) => a.left - b.left)
-               .map((b) => [
-                  (b.left - origin) / span,
-                  (b.right - origin) / span,
-               ]),
-         );
-      };
-
-      // The renderer draws grid's items; Publisher's own grid draws tiled's, so
-      // the two are addressed by different selectors on purpose.
-      const gridRows = await shapeOf("grid", ".dashboard-item");
-      const tiledRows = await shapeOf(
-         "tiled",
-         ".MuiPaper-root:has(.malloy-render)",
-      );
-
-      expect(tiledRows).toHaveLength(gridRows.length);
-      for (const [index, row] of tiledRows.entries()) {
-         expect(row).toHaveLength(gridRows[index].length);
-         for (const [column, [left, right]] of row.entries()) {
-            const [gridLeft, gridRight] = gridRows[index][column];
-            // Three percent of the grid: the two forms use different gap and
-            // border chrome, and the question is whether the colspans agree.
-            expect(Math.abs(left - gridLeft)).toBeLessThan(0.03);
-            expect(Math.abs(right - gridRight)).toBeLessThan(0.03);
-         }
-      }
    });
 });
