@@ -182,8 +182,8 @@ handed a query whose aggregate list was semicolon-separated and had errored.
 Hosts help here by accident: the common pattern is to log a query's COMPILE
 ERROR and nothing at all for a success, and that asymmetry is exactly what is
 needed. Map it to the row's `error` field. With errors carried and the calls in
-observed order, the same replay matched the spawned arm on 8 of 8 tool-call
-streams, 0 of 8 error counts, and 7 of 8 final queries.
+observed order, the same replay matched the spawned arm on all 8 tool-call
+streams, all 8 error counts, and 7 of 8 final queries.
 
 ## What the last one costs, and why it cannot be fixed
 

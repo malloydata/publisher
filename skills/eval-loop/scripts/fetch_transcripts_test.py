@@ -227,6 +227,31 @@ class FetchAll(unittest.TestCase):
         self.assertIn(("gc", "session_id", ("s1",)), self.calls)
         self.assertIn(("tools", "request_id", ("r1",)), self.calls)
 
+    def test_session_mode_keeps_the_prose_that_belongs_to_the_session(self):
+        # The prose rows are fetched by session id, so the session id has to
+        # survive normalise or rows_for matches none of them and every case
+        # drops to T1.
+        import argparse
+        prose = [{"request_id": "r1", "session_id": "s1", "seq": 1,
+                  "chunk": 0, "role": "assistant", "text": "It is 42."},
+                 {"request_id": "r9", "session_id": "s9", "seq": 1,
+                  "chunk": 0, "role": "assistant", "text": "Other session."}]
+
+        def fake(a, source, field, ids):
+            return prose if source == "msg" else []
+
+        a = argparse.Namespace(tier="T2", unit="session", source_turns="turn",
+                               source_execute="tools", source_get_context="gc",
+                               source_messages="msg")
+        original = ft.fetch_rows
+        ft.fetch_rows = fake
+        try:
+            data = ft.fetch_all(a, ["s1"])
+        finally:
+            ft.fetch_rows = original
+        got = ft.rows_for(a, data, "s1")["messages"]
+        self.assertEqual([m["text"] for m in got], ["It is 42."])
+
 
 class RepeatedAnswers(unittest.TestCase):
     """A list in --source-map writes one ordinary run directory per repeat."""
