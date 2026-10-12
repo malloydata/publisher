@@ -718,10 +718,11 @@ describe("notebook lint", () => {
    });
 
    describe("a notebook written as tiles", () => {
-      const TILES = `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v"] }\n`;
+      const TAG = `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v"] }`;
+      const TILES = `${TAG}\n`;
       const BLOCK = "##|(markdown) intro\nhi\n|##\n";
-      const TILES_12 = TILES.replace("\n", " dashboard { columns=12 }\n");
-      const TILES_1 = TILES.replace("\n", " dashboard { columns=1 }\n");
+      const TILES_12 = `${TAG} dashboard { columns=12 }\n`;
+      const TILES_1 = `${TAG} dashboard { columns=1 }\n`;
 
       it("is read like a dashboard: a listed block is a tile, not a cell", () => {
          expect(lint(`${TILES}${SOURCE}${BLOCK}`)).toEqual([]);
