@@ -32,6 +32,9 @@
  * from, the picked sources one query from it can combine, and the targets
  * they answer. `coverage` is then target by group. The judge's caveats ride
  * on the first group; with no pick there is no group, and they are warnings.
+ * A picked route (`listRoutes`) is on the joining source's card under the id
+ * the field has there, with its join path, relationship and population
+ * sentence, and that source is the one its group counts.
  *
  * The answer is complete: every card a pick lands on, with every pick.
  * Nothing here is cut to fit a response size; the response layer pages the
@@ -60,7 +63,7 @@ import type { Cluster, ConnectResult, PeerSource } from "./connect";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
 import { PATHS_SHOWN, type JudgeVerdict } from "./judge";
-import { routesFrom } from "./routes";
+import { parseRouteKey, routesFrom } from "./routes";
 
 /** Distinct values the query-time lookup reads for a gated dimension. */
 const GATED_LOOKUP_LIMIT = 2_000;
@@ -194,6 +197,29 @@ export async function respond(args: {
       for (const pick of verdict.picks) {
          const target = targetOf.get(pick.target);
          for (const key of pick.keys) {
+            const route = parseRouteKey(key);
+            if (route) {
+               // A picked route: the joining source's rows, on its own card.
+               const found = cluster.candidates
+                  .get(pick.target)
+                  ?.find((c) => c.key === route.node);
+               const p = routeRow(args, route);
+               if (!p) continue;
+               put(
+                  p.key,
+                  p.row,
+                  pick.target,
+                  publish(found?.score ?? 0),
+                  pick.reason,
+               );
+               (picksOut[pick.target] ??= []).push(p.id);
+               placedOn.push({
+                  target: pick.target,
+                  source: route.from,
+                  id: p.id,
+               });
+               continue;
+            }
             const node = index.catalog.nodes.get(key);
             if (!node) continue;
             const found = cluster.candidates
@@ -477,6 +503,48 @@ async function place(
       });
    }
    return out;
+}
+
+/**
+ * A picked route as a row on the joining source's card: the field under its
+ * dotted name there (`products.product_count` on order_items), with the join
+ * path, the widest relationship on it and the population sentence. Its id is
+ * the one the field has through the route. Never carries values: a value was
+ * matched on the field's own source.
+ */
+function routeRow(
+   args: Parameters<typeof respond>[0],
+   route: { from: string; path: string[]; node: string },
+): { key: string; id: string; row: ResultEntity } | undefined {
+   const { index, request } = args;
+   const node = index.catalog.nodes.get(route.node);
+   const from = index.catalog.sources.get(route.from);
+   if (!node || !from) return undefined;
+   const joinPath = route.path.join(".");
+   const hop = index.catalog.joins
+      .get(route.from)
+      ?.find((h) => h.path.join(".") === joinPath);
+   const name = `${joinPath}.${node.name}`;
+   const note = populationNote(from.name, route.path);
+   const row: ResultEntity = {
+      kind: node.kind,
+      name,
+      source: from.name,
+      environmentName: request.environmentName,
+      packageName: request.packageName,
+      modelPath: cardModelPath(from, request),
+      doc: node.displayDoc ? `${node.displayDoc} ${note}` : note,
+      ...(node.doc ? { embedDoc: node.doc } : {}),
+      joinPath,
+      ...(hop ? { relationship: hop.fanout } : {}),
+      ...(node.dataType ? { dataType: node.dataType } : {}),
+      ...(node.code ? { code: node.code } : {}),
+   };
+   return {
+      key: `${route.from}\u0000${node.kind}\u0000${name}`,
+      id: `${node.kind}:${from.name}:${name}`,
+      row,
+   };
 }
 
 function unique<T>(xs: readonly T[]): T[] {

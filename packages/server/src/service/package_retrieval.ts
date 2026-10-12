@@ -191,6 +191,15 @@ export interface FcjSettings {
     * stay indexed on the joining source in both.
     */
    joinedCopies: FcjJoinedCopies;
+   /**
+    * PROVISIONAL, 3 by default; read with `connect: "list"` only. Under each
+    * candidate field the judge's list shows up to this many routes to it from
+    * the other listed sources (shortest first, any depth), each with its own
+    * number. A picked route is returned on the joining source's card under
+    * the id it has there (`measure:order_items:products.product_count`). 0
+    * shows none and keeps the list as it was.
+    */
+   listRoutes: number;
 }
 
 export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
@@ -232,6 +241,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    alsoLikely: "auto",
    alsoLikelyTwins: 2,
    joinedCopies: "indexed",
+   listRoutes: 3,
 };
 
 export interface PackageRetrievalSettings {
@@ -590,6 +600,7 @@ function parseFcj(raw: unknown): FcjSettings {
       alsoLikely: fcjAlsoLikely(obj),
       alsoLikelyTwins: int("alsoLikelyTwins", 0, 10),
       joinedCopies: fcjJoinedCopies(obj),
+      listRoutes: int("listRoutes", 0, 20),
    };
 }
 

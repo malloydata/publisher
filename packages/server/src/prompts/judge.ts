@@ -12,7 +12,9 @@
  *
  * There are two defaults. A cluster has a home source and the sources its
  * joins reach. The provisional `connect: "list"` has no home: its sources are
- * peers, and the judge is told which of them one query can combine.
+ * peers, and the judge is told which of them one query can combine. A list
+ * that shows routes (`listRoutes` above 0) uses a third default that adds
+ * the rule for picking a route.
  */
 
 const MEASURE_RULE = `- For a measure target, pick the measure that computes what the target asks for. Pick several when the target or the question needs several: a ratio and the measures it is built from, two plausible readings of one word ("revenue" as gross or as net), or a value that depends on other measures (a fee set by volume and by fraud rate). Say in the reason why each one is there.`;
@@ -48,6 +50,28 @@ ${THING_RULE}
 ${DOC_RULE}
 ${CAVEAT_FILTER_RULE}
 - When several sources serve a target, prefer the one that can share a query with the other targets' picks: the same source, or a source its joins reach. Say in "caveats" which picks can be queried together.
+- Pick nothing for a target no listed source can answer. ${NAME_RULE}
+
+${DATA_LINE}`;
+
+/**
+ * With `connect: "list"` and `listRoutes` above 0: the list instructions plus
+ * the rule for routes. Under a field, the list shows its routes: the same
+ * field reached from another listed source through that source's joins, each
+ * with its own number.
+ */
+export const DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS = `You choose which fields of a data model answer each part of a question.
+
+You are shown the search targets the user's agent wrote and, for each target, candidate fields from several sources, grouped by the source that owns them. Each source is listed with the other listed sources a query from it can also use through its joins. No source comes first: each is a source the agent can query. For each target, pick every candidate, from any source, that serves it.
+
+${MEASURE_RULE}
+${DIMENSION_RULE}
+${THING_RULE}
+${DOC_RULE}
+${CAVEAT_FILTER_RULE}
+- When several sources serve a target, prefer the one that can share a query with the other targets' picks: the same source, or a source its joins reach. Say in "caveats" which picks can be queried together.
+- Some fields are listed with routes: the same field reached from another listed source through that source's joins, each with its own number. A route counts the rows of the joining source. Through order_items, products.product_count counts the products that appear on order items, not every product.
+- Pick the route when the target is about the joining source's rows: "products that were ordered", "customers who placed orders". Pick the field itself when the target is about every row of its own source: "all products we sell", "every customer on file". When you cannot tell, pick both and say why in the reason.
 - Pick nothing for a target no listed source can answer. ${NAME_RULE}
 
 ${DATA_LINE}`;
