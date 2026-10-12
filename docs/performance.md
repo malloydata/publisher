@@ -232,5 +232,96 @@ Raw files beside the report: per run, `*.summary.json` (k6 `--summary-export`), 
 
 ## Baseline
 
-_Not yet recorded._ Run the [baseline commands](#run-it) on an idle machine and paste each
-`report.md`'s scenario tables here, with the context table (version, SHA, machine) they came from.
+Recorded on 2026-10-12 with the [baseline commands](#run-it): `perf:baseline` (all three scenarios,
+medium preset, 60 s per run, 3 warm-up rounds) and the `loads` command for the small and large
+presets. The tables below condense the three `report.md` files; latencies are client-side
+`http_req_duration` in ms, and every run finished with 0 % errors and no dropped iterations.
+
+| item         | value                                                                                                                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Publisher    | 0.9.7 at `bffa36291796` (branch `perf/load-test`, the harness commit), production build                                                                                                                |
+| machine      | Apple M5 Pro, 18 cores, 48 GiB, macOS (Darwin 25.5.0 arm64)                                                                                                                                            |
+| runtimes     | Bun 1.4.2, Node v24.6.0, k6 v2.0.0                                                                                                                                                                     |
+| server knobs | defaults: `PACKAGE_LOAD_WORKERS=1`, `PUBLISHER_MAX_CONCURRENT_QUERIES=32`                                                                                                                              |
+| load average | 2.66 before the first run and 4.45 after the last (1 min). Not idle: other sessions were open on the machine, so treat small differences (under ~10 %) between these numbers and a later run as noise. |
+| boot → READY | 3.6 s (medium), 2.2 s (small), 7.4 s (large)                                                                                                                                                           |
+| packages     | storefront: 6 files, 0.9 MB. gen: 1M fact rows (18 MB parquet); Malloy text 12.8 KB (small, 4 files), 112 KB (medium, 10 files), 593 KB (large, 26 files)                                              |
+
+### Loads
+
+The generated package, by preset. `req/s` is completed operations per second across all VUs.
+
+| preset |    op    | c1 req/s | c1 avg | c1 p95 | c2 req/s | c2 avg | c2 p95 | c4 req/s | c4 avg | c4 p95 |
+| ------ | :------: | -------: | -----: | -----: | -------: | -----: | -----: | -------: | -----: | -----: |
+| small  | register |     6.38 |    154 |    179 |     7.56 |    243 |    301 |     7.55 |    514 |    755 |
+| small  |  reload  |     7.02 |    142 |    172 |     9.44 |    212 |    247 |     9.56 |    417 |    566 |
+| medium | register |     1.05 |    950 |   1027 |     1.31 |   1377 |   1618 |     1.42 |   2687 |   3584 |
+| medium |  reload  |     1.06 |    940 |   1025 |     1.33 |   1497 |   1674 |     1.44 |   2766 |   3636 |
+| large  | register |     0.18 |   5560 |   5849 |     0.22 |   8547 |   9446 |     0.23 | 16.9 s | 23.3 s |
+| large  |  reload  |     0.17 |   5810 |   6560 |     0.20 |   9714 | 10.9 s |     0.20 | 19.5 s | 28.1 s |
+
+storefront (from the medium run): register 4.09 / 4.64 / 5.14 req/s at c1 / c2 / c4 (avg 241 / 408 /
+747 ms), reload 4.62 / 5.34 / 5.77 req/s (avg 216 / 374 / 691 ms). The `delete` of each register
+cycle averages under 4 ms at c1 but reaches a p95 of 167–484 ms at c4 and 1.2 s for large at c2: it
+waits behind loads in progress.
+
+Server-side, a medium register is 952 ms at the HTTP layer, but `malloy_package_load_duration`
+records 611 ms of it and the worker's compile 297 ms; for large the same three figures are 5.6 s,
+3.9 s and 1.6 s. The rest is spent outside the worker, partly after the load metric is
+recorded.
+
+### Queries
+
+Closed loop (`constant-vus`), 60 s per row. Each cell is that op's `req/s · p95 ms`; `total` is
+every op together.
+
+| target     | VUs | total req/s |  query_cheap | query_medium |  query_heavy |  report_get |
+| ---------- | --: | ----------: | -----------: | -----------: | -----------: | ----------: |
+| storefront |   1 |         357 |  142.7 · 1.5 |  124.9 · 2.3 |  71.4 · 18.5 |   8.9 · 0.3 |
+| storefront |   4 |         507 | 202.8 · 19.5 | 177.4 · 20.1 | 101.4 · 34.1 |  12.7 · 1.4 |
+| storefront |  16 |         522 | 208.8 · 59.6 | 182.7 · 60.5 | 104.4 · 63.5 |  13.0 · 2.4 |
+| storefront |  32 |         532 |  212.8 · 141 |  186.1 · 146 |  106.4 · 150 | 13.3 · 54.2 |
+| gen        |   1 |          59 |   23.7 · 5.8 |  20.7 · 15.6 |   11.8 · 106 |   1.5 · 0.3 |
+| gen        |   4 |          68 |   27.1 · 128 |   23.7 · 138 |   13.6 · 206 |   1.7 · 0.4 |
+| gen        |  16 |          64 |   25.4 · 438 |   22.2 · 441 |   12.7 · 463 |   1.6 · 1.0 |
+| gen        |  32 |          56 |  22.3 · 1087 |  19.4 · 1011 |   11.2 · 971 |   1.4 · 393 |
+
+At 32 VUs the gen p99 reaches 1.7 s (cheap), 7.3 s (medium) and the max 9.5 s; `report_list`
+behaves like `report_get` (storefront p95 49.5 ms, gen 433 ms at 32 VUs).
+
+### Mixed
+
+Queries at 10 req/s (open model), 60 s without loads, then 60 s with one VU reloading the queried
+package and one VU registering, reloading and deleting a copy of the other package.
+
+| target     | op           | avg base | avg load | avg × | p95 base | p95 load | p95 × |
+| ---------- | ------------ | -------: | -------: | ----: | -------: | -------: | ----: |
+| storefront | query_cheap  |      4.9 |     47.4 |  9.6× |      6.3 |      167 | 26.7× |
+| storefront | query_medium |      7.2 |     50.3 |  7.0× |      9.0 |      163 | 18.1× |
+| storefront | query_heavy  |     19.7 |     53.4 |  2.7× |     38.5 |      174 |  4.5× |
+| storefront | report_list  |      1.2 |     27.1 | 23.5× |      1.4 |     97.9 | 68.0× |
+| storefront | report_get   |      1.2 |     32.4 | 26.0× |      1.7 |      124 | 72.9× |
+| gen        | query_cheap  |      9.3 |     48.7 |  5.3× |     13.9 |      169 | 12.2× |
+| gen        | query_medium |     21.8 |     57.1 |  2.6× |     28.0 |      181 |  6.5× |
+| gen        | query_heavy  |     59.9 |     98.1 |  1.6× |      114 |      229 |  2.0× |
+| gen        | report_list  |      1.3 |     49.3 | 37.8× |      1.6 |      143 | 88.3× |
+| gen        | report_get   |      0.9 |     29.5 | 33.0× |      1.1 |      107 | 98.9× |
+
+The loaders themselves, during the second window: a reload of the queried package took 581 ms avg
+(storefront) and 1227 ms (gen); registering a copy of the other package took 1167–1224 ms.
+
+### What the baseline shows
+
+- **Loads serialize.** Throughput is nearly flat from 1 to 4 concurrent loads (medium: 1.05 →
+  1.42 req/s) while latency grows about linearly with concurrency (950 → 2687 ms), because loads
+  queue for the single package-load worker (`PACKAGE_LOAD_WORKERS=1`) and for the main thread.
+  Load time is roughly proportional to Malloy text, ~9–10 ms per KB once past fixed costs: small
+  154 ms, medium 950 ms, large 5.6 s.
+- **Query throughput plateaus early.** storefront reaches ~210 cheap req/s (~530 total) at 4 VUs
+  and gains nothing beyond. The generated package's 1M-row queries do not scale past one VU at all
+  (~24 cheap req/s, ~60–68 total): latency grows linearly with VUs instead, to a p99 of up to 9 s
+  at 32 VUs.
+- **Loads disturb everything else.** While packages load, cheap-query p95 rises 12–27× and report
+  reads, which are sub-millisecond work, rise 68–99× (p95 1–2 ms → 98–143 ms). Work that does no
+  I/O slowing down that much points at the main thread being blocked during loads, not at
+  contention for DuckDB.
