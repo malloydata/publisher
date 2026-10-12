@@ -781,6 +781,12 @@ export class Model {
     * unknown: an in-process `Model.create`, a notebook, or a check that threw.
     */
    private buildPlanInputs: SerializedModel["buildPlanInputs"];
+   /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
+   private reportModelFacts:
+      | { value: ReportModelFacts | undefined }
+      | undefined;
+   /** {@link carriesReportTag}, once read. */
+   private reportTagCarried: boolean | undefined;
    /** Settles once {@link ensureSharedQueryModel} has built the QueryModel. */
    private sharedQueryModel: Promise<void> | undefined;
    private compiledReportFacts:
@@ -5191,6 +5197,14 @@ export class Model {
     * lint are built from. See `service/report_manifest.ts`.
     */
    public getReportModelFacts(): ReportModelFacts | undefined {
+      // Memoized: every input is fixed for this Model's life (a reload builds
+      // new Models), and `carriesReportTag` asks on every query.
+      return (this.reportModelFacts ??= {
+         value: this.deriveReportModelFacts(),
+      }).value;
+   }
+
+   private deriveReportModelFacts(): ReportModelFacts | undefined {
       if (!this.modelDef) return undefined;
       // `this.givens` is the model's surfaced given list — the same surface
       // `filterGivensToModelSurface` enforces at query time, so a control the
@@ -5880,6 +5894,11 @@ export class Model {
     * said; discovery's map is the answer after it.
     */
    public carriesReportTag(): boolean {
+      // Memoized, like the facts it reads: the query paths ask on every query.
+      return (this.reportTagCarried ??= this.deriveCarriesReportTag());
+   }
+
+   private deriveCarriesReportTag(): boolean {
       if (!isReportEligiblePath(this.modelPath)) return false;
       const facts = this.getReportModelFacts();
       return facts !== undefined && factsReportTag(facts).status !== "none";
