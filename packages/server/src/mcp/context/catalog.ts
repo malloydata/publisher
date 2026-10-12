@@ -26,6 +26,7 @@ import {
    comparePaths,
    docOnlyText,
    docText,
+   enterJoin,
    entityId,
    modelPathOfUrl,
    sourceContextKey,
@@ -149,6 +150,14 @@ export interface CatalogReport {
     * has a node on the source the join reaches (a route reaches it instead).
     */
    joinedCopiesDropped: number;
+   /**
+    * With `unservedCopies`: joined copies added for fields of unserved
+    * sources (beyond what the shipped index has), copies left out by the
+    * per-field cap, and join paths the walk stopped at its guard.
+    */
+   unservedCopiesAdded: number;
+   unservedCopiesCapped: number;
+   unservedWalkCapped: number;
 }
 
 export interface Catalog {
@@ -202,6 +211,16 @@ export interface CatalogInput {
     * at any depth.
     */
    joinedCopies?: "indexed" | "routes";
+   /**
+    * PROVISIONAL (`retrieval.fcj.unservedCopies`), 0 when absent. Above 0, a
+    * field whose own source is not served (an unpublished source, or a raw
+    * table or SQL join) gets a joined copy on each served source that reaches
+    * it, at any depth up to JOIN_WALK_MAX_HOPS joins (JOIN_WALK_MAX_PATHS
+    * join paths walked per source), at most this many copies per field,
+    * shortest path first. The copies the shipped index already has (two
+    * joins deep) are kept and count toward that cap.
+    */
+   unservedCopies?: number;
 }
 
 /** Most joins in one path the join walk records. */
@@ -526,6 +545,183 @@ interface InfoField {
    name: string;
    annotations?: Array<string | { value: string }>;
    schema?: { fields?: InfoField[] };
+   relationship?: Relationship;
+   type?: { kind?: string };
+}
+
+/**
+ * The joined copies `unservedCopies` adds: for each served source, every
+ * dimension and measure its joins reach whose own source is not served, at
+ * any depth up to JOIN_WALK_MAX_HOPS joins. A field's own source is the
+ * source of the last join on its path that names one (`sourceID`, or the
+ * source a `join_one: x is s extend {...}` extends); a raw table or SQL join
+ * belongs to the source above it. A field of a served source is left out:
+ * it is found once, on its own source, with routes.
+ *
+ * Each field gets at most `cap` copies over all served sources, shortest
+ * path first (then source key, then path). The copies the catalog already
+ * holds (the shipped index's, two joins deep) are kept and count first. The
+ * walk records at most JOIN_WALK_MAX_PATHS join paths per served source.
+ */
+function unservedCopies(args: {
+   models: readonly CatalogModel[];
+   modelPaths: readonly string[];
+   sourceKeyByContext: ReadonlyMap<string, string>;
+   sources: ReadonlyMap<string, CatalogSource>;
+   hasNode: (kind: string, sourceKey: string, name: string) => boolean;
+   cap: number;
+}): {
+   added: Array<{ entity: Entity; sourceKey: string }>;
+   capped: number;
+   walkCapped: number;
+} {
+   const { modelPaths, sources, hasNode, cap } = args;
+   const keyOfId = (id: string | undefined) => {
+      const parsed = splitSourceId(id);
+      const at = parsed ? modelPathOfUrl(parsed.url, modelPaths) : undefined;
+      return parsed && at !== undefined
+         ? sourceKeyOf(parsed.source, at)
+         : undefined;
+   };
+   interface Found {
+      field: string;
+      identity: string;
+      sourceKey: string;
+      entity: Entity;
+      exists: boolean;
+      depth: number;
+   }
+   const found: Found[] = [];
+   let walkCapped = 0;
+   const walked = new Set<string>();
+   for (const model of args.models) {
+      for (const raw of model.sourceInfos) {
+         const info = raw as {
+            name?: string;
+            schema?: { fields?: InfoField[] };
+         };
+         if (!info.name) continue;
+         const sourceKey = args.sourceKeyByContext.get(
+            sourceContextKey(model.modelPath, info.name),
+         );
+         if (!sourceKey || walked.has(sourceKey)) continue;
+         walked.add(sourceKey);
+         const sourceName = sources.get(sourceKey)?.name ?? info.name;
+         let paths = 0;
+         const visit = (
+            fields: readonly InfoField[],
+            compiled: readonly CompiledField[] | undefined,
+            path: readonly string[],
+            fanout: Relationship,
+            /** The id of the source the fields belong to, and the raw joins below it. */
+            owner: string,
+            rest: readonly string[],
+         ) => {
+            for (const f of fields) {
+               if (f.kind === "join") {
+                  if (path.length >= JOIN_WALK_MAX_HOPS) {
+                     walkCapped += 1;
+                     continue;
+                  }
+                  if (paths >= JOIN_WALK_MAX_PATHS) {
+                     walkCapped += 1;
+                     return;
+                  }
+                  paths += 1;
+                  const entry = compiled?.find(
+                     (c) => c.join !== undefined && activeName(c) === f.name,
+                  );
+                  const id = entry?.sourceID ?? entry?.extends;
+                  const next =
+                     path.length === 0
+                        ? { joinPath: f.name, fanout: f.relationship ?? "one" }
+                        : enterJoin(
+                             { name: f.name, relationship: f.relationship },
+                             { joinPath: path.join("."), fanout },
+                          );
+                  visit(
+                     f.schema?.fields ?? [],
+                     entry?.fields,
+                     [...path, f.name],
+                     next.fanout,
+                     id ?? owner,
+                     id ? [] : [...rest, f.name],
+                  );
+                  continue;
+               }
+               if (f.kind !== "dimension" && f.kind !== "measure") continue;
+               if (path.length === 0) continue;
+               const ownerKey = keyOfId(owner);
+               // A field of a served source is found on that source (or was
+               // folded there into another spelling of the same column).
+               if (
+                  rest.length === 0 &&
+                  ownerKey !== undefined &&
+                  sources.has(ownerKey)
+               ) {
+                  continue;
+               }
+               const joinPath = path.join(".");
+               const name = `${joinPath}.${f.name}`;
+               const dataType = f.type?.kind?.replace(/_type$/, "");
+               found.push({
+                  field: name,
+                  identity: [owner, ...rest, f.kind, f.name].join("\u0000"),
+                  sourceKey,
+                  exists: hasNode(f.kind, sourceKey, name),
+                  depth: path.length,
+                  entity: {
+                     id: `unserved:${sourceKey}:${name}`,
+                     kind: f.kind,
+                     name,
+                     source: sourceName,
+                     modelPath: model.modelPath,
+                     doc: docText(f.annotations),
+                     embedDoc: docOnlyText(f.annotations),
+                     joinPath,
+                     relationship: fanout,
+                     ...(dataType ? { dataType } : {}),
+                  } as Entity,
+               });
+            }
+         };
+         visit(
+            info.schema?.fields ?? [],
+            compiledSource(model.modelDef, info.name)?.fields,
+            [],
+            "one",
+            sourceKey,
+            [],
+         );
+      }
+   }
+   const byIdentity = new Map<string, Found[]>();
+   for (const x of found) {
+      const list = byIdentity.get(x.identity) ?? [];
+      list.push(x);
+      byIdentity.set(x.identity, list);
+   }
+   const added: Array<{ entity: Entity; sourceKey: string }> = [];
+   let capped = 0;
+   for (const list of byIdentity.values()) {
+      list.sort(
+         (a, b) =>
+            a.depth - b.depth ||
+            byText(a.sourceKey, b.sourceKey) ||
+            byText(a.field, b.field),
+      );
+      let count = list.filter((x) => x.exists).length;
+      for (const x of list) {
+         if (x.exists) continue;
+         if (count >= cap) {
+            capped += 1;
+            continue;
+         }
+         count += 1;
+         added.push({ entity: x.entity, sourceKey: x.sourceKey });
+      }
+   }
+   return { added, capped, walkCapped };
 }
 
 /**
@@ -618,12 +814,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
    }
 
    // 2. Fields, views, joins and queries, one node per (kind, source, name).
-   for (const e of input.entities) {
-      if (e.kind === "source" || !e.source) continue;
-      const sourceKey = sourceKeyByContext.get(
-         sourceContextKey(e.modelPath, e.source),
-      );
-      if (!sourceKey) continue;
+   const addEntityNode = (e: Entity, sourceKey: string) => {
       const key = nodeKeyOf(e.kind, sourceKey, e.name);
       const existing = nodes.get(key);
       if (existing) {
@@ -631,14 +822,14 @@ export function buildCatalog(input: CatalogInput): Catalog {
             existing.modelPaths.push(e.modelPath);
             existing.entities.push(e);
          }
-         continue;
+         return;
       }
       const node: CatalogNode = {
          key,
-         id: entityId(e.kind, e.source, e.name),
+         id: entityId(e.kind, e.source ?? "", e.name),
          kind: e.kind,
          name: e.name,
-         source: e.source,
+         source: e.source ?? "",
          sourceKey,
          modelPaths: [e.modelPath],
          doc: e.embedDoc,
@@ -656,6 +847,32 @@ export function buildCatalog(input: CatalogInput): Catalog {
       nodes.set(key, node);
       sources.get(sourceKey)?.fields.push(key);
       edges.push({ kind: "contains", from: sourceKey, to: key });
+   };
+   for (const e of input.entities) {
+      if (e.kind === "source" || !e.source) continue;
+      const sourceKey = sourceKeyByContext.get(
+         sourceContextKey(e.modelPath, e.source),
+      );
+      if (sourceKey) addEntityNode(e, sourceKey);
+   }
+
+   // 2b. With `unservedCopies` above 0: joined copies of fields whose own
+   // source is not served, at any depth the join walk allows. The shipped
+   // index stops at two joins.
+   const unserved =
+      (input.unservedCopies ?? 0) > 0
+         ? unservedCopies({
+              models: input.models,
+              modelPaths,
+              sourceKeyByContext,
+              sources,
+              hasNode: (kind, sourceKey, name) =>
+                 nodes.has(nodeKeyOf(kind, sourceKey, name)),
+              cap: input.unservedCopies!,
+           })
+         : { added: [], capped: 0, walkCapped: 0 };
+   for (const { entity, sourceKey } of unserved.added) {
+      addEntityNode(entity, sourceKey);
    }
    for (const node of nodes.values()) {
       node.modelPaths.sort(comparePaths);
@@ -959,6 +1176,9 @@ export function buildCatalog(input: CatalogInput): Catalog {
          ),
          joinPathsCapped: walked.capped,
          joinedCopiesDropped,
+         unservedCopiesAdded: unserved.added.length,
+         unservedCopiesCapped: unserved.capped,
+         unservedWalkCapped: unserved.walkCapped,
       },
    };
 }
