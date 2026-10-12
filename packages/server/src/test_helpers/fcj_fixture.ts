@@ -154,6 +154,63 @@ source: plain_payments is payments extend {
 };
 
 /**
+ * Deep joins:
+ *
+ * - a chain four joins deep: parcels -> shipment (shipments) ->
+ *   shipped_order (orders) -> customer (customers) -> region (regions);
+ * - a raw-table join on `orders` (`date_dim`), whose fields have no source of
+ *   their own, so they stay indexed on `orders`; `shipments` carries a joined
+ *   copy of them two joins deep (`shipped_order.date_dim.yr`);
+ * - the self-join Malloy allows: `staff` extends `staff_base` and joins it as
+ *   `manager` (a source cannot join itself, and named sources cannot form a
+ *   cycle, because a join names a source defined before it).
+ */
+export const FCJ_DEEP_FILES: Record<string, string> = {
+   "deep.malloy": `
+#(doc) One row per sales region.
+source: regions is duckdb.sql("select 1 as id, 'West' as name") extend {
+  #(doc) Region name.
+  dimension: region_name is name
+}
+
+#(doc) One row per customer.
+source: customers is duckdb.sql("select 1 as id, 1 as region_id") extend {
+  join_one: region is regions on region.id = region_id
+}
+
+#(doc) One row per order.
+source: orders is duckdb.sql("select 1 as id, 1 as customer_id, date '2024-01-01' as order_date") extend {
+  join_one: customer is customers on customer.id = customer_id
+  join_one: date_dim is duckdb.sql("select date '2024-01-01' as d, 2024 as yr") on date_dim.d = order_date
+  #(doc) Number of orders.
+  measure: order_count is count()
+}
+
+#(doc) One row per shipment.
+source: shipments is duckdb.sql("select 1 as id, 1 as order_id") extend {
+  join_one: shipped_order is orders on shipped_order.id = order_id
+}
+
+#(doc) One row per parcel.
+source: parcels is duckdb.sql("select 1 as id, 1 as shipment_id") extend {
+  join_one: shipment is shipments on shipment.id = shipment_id
+  #(doc) Number of parcels.
+  measure: parcel_count is count()
+}
+
+#(doc) One row per member of staff.
+source: staff_base is duckdb.sql("select 1 as id, 1 as boss_id, 'Ann' as nm") extend {
+  #(doc) Name of the member of staff.
+  dimension: staff_name is nm
+}
+
+source: staff is staff_base extend {
+  join_one: manager is staff_base on manager.id = boss_id
+}
+`,
+};
+
+/**
  * The shape of a list-mode loss: the best candidate for "total revenue" sits
  * on a narrow derived source (`campaign_summary`, one row per campaign) and
  * the field the question wants on the main one (`sales_mix`, which reaches

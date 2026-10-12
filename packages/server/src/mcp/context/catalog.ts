@@ -134,14 +134,40 @@ export interface CatalogReport {
    unresolvedReferences: number;
    /** With `collapseCopies`: nodes folded into the field they copy. */
    copiesFolded: number;
+   /** Join paths the walk recorded, over every source. */
+   joinPaths: number;
+   /** Joins in the longest recorded path. */
+   deepestJoinPath: number;
+   /**
+    * Paths the walk did not extend because they already had JOIN_WALK_MAX_HOPS
+    * joins (or a source already had JOIN_WALK_MAX_PATHS paths). 0 means every
+    * path of the join graph is recorded.
+    */
+   joinPathsCapped: number;
+   /**
+    * With `joinedCopies: "routes"`: joined copies left out because the field
+    * has a node on the source the join reaches (a route reaches it instead).
+    */
+   joinedCopiesDropped: number;
 }
 
 export interface Catalog {
    nodes: Map<string, CatalogNode>;
    sources: Map<string, CatalogSource>;
    edges: CatalogEdge[];
-   /** Joins out of each source, by source key; already deduplicated by path. */
+   /**
+    * Joins out of each source, by source key: every path the join graph has
+    * from it, at any depth up to JOIN_WALK_MAX_HOPS (see walkJoins). One
+    * entry per path.
+    */
    joins: Map<string, JoinHop[]>;
+   /**
+    * Deepest route routesOf lists: ROUTE_MAX_DEPTH with
+    * `joinedCopies: "indexed"`, JOIN_WALK_MAX_HOPS with `"routes"`.
+    */
+   routeDepth: number;
+   /** The `joinedCopies` mode the catalog was built in. */
+   joinedCopies: "indexed" | "routes";
    /** Source key by sourceContextKey(modelPath, name), for mapping shipped entities in. */
    sourceKeyByContext: Map<string, string>;
    report: CatalogReport;
@@ -168,6 +194,121 @@ export interface CatalogInput {
     * defined, so an extension competes only with the fields it adds.
     */
    collapseCopies?: boolean;
+   /**
+    * PROVISIONAL (`retrieval.fcj.joinedCopies`), `indexed` when absent. With
+    * `routes`, a joined copy of a field that has a node on the source the
+    * join reaches is left out, a join to a source extended in the join
+    * (`b is s extend {...}`) becomes a join hop to `s`, and routes are listed
+    * at any depth.
+    */
+   joinedCopies?: "indexed" | "routes";
+}
+
+/** Most joins in one path the join walk records. */
+export const JOIN_WALK_MAX_HOPS = 8;
+/** Most paths the join walk records from one source. */
+export const JOIN_WALK_MAX_PATHS = 1_000;
+/**
+ * Deepest route listed with `joinedCopies: "indexed"`: the depth the shipped
+ * index gives joined copies.
+ */
+export const ROUTE_MAX_DEPTH = 2;
+
+function byText(a: string, b: string): number {
+   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Every join path out of every source, walked over the join graph to any
+ * depth: a path is one of the source's own joins, then one of the joins of
+ * the source that join reaches, and so on. `recorded` holds what the compiled
+ * model records per source: its own joins (paths of one join), plus nested
+ * paths, which are kept as they are when the one-join walk cannot produce
+ * them (their first join has no source to step through).
+ *
+ * A path never passes through a source twice. A join back to a source already
+ * on the path (a source joined to itself, or a cycle) is recorded as the last
+ * join of that path and not followed, so `manager` is a path and
+ * `manager.manager` is not. A path stops at JOIN_WALK_MAX_HOPS joins, and a
+ * source at JOIN_WALK_MAX_PATHS paths; `capped` counts the stops. Pure.
+ */
+export function walkJoins(recorded: ReadonlyMap<string, readonly JoinHop[]>): {
+   joins: Map<string, JoinHop[]>;
+   capped: number;
+} {
+   const edges = new Map<string, JoinHop[]>();
+   for (const [from, hops] of recorded) {
+      edges.set(
+         from,
+         hops
+            .filter((h) => h.path.length === 1)
+            .sort((a, b) => byText(a.path[0], b.path[0])),
+      );
+   }
+   let capped = 0;
+   const joins = new Map<string, JoinHop[]>();
+   for (const root of recorded.keys()) {
+      const out: JoinHop[] = [];
+      const byPath = new Map<string, string>();
+      let full = false;
+      const visit = (
+         at: string,
+         path: readonly string[],
+         onPath: ReadonlySet<string>,
+         fanout: Relationship | undefined,
+      ) => {
+         for (const edge of edges.get(at) ?? []) {
+            if (out.length >= JOIN_WALK_MAX_PATHS) {
+               if (!full) capped += 1;
+               full = true;
+               return;
+            }
+            const next = [...path, edge.path[0]];
+            // A `one` join keeps the fan-out so far; any other replaces it.
+            const f: Relationship =
+               fanout !== undefined && edge.fanout === "one"
+                  ? fanout
+                  : edge.fanout;
+            out.push({ to: edge.to, path: next, fanout: f });
+            byPath.set(next.join("."), edge.to);
+            if (onPath.has(edge.to)) continue;
+            if (next.length >= JOIN_WALK_MAX_HOPS) {
+               if ((edges.get(edge.to) ?? []).length > 0) capped += 1;
+               continue;
+            }
+            visit(edge.to, next, new Set([...onPath, edge.to]), f);
+         }
+      };
+      visit(root, [], new Set([root]), undefined);
+      for (const hop of recorded.get(root) ?? []) {
+         const text = hop.path.join(".");
+         if (byPath.has(text)) continue;
+         if (
+            hop.path.length > JOIN_WALK_MAX_HOPS ||
+            out.length >= JOIN_WALK_MAX_PATHS
+         ) {
+            capped += 1;
+            continue;
+         }
+         // The same rule: no source twice before the path's last join.
+         const seen = new Set([root]);
+         let repeats = false;
+         for (let i = 1; i < hop.path.length && !repeats; i++) {
+            const prefix = hop.path.slice(0, i).join(".");
+            const via =
+               byPath.get(prefix) ??
+               recorded.get(root)?.find((h) => h.path.join(".") === prefix)?.to;
+            if (via === undefined) continue;
+            repeats = seen.has(via);
+            seen.add(via);
+         }
+         if (repeats) continue;
+         out.push({ to: hop.to, path: [...hop.path], fanout: hop.fanout });
+         byPath.set(text, hop.to);
+      }
+      if (out.length > 0) joins.set(root, out);
+   }
+   return { joins, capped };
 }
 
 /** `name` or `as`, whichever the compiled entry is known by. */
@@ -306,6 +447,8 @@ function joinSourceIds(
    fields: CompiledField[] | undefined,
    prefix: readonly string[] = [],
    out = new Map<string, string>(),
+   /** Filled with each join path's relationship (`one`, `many`, `cross`). */
+   kinds?: Map<string, string>,
 ): Map<string, string> {
    if (prefix.length >= 10) return out;
    for (const f of fields ?? []) {
@@ -315,9 +458,26 @@ function joinSourceIds(
       const path = [...prefix, name];
       const id = f.sourceID ?? f.extends;
       if (id) out.set(path.join("."), id);
-      joinSourceIds(f.fields, path, out);
+      kinds?.set(path.join("."), f.join);
+      joinSourceIds(f.fields, path, out, kinds);
    }
    return out;
+}
+
+/** The widest relationship on a compiled join path, as enterJoin computes it. */
+function compiledFanout(
+   kinds: ReadonlyMap<string, string>,
+   path: readonly string[],
+): Relationship {
+   let fanout: Relationship = "one";
+   for (let i = 1; i <= path.length; i++) {
+      const kind = kinds.get(path.slice(0, i).join(".")) as
+         | Relationship
+         | undefined;
+      if (i === 1) fanout = kind ?? "one";
+      else if (kind && kind !== "one") fanout = kind;
+   }
+   return fanout;
 }
 
 /** The catalog key of a source: its name and the file that defines it. */
@@ -503,8 +663,10 @@ export function buildCatalog(input: CatalogInput): Catalog {
    }
    for (const source of sources.values()) source.modelPaths.sort(comparePaths);
 
-   // 3. Joins out of each source, from the shipped topology.
-   const joins = new Map<string, JoinHop[]>();
+   // 3. Joins out of each source, from the shipped topology. Walked to every
+   // depth in step 4b, once step 4 has added what only the compiled model has.
+   const routesMode = input.joinedCopies === "routes";
+   let joins = new Map<string, JoinHop[]>();
    for (const [root, reaches] of input.topology) {
       const from = sourceKeyByContext.get(root);
       if (!from) continue;
@@ -582,7 +744,35 @@ export function buildCatalog(input: CatalogInput): Catalog {
          }
          const compiled = compiledSource(model.modelDef, info.name);
          if (compiled?.location) sourceAt.set(sourceKey, compiled.location);
-         const joinIds = joinSourceIds(compiled?.fields);
+         const joinKinds = new Map<string, string>();
+         const joinIds = joinSourceIds(
+            compiled?.fields,
+            [],
+            undefined,
+            joinKinds,
+         );
+         if (routesMode) {
+            // A join to a source extended in the join (`b is s extend {...}`)
+            // has no target in the topology. In routes mode it is a join to
+            // `s`, so `s`'s own fields are reached through it by route.
+            for (const [pathText, raw] of joinIds) {
+               const id = splitSourceId(raw);
+               const at = id ? modelPathOfUrl(id.url, modelPaths) : undefined;
+               const to =
+                  id && at !== undefined
+                     ? sourceKeyOf(id.source, at)
+                     : undefined;
+               if (!to || to === sourceKey || !sources.has(to)) continue;
+               const hops = joins.get(sourceKey) ?? [];
+               if (hops.some((h) => h.path.join(".") === pathText)) continue;
+               const path = pathText.split(".");
+               hops.push({ to, path, fanout: compiledFanout(joinKinds, path) });
+               joins.set(sourceKey, hops);
+               if (path.length === 1) {
+                  edges.push({ kind: "joins", from: sourceKey, to, path });
+               }
+            }
+         }
          for (const key of sources.get(sourceKey)?.fields ?? []) {
             const node = nodes.get(key)!;
             const id = splitSourceId(
@@ -623,6 +813,81 @@ export function buildCatalog(input: CatalogInput): Catalog {
             }
          }
       }
+   }
+
+   // 4b. Every path of the join graph, at any depth.
+   const walked = walkJoins(joins);
+   joins = walked.joins;
+
+   // 4c. With joinedCopies "routes", leave out every joined copy whose field
+   // has a node on the source the join reaches: the field is searched once,
+   // on its own source, and reached by a route. A field of a raw-table or
+   // SQL join, or one a join adds to its target, has no such node and stays.
+   let joinedCopiesDropped = 0;
+   if (routesMode) {
+      const dropped = new Map<string, string>();
+      for (const node of nodes.values()) {
+         if (!node.joinPath) continue;
+         if (node.kind !== "dimension" && node.kind !== "measure") continue;
+         const path = node.joinPath.split(".");
+         const leaf = node.name.slice(node.joinPath.length + 1);
+         for (let i = path.length; i >= 1; i--) {
+            const prefix = path.slice(0, i).join(".");
+            const to =
+               joins
+                  .get(node.sourceKey)
+                  ?.find((h) => h.path.join(".") === prefix)?.to ??
+               (i === path.length ? node.joinedSourceKey : undefined);
+            if (!to || to === node.sourceKey) continue;
+            const rest = [...path.slice(i), leaf].join(".");
+            // The field's own node, or the node another spelling of the same
+            // column was folded into (collapseAliases).
+            const own =
+               nodes.get(nodeKeyOf(node.kind, to, rest)) ??
+               sources
+                  .get(to)
+                  ?.fields.map((k) => nodes.get(k)!)
+                  .find(
+                     (n) => n.kind === node.kind && n.aliases?.includes(rest),
+                  );
+            if (own) {
+               dropped.set(node.key, own.key);
+               break;
+            }
+         }
+      }
+      // A copy of a copy resolves to the field itself.
+      const finalOf = (key: string): string => {
+         let k = key;
+         for (let i = 0; i < 16 && dropped.has(k); i++) k = dropped.get(k)!;
+         return k;
+      };
+      for (const key of dropped.keys()) {
+         const node = nodes.get(key)!;
+         nodes.delete(key);
+         const source = sources.get(node.sourceKey);
+         if (source) source.fields = source.fields.filter((k) => k !== key);
+      }
+      for (const node of nodes.values()) {
+         node.dependsOn = [
+            ...new Set(
+               node.dependsOn.map((d) => (dropped.has(d) ? finalOf(d) : d)),
+            ),
+         ].filter((d) => d !== node.key);
+         node.uses = node.uses.filter((u) => !dropped.has(u));
+      }
+      for (let i = edges.length - 1; i >= 0; i--) {
+         const e = edges[i];
+         if (
+            dropped.has(e.from) ||
+            (e.kind !== "depends" && dropped.has(e.to))
+         ) {
+            edges.splice(i, 1);
+         } else if (e.kind === "depends" && dropped.has(e.to)) {
+            e.to = finalOf(e.to);
+         }
+      }
+      joinedCopiesDropped = dropped.size;
    }
 
    // 5. With collapseCopies, fold each unchanged inherited copy into the node
@@ -667,11 +932,14 @@ export function buildCatalog(input: CatalogInput): Catalog {
       uses: 0,
    };
    for (const e of edges) edgeCounts[e.kind] += 1;
+   const allPaths = [...joins.values()].flat();
    return {
       nodes,
       sources,
       edges,
       joins,
+      routeDepth: routesMode ? JOIN_WALK_MAX_HOPS : ROUTE_MAX_DEPTH,
+      joinedCopies: routesMode ? "routes" : "indexed",
       sourceKeyByContext,
       report: {
          sources: sources.size,
@@ -684,6 +952,13 @@ export function buildCatalog(input: CatalogInput): Catalog {
          gatedSources: [...sources.values()].filter((s) => s.gated).length,
          unresolvedReferences: unresolved,
          copiesFolded,
+         joinPaths: allPaths.length,
+         deepestJoinPath: allPaths.reduce(
+            (n, h) => Math.max(n, h.path.length),
+            0,
+         ),
+         joinPathsCapped: walked.capped,
+         joinedCopiesDropped,
       },
    };
 }

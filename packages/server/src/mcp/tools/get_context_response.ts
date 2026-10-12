@@ -148,6 +148,24 @@ interface SourceCardEntity {
     * no value index has no counts to fill, so it is omitted.
     */
    values?: Array<{ value: string; relevance: number; search_text: string }>;
+   /**
+    * fcj engine (provisional `alsoLikely`): true when the entity is not one of
+    * the judge's picks but a field returned beside them; the reason says why
+    * (a pick's same-named field on another source, or a name the judge's note
+    * wrote). Absent on a pick.
+    */
+   also_likely?: true;
+   also_likely_reason?: string;
+   /**
+    * fcj engine (provisional `joinedCopies: "routes"`): every route from
+    * another source of this answer to the field, shortest first, with the id
+    * the field has there (`dimension:orders:customer.region.name`).
+    */
+   routes?: Array<{
+      entity_id: string;
+      from_source: string;
+      join_path: string;
+   }>;
 }
 
 export interface SourceCard {
@@ -251,6 +269,18 @@ export function toSourceResults(
                     value: v.value,
                     relevance: Math.round(v.score * 10_000) / 10_000,
                     search_text: v.searchText,
+                 })),
+              }
+            : {}),
+         ...(r.alsoLikely
+            ? { also_likely: true as const, also_likely_reason: r.alsoLikely }
+            : {}),
+         ...(r.routes && r.routes.length > 0
+            ? {
+                 routes: r.routes.map((x) => ({
+                    entity_id: x.id,
+                    from_source: x.from,
+                    join_path: x.path,
                  })),
               }
             : {}),

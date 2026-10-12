@@ -41,7 +41,7 @@
  */
 
 import type { FcjSettings } from "../../service/package_retrieval";
-import type { CatalogNode } from "./catalog";
+import { JOIN_WALK_MAX_HOPS, type CatalogNode } from "./catalog";
 import {
    mentionsPeriod,
    rankTarget,
@@ -565,7 +565,9 @@ function connectList(args: Parameters<typeof connect>[0]): ConnectResult {
       args.allow,
    );
    for (const e of extras) admit(ownerOf(e.key));
-   const reach = new ReachCache(index.catalog.joins, settings.reachDepth);
+   // Which peers one query can combine follows the join graph to any depth
+   // (the catalog's walk), not `reachDepth`, which weighs cluster scores.
+   const reach = new ReachCache(index.catalog.joins, JOIN_WALK_MAX_HOPS);
    const peers: PeerSource[] = [...pool.keys()].map((source) => ({
       source,
       reaches: [...reach.of(source).values()].filter(
