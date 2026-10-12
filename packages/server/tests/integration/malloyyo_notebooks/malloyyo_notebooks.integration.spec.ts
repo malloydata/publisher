@@ -11,7 +11,14 @@
  * path a `.malloynb` cell runs through.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import {
+   afterAll,
+   beforeAll,
+   beforeEach,
+   describe,
+   expect,
+   it,
+} from "bun:test";
 import * as fs from "fs";
 import path from "path";
 import { resetAuthorizeGuardTelemetryForTesting } from "../../../src/authorize_metrics";
@@ -145,6 +152,25 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       }>(pkgUrl(pkg, `/reports/${report}`));
       return { status, body: body.notebook ?? {} };
    };
+   /**
+    * Each report's cells, read once per test: a test that runs several cells
+    * of one report reads it once, as a viewer's page does.
+    */
+   let cellsRead = new Map<string, Promise<Cell[]>>();
+   beforeEach(() => {
+      cellsRead = new Map();
+   });
+   const cellsOf = (pkg: string, report: string): Promise<Cell[]> => {
+      const key = `${pkg}/${report}`;
+      let read = cellsRead.get(key);
+      if (!read) {
+         read = getCells(pkg, report).then(
+            ({ body }) => body.notebookCells ?? [],
+         );
+         cellsRead.set(key, read);
+      }
+      return read;
+   };
    /** Run one cell the way a viewer does: its text through the query route. */
    const runCell = async (
       pkg: string,
@@ -152,10 +178,16 @@ describe("Malloyyo notebooks served through the real server (E2E)", () => {
       index: number,
       params: { givens?: Record<string, unknown> } = {},
    ): Promise<{ status: number; body: Cell & { message?: string } }> => {
-      const cell = (await getCells(pkg, report)).body.notebookCells?.[index];
+      const cells = await cellsOf(pkg, report);
+      const cell = cells[index];
+      if (cell?.text === undefined)
+         throw new Error(
+            `${pkg}/${report} has no cell ${index} with text to run ` +
+               `(it has ${cells.length} cells)`,
+         );
       const res = await env.query(
          report,
-         { query: cell?.text, givens: params.givens },
+         { query: cell.text, givens: params.givens },
          pkg,
       );
       return {
