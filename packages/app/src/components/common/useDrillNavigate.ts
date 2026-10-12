@@ -26,8 +26,10 @@ import { useCallback } from "react";
  *
  * It returns what the target came to, which `Report` reports as a
  * `report.drill` event: `resolved` for a report the listing has,
- * `unresolved` for a plain path nothing answers to, `malformed` for a target
- * that goes nowhere.
+ * `unresolved` for a plain path a read listing does not have, `unverified`
+ * for one clicked before the listing could say (not read yet, or unreadable:
+ * the page it lands on says what is there), `malformed` for a target that
+ * goes nowhere.
  *
  * A drill IS a navigation step, so unlike a control change it pushes history:
  * Back returns to the report the reader drilled from. `useRouterClickHandler`
@@ -39,7 +41,11 @@ import { useCallback } from "react";
 export function useDrillNavigate(environmentName: string, packageName: string) {
    const navigate = useRouterClickHandler();
    // Shared with every other reader of the listing, so this is usually already cached.
-   const { reports } = useReportListing(environmentName, packageName);
+   const { reports, settled, isError } = useReportListing(
+      environmentName,
+      packageName,
+   );
+   const listed = settled && !isError;
    return useCallback(
       (target: DrillNavigation, event?: MouseEvent): DrillOutcome => {
          const written = target.path;
@@ -52,8 +58,9 @@ export function useDrillNavigate(environmentName: string, packageName: string) {
          );
          const query = new URLSearchParams(target.givens).toString();
          navigate(route + (query ? `?${query}` : ""), event);
-         return resolved.kind === "path" ? "resolved" : "unresolved";
+         if (resolved.kind === "path") return "resolved";
+         return listed ? "unresolved" : "unverified";
       },
-      [navigate, environmentName, packageName, reports],
+      [navigate, environmentName, packageName, reports, listed],
    );
 }

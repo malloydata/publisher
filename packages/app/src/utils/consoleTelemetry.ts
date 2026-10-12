@@ -27,7 +27,7 @@ export function reportEventFailed(event: ReportEvent): boolean {
       case "report.rows_shown":
          return !event.ok;
       case "report.drill":
-         return event.outcome !== "resolved";
+         return event.outcome === "unresolved" || event.outcome === "malformed";
       default:
          return false;
    }

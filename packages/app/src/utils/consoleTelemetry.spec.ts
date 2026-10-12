@@ -100,6 +100,8 @@ describe("reportEventFailed", () => {
          durationMs: 1,
       },
       { ...at, type: "report.drill", to: "report", outcome: "resolved" },
+      // Clicked before the listing could say: the page it lands on says.
+      { ...at, type: "report.drill", to: "report", outcome: "unverified" },
       { ...at, type: "report.explored", tile: "t" },
    ];
 

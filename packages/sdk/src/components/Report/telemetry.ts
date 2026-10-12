@@ -32,6 +32,12 @@ export type DrillOutcome =
    | "resolved"
    /** A well-formed destination nothing answers to. */
    | "unresolved"
+   /**
+    * It navigated to the destination as written before the host could say
+    * whether a report is there (its listing not read yet, or unreadable). Not
+    * a failure: the page it lands on says what is there.
+    */
+   | "unverified"
    /** A target or value that cannot be a destination at all. */
    | "malformed";
 

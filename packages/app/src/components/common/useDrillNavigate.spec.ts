@@ -6,12 +6,14 @@ import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 
 let reports: { path: string; layout: string }[] = [];
+let settled = true;
+let isError = false;
 const navigate = mock((_to: string, _event?: MouseEvent) => {});
 
 const sdk = await import("@malloy-publisher/sdk");
 mock.module("@malloy-publisher/sdk", () => ({
    ...sdk,
-   useReportListing: () => ({ reports }),
+   useReportListing: () => ({ reports, settled, isError }),
    useRouterClickHandler: () => navigate,
 }));
 
@@ -27,6 +29,8 @@ const drill = (env: string, pkg: string, to: string, givens = {}) => {
 beforeEach(() => {
    outcome = undefined;
    reports = [];
+   settled = true;
+   isError = false;
    navigate.mockClear();
 });
 
@@ -76,5 +80,26 @@ describe("useDrillNavigate", () => {
          { path: "notebooks/overview.malloy", layout: "linear" },
       ];
       expect(drill("env", "pkg", "overview")).toBe("/env/pkg/overview");
+   });
+
+   it("navigates to the path as written, unverified, before the listing has answered", () => {
+      settled = false;
+      expect(drill("env", "pkg", "sales/q3", { region: "west" })).toBe(
+         "/env/pkg/sales/q3?region=west",
+      );
+      expect(outcome).toBe("unverified");
+   });
+
+   it("is unverified, not unresolved, when the listing could not be read", () => {
+      isError = true;
+      expect(drill("env", "pkg", "sales/q3")).toBe("/env/pkg/sales/q3");
+      expect(outcome).toBe("unverified");
+   });
+
+   it("still resolves against a cached listing whose refetch failed", () => {
+      isError = true;
+      reports = [{ path: "sales/q3.malloy", layout: "grid" }];
+      drill("env", "pkg", "sales/q3");
+      expect(outcome).toBe("resolved");
    });
 });

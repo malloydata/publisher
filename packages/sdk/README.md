@@ -1168,7 +1168,7 @@ environment and package and adds them when it logs.
 | `report.created`           | `where` (`package`/`host`), `durationMs`                                              | `createDocument`, so `NewDocumentDialog` and `Package`                                           |
 | `report.create_refused`    | `reason`                                                                              | `createDocument`                                                                                 |
 | `report.layout_changed`    | `from`, `to`                                                                          | the builder's Linear / Grid switch                                                               |
-| `report.drill`             | `to` (`self`/`report`), `outcome` (`resolved`/`unresolved`/`malformed`)               | `Report`: a `to=self` drill, or a drill to another report whose `onNavigate` returned an outcome |
+| `report.drill`             | `to` (`self`/`report`), `outcome` (`resolved`/`unresolved`/`unverified`/`malformed`)  | `Report`: a `to=self` drill, or a drill to another report whose `onNavigate` returned an outcome |
 | `report.explored`          | `tile`                                                                                | reserved: nothing emits it yet                                                                   |
 
 `category` is a `ReportFailure` (`not_found`, `forbidden`, `invalid`, `unsupported`, `server`, `network`,
