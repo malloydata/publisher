@@ -183,6 +183,7 @@ import {
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
 import { onlyParseFailures } from "./compile_restriction";
+import { createEventLoopYielder } from "./event_loop_yield";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -6172,7 +6173,11 @@ export class Model {
       const findings: RenderTagWarning[] = [];
       // One QueryModel for every prepare below, not one each.
       if (targets.length > 0) await this.ensureSharedQueryModel();
+      // Nothing below does I/O, so without this the whole loop is one
+      // macrotask: a large model's validation held the event loop for ~1 s.
+      const yielder = createEventLoopYielder();
       for (const target of targets) {
+         await yielder.maybeYield();
          let result: Malloy.Result;
          try {
             const prepared = await mm

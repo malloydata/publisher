@@ -46,6 +46,7 @@ import {
    classifyDynamicTerms,
    type DynamicTerm,
 } from "./persist_dynamic_terms";
+import { createEventLoopYielder } from "./event_loop_yield";
 import { resolvePartitionColumns } from "./persist_partition";
 import { quoteIdentifier } from "./quoting";
 
@@ -904,6 +905,7 @@ export async function compilePackageBuildPlan(
    const droppedPersistSources: { name: string; modelPath: string }[] = [];
    const preaggregatePlans: Record<string, RollupPlan> = {};
    const sourceGateOutcomes: Record<string, PersistSourceGateOutcome> = {};
+   const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -912,6 +914,9 @@ export async function compilePackageBuildPlan(
       // package build plan and silently drop every persist source in it.
       if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
       if (options?.skipModel?.(modelPath)) continue;
+      // Each compile below is a long synchronous stretch; give the event loop
+      // a turn between models so requests are not held for the whole plan.
+      await yielder.maybeYield();
       if (signal?.aborted) throw new Error("Build cancelled");
 
       const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
