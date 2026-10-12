@@ -1,0 +1,12 @@
+##! experimental.givens
+## artifact { layout=linear title="Orders from a start" givens { SINCE=@2024-03-01 } }
+
+// `givens { … }` is where the controls begin: a value the reader arrives at,
+// rather than the declaration's default. A URL parameter beats it, so a link
+// still shows what the sender was looking at.
+import { orders } from "orders.malloy"
+import { SINCE } from "givens.malloy"
+
+##(markdown) Orders in the window
+
+run: orders -> since_totals
