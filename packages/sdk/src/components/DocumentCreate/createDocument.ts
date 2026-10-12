@@ -105,7 +105,8 @@ export function reportPathProblem(path: string): string | undefined {
    // Without case: on a case-insensitive file system `Public/` is `public/`.
    if (segments[0].toLowerCase() === "public")
       return "A report cannot live under public/, which is served as plain files.";
-   if (path === "index.malloy")
+   // Without case too: on a case-insensitive file system it is the surface.
+   if (path.toLowerCase() === "index.malloy")
       return "The package's index.malloy is its surface, never a report.";
    return undefined;
 }

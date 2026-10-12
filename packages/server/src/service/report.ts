@@ -41,9 +41,20 @@ export function isUnderPublicDir(modelPath: string): boolean {
 }
 
 /**
+ * True for the package's root `index.malloy` in any letter case: on a
+ * case-insensitive file system `Index.malloy` IS that file. Reserved for the
+ * surface, so never a report, read or written. (Which file DECIDES the surface
+ * is exact, `package_manifest.ts`: a root `Index.malloy` publishes nothing.)
+ */
+export function isRootIndexPath(modelPath: string): boolean {
+   return modelPath.replace(/^\.\//, "").toLowerCase() === INDEX_MODEL_NAME;
+}
+
+/**
  * True for a package-relative path that CAN be a report: a `.malloy` or a
- * `.malloynb`, outside `public/`, and not the root `index.malloy` (which is the
- * surface, never a report). Whether it IS one depends on its tags.
+ * `.malloynb`, outside `public/`, and not the root `index.malloy` in any case
+ * (which is the surface, never a report). Whether it IS one depends on its
+ * tags.
  */
 export function isReportEligiblePath(modelPath: string): boolean {
    if (
@@ -52,22 +63,21 @@ export function isReportEligiblePath(modelPath: string): boolean {
    )
       return false;
    if (isUnderPublicDir(modelPath)) return false;
-   return modelPath !== INDEX_MODEL_NAME;
+   return !isRootIndexPath(modelPath);
 }
 
 /**
  * Why a report cannot be written at `modelPath` (already a safe relative
  * path), or undefined when it can: a `.malloy` outside `public/` other than
- * the root `index.malloy`, the surface. The root name is compared without
- * case, like `public/`: on a case-insensitive file system `Index.malloy` IS
- * the surface. The one rule for the write route and the write itself.
+ * the root `index.malloy` in any case ({@link isRootIndexPath}). The one rule
+ * for the write route and the write itself.
  */
 export function reportWritePathProblem(modelPath: string): string | undefined {
    if (!modelPath.endsWith(MODEL_FILE_SUFFIX))
       return `Only a report, a \`.malloy\` file, can be written here, not \`${modelPath}\`.`;
    if (isUnderPublicDir(modelPath))
       return `\`${modelPath}\` is in \`public/\`, which is served as raw static files, so a report cannot be written there.`;
-   if (modelPath.replace(/^\.\//, "").toLowerCase() === INDEX_MODEL_NAME)
+   if (isRootIndexPath(modelPath))
       return `\`${INDEX_MODEL_NAME}\` at the package root is the package's surface, never a report, so it cannot be written here.`;
    return undefined;
 }

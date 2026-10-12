@@ -144,6 +144,7 @@ import {
 } from "./report_manifest";
 import {
    isReportEligiblePath,
+   isRootIndexPath,
    readReportTagOfText,
    reportName,
    type ReportLayout,
@@ -214,8 +215,8 @@ interface ReportDiscovery {
    files: Map<string, ReportFile>;
    /** Every compiled model's facts, for the package-wide drill and given lints. */
    allFacts: Map<string, ReportModelFacts>;
-   /** The root `index.malloy` carries an artifact tag, which is ignored. */
-   indexTagged: boolean;
+   /** Root `index.malloy` files (any letter case) whose artifact tag is ignored. */
+   taggedIndexPaths: string[];
    /** Linear reports whose cells the reader refused. */
    readerWarnings: ApiPackageWarning[];
 }
@@ -3255,7 +3256,7 @@ export class Package {
       // model dimension: a tag in a package with no reports at all is exactly
       // as breakable and would otherwise never be checked.
       const allFacts = new Map<string, ReportModelFacts>();
-      let indexTagged = false;
+      const taggedIndexPaths: string[] = [];
       const dropped = (modelPath: string, why: string): ReportFile => {
          logger.warn(why, {
             packageName: this.packageName,
@@ -3294,9 +3295,9 @@ export class Package {
          }
          if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
          const tag = await this.readFileReportTag(model, modelPath, facts);
-         if (modelPath === INDEX_MODEL_NAME) {
+         if (isRootIndexPath(modelPath)) {
             // The surface, never a report; a tag on it is reported and ignored.
-            indexTagged = tag.status !== "none";
+            if (tag.status !== "none") taggedIndexPaths.push(modelPath);
             continue;
          }
          if (!isReportEligiblePath(modelPath) || tag.status === "none")
@@ -3381,7 +3382,7 @@ export class Package {
       }
       const readerWarnings =
          during === "compile" ? [] : this.attachNotebookCells(models, files);
-      return { files, allFacts, indexTagged, readerWarnings };
+      return { files, allFacts, taggedIndexPaths, readerWarnings };
    }
 
    /**
@@ -3739,15 +3740,20 @@ export class Package {
     */
    private curationWarnings(discovery: ReportDiscovery): ApiPackageWarning[] {
       const warnings: ApiPackageWarning[] = [];
-      if (discovery.indexTagged) {
+      for (const modelPath of discovery.taggedIndexPaths) {
          warnings.push({
-            model: INDEX_MODEL_NAME,
+            model: modelPath,
             code: "index-is-not-a-report",
             message:
-               `${INDEX_MODEL_NAME} carries an artifact tag, which is ignored: ` +
-               `the root ${INDEX_MODEL_NAME} is this package's surface, never a ` +
-               `report. Fix: move the report into a file of its own and remove ` +
-               `the tag from ${INDEX_MODEL_NAME}.`,
+               modelPath === INDEX_MODEL_NAME
+                  ? `${INDEX_MODEL_NAME} carries an artifact tag, which is ignored: ` +
+                    `the root ${INDEX_MODEL_NAME} is this package's surface, never a ` +
+                    `report. Fix: move the report into a file of its own and remove ` +
+                    `the tag from ${INDEX_MODEL_NAME}.`
+                  : `${modelPath} carries an artifact tag, which is ignored: a ` +
+                    `root ${INDEX_MODEL_NAME}, in any letter case, is reserved for ` +
+                    `this package's surface, never a report. Fix: rename it to a ` +
+                    `name other than ${INDEX_MODEL_NAME}.`,
             severity: "error",
          });
       }

@@ -175,10 +175,12 @@ describe("isUnderPublicDir and isReportEligiblePath", () => {
       ["a/public/x.malloy", false, true],
       ["index.malloy", false, false],
       ["a/index.malloy", false, true],
-      // The root `index.malloy` is matched exactly, with case and without a
-      // leading `./`. Pinned as it stands, not as it should be.
-      ["Index.malloy", false, true],
-      ["./index.malloy", false, true],
+      // The root `index.malloy` in any case and spelling, as the write path
+      // refuses it: on a case-insensitive file system `Index.malloy` IS it.
+      ["Index.malloy", false, false],
+      ["INDEX.malloy", false, false],
+      ["./index.malloy", false, false],
+      ["a/Index.malloy", false, true],
    ];
    for (const [path, underPublic, eligible] of cases) {
       it(`${path}: public ${underPublic}, eligible ${eligible}`, () => {

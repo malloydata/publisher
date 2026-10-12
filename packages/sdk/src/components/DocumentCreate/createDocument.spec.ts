@@ -531,6 +531,9 @@ describe("reportPathProblem", () => {
       expect(reportPathProblem("PUBLIC/a/x.malloy")).toContain("public/");
       expect(reportPathProblem("publications/x.malloy")).toBeUndefined();
       expect(reportPathProblem("index.malloy")).toContain("index.malloy");
+      // As the server refuses it: on a case-insensitive file system it is the surface.
+      expect(reportPathProblem("Index.malloy")).toContain("index.malloy");
+      expect(reportPathProblem("sales/Index.malloy")).toBeUndefined();
       expect(reportPathProblem("../x.malloy")).toContain("inside the package");
       expect(reportPathProblem("x.malloynb")).toContain(".malloy");
    });
