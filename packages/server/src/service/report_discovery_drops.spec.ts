@@ -14,7 +14,7 @@ import os from "os";
 import path from "path";
 import { logger } from "../logger";
 import type { components } from "../api";
-import * as dashboard from "./dashboard";
+import * as reportManifest from "./report_manifest";
 import { Environment } from "./environment";
 import { Model } from "./model";
 import { Package } from "./package";
@@ -142,9 +142,9 @@ describe("report discovery: what it does with a report it cannot read", () => {
    });
 
    it("drops a grid report whose manifest cannot be built, and says so", async () => {
-      const real = dashboard.buildDashboardManifest;
+      const real = reportManifest.buildReportManifest;
       spies.push(
-         spyOn(dashboard, "buildDashboardManifest").mockImplementation(
+         spyOn(reportManifest, "buildReportManifest").mockImplementation(
             (facts, options) => {
                if (facts.modelPath === "grid.malloy")
                   throw new Error("simulated manifest failure");
@@ -168,11 +168,11 @@ describe("report discovery: what it does with a report it cannot read", () => {
 
    for (const modelPath of ["grid.malloy", "story.malloy"]) {
       it(`drops ${modelPath} when it produced no facts and no compile error, and says so`, async () => {
-         const real = Model.prototype.getCompiledDashboardModelFacts;
+         const real = Model.prototype.getCompiledReportModelFacts;
          spies.push(
             spyOn(
                Model.prototype,
-               "getCompiledDashboardModelFacts",
+               "getCompiledReportModelFacts",
             ).mockImplementation(function (this: Model) {
                if (this.getPath() === modelPath)
                   return Promise.resolve(undefined);
@@ -201,9 +201,9 @@ describe("report discovery: what it does with a report it cannot read", () => {
    }
 
    it("says the lint stopped early when a check throws, keeping the drops", async () => {
-      const real = dashboard.buildDashboardManifest;
+      const real = reportManifest.buildReportManifest;
       spies.push(
-         spyOn(dashboard, "buildDashboardManifest").mockImplementation(
+         spyOn(reportManifest, "buildReportManifest").mockImplementation(
             (facts, options) => {
                if (facts.modelPath === "grid.malloy")
                   throw new Error("simulated manifest failure");

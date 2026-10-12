@@ -5,32 +5,30 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    normalizeTileExpression,
    queryTiles,
    docCommentText,
    docCommentTitleAndDescription,
    filterPublisherOwnedRenderLogs,
-   matchesDocumentedDashboardName,
-   lintDashboard,
+   matchesDocumentedReportName,
+   lintReport,
    lintDrillTargets,
    lintGivenTags,
    lintSelfDrills,
-   isUnparsedDashboardTagFinding,
-   lintUndiscoveredDashboard,
+   isUnparsedReportTagFinding,
+   lintUndiscoveredReport,
    motlyAnnotations,
    quoteFilterLiterals,
    resolveDrillDestination,
    unwrapFilterLiteral,
-   type DashboardGivenDeclaration,
-   type DashboardModelFacts,
-} from "./dashboard";
+   type ReportGivenDeclaration,
+   type ReportModelFacts,
+} from "./report_manifest";
 import { isReportEligiblePath, isUnderPublicDir, reportName } from "./report";
 
 /** A facts bundle with everything empty, for tests to override a slice of. */
-function facts(
-   overrides: Partial<DashboardModelFacts> = {},
-): DashboardModelFacts {
+function facts(overrides: Partial<ReportModelFacts> = {}): ReportModelFacts {
    return {
       modelPath: "dashboards/overview.malloy",
       modelAnnotations: [],
@@ -50,11 +48,11 @@ function given(
    type: string,
    annotations: string[],
    defaultText?: string,
-): [string, DashboardGivenDeclaration] {
+): [string, ReportGivenDeclaration] {
    return [name, { name, type, annotations, default: defaultText }];
 }
 
-const build = (f: DashboardModelFacts) => buildDashboardManifest(f);
+const build = (f: ReportModelFacts) => buildReportManifest(f);
 
 // Ported from the folder-pinning path helpers: where a report lives carries no
 // meaning, so what was a rejection of a nested or out-of-folder path is now an
@@ -98,7 +96,7 @@ describe("service/report path helpers", () => {
    });
 });
 
-describe("service/dashboard annotation routing", () => {
+describe("service/report_manifest annotation routing", () => {
    it("keeps MOTLY (plain # and ##) annotations only", () => {
       expect(
          motlyAnnotations([
@@ -133,7 +131,7 @@ describe("service/dashboard annotation routing", () => {
    });
 });
 
-describe("service/dashboard title and description together", () => {
+describe("service/report_manifest title and description together", () => {
    // The defect this exists to prevent: `description` was the whole doc comment
    // while `title` fell back to its first line, so a one-line comment with no
    // `title=` published the same words twice and the page rendered a heading
@@ -187,7 +185,7 @@ describe("service/dashboard title and description together", () => {
    });
 });
 
-describe("service/dashboard render-log filtering", () => {
+describe("service/report_manifest render-log filtering", () => {
    // Whether the query ran against a served report (`Package.isServedReport`).
    const DASH = true;
    const PLAIN = false;
@@ -281,7 +279,7 @@ describe("service/dashboard render-log filtering", () => {
    });
 });
 
-describe("service/dashboard filter literals", () => {
+describe("service/report_manifest filter literals", () => {
    // MOTLY has no filter-literal value form, and the parse failure discards the
    // whole tag — so this rewrite is what makes Malloyyo's documented starting
    // values discoverable at all.
@@ -316,7 +314,7 @@ describe("service/dashboard filter literals", () => {
 /** A grid report whose one tile is the named query `overview`. */
 const GRID_OVERVIEW = '## artifact { layout=grid tiles=["overview"] }\n';
 
-describe("service/dashboard given specs (the control contract)", () => {
+describe("service/report_manifest given specs (the control contract)", () => {
    /**
     * `default` must be usable AS a default, so a filter given publishes the BODY
     * the query endpoint takes rather than the `f'…'` literal it is declared as.
@@ -508,7 +506,7 @@ describe("service/dashboard given specs (the control contract)", () => {
    });
 });
 
-describe("service/dashboard suggest givenNames", () => {
+describe("service/report_manifest suggest givenNames", () => {
    // A `suggest { source=… }` over a gated or scoped source must carry that
    // source's givens or the option query is denied and the control reads
    // "Options unavailable". The names come from the facts' lookup, narrowed to
@@ -570,14 +568,14 @@ describe("service/dashboard suggest givenNames", () => {
    });
 });
 
-describe("service/dashboard manifest (composite form)", () => {
+describe("service/report_manifest manifest (composite form)", () => {
    /**
     * A tile discovery cannot resolve statically contributes no `givenNames`, so
     * a union over the resolved tiles alone would publish NO control for a given
     * its refinement still filters by, and the tile would run at that given's
     * default with nothing reported. One unresolvable tile therefore widens the
     * row to the file's whole surfaced set. This is also what
-    * `DashboardTile.givenNames` tells a client to do when it is absent, which
+    * `ReportTile.givenNames` tells a client to do when it is absent, which
     * only works if the row contains them.
     *
     * Deliberately MIXED, because a single-tile fixture cannot distinguish `some`
@@ -789,7 +787,7 @@ describe("service/dashboard manifest (composite form)", () => {
             ["orders -> plain", { reads: ["SCOPE"], gateReads: ["ORG"] }],
          ]),
       });
-      const messages = lintDashboard(f, build(f)!)
+      const messages = lintReport(f, build(f)!)
          .map((x) => x.message)
          .join("\n");
       expect(messages).toContain('"SCOPE"');
@@ -804,7 +802,7 @@ describe("service/dashboard manifest (composite form)", () => {
             ["orders -> plain", { reads: ["SCOPE", "SCOPE"], gateReads: [] }],
          ]),
       });
-      const findings = lintDashboard(f, build(f)!).filter((x) =>
+      const findings = lintReport(f, build(f)!).filter((x) =>
          x.message.includes('"SCOPE"'),
       );
       expect(findings).toHaveLength(1);
@@ -827,7 +825,7 @@ describe("service/dashboard manifest (composite form)", () => {
    });
 });
 
-describe("service/dashboard per-tile layout", () => {
+describe("service/report_manifest per-tile layout", () => {
    // The layout tags sit on the VIEW, not on the tile entry, which is the whole
    // point: the same three tags @malloydata/render resolves for the children of
    // a `# dashboard` nest, so one view lays out identically whichever way it is
@@ -836,7 +834,7 @@ describe("service/dashboard per-tile layout", () => {
    const withViews = (
       annotation: string,
       views: Record<string, string[]>,
-   ): DashboardModelFacts =>
+   ): ReportModelFacts =>
       facts({
          modelAnnotations: [annotation],
          viewGivens: new Map(Object.keys(views).map((key) => [key, []])),
@@ -942,7 +940,7 @@ describe("service/dashboard per-tile layout", () => {
       });
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(f, manifest).map((x) => x.message)).toEqual([
+      expect(lintReport(f, manifest).map((x) => x.message)).toEqual([
          expect.stringContaining("declares no # dashboard { columns=N }"),
       ]);
    });
@@ -954,7 +952,7 @@ describe("service/dashboard per-tile layout", () => {
       );
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(f, manifest).map((x) => x.message)).toEqual([
+      expect(lintReport(f, manifest).map((x) => x.message)).toEqual([
          expect.stringContaining("clamped to 4"),
       ]);
    });
@@ -967,7 +965,7 @@ describe("service/dashboard per-tile layout", () => {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
       expect(manifest.dashboardColumns).toBe(36);
-      expect(lintDashboard(f, manifest)).toEqual([
+      expect(lintReport(f, manifest)).toEqual([
          expect.objectContaining({
             severity: "warn",
             message: expect.stringContaining(
@@ -984,7 +982,7 @@ describe("service/dashboard per-tile layout", () => {
       );
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(f, manifest)).toEqual([]);
+      expect(lintReport(f, manifest)).toEqual([]);
    });
 
    it("reports an unreadable colspan without printing the word undefined", () => {
@@ -993,7 +991,7 @@ describe("service/dashboard per-tile layout", () => {
       });
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      const messages = lintDashboard(f, manifest).map((x) => x.message);
+      const messages = lintReport(f, manifest).map((x) => x.message);
       expect(messages).toHaveLength(1);
       expect(messages[0]).toContain("could not be read");
       expect(messages[0]).not.toContain("undefined");
@@ -1006,15 +1004,15 @@ describe("service/dashboard per-tile layout", () => {
       );
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(f, manifest)).toEqual([]);
+      expect(lintReport(f, manifest)).toEqual([]);
    });
 });
 
-describe("service/dashboard artifact-tag enumeration", () => {
-   const lintOf = (f: DashboardModelFacts) => {
+describe("service/report_manifest artifact-tag enumeration", () => {
+   const lintOf = (f: ReportModelFacts) => {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      return lintDashboard(f, manifest).map((finding) => finding.message);
+      return lintReport(f, manifest).map((finding) => finding.message);
    };
 
    // `readArtifactTag` looks properties up by name, so a misspelling is not an
@@ -1108,12 +1106,12 @@ describe("service/dashboard artifact-tag enumeration", () => {
    });
 });
 
-describe("service/dashboard lint", () => {
+describe("service/report_manifest lint", () => {
    /** Lint a facts bundle through the manifest the same file would produce. */
-   function lint(f: DashboardModelFacts) {
+   function lint(f: ReportModelFacts) {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      return lintDashboard(f, manifest).map((finding) => finding.message);
+      return lintReport(f, manifest).map((finding) => finding.message);
    }
 
    it("passes a well-formed dashboard silently", () => {
@@ -1138,7 +1136,7 @@ describe("service/dashboard lint", () => {
    // no-annotations early return.
    //
    // It also lands on the branch of the lint that runs for a dashboard that
-   // EXISTS. `lintUndiscoveredDashboard` reports the drop, but package.ts picks
+   // EXISTS. `lintUndiscoveredReport` reports the drop, but package.ts picks
    // exactly one of the two lints, so a built dashboard would never see it: the
    // author's line is dropped and nothing anywhere says so.
    it("reports an @env line dropped from a dashboard that still builds", () => {
@@ -1341,7 +1339,7 @@ describe("service/dashboard lint", () => {
       it("is silent when it simply carries no tag", () => {
          // A shared include is a legitimate pattern, not a mistake.
          expect(
-            lintUndiscoveredDashboard(
+            lintUndiscoveredReport(
                facts({ modelPath: "dashboards/_shared.malloy" }),
             ),
          ).toEqual([]);
@@ -1350,7 +1348,7 @@ describe("service/dashboard lint", () => {
       it("explains a tag that does not parse", () => {
          // MOTLY discards the whole tag on a syntax error, so the file silently
          // stops being a dashboard — the least debuggable outcome there is.
-         const findings = lintUndiscoveredDashboard(
+         const findings = lintUndiscoveredReport(
             facts({
                modelPath: "dashboards/broken.malloy",
                modelAnnotations: ['## artifact { title="x" tiles=[ }\n'],
@@ -1366,20 +1364,20 @@ describe("service/dashboard lint", () => {
          // Package reload and compile drop the notebook lint's copy of this
          // finding by recognizing it, so the recognizer must match what the
          // lint actually says, whatever the wording.
-         expect(isUnparsedDashboardTagFinding(findings[0].message)).toBe(true);
+         expect(isUnparsedReportTagFinding(findings[0].message)).toBe(true);
       });
 
       it("recognizes only the unparsed-tag finding as one", () => {
          // A tag that parses but declares no tiles is a different finding,
          // and the notebook lint has no copy of it to drop.
-         const findings = lintUndiscoveredDashboard(
+         const findings = lintUndiscoveredReport(
             facts({
                modelPath: "dashboards/empty.malloy",
                modelAnnotations: ['## artifact { title="x" }\n'],
             }),
          );
          expect(findings).toHaveLength(1);
-         expect(isUnparsedDashboardTagFinding(findings[0].message)).toBe(false);
+         expect(isUnparsedReportTagFinding(findings[0].message)).toBe(false);
       });
    });
 
@@ -1592,7 +1590,7 @@ describe("service/dashboard lint", () => {
 // job and not this module's, and it stayed green when the encoding was reverted.
 // Removed rather than kept as decoration.
 
-describe("service/dashboard multi-line doc comment as a title", () => {
+describe("service/report_manifest multi-line doc comment as a title", () => {
    // Fixed once on the notebook path and left on both dashboard paths, which is
    // the incomplete-fix pattern: the title is a one-line field and the doc
    // comment is deliberately newline-joined markdown.
@@ -1618,7 +1616,7 @@ describe("service/dashboard multi-line doc comment as a title", () => {
    });
 });
 
-describe("service/dashboard name matches the documented pattern", () => {
+describe("service/report_manifest name matches the documented pattern", () => {
    // This predicate no longer gates anything. Curation still can withhold a
    // dashboard; what this settles is that a NAME is never the reason, and a
    // served one has its name percent-encoded into the published URL. An earlier
@@ -1628,23 +1626,23 @@ describe("service/dashboard name matches the documented pattern", () => {
    // generated from the spec will accept, so a mismatch is advisory only.
    it("reports a name outside the documented pattern", () => {
       expect(
-         matchesDocumentedDashboardName(reportName("dashboards/v1.2.malloy")),
+         matchesDocumentedReportName(reportName("dashboards/v1.2.malloy")),
       ).toBe(false);
-      expect(matchesDocumentedDashboardName("has space")).toBe(false);
-      expect(matchesDocumentedDashboardName("has/slash")).toBe(false);
-      expect(matchesDocumentedDashboardName("")).toBe(false);
-      expect(matchesDocumentedDashboardName("..")).toBe(false);
+      expect(matchesDocumentedReportName("has space")).toBe(false);
+      expect(matchesDocumentedReportName("has/slash")).toBe(false);
+      expect(matchesDocumentedReportName("")).toBe(false);
+      expect(matchesDocumentedReportName("..")).toBe(false);
    });
 
    it("accepts the names the path parameter declares", () => {
-      expect(matchesDocumentedDashboardName("overview")).toBe(true);
-      expect(matchesDocumentedDashboardName("q3-2026_v2")).toBe(true);
+      expect(matchesDocumentedReportName("overview")).toBe(true);
+      expect(matchesDocumentedReportName("q3-2026_v2")).toBe(true);
    });
 });
 
-describe("service/dashboard silent-vanish lint", () => {
-   const messages = (f: DashboardModelFacts) =>
-      lintUndiscoveredDashboard(f).map((finding) => finding.message);
+describe("service/report_manifest silent-vanish lint", () => {
+   const messages = (f: ReportModelFacts) =>
+      lintUndiscoveredReport(f).map((finding) => finding.message);
 
    // The composite branch is gated on having at least one tile, and a tag that
    // PARSES is invisible to the parse-error check, so this file produced no
@@ -1765,17 +1763,17 @@ describe("service/dashboard silent-vanish lint", () => {
    });
 });
 
-describe("service/dashboard suggest source lint", () => {
-   const lintOf = (f: DashboardModelFacts) => {
+describe("service/report_manifest suggest source lint", () => {
+   const lintOf = (f: ReportModelFacts) => {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      return lintDashboard(f, manifest).map((finding) => finding.message);
+      return lintReport(f, manifest).map((finding) => finding.message);
    };
 
    /** A dashboard whose one tile filters by BRAND, whose suggest names a query. */
    const withSuggestQuery = (
-      overrides: Partial<DashboardModelFacts>,
-   ): DashboardModelFacts =>
+      overrides: Partial<ReportModelFacts>,
+   ): ReportModelFacts =>
       facts({
          modelAnnotations: ['## artifact { tiles=["orders -> a"] }\n'],
          viewGivens: new Map([["orders -> a", ["BRAND"]]]),
@@ -1864,8 +1862,8 @@ describe("service/dashboard suggest source lint", () => {
    });
 });
 
-describe("service/dashboard given-tag lint", () => {
-   const messages = (f: DashboardModelFacts) =>
+describe("service/report_manifest given-tag lint", () => {
+   const messages = (f: ReportModelFacts) =>
       lintGivenTags([f]).map((finding) => finding.message);
 
    // A failed MOTLY parse yields an EMPTY tag rather than undefined, so
@@ -1908,11 +1906,11 @@ describe("service/dashboard given-tag lint", () => {
    });
 });
 
-describe("service/dashboard grid width and hostile literals", () => {
-   function lintOf(f: DashboardModelFacts) {
+describe("service/report_manifest grid width and hostile literals", () => {
+   function lintOf(f: ReportModelFacts) {
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      return lintDashboard(f, manifest).map((finding) => finding.message);
+      return lintReport(f, manifest).map((finding) => finding.message);
    }
 
    const composite = (annotation: string) =>
@@ -1946,7 +1944,7 @@ describe("service/dashboard grid width and hostile literals", () => {
          expect(build(f)?.dashboardColumns).toBeUndefined();
          const manifest = build(f);
          if (!manifest) throw new Error("expected a dashboard");
-         expect(lintDashboard(f, manifest)).toHaveLength(1);
+         expect(lintReport(f, manifest)).toHaveLength(1);
       }
    });
 
@@ -1957,7 +1955,7 @@ describe("service/dashboard grid width and hostile literals", () => {
       expect(build(f)?.dashboardColumns).toBe(4);
       const manifest = build(f);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(f, manifest)).toEqual([]);
+      expect(lintReport(f, manifest)).toEqual([]);
    });
 
    it("reads dashboard_columns as the grid width when dashboard { columns } is absent, and leaves reporting it to the notebook lint", () => {
@@ -2102,7 +2100,7 @@ describe("service/dashboard grid width and hostile literals", () => {
    });
 });
 
-describe("service/dashboard inherits the annotation guards", () => {
+describe("service/report_manifest inherits the annotation guards", () => {
    // Dashboard discovery reads `# artifact`, so it is a NEW reader of
    // reserved-namespace tags and must inherit both guards `motly.ts` installs.
    // Structurally it does, because every read here goes through `motlyTag`
@@ -2134,7 +2132,7 @@ describe("service/dashboard inherits the annotation guards", () => {
             "super-secret-value",
          );
          expect(
-            lintUndiscoveredDashboard(
+            lintUndiscoveredReport(
                facts({
                   modelAnnotations: [
                      '## artifact { title=@env.SLICE6_PROBE_SECRET tiles=["orders -> overview"] }\n',
@@ -2196,7 +2194,7 @@ describe("service/dashboard inherits the annotation guards", () => {
    });
 });
 
-describe("service/dashboard tile normalization", () => {
+describe("service/report_manifest tile normalization", () => {
    /**
     * The expression this replaced, kept verbatim as an oracle. It backtracked
     * quadratically over a whitespace run, which a package author controls
@@ -2246,7 +2244,7 @@ describe("service/dashboard tile normalization", () => {
    });
 });
 
-describe("service/dashboard text tile entries", () => {
+describe("service/report_manifest text tile entries", () => {
    const fixture = fs.readFileSync(
       path.resolve(
          __dirname,
@@ -2282,7 +2280,7 @@ describe("service/dashboard text tile entries", () => {
          },
          { kind: "query", query: "orders -> kpis", givenNames: [] },
       ]);
-      expect(lintDashboard(f, manifest)).toEqual([]);
+      expect(lintReport(f, manifest)).toEqual([]);
    });
 
    it("reads break on a text entry, and leaves a text tile out of the control row", () => {
@@ -2314,7 +2312,7 @@ describe("service/dashboard text tile entries", () => {
       });
       const manifest = build(g);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(g, manifest).map((x) => x.message)).toEqual([
+      expect(lintReport(g, manifest).map((x) => x.message)).toEqual([
          'tile "intro" names the ##|(markdown) intro block but has no kind=text, so it is read as a query. Fix: write intro { kind=text }',
       ]);
    });
@@ -2329,7 +2327,7 @@ describe("service/dashboard text tile entries", () => {
       expect(manifest.tiles).toEqual([
          { kind: "text", name: "note", markdown: "" },
       ]);
-      expect(lintDashboard(g, manifest).map((x) => x.message)).toEqual([
+      expect(lintReport(g, manifest).map((x) => x.message)).toEqual([
          expect.stringContaining("has no `##|(markdown) note` block"),
       ]);
    });
@@ -2346,7 +2344,7 @@ describe("service/dashboard text tile entries", () => {
       const manifest = build(g);
       if (!manifest) throw new Error("expected a dashboard");
       expect(manifest.tiles?.[0]).toMatchObject({ markdown: "one" });
-      const messages = lintDashboard(g, manifest).map((x) => x.message);
+      const messages = lintReport(g, manifest).map((x) => x.message);
       expect(messages).toEqual(
          expect.arrayContaining([
             expect.stringContaining("carries `label`"),
@@ -2357,7 +2355,7 @@ describe("service/dashboard text tile entries", () => {
    });
 });
 
-describe("service/dashboard layout", () => {
+describe("service/report_manifest layout", () => {
    const text = (layout: string) =>
       `## artifact { layout=${layout} tiles=[note { kind=text }] } dashboard { columns=6 }\n`;
 

@@ -23,7 +23,7 @@ import {
    type CompiledDocument,
 } from "./compile_document";
 import type { NotebookCellSpan } from "./notebook";
-import type { DashboardQueryTileSpec } from "./dashboard";
+import type { ReportQueryTileSpec } from "./report_manifest";
 import { Environment, resetAdmissionTelemetryForTesting } from "./environment";
 
 const manifestOf = (result: { document?: CompiledDocument }) => {
@@ -31,7 +31,7 @@ const manifestOf = (result: { document?: CompiledDocument }) => {
    return result.document.manifest;
 };
 const tilesOf = (result: { document?: CompiledDocument }) =>
-   (manifestOf(result).tiles ?? []) as DashboardQueryTileSpec[];
+   (manifestOf(result).tiles ?? []) as ReportQueryTileSpec[];
 
 // Compile of a source that carries a model-level `## artifact` tag answers with
 // the document it describes. Driven through a real installed package.
@@ -895,7 +895,7 @@ source: t is duckdb.sql("select 1 as a") extend {
    it("restricts the tile whose compiled source is denied, bare, and leaves the other", async () => {
       const result = await run("s");
       const tiles = (result?.document?.manifest?.tiles ??
-         []) as DashboardQueryTileSpec[];
+         []) as ReportQueryTileSpec[];
       expect(tiles[0]).toEqual({
          kind: "query",
          query: "s -> v",

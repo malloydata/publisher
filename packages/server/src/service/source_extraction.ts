@@ -712,7 +712,7 @@ export function extractSourcesFromModelDef(
          }
          // The wire shape stays a flat `string[]` per route for
          // introspection. `suggestGivenLookup`'s consumers
-         // (`package_load_worker.ts`, `model.ts`'s `getDashboardModelFacts`)
+         // (`package_load_worker.ts`, `model.ts`'s `getReportModelFacts`)
          // read only `authorize`, so a given referenced solely by a
          // `#(authorize)` term is still not suggested; a known,
          // accepted gap, not a fail-open — the gate itself still enforces via

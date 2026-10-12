@@ -116,7 +116,7 @@ export function drillDestinations(field: DrillField | undefined): string[] {
    if (!drill) return [];
    // Malloyyo accepts a lone destination unbracketed (`to=overview`) as well as
    // the list form. The server grows the same leniency in `readDrillTag`
-   // (`service/dashboard.ts`) with the dashboard slice of this split; it is not
+   // (`service/report_manifest.ts`) with the dashboard slice of this split; it is not
    // in the tree yet, so keep the two in step when it lands.
    return (
       drill.textArray("to") ?? [drill.text("to")].filter(isNonEmpty)

@@ -13,13 +13,13 @@ import {
    UnparseableTextError,
 } from "../errors";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    compileTileGivens,
    normalizeTileExpression,
-   readDashboardModelFacts,
+   readReportModelFacts,
    readDocumentTileExpressions,
-   type DashboardManifest,
-} from "./dashboard";
+   type ServedReportManifest,
+} from "./report_manifest";
 import { gateGivenSource } from "./given";
 import {
    buildDerivationBaseMap,
@@ -92,7 +92,7 @@ export interface DocumentCell {
 
 export interface CompiledDocument {
    layout: ReportLayout;
-   manifest?: Omit<DashboardManifest, "entryFile" | "path">;
+   manifest?: Omit<ServedReportManifest, "entryFile" | "path">;
    cells: DocumentCell[];
 }
 
@@ -416,7 +416,7 @@ export async function compileDocument(input: {
    const slug = modelName.replace(/^.*\//, "").replace(/\.malloy$/, "");
    // Where the text would live decides nothing: its tags decide the layout.
    const path = `${slug}.malloy`;
-   const facts = readDashboardModelFacts(
+   const facts = readReportModelFacts(
       path,
       modelDef,
       Object.values(registry).map((given) => given.name),
@@ -433,7 +433,7 @@ export async function compileDocument(input: {
          ),
       ),
    );
-   const manifest = buildDashboardManifest(
+   const manifest = buildReportManifest(
       { ...facts, compiledTileGivens: compiledTiles },
       { restrictedTiles },
    );

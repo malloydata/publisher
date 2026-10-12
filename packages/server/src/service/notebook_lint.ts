@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type LogMessage } from "@malloydata/malloy";
-import { isUnparsedDashboardTagFinding } from "./dashboard";
+import { isUnparsedReportTagFinding } from "./report_manifest";
 import {
    attachedNowhereFix,
    callAccessor,
@@ -825,7 +825,7 @@ export function lintNotebookText(
             );
          }
       }
-      // A single query has no grid, and dashboard.ts already says so.
+      // A single query has no grid, and report_manifest.ts already says so.
       if (
          properties.includes("dashboard_columns") &&
          properties.includes("tiles")
@@ -876,7 +876,7 @@ export function reportedByDashboardLint(
       dashboardFindings.some(
          (f) =>
             f.model === modelPath &&
-            isUnparsedDashboardTagFinding(f.message ?? ""),
+            isUnparsedReportTagFinding(f.message ?? ""),
       )
    );
 }

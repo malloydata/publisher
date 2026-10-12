@@ -5,10 +5,10 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
-   buildDashboardManifest,
-   lintDashboard,
-   type DashboardModelFacts,
-} from "./dashboard";
+   buildReportManifest,
+   lintReport,
+   type ReportModelFacts,
+} from "./report_manifest";
 import { translateToParse } from "./notebook";
 import {
    lintNotebookText as lintNotebookTextAll,
@@ -1052,7 +1052,7 @@ describe("notebook lint", () => {
          path.join(FIXTURES, "notebooks-malloyyo/dashboards/text_tiles.malloy"),
          "utf8",
       );
-      const facts: DashboardModelFacts = {
+      const facts: ReportModelFacts = {
          modelPath: "dashboards/text_tiles.malloy",
          modelAnnotations: text
             .split("\n")
@@ -1069,9 +1069,9 @@ describe("notebook lint", () => {
             forQuery: () => undefined,
          },
       };
-      const manifest = buildDashboardManifest(facts);
+      const manifest = buildReportManifest(facts);
       if (!manifest) throw new Error("expected a dashboard");
-      expect(lintDashboard(facts, manifest).map((f) => f.severity)).toEqual([
+      expect(lintReport(facts, manifest).map((f) => f.severity)).toEqual([
          "warn",
       ]);
    });

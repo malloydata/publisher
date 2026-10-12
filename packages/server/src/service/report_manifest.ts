@@ -97,8 +97,8 @@ export const COMPONENT_FILE_SUFFIXES = [".jsx", ".tsx"] as const;
  * dashboard that filters by it, so these are the shared types — a notebook
  * renders the same control for the same given. See `given.ts`.
  */
-export type DashboardControlKind = GivenControlKind;
-export type DashboardSuggestSpec = GivenSuggestSpec;
+export type ReportControlKind = GivenControlKind;
+export type ReportSuggestSpec = GivenSuggestSpec;
 
 /**
  * One filter control on a dashboard: the given it binds plus the presentation
@@ -108,13 +108,13 @@ export type DashboardSuggestSpec = GivenSuggestSpec;
  *
  * This is the ordinary API `Given`, not a dashboard-shaped copy of one. Its
  * `default` is therefore the *declaration's* default; a dashboard's own
- * starting values live in {@link DashboardManifest.givens} and are already
+ * starting values live in {@link ServedReportManifest.givens} and are already
  * unwrapped to run shape.
  */
-export type DashboardGivenSpec = MalloyGivenApi;
+export type ReportGivenSpec = MalloyGivenApi;
 
 /** A tile that runs a query: what to run, and how to present it. */
-export interface DashboardQueryTileSpec extends DashboardTileLayout {
+export interface ReportQueryTileSpec extends ReportTileLayout {
    kind: "query";
    /** The run expression exactly as written in `tiles=[…]` (`"orders -> by_month"`). */
    query: string;
@@ -136,7 +136,7 @@ export interface DashboardQueryTileSpec extends DashboardTileLayout {
 }
 
 /** A tile that shows markdown: its `##|(markdown) name` block, laid out by its own `tiles=[…]` entry. */
-export interface DashboardTextTileSpec {
+export interface ReportTextTileSpec {
    kind: "text";
    name: string;
    /** The block's body; empty when the file has no block of that name. */
@@ -145,14 +145,14 @@ export interface DashboardTextTileSpec {
    break?: boolean;
 }
 
-export type DashboardTileSpec = DashboardQueryTileSpec | DashboardTextTileSpec;
+export type ReportTileSpec = ReportQueryTileSpec | ReportTextTileSpec;
 
 /** The tiles that run a query, for every reader that has no use for prose. */
 export function queryTiles(
-   tiles: readonly DashboardTileSpec[] | undefined,
-): DashboardQueryTileSpec[] {
+   tiles: readonly ReportTileSpec[] | undefined,
+): ReportQueryTileSpec[] {
    return (tiles ?? []).filter(
-      (tile): tile is DashboardQueryTileSpec => tile.kind === "query",
+      (tile): tile is ReportQueryTileSpec => tile.kind === "query",
    );
 }
 
@@ -166,7 +166,7 @@ export function queryTiles(
  * it the whole set: a tag honored on one form and dropped on the other is a
  * silent divergence, and this reader is the only place it can be prevented.
  */
-export interface DashboardTileLayout {
+export interface ReportTileLayout {
    /** `# label`: the tile's heading. */
    label?: string;
    /** `# subtitle`: a second line under the heading. */
@@ -186,7 +186,7 @@ export interface DashboardTileLayout {
    borderless?: boolean;
 }
 
-export interface DashboardManifest {
+export interface ServedReportManifest {
    /** The filename basename: a display label, and the deprecated `…/dashboards/{name}` segment. Never the identity, which is `entryFile`. */
    name: string;
    /** How the tiles are placed (`report.ts`, §2); a linear report lays out as one column. */
@@ -194,7 +194,7 @@ export interface DashboardManifest {
    title: string;
    description?: string;
    /** The tiles, in order; absent only on a grid report listed with its compile error. */
-   tiles?: DashboardTileSpec[];
+   tiles?: ReportTileSpec[];
    /** Grid width: `# dashboard {columns=N}`, beside the artifact tag. */
    dashboardColumns?: number;
    /**
@@ -215,7 +215,7 @@ export interface DashboardManifest {
     * `givens` is the declarations, here as everywhere else. Values keyed by
     * name are {@link startingGivens}; a bare list of names is `givenNames`.
     */
-   givens: DashboardGivenSpec[];
+   givens: ReportGivenSpec[];
 }
 
 /**
@@ -236,7 +236,7 @@ const PUBLISHER_OWNED_TAGS = ["artifact", "drill"];
 
 /**
  * The renderer's own per-child dashboard tags, which Publisher also reads for a
- * tile ({@link DashboardTileLayout}).
+ * tile ({@link ReportTileLayout}).
  *
  * It resolves these only for the direct children of a `# dashboard` nest, and a
  * tile is a standalone query, so without this every tile of every dashboard
@@ -303,7 +303,7 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
  * dotfiles, so `.malloy` never becomes a model), a dot mid-name does not break
  * routing, and the lookup is a `Map`, so there is no traversal risk.
  */
-export function matchesDocumentedDashboardName(slug: string): boolean {
+export function matchesDocumentedReportName(slug: string): boolean {
    return /^[a-zA-Z0-9_-]+$/.test(slug);
 }
 
@@ -443,7 +443,7 @@ function positiveInteger(value: number | undefined): number | undefined {
 }
 
 /** One given declaration, as discovery needs it. */
-export interface DashboardGivenDeclaration {
+export interface ReportGivenDeclaration {
    name: string;
    type: string;
    default?: string;
@@ -455,7 +455,7 @@ export interface DashboardGivenDeclaration {
  * so the manifest build stays a pure function over plain data (and so the
  * grammar is unit-testable without a compile).
  */
-export interface DashboardModelFacts {
+export interface ReportModelFacts {
    modelPath: string;
    /** Model-level (`##`) annotation texts, folded across the import lineage. */
    modelAnnotations: string[];
@@ -492,13 +492,13 @@ export interface DashboardModelFacts {
     * worse than no control. A tile referencing a given the file does not import
     * is an authoring mistake for the lint to name.
     */
-   givens: Map<string, DashboardGivenDeclaration>;
+   givens: Map<string, ReportGivenDeclaration>;
    /**
     * Given names each source view references, keyed by the run expression that
     * names it (`"orders -> by_month"`, normalized). This is what resolves a
     * composite dashboard's tiles, whose `tiles=[…]` entries are written in
     * exactly that form. Reference, not bindability: intersect with
-    * {@link DashboardModelFacts.givens} before promising a control.
+    * {@link ReportModelFacts.givens} before promising a control.
     *
     * Its key set doubles as "every view this file can run as a tile", which is
     * what lets the lint call out a tile that names nothing.
@@ -508,15 +508,15 @@ export interface DashboardModelFacts {
     * What each tile's COMPILED query reads, keyed by normalized tile
     * expression; preferred over {@link viewGivens} wherever present. Absent for
     * a tile that did not compile, and entirely when the caller compiled
-    * nothing (a test, a sync reader). See `Model.getCompiledDashboardModelFacts`.
+    * nothing (a test, a sync reader). See `Model.getCompiledReportModelFacts`.
     */
    compiledTileGivens?: Map<string, CompiledTileGivens>;
    /**
     * Annotation texts on each source view, keyed the way
-    * {@link DashboardModelFacts.viewGivens} is. The per-tile layout tags live
+    * {@link ReportModelFacts.viewGivens} is. The per-tile layout tags live
     * here; a model-level named query's are in `queries[].annotations` already.
     *
-    * Raw rather than pre-read into a {@link DashboardTileLayout}: the lint has to
+    * Raw rather than pre-read into a {@link ReportTileLayout}: the lint has to
     * report values the reader drops, which a derived map no longer carries.
     */
    viewAnnotations: Map<string, string[]>;
@@ -530,7 +530,7 @@ export interface DashboardModelFacts {
     * is declared on model dimensions rather than on a dashboard, so a file's
     * drills come from the sources it imports.
     */
-   drills: DashboardDrill[];
+   drills: ReportDrill[];
    /**
     * Which givens a `suggest` needs in its request: the source's own `where:`
     * and effective `#(authorize)` references, or a named query's plus its
@@ -552,7 +552,7 @@ export interface CompiledTileGivens {
 }
 
 /** A `# drill { to=[…] given=… }` tag on a source dimension. */
-export interface DashboardDrill {
+export interface ReportDrill {
    source: string;
    dimension: string;
    /** Destinations: a dashboard slug each, or the literal `self`. */
@@ -605,10 +605,10 @@ export function normalizeTileExpression(tile: string): string {
  * does not. That covers composite tiles.
  *
  * `surfacedGivenNames` narrows the registry to what this file can be run with;
- * see {@link DashboardModelFacts.givens}. Pass every registry name only when the
+ * see {@link ReportModelFacts.givens}. Pass every registry name only when the
  * caller genuinely wants the closure.
  */
-export function readDashboardModelFacts(
+export function readReportModelFacts(
    modelPath: string,
    modelDef: ModelDef,
    surfacedGivenNames: string[],
@@ -619,10 +619,10 @@ export function readDashboardModelFacts(
     * caller without the extraction (a test) gets.
     */
    gatesBySource?: ReadonlyMap<string, readonly string[]>,
-): DashboardModelFacts {
+): ReportModelFacts {
    const registry = modelDef.givens ?? {};
    const surfaced = new Set(surfacedGivenNames);
-   const givens = new Map<string, DashboardGivenDeclaration>();
+   const givens = new Map<string, ReportGivenDeclaration>();
    for (const given of Object.values(registry)) {
       if (!surfaced.has(given.name)) continue;
       const type = given.type;
@@ -659,7 +659,7 @@ export function readDashboardModelFacts(
    const viewGivens = new Map<string, string[]>();
    const viewAnnotations = new Map<string, string[]>();
    const sourceFields = new Map<string, Set<string>>();
-   const drills: DashboardDrill[] = [];
+   const drills: ReportDrill[] = [];
    for (const obj of Object.values(modelDef.contents)) {
       if (!isSourceDef(obj)) continue;
       const sourceName = obj.as || obj.name;
@@ -744,12 +744,10 @@ export function readDashboardModelFacts(
  * and leaving the lint to say so; clamping to the grid width happens at render
  * time, where the width is known.
  */
-function readTileLayout(
-   annotations: string[],
-): DashboardTileLayout | undefined {
+function readTileLayout(annotations: string[]): ReportTileLayout | undefined {
    const tag = motlyTag(annotations);
    if (!tag) return undefined;
-   const layout: DashboardTileLayout = {};
+   const layout: ReportTileLayout = {};
    const label = tagText(tag, "label");
    if (label !== undefined) layout.label = label;
    const subtitle = tagText(tag, "subtitle");
@@ -771,7 +769,7 @@ function readTileLayout(
  */
 function readDrillTag(
    annotations: string[],
-): Omit<DashboardDrill, "source" | "dimension"> | undefined {
+): Omit<ReportDrill, "source" | "dimension"> | undefined {
    const drill = motlyTag(annotations)?.tag("drill");
    if (!drill) return undefined;
    // Malloyyo accepts a single destination unbracketed (`to=overview`) as well
@@ -813,7 +811,7 @@ function tagTextArray(
  */
 function resolveTileGivens(
    tile: string,
-   facts: DashboardModelFacts,
+   facts: ReportModelFacts,
 ): string[] | undefined {
    const reads = referencedTileGivens(tile, facts);
    if (reads === undefined) return undefined;
@@ -836,8 +834,8 @@ function resolveTileGivens(
  */
 function resolveTileLayout(
    tile: string,
-   facts: DashboardModelFacts,
-): DashboardTileLayout | undefined {
+   facts: ReportModelFacts,
+): ReportTileLayout | undefined {
    const annotations = tileAnnotations(tile, facts);
    return annotations && readTileLayout(annotations);
 }
@@ -845,7 +843,7 @@ function resolveTileLayout(
 /** The annotations on whatever a tile expression names, for the two readers of them. */
 function tileAnnotations(
    tile: string,
-   facts: DashboardModelFacts,
+   facts: ReportModelFacts,
 ): string[] | undefined {
    const normalized = normalizeTileExpression(tile);
    return (
@@ -857,7 +855,7 @@ function tileAnnotations(
 /** {@link resolveTileGivens} before the bindability filter; the lint wants both. */
 function referencedTileGivens(
    tile: string,
-   facts: DashboardModelFacts,
+   facts: ReportModelFacts,
 ): string[] | undefined {
    const normalized = normalizeTileExpression(tile);
    const statically =
@@ -883,14 +881,14 @@ function referencedTileGivens(
  */
 function buildGivenSpecs(
    names: readonly string[],
-   facts: DashboardModelFacts,
-): DashboardGivenSpec[] {
+   facts: ReportModelFacts,
+): ReportGivenSpec[] {
    const declarations = facts.givens;
-   const specs: DashboardGivenSpec[] = [];
+   const specs: ReportGivenSpec[] = [];
    for (const name of new Set(names)) {
       const declaration = declarations.get(name);
       // Absent when the given is referenced but not imported by the entry file,
-      // so it is not bindable and gets no control. `lintDashboard` names that
+      // so it is not bindable and gets no control. `lintReport` names that
       // case for both dashboard forms.
       if (!declaration) continue;
       specs.push(givenSpec(declaration, facts));
@@ -899,9 +897,9 @@ function buildGivenSpecs(
 }
 
 function givenSpec(
-   declaration: DashboardGivenDeclaration,
-   facts: DashboardModelFacts,
-): DashboardGivenSpec {
+   declaration: ReportGivenDeclaration,
+   facts: ReportModelFacts,
+): ReportGivenSpec {
    const control = readGivenControlSpec(declaration.annotations);
    // Which givens the suggest query must carry to run: a gated or scoped
    // source's, so the option list loads without depending on the rest of the
@@ -954,7 +952,7 @@ function givenSpec(
 }
 
 /** A compiled file's report tag, by the one reader (`report.ts`) over its own model-level notes. */
-export function factsReportTag(facts: DashboardModelFacts): ReportTag {
+export function factsReportTag(facts: ReportModelFacts): ReportTag {
    return readReportTag(facts.modelAnnotations);
 }
 
@@ -963,13 +961,13 @@ export function factsReportTag(facts: DashboardModelFacts): ReportTag {
  * is no report (`report.ts`), or one with no tiles to lay out: a linear report
  * written as `run:` cells, or a grid tag whose tile list is missing or empty.
  */
-export function buildDashboardManifest(
-   facts: DashboardModelFacts,
+export function buildReportManifest(
+   facts: ReportModelFacts,
    options?: {
       /** Normalized tile expressions the caller may not read; they come back bare. */
       restrictedTiles?: ReadonlySet<string>;
    },
-): DashboardManifest | undefined {
+): ServedReportManifest | undefined {
    const name = reportName(facts.modelPath);
    const base = {
       name,
@@ -990,7 +988,7 @@ export function buildDashboardManifest(
       (composite.tiles.length > 0 || layout === "linear")
    ) {
       const blocks = readTextBlocks(facts.modelAnnotations);
-      const tiles = composite.tiles.map((entry): DashboardTileSpec => {
+      const tiles = composite.tiles.map((entry): ReportTileSpec => {
          if (entry.kind === "text") {
             return {
                kind: "text",
@@ -1040,11 +1038,11 @@ export function buildDashboardManifest(
          // with nothing said. That is the same silent filtering the source-level
          // `where:` handling exists to prevent, so ONE unresolvable tile widens
          // the row to the file's whole surfaced given set instead. That is also
-         // what `DashboardTile.givenNames` tells a client to do ("send the whole
+         // what `ReportTile.givenNames` tells a client to do ("send the whole
          // control row"), which only works if the row actually contains them.
          //
          // Unenumerated side effect, stated because it is not obvious:
-         // `lintDashboard` walks `manifest.givens`, so a widened row also widens
+         // `lintReport` walks `manifest.givens`, so a widened row also widens
          // the suggest lint. A composite with one unresolvable tile can emit a
          // suggest finding for a given no tile references.
          // Text tiles read no givens, so they never widen the row.
@@ -1069,7 +1067,7 @@ export function buildDashboardManifest(
  * One load-time lint finding, in the shape the package-warnings surface serves.
  * `model` is filled in by the caller, which knows the file.
  */
-export interface DashboardLintFinding {
+export interface ReportLintFinding {
    /**
     * What the finding is about: a dashboard slug, a tile, a dimension. For a
     * `# drill` finding this is where the tag is *declared* — deliberately not
@@ -1106,11 +1104,11 @@ function plainTileParts(
  * surfaces as that model's compilation error. Drill targets are package-wide,
  * so they are checked once by {@link lintDrillTargets} rather than here.
  */
-export function lintDashboard(
-   facts: DashboardModelFacts,
-   manifest: DashboardManifest,
-): DashboardLintFinding[] {
-   const findings: DashboardLintFinding[] = [];
+export function lintReport(
+   facts: ReportModelFacts,
+   manifest: ServedReportManifest,
+): ReportLintFinding[] {
+   const findings: ReportLintFinding[] = [];
    const slug = manifest.name;
    const add = (message: string, severity: "error" | "warn" = "warn") =>
       findings.push({ subject: slug, message, severity });
@@ -1125,7 +1123,7 @@ export function lintDashboard(
    // dashboard with one line silently removed.
    //
    // Needed here because package.ts runs exactly one of the two dashboard
-   // lints: `lintUndiscoveredDashboard` reports these only for a file that
+   // lints: `lintUndiscoveredReport` reports these only for a file that
    // produced NO dashboard, so before this the author of a working dashboard
    // was told nothing at all. Measured: that file built and produced zero
    // findings.
@@ -1464,14 +1462,14 @@ const TAG_DISCARDED =
 
 const TAG_UNPARSED_PREFIX = "Tag ";
 
-/** The one place {@link lintUndiscoveredDashboard}'s unparsed-tag message is
- *  built, so {@link isUnparsedDashboardTagFinding} reads the same pieces. */
+/** The one place {@link lintUndiscoveredReport}'s unparsed-tag message is
+ *  built, so {@link isUnparsedReportTagFinding} reads the same pieces. */
 function unparsedTagMessage(parseError: string): string {
    return `${TAG_UNPARSED_PREFIX}${describeParseFailure(parseError)}, ${TAG_DISCARDED}`;
 }
 
 /**
- * Whether a finding is {@link lintUndiscoveredDashboard}'s report of a tag that
+ * Whether a finding is {@link lintUndiscoveredReport}'s report of a tag that
  * does not parse. The notebook lint reports the model-level `## artifact` case
  * too, so a caller that shows both picks one by this.
  *
@@ -1480,15 +1478,15 @@ function unparsedTagMessage(parseError: string): string {
  * against the lint's real output, so a reworded message cannot turn it off
  * unnoticed.
  */
-export function isUnparsedDashboardTagFinding(message: string): boolean {
+export function isUnparsedReportTagFinding(message: string): boolean {
    return (
       message.startsWith(TAG_UNPARSED_PREFIX) && message.endsWith(TAG_DISCARDED)
    );
 }
 
-export function lintUndiscoveredDashboard(
-   facts: DashboardModelFacts,
-): DashboardLintFinding[] {
+export function lintUndiscoveredReport(
+   facts: ReportModelFacts,
+): ReportLintFinding[] {
    const subject = reportName(facts.modelPath);
    // Deduplicated, like lintGivenTags and for the same reason: every finding
    // here carries the same subject (the file's slug), so two tags in the file
@@ -1502,7 +1500,7 @@ export function lintUndiscoveredDashboard(
    const messages = motlyParseErrors(facts.modelAnnotations).map(
       unparsedTagMessage,
    );
-   const findings: DashboardLintFinding[] = Array.from(
+   const findings: ReportLintFinding[] = Array.from(
       new Set(messages),
       (message) => ({ subject, message, severity: "error" as const }),
    );
@@ -1544,11 +1542,9 @@ export function lintUndiscoveredDashboard(
  * whose view carries the tag is told as well. That is still true of the include
  * (it produces no dashboard), and one finding per importing file beats none.
  */
-function lintArtifactOnView(
-   facts: DashboardModelFacts,
-): DashboardLintFinding[] {
+function lintArtifactOnView(facts: ReportModelFacts): ReportLintFinding[] {
    const subject = reportName(facts.modelPath);
-   const findings: DashboardLintFinding[] = [];
+   const findings: ReportLintFinding[] = [];
    for (const [view, annotations] of facts.viewAnnotations) {
       if (!motlyTag(annotations)?.tag("artifact")) continue;
       findings.push({
@@ -1598,9 +1594,9 @@ const NAME_THE_TILES = `Name the views to show: tiles=["source -> view", …].`;
  * *a* malformed tag, and its absence is not proof the tags are well formed.
  */
 export function lintGivenTags(
-   facts: readonly DashboardModelFacts[],
-): DashboardLintFinding[] {
-   const findings = new Map<string, DashboardLintFinding>();
+   facts: readonly ReportModelFacts[],
+): ReportLintFinding[] {
+   const findings = new Map<string, ReportLintFinding>();
    for (const file of facts) {
       for (const [name, declaration] of file.givens) {
          for (const message of motlyParseErrors(declaration.annotations)) {
@@ -1678,10 +1674,10 @@ export function resolveDrillDestination(
  * finding states the cause).
  */
 export function lintDrillTargets(
-   facts: readonly DashboardModelFacts[],
+   facts: readonly ReportModelFacts[],
    reportPaths: ReadonlySet<string>,
-): DashboardLintFinding[] {
-   const findings = new Map<string, DashboardLintFinding>();
+): ReportLintFinding[] {
+   const findings = new Map<string, ReportLintFinding>();
    for (const file of facts) {
       for (const drill of file.drills) {
          const where = `${drill.source}.${drill.dimension}`;
@@ -1732,7 +1728,7 @@ export function lintDrillTargets(
  * author nothing; a lint that is GREEN tells them the drill is wired, and their
  * next move is to stop checking.
  */
-function drillGivenName(drill: DashboardDrill): string {
+function drillGivenName(drill: ReportDrill): string {
    return drill.given ?? drill.dimension;
 }
 
@@ -1754,8 +1750,8 @@ function drillGivenName(drill: DashboardDrill): string {
  * case stays a click-time console warning naming the given and the fix.
  */
 export function lintSelfDrills(
-   facts: readonly DashboardModelFacts[],
-): DashboardLintFinding[] {
+   facts: readonly ReportModelFacts[],
+): ReportLintFinding[] {
    // Folded, because the surfaces that consume a drill fold: the SDK dashboard
    // viewer resolves a tag's name against a case-folded map of the declared
    // givens (`Dashboard.tsx`, `givenNamesByFold`), and the notebook does the
@@ -1767,7 +1763,7 @@ export function lintSelfDrills(
       for (const name of file.givens.keys()) surfaced.add(name.toLowerCase());
    }
 
-   const findings = new Map<string, DashboardLintFinding>();
+   const findings = new Map<string, ReportLintFinding>();
    for (const file of facts) {
       for (const drill of file.drills) {
          if (!drill.to.includes("self")) continue;

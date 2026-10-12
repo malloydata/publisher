@@ -19,7 +19,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { factsReportTag, readDashboardModelFacts } from "./dashboard";
+import { factsReportTag, readReportModelFacts } from "./report_manifest";
 import { lintNotebookText } from "./notebook_lint";
 import { readReportTagOfText, type ReportTag } from "./report";
 
@@ -67,7 +67,7 @@ async function compiledLayout(source: string): Promise<Layout> {
    const model = await runtime.loadModel(new URL(URL_OF)).getModel();
    const modelDef = (model as unknown as { _modelDef: ModelDef })._modelDef;
    return layoutOf(
-      factsReportTag(readDashboardModelFacts(MODEL_PATH, modelDef, [])),
+      factsReportTag(readReportModelFacts(MODEL_PATH, modelDef, [])),
    );
 }
 

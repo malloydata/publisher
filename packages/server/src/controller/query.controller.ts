@@ -15,7 +15,7 @@ import {
    type QueryMetadata,
 } from "../service/query_metadata";
 import { runWithQueryTimeout } from "../query_timeout";
-import { filterPublisherOwnedRenderLogs } from "../service/dashboard";
+import { filterPublisherOwnedRenderLogs } from "../service/report_manifest";
 import { EnvironmentStore } from "../service/environment_store";
 import type { FilterParams } from "../service/filter";
 import type { GivenValue } from "@malloydata/malloy";

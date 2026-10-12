@@ -125,14 +125,14 @@ import {
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    compileTileGivens,
    factsReportTag,
-   readDashboardModelFacts,
-   type DashboardManifest,
-   type DashboardModelFacts,
-} from "./dashboard";
-import { isReportEligiblePath } from "./report";
+   readReportModelFacts,
+   type ServedReportManifest,
+   type ReportModelFacts,
+} from "./report_manifest";
+import { isReportEligiblePath, type ReportLayout } from "./report";
 import {
    docNotesAboveArtifact,
    isNotebookReaderError,
@@ -165,7 +165,7 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
-import { filterPublisherOwnedRenderLogs } from "./dashboard";
+import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
    motlyTag,
@@ -774,11 +774,11 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
-   private compiledDashboardFacts:
-      | Promise<DashboardModelFacts | undefined>
+   private compiledReportFacts:
+      | Promise<ReportModelFacts | undefined>
       | undefined;
-   /** {@link compiledDashboardFacts} once settled, for the sync notebook reader. */
-   private settledCompiledDashboardFacts: DashboardModelFacts | undefined;
+   /** {@link compiledReportFacts} once settled, for the sync notebook reader. */
+   private settledCompiledReportFacts: ReportModelFacts | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -789,7 +789,7 @@ export class Model {
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
    /** The tile layout of a served notebook written as one; undefined for one written as cells. */
-   private notebookLayout: DashboardManifest | undefined;
+   private notebookLayout: ServedReportManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. Malloy's
@@ -861,12 +861,11 @@ export class Model {
        *  surface. Set by the Package, which knows whether the surface is an
        *  index.malloy or an explores list. See {@link notQueryable}. */
       offSurface?: OffSurfaceContext;
-      /** This file is a served grid report: an entry point that admits
-       *  nothing of its own, since its tiles read only the package surface. */
-      dashboard?: boolean;
-      /** This file is a served linear report. It keeps `modelType` "model"
-       *  and, like a `.malloynb`, admits nothing of its own. */
-      notebook?: boolean;
+      /** This file is a served report with this layout: an entry point that,
+       *  like a `.malloynb`, admits nothing of its own, since a grid report's
+       *  tiles and a linear report's cells read only the package surface. A
+       *  linear report keeps `modelType` "model". */
+      layout?: ReportLayout;
       /** The served report's own compiled file text, so a
        *  source it declares on top of a surface source
        *  (`source: big is orders extend {...}`) can be proven to derive from
@@ -5137,14 +5136,14 @@ export class Model {
     *
     * Deliberately uncurated: `explores` curation shapes the discovery surface
     * agents see, and these facts are the raw material the manifest and the
-    * lint are built from. See `service/dashboard.ts`.
+    * lint are built from. See `service/report_manifest.ts`.
     */
-   public getDashboardModelFacts(): DashboardModelFacts | undefined {
+   public getReportModelFacts(): ReportModelFacts | undefined {
       if (!this.modelDef) return undefined;
       // `this.givens` is the model's surfaced given list — the same surface
       // `filterGivensToModelSurface` enforces at query time, so a control the
       // manifest advertises is one a query will accept.
-      return readDashboardModelFacts(
+      return readReportModelFacts(
          this.modelPath,
          this.modelDef,
          (this.givens ?? [])
@@ -5170,7 +5169,7 @@ export class Model {
    }
 
    /**
-    * {@link getDashboardModelFacts} plus what each layout tile's compiled query
+    * {@link getReportModelFacts} plus what each layout tile's compiled query
     * reads (`compiledTileGivens`), for the manifest discovery serves.
     *
     * The static walk misses a given read through a joined source's `where:`, a
@@ -5179,24 +5178,22 @@ export class Model {
     * cached for this Model's life. A tile that fails to compile keeps the
     * static answer.
     */
-   public getCompiledDashboardModelFacts(): Promise<
-      DashboardModelFacts | undefined
-   > {
-      this.compiledDashboardFacts ??= this.compileDashboardModelFacts().then(
-         (facts) => (this.settledCompiledDashboardFacts = facts),
+   public getCompiledReportModelFacts(): Promise<ReportModelFacts | undefined> {
+      this.compiledReportFacts ??= this.compileReportModelFacts().then(
+         (facts) => (this.settledCompiledReportFacts = facts),
       );
-      return this.compiledDashboardFacts;
+      return this.compiledReportFacts;
    }
 
-   private async compileDashboardModelFacts(): Promise<
-      DashboardModelFacts | undefined
+   private async compileReportModelFacts(): Promise<
+      ReportModelFacts | undefined
    > {
-      const facts = this.getDashboardModelFacts();
+      const facts = this.getReportModelFacts();
       const materializer = this.modelMaterializer;
       if (!facts || !materializer) return facts;
       let tiles: string[];
       try {
-         tiles = (buildDashboardManifest(facts)?.tiles ?? []).flatMap((tile) =>
+         tiles = (buildReportManifest(facts)?.tiles ?? []).flatMap((tile) =>
             tile.kind === "query" ? [tile.query] : [],
          );
       } catch {
@@ -5243,8 +5240,7 @@ export class Model {
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
       offSurface?: OffSurfaceContext;
-      dashboard?: boolean;
-      notebook?: boolean;
+      layout?: ReportLayout;
       derivationText?: string;
    }): void {
       this.queryBoundary = policy;
@@ -5331,7 +5327,7 @@ export class Model {
               `import "${this.modelPath}" in a listed model, name the sources ` +
               `you want in that model's export { ... }, and address the ` +
               `query to that model.`;
-      } else if (!this.isNotebook() && !this.isDashboard()) {
+      } else if (!this.isNotebook() && !this.isGridReport()) {
          // This file is on the surface and already sees the name, so the only
          // edit is to export it here.
          fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
@@ -5343,7 +5339,7 @@ export class Model {
          const exporter = surface.indexModel
             ? `"${INDEX_MODEL_NAME}"`
             : `a listed model`;
-         const readdress = this.isDashboard()
+         const readdress = this.isGridReport()
             ? ""
             : surface.indexModel
               ? `, and address the query to "${INDEX_MODEL_NAME}"`
@@ -5427,7 +5423,7 @@ export class Model {
       // whether the source it reads is on the surface.
       if (
          !this.isNotebook() &&
-         !this.isDashboard() &&
+         !this.isGridReport() &&
          (this.getQueries() ?? []).some((q) => q.name === name)
       )
          return true;
@@ -5501,7 +5497,7 @@ export class Model {
          // over a hidden source does not.
          if (
             !sourceName &&
-            this.isDashboard() &&
+            this.isGridReport() &&
             (this.queries ?? []).some((q) => q.name === queryName)
          ) {
             return "deferred";
@@ -5814,7 +5810,7 @@ export class Model {
    public isNotebook(): boolean {
       return (
          this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
-         this.queryBoundary.notebook === true
+         this.queryBoundary.layout === "linear"
       );
    }
 
@@ -5833,12 +5829,12 @@ export class Model {
     */
    public carriesReportTag(): boolean {
       if (!isReportEligiblePath(this.modelPath)) return false;
-      const facts = this.getDashboardModelFacts();
+      const facts = this.getReportModelFacts();
       return facts !== undefined && factsReportTag(facts).status !== "none";
    }
 
-   private isDashboard(): boolean {
-      return this.queryBoundary.dashboard === true;
+   private isGridReport(): boolean {
+      return this.queryBoundary.layout === "grid";
    }
 
    private ownCuratedSourceNames(): Set<string> {
@@ -5848,7 +5844,7 @@ export class Model {
       // query text sent to its path reach them. Only the package-wide surface
       // admits there. A source it declares on top of a surface source is
       // admitted by derivesFromCurated, not here.
-      if (this.isNotebook() || this.isDashboard()) return new Set();
+      if (this.isNotebook() || this.isGridReport()) return new Set();
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
@@ -6382,11 +6378,11 @@ export class Model {
    }
 
    /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
-   private readNotebookLayout(): DashboardManifest | undefined {
+   private readNotebookLayout(): ServedReportManifest | undefined {
       // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
       const facts =
-         this.settledCompiledDashboardFacts ?? this.getDashboardModelFacts();
-      const manifest = facts && buildDashboardManifest(facts);
+         this.settledCompiledReportFacts ?? this.getReportModelFacts();
+      const manifest = facts && buildReportManifest(facts);
       return manifest?.layout === "linear" && manifest.tiles
          ? manifest
          : undefined;
@@ -8714,7 +8710,7 @@ export class Model {
       const names = new Set<string>(exports);
       const { mode, exploresDeclared } = this.queryBoundary;
       if (
-         !(this.isDashboard() || this.isNotebook()) ||
+         !(this.isGridReport() || this.isNotebook()) ||
          mode === "all" ||
          !exploresDeclared
       ) {
@@ -8798,7 +8794,7 @@ export class Model {
     * `includeHiddenFilesAndSources`.
     */
    public showsFileText(text: string): boolean {
-      if (this.isDashboard()) return true;
+      if (this.isGridReport()) return true;
       const published = this.publishedNames();
       if (!published) return true;
       const unpublished = new Set(

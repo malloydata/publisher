@@ -128,19 +128,19 @@ import {
 } from "./deprecated/explores";
 import { lintNotebookText, reportedByDashboardLint } from "./notebook_lint";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    COMPONENT_FILE_SUFFIXES,
    factsReportTag,
-   matchesDocumentedDashboardName,
-   lintDashboard,
+   matchesDocumentedReportName,
+   lintReport,
    lintDrillTargets,
    lintGivenTags,
    lintSelfDrills,
-   lintUndiscoveredDashboard,
+   lintUndiscoveredReport,
    queryTiles,
-   type DashboardManifest,
-   type DashboardModelFacts,
-} from "./dashboard";
+   type ServedReportManifest,
+   type ReportModelFacts,
+} from "./report_manifest";
 import {
    isReportEligiblePath,
    readReportTagOfText,
@@ -177,7 +177,7 @@ interface ServedReport {
     * to compile (carrying `error`). Absent on a linear `run:`-cell report and a
     * `.malloynb`.
     */
-   manifest?: DashboardManifest & { error?: string };
+   manifest?: ServedReportManifest & { error?: string };
    /** A `.malloy` report's compiled text ("" when unreadable); absent on a `.malloynb`. */
    text?: string;
 }
@@ -202,7 +202,7 @@ interface ReportFile {
    /** The basename, a display label. */
    name: string;
    /** The compiled facts, when the file has them; what the lint reads. */
-   facts?: DashboardModelFacts;
+   facts?: ReportModelFacts;
    /** Set when `status` is `served`. */
    report?: ServedReport;
 }
@@ -212,7 +212,7 @@ interface ReportDiscovery {
    /** Every file that carries an artifact tag, and every `.malloynb`, by path. */
    files: Map<string, ReportFile>;
    /** Every compiled model's facts, for the package-wide drill and given lints. */
-   allFacts: Map<string, DashboardModelFacts>;
+   allFacts: Map<string, ReportModelFacts>;
    /** The root `index.malloy` carries an artifact tag, which is ignored. */
    indexTagged: boolean;
    /** Linear reports whose cells the reader refused. */
@@ -671,8 +671,7 @@ export class Package {
             offSurface,
             // The model serves a grid report's tiles and a linear report's
             // cells; both read the surface and add nothing to it.
-            dashboard: report?.layout === "grid",
-            notebook: report?.layout === "linear",
+            layout: report?.layout,
             derivationText: report?.text,
          });
       }
@@ -3142,7 +3141,7 @@ export class Package {
    private async readFileReportTag(
       model: Model,
       modelPath: string,
-      facts: DashboardModelFacts | undefined,
+      facts: ReportModelFacts | undefined,
    ): Promise<ReportTag> {
       try {
          if (facts) return factsReportTag(facts);
@@ -3251,7 +3250,7 @@ export class Package {
       // Every model, not just the reports, because `# drill` is declared on a
       // model dimension: a tag in a package with no reports at all is exactly
       // as breakable and would otherwise never be checked.
-      const allFacts = new Map<string, DashboardModelFacts>();
+      const allFacts = new Map<string, ReportModelFacts>();
       let indexTagged = false;
       const dropped = (modelPath: string, why: string): ReportFile => {
          logger.warn(why, {
@@ -3265,9 +3264,9 @@ export class Package {
          const model = models.get(modelPath);
          if (!model) continue;
 
-         let facts: DashboardModelFacts | undefined;
+         let facts: ReportModelFacts | undefined;
          try {
-            facts = await model.getCompiledDashboardModelFacts();
+            facts = await model.getCompiledReportModelFacts();
             if (facts) allFacts.set(modelPath, facts);
          } catch (err) {
             logger.warn("Reading a model's report facts failed", {
@@ -3315,9 +3314,9 @@ export class Package {
             );
             continue;
          }
-         let manifest: (DashboardManifest & { error?: string }) | undefined;
+         let manifest: (ServedReportManifest & { error?: string }) | undefined;
          try {
-            manifest = facts && buildDashboardManifest(facts);
+            manifest = facts && buildReportManifest(facts);
          } catch (err) {
             logger.warn("Report discovery failed", {
                packageName: this.packageName,
@@ -3462,7 +3461,7 @@ export class Package {
     */
    private async lintTilesAgainstSurface(
       modelPath: string,
-      manifest: DashboardManifest,
+      manifest: ServedReportManifest,
    ): Promise<ApiPackageWarning[]> {
       const model = this.models.get(modelPath);
       if (!model || !this.queryBoundaryActive()) return [];
@@ -3532,8 +3531,8 @@ export class Package {
     * lives, and per file whose tag makes no report, plus the package-wide
     * checks (drill, given tags, curation).
     *
-    * Per file, the manifest checks (`lintDashboard`, or for a tagged file that
-    * produced no report, `lintUndiscoveredDashboard`) and the text checks
+    * Per file, the manifest checks (`lintReport`, or for a tagged file that
+    * produced no report, `lintUndiscoveredReport`) and the text checks
     * (`lintNotebookText`, with line numbers) run together, so the one finding
     * both can make, an artifact tag that does not parse, is reported once.
     *
@@ -3570,10 +3569,7 @@ export class Package {
             // A name outside the documented pattern is served and only noted:
             // it still addresses the deprecated `…/dashboards/{name}` route,
             // encoded.
-            if (
-               report?.layout !== "grid" ||
-               matchesDocumentedDashboardName(name)
-            )
+            if (report?.layout !== "grid" || matchesDocumentedReportName(name))
                continue;
             warnings.push({
                model: modelPath,
@@ -3602,8 +3598,8 @@ export class Package {
             const fileFindings: ApiPackageWarning[] = [];
             if (facts) {
                const findings = manifest
-                  ? lintDashboard(facts, manifest)
-                  : lintUndiscoveredDashboard(facts);
+                  ? lintReport(facts, manifest)
+                  : lintUndiscoveredReport(facts);
                for (const finding of findings) {
                   fileFindings.push({ model: modelPath, ...finding });
                }

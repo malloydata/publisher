@@ -564,7 +564,7 @@ describe("served notebooks (worker path)", () => {
             mode: "all",
             exploresDeclared: false,
             isQueryEntryPoint: true,
-            notebook: true,
+            layout: "linear",
          });
          expect(await model.getNotebook()).toMatchObject({
             format: "malloy",

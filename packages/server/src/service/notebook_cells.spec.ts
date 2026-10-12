@@ -225,7 +225,7 @@ describe("served notebook cells", () => {
                mode: "all",
                exploresDeclared: false,
                isQueryEntryPoint: true,
-               notebook: true,
+               layout: "linear",
             });
             expect(
                inProcess.attachServedNotebookCells(

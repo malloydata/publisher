@@ -12,7 +12,7 @@ import {
    type QuerySlotHandle,
 } from "../../query_concurrency";
 import { runWithQueryTimeout } from "../../query_timeout";
-import { filterPublisherOwnedRenderLogs } from "../../service/dashboard";
+import { filterPublisherOwnedRenderLogs } from "../../service/report_manifest";
 import { EnvironmentStore } from "../../service/environment_store";
 import { RESTRICTED_CONSTRUCTS, type ErrorDetails } from "../error_messages";
 import {

@@ -69,7 +69,7 @@ function harness(
          options.reloadCompiles === false
             ? sinon.stub().rejects(new Error("Cannot redefine 'x'"))
             : sinon.stub().resolves({}),
-      getDashboardModelFacts: () =>
+      getReportModelFacts: () =>
          options.reloadedNotes && {
             modelAnnotations: options.reloadedNotes,
             queries: [],
