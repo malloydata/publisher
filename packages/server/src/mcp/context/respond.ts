@@ -54,11 +54,13 @@ import {
    type ResultEntity,
    type SourceCard,
 } from "../tools/get_context_tool";
-import type { CatalogNode, CatalogSource } from "./catalog";
+import type { AlsoLikelyField } from "./also_likely";
+import { nodeKeyOf, type CatalogNode, type CatalogSource } from "./catalog";
 import type { Cluster, ConnectResult, PeerSource } from "./connect";
 import type { FindTarget } from "./find";
 import type { FcjIndex } from "./index_build";
-import type { JudgeVerdict } from "./judge";
+import { PATHS_SHOWN, type JudgeVerdict } from "./judge";
+import { routesFrom } from "./routes";
 
 /** Distinct values the query-time lookup reads for a gated dimension. */
 const GATED_LOOKUP_LIMIT = 2_000;
@@ -107,6 +109,8 @@ export async function respond(args: {
    environmentStore: EnvironmentStore;
    /** Test seam for the gated lookup; the query path otherwise. */
    valueFetcher?: ValueFetcher;
+   /** Fields returned beside the picks, marked "also likely" (also_likely.ts). */
+   alsoLikely?: readonly AlsoLikelyField[];
 }): Promise<FcjAnswer> {
    const { index, request, connected, verdicts, targets } = args;
    const warnings: string[] = [];
@@ -240,8 +244,10 @@ export async function respond(args: {
                },
                sources: g.members.map((m) => ({
                   source: index.catalog.sources.get(m.source)?.name,
+                  // Shortest first; the walk can find many paths in a deep graph.
                   joins: m.paths
                      .filter((x) => x.length > 0)
+                     .slice(0, PATHS_SHOWN)
                      .map((x) => x.join(".")),
                })),
                covers,
@@ -284,6 +290,51 @@ export async function respond(args: {
          picks: picksOut,
          ...(verdict.caveats.length > 0 ? { caveats: verdict.caveats } : {}),
       });
+   }
+
+   // "Also likely" fields go on cards like picks (after them), each marked
+   // with its reason. They are not picks: no target, no group in `clusters`.
+   const first = connected.clusters[0];
+   if (first) {
+      const home = index.catalog.sources.get(first.home)!;
+      const homePath = cardModelPath(home, request);
+      for (const extra of args.alsoLikely ?? []) {
+         const node = index.catalog.nodes.get(extra.key);
+         if (!node) continue;
+         const placed = await place(
+            args,
+            first,
+            node,
+            home,
+            homePath,
+            undefined,
+            undefined,
+            warnings,
+         );
+         for (const p of placed) {
+            if (rows.has(p.key)) continue;
+            put(p.key, { ...p.row, alsoLikely: extra.reason });
+         }
+      }
+   }
+
+   // In routes mode, every field carries its routes from the other sources
+   // the answer holds a card for.
+   if (index.catalog.joinedCopies === "routes") {
+      const cardSources = new Set<string>();
+      for (const key of order) cardSources.add(key.split("\u0000")[0]);
+      for (const key of order) {
+         const [sourceKey, kind, name] = key.split("\u0000");
+         const node = index.catalog.nodes.get(nodeKeyOf(kind, sourceKey, name));
+         if (!node) continue;
+         const routes = routesFrom(index.catalog, node, cardSources);
+         if (routes.length === 0) continue;
+         rows.get(key)!.routes = routes.map((r) => ({
+            id: r.id,
+            from: index.catalog.sources.get(r.from)?.name ?? r.from,
+            path: r.path.join("."),
+         }));
+      }
    }
 
    // Every card a pick lands on is built under one model path per source.

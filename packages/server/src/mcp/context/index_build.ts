@@ -188,6 +188,7 @@ export async function buildFcjIndex(args: {
    const catalog = buildCatalog({
       ...(await catalogInputOf(args.pkgIndex)),
       collapseCopies: settings.collapseCopies,
+      joinedCopies: settings.joinedCopies ?? "indexed",
    });
    // A folded copy is never searched, so it gets no row and no keyword text.
    const searched = [...catalog.nodes.values()].filter((n) => !n.copyOf);
