@@ -1573,7 +1573,7 @@ def main(argv: list[str] | None = None) -> int:
                          "local --publisher. Needs --truth-organization and "
                          "--environment, and an OAuth login under "
                          "--hosted-mcp-server")
-    ap.add_argument("--hosted-mcp-server", default="credible",
+    ap.add_argument("--hosted-mcp-server", default="hosted",
                     help="with --truth-mcp-url: the MCP server name you "
                          "authenticated under (also the OAuth cache key)")
     ap.add_argument("--truth-organization", default=None,
