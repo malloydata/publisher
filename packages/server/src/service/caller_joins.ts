@@ -451,9 +451,10 @@ export function derivationTerminals(
  * struct; one the model declared must be a name the on-disk model declares. A
  * query-source join the caller wrote also resolves its base, while one the
  * model declares is anchored as itself (its gate entry already carries the
- * base's); a composite join resolves its own id AND every member. Only the join itself may fall back to text when it has
- * no `sourceID` (an inline `extend`): every base any `ALIAS is BASE` spelling
- * gives it must then prove out.
+ * base's); a composite join resolves its own id AND every member. An inline
+ * `extend` of a model source anchors on the source it extends. Only a join
+ * that names nothing resolvable falls back to text: every base any
+ * `ALIAS is BASE` spelling gives it must then prove out.
  */
 export function resolveCallerJoin(
    callerJoin: CallerJoin,
@@ -570,6 +571,20 @@ export function resolveCallerJoin(
          if (!anchor) return false;
          anchored = true;
          declaredByModel = anchor === "model";
+      } else {
+         // An inline `X extend { … }` has no sourceID of its own (Malloy
+         // strips it from any modified source) but records what it extends.
+         // When that is a model source, the extension is the caller entering
+         // that source with additions on top: anchor on it, and gate it as
+         // that source. The additions themselves are the caller's and are
+         // held by the graft, which must land on the recompiled query.
+         const extendsID = (struct as { extends?: string }).extends;
+         if (extendsID) {
+            const anchor = bySourceID(extendsID, forBoundary);
+            if (!anchor) return false;
+            anchored = true;
+            declaredByModel = anchor === "model";
+         }
       }
       if (struct.type === "composite") {
          composite = true;
@@ -598,7 +613,7 @@ export function resolveCallerJoin(
          // base is walked only when the query source is the caller's, since
          // then nothing on disk vouches for what it reads. An author base may
          // be an inline `table(...) extend { … }` with no sourceID at all, and
-         // walking it failed closed on a legal declaration.
+         // walking it would fail closed on a legal declaration.
          if (!declaredByModel) {
             const ref = q?.structRef;
             if (typeof ref === "string") {

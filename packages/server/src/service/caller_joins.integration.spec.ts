@@ -480,6 +480,21 @@ describe("a caller join into an #(access_filter) row gate", () => {
       ]);
    });
 
+   it("an inline extend over a query source with an anonymous base is filtered", async () => {
+      const { rows, sql } = await run(
+         plainModel,
+         "run: plain extend { join_one: e is rg_anon extend { dimension: z is 1 } on id = e.id } -> { group_by: id, e.region, e.z }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, region: "US", z: 1 },
+         // `z is 1` is a constant on the join side: it is 1 whether or not
+         // the join matched; the filtered column is what reads null.
+         { id: 2, region: null, z: 1 },
+      ]);
+      expect(sql).toMatch(/"region" IN \('US'\)/);
+   });
+
    it("a lock on a query source over an anonymous base is decided, not refused as unprovable", async () => {
       const q =
          "run: plain extend { join_one: l is lock_anon on id = l.id } -> { group_by: id, l.secret }";
