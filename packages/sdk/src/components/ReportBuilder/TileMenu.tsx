@@ -34,8 +34,13 @@ export interface TileMenuProps {
    onRemove: () => void;
    /** Why removing is refused, shown beside a Remove that stays focusable; absent when it is allowed. */
    removeBlocked?: string;
-   /** Open the clickable-cells window for this tile's source. */
-   onDrills: () => void;
+   /**
+    * Open the clickable-cells window for this tile's source. Absent when the
+    * source declares no dimension in this file, so there is nothing a drill
+    * could go on: the menu then offers no Drill, rather than a window that
+    * explains why its own Apply is off.
+    */
+   onDrills?: () => void;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
    view?: Pick<CatalogView, "chart" | "aggregateOnly">;
 }
@@ -164,7 +169,7 @@ export function TileMenu({
                   </Typography>
                )}
                <Stack direction="row" sx={{ justifyContent: "space-between" }}>
-                  {editable ? (
+                  {editable && onDrills ? (
                      <Button
                         size="small"
                         startIcon={<AdsClickIcon />}
