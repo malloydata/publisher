@@ -236,22 +236,33 @@ test.describe("notebook-givens", () => {
       page,
    }) => {
       await openGivensNotebook(page);
-      const filter = await openFilter(page, "include_x");
-      const box = filter.getByLabel("include_x", { exact: true });
+      // Reset sits in the filter row, which an open popover hides from the
+      // accessibility tree, so it is read with the popover closed.
+      const reset = page.getByRole("button", { name: "Reset" });
+      let filter = await openFilter(page, "include_x");
+      let box = filter.getByLabel("include_x", { exact: true });
 
       // Unset → reflects the model default (`is true`), so the box shows what
       // the query actually runs with. No override yet, so no Reset.
       await expect(box).toBeChecked();
-      await expect(page.getByRole("button", { name: "Reset" })).toBeHidden();
+      await closeFilter(page);
+      await expect(reset).toBeHidden();
 
       // Toggle → explicit `false` override (a real value, not "unset").
+      filter = await openFilter(page, "include_x");
+      box = filter.getByLabel("include_x", { exact: true });
       await box.uncheck();
       await expect(box).not.toBeChecked();
-      await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
+      await closeFilter(page);
+      await expect(reset).toBeVisible();
 
       // Revert (×) → drop the override, back to the default (checked).
+      filter = await openFilter(page, "include_x");
       await filter.getByRole("button", { name: "Clear value" }).click();
-      await expect(box).toBeChecked();
-      await expect(page.getByRole("button", { name: "Reset" })).toBeHidden();
+      await expect(
+         filter.getByLabel("include_x", { exact: true }),
+      ).toBeChecked();
+      await closeFilter(page);
+      await expect(reset).toBeHidden();
    });
 });

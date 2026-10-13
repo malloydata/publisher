@@ -9,6 +9,7 @@ import {
    type PackageEnv,
 } from "./helpers/packageEnv";
 import { saveChanges } from "./helpers/save";
+import { closeFilter } from "./helpers/filters";
 
 /**
  * Documents the builders open or create in shapes the happy path skips: a
@@ -60,7 +61,6 @@ test.describe("dashboard with no tile", () => {
             "dashboards/blank.malloy": `##! experimental.givens
 ## artifact { title="Blank start" tiles=[] }
 import { orders } from '../orders.malloy'
-import { closeFilter } from "./helpers/filters";
 `,
          },
       );
@@ -163,7 +163,7 @@ test.describe("joined filter", () => {
       // The reader serves the saved file with the control in place.
       await page.goto(`/${pe.env}/${pe.pkg}/overview`);
       await expect(
-         page.getByRole("combobox", { name: /state/i }).first(),
+         page.getByRole("button", { name: /state[^:]*: /i }).first(),
       ).toBeVisible({
          timeout: 60_000,
       });

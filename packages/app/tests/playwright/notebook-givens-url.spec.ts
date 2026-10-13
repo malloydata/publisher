@@ -241,7 +241,8 @@ test.describe("notebook givens are URL-addressable", () => {
       await page.getByRole("button", { name: "Reset" }).click();
 
       await expect(page).not.toHaveURL(/MIN_AMOUNT/);
-      await expectFilterValue(page, "MIN_AMOUNT", "Any");
+      // Unset, the button reads the model's default.
+      await expectFilterValue(page, "MIN_AMOUNT", "0");
    });
 
    test("a control change keeps the URL fragment", async ({ page }) => {

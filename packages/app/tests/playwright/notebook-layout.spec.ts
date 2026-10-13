@@ -112,7 +112,8 @@ test.describe("layout notebooks", () => {
       await expect(reader.locator('[data-layout="linear"]')).toHaveCount(1);
       await expect(reader.locator('[data-chrome="card"]')).toHaveCount(2);
       const bare = reader.locator('[data-chrome="none"]');
-      expect(await bare.count()).toBeGreaterThanOrEqual(3);
+      // The text tile and the description.
+      expect(await bare.count()).toBeGreaterThanOrEqual(2);
       const borders = await bare.evaluateAll((els) =>
          els.map((el) => getComputedStyle(el).borderTopStyle),
       );

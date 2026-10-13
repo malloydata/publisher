@@ -35,12 +35,15 @@ export async function openFilter(
 
 /**
  * Close whatever filter popover is open. A picker's own list closes on the
- * first Escape, the popover on the next.
+ * first Escape, the popover on the next. Escape reaches the popover only while
+ * focus is inside it, which a control that removes itself (a clear ×) can
+ * end, so a click outside it is the fallback.
  */
 export async function closeFilter(page: Page): Promise<void> {
    const open = page.getByRole("dialog", { name: / filter$/ });
    for (let i = 0; i < 3 && (await open.count()) > 0; i++)
       await page.keyboard.press("Escape");
+   if ((await open.count()) > 0) await page.mouse.click(2, 2);
    await expect(open).toHaveCount(0);
 }
 

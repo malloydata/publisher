@@ -710,6 +710,9 @@ test.describe("package-dashboards", () => {
          .getByRole("option", { name: "Nike" })
          .click({ timeout: 30_000 });
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
+      // The popover hides the page from the pointer and from the
+      // accessibility tree until it closes.
+      await closeFilter(page);
 
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
       await page.getByRole("menuitem", { name: "Regions" }).click();

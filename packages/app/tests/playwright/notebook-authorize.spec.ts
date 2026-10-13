@@ -7,6 +7,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import { filterButton, openFilter } from "./helpers/filters";
 
 /**
  * End-to-end coverage for `#(authorize)` source gates in a notebook. The
@@ -63,7 +64,6 @@ const CELL = "run: gated_products -> spotlight";
 const NOTEBOOK_SOURCE = `##! experimental.givens
 ## artifact { layout=linear }
 import "authz_gate.malloy"
-import { filterButton, openFilter } from "./helpers/filters";
 
 ${CELL}
 `;
