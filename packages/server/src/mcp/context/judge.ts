@@ -32,6 +32,7 @@ import {
    DEFAULT_JUDGE_LIST_INSTRUCTIONS,
    DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS,
    JUDGE_REPLY_FORMAT,
+   JUDGE_SPLIT_RULES,
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
 import { getEgressPreset } from "../../retrieval_config";
@@ -313,8 +314,12 @@ export function renderJudgePrompt(
    lines.push("", "<targets>");
    targets.forEach((t, i) => {
       const covered = cluster.covers.includes(t.index);
+      const parent =
+         t.partOf !== undefined
+            ? targets.findIndex((x) => x.index === t.partOf)
+            : -1;
       lines.push(
-         `Target ${i + 1} (${t.type}${covered ? "" : "; this group matched it weakly"}): ${JSON.stringify(t.text)}`,
+         `Target ${i + 1} (${t.type}${parent >= 0 ? `; one item of the list in target ${parent + 1}` : ""}${covered ? "" : "; this group matched it weakly"}): ${JSON.stringify(t.text)}`,
       );
       const listed = options.filter((o) => o.targets.includes(t.index));
       if (listed.length === 0) lines.push("  (no candidates in this group)");
@@ -541,6 +546,8 @@ export async function judge(args: {
    concurrency: number;
    /** `listRoutes`: routes shown per field in a list (0, the default, shows none). */
    listRoutes?: number;
+   /** `splitBundles`: add JUDGE_SPLIT_RULES to the instructions. */
+   splitRules?: boolean;
 }): Promise<JudgeVerdict[]> {
    return runPooled(args.clusters, args.concurrency, async (cluster) => {
       const cap = cluster.peers ? (args.listRoutes ?? 0) : 0;
@@ -548,14 +555,15 @@ export async function judge(args: {
          index: args.index,
          cap,
       });
+      const base =
+         args.instructions ??
+         (cluster.peers
+            ? cap > 0
+               ? DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS
+               : DEFAULT_JUDGE_LIST_INSTRUCTIONS
+            : DEFAULT_JUDGE_INSTRUCTIONS);
       const reply = await args.chat.completeJson({
-         system:
-            args.instructions ??
-            (cluster.peers
-               ? cap > 0
-                  ? DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS
-                  : DEFAULT_JUDGE_LIST_INSTRUCTIONS
-               : DEFAULT_JUDGE_INSTRUCTIONS),
+         system: args.splitRules ? `${base}\n\n${JUDGE_SPLIT_RULES}` : base,
          prompt: renderJudgePrompt(
             args.index,
             cluster,
