@@ -104,9 +104,11 @@ export function BuilderDialogs({
                  }
                : {})}
             view={menuView}
-            onDrills={() => {
-               setDrillSource(menuTile?.source);
-            }}
+            {...((editor.document.sources.find(
+               (s) => s.name === menuTile?.source,
+            )?.dimensions?.length ?? 0) > 0
+               ? { onDrills: () => setDrillSource(menuTile?.source) }
+               : {})}
          />
          <DrillDialog
             open={drillSource !== undefined}

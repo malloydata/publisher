@@ -87,9 +87,14 @@ export function BuilderGrid({
            )
          : (preview ?? editor.document.tiles);
    // And, while a drag is live, the empty end of every row as a drop target.
-   // Not otherwise: a gap is only a place to land while something is in hand.
+   // While an edge is dragged too: narrowing a tile frees columns its row-mate
+   // does not take, and an undrawn hole there read as a broken layout rather
+   // than room to fill. Not otherwise: a gap is only shown mid-gesture.
    const empty = editor.document.tiles.length === 0;
-   const entries = dragging ? withGaps(shown, columns) : shown.map(tileEntry);
+   const entries =
+      dragging || resize !== undefined
+         ? withGaps(shown, columns)
+         : shown.map(tileEntry);
    const heading = (tile: QueryTile) =>
       headingOf(tile, tileDisplayTitle(tile), editTile);
    return (
@@ -126,7 +131,12 @@ export function BuilderGrid({
                            flash={tileKey(each) === flash}
                            menuOpen={menuIndex === index}
                            bare={chrome === "none"}
-                           {...(notebook && canAdd
+                           // Not on the last tile: the "Add tile" under the
+                           // list adds there already, and the two drew on top
+                           // of each other.
+                           {...(notebook &&
+                           canAdd &&
+                           index < editor.document.tiles.length - 1
                               ? {
                                    onInsertAfter: () => openAdd(index + 1),
                                 }

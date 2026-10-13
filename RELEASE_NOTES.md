@@ -21,6 +21,22 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Report builder fixes: a quieter new report, filters that stop covering tiles, tooltips at the cursor
+
+**New report writes less.** A report created from the package page's **New report** no longer starts with an `intro` text tile holding `# <title>` and a line asking for a description. The page already shows the title and offers the description in place, so a new report said both twice. The file now lists only the query tile you picked, and that tile carries `# label="<view title>"`, so it reads "Top products" rather than "Top products tile". Existing reports are not touched. A tool that expected a new file's first tile to be `intro` should stop relying on it.
+
+**The filter bar no longer covers tiles.** In a grid report the pinned filter bar now draws a hairline under itself while tiles scroll beneath it, and leaves a gap, rather than cutting tile headings off at an edge you could not see. A linear report's filters no longer pin at all: there they are a full panel, and pinned they took a third of a laptop screen. This applies to the reader and the builder alike.
+
+**Smaller builder fixes.**
+
+- In a linear report the "+" under the last tile and the "Add tile" button below the list no longer draw on top of each other.
+- A tile's menu offers **Drill** only when its source declares a dimension in the report, instead of opening a window that explained why its Apply was disabled.
+- While a tile's edge is dragged narrower, the columns it frees show as an empty slot, so the gap reads as room rather than a broken layout.
+
+**Chart tooltips open at the cursor.** A tooltip that opened on a single pointer move, typically a chart scrolled under a still pointer, was drawn in the top-left corner of the window. The renderer recorded the pointer only while a tooltip was already showing, so the move that opened one was lost. The fix is in `@malloydata/render`, and Publisher carries it as a patch to 0.0.435 until a release includes it. The patch applies to the Publisher Console, which bundles the renderer; an application embedding `@malloy-publisher/sdk` resolves its own copy and keeps the bug until it upgrades the renderer.
+
+**Wide tables show their scrollbar.** The Console's thin, overlay scrollbars hid a result table's horizontal scrollbar until you scrolled, so a narrow tile looked cut off rather than wider than its card. Result tables keep a visible scrollbar again, themed for light and dark.
+
 ## [0.9.9] — Loading a package no longer holds the server's event loop while it compiles
 
 Loading a package with large models could stop the server answering anything, health probes included, for tens of seconds. The package-load worker compiled the models, and then the main thread compiled them again: to derive the persist build plan, to give the render-tag check a result schema for every annotated query and view, and to build each model's `#@ preaggregate` companion. Several versions of such a package loading together, as on a restart, ran these back to back on the one thread, long enough to fail a Kubernetes liveness probe.
