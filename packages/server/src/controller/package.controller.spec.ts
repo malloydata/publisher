@@ -1110,6 +1110,15 @@ describe("PackageController.addPackage with package versioning off or on", () =>
       return new PackageController(environmentStore);
    }
 
+   // logger.warn may already be a spy another spec left in place (health.spec
+   // never restores its own), and spying on it again returns that spy with the
+   // calls it holds; clear them so a test counts only its own.
+   const spyOnWarn = () => {
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      warn.mockClear();
+      return warn;
+   };
+
    const offWarnings = (warn: { mock: { calls: unknown } }) =>
       (warn.mock.calls as unknown as unknown[][]).filter(([message]) =>
          String(message).includes("Package versioning is off"),
@@ -1122,7 +1131,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
       delete process.env.PUBLISHER_PACKAGE_VERSIONING;
       const versions = versionsPublishing(installedPackage);
       const installPackage = sinon.stub().resolves(installedPackage);
-      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      const warn = spyOnWarn();
       try {
          await controllerWith(versions, installPackage).addPackage("env", {
             name: "pkg",
@@ -1176,7 +1185,7 @@ describe("PackageController.addPackage with package versioning off or on", () =>
       versioningOn();
       const versions = versionsPublishing(installedPackage);
       const installPackage = sinon.stub().resolves(installedPackage);
-      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      const warn = spyOnWarn();
       try {
          await controllerWith(versions, installPackage).addPackage("env", {
             name: "pkg",
