@@ -137,12 +137,18 @@ export function recordPackageLoadPhases(
  *
  * - `worker`: the package-load worker's job (manifest, compile, extraction) as
  *   the main thread waits for it, with the database scan it overlaps.
- * - `hydrate`: building the main thread's Models from the worker's output.
+ * - `hydrate`: building the main thread's Models from the worker's output,
+ *   and checking their persist names.
  * - `render_validation`: render-tag validation of every model.
  * - `discovery`: reading the package's reports.
  * - `lint`: linting them.
- * - `build_plan`: computing the persist build plan.
+ * - `build_plan`: applying the persist build plan the worker derived, or
+ *   deriving it here when the worker left it at its soft deadline.
  * - `total`: the load end to end, as `Package.create` runs it.
+ *
+ * Each is wall-clock time. The main-thread stages yield to the event loop as
+ * they go (see `event_loop_yield.ts`), so they include the requests served
+ * meanwhile. `Package.reloadAllModels` records none of them.
  */
 export type PackageLoadPhase =
    | "worker"

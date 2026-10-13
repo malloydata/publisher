@@ -4874,7 +4874,6 @@ export class Model {
    }
 
    /**
-   /**
     * Build this model's Malloy `QueryModel` once, on the base model its
     * materializer holds, so every query compiled against it reuses it.
     *

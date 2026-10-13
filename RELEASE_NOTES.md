@@ -29,7 +29,7 @@ Package loads and queries do less on the main thread. Nothing an API or MCP call
 - Render-tag validation, model hydration and the main-thread build-plan derivation yield to the event loop every 10 ms, so a request that arrives during a load waits for at most one step rather than for the whole load.
 - A model's report facts are derived once rather than on every query.
 
-**New metric:** `publisher_package_load_phase_duration_ms{phase}`, one sample per stage of a successful load: `worker`, `hydrate`, `render_validation`, `discovery`, `lint`, `build_plan` and `total`. Since 0.9.9 the load worker derives the build plan, so `build_plan` is the time to apply it, or to derive it on the main thread when the worker left it at its soft deadline. `malloy_package_load_duration` is unchanged and still stops before report discovery and the build plan; `total` is the whole load. See `docs/configuration.md`.
+**New metric:** `publisher_package_load_phase_duration_ms{phase}`, one sample per stage of a successful load: `worker`, `hydrate`, `render_validation`, `discovery`, `lint`, `build_plan` and `total`. Since 0.9.9 the load worker derives the build plan, so `build_plan` is the time to apply it, or to derive it on the main thread when the worker left it at its soft deadline. `malloy_package_load_duration` is unchanged and still stops before report discovery and the build plan; `total` is the whole load. Each stage is wall-clock time, so a main-thread stage includes the requests served while it yields. Package loads record it; reloads do not. See `docs/configuration.md`.
 
 ## [Unreleased] — Reports written as `run:` cells are no longer reports (BREAKING)
 
