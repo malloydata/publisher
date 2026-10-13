@@ -70,7 +70,7 @@ test.describe("dashboard-create", () => {
    }) => {
       await page.goto(`/${env}/${PKG}`);
       await page
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .first()
          .click({
             timeout: 60_000,

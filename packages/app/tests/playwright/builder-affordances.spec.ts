@@ -119,7 +119,7 @@ test.describe("builder affordances", () => {
          timeout: 60_000,
       });
       // The empty row's action and the heading's are the same New report.
-      await page.getByRole("button", { name: "New report" }).last().click();
+      await page.getByRole("button", { name: "Add report" }).last().click();
       const dialog = page.getByRole("dialog", { name: "New report" });
       await expect(dialog).toBeVisible();
       await expect(dialog.getByRole("combobox", { name: "Layout" })).toHaveText(
@@ -142,7 +142,7 @@ test.describe("builder affordances", () => {
       const section = page.getByRole("region", { name: "Reports" });
       await expect(section).toBeVisible({ timeout: 60_000 });
       await section
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .click();
       await expect(
          page.getByRole("dialog", { name: "New report" }),

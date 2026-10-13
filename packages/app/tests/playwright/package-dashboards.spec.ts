@@ -104,7 +104,7 @@ test.describe("package-dashboards", () => {
          artifacts.getByRole("button", { name: /Orders in a window/ }),
       ).toHaveCount(1);
       await expect(
-         artifacts.getByRole("button", { name: "New report", exact: true }),
+         artifacts.getByRole("button", { name: "Add report", exact: true }),
       ).toBeVisible();
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),

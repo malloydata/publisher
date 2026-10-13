@@ -144,7 +144,7 @@ test.describe("embedded host", () => {
       const writes = watchPackageWrites(page);
       await page.goto(`/${storefront.env}/${storefront.pkg}`);
       await page
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .first()
          .click({
             timeout: 60_000,
@@ -198,7 +198,7 @@ test.describe("embedded host", () => {
       const writes = watchPackageWrites(page);
       await page.goto(`/${storefront.env}/${storefront.pkg}`);
       await page
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .first()
          .click({
             timeout: 60_000,
@@ -312,7 +312,7 @@ test.describe("embedded host", () => {
          page.getByRole("heading", { name: "Reports", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(
-         page.getByRole("button", { name: "New report", exact: true }),
+         page.getByRole("button", { name: "Add report", exact: true }),
       ).toHaveCount(0);
    });
 });
