@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — Loading a package no longer holds the server's event loop while it compiles
+## [0.9.9] — Loading a package no longer holds the server's event loop while it compiles
 
 Loading a package with large models could stop the server answering anything, health probes included, for tens of seconds. The package-load worker compiled the models, and then the main thread compiled them again: to derive the persist build plan, to give the render-tag check a result schema for every annotated query and view, and to build each model's `#@ preaggregate` companion. Several versions of such a package loading together, as on a restart, ran these back to back on the one thread, long enough to fail a Kubernetes liveness probe.
 
@@ -34,7 +34,7 @@ Loading a package with large models could stop the server answering anything, he
 
 `PACKAGE_LOAD_JOB_TIMEOUT_MS` still bounds a load's compile, and a load may now run to twice it before its worker is stopped. The work a load worker does for the main thread interleaves with the compile, and the worker starts none of it after three quarters of the timeout. Past that point it leaves the remaining render-tag results and companions to the main thread, model by model, and the build plan, once any model's part of it is missing, to the main thread as a whole. The main thread then does that work as before. A package whose compile fits the timeout still loads, and only one that comes close to it does any of this work on the main thread. A load that hangs is now stopped at twice the timeout. The workers use more CPU per load than before and the main thread correspondingly less, and `malloy_package_load_compile_duration` now includes the work the worker does for the main thread. `publisher_materialization_build_plan_compute_duration_ms` has a `computed_in` label: `worker` for a plan the worker derived, measured from the first model's plan collection to the plan's completion, which other models' compiles interleave with, and `main_thread` for one the main thread derived.
 
-## [Unreleased] - A package can ship its own skills and declare agents
+## [0.9.9] - A package can ship its own skills and declare agents
 
 A package can now carry guidance for the agents that work with it. A `skills/` directory at the package root holds agent skills in the agentskills.io format, served next to the bundled ones by a new `get_skill` MCP tool and `GET .../packages/{pkg}/skills`; a package skill with the name of a bundled one replaces it for that package. An `agents` object in `publisher.json` declares named agents, each with a description, an instructions file, its own skills, and optional scheduled tasks. They are served by a new `get_agent` MCP tool and `GET .../packages/{pkg}/agents` and `.../agents/{name}`, listed on `Package.agents`, and shown in an Agents section on the package page.
 
