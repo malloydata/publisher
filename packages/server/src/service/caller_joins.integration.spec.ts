@@ -502,6 +502,20 @@ describe("a caller join into an #(access_filter) row gate", () => {
       expect(sql).toMatch(/"region" IN \('US'\)/);
    });
 
+   it("an inline extend of a CALLER-declared query source over a locked base is decided by the base's lock, not over-denied", async () => {
+      // `mine` is the caller's; `mine extend {}` has no sourceID and an
+      // `extends` naming a caller source, so it must resolve through the
+      // compiled base to the model's `gated`, as it did before.
+      const q =
+         "source: mine is gated -> { group_by: id, name }\nrun: plain extend { join_one: e is mine extend {} on id = e.id } -> { group_by: id, e.name }";
+      await expectDenied(plainModel, q, DENY, "e");
+      const { rows } = await run(plainModel, q, ADMIT);
+      expect(byId(rows)).toEqual([
+         { id: 1, name: "a" },
+         { id: 2, name: "b" },
+      ]);
+   });
+
    it("a lock on a query source over an anonymous base is decided, not refused as unprovable", async () => {
       const q =
          "run: plain extend { join_one: l is lock_anon on id = l.id } -> { group_by: id, l.secret }";

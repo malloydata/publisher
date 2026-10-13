@@ -557,6 +557,27 @@ export function resolveCallerJoin(
       return anchor;
    };
 
+   // Whether every `contents` entry carrying `sourceID` is one the on-disk
+   // model declares: not the caller's, and a name the model declares. A
+   // read-only probe, unlike `bySourceID`, which records what it resolves.
+   const modelDeclaresSourceID = (sourceID: string): boolean => {
+      const entries = Object.entries(compiledModelDef.contents).filter(
+         ([, value]) =>
+            isSourceDef(value) &&
+            (value as unknown as IrStruct).sourceID === sourceID,
+      );
+      return (
+         entries.length > 0 &&
+         entries.every(
+            ([key, value]) =>
+               !isCaller((value as unknown as IrStruct).location) &&
+               context.isModelSource(
+                  aliasOf(value as unknown as IrStruct) ?? key,
+               ),
+         )
+      );
+   };
+
    const resolveStruct = (
       struct: IrStruct,
       isJoinItself: boolean,
@@ -575,15 +596,18 @@ export function resolveCallerJoin(
          // An inline `X extend { … }` has no sourceID of its own (Malloy
          // strips it from any modified source). When the result is
          // persistable — `X` was a query source or a `sql_select` — Malloy
-         // records what it extends, and when that is a model source the
-         // extension is the caller entering that source with additions on
-         // top: anchor on it, and gate it as that source. An inline extend
-         // of a TABLE source records no `extends` and falls through to the
-         // text-chain fallback below, as before. The additions themselves
-         // are the caller's and are held by the graft, which must land on
-         // the recompiled query.
+         // records what it extends, and when that is a source the MODEL
+         // declares the extension is the caller entering that source with
+         // additions on top: anchor on it, and gate it as that source. The
+         // additions themselves are the caller's and are held by the graft,
+         // which must land on the recompiled query. When `X` is a source the
+         // caller declared, or an inline extend of a TABLE source (no
+         // `extends` at all), nothing changes: the `query_source` branch
+         // below walks the compiled base, as before. Resolving a caller
+         // source here would hand it to `decideCallerSource`, which decides
+         // a caller source from its own struct and over-denies this shape.
          const extendsID = (struct as { extends?: string }).extends;
-         if (extendsID) {
+         if (extendsID && modelDeclaresSourceID(extendsID)) {
             const anchor = bySourceID(extendsID, forBoundary);
             if (!anchor) return false;
             anchored = true;
