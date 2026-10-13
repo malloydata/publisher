@@ -22,8 +22,7 @@ import {
  * The notebook editor's tile operations against a real server: reorder by
  * pointer, add and remove a text tile, prose that mentions a gate, a file that
  * changed underneath the editor, and starting givens that live in the artifact
- * tag. The tour is a layout notebook; `autorun_off` stays in the cell format,
- * which the editor converts on open.
+ * tag.
  */
 
 const PKG = "notebooks-malloyyo";
@@ -52,15 +51,22 @@ Fourth note.
 `;
 
 const AUTORUN_OFF = `##! experimental.givens
-## artifact { layout=linear title="Autorun off" autorun=false givens { REGION=f'US' } }
+##| artifact { layout=linear title="Autorun off" autorun=false givens { REGION=f'US' }
+  tiles=[intro { kind=text }, "orders_tiles -> by_month_in_region"]
+}
+|##
 import "../models/orders.malloy"
 
 # label="Region" control=select suggest { source=orders dimension=region }
 given: REGION :: filter<string> is f''
 
-##(markdown) Pick a region, then apply.
+##|(markdown) intro
+Pick a region, then apply.
+|##
 
-run: orders -> by_month + { where: region ~ $REGION }
+source: orders_tiles is orders extend {
+  view: by_month_in_region is by_month + { where: region ~ $REGION }
+}
 `;
 
 let pe: PackageEnv;

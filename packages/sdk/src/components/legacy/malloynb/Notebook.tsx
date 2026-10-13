@@ -1,9 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { parseResourceUri } from "../../utils/formatting";
-import type { CellReportProps } from "../Report/CellReport";
-import { DashboardView } from "../Dashboard/DashboardView";
+import { parseResourceUri } from "../../../utils/formatting";
+import type { CellReportProps } from "./CellRunnerView";
+import { DashboardView } from "../../Dashboard/DashboardView";
 import { MalloynbCells, useNotebookQuery } from "./MalloynbCells";
 
 type NotebookProps = CellReportProps;

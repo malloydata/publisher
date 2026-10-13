@@ -1,8 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+/**
+ * @deprecated `.malloynb` only; deleted with the format. One cell of a
+ * `.malloynb` notebook: prose, or code with its result in a report tile.
+ */
+
 import CodeIcon from "@mui/icons-material/Code";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
@@ -15,30 +18,25 @@ import {
    Stack,
    Tooltip,
 } from "@mui/material";
-import React, { useEffect, useId, useState } from "react";
-import type { Given } from "../../client";
-import { usePublisherTheme } from "../../theme/ThemeContext";
-import { parseResourceUri } from "../../utils/formatting";
-import { ErrorDetailAlert } from "../ApiErrorDisplay";
-import { AppDialog } from "../AppDialog";
-import { highlight } from "../highlighter";
-import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
-import { FloatingIconButton } from "../FloatingIconButton";
-import { Prose } from "../Prose";
-import type { NavigationClick } from "../click_helper";
-import { useDrill, type DrillNavigation } from "../drill";
-import ResultContainer from "../RenderedResult/ResultContainer";
-import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
-import ResultsDialog from "../ResultsDialog";
-import { CleanMetricCard, MONO_FONT_FAMILY } from "../styles";
-import {
-   cellCaption,
-   cellLabel,
-   definitionSummary,
-   stripProse,
-} from "./cellKind";
-import { TileCard, TileHeading } from "../Dashboard/TileCard";
-import { TextTileFrame } from "../Report/ReportPage";
+import React, { useEffect, useState } from "react";
+import type { Given } from "../../../client";
+import { usePublisherTheme } from "../../../theme/ThemeContext";
+import { parseResourceUri } from "../../../utils/formatting";
+import { ErrorDetailAlert } from "../../ApiErrorDisplay";
+import { AppDialog } from "../../AppDialog";
+import { highlight } from "../../highlighter";
+import { ModelExplorerDialog } from "../../Model/ModelExplorerDialog";
+import { FloatingIconButton } from "../../FloatingIconButton";
+import { Prose } from "../../Prose";
+import type { NavigationClick } from "../../click_helper";
+import { useDrill, type DrillNavigation } from "../../drill";
+import ResultContainer from "../../RenderedResult/ResultContainer";
+import { NOTEBOOK_CELL_MAX_HEIGHT } from "../../RenderedResult/resultSizing";
+import ResultsDialog from "../../ResultsDialog";
+import { CleanMetricCard, MONO_FONT_FAMILY } from "../../styles";
+import { stripProse } from "./cellKind";
+import { TileCard, TileHeading } from "../../Dashboard/TileCard";
+import { TextTileFrame } from "../../Report/ReportPage";
 import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
@@ -117,8 +115,6 @@ export function NotebookCell({
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
 
-   const [definitionOpen, setDefinitionOpen] = useState(false);
-   const definitionRegionId = useId();
    const [copyMessage, setCopyMessage] = useState("");
 
    const { environmentName, packageName, modelPath } =
@@ -234,20 +230,6 @@ export function NotebookCell({
          });
    }, [cell, mode]);
 
-   const caption = cell.kind === "query" ? cellCaption(cell) : undefined;
-   const label = cell.kind === "query" ? cellLabel(cell) : undefined;
-   // The prose a cell carries above its query: a text tile before the result's
-   // tile, as in a report written as tiles.
-   const header = cell.markdown ? (
-      <Box sx={{ mb: 2 }}>
-         <TextTileFrame>
-            <Prose variant="document" links={links}>
-               {cell.markdown}
-            </Prose>
-         </TextTileFrame>
-      </Box>
-   ) : null;
-
    const copyToClipboard = () => {
       const url = window.location.href;
       navigator.clipboard
@@ -328,54 +310,8 @@ export function NotebookCell({
             </TextTileFrame>
          </Box>
       )) ||
-      (cell.kind === "definition" && (
-         <Box>
-            {header}
-            <Box
-               component="button"
-               type="button"
-               aria-expanded={definitionOpen}
-               aria-controls={definitionRegionId}
-               onClick={() => setDefinitionOpen((open) => !open)}
-               sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  p: 0,
-                  border: 0,
-                  background: "none",
-                  cursor: "pointer",
-                  fontFamily: MONO_FONT_FAMILY,
-                  fontSize: "13px",
-                  color: "text.secondary",
-               }}
-            >
-               {definitionOpen ? (
-                  <ExpandMoreIcon fontSize="small" />
-               ) : (
-                  <ChevronRightIcon fontSize="small" />
-               )}
-               {definitionSummary(cell)}
-            </Box>
-            {definitionOpen && (
-               <CleanMetricCard
-                  id={definitionRegionId}
-                  sx={{ mt: 1, padding: "12px 24px" }}
-               >
-                  <pre
-                     className="code-display"
-                     style={{ margin: 0, overflow: "auto" }}
-                     dangerouslySetInnerHTML={{
-                        __html: highlightedMalloyCode ?? "",
-                     }}
-                  />
-               </CleanMetricCard>
-            )}
-         </Box>
-      )) ||
       (cell.type === "code" && (
          <Box>
-            {header}
             {cell.newSources && cell.newSources.length > 0 && (
                <Stack
                   sx={{
@@ -459,12 +395,6 @@ export function NotebookCell({
                !hasValidImport &&
                !(cell.newSources && cell.newSources.length > 0) && (
                   <TileCard>
-                     {(label || caption) && (
-                        <TileHeading
-                           title={label ?? ""}
-                           {...(caption ? { subtitle: caption } : {})}
-                        />
-                     )}
                      <Box
                         sx={{
                            display: "flex",
@@ -493,12 +423,11 @@ export function NotebookCell({
             )}
 
             {cell.result && (
-               // The tile a grid draws: its title and caption, the cell's own
-               // actions on the heading's row, then the result.
+               // The tile a grid draws: the cell's own actions on the heading's
+               // row, then the result.
                <TileCard>
                   <TileHeading
-                     title={label ?? ""}
-                     {...(caption ? { subtitle: caption } : {})}
+                     title=""
                      action={
                         <Stack direction="row" sx={{ gap: 0.5, mt: "-4px" }}>
                            <FloatingIconButton

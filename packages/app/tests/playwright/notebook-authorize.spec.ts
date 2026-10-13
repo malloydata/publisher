@@ -57,15 +57,14 @@ source: gated_products is duckdb.table('data/products.parquet') extend {
 }
 `;
 
-// One query cell. The report enables `experimental.givens`: authorize
-// validation compiles a `$role` probe against the report's model, which needs
-// the flag set here even though `role` itself is declared in the imported model.
+// One query tile, run as this query. The report enables `experimental.givens`:
+// authorize validation compiles a `$role` probe against the report's model,
+// which needs the flag set here even though `role` itself is declared in the
+// imported model.
 const CELL = "run: gated_products -> spotlight";
 const NOTEBOOK_SOURCE = `##! experimental.givens
-## artifact { layout=linear }
+## artifact { layout=linear tiles=["gated_products -> spotlight"] }
 import "authz_gate.malloy"
-
-${CELL}
 `;
 
 async function reloadPackage(baseURL: string): Promise<void> {

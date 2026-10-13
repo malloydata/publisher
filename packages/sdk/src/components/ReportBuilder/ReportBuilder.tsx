@@ -27,7 +27,6 @@ import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
 import { useControlBindings } from "./useControlBindings";
-import { useConversionConfirm } from "./useConversionConfirm";
 import { useReportEditor } from "./useReportEditor";
 import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
@@ -153,12 +152,6 @@ export interface ReportBuilderProps {
     */
    onEvent?: ReportEventHandler;
    /**
-    * The document is a conversion of a cell-format notebook: `from` is the text
-    * on disk, `to` the layout text it converts to. Save writes `to` with the
-    * edits spliced in, and Undo save puts `from` back.
-    */
-   conversion?: { from: string; to: string };
-   /**
     * Whether the document differs from what was last saved, on every change
     * and on mount.
     *
@@ -221,7 +214,6 @@ export function ReportBuilder({
    toolbar,
    dashboards,
    onEvent,
-   conversion,
    savesTo = "package",
    saveLabel,
    replaces,
@@ -233,7 +225,6 @@ export function ReportBuilder({
       source,
       document,
       ...(onSave ? { onSave } : {}),
-      ...(conversion ? { conversion } : {}),
       ...(replaces !== undefined ? { replaces } : {}),
       ...(visibleSources ? { visibleSources } : {}),
    });
@@ -300,10 +291,6 @@ export function ReportBuilder({
    const { draftDirty, openDraft, prepare } = useOpenDraftCommit({
       editorDirty: editor.dirty,
    });
-   const { confirmConversion, prepareSave } = useConversionConfirm({
-      pendingOpen: editor.pendingOpen,
-      prepare,
-   });
 
    const shortcuts = useMemo(
       () => ({
@@ -315,8 +302,7 @@ export function ReportBuilder({
                !menu &&
                !filterDialog &&
                !addingTile &&
-               drillSource === undefined &&
-               confirmConversion === undefined
+               drillSource === undefined
             )
                clearSelection();
          },
@@ -342,7 +328,6 @@ export function ReportBuilder({
          filterDialog,
          addingTile,
          drillSource,
-         confirmConversion,
          clearSelection,
          selected,
          columns,
@@ -353,7 +338,7 @@ export function ReportBuilder({
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
       extraDirty: draftDirty,
-      prepare: prepareSave,
+      prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onDirtyChange,
@@ -421,15 +406,6 @@ export function ReportBuilder({
                   px: `${SELECTION_RING_PX}px`,
                   pb: `${SELECTION_RING_PX}px`,
                }}
-               notice={
-                  editor.pendingOpen && (
-                     <Alert severity="info">
-                        This report is in the cell format. Saving rewrites it as
-                        a layout notebook, and a named query run once becomes
-                        that tile&apos;s view.
-                     </Alert>
-                  )
-               }
                header={
                   <BuilderHeader
                      editor={editor}
@@ -526,7 +502,6 @@ export function ReportBuilder({
                   tiles={tiles}
                   drillSource={drillSource}
                   setDrillSource={setDrillSource}
-                  confirmConversion={confirmConversion}
                   exitDialog={session.exitGuard.dialog}
                />
             </ReportPage>

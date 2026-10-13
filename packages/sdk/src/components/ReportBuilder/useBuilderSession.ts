@@ -24,11 +24,9 @@ export interface SessionEditor<D, L extends LastSave = LastSave> {
    /** The document as of the last save (or open). */
    saved: D;
    dirty: boolean;
-   /** Unsaved edits made by a person, when that differs from `dirty` (an open that is unsaved before any edit); absent means `dirty`. */
+   /** Unsaved edits made by a person, when that differs from `dirty`; absent means `dirty`. */
    edited?: boolean;
    structural: boolean;
-   /** Whether the document opened unsaved (a conversion); the save that clears it reports so. */
-   pendingOpen?: boolean;
    canUndo: boolean;
    canRedo: boolean;
    undo: () => void;
@@ -53,8 +51,6 @@ export interface SessionReport {
 export interface SessionSaveInfo {
    size: number;
    structural: boolean;
-   /** The save wrote a document that opened unsaved. */
-   fromOpen: boolean;
    durationMs: number;
 }
 
@@ -102,7 +98,7 @@ export function useBuilderSession<
    const reportRef = useRef(report);
    reportRef.current = report;
    const dirty = editor.dirty || extraDirty;
-   // Work to lose: a conversion nobody has touched is rebuilt by opening the file again.
+   // Work to lose.
    const hasEdits = (editor.edited ?? editor.dirty) || extraDirty;
 
    useEffect(() => {
@@ -129,7 +125,6 @@ export function useBuilderSession<
       setUndone(false);
       const started = now();
       const { structural } = editor;
-      const fromOpen = editor.pendingOpen ?? false;
       const size = reportRef.current.size;
       return editor
          .save()
@@ -138,7 +133,6 @@ export function useBuilderSession<
                reportRef.current.saved({
                   size,
                   structural,
-                  fromOpen,
                   durationMs: now() - started,
                });
             } else reportRef.current.refused(outcome.reason);
@@ -172,7 +166,6 @@ export function useBuilderSession<
                reportRef.current.undone({
                   size,
                   structural,
-                  fromOpen: false,
                   durationMs: now() - started,
                });
             } else reportRef.current.undoRefused(outcome.reason);

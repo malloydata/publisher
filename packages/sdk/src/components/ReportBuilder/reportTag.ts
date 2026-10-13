@@ -26,6 +26,7 @@ export type ReportTag =
    | { status: "none" }
    | { status: "unparsed"; errors: string[] }
    | { status: "kind-removed"; kind: string }
+   | { status: "cells-removed" }
    | { status: "report"; layout: ReportLayout };
 
 type Parsed = { tag: TagReads; log: Array<{ message: string }> };
@@ -51,6 +52,10 @@ const onTagRoute = (note: string) => /^##\|?(?:[ \t\r\n]|$)/.test(note);
 export const kindRemovedReason = (kind: string) =>
    `\`kind=${kind}\` is no longer read, so this file is not a report. Fix: remove \`kind=${kind}\` and write \`layout=grid\` or \`layout=linear\`.`;
 
+/** Why a linear tag with no `tiles` makes no report, and the fix: the server's message, capitalized. */
+export const CELLS_REMOVED_REASON =
+   "A linear report written as `run:` cells is no longer read, so this file is not a report. Fix: list its tiles in `tiles=[…]` (a text tile per prose block, a query tile per view), or remove the `## artifact` tag.";
+
 /**
  * The one reader of a report's tag in the SDK, over a file's model-level
  * notes (`ParsedMalloy.modelNotes`). The server's `readReportTag` is the same
@@ -58,7 +63,8 @@ export const kindRemovedReason = (kind: string) =>
  *
  * The layout, first match wins: `layout=grid|linear`; else grid when the tag
  * lists `tiles` (an empty list counts) or a model-level `dashboard { … }` grid
- * tag is present; else linear.
+ * tag is present; else linear. A linear tag with no `tiles` key (an empty
+ * list counts as one) is the retired cell format, and no report.
  */
 export function readReportTag(
    modelNotes: readonly string[],
@@ -80,12 +86,16 @@ export function readReportTag(
          : { status: "none" };
    const kind = textOf(artifact, "kind");
    if (kind !== undefined) return { status: "kind-removed", kind };
-   const layout = textOf(artifact, "layout");
-   if (layout === "grid" || layout === "linear")
-      return { status: "report", layout };
-   if (artifact.has("tiles") || tag?.tag("dashboard") !== undefined)
-      return { status: "report", layout: "grid" };
-   return { status: "report", layout: "linear" };
+   const named = textOf(artifact, "layout");
+   const hasTiles = artifact.has("tiles");
+   const layout: ReportLayout =
+      named === "grid" || named === "linear"
+         ? named
+         : hasTiles || tag?.tag("dashboard") !== undefined
+           ? "grid"
+           : "linear";
+   if (layout === "linear" && !hasTiles) return { status: "cells-removed" };
+   return { status: "report", layout };
 }
 
 /**

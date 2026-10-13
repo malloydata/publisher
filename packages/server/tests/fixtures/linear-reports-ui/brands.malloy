@@ -1,7 +1,6 @@
 ##! experimental.givens
 ##| artifact { layout=linear title="Brands"
   tiles=[
-    heading { kind=text },
     "brands_tiles -> amount_by_brand",
     "brands_tiles -> orders_by_region"
   ]
@@ -15,10 +14,6 @@
 // somewhere to put the clicked value.
 import "orders.malloy"
 import { REGION } from "givens.malloy"
-
-##|(markdown) heading
-# Brands
-|##
 
 source: brands_tiles is orders extend {
    # label="Amount by brand"

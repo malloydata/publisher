@@ -4,7 +4,6 @@
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
-import type { Given } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -464,10 +463,6 @@ export function ReportEditor(props: ReportEditorProps) {
                modelPath={modelPath}
                {...(textSource ? { textSource } : {})}
                slug={dashboardName}
-               modelGivens={
-                  (modelQuery.data?.data as { givens?: Given[] } | undefined)
-                     ?.givens
-               }
                {...(versionId !== undefined ? { versionId } : {})}
                opened={opened}
                {...(fromDraft &&

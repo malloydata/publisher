@@ -136,22 +136,6 @@ describe("opening a report", () => {
       });
    });
 
-   it("reports a run:-cell report's open as linear, counting its cells", async () => {
-      manifest = CELLS;
-      const onEvent = mock((_event: ReportEvent) => {});
-      render(
-         <Report resourceUri={URI} path="review.malloy" onEvent={onEvent} />,
-         { wrapper: serverWrapper },
-      );
-      expect(await screen.findByText("Cell prose")).toBeTruthy();
-      expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "report.opened",
-         path: "review.malloy",
-         layout: "linear",
-         tiles: 2,
-      });
-   });
-
    it("reports a failed read as load_failed with a category, never the message, and no open", async () => {
       reportFailure = Object.assign(
          new Error("no such report: secret.malloy"),
@@ -259,34 +243,5 @@ describe("a failed query", () => {
             category: "server",
          },
       ]);
-   });
-
-   it("reports a cell's failure to the host instead of the console", async () => {
-      manifest = CELLS;
-      queryFailure = { response: { status: 403 } };
-      const onEvent = mock((_event: ReportEvent) => {});
-      render(
-         <Report resourceUri={URI} path="review.malloy" onEvent={onEvent} />,
-         { wrapper: serverWrapper },
-      );
-      await waitFor(() =>
-         expect(typesOf(onEvent.mock.calls)).toContain("report.query_failed"),
-      );
-      expect(
-         onEvent.mock.calls
-            .map(([event]) => event)
-            .find((event) => event.type === "report.query_failed"),
-      ).toMatchObject({ tile: 1, category: "forbidden", layout: "linear" });
-      expect(errorSpy).not.toHaveBeenCalled();
-   });
-
-   it("logs a cell's failure to the console when no host listens", async () => {
-      manifest = CELLS;
-      queryFailure = { response: { status: 500 } };
-      render(<Report resourceUri={URI} path="review.malloy" />, {
-         wrapper: serverWrapper,
-      });
-      await waitFor(() => expect(errorSpy).toHaveBeenCalled());
-      expect(String(errorSpy.mock.calls[0][0])).toContain("cell 1");
    });
 });

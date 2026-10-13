@@ -15,7 +15,8 @@ import {
 } from "../drill";
 import { GivensPanel, type GivensLayout } from "../given";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
-import { Prose } from "../Prose";
+import { Prose, type ProseLinkContext } from "../Prose";
+import type { NavigationClick } from "../click_helper";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { DashboardGrid, GRID_GAP_PX } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
@@ -79,6 +80,11 @@ export interface DashboardViewProps {
    runModelPath?: string;
    /** Givens the host sets itself: no control is shown for them. */
    hiddenGivens?: readonly string[];
+   /**
+    * An ordinary link in the report's prose (its description and text tiles),
+    * for a host with its own router. Omitted, links are plain anchors.
+    */
+   onLinkNavigate?: (to: string, event?: NavigationClick) => void;
 }
 
 /**
@@ -102,7 +108,25 @@ export function DashboardView({
    preamble,
    runModelPath,
    hiddenGivens,
+   onLinkNavigate,
 }: DashboardViewProps) {
+   // Where a relative link in the report's prose resolves from, and how the
+   // host navigates to it.
+   const links = useMemo<ProseLinkContext>(
+      () => ({
+         environmentName,
+         packageName,
+         sourcePath: manifest.path ?? documentName,
+         ...(onLinkNavigate ? { onNavigate: onLinkNavigate } : {}),
+      }),
+      [
+         environmentName,
+         packageName,
+         manifest.path,
+         documentName,
+         onLinkNavigate,
+      ],
+   );
    const specs = useMemo(
       () =>
          (manifest.givens ?? []).filter(
@@ -221,7 +245,7 @@ export function DashboardView({
       return (
          <ReportPage
             layout={layout}
-            header={<DashboardHeader manifest={manifest} />}
+            header={<DashboardHeader manifest={manifest} links={links} />}
          >
             <Alert severity="error">{manifest.error}</Alert>
          </ReportPage>
@@ -234,7 +258,7 @@ export function DashboardView({
    return (
       <ReportPage
          layout={layout}
-         header={<DashboardHeader manifest={manifest} />}
+         header={<DashboardHeader manifest={manifest} links={links} />}
          // Only when there are controls: GivensPanel draws nothing without
          // them, and an empty bar would still cost the page a gap.
          controls={
@@ -270,7 +294,7 @@ export function DashboardView({
                   tile.kind === "text" || tile.query === undefined ? (
                      // Prose, never a card, in either layout: a text tile is
                      // part of the page, not a result.
-                     <TextTile markdown={tile.markdown ?? ""} />
+                     <TextTile markdown={tile.markdown ?? ""} links={links} />
                   ) : (
                      <DashboardTile
                         index={index}
@@ -334,10 +358,18 @@ export function DashboardView({
 }
 
 /** A text tile: its markdown and nothing else, no heading. */
-function TextTile({ markdown }: { markdown: string }) {
+function TextTile({
+   markdown,
+   links,
+}: {
+   markdown: string;
+   links: ProseLinkContext;
+}) {
    return (
       <TextTileFrame>
-         <Prose variant="document">{markdown}</Prose>
+         <Prose variant="document" links={links}>
+            {markdown}
+         </Prose>
       </TextTileFrame>
    );
 }
@@ -347,14 +379,22 @@ function TextTile({ markdown }: { markdown: string }) {
  * with the title, and the description as markdown prose (Malloy carries a
  * `##"` block through with its newlines intact) in a text tile's frame.
  */
-function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
+function DashboardHeader({
+   manifest,
+   links,
+}: {
+   manifest: DashboardManifest;
+   links: ProseLinkContext;
+}) {
    return (
       <ReportHeader
          title={manifest.title ?? manifest.name}
          description={
             manifest.description ? (
                <TextTileFrame>
-                  <Prose variant="document">{manifest.description}</Prose>
+                  <Prose variant="document" links={links}>
+                     {manifest.description}
+                  </Prose>
                </TextTileFrame>
             ) : undefined
          }

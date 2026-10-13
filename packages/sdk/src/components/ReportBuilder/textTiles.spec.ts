@@ -151,29 +151,29 @@ describe("readDashboardDocument: text tiles and layout", () => {
       expect(text(await openDocument(source), "outro").markdown).toBe("");
    });
 
-   it("marks a notebook with no tiles list as the cell format", async () => {
+   it("refuses a notebook with no tiles list: the cell format is no longer read", async () => {
       const result = await readDashboardDocument(
          `## artifact { layout=linear title="Old" }\nimport { a } from "../m.malloy"\n\nrun: a -> v\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.legacyNotebook).toBe(true);
+      expect(result.reason).toContain("no longer read");
    });
 
-   it("still refuses a grid report with no tiles list, without the legacy mark", async () => {
+   it("refuses a grid report with no tiles list for a missing tile list", async () => {
       const result = await readDashboardDocument(
          `## artifact { layout=grid title="D" }\nimport { a } from "../m.malloy"\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.legacyNotebook).toBeUndefined();
+      expect(result.reason).not.toContain("no longer read");
       expect(result.reason).toContain("tiles");
    });
 
-   it("reads a tag with no layout and no tiles as a linear report in the cell format", async () => {
+   it("refuses a tag with no layout and no tiles as the retired cell format", async () => {
       const result = await readDashboardDocument(
          `## artifact { title="D" }\nimport { a } from "../m.malloy"\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.legacyNotebook).toBe(true);
+      expect(result.reason).toContain("no longer read");
    });
 
    it("reads an empty tiles list on a notebook as a layout notebook with no tiles", async () => {
