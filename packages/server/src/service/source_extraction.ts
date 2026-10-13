@@ -427,10 +427,11 @@ export function extractSourcesFromModelDef(
    // on …` with no annotation of its own, therefore surfaces on the join
    // field's `annotations` looking BYTE-IDENTICAL to a misplaced one —
    // `docs/authorize.md`'s own worked join example is exactly this shape.
-   // `gatedSourceOwnAuthorizeNotes` below is the identity set that tells the
-   // two apart: a copied note is (by reference) also some source's OWN note
-   // somewhere in this model; an author's stray annotation is a freshly
-   // parsed note object that appears nowhere else.
+   // `gatedSourceOwnAuthorizeNotes` below, with its position-keyed twin, is
+   // the set that tells the two apart: a copied note is also some source's
+   // OWN note somewhere in this model, by reference or by the position it
+   // was parsed from; an author's stray annotation is a freshly parsed note
+   // at the join line's own position, which appears nowhere else.
    const misplacedAuthorize: MisplacedAuthorizeAnnotation[] = [];
 
    // Every `#(authorize)`-tagged note object that is some source's OWN
@@ -453,9 +454,17 @@ export function extractSourcesFromModelDef(
    // source's own position. So a position match is as authoritative as an
    // identity match, and the fallback keeps a diamond-imported gated join
    // from failing the load as a misplaced annotation.
+   //
+   // Position identifies a note only while one compile never parses two
+   // different texts under one URL. File URLs hold that because the
+   // intercepting reader matches on the URL string, and a synthetic compile
+   // (a notebook cell, `/compile`'s append scope) gets its own
+   // `internal://<method>/<uuid>` URL from Malloy. The note's text is folded
+   // into the key as well, so a same-position, different-text collision
+   // would be refused rather than accepted.
    const gatedSourceOwnAuthorizeNoteKeys = new Set<string>();
    const noteKey = (note: AnnotationNote): string =>
-      `${note.at.url}#${note.at.range.start.line}:${note.at.range.start.character}-${note.at.range.end.line}:${note.at.range.end.character}`;
+      `${note.at.url}#${note.at.range.start.line}:${note.at.range.start.character}-${note.at.range.end.line}:${note.at.range.end.character}#${note.text}`;
    const isGatedSourceOwnNote = (note: AnnotationNote): boolean =>
       gatedSourceOwnAuthorizeNotes.has(note) ||
       gatedSourceOwnAuthorizeNoteKeys.has(noteKey(note));
@@ -802,8 +811,9 @@ export function extractSourcesFromModelDef(
             // this model is let through (`joinFieldNamesUnresolvableDeclaration`
             // below); a resolvable one falls through to the same fatal
             // `misplacedAuthorize` every other misplaced annotation gets,
-            // because there the identity check is authoritative and a
-            // mismatch means the annotation really is author-written here.
+            // because there the identity-or-position check is authoritative
+            // and a mismatch means the annotation really is author-written
+            // here.
             //
             // `isJoined` alone is not enough: it is `'join' in def`, which is
             // also true of an array- or record-typed dimension (Malloy's IR
@@ -829,7 +839,7 @@ export function extractSourcesFromModelDef(
                   // of just the joiner, or a source two-plus hops away).
                   // Presumed Malloy's copy of a gate declared out of sight,
                   // not authored here — see the helper's doc. Ignored
-                  // SILENTLY, not warned: the identity set cannot speak for a
+                  // SILENTLY, not warned: the own-note set cannot speak for a
                   // declaration it never saw, and every legitimate cross-file
                   // join of a gated source lands here, so a warning would fire
                   // on correct packages as a matter of course. The residual

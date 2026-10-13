@@ -38,7 +38,20 @@ import "facts.malloy"
 #(access_filter) region in $GROUPS
 source: secure_attr is dim_attr extend { join_many: values is fact on attr_id = values.id }
 `;
-// The genuine mistake: a gate typed on the join line itself.
+// The genuine mistake inside the diamond: the gate typed on the join line of
+// a file that itself declares gated sources, so the file's URL is in the
+// own-note set and only the position tells the notes apart.
+const FACTS_TYPED = `import "dims.malloy"
+##! experimental { givens }
+#(access_filter) region in $GROUPS
+source: fact_base is ${T} extend {
+  #(authorize) false
+  join_one: field is dim_attr on id = field.attr_id
+}
+#(access_filter) region in $GROUPS
+source: fact is fact_base -> { select: id, region, nm is field.attr_name } extend { primary_key: id }
+`;
+// The genuine mistake in a file that declares no gated source of its own.
 const TYPED_ON_JOIN = `import "dims.malloy"
 ##! experimental { givens }
 source: joiner is ${T} extend {
@@ -96,6 +109,26 @@ describe("a gated source joined inside a diamond import", () => {
 });
 
 describe("a gate typed on a join line", () => {
+   it("inside the diamond, in a file whose URL holds gated sources, is still reported", async () => {
+      const found = await compile(
+         {
+            "dims.malloy": DIMS,
+            "facts.malloy": FACTS_TYPED,
+            "security.malloy": SECURITY,
+         },
+         "security.malloy",
+         false,
+      );
+      expect(found).toEqual([
+         {
+            kind: "field",
+            name: "fact_base",
+            fieldName: "field",
+            route: "authorize",
+         },
+      ]);
+   });
+
    it("is still reported as misplaced", async () => {
       const found = await compile(
          { "dims.malloy": DIMS, "joiner.malloy": TYPED_ON_JOIN },
