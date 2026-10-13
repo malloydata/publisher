@@ -440,6 +440,25 @@ export function extractSourcesFromModelDef(
    // source the field happens to live on — a join field's copied note names
    // the JOINED source, not the joiner.
    const gatedSourceOwnAuthorizeNotes = new Set<AnnotationNote>();
+   // The same notes by the position they were parsed from. Object identity
+   // is the first test, and it holds whenever Malloy copied the note by
+   // reference. It does NOT hold when the model compiled the declaring file
+   // more than once — a diamond import (`security.malloy` imports both
+   // `dims.malloy` and `facts.malloy`, and `facts.malloy` imports
+   // `dims.malloy` too) parses `dims.malloy` once per path, so the struct a
+   // join embeds carries one parse's note while `contents` holds the other's.
+   // The two are byte-identical and were parsed from the same `source:` line,
+   // which is what a copied gate IS; an annotation an author typed on a join
+   // line was parsed from THAT line, in the joiner's file, and matches no
+   // source's own position. So a position match is as authoritative as an
+   // identity match, and the fallback keeps a diamond-imported gated join
+   // from failing the load as a misplaced annotation.
+   const gatedSourceOwnAuthorizeNoteKeys = new Set<string>();
+   const noteKey = (note: AnnotationNote): string =>
+      `${note.at.url}#${note.at.range.start.line}:${note.at.range.start.character}-${note.at.range.end.line}:${note.at.range.end.character}`;
+   const isGatedSourceOwnNote = (note: AnnotationNote): boolean =>
+      gatedSourceOwnAuthorizeNotes.has(note) ||
+      gatedSourceOwnAuthorizeNoteKeys.has(noteKey(note));
    // Every `#(authorize)`-tagged note object seen above, resolved to the ONE
    // top-level struct whose OWN `source:` line actually wrote it — see
    // `considerNoteOwner`'s doc. Feeds `authorizeOwnNotes` below so a
@@ -464,6 +483,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes(struct.annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            gatedSourceOwnAuthorizeNoteKeys.add(noteKey(note));
             considerNoteOwner(authorizeNoteDeclaredBy, note, struct);
          }
       }
@@ -498,6 +518,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes((entry as StructDef).annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            gatedSourceOwnAuthorizeNoteKeys.add(noteKey(note));
             considerNoteOwner(
                authorizeNoteDeclaredBy,
                note,
@@ -763,13 +784,10 @@ export function extractSourcesFromModelDef(
             // not an annotation anyone wrote here. See the function header and
             // `gatedSourceOwnAuthorizeNotes`'s doc above. If the author instead
             // typed `#(authorize)` directly on the join line themselves, the
-            // note is a freshly parsed object that matches nothing else, so
-            // this still falls through and reports it.
-            if (
-               fieldAuthorizeNotes.every((note) =>
-                  gatedSourceOwnAuthorizeNotes.has(note),
-               )
-            ) {
+            // note is a freshly parsed object at the join line's own position,
+            // which matches nothing else by identity or by position, so this
+            // still falls through and reports it.
+            if (fieldAuthorizeNotes.every(isGatedSourceOwnNote)) {
                continue;
             }
             const fieldName = field.as || field.name;
