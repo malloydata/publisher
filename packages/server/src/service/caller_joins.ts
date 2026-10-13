@@ -573,11 +573,15 @@ export function resolveCallerJoin(
          declaredByModel = anchor === "model";
       } else {
          // An inline `X extend { … }` has no sourceID of its own (Malloy
-         // strips it from any modified source) but records what it extends.
-         // When that is a model source, the extension is the caller entering
-         // that source with additions on top: anchor on it, and gate it as
-         // that source. The additions themselves are the caller's and are
-         // held by the graft, which must land on the recompiled query.
+         // strips it from any modified source). When the result is
+         // persistable — `X` was a query source or a `sql_select` — Malloy
+         // records what it extends, and when that is a model source the
+         // extension is the caller entering that source with additions on
+         // top: anchor on it, and gate it as that source. An inline extend
+         // of a TABLE source records no `extends` and falls through to the
+         // text-chain fallback below, as before. The additions themselves
+         // are the caller's and are held by the graft, which must land on
+         // the recompiled query.
          const extendsID = (struct as { extends?: string }).extends;
          if (extendsID) {
             const anchor = bySourceID(extendsID, forBoundary);
