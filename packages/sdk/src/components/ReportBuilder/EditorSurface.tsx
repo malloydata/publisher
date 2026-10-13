@@ -20,6 +20,7 @@ import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useReportListing } from "../Package/useDocumentLocation";
+import { reportQueryOptions } from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
@@ -111,41 +112,36 @@ export function EditorSurface({
    );
 
    const {
-      data,
+      data: read,
       isSuccess: manifestLoaded,
       isError: manifestFailed,
    } = useQueryWithApiError({
-      queryKey: [
-         "dashboard-editor-manifest",
+      // The reader's read of the same report, so opening the builder from the
+      // reader does not read it again. A report in the cell format has only the
+      // tag's starting values until it is saved.
+      ...reportQueryOptions(apiClients, {
          environmentName,
          packageName,
-         modelPath,
+         path: modelPath,
          versionId,
-      ],
-      // One read for either layout, by path. A report in the cell format has only the tag's starting values until it is saved.
-      queryFn: async (): Promise<DashboardManifest> => {
-         const read = (
-            await apiClients.reports.getReport(
-               environmentName,
-               packageName,
-               modelPath,
-               versionId,
-            )
-         ).data;
-         if (read.notebook)
-            return {
-               ...(read.notebook.startingGivens
-                  ? { startingGivens: read.notebook.startingGivens }
-                  : {}),
-               ...(read.notebook.autorun === undefined
-                  ? {}
-                  : { autorun: read.notebook.autorun }),
-            };
-         return read;
-      },
+      }),
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
    });
+   const data = useMemo(
+      (): DashboardManifest | undefined =>
+         read?.notebook
+            ? {
+                 ...(read.notebook.startingGivens
+                    ? { startingGivens: read.notebook.startingGivens }
+                    : {}),
+                 ...(read.notebook.autorun === undefined
+                    ? {}
+                    : { autorun: read.notebook.autorun }),
+              }
+            : read,
+      [read],
+   );
    // A text source takes its manifest from compiling the text as the viewer.
    const runModelPath = textSource?.modelPath ?? modelPath;
    const compiled = useCompiledDocument(

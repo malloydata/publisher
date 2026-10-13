@@ -63,6 +63,7 @@ const CELL = "run: gated_products -> spotlight";
 const NOTEBOOK_SOURCE = `##! experimental.givens
 ## artifact { layout=linear }
 import "authz_gate.malloy"
+import { filterButton, openFilter } from "./helpers/filters";
 
 ${CELL}
 `;
@@ -159,7 +160,13 @@ test.describe("notebook-authorize", () => {
       // An untitled report is listed by its basename.
       await page.getByText("authz_gate_notebook", { exact: true }).click();
       await expect(page).toHaveURL(/\/authz_gate_notebook$/);
-      await expect(page.getByLabel("role")).toBeVisible();
+      await expect(filterButton(page, "role")).toBeVisible();
+   }
+
+   /** Type a role into its filter's popover. */
+   async function supplyRole(page: import("@playwright/test").Page) {
+      const filter = await openFilter(page, "role");
+      await filter.getByLabel("role", { exact: true }).fill("analyst");
    }
 
    test("UI: result is gated until the given is supplied", async ({ page }) => {
@@ -182,7 +189,7 @@ test.describe("notebook-authorize", () => {
 
       // With the notebook idle, supplying the satisfying given re-executes and
       // the result appears.
-      await page.getByLabel("role").fill("analyst");
+      await supplyRole(page);
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
@@ -209,7 +216,7 @@ test.describe("notebook-authorize", () => {
       );
       await openNotebook(page);
       await firstCellRequest;
-      await page.getByLabel("role").fill("analyst");
+      await supplyRole(page);
 
       // Once the held run finishes, the mid-flight given must be picked up and
       // re-executed — the result appears without any further interaction.

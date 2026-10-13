@@ -42,12 +42,15 @@ const PAGE_GAP = 2;
  * whatever the surface adds under them).
  */
 export function ReportPage({
+   layout,
    notice,
    header,
    controls,
    children,
    sx,
 }: {
+   /** Written as `data-layout` on the page, so a test or a host can tell the two apart. */
+   layout?: "grid" | "linear";
    notice?: ReactNode;
    header: ReactNode;
    controls?: ReactNode;
@@ -55,7 +58,10 @@ export function ReportPage({
    sx?: SxProps<Theme>;
 }) {
    return (
-      <Stack sx={[{ gap: PAGE_GAP }, ...(Array.isArray(sx) ? sx : [sx])]}>
+      <Stack
+         data-layout={layout}
+         sx={[{ gap: PAGE_GAP }, ...(Array.isArray(sx) ? sx : [sx])]}
+      >
          {notice}
          {header}
          {controls}

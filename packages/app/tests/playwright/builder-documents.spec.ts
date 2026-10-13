@@ -60,6 +60,7 @@ test.describe("dashboard with no tile", () => {
             "dashboards/blank.malloy": `##! experimental.givens
 ## artifact { title="Blank start" tiles=[] }
 import { orders } from '../orders.malloy'
+import { closeFilter } from "./helpers/filters";
 `,
          },
       );
@@ -130,14 +131,22 @@ test.describe("joined filter", () => {
          .getByRole("button", { name: "Add filter", exact: true })
          .click();
 
-      // The new control's picker asks the server for its values.
-      const control = page.getByRole("combobox", { name: /state/i }).first();
-      await expect(control).toBeVisible({ timeout: 30_000 });
+      // The new filter's button opens its picker, which asks the server for
+      // its values.
+      await page
+         .getByRole("button", { name: /state[^:]*: /i })
+         .first()
+         .click({ timeout: 30_000 });
+      const control = page
+         .getByRole("dialog", { name: / filter$/ })
+         .getByRole("combobox")
+         .first();
+      await expect(control).toBeVisible();
       await control.click();
       await expect(page.getByRole("option").first()).toBeVisible({
          timeout: 30_000,
       });
-      await page.keyboard.press("Escape");
+      await closeFilter(page);
 
       await saveChanges(page);
       expect(await pe.readSource("overview.malloy")).toContain(

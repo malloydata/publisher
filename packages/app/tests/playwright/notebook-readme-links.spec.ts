@@ -101,7 +101,8 @@ test.describe("notebook-readme-links", () => {
       // The target notebook renders its authored H1, proving it loaded rather
       // than the "does not exist" error the dropped-package route gave.
       await expect(
-         page.getByRole("heading", { name: "Linked tour", level: 1 }),
+         // The report's title and the prose's own heading both say it.
+         page.getByRole("heading", { name: "Linked tour", level: 1 }).first(),
       ).toBeVisible();
    });
 });

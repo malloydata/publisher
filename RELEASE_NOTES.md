@@ -31,13 +31,14 @@ What an SDK host sees:
 - **`chrome` on `Report` and `DashboardView` is accepted and ignored.** A host that passed `chrome="none"` for a linear report gets cards around its query tiles, as a grid has; text tiles and the description are prose, never a card, in either layout.
 - **Report surfaces size their controls and tiles themselves**: 32px controls, 6px control corners, 8px tiles, a 14px semibold tile title, rather than the host theme's button sizes and `shape.borderRadius`. Colours still come from the host palette and the instance theme.
 - **The report title is an `h1`.** An untitled linear report is titled with its file name, as an untitled grid already was.
+- **The report page carries `data-layout`** (`grid` or `linear`) in the reader and the builder alike, for a host or a test that needs to tell the two apart now that both draw cards. A test that checked a linear report by the absence of cards should check this instead.
 - **`CellReport` takes `title` and `description`**, drawn in the shared header; `Report` passes them from the manifest.
 
 In the builder, a report's filters are configured on the filter row itself: a remove badge on each button's corner, its settings from its popover, "+ Filter" at the end of the row, and a filter no tile reads yet shown dashed and marked unused. The row of chips above the controls is gone.
 
 A tile is removed the same way: a × on its corner while it is hovered, focused or selected, rather than Delete in its "⋯" menu, which now holds the chart and drill only (a text tile has no menu). The last tile of a saved report keeps its × but says why it cannot go.
 
-**Switching from reading to editing no longer blanks the page.** The Console keeps the report on screen while the builder's code and data load, and starts fetching the builder's code when the pointer reaches Edit. A tile the builder has not changed runs exactly as the reader runs it, so it is drawn from the reader's cached result instead of re-running. `ReportEditor` takes `loading`, what to draw while the report opens (default a spinner), for a host that wants the same.
+**Switching from reading to editing no longer blanks the page.** The Console keeps the report on screen while the builder's code and data load, and starts fetching the builder's code when the pointer reaches Edit. A tile the builder has not changed runs exactly as the reader runs it, so it is drawn from the reader's cached result instead of re-running. The builder also reads the report's manifest from the reader's cache entry, so opening it reads the report once. `ReportEditor` takes `loading`, what to draw while the report opens (default a spinner), for a host that wants the same.
 
 **The package page says what failed to load.** A file the server could not serve as intended (for example one whose artifact tag still sets `kind=`, which 0.9.8 stopped reading, so it listed under Models rather than Reports) is named with the server's own message and fix. Lower-severity notes are folded behind a count. The Reports heading's create button is now **+ Report**, accessible name "Add report", like every other section's add button.
 

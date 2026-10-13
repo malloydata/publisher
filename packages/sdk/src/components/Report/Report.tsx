@@ -13,6 +13,7 @@ import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
+import { reportQueryOptions } from "./reportQuery";
 import { CellReport } from "./CellReport";
 import {
    failureCategory,
@@ -110,19 +111,12 @@ export function Report({
       isError,
       error,
    } = useQueryWithApiError({
-      // Every value the request is built from, so two versions of one report
-      // never share a cache entry.
-      queryKey: ["report", environmentName, packageName, versionId, path],
-      queryFn: async ({ signal }) =>
-         (
-            await apiClients.reports.getReport(
-               environmentName,
-               packageName,
-               path,
-               versionId,
-               { signal },
-            )
-         ).data,
+      ...reportQueryOptions(apiClients, {
+         environmentName,
+         packageName,
+         path,
+         versionId,
+      }),
       enabled: uriNamesBoth && path !== "",
    });
 

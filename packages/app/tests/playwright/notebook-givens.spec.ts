@@ -6,6 +6,12 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
+import {
+   closeFilter,
+   expectFilterValue,
+   filterButton,
+   openFilter,
+} from "./helpers/filters";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
@@ -114,39 +120,42 @@ test.describe("notebook-givens", () => {
       expect(names).toContain("include_x");
    });
 
-   test("Filters panel renders one input per declared given", async ({
+   test("the filter row has one button per declared given", async ({
       page,
    }) => {
       await openGivensNotebook(page);
 
+      for (const name of ["target_code", "cutoff", "include_x"])
+         await expect(filterButton(page, name)).toBeVisible();
+      const filter = await openFilter(page, "target_code");
       await expect(
-         page.getByRole("heading", { name: "Filters", level: 6 }),
+         filter.getByLabel("target_code", { exact: true }),
       ).toBeVisible();
-      await expect(page.getByLabel("target_code")).toBeVisible();
-      await expect(page.getByLabel("cutoff")).toBeVisible();
-      await expect(page.getByLabel("include_x")).toBeVisible();
    });
 
    test("description annotation surfaces as helper text", async ({ page }) => {
       await openGivensNotebook(page);
+      const filter = await openFilter(page, "target_code");
 
       // Not exact: the helper line now also carries the `Default: …` caption.
       await expect(
-         page.getByText("Product category to spotlight", { exact: false }),
+         filter.getByText("Product category to spotlight", { exact: false }),
       ).toBeVisible();
    });
 
-   test("model default surfaces as a helper line", async ({ page }) => {
+   test("model default surfaces on the button and as a helper line", async ({
+      page,
+   }) => {
       await openGivensNotebook(page);
 
       // target_code defaults to 'Jeans' (string literal unquoted) and cutoff to
-      // @2024-01-01 (date, @ stripped). Both shown as a Default caption while
-      // the inputs stay empty — the value still comes from the model default.
+      // @2024-01-01. Unset, each button reads its default, the value the
+      // query runs with.
+      await expectFilterValue(page, "target_code", "Jeans");
+      await expectFilterValue(page, "cutoff", "Jan 1, 2024");
+      const filter = await openFilter(page, "target_code");
       await expect(
-         page.getByText("Default: Jeans", { exact: false }),
-      ).toBeVisible();
-      await expect(
-         page.getByText("Default: 2024-01-01", { exact: false }),
+         filter.getByText("Default: Jeans", { exact: false }),
       ).toBeVisible();
    });
 
@@ -163,12 +172,13 @@ test.describe("notebook-givens", () => {
       page,
    }) => {
       await openGivensNotebook(page);
-      const input = page.getByLabel("target_code");
+      const filter = await openFilter(page, "target_code");
+      const input = filter.getByLabel("target_code", { exact: true });
 
       await input.fill("Tops");
       await expect(page.getByText("Aurora Boxy Blouse").first()).toBeVisible();
 
-      const clearBtn = page.getByRole("button", { name: "Clear value" });
+      const clearBtn = filter.getByRole("button", { name: "Clear value" });
       await expect(clearBtn).toBeVisible();
       await clearBtn.click();
 
@@ -179,14 +189,16 @@ test.describe("notebook-givens", () => {
 
    test("Reset button clears all given values", async ({ page }) => {
       await openGivensNotebook(page);
-      const input = page.getByLabel("target_code");
+      const filter = await openFilter(page, "target_code");
+      await filter.getByLabel("target_code", { exact: true }).fill("Shorts");
+      await closeFilter(page);
+      await expectFilterValue(page, "target_code", "Shorts");
 
-      await input.fill("Shorts");
       const resetBtn = page.getByRole("button", { name: "Reset" });
       await expect(resetBtn).toBeVisible();
       await resetBtn.click();
 
-      await expect(input).toHaveValue("");
+      await expectFilterValue(page, "target_code", "Jeans");
       await expect(resetBtn).toBeHidden();
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
@@ -195,7 +207,8 @@ test.describe("notebook-givens", () => {
       page,
    }) => {
       await openGivensNotebook(page);
-      const input = page.getByLabel("target_code");
+      const filter = await openFilter(page, "target_code");
+      const input = filter.getByLabel("target_code", { exact: true });
 
       // Default Jeans -> Cobalt Bootcut Jean.
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
@@ -213,7 +226,7 @@ test.describe("notebook-givens", () => {
 
       // The × is present even though the field is empty — an override is active,
       // distinct from unset. Clicking it reverts to the model default.
-      const clearBtn = page.getByRole("button", { name: "Clear value" });
+      const clearBtn = filter.getByRole("button", { name: "Clear value" });
       await expect(clearBtn).toBeVisible();
       await clearBtn.click();
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
@@ -223,7 +236,8 @@ test.describe("notebook-givens", () => {
       page,
    }) => {
       await openGivensNotebook(page);
-      const box = page.getByLabel("include_x");
+      const filter = await openFilter(page, "include_x");
+      const box = filter.getByLabel("include_x", { exact: true });
 
       // Unset → reflects the model default (`is true`), so the box shows what
       // the query actually runs with. No override yet, so no Reset.
@@ -236,7 +250,7 @@ test.describe("notebook-givens", () => {
       await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
 
       // Revert (×) → drop the override, back to the default (checked).
-      await page.getByRole("button", { name: "Clear value" }).click();
+      await filter.getByRole("button", { name: "Clear value" }).click();
       await expect(box).toBeChecked();
       await expect(page.getByRole("button", { name: "Reset" })).toBeHidden();
    });

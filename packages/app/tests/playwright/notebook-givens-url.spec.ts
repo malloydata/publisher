@@ -5,6 +5,12 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+   closeFilter,
+   expectFilterValue,
+   filterButton,
+   openFilter,
+} from "./helpers/filters";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 
 /**
@@ -83,12 +89,19 @@ async function resultsText(page: Page): Promise<string> {
    return (await page.locator(".malloy-render").allInnerTexts()).join("\u0001");
 }
 
-/** The panel is only rendered once the notebook's sources have loaded. */
+/** The filter row is only rendered once the notebook's sources have loaded. */
 async function openNotebook(page: Page, search = "") {
    await page.goto(`${NOTEBOOK}${search}`);
-   await expect(page.getByText("Filters", { exact: true })).toBeVisible({
+   await expect(page.getByRole("group", { name: "Filters" })).toBeVisible({
       timeout: 60_000,
    });
+}
+
+/** Type a minimum amount into its filter's popover, and close it. */
+async function setMinAmount(page: Page, value: string) {
+   const filter = await openFilter(page, "MIN_AMOUNT");
+   await filter.getByLabel("MIN_AMOUNT", { exact: true }).fill(value);
+   await closeFilter(page);
 }
 
 test.describe("notebook givens are URL-addressable", () => {
@@ -109,24 +122,25 @@ test.describe("notebook givens are URL-addressable", () => {
    }) => {
       await openNotebook(page);
 
-      // Role-scoped, not `getByLabel`. `getByLabel` matches case-insensitively
-      // on a substring, so once a cell's chart has rendered it also matches the
-      // Vega x-axis whose aria-label reads "X-axis titled 'region' ...", giving
-      // three hits and a strict-mode violation. It passed only while the
-      // assertion beat the chart render.
-      await expect(page.getByRole("textbox", { name: "REGION" })).toBeVisible();
-      await expect(page.getByLabel("MIN_AMOUNT")).toBeVisible();
+      // A button per given, each opening its control. Role-scoped, not
+      // `getByLabel`: that matches on a substring, which a rendered chart's
+      // axis labels also satisfy.
+      await expect(filterButton(page, "MIN_AMOUNT")).toBeVisible();
+      const region = await openFilter(page, "REGION");
+      await expect(
+         region.getByRole("textbox", { name: "REGION" }),
+      ).toBeVisible();
       // The `#(description=...)` annotation is the helper text, which is the
       // only thing telling a reader what a given means.
       await expect(
-         page.getByText("Region to focus on — leave empty for all regions"),
+         region.getByText("Region to focus on — leave empty for all regions"),
       ).toBeVisible();
    });
 
    test("setting a control writes it to the URL", async ({ page }) => {
       await openNotebook(page);
 
-      await page.getByLabel("MIN_AMOUNT").fill("500");
+      await setMinAmount(page, "500");
       await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
    });
 
@@ -154,7 +168,7 @@ test.describe("notebook givens are URL-addressable", () => {
       // a window between two polls, this is a one-way transition.
       const stale = await results.first().elementHandle();
 
-      await page.getByLabel("MIN_AMOUNT").fill("500");
+      await setMinAmount(page, "500");
       await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
 
       // A run actually started. Without this the assertion below resolves on its
@@ -183,7 +197,7 @@ test.describe("notebook givens are URL-addressable", () => {
       const unfiltered = await resultsText(page);
 
       await openNotebook(page, "?MIN_AMOUNT=500");
-      await expect(page.getByLabel("MIN_AMOUNT")).toHaveValue("500");
+      await expectFilterValue(page, "MIN_AMOUNT", "500");
       // And it is still there once the cells have run, rather than being
       // cleared by the panel reporting its own empty state on mount.
       await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
@@ -211,7 +225,7 @@ test.describe("notebook givens are URL-addressable", () => {
       // on the first control change.
       await openNotebook(page, "?utm_source=slack");
 
-      await page.getByLabel("MIN_AMOUNT").fill("500");
+      await setMinAmount(page, "500");
 
       await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
       await expect(page).toHaveURL(/[?&]utm_source=slack/);
@@ -222,12 +236,12 @@ test.describe("notebook givens are URL-addressable", () => {
       // "nothing set" and Reset goes there. Reset used to be inert or to
       // double-run, depending on autorun; both are covered in the hook's spec.
       await openNotebook(page, "?MIN_AMOUNT=500");
-      await expect(page.getByLabel("MIN_AMOUNT")).toHaveValue("500");
+      await expectFilterValue(page, "MIN_AMOUNT", "500");
 
       await page.getByRole("button", { name: "Reset" }).click();
 
       await expect(page).not.toHaveURL(/MIN_AMOUNT/);
-      await expect(page.getByLabel("MIN_AMOUNT")).toHaveValue("");
+      await expectFilterValue(page, "MIN_AMOUNT", "Any");
    });
 
    test("a control change keeps the URL fragment", async ({ page }) => {
@@ -237,11 +251,11 @@ test.describe("notebook givens are URL-addressable", () => {
       // the reader had arrived on. Browser-level, so it is pinned here rather
       // than in a unit test.
       await page.goto(`${NOTEBOOK}#cell-2`);
-      await expect(page.getByText("Filters", { exact: true })).toBeVisible({
+      await expect(page.getByRole("group", { name: "Filters" })).toBeVisible({
          timeout: 60_000,
       });
 
-      await page.getByLabel("MIN_AMOUNT").fill("500");
+      await setMinAmount(page, "500");
       await expect(page).toHaveURL(/[?&]MIN_AMOUNT=500/);
       await expect(page).toHaveURL(/#cell-2$/);
    });

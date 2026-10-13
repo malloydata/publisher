@@ -222,10 +222,14 @@ export function DashboardView({
    const modelPath = runModelPath ?? manifest.path;
    const tiles = manifest.tiles ?? [];
    // The layout decides the arrangement only, as it does in the builder.
-   const { columns } = layoutRules(manifest.layout, manifest.dashboardColumns);
+   const { columns, layout } = layoutRules(
+      manifest.layout,
+      manifest.dashboardColumns,
+   );
 
    return (
       <ReportPage
+         layout={layout}
          header={<DashboardHeader manifest={manifest} />}
          // Only when there are controls: GivensPanel draws nothing without
          // them, and an empty bar would still cost the page a gap.

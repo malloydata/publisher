@@ -416,6 +416,7 @@ export function ReportBuilder({
             {/* The reader's page, with the ring's inset (minus the top:
              nothing at the top of the page can be selected). */}
             <ReportPage
+               layout={rules.layout}
                sx={{
                   px: `${SELECTION_RING_PX}px`,
                   pb: `${SELECTION_RING_PX}px`,
