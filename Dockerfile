@@ -135,6 +135,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
+# patchedDependencies in package.json point at patches/; bun install refuses to
+# run without the patch files, so they have to arrive before it does.
+COPY patches/ ./patches/
 COPY scripts/add-license-headers.mjs ./scripts/
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
@@ -201,6 +204,7 @@ LABEL org.opencontainers.image.title="Malloy Publisher" \
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
+COPY --from=builder /publisher/patches/ /publisher/patches/
 COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
 COPY --from=builder /publisher/packages/app/package.json /publisher/packages/app/package.json
 COPY --from=builder /publisher/packages/server/dist/ /publisher/packages/server/dist/
