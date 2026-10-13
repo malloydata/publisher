@@ -25,6 +25,10 @@ import {
 } from "../../providers/active";
 import { _setFcjValueFetcherForTests } from "./engine_state";
 import { heldResults } from "./pages";
+import {
+   DEFAULT_FCJ_SETTINGS,
+   DEFAULT_PACKAGE_RETRIEVAL,
+} from "../../service/package_retrieval";
 
 let harness: SemanticHarness;
 beforeAll(async () => {
@@ -277,5 +281,118 @@ describe("fcj paging", () => {
          offset: 3,
       });
       expect(payload.error).toContain("Invalid offset");
+   });
+});
+
+describe("splitBundles", () => {
+   const listSplit = {
+      ...DEFAULT_PACKAGE_RETRIEVAL,
+      engine: "fcj" as const,
+      fcj: {
+         ...DEFAULT_FCJ_SETTINGS,
+         connect: "list" as const,
+         splitBundles: true,
+      },
+   };
+   const bundle = {
+      search_targets: [
+         {
+            target_type: "dimension",
+            search_text: "region name, airport name, customer email",
+         },
+      ],
+      scopes,
+   };
+   /** The first option number listed under target `n` of a judge prompt. */
+   const firstOptionOf = (prompt: string, n: number) => {
+      const at = prompt.indexOf(`Target ${n} (`);
+      const next = prompt.indexOf("Target ", at + 1);
+      const m = /\[(\d+)\]/.exec(
+         prompt.slice(at, next > at ? next : undefined),
+      );
+      return m ? Number(m[1]) : undefined;
+   };
+
+   it("shows the judge each item under the list target and folds the picks back into it", async () => {
+      const chat = scriptedChat((prompt) =>
+         JSON.stringify({
+            picks: [
+               { target: 1, candidates: [], reason: "the list" },
+               { target: 2, candidates: [firstOptionOf(prompt, 2)] },
+               { target: 3, candidates: [firstOptionOf(prompt, 3)] },
+               { target: 4, candidates: [] },
+            ],
+            caveats: ["No customer email field exists."],
+         }),
+      );
+      _setChatModelForTests(chat.model);
+      try {
+         const { pkg } = await compileFcjFixture(
+            undefined,
+            undefined,
+            listSplit,
+         );
+         const { payload } = await untilSemantic(
+            harness.handlerFor(pkg),
+            bundle,
+            full,
+         );
+         const prompt = chat.prompts.at(-1)!;
+         expect(prompt).toContain(
+            'Target 2 (dimension; one item of the list in target 1): "region name"',
+         );
+         expect(prompt).toContain(
+            'Target 4 (dimension; one item of the list in target 1): "customer email"',
+         );
+         const split = payload.retrieval_trace_full.fcj.split;
+         expect(split[0].items.map((i: { text: string }) => i.text)).toEqual([
+            "region name",
+            "airport name",
+            "customer email",
+         ]);
+         // One pick, under the caller's target, holding both items' fields.
+         const picks = payload.retrieval_trace_full.fcj.judge[0].picks;
+         expect(
+            picks.map((p: { target_index: number }) => p.target_index),
+         ).toEqual([0]);
+         expect(picks[0].ids).toHaveLength(2);
+         expect(picks[0].reason).toContain(
+            'Not found by this search: "customer email"',
+         );
+         expect(payload.unresolved_targets).toEqual([]);
+         // An absence caveat names no field for "also likely" to add.
+         const named = payload.retrieval_trace_full.fcj.also_likely.filter(
+            (a: { rule: string }) => a.rule === "named",
+         );
+         expect(named).toEqual([]);
+      } finally {
+         _clearChatModelForTests();
+      }
+   });
+
+   it("leaves a phrase with no list alone, and is off by default", async () => {
+      const { pkg } = await compileFcjFixture(undefined, undefined, listSplit);
+      const { payload } = await untilSemantic(
+         harness.handlerFor(pkg),
+         {
+            search_targets: [
+               { target_type: "dimension", search_text: "region name" },
+            ],
+            scopes,
+         },
+         full,
+      );
+      expect(payload.retrieval_trace_full.fcj.split).toBeUndefined();
+      const { pkg: off } = await compileFcjFixture(undefined, undefined, {
+         ...listSplit,
+         fcj: { ...listSplit.fcj, splitBundles: false },
+      });
+      const { payload: p2 } = await untilSemantic(
+         harness.handlerFor(off),
+         bundle,
+         full,
+      );
+      expect(p2.retrieval_trace_full.fcj.split).toBeUndefined();
+      expect(p2.retrieval_trace_full.fcj.find).toHaveLength(1);
    });
 });
