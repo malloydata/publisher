@@ -53,16 +53,18 @@ test.describe("dashboard text tile", () => {
       await expect(tile.locator("strong", { hasText: "bold" })).toBeVisible();
 
       await saveChanges(page);
-      const saved = await pe.readSource(`dashboards/${slug}.malloy`);
+      const saved = await pe.readSource(`${slug}.malloy`);
       expect(saved).toContain("##|(markdown) text_1");
       expect(saved).toContain("Some **bold** words.");
 
-      await page.goto(`/${pe.env}/${pe.pkg}/dashboards/${slug}`);
+      await page.goto(`/${pe.env}/${pe.pkg}/${slug}`);
       await expect(
          page.getByRole("heading", { name: "Heading here" }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(page.locator("strong", { hasText: "bold" })).toBeVisible();
-      // A dashboard keeps its cards: the text tile sits in one, beside the query tile's.
+      // A grid report keeps its cards: the text tile added here sits in one,
+      // beside the query tile's. A new report starts with no intro text tile,
+      // so those two are all there are.
       await expect(page.locator('[data-chrome="card"]')).toHaveCount(2);
       await expect(page.locator("[data-malloy-render-as]").first()).toBeVisible(
          { timeout: 60_000 },

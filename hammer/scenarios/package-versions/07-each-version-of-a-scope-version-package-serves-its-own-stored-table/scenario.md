@@ -19,6 +19,7 @@ store per version.
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: on
 
 ## Model anchor/anchor.malloy
 
@@ -58,19 +59,23 @@ expect binding: summary -> lake
 
 ## Operator lake
 
-One table per version, each named for it.
+One table per version, each named for it: the version's numbers, then 8 hex
+of a hash of the environment, the package and the version, so another package
+at the same version never builds the same table. The hex depends on the
+scenario's environment name, so it is shown as `<hash>`.
 
 ```sql
-SELECT table_name FROM information_schema.tables
+SELECT regexp_replace(table_name, '_[0-9a-f]{8}$', '_<hash>') AS table_name
+FROM information_schema.tables
 WHERE table_name LIKE 'summary%' ORDER BY table_name
 ```
 
 Expect:
 
-| table_name      |
-| --------------- |
-| summary__v1_0_0 |
-| summary__v1_1_0 |
+| table_name             |
+| ---------------------- |
+| summary__v1_0_0_<hash> |
+| summary__v1_1_0_<hash> |
 
 ## Query older (version=1.0.0)
 

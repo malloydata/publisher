@@ -20,7 +20,7 @@ Task-specific guides for working with Malloy through this Publisher deployment. 
 
 That matters because the four channels used to take "everything under `skills/` minus `credible-*`" independently, so a skill added here shipped everywhere by default and there was nowhere to say otherwise. Registering a skill is now one line in the manifest, and forgetting to is a red build rather than a silent non-ship.
 
-`groups` names the two roles a consumer can take on its own: `analysis` (9 skills) is what an agent answering questions over a published model loads, `modeling` (22) what an agent building or editing a model loads. An eval that measures one of those agents installs the matching group rather than the whole set, because an answerer holding the whole library is a different system from the one a customer's analysis agent is. Groups may overlap, and a skill in neither ships anyway; a group is a curated install set, not a partition.
+`groups` names the two roles a consumer can take on its own: `analysis` (8 skills) is what an agent answering questions over a published model loads, `modeling` (21) what an agent building or editing a model loads. An eval that measures one of those agents installs the matching group rather than the whole set, because an answerer holding the whole library is a different system from the one a customer's analysis agent is. Groups may overlap, and a skill in neither ships anyway; a group is a curated install set, not a partition.
 
 **A group is installable on its own**, which is a property `manifest.spec.ts` holds it to: a member never `skill:`-references a skill outside its group, so nothing tells the agent to read what it does not have. That is why `malloy-getting-started` and `malloy-analysis-report` name `malloy-gotchas-modeling` and `malloy-model` in prose rather than as `skill:` references. Both are modeling doctrine, and an answerer that followed the reference would hold exactly what the `analysis` group exists to withhold.
 
@@ -41,8 +41,8 @@ Two rules make it work:
 
 ## Shared vs Publisher-specific
 
-- **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-define`, `malloy-discover`, `malloy-notebooks`, `malloy-review`, `malloy-gotchas-modeling`, `malloy-analysis-report`, `malloy-phrase-detection`, `malloy-html-data-apps`, `malloy-lookml-review`, `malloy-powerbi-review`.
-- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started` (Publisher's own host/router entry points; `malloy-getting-started` also holds the catalogue of every skill), plus `malloy-dashboards` (dashboards are a Publisher surface). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
+- **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-define`, `malloy-discover`, `malloy-reports`, `malloy-review`, `malloy-gotchas-modeling`, `malloy-analysis-report`, `malloy-phrase-detection`, `malloy-html-data-apps`, `malloy-lookml-review`, `malloy-powerbi-review`.
+- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, `malloy-run-agent` (Publisher's own host/router entry points; `malloy-getting-started` also holds the catalogue of every skill). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
 
 ## Evaluation skills
 
@@ -71,11 +71,11 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 
 **`get_context` is now literally correct here.** This server exposes a tool by that exact name, taking the same typed `search_targets` and `scopes` the shared skills describe and answering in the same shape. Until it landed, this repo shipped skills describing a request its own server rejected, and this section existed to paper over that. What remains of the mapping is smaller:
 
-| Shared skills say | This server exposes |
-| --- | --- |
-| `get_context` | `get_context` |
-| `execute_query` | `execute_query` |
-| `search_malloy_docs` | `search_malloy_docs` |
+| Shared skills say        | This server exposes      |
+| ------------------------ | ------------------------ |
+| `get_context`            | `get_context`            |
+| `execute_query`          | `execute_query`          |
+| `search_malloy_docs`     | `search_malloy_docs`     |
 | `search_database_schema` | `search_database_schema` |
 
 `list_packages` supplies the environment and package names `get_context`'s `scopes` requires, and `compile_model` / `reload_package` / `get_status` are Publisher-only and appear only in the host/router skills. Publisher registers these tools under exactly the bare names above, so on a Publisher host the mapping is the identity and the host/router skills name them as written.
@@ -84,7 +84,7 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 
 - **Edit a shared skill here, and only here.** Credible picks it up when it bumps its pin on `@malloy-publisher/skills` (see "Where these come from"). There is no copy in `ms2data/agent-skills` to update.
 - **Register it in [`manifests/publisher-local.json`](../manifests/publisher-local.json).** An unregistered skill ships through no channel, and `manifest.spec.ts` fails rather than letting that pass quietly.
-- **`malloy-dashboards` is not a shared skill.** Credible's dashboard skill is `credible-dashboards` in `ms2data/agent-skills`, written for its own surfaces. The two describe the same feature and are not copies of each other.
+- **`malloy-reports` replaced two skills.** Dashboards and notebooks became one document type, the report (`docs/reports-design.md`), so `malloy-dashboards` and `malloy-notebooks` merged into `malloy-reports`, which is shared as `malloy-notebooks` was. Both old names still ship as stubs that point to it and sit in no group: `malloy-notebooks` because Credible's manifests in `ms2data/agent-skills` list it by name, and `malloy-dashboards` because `install` never prunes a skill, so an existing install would otherwise keep the old folder rules. Credible's own dashboard skill, `credible-dashboards`, is separate and not a copy. Remove the stubs once Credible's manifests name `malloy-reports` instead.
 - **A `description` has two budgets, and `packages/skills/src/manifest.spec.ts` holds both.** Every shipped skill stays under 1024 characters, the frontmatter budget a host loader reads. The four shared skills that a downstream plugin packages -- `malloy-analysis`, `malloy-charts`, `malloy-phrase-detection`, `malloy-queries` -- stay under 200, because that build rewrites the `description:` line in place at 200 and appends an ellipsis. It does that silently, so a description written past 200 loses its tail on the surface where a description matters most: `malloy-analysis` shipped for several releases with its own trigger clause cut off. Lead with the trigger condition and the budget is rarely tight.
 - **Any edit under `skills/` means regenerating the MCP bundle** (`cd packages/server && bun run src/mcp/skills/build_skills_bundle.ts ../../skills`) and committing the resulting `src/mcp/skills/skills_bundle.json`. It is a committed generated asset, and `skills_bundle.spec.ts` fails the build when it drifts from this tree. The bundle is committed indented so that two PRs touching different skills merge cleanly; if you do hit a conflict in it, resolve it by regenerating from the merged `skills/` tree, never by editing the JSON by hand.
 - A new skill directory needs a `.claude/skills/<name>` symlink (`ln -s ../../skills/<name> .claude/skills/<name>`) so Claude Code discovers it.

@@ -38,7 +38,7 @@ import {
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
 import type { DrillClickPayload } from "../drill/resolveDrill";
-import { loadMalloyTag } from "../DashboardBuilder/loadMalloy";
+import { loadMalloyTag } from "../ReportBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
 type MalloyRenderElement = HTMLElement & Record<string, unknown>;

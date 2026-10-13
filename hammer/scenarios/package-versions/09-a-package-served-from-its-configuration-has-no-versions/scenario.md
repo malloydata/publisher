@@ -18,6 +18,7 @@ answered from that tree.
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: on
 
 ## Model sales/sales.malloy
 

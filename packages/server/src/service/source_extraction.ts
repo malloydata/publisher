@@ -13,8 +13,9 @@
  * differ only in how they type the result
  * (generated API types vs. worker wire types — structurally identical, so each
  * casts at its boundary) and in how they report a filter parse failure (the
- * service logs a warning; the worker has no logger and stays silent), which is
- * threaded through the optional `onParseError` callback.
+ * service logs a warning; the worker stays silent, since the main thread logs
+ * it when it builds the model's filters), which is threaded through the
+ * optional `onParseError` callback.
  */
 
 import {
@@ -712,7 +713,7 @@ export function extractSourcesFromModelDef(
          }
          // The wire shape stays a flat `string[]` per route for
          // introspection. `suggestGivenLookup`'s consumers
-         // (`package_load_worker.ts`, `model.ts`'s `getDashboardModelFacts`)
+         // (`package_load_worker.ts`, `model.ts`'s `getReportModelFacts`)
          // read only `authorize`, so a given referenced solely by a
          // `#(authorize)` term is still not suggested; a known,
          // accepted gap, not a fail-open — the gate itself still enforces via

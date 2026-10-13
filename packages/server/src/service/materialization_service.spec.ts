@@ -662,9 +662,6 @@ describe("MaterializationService", () => {
                mode: "auto",
                trigger: "ON_DEMAND",
             },
-            // An unversioned package's run builds no version and holds the
-            // package's slot.
-            { version: null, lockVersion: undefined },
          ]);
       });
 

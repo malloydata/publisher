@@ -1,5 +1,5 @@
 import "../orders.malloy"
 
+## artifact { layout=grid title="Overview" tiles=["overview"] }
 # dashboard
-# artifact { title="Overview" }
 query: overview is orders -> by_status

@@ -34,6 +34,7 @@ import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { MaterializationController } from "./controller/materialization.controller";
+import { LegacyReportController } from "./controller/legacy_report.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
 import { QueryController } from "./controller/query.controller";
@@ -105,6 +106,7 @@ export function registerLegacyRoutes(
       compileController,
       materializationController,
    } = controllers;
+   const legacyReportController = new LegacyReportController(environmentStore);
 
    // body-parser is already registered on the main app for `${API_PREFIX}/*`
    // paths via `app.use(bodyParser.json(...))`. The legacy routes share the
@@ -822,7 +824,7 @@ export function registerLegacyRoutes(
          }
          try {
             res.status(200).json(
-               await modelController.listNotebooks(
+               await legacyReportController.listNotebooks(
                   req.params.projectName,
                   req.params.packageName,
                ),
@@ -874,7 +876,7 @@ export function registerLegacyRoutes(
             }
             const bypassFilters = bypass.value;
             res.status(200).json(
-               await modelController.executeNotebookCell(
+               await legacyReportController.executeNotebookCell(
                   req.params.projectName,
                   req.params.packageName,
                   notebookPath,
@@ -901,7 +903,7 @@ export function registerLegacyRoutes(
          try {
             const notebookPath = (req.params as Record<string, string>)["0"];
             res.status(200).json(
-               await modelController.getNotebook(
+               await legacyReportController.getNotebook(
                   req.params.projectName,
                   req.params.packageName,
                   notebookPath,

@@ -54,7 +54,6 @@ import { errMessage } from "../utils";
 import {
    collectIncrementalDeclarations,
    CompiledBuildPlan,
-   compilePackageBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
    deriveColumns,
@@ -63,6 +62,7 @@ import {
    resolveQueryMetadata,
    compilerBuildId,
 } from "./build_plan";
+import { compilePackageBuildPlan } from "./build_plan_compile";
 import {
    warehouseDeltaTarget,
    type DeltaTarget,
@@ -1450,7 +1450,11 @@ export class MaterializationService {
                packageName,
                "PENDING",
                metadata,
-               { version, lockVersion },
+               // A version's run records its version and slot; a package with
+               // no versions passes neither, as before versions.
+               ...(version !== null || lockVersion !== undefined
+                  ? [{ version, lockVersion }]
+                  : []),
             );
          } catch (err) {
             if (err instanceof DuplicateActiveMaterializationError) {
@@ -1691,7 +1695,13 @@ export class MaterializationService {
                opts.sourceNames,
                priorEntries,
                incremental,
-               owned !== undefined ? versionTableSuffix(owned) : "",
+               owned !== undefined
+                  ? versionTableSuffix({
+                       environmentName,
+                       packageName,
+                       version: owned,
+                    })
+                  : "",
             ));
          }
 

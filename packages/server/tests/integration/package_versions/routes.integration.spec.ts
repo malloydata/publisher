@@ -16,6 +16,7 @@ import os from "os";
 import path from "path";
 import vm from "vm";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { versioningOnForSuite } from "../../harness/versioning";
 
 const ENV_NAME = "package-versions-routes-env";
 const PKG = "versioned";
@@ -41,9 +42,8 @@ function writePackage(
    );
    fs.writeFileSync(
       path.join(dir, "dashboards", "overview.malloy"),
-      `import { numbers } from '../model.malloy'\n\n` +
-         `# artifact { title="Overview v${answer}" } dashboard\n` +
-         `query: overview is numbers -> which_version\n`,
+      `## artifact { layout=grid title="Overview v${answer}" tiles=["numbers -> which_version"] }\n` +
+         `import { numbers } from '../model.malloy'\n`,
    );
    fs.writeFileSync(
       path.join(dir, "notes.malloynb"),
@@ -83,6 +83,8 @@ async function answerOf(versionId?: string): Promise<number> {
 }
 
 describe("package-scoped routes of a versioned package", () => {
+   versioningOnForSuite();
+
    beforeAll(async () => {
       root = fs.realpathSync(
          fs.mkdtempSync(path.join(os.tmpdir(), "package-versions-routes-")),
@@ -203,6 +205,22 @@ describe("package-scoped routes of a versioned package", () => {
       ).toBe("Overview v2");
    });
 
+   it("reports are the named version's", async () => {
+      const list = (await (
+         await fetch(api(`${PKG}/reports?versionId=1.0.0`))
+      ).json()) as { path?: string; title?: string }[];
+      expect(list.map((r) => [r.path, r.title])).toEqual([
+         ["dashboards/overview.malloy", "Overview v1"],
+         ["notes.malloynb", "Notes v1"],
+      ]);
+      const report = (path: string) =>
+         fetch(api(`${PKG}/reports/dashboards/overview.malloy${path}`)).then(
+            json,
+         );
+      expect((await report("?versionId=1.0.0")).title).toBe("Overview v1");
+      expect((await report("")).title).toBe("Overview v2");
+   });
+
    it("notebooks, and a notebook cell, are the named version's", async () => {
       expect(
          (await fetch(api(`${PKG}/notebooks?versionId=1.0.0`))).status,
@@ -275,7 +293,8 @@ describe("package-scoped routes of a versioned package", () => {
          headers: { "content-type": "application/json" },
          body: JSON.stringify({
             source:
-               "import { numbers } from '../model.malloy'\n# artifact dashboard\nquery: q is numbers -> which_version\n",
+               '## artifact { layout=grid tiles=["numbers -> which_version"] }\n' +
+               "import { numbers } from '../model.malloy'\n",
          }),
       });
       expect(res.status).toBe(409);
@@ -287,6 +306,8 @@ describe("package-scoped routes of a versioned package", () => {
          `${PKG}`,
          `${PKG}/models`,
          `${PKG}/models/model.malloy`,
+         `${PKG}/reports`,
+         `${PKG}/reports/dashboards/overview.malloy`,
          `${PKG}/dashboards`,
          `${PKG}/dashboards/overview`,
          `${PKG}/notebooks`,

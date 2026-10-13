@@ -1,0 +1,31 @@
+##! experimental.givens
+## artifact { layout=linear title="Governed cells" }
+import { orders } from "models/orders.malloy"
+import { hidden } from "models/hidden.malloy"
+import { GROUPS, ROLES, gated, locked } from "models/secured.malloy"
+
+given: REGION :: string is 'US'
+
+run: orders -> { aggregate: order_count }
+
+run: orders -> { where: region = $REGION; aggregate: order_count }
+
+run: hidden -> { aggregate: secret_total }
+
+run: gated -> { aggregate: n }
+
+run: locked -> { aggregate: n }
+
+source: derived is gated extend { measure: m is count() }
+
+run: derived -> { aggregate: m }
+
+source: derived_locked is locked extend { measure: m is count() }
+
+run: derived_locked -> { aggregate: m }
+
+source: from_hidden is hidden extend {}
+
+run: from_hidden -> { aggregate: secret_total }
+
+run: duckdb.sql("select 1 as one") -> { select: one }

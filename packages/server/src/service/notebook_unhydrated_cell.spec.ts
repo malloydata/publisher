@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
+// this file is about that deprecated feature.
+
 /**
  * A `.malloynb` code cell whose query did not hydrate keeps its `queryInfo`
  * but has nothing to check it against the surface with. Driven over copies of

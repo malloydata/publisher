@@ -23,10 +23,8 @@ import {
    type VirtualMap,
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
-import {
-   MalloySQLParser,
-   MalloySQLStatementType,
-} from "@malloydata/malloy-sql";
+import { MalloySQLStatementType } from "@malloydata/malloy-sql";
+import { parseMalloynb } from "./deprecated/malloynb";
 import { DataStyles } from "@malloydata/render";
 import { publisherMeter } from "../telemetry";
 import {
@@ -46,6 +44,7 @@ import {
    getQueryMetadataMode,
 } from "../config";
 import {
+   GIVENS_DOCS_URL,
    INDEX_MODEL_NAME,
    MODEL_FILE_SUFFIX,
    NOTEBOOK_FILE_SUFFIX,
@@ -69,6 +68,8 @@ import {
    planModelPreaggregation,
    type RollupPlan,
 } from "./preaggregation_synthesis";
+import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
@@ -126,16 +127,16 @@ import {
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
-   buildDashboardManifest,
+   buildReportManifest,
    compileTileGivens,
-   readDashboardModelFacts,
-   type DashboardManifest,
-   type DashboardModelFacts,
-} from "./dashboard";
+   factsReportTag,
+   readReportModelFacts,
+   type ServedReportManifest,
+   type ReportModelFacts,
+} from "./report_manifest";
+import { isReportEligiblePath, type ReportLayout } from "./report";
 import {
-   artifactKindOfNotes,
    docNotesAboveArtifact,
-   isArtifactNoteText,
    isNotebookReaderError,
    parseNotebookText,
    readNotebookCells,
@@ -144,7 +145,6 @@ import {
 } from "./notebook";
 import {
    recordNotebookCellExecution,
-   type NotebookDiscoveryOutcome,
    type NotebookFormat,
 } from "../notebook_metrics";
 import {
@@ -153,6 +153,7 @@ import {
 } from "./gate_dimension";
 import {
    buildFilterClause,
+   FILTER_ANNOTATION_PREFIX,
    filterHasValue,
    FilterValidationError,
    injectFilterRefinement,
@@ -166,7 +167,7 @@ import {
    malloyGivenToApi,
    type MalloyGiven,
 } from "./given";
-import { filterPublisherOwnedRenderLogs } from "./dashboard";
+import { filterPublisherOwnedRenderLogs } from "./report_manifest";
 import {
    docCommentTitleAndDescription,
    motlyTag,
@@ -775,11 +776,11 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
-   private compiledDashboardFacts:
-      | Promise<DashboardModelFacts | undefined>
+   private compiledReportFacts:
+      | Promise<ReportModelFacts | undefined>
       | undefined;
-   /** {@link compiledDashboardFacts} once settled, for the sync notebook reader. */
-   private settledCompiledDashboardFacts: DashboardModelFacts | undefined;
+   /** {@link compiledReportFacts} once settled, for the sync notebook reader. */
+   private settledCompiledReportFacts: ReportModelFacts | undefined;
    private sources: ApiSource[] | undefined;
    private queries: ApiQuery[] | undefined;
    private sourceInfos: Malloy.SourceInfo[] | undefined;
@@ -790,7 +791,7 @@ export class Model {
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
    /** The tile layout of a served notebook written as one; undefined for one written as cells. */
-   private notebookLayout: DashboardManifest | undefined;
+   private notebookLayout: ServedReportManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
    /** Givens declared on the model, in declaration order. Malloy's
@@ -862,15 +863,12 @@ export class Model {
        *  surface. Set by the Package, which knows whether the surface is an
        *  index.malloy or an explores list. See {@link notQueryable}. */
       offSurface?: OffSurfaceContext;
-      /** This file is a dashboard the package discovered. A dashboard is an
-       *  entry point, but like a notebook it admits nothing of its own: its
-       *  tiles read only the package surface. */
-      dashboard?: boolean;
-      /** This file is a served notebook: a `.malloy` under `notebooks/` with a
-       *  model-level `## artifact` note. It keeps `modelType` "model" and, like
-       *  a `.malloynb`, admits nothing of its own. */
-      notebook?: boolean;
-      /** The dashboard's or served notebook's own compiled file text, so a
+      /** This file is a served report with this layout: an entry point that,
+       *  like a `.malloynb`, admits nothing of its own, since a grid report's
+       *  tiles and a linear report's cells read only the package surface. A
+       *  linear report keeps `modelType` "model". */
+      layout?: ReportLayout;
+      /** The served report's own compiled file text, so a
        *  source it declares on top of a surface source
        *  (`source: big is orders extend {...}`) can be proven to derive from
        *  it. Author text, not caller text. */
@@ -1121,7 +1119,7 @@ export class Model {
       // spamming for models that have already moved over.
       if (this.filterMap.size > 0) {
          logger.warn(
-            `Model "${packageName}/${modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see https://github.com/malloydata/publisher/blob/main/docs/givens.md`,
+            `Model "${packageName}/${modelPath}" uses deprecated #(filter) annotations. Migrate to given: — see ${GIVENS_DOCS_URL}`,
             {
                packageName,
                modelPath,
@@ -1129,6 +1127,39 @@ export class Model {
             },
          );
       }
+   }
+
+   /**
+    * The sources THIS file declares deprecated `#(filter)` annotations on: the
+    * annotation is written in this file, on the source's own statement. Unlike
+    * `filterMap`, which also holds every source that inherits a filter (an
+    * `extend` of a filtered source) and every filtered source an import brings
+    * in, this names each declaration exactly once, in the file to change.
+    */
+   public declaredFilterSourceNames(): string[] {
+      if (!this.modelDef) return [];
+      const ownFile = (url: string): boolean => {
+         try {
+            return decodeURIComponent(new URL(url).pathname).endsWith(
+               `/${this.modelPath}`,
+            );
+         } catch {
+            return false;
+         }
+      };
+      const names: string[] = [];
+      for (const entry of Object.values(this.modelDef.contents)) {
+         if (!isSourceDef(entry)) continue;
+         const own = entry.annotations?.blockNotes ?? [];
+         const declares = own.some(
+            (note) =>
+               note.text.trim().startsWith(FILTER_ANNOTATION_PREFIX) &&
+               note.at !== undefined &&
+               ownFile(note.at.url),
+         );
+         if (declares) names.push(entry.as || entry.name);
+      }
+      return names.sort();
    }
 
    /**
@@ -4824,6 +4855,12 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
+      model.preparedRenderTagResults = data.renderTagResults as
+         | { label: string; result?: Malloy.Result }[]
+         | undefined;
+      model.preparedPreaggregateCompanion = data.preaggregateCompanion as
+         | { modelDef?: ModelDef }
+         | undefined;
       return model;
    }
 
@@ -5102,23 +5139,19 @@ export class Model {
    }
 
    /**
-    * The facts dashboard discovery reads off this model, or undefined when the
+    * The facts report discovery reads off this model, or undefined when the
     * model failed to compile.
     *
-    * Deliberately uncurated HERE: `explores` curation shapes the *discovery*
-    * surface agents see, and these facts are the raw material the manifest is
-    * built from, so filtering them at this level would lose information the
-    * lint needs. The curation decision is made by the caller instead:
-    * `Package.discoverDashboards` withholds a dashboard whose entry file is not
-    * a query entry point, because its manifest would advertise names the query
-    * boundary refuses. See `service/dashboard.ts`.
+    * Deliberately uncurated: `explores` curation shapes the discovery surface
+    * agents see, and these facts are the raw material the manifest and the
+    * lint are built from. See `service/report_manifest.ts`.
     */
-   public getDashboardModelFacts(): DashboardModelFacts | undefined {
+   public getReportModelFacts(): ReportModelFacts | undefined {
       if (!this.modelDef) return undefined;
       // `this.givens` is the model's surfaced given list — the same surface
       // `filterGivensToModelSurface` enforces at query time, so a control the
       // manifest advertises is one a query will accept.
-      return readDashboardModelFacts(
+      return readReportModelFacts(
          this.modelPath,
          this.modelDef,
          (this.givens ?? [])
@@ -5144,7 +5177,7 @@ export class Model {
    }
 
    /**
-    * {@link getDashboardModelFacts} plus what each layout tile's compiled query
+    * {@link getReportModelFacts} plus what each layout tile's compiled query
     * reads (`compiledTileGivens`), for the manifest discovery serves.
     *
     * The static walk misses a given read through a joined source's `where:`, a
@@ -5153,24 +5186,22 @@ export class Model {
     * cached for this Model's life. A tile that fails to compile keeps the
     * static answer.
     */
-   public getCompiledDashboardModelFacts(): Promise<
-      DashboardModelFacts | undefined
-   > {
-      this.compiledDashboardFacts ??= this.compileDashboardModelFacts().then(
-         (facts) => (this.settledCompiledDashboardFacts = facts),
+   public getCompiledReportModelFacts(): Promise<ReportModelFacts | undefined> {
+      this.compiledReportFacts ??= this.compileReportModelFacts().then(
+         (facts) => (this.settledCompiledReportFacts = facts),
       );
-      return this.compiledDashboardFacts;
+      return this.compiledReportFacts;
    }
 
-   private async compileDashboardModelFacts(): Promise<
-      DashboardModelFacts | undefined
+   private async compileReportModelFacts(): Promise<
+      ReportModelFacts | undefined
    > {
-      const facts = this.getDashboardModelFacts();
+      const facts = this.getReportModelFacts();
       const materializer = this.modelMaterializer;
       if (!facts || !materializer) return facts;
       let tiles: string[];
       try {
-         tiles = (buildDashboardManifest(facts)?.tiles ?? []).flatMap((tile) =>
+         tiles = (buildReportManifest(facts)?.tiles ?? []).flatMap((tile) =>
             tile.kind === "query" ? [tile.query] : [],
          );
       } catch {
@@ -5217,8 +5248,7 @@ export class Model {
       packageCuratedSources?: ReadonlyMap<string, ReadonlySet<string>>;
       packageCuratedQueries?: ReadonlyMap<string, ReadonlySet<string>>;
       offSurface?: OffSurfaceContext;
-      dashboard?: boolean;
-      notebook?: boolean;
+      layout?: ReportLayout;
       derivationText?: string;
    }): void {
       this.queryBoundary = policy;
@@ -5305,7 +5335,7 @@ export class Model {
               `import "${this.modelPath}" in a listed model, name the sources ` +
               `you want in that model's export { ... }, and address the ` +
               `query to that model.`;
-      } else if (!this.isNotebook() && !this.isDashboard()) {
+      } else if (!this.isNotebook() && !this.isGridReport()) {
          // This file is on the surface and already sees the name, so the only
          // edit is to export it here.
          fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
@@ -5317,7 +5347,7 @@ export class Model {
          const exporter = surface.indexModel
             ? `"${INDEX_MODEL_NAME}"`
             : `a listed model`;
-         const readdress = this.isDashboard()
+         const readdress = this.isGridReport()
             ? ""
             : surface.indexModel
               ? `, and address the query to "${INDEX_MODEL_NAME}"`
@@ -5401,7 +5431,7 @@ export class Model {
       // whether the source it reads is on the surface.
       if (
          !this.isNotebook() &&
-         !this.isDashboard() &&
+         !this.isGridReport() &&
          (this.getQueries() ?? []).some((q) => q.name === name)
       )
          return true;
@@ -5475,7 +5505,7 @@ export class Model {
          // over a hidden source does not.
          if (
             !sourceName &&
-            this.isDashboard() &&
+            this.isGridReport() &&
             (this.queries ?? []).some((q) => q.name === queryName)
          ) {
             return "deferred";
@@ -5788,7 +5818,7 @@ export class Model {
    public isNotebook(): boolean {
       return (
          this.modelPath.endsWith(NOTEBOOK_FILE_SUFFIX) ||
-         this.queryBoundary.notebook === true
+         this.queryBoundary.layout === "linear"
       );
    }
 
@@ -5799,27 +5829,20 @@ export class Model {
          : "malloy";
    }
 
-   /** Whether this compiled model has the own `## artifact` note that makes a
-    *  candidate under `notebooks/` a served notebook. */
-   public carriesNotebookArtifactNote(): boolean {
-      return (
-         this.modelDef !== undefined &&
-         ownModelNoteObjects(this.modelDef).some((note) =>
-            isArtifactNoteText(note.text),
-         )
-      );
+   /**
+    * Whether this compiled file carries a model-level `## artifact` tag
+    * (`report.ts`), so the renderer's "unknown tag" findings for the tags
+    * Publisher owns are dropped. For a check that runs before discovery has
+    * said; discovery's map is the answer after it.
+    */
+   public carriesReportTag(): boolean {
+      if (!isReportEligiblePath(this.modelPath)) return false;
+      const facts = this.getReportModelFacts();
+      return facts !== undefined && factsReportTag(facts).status !== "none";
    }
 
-   /** The `kind` the model's own `## artifact` note declares, if any. */
-   public artifactKind(): string | undefined {
-      return (
-         this.modelDef &&
-         artifactKindOfNotes(ownModelNoteObjects(this.modelDef))
-      );
-   }
-
-   private isDashboard(): boolean {
-      return this.queryBoundary.dashboard === true;
+   private isGridReport(): boolean {
+      return this.queryBoundary.layout === "grid";
    }
 
    private ownCuratedSourceNames(): Set<string> {
@@ -5829,7 +5852,7 @@ export class Model {
       // query text sent to its path reach them. Only the package-wide surface
       // admits there. A source it declares on top of a surface source is
       // admitted by derivesFromCurated, not here.
-      if (this.isNotebook() || this.isDashboard()) return new Set();
+      if (this.isNotebook() || this.isGridReport()) return new Set();
       return new Set(
          (this.getSources() ?? [])
             .map((s) => s.name)
@@ -5996,30 +6019,46 @@ export class Model {
       // that fails to compile still leaves the storage tier able to serve these
       // rollups: planning is pure, the compile is not.
       //
-      // Statically imported, unlike the compile helper below. That one needs a
-      // dynamic import to break a real cycle; this module is already in this
-      // file's static graph by way of `preaggregation_serve_bindings`, so a
-      // dynamic import here bought nothing and put an await between the reset
-      // above and the assignment below.
       this.preaggregateRollupPlans = planModelPreaggregation(
          this.modelDef.contents as Record<string, unknown>,
       );
       this.preaggregatePlansVersion += 1;
-      // Dynamic import to break a module cycle: the helper compiles through
-      // Model.getModelRuntime, so importing it at the top of this file would make
-      // the two modules import each other.
-      const { tryCompileSynthesizedPreaggregation } = await import(
-         "./preaggregation_compile"
-      );
+      // The worker compiles the companion alongside the model (see
+      // SerializedModel.preaggregateCompanion), so the first build after
+      // hydration loads it rather than compiling it here. A build manifest is
+      // read only when a query is prepared, never by the compile, so loading it
+      // into a runtime holding `buildManifest` serves exactly what compiling it
+      // here would. Taken once: a later rebuild compiles against whatever is
+      // bound then.
+      const prepared = this.preparedPreaggregateCompanion;
+      this.preparedPreaggregateCompanion = undefined;
+      if (prepared) {
+         this.preaggregateServeMaterializer = prepared.modelDef
+            ? makeHydrationRuntime(
+                 malloyConfig,
+                 buildManifest,
+              )._loadModelFromModelDef(prepared.modelDef)
+            : undefined;
+         return;
+      }
       const synthesized = await tryCompileSynthesizedPreaggregation({
          packagePath,
          modelPath: this.modelPath,
-         malloyConfig,
          contents: this.modelDef.contents as Record<string, unknown>,
-         buildManifest,
+         getRuntime: (overlay) =>
+            Model.getModelRuntime(packagePath, this.modelPath, malloyConfig, {
+               buildManifest,
+               overlay,
+            }),
       });
       this.preaggregateServeMaterializer = synthesized?.materializer;
    }
+
+   /**
+    * The pre-aggregation companion the package-load worker compiled for this
+    * model, held until {@link buildPreaggregateServeModel} reads it.
+    */
+   private preparedPreaggregateCompanion: { modelDef?: ModelDef } | undefined;
 
    /**
     * Compile-time renderer-tag validation, run on the main thread.
@@ -6066,56 +6105,32 @@ export class Model {
          "@malloydata/render-validator"
       );
 
-      // Renderable targets: top-level named queries and every view declared on a
-      // source. Source views are where render tags like `# big_value` usually
-      // live, and they are NOT in `this.queries`.
-      const targets: { label: string; queryString: string }[] = [];
-      for (const query of this.queries ?? []) {
-         // Only an annotated, named query can carry a render tag to validate;
-         // skip the rest rather than compiling every query in the package.
-         if (!query.name || !query.annotations?.length) {
-            continue;
-         }
-         // Quote the identifier (see quoteMalloyIdentifier) so a name needing
-         // Malloy quoting still lexes and cannot break out of the quotes.
-         targets.push({
-            label: query.name,
-            queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
-         });
-      }
-      for (const source of this.sources ?? []) {
-         for (const view of source.views ?? []) {
-            // Render tags live on the view's own or inherited annotations, not
-            // via source-to-view inheritance, so an unannotated view has
-            // nothing to validate and need not be compiled. (A model-level
-            // `##` tag is the one case this gate doesn't reach, but those are
-            // theme/config, not the child-only chart tags this guards against.)
-            if (!view.annotations?.length) {
-               continue;
-            }
-            // Quote both identifiers (see quoteMalloyIdentifier): an unquoted
-            // name like `gated-source` fails to lex, and the catch below would
-            // then silently skip the very view this is meant to validate.
-            targets.push({
-               label: `${source.name} -> ${view.name}`,
-               queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,
-            });
-         }
-      }
+      // The worker prepares the targets alongside the model's compile (see
+      // SerializedModel.renderTagResults), in target order, up to its soft
+      // deadline; the targets after the last one it reached are prepared here,
+      // all of them for a model that arrives without results. Taken once: the
+      // results are only read by this check.
+      const fromWorker = this.preparedRenderTagResults ?? [];
+      this.preparedRenderTagResults = undefined;
+      const remaining = renderTagTargets(this.queries, this.sources).slice(
+         fromWorker.length,
+      );
+      const prepared = [
+         ...fromWorker.filter(
+            (entry): entry is { label: string; result: Malloy.Result } =>
+               entry.result !== undefined,
+         ),
+         ...(remaining.length > 0
+            ? await this.prepareRenderTagTargets(mm, remaining)
+            : []),
+      ];
 
       const findings: RenderTagWarning[] = [];
-      for (const target of targets) {
-         let result: Malloy.Result;
-         try {
-            const prepared = await mm
-               .loadQuery(target.queryString)
-               .getPreparedResult();
-            result = prepared.toStableResult();
-         } catch {
-            // A view/query that fails to prepare is reported by the normal
-            // compile path; don't mask that with a render-tag error.
-            continue;
-         }
+      // Once per model: it reads the whole model, and the loop below runs
+      // without an await, so a call per result held the event loop for the
+      // number of results times the model's size.
+      const carriesReportTag = this.carriesReportTag();
+      for (const { label, result } of prepared) {
          // Keep both severities. The renderer reports a tag that is well-formed
          // but inert as `warn`, not `error` -- `# colspan` outside columns mode
          // ("Ignored # colspan ... colspan only applies in columns mode"), or a
@@ -6140,19 +6155,19 @@ export class Model {
          // narrowing below surfaces anything unexpected as `warn` instead.
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            this.modelPath,
+            carriesReportTag,
          );
          if (logs.length > 0) {
             // An inert tag is not an invalid one, so don't call it "Invalid";
             // the per-finding messages already say which kind each is.
             logger.warn(
-               `Render tag findings on '${target.label}': ${logs
+               `Render tag findings on '${label}': ${logs
                   .map((e) => `[${e.severity}] ${e.message}`)
                   .join("; ")}`,
             );
             for (const e of logs) {
                findings.push({
-                  subject: target.label,
+                  subject: label,
                   message: e.message,
                   severity: e.severity === "error" ? "error" : "warn",
                });
@@ -6160,6 +6175,40 @@ export class Model {
          }
       }
       return findings;
+   }
+
+   /**
+    * Results the package-load worker prepared for the render-tag check, held
+    * until {@link validateRenderTags} reads them.
+    */
+   private preparedRenderTagResults:
+      | { label: string; result?: Malloy.Result }[]
+      | undefined;
+
+   /**
+    * Prepare render-tag targets compile-only: the ones the worker did not
+    * reach. A target that fails to prepare is reported by the normal compile
+    * path, so it is skipped rather than masked here.
+    */
+   private async prepareRenderTagTargets(
+      mm: ModelMaterializer,
+      targets: RenderTagTarget[],
+   ): Promise<{ label: string; result: Malloy.Result }[]> {
+      const prepared: { label: string; result: Malloy.Result }[] = [];
+      for (const target of targets) {
+         try {
+            const result = await mm
+               .loadQuery(target.queryString)
+               .getPreparedResult();
+            prepared.push({
+               label: target.label,
+               result: result.toStableResult(),
+            });
+         } catch {
+            continue;
+         }
+      }
+      return prepared;
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
@@ -6262,9 +6311,11 @@ export class Model {
    /**
     * Read a served notebook's cells out of `text`, the text this model compiled,
     * and attach them. A reader refusal becomes this notebook's error and leaves
-    * it with no cells; the model itself keeps serving.
+    * it with no cells; the model itself keeps serving. `ok` when its cells were
+    * read, `refused` when the reader refused them, `broken` when it did not
+    * compile and so has none.
     */
-   public attachServedNotebookCells(text: string): NotebookDiscoveryOutcome {
+   public attachServedNotebookCells(text: string): "ok" | "refused" | "broken" {
       this.notebookReaderRefusal = undefined;
       this.notebookAnnotations = undefined;
       this.notebookLayout = undefined;
@@ -6361,12 +6412,12 @@ export class Model {
    }
 
    /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
-   private readNotebookLayout(): DashboardManifest | undefined {
+   private readNotebookLayout(): ServedReportManifest | undefined {
       // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
       const facts =
-         this.settledCompiledDashboardFacts ?? this.getDashboardModelFacts();
-      const manifest = facts && buildDashboardManifest(facts);
-      return manifest?.kind === "notebook" && manifest.tiles
+         this.settledCompiledReportFacts ?? this.getReportModelFacts();
+      const manifest = facts && buildReportManifest(facts);
+      return manifest?.layout === "linear" && manifest.tiles
          ? manifest
          : undefined;
    }
@@ -6418,7 +6469,7 @@ export class Model {
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy under notebooks/ with a ## artifact note.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy with a model-level ## artifact { layout=linear } tag.`,
          );
       }
    }
@@ -8693,7 +8744,7 @@ export class Model {
       const names = new Set<string>(exports);
       const { mode, exploresDeclared } = this.queryBoundary;
       if (
-         !(this.isDashboard() || this.isNotebook()) ||
+         !(this.isGridReport() || this.isNotebook()) ||
          mode === "all" ||
          !exploresDeclared
       ) {
@@ -8777,7 +8828,7 @@ export class Model {
     * `includeHiddenFilesAndSources`.
     */
    public showsFileText(text: string): boolean {
-      if (this.isDashboard()) return true;
+      if (this.isGridReport()) return true;
       const published = this.publishedNames();
       if (!published) return true;
       const unpublished = new Set(
@@ -9012,7 +9063,7 @@ export class Model {
                packageName: this.packageName,
                name: this.notebookLayout.name,
                path: this.modelPath,
-               kind: this.notebookLayout.kind,
+               layout: this.notebookLayout.layout,
                title: this.notebookLayout.title,
                description: this.notebookLayout.description,
                tiles: this.notebookLayout.tiles,
@@ -9768,7 +9819,7 @@ export class Model {
       }
 
       try {
-         parse = MalloySQLParser.parse(fileContents, modelPath);
+         parse = parseMalloynb(fileContents, modelPath);
       } catch {
          throw new Error("Could not parse model: " + modelPath);
       }

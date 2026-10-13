@@ -6,7 +6,7 @@
 // it round-trips back to this exact name.
 import { orders } from '../orders.malloy'
 
-# artifact { title="Percent In Name" }
+## artifact { layout=grid title="Percent In Name" tiles=["percent_in_name"] }
 query: percent_in_name is orders -> {
    group_by: brand_name
    aggregate: total_amount

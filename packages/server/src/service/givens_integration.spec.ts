@@ -313,15 +313,21 @@ describe("filter given values are checked on arrival", () => {
       expect(await count({ SINCE: "2024-02" })).toBe(1);
    });
 
-   it("checks a notebook cell's givens the same way", async () => {
-      const notebook = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         "filter_givens.malloynb",
-         getConnections(),
-      );
-      await expect(
-         notebook.executeNotebookCell(1, undefined, undefined, { BIG: "asdf" }),
-      ).rejects.toThrow("Invalid value for given BIG (filter<boolean>)");
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("checks a notebook cell's givens the same way", async () => {
+         const notebook = await Model.create(
+            "test-pkg",
+            TEST_PKG_DIR,
+            "filter_givens.malloynb",
+            getConnections(),
+         );
+         await expect(
+            notebook.executeNotebookCell(1, undefined, undefined, {
+               BIG: "asdf",
+            }),
+         ).rejects.toThrow("Invalid value for given BIG (filter<boolean>)");
+      });
    });
 });

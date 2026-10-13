@@ -356,15 +356,24 @@ export class VersionService<P = unknown> {
       const store = this.requireStore();
       // Before any path is built from it.
       assertSafePackageName(packageName);
-      if (await host.isWatchMounted(packageName)) {
-         throw new BadRequestError(
-            `Package ${packageName} is mounted for watch mode, which serves its source directory as it changes, so it cannot hold published versions. Publish it from another location, or start the server without watching it.`,
-         );
-      }
+      await this.refuseWatchMounted(packageName);
       host.admit(packageName, "publish a package version");
+      return this.publishStagedVersion(
+         await store.stage(packageName, downloader),
+         options,
+      );
+   }
 
-      const staged = await store.stage(packageName, downloader);
+   /** Publish a staged version; the stage is consumed. */
+   private async publishStagedVersion(
+      staged: StagedVersion,
+      options: PublishOptions<P>,
+   ): Promise<PublishResult<P>> {
+      const host = this.requireHost();
+      const store = this.requireStore();
+      const { packageName } = staged;
       try {
+         await this.refuseWatchMounted(packageName);
          if (await this.isVersioned(packageName)) {
             return await this.publishStaged(staged, options, false);
          }
@@ -379,6 +388,15 @@ export class VersionService<P = unknown> {
                packageName,
                error,
             }),
+         );
+      }
+   }
+
+   /** A watch-mounted package serves its own source directory: no versions. */
+   private async refuseWatchMounted(packageName: string): Promise<void> {
+      if (await this.requireHost().isWatchMounted(packageName)) {
+         throw new BadRequestError(
+            `Package ${packageName} is mounted for watch mode, which serves its source directory as it changes, so it cannot hold published versions. Publish it from another location, or start the server without watching it.`,
          );
       }
    }
@@ -521,8 +539,11 @@ export class VersionService<P = unknown> {
     * Publishing a version this server already holds: placement, not a new
     * publish. The same content succeeds and writes no files; different
     * content is 409 and an archived version 410. A non-null manifest on the
-    * request binds the version to it, and `latest` moves only to a version
-    * strictly higher than the current one.
+    * request binds the version to it. `latest` is left where it is: a
+    * placement is the same publish again (a retry, or a load onto one more
+    * server), so it must not undo a rollback made since. Only a package with
+    * no `latest` at all takes the version as its `latest`, under
+    * `on-publish`.
     */
    private async reload(
       existing: Version,
@@ -589,8 +610,7 @@ export class VersionService<P = unknown> {
             this.environmentId,
             packageName,
             versionId,
-            (current) =>
-               current === null || compareSemver(versionId, current) > 0,
+            (current) => current === null,
          );
          if (moved) {
             this.latestSeen.set(packageName, versionId);

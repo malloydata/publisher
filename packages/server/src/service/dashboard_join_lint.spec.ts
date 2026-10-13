@@ -40,12 +40,12 @@ source: order_items is duckdb.sql("select 1 as product_id, 5 as qty") extend {
 `;
 
 const dashboard = (dimension: string) => `##! experimental.givens
+## artifact { layout=grid title="By category" tiles=["by_category"] }
 import { order_items } from '../model.malloy'
 
 # control=select suggest { source=order_items dimension="${dimension}" }
 given: CATEGORY :: filter<string> is f''
 
-# artifact { title="By category" }
 query: by_category is order_items -> {
    where: products.category ~ $CATEGORY
    group_by: products.category

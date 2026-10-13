@@ -130,10 +130,11 @@ export function NotebookCell({
    // by that dimension is clickable for free: the same resolution, and the
    // same hook, the dashboard viewer uses.
    const { drill, drillMenu } = useDrill({
-      // The dashboards route now exists, so a `# drill { to=<dashboard> }` from
-      // a notebook cell is honoured: the host turns the destination and its
-      // seeded givens into `/{env}/{pkg}/dashboards/<slug>?GIVEN=value`. Passed
-      // through rather than built here, because only the host knows its routing.
+      // A `# drill { to=<report> }` from a cell is honoured: the host resolves
+      // the destination (a package path from the root) and turns it and its
+      // seeded givens into the report's route, the Console's being
+      // `/{env}/{pkg}/<path>?GIVEN=value`. Passed through rather than built
+      // here, because only the host knows its routing.
       //
       // Still optional, and the reason matters: a host without a dashboard
       // route omits it, which makes a named destination non-honorable and
@@ -153,7 +154,7 @@ export function NotebookCell({
       canSelf: canDrillSelf,
       // The reader is in a notebook, so `to=self` says so: the drill tag is on
       // a shared model dimension and cannot know which document it fired in.
-      selfLabel: "Filter this notebook",
+      selfLabel: "Filter this report",
    });
    // Regex to extract imported names from import statements
    const IMPORT_NAMES_REGEX = /import\s*\{([^}]+)\}\s*from\s*['"`][^'"`]+['"`]/;

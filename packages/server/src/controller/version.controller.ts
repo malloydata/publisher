@@ -1,7 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { isManifestUri } from "./manifest_location";
+import {
+   isManifestLocation,
+   MANIFEST_LOCATION_FORMS,
+} from "./manifest_location";
 import express from "express";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
@@ -96,15 +99,15 @@ export class VersionController {
       this.assertWritable();
       const fields = (body ?? {}) as { manifestLocation?: unknown };
       const location = fields.manifestLocation;
-      // A gs:// or s3:// URI, as the spec declares: the manifest is fetched
-      // from object storage, never read from a path on this server.
+      // A location the manifest loader reads (see isManifestLocation), or
+      // null to clear the binding.
       if (
          !("manifestLocation" in fields) ||
          (location !== null &&
-            (typeof location !== "string" || !isManifestUri(location)))
+            (typeof location !== "string" || !isManifestLocation(location)))
       ) {
          throw new BadRequestError(
-            "`manifestLocation` must be the gs:// or s3:// URI of a build manifest, or null to serve live.",
+            `\`manifestLocation\` must be ${MANIFEST_LOCATION_FORMS}, or null to serve live.`,
          );
       }
       const { versions, environment } = await this.service(environmentName);

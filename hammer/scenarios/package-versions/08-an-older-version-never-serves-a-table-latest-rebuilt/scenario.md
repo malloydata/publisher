@@ -25,6 +25,7 @@ exactly as a long-running server would, before latest rebuilds.
 ## Publisher
 
 - PERSIST_STORAGE_MODE: on
+- PUBLISHER_PACKAGE_VERSIONING: on
 
 ## Model anchor/anchor.malloy
 

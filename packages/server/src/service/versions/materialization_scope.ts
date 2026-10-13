@@ -186,20 +186,38 @@ export function storageBindingResolverFor(
  */
 const VERSIONED_TABLE_SEGMENT_MAX = 50;
 
+/** Whose a `scope: version` table is: one version of one package. */
+export interface VersionTableOwner {
+   environmentName: string;
+   packageName: string;
+   version: string;
+}
+
 /**
  * The suffix that makes a self-assigned table one version's own, under
- * `scope: version`: `__v1_2_3` for a release. A version with a pre-release or
- * build part also gets 8 hex of its hash, because its dots, dashes and plus
- * signs cannot stand in an identifier, and the underscored form alone could
- * name two versions (`1.0.0-rc.1` and `1.0.0-rc-1`).
+ * `scope: version`: `__v1_2_3_<8 hex>`. The digits are the version's release,
+ * so a name says which version built it. The hex is a hash of the
+ * environment, the package and the whole version:
+ *
+ *  - the package and environment, because tables live on connections that
+ *    packages, and environments, can share: two packages at the same version
+ *    with the same `persist name=` would otherwise build one table, and
+ *    archiving one version would drop the table the other still serves;
+ *  - the whole version, because a pre-release's or build's dots, dashes and
+ *    plus signs cannot stand in an identifier, and the underscored form alone
+ *    could name two versions (`1.0.0-rc.1` and `1.0.0-rc-1`).
  */
-export function versionTableSuffix(version: string): string {
-   const release = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+export function versionTableSuffix(owner: VersionTableOwner): string {
+   const release = /^(\d+)\.(\d+)\.(\d+)/.exec(owner.version);
    const base = release
       ? `${release[1]}_${release[2]}_${release[3]}`
-      : version.replace(/[^A-Za-z0-9]/g, "_");
-   if (release && release[0] === version) return `__v${base}`;
-   return `__v${base}_${shortHash(version)}`;
+      : owner.version.replace(/[^A-Za-z0-9]/g, "_");
+   const owned = JSON.stringify([
+      owner.environmentName,
+      owner.packageName,
+      owner.version,
+   ]);
+   return `__v${base}_${shortHash(owned)}`;
 }
 
 /**

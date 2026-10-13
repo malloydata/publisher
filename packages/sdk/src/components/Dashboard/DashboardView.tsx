@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DashboardManifest } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -16,6 +16,8 @@ import {
 import { GivensPanel, type GivensLayout } from "../given";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { Prose } from "../Prose";
+import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import {
    DashboardGrid,
@@ -26,9 +28,10 @@ import {
 } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
-import type { DashboardEventHandler } from "./telemetry";
+import { useReportEvents } from "../Report/telemetry";
 import { TileCard, type TileChrome } from "./TileCard";
 import { tileIgnoredFilterLabels } from "./TileFilterTag";
+import { useStuck } from "./useStuck";
 
 /** Narrowest a tile that sets no `colspan` is allowed to render. */
 const MIN_TILE_PX = 240;
@@ -62,7 +65,6 @@ export interface DashboardViewProps {
    onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
    height?: number;
    maxResultSize?: number;
-   onEvent?: DashboardEventHandler;
    /** `none` renders tiles as a document, with no cards or title block. */
    chrome?: TileChrome;
    /**
@@ -99,7 +101,6 @@ export function DashboardView({
    onNavigate,
    height,
    maxResultSize,
-   onEvent,
    chrome = "card",
    controlsLayout = "bar",
    preamble,
@@ -153,6 +154,8 @@ export function DashboardView({
       ...(givens ? { hostGivens: givens } : {}),
    });
    const { applied, declaredTypes, canSelf, onSelf } = controls;
+   // Set by the `Report` around this view; silent anywhere else.
+   const events = useReportEvents();
 
    // A given only a gate reads is in a tile's `givenNames` but not the row, so
    // the host's value for it is sent as given: the row would drop it as undeclared.
@@ -196,7 +199,7 @@ export function DashboardView({
       onNavigate,
       onSelf,
       canSelf,
-      selfLabel: "Filter this dashboard",
+      selfLabel: "Filter this report",
       ...(preamble === undefined ? { onRows } : {}),
    });
    // Each tile's clicks carry the tile they came from, so the rows behind a
@@ -231,43 +234,22 @@ export function DashboardView({
             <DashboardHeader manifest={manifest} chrome={chrome} />
          )}
 
-         {/* Sticky so the controls stay in reach while the tiles scroll under.
-             Only when there are controls: GivensPanel draws nothing without
-             them, and an empty box would still cost the Stack a gap. */}
+         {/* Sticky so the controls stay in reach while the tiles scroll under,
+             in a grid only: a linear report's controls are a full panel, and
+             pinned they would take a third of a laptop screen from the prose
+             they sit above. Only when there are controls: GivensPanel draws
+             nothing without them, and an empty box would still cost the Stack
+             a gap. */}
          {specs.length > 0 && (
-            <Box
-               sx={{
-                  position: "sticky",
-                  top: 0,
-                  zIndex: STICKY_CONTROLS_Z,
-                  bgcolor: "background.default",
-               }}
-            >
+            <StickyControls sticky={chrome === "card"}>
                <GivensPanel {...controls.panel} layout={controlsLayout} />
-            </Box>
+            </StickyControls>
          )}
 
          {modelPath === undefined ? (
             <Alert severity="error">
                This dashboard has no model path, so there is nothing to run.
             </Alert>
-         ) : manifest.query !== undefined ? (
-            // Single-query form: one query whose result IS the dashboard. Its
-            // `# dashboard {columns=N}` tag is the renderer's business, so no
-            // grid is imposed here: doing so would nest a grid in a grid.
-            <DashboardTile
-               environmentName={environmentName}
-               packageName={packageName}
-               versionId={versionId}
-               modelPath={modelPath}
-               queryName={manifest.query}
-               givens={applied}
-               declaredTypes={declaredTypes}
-               height={height}
-               maxResultSize={maxResultSize}
-               drill={drill}
-               chrome={chrome}
-            />
          ) : tiles.length > 0 ? (
             // Composite form: each tile runs on its own and the results are
             // combined into one grid here, since no single Malloy result spans
@@ -284,12 +266,13 @@ export function DashboardView({
                keyOf={(tile, index) =>
                   `${index}:${tile.kind === "text" ? `text:${tile.name}` : tile.query}`
                }
-               renderTile={(tile) =>
+               renderTile={(tile, index) =>
                   // An absent `kind` is a query tile, as it was before text tiles.
                   tile.kind === "text" || tile.query === undefined ? (
                      <TextTile markdown={tile.markdown ?? ""} chrome={chrome} />
                   ) : (
                      <DashboardTile
+                        index={index}
                         environmentName={environmentName}
                         packageName={packageName}
                         versionId={versionId}
@@ -335,8 +318,8 @@ export function DashboardView({
                onClose={() => setRows(undefined)}
                onDone={(ok, durationMs) => {
                   if (rows)
-                     onEvent?.({
-                        type: "dashboard.rows_shown",
+                     events.emit({
+                        type: "report.rows_shown",
                         source: rows.source,
                         view: rows.view,
                         field: rows.field,
@@ -424,5 +407,55 @@ export function DashboardProse({
             </Box>
          )}
       </Stack>
+   );
+}
+
+/**
+ * A control row that pins to the top of the scroller and, while pinned, draws
+ * a hairline under itself, so tiles scrolling beneath read as passing under a
+ * bar rather than being cut off by nothing. Shared by the reader and the
+ * builder so both pin the same way.
+ */
+export function StickyControls({
+   sticky = true,
+   children,
+}: {
+   sticky?: boolean;
+   children: ReactNode;
+}) {
+   const { theme } = usePublisherTheme();
+   const { sentinelRef, stuck } = useStuck();
+   if (!sticky) return <Box>{children}</Box>;
+   const edge = theme.cardBorder.replace(/^1px solid /, "");
+   return (
+      <>
+         {/* The sentinel the pin is detected from; it costs the parent Stack
+             no gap, since it is a zero-height sibling and Stack gaps are on
+             the bar's own margin. */}
+         <Box
+            ref={sentinelRef}
+            aria-hidden
+            sx={{ height: 0, m: "0 !important" }}
+         />
+         <Box
+            data-stuck={stuck || undefined}
+            sx={{
+               position: "sticky",
+               top: 0,
+               zIndex: STICKY_CONTROLS_Z,
+               bgcolor: "background.default",
+               // Room under the bar for the edge, so the line never sits on
+               // the controls themselves.
+               pb: 1,
+               // A shadow rather than a border: drawing the edge must not
+               // change the bar's height, or the page jumps as it pins.
+               boxShadow: stuck ? `0 1px 0 ${edge}` : "none",
+               transition: `box-shadow ${MOTION_FAST}`,
+               ...reducedMotionSx,
+            }}
+         >
+            {children}
+         </Box>
+      </>
    );
 }

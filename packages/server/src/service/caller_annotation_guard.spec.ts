@@ -116,7 +116,7 @@ describe("hasCallerAuthorizeAnnotation: markdown and text block bodies are prose
       ],
       [
          "a notebook file whose prose mentions both tags",
-         `##! experimental.givens\n## artifact { kind=notebook }\n\n##|(markdown)\nRows are limited by #(access_filter); the source is locked by #(authorize).\n|##\n\n${RUN}\n`,
+         `##! experimental.givens\n## artifact { layout=linear }\n\n##|(markdown)\nRows are limited by #(access_filter); the source is locked by #(authorize).\n|##\n\n${RUN}\n`,
       ],
    ];
    for (const [name, text] of accepted) {
@@ -150,7 +150,7 @@ describe("hasCallerAuthorizeAnnotation: markdown and text block bodies are prose
    it("accepts the one-line markdown cell the notebook writer emits", () => {
       expect(
          refuses(
-            `## artifact { kind=notebook }\n\n##(markdown) Rows are limited by #(access_filter).\n\n${RUN}\n`,
+            `## artifact { layout=linear }\n\n##(markdown) Rows are limited by #(access_filter).\n\n${RUN}\n`,
          ),
       ).toBe(false);
    });

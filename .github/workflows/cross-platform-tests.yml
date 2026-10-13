@@ -111,6 +111,13 @@ jobs:
         run: bun run --cwd packages/sdk test
         shell: bash
 
+      # The Console's routing specs, on the same DOM preload as the SDK's
+      # (packages/app/test/setup.ts). They import the built SDK, which the
+      # build step above produced.
+      - name: Run Console tests
+        run: bun run --cwd packages/app test
+        shell: bash
+
       # Runners are UTC, the one zone where a local-vs-UTC date bug is invisible.
       # Reverting GivenInput's `dayjs.utc` to `dayjs` fails 0 tests under UTC, 3
       # under a zone ahead of it and 1 under a zone behind it.

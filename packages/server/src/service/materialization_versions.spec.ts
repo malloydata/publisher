@@ -27,6 +27,7 @@ import {
    ServingReader,
    WRITES_TABLES_KEY,
    storageBindingResolverFor,
+   versionTableSuffix,
 } from "./versions/materialization_scope";
 
 // Materializations of published versions, end to end: real versions compiled
@@ -39,6 +40,12 @@ import {
 const ENV = "testEnv";
 const ENV_ID = "env-1";
 const PKG = "sales";
+
+/** The table a `scope: version` version builds `summary` into. */
+const versionTable = (version: string, packageName = PKG) =>
+   `summary${versionTableSuffix({ environmentName: ENV, packageName, version })}`;
+const TABLE_V1 = versionTable("1.0.0");
+const TABLE_V2 = versionTable("2.0.0");
 
 let root: string;
 let envPath: string;
@@ -318,11 +325,8 @@ describe('scope "version": each version builds and serves its own tables', () =>
          Object.values(v1.manifest?.entries ?? {}).map(
             (e) => e.physicalTableName,
          ),
-      ).toEqual(["summary__v1_0_0"]);
-      expect(await warehouseTables()).toEqual([
-         "summary__v1_0_0",
-         "summary__v2_0_0",
-      ]);
+      ).toEqual([TABLE_V1]);
+      expect(await warehouseTables()).toEqual([TABLE_V1, TABLE_V2]);
    });
 
    it("serves each version from its own table", async () => {
@@ -330,8 +334,8 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await publish("2.0.0", 2, "version");
       await build({ versionId: "1.0.0" });
       await build({ versionId: "2.0.0" });
-      await tamper("summary__v1_0_0", 101);
-      await tamper("summary__v2_0_0", 102);
+      await tamper(TABLE_V1, 101);
+      await tamper(TABLE_V2, 102);
 
       expect(await answerOf("1.0.0")).toBe(101);
       expect(await answerOf("2.0.0")).toBe(102);
@@ -342,8 +346,8 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await publish("2.0.0", 2, "version");
       await build({ versionId: "1.0.0" });
       await build({ versionId: "2.0.0" });
-      await tamper("summary__v1_0_0", 101);
-      await tamper("summary__v2_0_0", 102);
+      await tamper(TABLE_V1, 101);
+      await tamper(TABLE_V2, 102);
 
       env = await newEnvironment();
       service = newService(env);
@@ -419,7 +423,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
             (await repo.getMaterializationById(auto.id))?.metadata?.[
                WRITES_TABLES_KEY
             ],
-         ).toEqual(["summary__v2_0_0"]);
+         ).toEqual([TABLE_V2]);
 
          const source = Object.values(
             (
@@ -433,7 +437,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
                   {
                      sourceID: source.sourceID,
                      sourceEntityId: source.sourceEntityId,
-                     physicalTableName: "summary__v2_0_0",
+                     physicalTableName: TABLE_V2,
                      realization: "COPY",
                   },
                ] as never,
@@ -460,18 +464,70 @@ describe('scope "version": each version builds and serves its own tables', () =>
       await env.getVersionService()!.setArchiveStatus(PKG, "1.0.0", "archive");
       await Promise.all(reclaims);
 
-      expect(await warehouseTables()).toEqual(["summary__v2_0_0"]);
+      expect(await warehouseTables()).toEqual([TABLE_V2]);
       expect(await repo.getMaterializationById(v1.id)).toBeNull();
       expect(
          (await repo.listMaterializations(ENV_ID, PKG)).map((m) => m.version),
       ).toEqual(["2.0.0"]);
    });
 
+   it("two packages at one version build tables of their own, so archiving one leaves the other's", async () => {
+      // Both declare `persist name="summary"` on the environment's shared
+      // connection and are at 1.0.0. Named for the version alone, they built
+      // one table, and archiving one package's version dropped the table the
+      // other was serving.
+      const OTHER = "other";
+      const otherLocation = writePackage("1.0.0", 7, "version");
+      await env.getVersionService()!.publish(
+         OTHER,
+         async (stagingPath) => {
+            await fs.promises.cp(otherLocation, stagingPath, {
+               recursive: true,
+            });
+         },
+         { sourceLocation: otherLocation, promotion: "on-publish" },
+      );
+      await publish("1.0.0", 1, "version");
+      await publish("2.0.0", 2, "version");
+      await build({ versionId: "1.0.0" });
+      await settled(
+         (
+            await service.createMaterialization(ENV, OTHER, {
+               versionId: "1.0.0",
+            })
+         ).id,
+      );
+      const otherTable = versionTable("1.0.0", OTHER);
+      expect(otherTable).not.toBe(TABLE_V1);
+      expect((await warehouseTables()).sort()).toEqual(
+         [TABLE_V1, otherTable].sort(),
+      );
+
+      await env.getVersionService()!.setArchiveStatus(PKG, "1.0.0", "archive");
+      await Promise.all(reclaims);
+
+      expect(await warehouseTables()).toEqual([otherTable]);
+      // The other package still serves from its own table.
+      await tamper(otherTable, 77);
+      const other = await env.getPackage(OTHER, false);
+      const result = await other
+         .getModel("model.malloy")!
+         .getQueryResults(
+            undefined,
+            undefined,
+            "run: summary -> { select: answer }",
+         );
+      expect(
+         (result as unknown as { compactResult: { answer: number }[] })
+            .compactResult[0].answer,
+      ).toBe(77);
+   });
+
    it("an unarchived version serves live until it is built again", async () => {
       await publish("1.0.0", 1, "version");
       await publish("2.0.0", 2, "version");
       await build({ versionId: "1.0.0" });
-      await tamper("summary__v1_0_0", 101);
+      await tamper(TABLE_V1, 101);
       expect(await answerOf("1.0.0")).toBe(101);
 
       const versions = env.getVersionService()!;
@@ -481,7 +537,7 @@ describe('scope "version": each version builds and serves its own tables', () =>
 
       expect(await answerOf("1.0.0")).toBe(1);
       await build({ versionId: "1.0.0" });
-      await tamper("summary__v1_0_0", 111);
+      await tamper(TABLE_V1, 111);
       expect(await answerOf("1.0.0")).toBe(111);
    });
 
@@ -564,11 +620,11 @@ describe('scope "version": each version builds and serves its own tables', () =>
 
       const kept = await repo.getMaterializationById(v1.id);
       expect(kept?.status).toBe("FAILED");
-      expect(await warehouseTables()).toContain("summary__v1_0_0");
+      expect(await warehouseTables()).toContain(TABLE_V1);
 
       await service.reclaimArchivedVersions();
       expect(await repo.getMaterializationById(v1.id)).toBeNull();
-      expect(await warehouseTables()).not.toContain("summary__v1_0_0");
+      expect(await warehouseTables()).not.toContain(TABLE_V1);
    });
 });
 
@@ -1367,10 +1423,7 @@ describe("the scheduler, per published version", () => {
          ["2.0.0", "MANIFEST_FILE_READY"],
       ]);
       expect(env.getLoadedVersionIds(PKG).sort()).toEqual(["1.0.0", "2.0.0"]);
-      expect(await warehouseTables()).toEqual([
-         "summary__v1_0_0",
-         "summary__v2_0_0",
-      ]);
+      expect(await warehouseTables()).toEqual([TABLE_V1, TABLE_V2]);
    });
 
    it("never fires an archived version, and fires it again once unarchived", async () => {

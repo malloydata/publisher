@@ -1,0 +1,22 @@
+##! experimental.givens
+## artifact { layout=linear title="Brands" }
+
+// Nothing here mentions drill: the tags are on `orders.brand_name` and
+// `orders.region_name`, so a cell that groups by one is clickable, and a click
+// either leaves for a dashboard or filters this report in place. REGION is
+// imported so the report shows a control for it, which `to=self` needs
+// somewhere to put the clicked value.
+import "orders.malloy"
+import { REGION } from "givens.malloy"
+
+##|(markdown)
+# Brands
+|##
+
+##(markdown) Amount by brand
+
+run: orders -> by_brand
+
+##(markdown) Orders by region
+
+run: orders -> by_region

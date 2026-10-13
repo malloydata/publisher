@@ -209,12 +209,9 @@ describe("scaffold: default package", () => {
       }
    });
 
-   test("publisher.json is the name and a first version", () => {
+   test("publisher.json is just the name", () => {
       run();
-      expect(readJson("sales/publisher.json")).toEqual({
-         name: "sales",
-         version: "0.1.0",
-      });
+      expect(readJson("sales/publisher.json")).toEqual({ name: "sales" });
    });
 
    test("malloy-config.json points the editor at the package directory", () => {

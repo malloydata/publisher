@@ -572,7 +572,7 @@ malloy-pub delete materialization <id> --environment <env> --package <pkg> --dro
 
 The `schedule` commands share the server's publish-gate validation: an invalid cron or an illegal scope/freshness combination is rejected, so a rejection means the change was unsafe.
 
-> **`--drop-tables` drops _every_ physical table in that run's manifest**, not just one source's. Auto-run assigns stable table names and carries unchanged sources forward, so an old run's manifest names tables a newer manifest still serves. To remove a persisted source, drop the old run **first, then `materialize --wait`** so every still-persisted source is re-created; dropping a run whose tables the current serving manifest depends on, without rebuilding, breaks queries.
+> **`--drop-tables` drops the physical tables in that run's manifest, except any that a still-ready run also names.** Auto-run assigns stable table names and carries unchanged sources forward, so an old run's manifest names tables a newer manifest still serves, and those survive the delete. Deleting a run also re-derives the package's serve bindings from the latest remaining ready run (or clears them, so queries compute live), so a delete does not break queries — it can leave a table behind. To remove a persisted source, delete its annotation, `materialize --wait`, then delete the old runs that name its table; a table no ready run names is dropped.
 
 ## Standalone vs. hosted (control-plane) deployments
 

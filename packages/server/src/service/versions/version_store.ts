@@ -97,15 +97,14 @@ export class VersionStore {
       await fs.promises.mkdir(path.dirname(stagingPath), { recursive: true });
       try {
          await downloader(stagingPath);
-         const { versionId, description } =
-            await readManifestVersion(stagingPath);
+         const manifest = await readManifestVersion(stagingPath);
          return {
             packageName,
             stagingPath,
-            versionId,
-            dirName: versionDirName(versionId),
+            versionId: manifest.versionId,
+            dirName: versionDirName(manifest.versionId),
             contentHash: await hashPackageTree(stagingPath),
-            description,
+            description: manifest.description,
          };
       } catch (err) {
          await removeQuietly(stagingPath);
@@ -114,7 +113,7 @@ export class VersionStore {
    }
 
    /** Remove a staged tree that will not be placed. */
-   async discard(staged: StagedVersion): Promise<void> {
+   async discard(staged: { stagingPath: string }): Promise<void> {
       await removeQuietly(this.within(STAGING_DIR_NAME, staged.stagingPath));
    }
 

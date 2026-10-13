@@ -388,20 +388,38 @@ describe("VersionService.publish of a version already published", () => {
       expect(versionDirs()).toEqual(["1.0.0"]);
    });
 
-   it("moves latest only to a strictly higher version", async () => {
+   it("leaves latest where it is: an older or a newer version published again moves nothing", async () => {
       const svc = service();
       const v1 = source("v1", { version: "1.0.0" });
+      const v2 = source("v2", { version: "2.0.0" });
       await publish(svc, v1);
-      await publish(svc, source("v2", { version: "2.0.0" }));
+      await publish(svc, v2);
       await publish(svc, v1);
       expect(await latest()).toBe("2.0.0");
 
-      // Published under explicit promotion, then re-loaded under on-publish.
+      // Rolled back, then the newer version's publish replayed (a retry):
+      // the rollback stands.
+      await svc.setLatest(PKG, "1.0.0");
+      await publish(svc, v2);
+      expect(await latest()).toBe("1.0.0");
+
+      // Published under explicit promotion, then placed again under
+      // on-publish: still a placement, so latest stays.
       const v3 = source("v3", { version: "3.0.0" });
       await publish(svc, v3, { promotion: "explicit" });
-      expect(await latest()).toBe("2.0.0");
       await publish(svc, v3);
-      expect(await latest()).toBe("3.0.0");
+      expect(await latest()).toBe("1.0.0");
+   });
+
+   it("gives a package with no latest the version placed again", async () => {
+      // Published under explicit promotion, nothing set latest; placed again
+      // under on-publish, it is the only candidate.
+      const svc = service();
+      const v1 = source("v1", { version: "1.0.0" });
+      await publish(svc, v1, { promotion: "explicit" });
+      expect(await latest()).toBeNull();
+      await publish(svc, v1);
+      expect(await latest()).toBe("1.0.0");
    });
 });
 

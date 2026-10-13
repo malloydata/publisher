@@ -66,16 +66,28 @@ tags:
       distribution
   - name: models
     description: Malloy model access and compilation operations
-  - name: notebooks
-    description: Malloy notebook access and execution operations
-  - name: dashboards
+  - name: reports
     description:
-      Discovery and manifests for `# artifact` dashboards - layout, tiles, and
-      the given specs behind their controls
+      Reports - any `.malloy` file in a package carrying an artifact tag,
+      wherever it lives, with a linear or grid layout - their listing,
+      manifests, and cells
+  - name: notebooks
+    description: Deprecated aliases for the linear reports. Use the `reports` routes.
+  - name: dashboards
+    description: Deprecated aliases for the grid reports. Use the `reports` routes.
   - name: data-apps
     description:
       In-package HTML data apps (static pages served from a package's public/
       directory)
+  - name: skills
+    description:
+      Agent skills in force for a package - the bundled guides plus the package's
+      own `skills/`, with the package's copy replacing a bundled one of the same
+      name
+  - name: agents
+    description:
+      Agents a package declares in `publisher.json`, resolved to their
+      instructions, skill files and schedules (served, never run)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -1452,19 +1464,31 @@ paths:
 
         ## Versioned publish
 
-        A request that carries a `location` publishes an immutable version of the package. The
-        request takes no version parameter: the version is the `version` field of the package's
-        own `publisher.json`, the way `npm publish` reads `package.json`, so bumping that field
-        is the release action.
+        Package versioning is a server setting, `PUBLISHER_PACKAGE_VERSIONING` (`off` by
+        default; `ServerStatus.packageVersioning` reports it), and a transition: a later release
+        removes the setting and always publishes versions.
 
-        - A `version` that is missing, or is not a semantic version, is refused with 400
-          (`reason` `MANIFEST_VERSION_MISSING` or `MANIFEST_VERSION_INVALID`).
+        With it off, a request that carries a `location` installs the package in place,
+        replacing the previous publish, as before versions, whatever its `publisher.json`
+        declares; the package has no versions, and the server logs a warning that names it. A
+        package that already has published versions refuses that with 409 (`reason`
+        `PACKAGE_IS_VERSIONED`).
+
+        With it on, a request that carries a `location` publishes an immutable version of the
+        package: the one its own `publisher.json` declares. The request takes no version
+        parameter: the version is that field, the way `npm publish` reads `package.json`, so
+        bumping it is the release action.
+
+        - A `publisher.json` with no `version` is refused with 400 (`reason`
+          `MANIFEST_VERSION_MISSING`), and one whose `version` is not a semantic version with
+          400 (`reason` `MANIFEST_VERSION_INVALID`). Nothing is written.
         - Publishing a version the package already has, with different content, is refused with
           409 (`reason` `VERSION_CONFLICT`). The same content again succeeds and writes no
           files, so re-loading a version onto a server that already holds it is safe to retry;
           a non-null `manifestLocation` on that request binds the version to it. A re-load
-          moves `latest` only to a strictly higher version, never back to an older build of an
-          equal one. Re-publishing an archived version is refused with 410 (`reason`
+          leaves `latest` where it is, so a retried publish never undoes a rollback; it sets
+          `latest` only for a package that has none. Re-publishing an archived version is
+          refused with 410 (`reason`
           `VERSION_ARCHIVED`): unarchive it instead.
         - A version that does not pass the publish checks (the same ones an unversioned publish
           applies) is refused with 400, and the versions already published keep serving.
@@ -1937,11 +1961,10 @@ paths:
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), only the
         files on that surface are listed, unless `includeHiddenFilesAndSources` is true. With it, every
-        model file is listed, and `isHidden` marks the ones the package hides. Dashboard files
-        are listed by the dashboards route either way. Served notebooks (a `.malloy` at the top of
-        `notebooks/` or `dashboards/` whose model-level `## artifact` tag says `kind=notebook`, or
-        names no `kind` and sits under `notebooks/`) are not models here, with or without a
-        surface; they are listed by list-notebooks.
+        model file is listed, and `isHidden` marks the ones the package hides. Reports (any
+        `.malloy` outside `public/` carrying an artifact tag, other than the root `index.malloy`;
+        see list-reports) are listed by list-reports. A grid report is not a model here on a
+        package with a surface; a linear report is not a model here with or without one.
       parameters:
         - name: environmentName
           in: path
@@ -1991,15 +2014,14 @@ paths:
         On a package with a surface (a root `index.malloy`, or a legacy `explores`), a file off
         that surface answers 404 with the same message a query to it gets, unless
         `includeHiddenFilesAndSources` is true. With it, the file is returned with its `sourceText`, whatever
-        sources the text names. Dashboard files and served notebooks (a `.malloy` at the top of
-        `notebooks/` or `dashboards/` whose model-level `## artifact` tag says `kind=notebook`, or
-        names no `kind` and sits under `notebooks/`) are always returned. A package with no surface, or with
+        sources the text names. Reports (see list-reports), wherever they live in the package,
+        are always returned. A package with no surface, or with
         `queryableSources: "all"`, returns every file. For a file it returns, `modelDef.contents` and `modelDef.exports`,
         `modelInfo`, `sources` and `sourceInfos` are limited to the names the file publishes, so
         the surface file does not carry the hidden sources it imports. A join to a hidden source
         keeps only its name and the names and types of its fields. `sourceText` is left out
         when the text names a source the file does not publish, unless
-        `includeHiddenFilesAndSources` is true; the text of a dashboard is always returned.
+        `includeHiddenFilesAndSources` is true; the text of a report is always returned.
       parameters:
         - name: environmentName
           in: path
@@ -2042,15 +2064,29 @@ paths:
       tags:
         - models
       operationId: update-model-source
-      summary: Write a dashboard or notebook file into the package
+      summary: Write a report file into the package
       description: |
-        Writes the Malloy text of a dashboard file — `dashboards/<slug>.malloy` —
-        or a notebook file — `notebooks/<slug>.malloy`, which must carry an
-        `## artifact` tag (an untagged file there is a shared include and is
-        refused with 400, and so is a write over an existing file that is
-        not a notebook) — the only paths this endpoint accepts,
-        into the package, and reloads the package in place so it is served from
-        the new text. This is the dashboard and notebook builder's save.
+        Writes the Malloy text of a report into the package, and reloads the
+        package in place so it is served from the new text. This is the report
+        builder's save. A report is any `.malloy` file carrying an artifact tag
+        (see list-reports), of either layout, wherever it lives in the package.
+
+        What it accepts:
+
+        - CREATE (no `expectedHash`): any `.malloy` path in the package that
+          does not exist yet, outside `public/`, and never the root
+          `index.malloy`. Missing directories are created, inside the package
+          root only. The text must carry an artifact tag (`## artifact`, or the
+          deprecated query-level `# artifact`): an `artifact` property anywhere
+          on a tag line, outside a string. Text without one is refused with 400.
+        - REPLACE (with `expectedHash`): only a file the package currently reads
+          as an editable report: a tagged `.malloy` report of either layout,
+          including a tagged grid report that has no tiles yet. A model, an
+          untagged file, a `.malloynb`, the root `index.malloy` and anything in
+          `public/` cannot be overwritten, wherever they live, and answer 400.
+
+        Two reports may share a basename in different directories; a report is
+        identified by its path, so a taken basename is not refused.
 
         The text is compiled first, as the file, and refused with its problems
         when it does not compile; nothing is written. The write is atomic (a
@@ -2068,21 +2104,16 @@ paths:
         merged: the caller re-opens and reapplies its change. Omit it to CREATE
         the file: a file that already exists is then refused with 409 too, so
         an unconditional overwrite is not something a caller can ask for by
-        leaving a field out. A notebook path over an existing file the package
-        does not serve as a notebook answers 400 instead, with or without a
-        hash, because that check comes before the hash. The check, the write,
+        leaving a field out. A path over an existing file the package does not
+        read as a report answers 400 instead, with or without a hash, because
+        that check comes before the hash. The check, the write,
         the reload and the restore all happen under one hold of the package
         lock, so two saves racing on one file cannot both pass the check, and a
         rollback cannot revert the other writer's text instead of its own.
 
-        A dashboard whose name (the file's basename) another file already holds
-        is refused with 409 before anything is written, since the name is its
-        URL and its `# drill` target. A `dashboards/` file whose text has no
-        `# artifact` or `## artifact` tag (an `artifact` property anywhere on a
-        tag line, outside a string) is refused with 400 before anything is
-        written; a tag only inside a block comment passes that check but the
-        compiled model carries none, so it is rolled back and answers 500. A
-        tagged dashboard with no tiles saves but is not served until it has one.
+        A tag only inside a block comment passes the tag check but the compiled
+        model carries none, so it is rolled back and answers 500. A tagged grid
+        report with no tiles saves but is not served until it has one.
 
         A create answers 201 and an update 200; `created` in the body says the
         same thing.
@@ -2111,7 +2142,7 @@ paths:
             type: string
         - name: path
           in: path
-          description: The file, `dashboards/<slug>.malloy` or `notebooks/<slug>.malloy`
+          description: The report file's path in the package, such as `sales/q3.malloy`
           required: true
           schema:
             $ref: "#/components/schemas/PathPattern"
@@ -2145,9 +2176,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description:
-            The file changed since the caller opened it, already exists and
-            no `expectedHash` was sent, or is a dashboard whose name another
-            file already holds
+            The file changed since the caller opened it, or already exists and
+            no `expectedHash` was sent
           content:
             application/json:
               schema:
@@ -2268,9 +2298,11 @@ paths:
         that is both gated and hidden from the caller answers 404 for the whole
         request, as it does without a document. In a document, problem positions
         are lines of the submitted text, problems carry no `model` tag, and
-        `includeSql` returns no `sql`. A tag that names no `kind` is a dashboard
-        when it lists `tiles` or carries a `dashboard { … }` grid tag, and a
-        notebook otherwise, since submitted text has no folder to take a kind from.
+        `includeSql` returns no `sql`. The document's `layout` follows the one
+        rule every report follows (see list-reports): the tag's `layout=`, else
+        its deprecated `kind=` (`dashboard` is grid, `notebook` is linear), else
+        grid when the tag lists `tiles` or carries a `dashboard { … }` grid tag,
+        else linear. Where a file lives never decides it.
       parameters:
         - name: environmentName
           in: path
@@ -2321,20 +2353,437 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/reports:
+    get:
+      tags:
+        - reports
+      operationId: list-reports
+      summary: List package reports
+      description: |
+        Lists every report in the package, in path order. A report is a
+        `.malloy` file anywhere in the package, outside `public/`, that carries
+        an artifact tag: a model-level `## artifact`, or the deprecated
+        query-level `# artifact` on a `query:`. The package's root
+        `index.malloy` is never a report (it is the surface). A legacy
+        `.malloynb` is also a report, linear and read-only. Where a file lives
+        carries no meaning: `dashboards/` and `notebooks/` are ordinary
+        directory names. Everything else is an ordinary model, which a report
+        may import.
+
+        A report's `layout` is decided by its tags, first match wins: the
+        tag's `layout=` (`grid` or `linear`); else the deprecated `kind=`
+        (`dashboard` is grid, `notebook` is linear); else grid for a
+        query-level `# artifact`; else grid for a model-level tag that lists
+        `tiles` or carries a `dashboard { … }` grid tag; else linear.
+
+        A report is identified by its `path`. `name`, its basename, is a
+        display label only: two reports may share one.
+
+        Every report is listed whatever the package's surface; the surface
+        limits what its tiles and cells may read, not whether it is listed. A
+        report that failed to compile is listed with its `error`. A tagged grid
+        report with no tiles yet is not served and not listed.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The reports in the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Report"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/reports/{path}:
+    get:
+      tags:
+        - reports
+      operationId: get-report
+      summary: Get a report manifest
+      description: |
+        Everything a viewer needs to render one report, addressed by its path in
+        the package, including its extension, exactly as list-reports gives
+        it (`sales/q3.malloy`). A report written as tiles, of either layout, carries the
+        manifest fields (`tiles` or `query`, `dashboardColumns`,
+        `startingGivens`, `autorun`, `givens`): its tiles run through the model
+        query endpoint with `givens`, using `path` as the model. A linear
+        report written as `run:` cells, or a `.malloynb`, carries `notebook`
+        instead: its cells as get-notebook returned them. A `.malloy` report's
+        cells run through the model query endpoint, each cell's `text` as
+        `query` and `path` as the model; a `.malloynb`'s through the
+        deprecated execute-notebook-cell.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: path
+          in: path
+          description: >-
+            The report's path within the package, including `.malloy` (or
+            `.malloynb`): the `path` list-reports returns.
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The report manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportManifest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/skills:
+    get:
+      tags:
+        - skills
+      operationId: list-skills
+      summary: List the agent skills in force for a package
+      description: |
+        Lists the agent skills that apply to this package: the guides bundled
+        with this server, plus any the package ships under `skills/`.
+
+        Resolution is name shadowing. A package skill whose `name` matches a
+        bundled skill REPLACES it for this package; one with a new name is
+        added. Nothing is merged, because the server does not know which guides
+        the calling agent already holds and so cannot patch one. Read `origin`
+        on each entry to tell a replaced skill from the original.
+
+        Bodies are not returned here. Fetch one with
+        `GET .../skills/{skillName}`. An entry whose `name` contains a slash
+        (`<skill>/<stem>`) is a skill's on-demand reference file, addressed by
+        the pointer at the end of its parent's body.
+
+        The REST half of the `get_skill` MCP tool, for callers running
+        unattended.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: The skills in force for the package
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SkillSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/skills/{skillName}:
+    get:
+      tags:
+        - skills
+      operationId: get-skill
+      summary: Get one agent skill, with its body
+      description: |
+        Returns one skill in force for this package, including its full
+        Markdown. `skillName` is a name from the listing, exactly as spelled
+        there; a reference file is addressed as `<skill>/<stem>`. The slash may
+        be sent literally or as `%2F`; a literal `%` in a name must be sent as
+        `%25`.
+
+        404 when no skill of that name is in force.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: skillName
+          in: path
+          description: >-
+            Skill name as returned by the listing. A reference file is
+            `<skill>/<stem>`; the slash may be literal or `%2F`.
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The skill and its body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Skill"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/agents:
+    get:
+      tags:
+        - agents
+      operationId: list-agents
+      summary: List the agents a package declares
+      description: |
+        Lists the agents declared under `agents` in the package's
+        `publisher.json` that passed validation, without instructions or
+        skills. An agent that failed validation is not listed; the package's
+        `warnings` say why. Empty when the manifest declares none.
+
+        The REST half of the `get_agent` MCP tool.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "200":
+          description: The agents the package declares
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/agents/{agentName}:
+    get:
+      tags:
+        - agents
+      operationId: get-agent
+      summary: Get one agent, resolved
+      description: |
+        Returns one agent with its instructions, its own skill files and each
+        schedule's task text, plus `source`, which pins the package load and the
+        agent's own content so a runner can prove which bytes ran. Publisher
+        serves the definition and runs nothing: the caller's own harness
+        executes it, and schedules are never fired by the server.
+
+        404 when no agent of that name is served.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: agentName
+          in: path
+          description: >-
+            Agent name as returned by the listing. Names are 1-64 lowercase
+            letters, digits and single hyphens; any other value is a 404, not a
+            400.
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+        - name: skills
+          in: query
+          description: >-
+            `full` (the default) returns every skill file with its text.
+            `summary` returns each file's `relative_filepath` and `bytes`, plus
+            `name` and `description` for a `SKILL.md`, and no `file_contents`;
+            fetch a file with `GET .../agents/{agentName}/skills/{path}`. The
+            `source` pin is identical in both. Any other value, including an
+            empty one, is a 400.
+          required: false
+          schema:
+            type: string
+            enum: [full, summary]
+            default: full
+      responses:
+        "200":
+          description: The resolved agent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Agent"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/agents/{agentName}/skills/{relativeFilepath}:
+    get:
+      tags:
+        - agents
+      operationId: get-agent-skill-file
+      summary: Get one of an agent's skill files
+      description: |
+        Returns one file from the agent's resolved skill set, named by a
+        `relative_filepath` from `GET .../agents/{agentName}?skills=summary`
+        (for example `analyst-conventions/SKILL.md`), with the same `source`
+        pin as the full definition. The path is looked up in the resolved set,
+        never joined onto the filesystem.
+
+        404 when the agent or the file is not served.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: agentName
+          in: path
+          description: >-
+            Agent name as returned by the listing. Names are 1-64 lowercase
+            letters, digits and single hyphens; any other value is a 404, not a
+            400.
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+        - name: relativeFilepath
+          in: path
+          description: >-
+            A `relative_filepath` from the agent's skill summary. Slashes may be
+            sent literally or as `%2F`; a literal `%` in a name must be sent as
+            `%25`.
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The skill file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentSkillRead"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  # ── DEPRECATED ──────────────────────────────────────────────────────────
+  # The `…/dashboards*` and `…/notebooks*` routes, kept for clients that still
+  # read them, until a later release removes them. Use `…/reports*` above.
+  # Their schemas (`Dashboard`, `DashboardManifest`, `DashboardTile`,
+  # `Notebook`, `RawNotebook`) are in the deprecated section of the schemas;
+  # no report schema references them.
   /environments/{environmentName}/packages/{packageName}/dashboards:
     get:
       tags:
         - dashboards
       operationId: list-dashboards
-      summary: List package dashboards
+      deprecated: true
+      summary: List package dashboards (deprecated; use list-reports)
       description: |
-        Lists the dashboards in the specified package — every tagged `.malloy`
-        file at the top of `dashboards/` or `notebooks/` carrying an
-        `# artifact` (or model-level `## artifact`) annotation whose `kind` is
-        `dashboard`, or names none under `dashboards/`. A `kind=notebook` file is
-        listed as a notebook instead, whichever folder it sits in. A file with
-        no artifact tag is a shared include and is not listed, whether or not it
-        compiles.
+        **DEPRECATED**: use list-reports, which lists every report of either
+        layout by path. This route lists the package's grid reports (see
+        list-reports for what makes a file a report and which layout it has),
+        wherever they live in the package. Two may share a `name`; their `path`
+        tells them apart. A file with no artifact tag is an ordinary model and is
+        not listed, whether or not it compiles.
+
+        **Contract change since reports.** This route used to list only
+        `.malloy` files directly under `dashboards/`, so every `name` was unique
+        and every `path` was `dashboards/<name>.malloy`. It now lists grid
+        reports from anywhere in the package (`sales/q3.malloy`,
+        `notebooks/x.malloy`, `a/b/c.malloy`), so `path` may have any depth and
+        `name` may repeat. Key on `path`.
 
         A tagged dashboard that failed to compile is listed carrying its
         `error` where that state can arise at all, so a broken dashboard is
@@ -2396,14 +2845,27 @@ paths:
       tags:
         - dashboards
       operationId: get-dashboard
-      summary: Get a dashboard manifest
+      deprecated: true
+      summary: Get a dashboard manifest (deprecated; use get-report)
       description: |
-        Retrieves everything a viewer needs to render one dashboard: the artifact
-        tag's declarations plus the control contract derived from the givens its
-        query references. Running the dashboard needs no further endpoint — its
+        **DEPRECATED**: use get-report, which addresses a report by its path.
+        Retrieves everything a viewer needs to render one grid report: the
+        artifact tag's declarations plus the control contract derived from the
+        givens its query references. Running it needs no further endpoint — its
         query, each tile, and each control's suggest query all run
         through the model query endpoint with `givens`, using the manifest's
         `path` as the model.
+
+        `dashboardName` is a basename, which is not an identity: it resolves
+        only when exactly one grid report in the package has it. When several
+        do, the answer is 409 naming every matching path; address the report
+        by path with get-report instead.
+
+        **Contract change since reports.** This route never answered 409
+        before: a dashboard lived directly under `dashboards/`, so its name was
+        unique. A grid report may now live anywhere, two may share a basename,
+        and a client of this route must handle 409. The match also covers grid
+        reports outside `dashboards/`.
       parameters:
         - name: environmentName
           in: path
@@ -2420,11 +2882,11 @@ paths:
         - name: dashboardName
           in: path
           description: >-
-            The dashboard's name: its filename basename. Conventionally letters,
+            The report's name: its filename basename. Conventionally letters,
             digits, "-" and "_", and a package is warned when one of its
-            dashboards falls outside that. It is NOT constrained to it, because
+            grid reports falls outside that. It is NOT constrained to it, because
             the name comes from a filename rather than being chosen: a file such
-            as `dashboards/v1.2.malloy` is served, and its published `resource`
+            as `v1.2.malloy` is served, and its published `resource`
             carries the name percent-encoded. Send it percent-encoded.
           required: true
           schema:
@@ -2442,6 +2904,14 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description:
+            More than one grid report in the package has this basename. The
+            message names every matching path; use get-report with one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -2454,14 +2924,20 @@ paths:
       tags:
         - notebooks
       operationId: list-notebooks
-      summary: List package notebooks
+      deprecated: true
+      summary: List package notebooks (deprecated; use list-reports)
       description: |
-        Retrieves a list of all Malloy notebooks within the specified package: every
-        `.malloynb` file, and every `.malloy` file at the top of `notebooks/` or `dashboards/`
-        whose model-level `## artifact` tag says `kind=notebook` (or names no `kind` and sits
-        under `notebooks/`). Each notebook entry includes the relative path,
-        package name, title, description, and any compilation or reading error. This endpoint
-        is useful for discovering available notebooks and checking their status.
+        **DEPRECATED**: use list-reports. Lists the package's linear reports (see
+        list-reports): every `.malloynb` file outside `public/`, and every tagged
+        `.malloy` report whose layout is linear, wherever it lives. Each entry
+        includes the relative path, package name, title, description, and any
+        compilation or reading error.
+
+        **Contract change since reports.** This route used to list `.malloy`
+        notebooks only directly under `notebooks/`. It now lists linear reports
+        from anywhere in the package, including `dashboards/` and nested
+        directories, and no longer lists a kindless tiled file in `notebooks/`,
+        which is now grid.
       parameters:
         - name: environmentName
           in: path
@@ -2501,13 +2977,14 @@ paths:
       tags:
         - notebooks
       operationId: get-notebook
-      summary: Get Malloy notebook cells
+      deprecated: true
+      summary: Get Malloy notebook cells (deprecated; use get-report)
       description: |
-        Retrieves a Malloy notebook with its raw cell contents (markdown and code).
-        Cell execution should be done separately via the execute-notebook-cell endpoint.
-        A served notebook (a `.malloy` at the top of `notebooks/` or `dashboards/` whose
-        model-level `## artifact` tag says `kind=notebook`, or names no `kind` and sits under
-        `notebooks/`) answers here as well as a `.malloynb`.
+        **DEPRECATED**: use get-report. Retrieves a linear report with its raw
+        cell contents (markdown and code). A `.malloy` report's cells run
+        through the model query endpoint (each cell's `text` as the query); a
+        `.malloynb`'s through execute-notebook-cell. A linear `.malloy`
+        report, wherever it lives, answers here as well as a `.malloynb`.
         On a package with a surface, the response shows only the sources the notebook may read.
       parameters:
         - name: environmentName
@@ -2550,13 +3027,19 @@ paths:
       tags:
         - notebooks
       operationId: execute-notebook-cell
-      summary: Execute a specific notebook cell
+      deprecated: true
+      summary: Execute a specific notebook cell (deprecated)
       description: |
-        Executes a specific cell in a Malloy notebook by index. For code cells, this compiles
-        and runs the Malloy code, returning query results and any new sources defined.
-        For markdown cells, this simply returns the cell content. A served notebook
-        (tagged `kind=notebook`, or untagged-kind under `notebooks/`) answers here as well as a
-        `.malloynb`.
+        **DEPRECATED**: removed with the other notebook routes. For a `.malloy`
+        report, run a cell through the model query endpoint instead: the
+        report's path as the model, the cell's `text` (from get-report) as
+        `query`, and `givens` in the body, which applies the same surface,
+        `#(authorize)` and row-level gates. A `.malloynb` has no other route.
+        Executes a specific cell in a linear report by index.
+        For code cells, this compiles and runs the Malloy code, returning query
+        results and any new sources defined. For markdown cells, this simply
+        returns the cell content. A linear `.malloy` report, wherever it lives,
+        answers here as well as a `.malloynb`.
 
         On a package with a surface (a root `index.malloy`, or a legacy `explores`) with
         `queryableSources` left at `"declared"`, a code cell may read only sources the surface
@@ -3445,8 +3928,10 @@ components:
           type: ["string", "null"]
           minLength: 1
           description: >-
-            URI (gs:// or s3://) of the build manifest to bind, or null to clear
-            the binding and serve live. An empty string is refused with 400.
+            Where the build manifest to bind is: a gs:// or s3:// URI, a
+            file:// URL, or an absolute path on this server (a mounted volume).
+            Null clears the binding and serves live. An empty string or a
+            relative path is refused with 400.
       required:
         - manifestLocation
 
@@ -3514,10 +3999,12 @@ components:
           enum: ["off", "on"]
           readOnly: true
           description: >-
-            "on" on every server that takes published versions: a publish
-            from a location publishes an immutable version. Absent from a
-            server that predates them, which is how an orchestrator talking
-            to servers mid-rollout tells which ones take native versions.
+            "on" when a publish from a location publishes an immutable
+            version (`PUBLISHER_PACKAGE_VERSIONING=on`); "off" when it installs
+            the package in place, as before versions. Reads and the versions
+            routes answer in both. Absent from a server that predates
+            versions, which reads as "off": how an orchestrator talking to
+            servers mid-rollout tells which ones publish native versions.
         versionPromotion:
           type: string
           enum: ["on-publish", "explicit"]
@@ -3946,11 +4433,11 @@ components:
             paths relative to the package root. Only these models are listed
             via `listModels()`, and the surface is the union of their
             `export {}` closures. Every other .malloy file still compiles for
-            import/join resolution but is hidden. Notebooks and dashboards are
-            always listed regardless of this field, and a dashboard entry
-            needs no listing: a tagged dashboard listed here reads the surface
-            and adds nothing to it. An untagged file under `dashboards/` that
-            is listed is an ordinary surface file.
+            import/join resolution but is hidden. Reports are always listed
+            regardless of this field, and a report needs no listing: a report
+            listed here reads the surface and adds nothing to it, and the
+            package warns about it (`report-on-surface`). An untagged file
+            that is listed is an ordinary surface file, wherever it lives.
             DEPRECATED, still honored. Every non-empty value gets a load
             warning naming the replacement: a root `index.malloy` that imports
             the listed files and exports what they publish. `[]` is deprecated
@@ -4009,23 +4496,28 @@ components:
             `queryableSources: "declared"`, and a root file such as
             `Index.malloy` that differs from `index.malloy` only in case and
             so is ignored. A root `index.malloy` with no manifest keys gets no
-            warning. Dashboard findings: a
-            `dashboards/` file whose `# artifact` tag does not parse or does not
-            describe a dashboard, a tile or suggest query that does not resolve,
-            a `# drill` naming a destination that is not a dashboard, and a
-            tile, single query or filter suggest that reads a source the
-            surface does not export, so it won't load. Two dashboard findings are about Publisher rather
-            than about the package: one when a file carrying an artifact tag
-            could not be read and so is not served at all, and one when the lint
-            stops early, in which case the list must be read as incomplete
-            rather than as a clean package. Notebook findings: a `notebooks/`
-            file with an `## artifact` note whose cells could not be read, which
-            names the line and the fix and is reported with severity `error`,
-            because the notebook is served with that error instead of opening.
-            The same family carries findings on files under `notebooks/` and
-            `dashboards/`, each naming its line and the fix; they are computed
-            at discovery and are also returned by `/compile` at file and
-            package scope. Eight codes are `error` and fail `/compile`:
+            warning. Report findings (one lint pass per report, of either
+            layout, wherever it lives): a file whose artifact tag does not
+            parse or does not describe a report, a tile or suggest query that
+            does not resolve, a `# drill` naming a destination that is not a
+            report, and a tile, single query or filter suggest that reads a
+            source the surface does not export, so it won't load. A `# drill`
+            destination is a path from the package root (a bare name is a file
+            at the root); one that names no report is unresolved (`error`).
+            Curation findings: a root `index.malloy` carrying an artifact tag,
+            which is ignored (`index-is-not-a-report`, `error`); and a report
+            that `index.malloy` imports or `explores` lists
+            (`report-on-surface`, `warn`). Two report findings are about
+            Publisher rather than about the package: one when a file carrying
+            an artifact tag could not be read and so is not served at all, and
+            one when the lint stops early, in which case the list must be read
+            as incomplete rather than as a clean package. A linear report whose
+            cells could not be read gets a finding that names the line and the
+            fix and is reported with severity `error`, because it is served
+            with that error instead of opening. The per-file report findings
+            each name their line and the fix and carry a `code`; they are
+            computed at discovery and are also returned by `/compile` at file
+            and package scope. Eight codes are `error` and fail `/compile`:
             `notebook-statement-above-artifact` and `notebook-tag-above-artifact`
             (a statement or a tag above a served notebook's `## artifact`),
             `notebook-markdown-above-artifact` (a `(markdown)` annotation above
@@ -4036,9 +4528,26 @@ components:
             `notebook-markdown-attached-nowhere` (a `#(markdown)` annotation
             with no statement to take it), `notebook-artifact-unparsed` (an
             `## artifact` tag does not parse), and `notebook-cells-unreadable`
-            (the reader could not read a served notebook's cells). The rest are
-            `warn` (a mistyped `(markdown)` opener, a missing `kind=notebook`, a
-            block that never closes, and similar).
+            (the reader could not read a linear report's cells), plus
+            `report-kind-removed` (a tag that sets `kind=`, which is no longer
+            read, so the file is not a report; the finding names the `layout=`
+            to write) and `report-layout-unknown` (a `layout=` other than
+            `grid` or `linear`). The rest are `warn` (a mistyped `(markdown)`
+            opener, `report-layout-implicit` for a tag that names no layout and lists
+            no tiles, a block that never closes, and similar).
+            Skill and agent findings, all `warn`: a package skill under
+            `skills/` that is not served (unreadable or linked-out `SKILL.md`,
+            a frontmatter `name` that is not its directory name, a `skills/`
+            directory that links out of the package) or served with a gap (no
+            `description`, a `reference/` that cannot be listed or read); and
+            each agent the manifest declares that is not served, or is served
+            with a finding (an agent skill with no `description`, a skills
+            directory with no skills, an unreadable reference).
+            Deprecated-format findings, all `warn`: each `.malloynb` notebook
+            (`model` is its path), and each source a file declares deprecated
+            `#(filter)` annotations on (`model` is that file, `subject` the
+            source; a source that only inherits or imports a filter is not
+            reported). Both still load and run.
             Server-computed and read-only:
             ignored on
             create/update requests and only returned in responses. Present only
@@ -4129,8 +4638,8 @@ components:
                 description: >-
                   What the finding is about: the query or view a render finding
                   sits on (`by_carrier`, `flights -> by_carrier`), the source a
-                  materialization finding belongs to, or, for a dashboard
-                  finding, the dashboard's name or the `source.dimension` a
+                  materialization finding belongs to, or, for a report
+                  finding, the report's name or the `source.dimension` a
                   `# drill` is declared on. Absent when a finding sits on none
                   of those, either because it spans several, in which case the
                   message names them, or because it is about the lint itself
@@ -4138,13 +4647,33 @@ components:
               message:
                 type: string
                 description: A description of the problem.
+              code:
+                type: string
+                description: >-
+                  A stable identifier for the finding's family, for a client that
+                  acts on it rather than only showing it; absent for a family that
+                  has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
+                  notebook, the deprecated cell format (one per file, `model`
+                  naming it). `deprecated-filter-annotation`: a source declaring
+                  deprecated `#(filter)` annotations (one per declaring source,
+                  `model` naming its file and `subject` the source).
+                  `report-name-ambiguous`: two or more grid reports share a
+                  basename, so the deprecated `GET …/dashboards/{name}` route
+                  answers 409 for it (one per name, `subject` naming it and the
+                  message every path; `warn`). The per-file
+                  report findings (`notebook-…`, `report-…`) and the report
+                  curation findings (`report-on-surface`,
+                  `index-is-not-a-report`). The message wording may change; the
+                  code does not.
               severity:
                 type: string
                 enum:
                   - error
                   - warn
                 description: >-
-                  Finding severity. Render-tag findings use both: `error` for
+                  Finding severity, `error` or `warn` and nothing else; a
+                  deprecated form that still loads (such as
+                  `deprecated-malloynb-notebook`) is `warn`. Render-tag findings use both: `error` for
                   a tag malformed for the field it sits on, which renders as
                   "[object Object]" or an inline error at query time, and `warn`
                   for one that is well-formed but inert where it sits and so is
@@ -4209,9 +4738,12 @@ components:
         manifestLocation:
           type: ["string", "null"]
           description: |
-            URI (gs:// or s3://) of the externally-computed manifest for this package.
-            On (re)load the publisher reads it and binds persist references
-            (sourceEntityId -> physicalTableName). Null = serve live.
+            Where the externally-computed manifest for this package is: a gs://
+            or s3:// URI, a file:// URL, or an absolute path on this server (a
+            mounted volume). On (re)load the publisher reads it and binds
+            persist references (sourceEntityId -> physicalTableName). Null =
+            serve live. For a package with published versions, a relative path
+            is refused with 400.
         queryMetadata:
           oneOf:
             - $ref: "#/components/schemas/QueryMetadata"
@@ -4456,6 +4988,238 @@ components:
             discovery index, which is what `get_context` ranks against
             when an embedding provider is configured. `status: lexical` when
             the server has no provider, because there is no index to describe.
+        servedRevision:
+          type: string
+          readOnly: true
+          description: >-
+            Server-computed, read-only: an identifier for the load that produced
+            what this package is currently serving. Minted fresh per load, so
+            two loads of byte-identical files carry different revisions. Use it
+            to tell one load from another, NOT to tell whether content changed:
+            it moves on every reload regardless. `sourceContentSha` answers that.
+        sourceContentSha:
+          type: string
+          readOnly: true
+          description: >-
+            Server-computed, read-only: SHA-256 over the package-relative path
+            and bytes of every file the package is serving: each model file,
+            each package skill file under `skills/`, and, when the manifest
+            declares `agents`, the canonical form of that `agents` object plus
+            every instructions, task and skill file those agents read.
+
+            This is the reload receipt. Publisher serves a COPY of a package
+            under `publisher_data/<env>/<pkg>/` unless the environment was
+            started with `--watch-env`, so an edit to the original source
+            directory reaches nothing and the reload still reports success.
+            Comparing this value across a reload is what distinguishes "the
+            server recompiled my edit" from "the server recompiled the same
+            bytes it already had".
+
+            It covers EVERY model path in the package, so an edit to an imported
+            file moves it where a hash of one model path would not. It covers
+            nothing outside the list above: a data file, a `public/` asset, a
+            `version` bump or any other key in publisher.json (`retrieval`,
+            `explores`, `queryableSources`, `scope`) all leave it unchanged,
+            although some of those do change what is served. An unchanged value
+            therefore proves an edit to a hashed file did not reach the served
+            copy, and says nothing about an edit to anything else.
+        agents:
+          type: array
+          readOnly: true
+          description: >-
+            Server-computed, read-only: the agents this package's
+            `publisher.json` declares and the server accepted, without their
+            instructions. Absent when the manifest declares no `agents`. An
+            agent that failed validation is left out and named in `warnings`.
+            Fetch one with `GET .../agents/{agentName}`.
+          items:
+            $ref: "#/components/schemas/AgentSummary"
+
+    AgentSchedule:
+      type: object
+      readOnly: true
+      description: >-
+        A cron schedule an agent declares. Validated and exposed only: the
+        server never runs it.
+      properties:
+        cron:
+          type: string
+          description: A 5-field UNIX cron expression, evaluated in UTC.
+        task:
+          type: string
+          description: Package-relative path of the task file, as written in the manifest.
+        taskContent:
+          type: string
+          description: >-
+            The task file's Markdown. Only on the resolved agent, not the
+            listing.
+
+    AgentSummary:
+      type: object
+      readOnly: true
+      description: One agent a package declares, without its instructions or skills.
+      properties:
+        name:
+          type: string
+          description: The agent's name (its key in the manifest's `agents` object).
+        description:
+          type: string
+        model:
+          type: string
+          description: The model the agent asks for; `inherit` when the manifest sets none.
+        schedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentSchedule"
+
+    AgentSkillFile:
+      type: object
+      readOnly: true
+      description: >-
+        One of an agent's skill files. The snake_case keys
+        (`relative_filepath`, `file_contents`) mirror the MCP `get_agent` tool
+        the shape is shared with, unlike the camelCase used elsewhere in this
+        API.
+      properties:
+        relative_filepath:
+          type: string
+          description: >-
+            Path relative to the agent's skills directory, for example
+            `analyst-conventions/SKILL.md` or
+            `analyst-conventions/reference/glossary.md`.
+        file_contents:
+          type: string
+          description: >-
+            A `SKILL.md` is re-emitted with only a quoted `name` and
+            `description` in its frontmatter; reference files are served raw.
+            Absent when the agent was fetched with `skills=summary`.
+        name:
+          type: string
+          description: A `SKILL.md`'s name. Only in the `skills=summary` view.
+        description:
+          type: string
+          description: A `SKILL.md`'s description. Only in the `skills=summary` view.
+        bytes:
+          type: integer
+          description: Size of `file_contents` in UTF-8 bytes. Only in the `skills=summary` view.
+
+    AgentSkillRead:
+      type: object
+      readOnly: true
+      description: One agent skill file, with the pin of the definition it belongs to.
+      properties:
+        relative_filepath:
+          type: string
+        file_contents:
+          type: string
+        source:
+          $ref: "#/components/schemas/AgentSource"
+
+    AgentSource:
+      type: object
+      readOnly: true
+      description: What a resolved agent was read from, so a runner can prove which bytes ran.
+      properties:
+        environment:
+          type: string
+        package:
+          type: string
+        sourceContentSha:
+          type: string
+          description: The package's `sourceContentSha` at the load this definition came from.
+        definitionSha:
+          type: string
+          description: >-
+            SHA-256 over this agent's canonical config, instructions, skill
+            files and task files. Editing another agent, or a model, does not
+            move it.
+        servedRevision:
+          type: string
+          description: The package's `servedRevision` at the load this definition came from.
+
+    Agent:
+      type: object
+      readOnly: true
+      description: >-
+        An agent a package declares, resolved to its instructions, skill files
+        and schedules. Adopt it only when the user asks for it by name.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        model:
+          type: string
+          description: The model the agent asks for; `inherit` when the manifest sets none.
+        instructions:
+          type: string
+          description: The instructions file's Markdown, at most 16 KB.
+        skills:
+          type: array
+          description: The agent's own skill files, sorted by `relative_filepath`.
+          items:
+            $ref: "#/components/schemas/AgentSkillFile"
+        schedules:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentSchedule"
+        warnings:
+          type: array
+          items:
+            type: string
+        source:
+          $ref: "#/components/schemas/AgentSource"
+
+    SkillSummary:
+      type: object
+      readOnly: true
+      description: >-
+        One agent skill in force for a package, without its body. This is what
+        a caller reads to decide which skill to fetch.
+      properties:
+        name:
+          type: string
+          description: >-
+            The skill's name, and the identifier for fetching it. A name
+            containing a slash (`<skill>/<stem>`) is one skill's on-demand
+            reference file rather than a skill in its own right.
+        description:
+          type: string
+          description: >-
+            One line saying when to read this skill. Empty when the package
+            author omitted it, which is also reported as a package warning.
+        origin:
+          type: string
+          enum:
+            - bundled
+            - package
+          description: >-
+            `bundled` = shipped with this server. `package` = shipped by the
+            package under `skills/`, which includes a package skill whose name
+            matches a bundled one and therefore REPLACES it for this package.
+            Present so a caller can tell a replaced skill from the original,
+            which is otherwise invisible.
+
+    Skill:
+      type: object
+      readOnly: true
+      description: An agent skill with its full Markdown body.
+      properties:
+        name:
+          type: string
+          description: The skill's name.
+        description:
+          type: string
+          description: One line saying when to read this skill.
+        content:
+          type: string
+          description: The skill's full guidance, Markdown.
+        origin:
+          type: string
+          enum:
+            - bundled
+            - package
+          description: Where this skill came from. See SkillSummary.origin.
 
     PackageEmbeddingIndex:
       type: object
@@ -4743,9 +5507,340 @@ components:
           type: string
           description: Error message if the model failed to compile or load
 
+    Report:
+      type: object
+      required: [resource, packageName, path, name, layout, title, editable]
+      description: |
+        One report in a package, as list-reports lists it: a `.malloy` file
+        whose model-level `## artifact` tag makes it one, wherever it lives
+        outside `public/`, or a `.malloynb`. See ReportManifest for the detail a viewer needs to render
+        one.
+      properties:
+        resource:
+          type: string
+          description: Resource path to the report (get-report)
+        packageName:
+          type: string
+          description: Name of the package containing this report
+        path:
+          type: string
+          description: >-
+            The report's path within its package, such as `sales/q3.malloy`.
+            Its identity, and the only thing that addresses it.
+        name:
+          type: string
+          description: >-
+            The file's basename without its extension. A display label only:
+            two reports in different directories may share it.
+        layout:
+          type: string
+          enum: [grid, linear]
+          description: >-
+            How its tiles are placed: `linear` top to bottom, one column, or
+            `grid` by `columns`, `colspan` and `break`. Decided by its tags (see
+            list-reports), never by where the file lives.
+        title:
+          type: string
+          description: >-
+            Human title: the artifact tag's `title`, else the first line of the
+            `"` notes above the tag, else,
+            for a linear report, its first markdown heading, else `name`.
+        description:
+          type: string
+          description: The report's doc comment, when it has one.
+        editable:
+          type: boolean
+          description: >-
+            Whether the builder opens it as it is: false for a `.malloynb` and
+            for a linear report written as `run:` cells.
+        error:
+          type: string
+          description: >-
+            Error message when the report failed to compile, or its cells could
+            not be read.
+
+    ReportManifest:
+      description: |
+        A `Report` plus what a viewer needs to draw it. A report written as
+        tiles, of either layout, carries `tiles`, `dashboardColumns`,
+        `startingGivens`, `autorun` and `givens`, whose tiles and suggest
+        queries run through `POST …/models/{path}/query` with `givens`. A
+        linear report written as `run:` cells, or a `.malloynb`, carries
+        `notebook` instead.
+      allOf:
+        - $ref: "#/components/schemas/Report"
+        - type: object
+          properties:
+            tiles:
+              type: array
+              description: >-
+                The report's tiles, each run as its own query (or shown as text),
+                in order. Absent on a `run:`-cell report.
+              items:
+                $ref: "#/components/schemas/ReportTile"
+            dashboardColumns:
+              type: integer
+              description: >-
+                Grid width, from the `# dashboard {columns=N}` tag beside the
+                artifact tag. 1 on a linear report. Absent means the viewer's
+                default.
+            startingGivens:
+              allOf:
+                - $ref: "#/components/schemas/EncodedGivenValues"
+              description: >-
+                Starting values for controls, from the artifact tag. URL
+                parameters override these.
+            autorun:
+              type: boolean
+              description: >-
+                False batches control changes behind an Apply button instead of
+                re-running on every change. Defaults to true.
+            givens:
+              type: array
+              description: >-
+                The control row: one entry per given the report's tiles run with
+                (less a given only a source's gate reads, which a host injects),
+                widened to every given the entry file surfaces when a tile cannot be
+                resolved (see `ReportTile.givenNames`). `default` is the value the
+                query endpoint takes, not the Malloy literal: a `filter<…>` given
+                declared `f'West'` publishes `West`.
+              items:
+                $ref: "#/components/schemas/Given"
+            notebook:
+              allOf:
+                - $ref: "#/components/schemas/ReportCells"
+              description: >-
+                For a linear report written as `run:` cells, or a `.malloynb`: its
+                cells and model. Run a `.malloy`
+                report's cell through the model query endpoint, its `text` as
+                `query`; a `.malloynb`'s with execute-notebook-cell. Absent on a
+                report written as tiles, and on a
+                report that failed to compile.
+
+    ReportTile:
+      type: object
+      description: >-
+        One tile of a report. A `query` tile (the default) runs a query; a
+        `text` tile shows markdown and runs nothing, so a caller that runs a
+        report's tiles skips the ones with `kind` `text`.
+      properties:
+        kind:
+          type: string
+          enum: [query, text]
+          description: >-
+            `query` runs `query` through the model query endpoint; `text` shows
+            `markdown`. Absent means `query`.
+        name:
+          type: string
+          description: >-
+            A text tile's name: the bare word in `tiles=[…]` and on its
+            `##|(markdown) name` block. Absent on a query tile.
+        markdown:
+          type: string
+          description: >-
+            A text tile's body, the text of its `##|(markdown) name` block
+            without the opener. Empty when the file has no such block. Absent on
+            a query tile.
+        query:
+          type: string
+          description: >-
+            Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example
+            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
+            the `query` field of a `POST …/models/{path}/query` body, prefixed
+            with `run:`.
+        restricted:
+          type: boolean
+          description: >-
+            Set on a tile of a compiled document (`CompileResult.document`) whose
+            source the caller may not read. The tile carries its `query` and
+            nothing derived from the source: no `givenNames`, no layout tags.
+        givenNames:
+          type: array
+          items:
+            type: string
+          description: |
+            Names of the givens this tile's compiled query reads: through its
+            view, its source's `where:`, a joined source's `where:`, a
+            dimension or measure it uses, and its source's `#(authorize)` and
+            `#(access_filter)` gates. A control not listed does not change the
+            tile, which is what a viewer's "Doesn't respond to" chip says. It
+            also tells a caller which tiles a changed control needs to re-run;
+            running a tile with the dashboard's whole control row also works,
+            because an unreferenced given is ignored. Absent when discovery
+            could not resolve the tile (its expression neither compiles nor is
+            a plain `source -> view` or named query the static walk reads), in
+            which case send the whole control row. One such tile
+            widens `ReportManifest.givens` to every given the entry file
+            surfaces, rather than the union over the resolvable tiles, so that
+            the row actually contains the givens that tile filters by.
+        label:
+          type: string
+          description: >-
+            Heading for the tile, from a `# label` on the view or query it names.
+            Absent when it carries none, in which case a viewer derives one from
+            the run expression.
+        subtitle:
+          type: string
+          description:
+            Second line under the heading, from a `# subtitle` on the view or
+            query it names.
+        colspan:
+          type: integer
+          description: >-
+            Grid columns this tile spans, from a `# colspan=N` on the view or
+            query it names, or from `colspan=N` on a text tile's entry in
+            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
+            means one column.
+        break:
+          type: boolean
+          description: >-
+            Start a new grid row at this tile, from a `# break` on the view or
+            query it names, or from `break` on a text tile's entry in
+            `tiles=[…]`. Named for the tag, so every per-tile field on this
+            schema is spelled the way an author writes it. A generated client
+            escapes the attribute where the word is reserved (the Python client
+            exposes `break_`) while the wire key stays `break`.
+        borderless:
+          type: boolean
+          description: >-
+            Draw the result with no card around it, from a `# borderless` on the
+            view or query it names. Together with `label`, `subtitle`, `colspan`
+            and `break` this is the whole per-child tag set `@malloydata/render`
+            resolves for a `# dashboard` nest child, read the same way here so one
+            view presents identically as a tile and as a nest.
+
+    ReportCells:
+      type: object
+      description: >-
+        A linear report written as cells, or a `.malloynb`: its cells, unexecuted,
+        and its model.
+      properties:
+        type:
+          type: string
+          description: Always `notebook`. Distinguishes the payload from the
+            compiled-model shape returned by the model endpoint.
+        packageName:
+          type: string
+          description: Name of the package containing this notebook
+        modelPath:
+          type: string
+          description: Relative path to the notebook file within its package directory
+        format:
+          type: string
+          enum: ["malloynb", "malloy"]
+          description:
+            The file format the notebook is written in. `malloynb` is the
+            cell-separated format; `malloy` is a linear `.malloy` report (see
+            list-reports), wherever it lives, whose cells are
+            its statements and its floating `(markdown)` notes in file order.
+        malloyVersion:
+          type: string
+          description: Version of the Malloy compiler used to generate the notebook data
+        modelInfo:
+          type: string
+          description: JSON string containing model metadata and structure information
+        notebookCells:
+          type: array
+          description: Array of notebook cells containing raw markdown and code content
+          items:
+            $ref: "#/components/schemas/NotebookCell"
+        annotations:
+          type: array
+          description:
+            Array of file-level (##) annotations attached to the notebook. For
+            a `.malloy` notebook, every own note that is not a floating
+            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
+            note below the `## artifact` tag is dropped and not listed.
+          items:
+            type: string
+        startingGivens:
+          allOf:
+            - $ref: "#/components/schemas/EncodedGivenValues"
+          description:
+            Starting values for the notebook's controls. A `.malloy` notebook
+            declares them in its artifact tag (`## artifact { givens { … } }`),
+            a `.malloynb` in its file-level tags (`## givens { … }`). URL
+            parameters override these, which is why the two share a shape.
+            Omitted when the notebook declares none.
+        autorun:
+          type: boolean
+          description:
+            False batches control changes behind an Apply button instead of
+            re-running on every change. Defaults to true. A `.malloy` notebook
+            reads it from its artifact tag (`## artifact { autorun=false }`), a
+            `.malloynb` from its file-level tags (`## autorun=false`). The same
+            flag, with the same default, that `DashboardManifest.autorun`
+            carries.
+        sources:
+          type: array
+          description: Sources defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Source"
+        queries:
+          type: array
+          description: Named queries defined in the notebook's model
+          items:
+            $ref: "#/components/schemas/Query"
+
+    DataApp:
+      type: object
+      description:
+        An in-package HTML data app within a Malloy package - a static page
+        served from the package's public/ directory
+      properties:
+        resource:
+          type: string
+          description:
+            Canonical URL to the served data app. Root-relative and does
+            NOT carry the /api/v0 prefix, because a data app is a static asset
+            served off the server root rather than an API resource.
+        packageName:
+          type: string
+          description: Name of the package containing this data app
+        versionId:
+          oneOf:
+            - $ref: "#/components/schemas/VersionIdPattern"
+            - type: "null"
+          readOnly: true
+          description: >-
+            The published version this data app was listed from. Absent for a
+            package that has no published versions. A link that must keep opening
+            this version after `latest` moves carries it as `?versionId=`, as
+            `resource` does. The static route serving the page reads it only
+            when it names a version the package has: otherwise (a package with
+            no versions, or a `versionId` that is no version of this package)
+            it serves the files of `latest`, so a router that forwards a page's
+            query string unchanged keeps working. The page's queries, through
+            the data-app runtime, follow the same rule. Files the page loads by
+            relative URL carry no `?versionId=`, so they come from `latest`.
+        path:
+          type: string
+          description: Relative path to the HTML file within its package directory
+        title:
+          type: string
+          description:
+            Title extracted from the file's <title> tag, or the path if
+            not present
+        fit:
+          type: string
+          enum:
+            - viewport
+          description:
+            Layout hint read from a <meta name="publisher:fit"> tag in the
+            page <head>. "viewport" tells the embedded viewer to fill the
+            available height instead of auto-sizing to the content height, for
+            full-screen apps like slide decks. Omitted for an ordinary
+            content-driven app, which keeps content-height auto-sizing.
+
+    # ── DEPRECATED ────────────────────────────────────────────────────────
+    # The shapes of the deprecated `…/dashboards*` and `…/notebooks*` routes.
+    # No report schema references them; each removal deletes its block here.
+
     Notebook:
       type: object
-      description: Malloy notebook metadata and status information
+      deprecated: true
+      description: DEPRECATED, use `Report`. A linear report as the deprecated
+        list-notebooks route lists it.
       properties:
         environmentName:
           type: string
@@ -4777,10 +5872,10 @@ components:
 
     Dashboard:
       type: object
+      deprecated: true
       description: |
-        A dashboard within a Malloy package: a self-contained `.malloy` file at
-        the top of the package's `dashboards/` or `notebooks/` directory carrying an `# artifact` (or
-        model-level `## artifact`) annotation. The list entry; see
+        DEPRECATED: use `Report`. A grid report (see list-reports), as the
+        deprecated list-dashboards route lists it. The list entry; see
         DashboardManifest for the detail a viewer needs to render one.
       properties:
         resource:
@@ -4791,14 +5886,17 @@ components:
           description: Name of the package containing this dashboard
         name:
           type: string
-          description:
-            The dashboard's slug — its filename basename. Addresses it in a URL
-            and as a `# drill` target.
+          description: >-
+            The report's filename basename: a display label, and the segment of
+            the deprecated get-dashboard URL. Not an identity: two reports may
+            share it. A change since reports: it used to be unique within the
+            package (every dashboard was directly under `dashboards/`), and a
+            client that keyed a map on it must key on `path` instead.
         path:
           type: string
           description:
-            Relative path to the dashboard file within its package directory
-            (`dashboards/<name>.malloy`)
+            Relative path to the report file within its package directory,
+            which is its identity
         title:
           type: string
           description:
@@ -4816,7 +5914,9 @@ components:
 
     DashboardManifest:
       type: object
+      deprecated: true
       description: |
+        DEPRECATED: use `ReportManifest`.
         Everything a viewer needs to render one dashboard: the artifact tag's
         declarations plus the control contract derived from the givens its query
         references. Running needs no dashboard-specific endpoint — the query,
@@ -4831,14 +5931,17 @@ components:
           description: Name of the package containing this dashboard
         name:
           type: string
-          description:
-            The dashboard's slug — its filename basename. Addresses it in a URL
-            and as a `# drill` target.
+          description: >-
+            The report's filename basename: a display label, and the segment of
+            the deprecated get-dashboard URL. Not an identity: two reports may
+            share it. A change since reports: it used to be unique within the
+            package (every dashboard was directly under `dashboards/`), and a
+            client that keyed a map on it must key on `path` instead.
         path:
           type: string
           description: |
-            Relative path to the dashboard file within its package directory
-            (`dashboards/<name>.malloy`). This is also the model to POST to:
+            Relative path to the report file within its package directory,
+            which is its identity. This is also the model to POST to:
             `query`, each tile, and each control's suggest query all run through
             `POST /environments/{environmentName}/packages/{packageName}/models/{path}/query`
             with `givens`, which is why there is no dashboard-specific run
@@ -4857,32 +5960,27 @@ components:
         error:
           type: string
           description: Error message if the dashboard file failed to compile
+        layout:
+          type: string
+          enum: [grid, linear]
+          description: >-
+            The report's layout (see list-reports). A `linear` report is laid
+            out as one column: `dashboardColumns` is 1 whatever the file says.
         kind:
           type: string
           enum: [dashboard, notebook]
+          deprecated: true
           description: >-
-            What the document is, from the `kind` property of its artifact tag
-            (the folder only decides the default when the tag says nothing). A
-            `notebook` is laid out as one column: `dashboardColumns` is 1
-            whatever the file says. Always `dashboard` on
-            `GET …/dashboards/{dashboardName}`; a notebook's manifest is the
-            `dashboard` field of `GET …/notebooks/{path}`.
-        query:
-          type: string
-          description: >-
-            Name of the tagged query whose single result IS the page. Set when the
-            `# artifact` tag sits on a `query:`; a dashboard authored the ordinary
-            way carries `tiles` instead and leaves this absent. A NAME rather than
-            an expression, so it goes in the `queryName` field of a
-            `POST …/models/{path}/query` body. A tile's `query` is the other shape
-            and is not interchangeable with this one; see `DashboardTile.query`.
+            DEPRECATED: read `layout`. The same thing in the old vocabulary:
+            `dashboard` for a grid report, `notebook` for a linear one. Always
+            `dashboard` on `GET …/dashboards/{dashboardName}`; a linear
+            report's manifest is the `dashboard` field of
+            `GET …/notebooks/{path}`.
         tiles:
           type: array
           description: >-
             The dashboard's tiles, each run as its own query and combined into one
-            grid. This is how a dashboard is normally authored, and the only form
-            that can span sources. Absent when the `# artifact` tag sits on a
-            `query:` instead, in which case `query` is set.
+            grid. Absent on a dashboard listed with its compile `error`.
           items:
             $ref: "#/components/schemas/DashboardTile"
         dashboardColumns:
@@ -4938,229 +6036,32 @@ components:
             $ref: "#/components/schemas/Given"
 
     DashboardTile:
-      type: object
+      deprecated: true
       description: >-
-        One tile of a dashboard. A `query` tile (the default) runs a query; a
-        `text` tile shows markdown and runs nothing, so a caller that runs a
-        dashboard's tiles skips the ones with `kind` `text`.
-      properties:
-        kind:
-          type: string
-          enum: [query, text]
-          description: >-
-            `query` runs `query` through the model query endpoint; `text` shows
-            `markdown`. Absent means `query`.
-        name:
-          type: string
-          description: >-
-            A text tile's name: the bare word in `tiles=[…]` and on its
-            `##|(markdown) name` block. Absent on a query tile.
-        markdown:
-          type: string
-          description: >-
-            A text tile's body, the text of its `##|(markdown) name` block
-            without the opener. Empty when the file has no such block. Absent on
-            a query tile.
-        query:
-          type: string
-          description: >-
-            Absent on a text tile. The run expression exactly as written in `tiles=[…]`, for example
-            "orders -> by_month". An EXPRESSION rather than a name, so it goes in
-            the `query` field of a `POST …/models/{path}/query` body, prefixed
-            with `run:`. Sending it in `queryName`, the field
-            `DashboardManifest.query` takes, is rejected.
-        restricted:
-          type: boolean
-          description: >-
-            Set on a tile of a compiled document (`CompileResult.document`) whose
-            source the caller may not read. The tile carries its `query` and
-            nothing derived from the source: no `givenNames`, no layout tags.
-        givenNames:
-          type: array
-          items:
-            type: string
-          description: |
-            Names of the givens this tile's compiled query reads: through its
-            view, its source's `where:`, a joined source's `where:`, a
-            dimension or measure it uses, and its source's `#(authorize)` and
-            `#(access_filter)` gates. A control not listed does not change the
-            tile, which is what a viewer's "Doesn't respond to" chip says. It
-            also tells a caller which tiles a changed control needs to re-run;
-            running a tile with the dashboard's whole control row also works,
-            because an unreferenced given is ignored. Absent when discovery
-            could not resolve the tile (its expression neither compiles nor is
-            a plain `source -> view` or named query the static walk reads), in
-            which case send the whole control row. One such tile
-            widens `DashboardManifest.givens` to every given the entry file
-            surfaces, rather than the union over the resolvable tiles, so that
-            the row actually contains the givens that tile filters by.
-        label:
-          type: string
-          description: >-
-            Heading for the tile, from a `# label` on the view or query it names.
-            Absent when it carries none, in which case a viewer derives one from
-            the run expression.
-        subtitle:
-          type: string
-          description:
-            Second line under the heading, from a `# subtitle` on the view or
-            query it names.
-        colspan:
-          type: integer
-          description: >-
-            Grid columns this tile spans, from a `# colspan=N` on the view or
-            query it names, or from `colspan=N` on a text tile's entry in
-            `tiles=[…]`. Clamped to `dashboardColumns` at render time. Absent
-            means one column.
-        break:
-          type: boolean
-          description: >-
-            Start a new grid row at this tile, from a `# break` on the view or
-            query it names, or from `break` on a text tile's entry in
-            `tiles=[…]`. Named for the tag, so every per-tile field on this
-            schema is spelled the way an author writes it. A generated client
-            escapes the attribute where the word is reserved (the Python client
-            exposes `break_`) while the wire key stays `break`.
-        borderless:
-          type: boolean
-          description: >-
-            Draw the result with no card around it, from a `# borderless` on the
-            view or query it names. Together with `label`, `subtitle`, `colspan`
-            and `break` this is the whole per-child tag set `@malloydata/render`
-            resolves for a `# dashboard` nest child, read the same way here so one
-            view presents identically as a tile and as a nest.
-
-    DataApp:
-      type: object
-      description:
-        An in-package HTML data app within a Malloy package - a static page
-        served from the package's public/ directory
-      properties:
-        resource:
-          type: string
-          description:
-            Canonical URL to the served data app. Root-relative and does
-            NOT carry the /api/v0 prefix, because a data app is a static asset
-            served off the server root rather than an API resource.
-        packageName:
-          type: string
-          description: Name of the package containing this data app
-        versionId:
-          oneOf:
-            - $ref: "#/components/schemas/VersionIdPattern"
-            - type: "null"
-          readOnly: true
-          description: >-
-            The published version this data app was listed from. Absent for a
-            package that has no published versions. A link that must keep opening
-            this version after `latest` moves carries it as `?versionId=`, as
-            `resource` does. The static route serving the page reads it only
-            when it names a version the package has: otherwise (a package with
-            no versions, or a `versionId` that is no version of this package)
-            it serves the files of `latest`, so a router that forwards a page's
-            query string unchanged keeps working. The page's queries, through
-            the data-app runtime, follow the same rule. Files the page loads by
-            relative URL carry no `?versionId=`, so they come from `latest`.
-        path:
-          type: string
-          description: Relative path to the HTML file within its package directory
-        title:
-          type: string
-          description:
-            Title extracted from the file's <title> tag, or the path if
-            not present
-        fit:
-          type: string
-          enum:
-            - viewport
-          description:
-            Layout hint read from a <meta name="publisher:fit"> tag in the
-            page <head>. "viewport" tells the embedded viewer to fill the
-            available height instead of auto-sizing to the content height, for
-            full-screen apps like slide decks. Omitted for an ordinary
-            content-driven app, which keeps content-height auto-sizing.
+        DEPRECATED: `ReportTile`, under the name the deprecated dashboard
+        routes gave it.
+      allOf:
+        - $ref: "#/components/schemas/ReportTile"
 
     RawNotebook:
-      type: object
-      description: Raw Malloy notebook with unexecuted cell contents
-      properties:
-        type:
-          type: string
-          description: Always `notebook`. Distinguishes the payload from the
-            compiled-model shape returned by the model endpoint.
-        packageName:
-          type: string
-          description: Name of the package containing this notebook
-        modelPath:
-          type: string
-          description: Relative path to the notebook file within its package directory
-        format:
-          type: string
-          enum: ["malloynb", "malloy"]
-          description:
-            The file format the notebook is written in. `malloynb` is the
-            cell-separated format; `malloy` is a `.malloy` at the top of `notebooks/` or
-            `dashboards/` whose model-level `## artifact` tag says `kind=notebook` (or names no
-            `kind` and sits under `notebooks/`), whose cells are
-            its statements and its floating `(markdown)` notes in file order.
-        malloyVersion:
-          type: string
-          description: Version of the Malloy compiler used to generate the notebook data
-        modelInfo:
-          type: string
-          description: JSON string containing model metadata and structure information
-        notebookCells:
-          type: array
-          description: Array of notebook cells containing raw markdown and code content
-          items:
-            $ref: "#/components/schemas/NotebookCell"
-        dashboard:
-          allOf:
-            - $ref: "#/components/schemas/DashboardManifest"
-          description: >-
-            The tile layout of a notebook written as one (`## artifact {
-            kind=notebook tiles=[…] }`), in the shape a dashboard has, with
-            `kind` `notebook` and one column. Absent on a notebook written as
-            cells. Its tiles run through the model query endpoint at
-            `modelPath`; `notebookCells` carries the same content as cells for
-            readers that do not draw a layout.
-        annotations:
-          type: array
-          description:
-            Array of file-level (##) annotations attached to the notebook. For
-            a `.malloy` notebook, every own note that is not a floating
-            `(markdown)` cell, in file order, each note once. A `"` or `(text)`
-            note below the `## artifact` tag is dropped and not listed.
-          items:
-            type: string
-        startingGivens:
-          allOf:
-            - $ref: "#/components/schemas/EncodedGivenValues"
-          description:
-            Starting values for the notebook's controls. A `.malloy` notebook
-            declares them in its artifact tag (`## artifact { givens { … } }`),
-            a `.malloynb` in its file-level tags (`## givens { … }`). URL
-            parameters override these, which is why the two share a shape.
-            Omitted when the notebook declares none.
-        autorun:
-          type: boolean
-          description:
-            False batches control changes behind an Apply button instead of
-            re-running on every change. Defaults to true. A `.malloy` notebook
-            reads it from its artifact tag (`## artifact { autorun=false }`), a
-            `.malloynb` from its file-level tags (`## autorun=false`). The same
-            flag, with the same default, that `DashboardManifest.autorun`
-            carries.
-        sources:
-          type: array
-          description: Sources defined in the notebook's model
-          items:
-            $ref: "#/components/schemas/Source"
-        queries:
-          type: array
-          description: Named queries defined in the notebook's model
-          items:
-            $ref: "#/components/schemas/Query"
+      deprecated: true
+      description: >-
+        DEPRECATED: `ReportCells`, as get-notebook answers them, plus the tile
+        layout of a linear report written as tiles.
+      allOf:
+        - $ref: "#/components/schemas/ReportCells"
+        - type: object
+          properties:
+            dashboard:
+              allOf:
+                - $ref: "#/components/schemas/DashboardManifest"
+              description: >-
+                The tile layout of a linear report written as one (`## artifact {
+                layout=linear tiles=[…] }`), in the shape a dashboard has, with
+                `layout` `linear` and one column. Absent on a notebook written as
+                cells. Its tiles run through the model query endpoint at
+                `modelPath`; `notebookCells` carries the same content as cells for
+                readers that do not draw a layout.
 
     CompiledModel:
       type: object
@@ -6363,8 +7264,7 @@ components:
           type: integer
           minimum: 1
           maximum: 2147483647
-          description:
-            Maximum run time of each statement on the database, in
+          description: Maximum run time of each statement on the database, in
             milliseconds. The database cancels a statement that exceeds it.
             When omitted, the database's own statement_timeout applies. Not
             applied to a DuckLake catalog connection.
@@ -6570,6 +7470,7 @@ components:
       required:
         - storage
         - catalog
+
     BigqueryConnection:
       type: object
       description: Google BigQuery database connection configuration
@@ -6787,6 +7688,7 @@ components:
         azureConnection:
           $ref: "#/components/schemas/AzureConnection"
     # TODO: What is this?  Can we remove it?
+
     SqlSource:
       type: object
       properties:
@@ -6887,14 +7789,15 @@ components:
             The package-version values let a caller tell "forgot to bump the
             version" from "the model is broken", which share a status code:
 
-              * MANIFEST_VERSION_MISSING (400): a versioned publish whose
-                publisher.json has no `version`.
-              * MANIFEST_VERSION_INVALID (400): its `version` is not a semantic
-                version.
+              * MANIFEST_VERSION_MISSING (400): with package versioning on, a
+                publish whose publisher.json has no `version`.
+              * MANIFEST_VERSION_INVALID (400): such a publish whose `version`
+                is not a semantic version.
               * VERSION_CONFLICT (409): that version is already published with
                 different content.
               * PACKAGE_IS_VERSIONED (409): the package has published versions,
-                so it cannot be changed in place.
+                so it cannot be changed in place (a write, or a publish with
+                package versioning off).
               * VERSION_IS_LATEST (409): the package's `latest` version cannot be
                 archived.
               * VERSION_IS_LAST_ACTIVE (409): the package's last version in
@@ -7137,13 +8040,20 @@ components:
         serves once saved. Present only when the source carries a model-level
         `## artifact` tag and compiled far enough to read.
       properties:
+        layout:
+          type: string
+          enum: [grid, linear]
+          description: >-
+            The report's layout, by the one rule every report follows: the
+            tag's `layout=`, else grid when it lists `tiles` or carries a
+            `dashboard { … }` grid tag, else linear.
         kind:
           type: string
           enum: [dashboard, notebook]
+          deprecated: true
           description: >-
-            From the tag's `kind`. When it names none, a document that lists
-            `tiles` or carries a `dashboard { … }` grid tag is a dashboard and
-            any other is a notebook: submitted text has no folder to decide.
+            DEPRECATED: read `layout`. The same thing in the old vocabulary:
+            `dashboard` for grid, `notebook` for linear.
         manifest:
           allOf:
             - $ref: "#/components/schemas/DashboardManifest"
@@ -7219,7 +8129,9 @@ components:
             the package's materialization scope in `metadata.scope`, which
             decides whose tables it builds. Under `scope: "version"` each
             version builds into tables of its own: a self-assigned name gains
-            the version as a suffix (`order_summary__v1_2_0`). Under
+            the version and a hash of the environment, package and version as
+            a suffix (`order_summary__v1_2_0_3f9c2a1b`), so no other package's
+            version builds the same table. Under
             `scope: "package"` (the default) the versions share the package's
             tables, so an auto-run (no `buildInstructions`) of a version other
             than `latest` is refused with 400 (`reason` VERSION_NOT_LATEST): it
@@ -7559,6 +8471,7 @@ components:
             The given names this term reads, in first-seen order. A reader must
             bind these for the term to apply; binding none applies each given's
             declared default, as a live query would.
+
     JoinedTerms:
       type: object
       required: [alias, source, terms]
@@ -7581,6 +8494,7 @@ components:
           description: >-
             The joined source's own stripped terms, which its binding re-applies
             with the caller's values.
+
     PersistSourcePlan:
       type: object
       required: [name, sourceID, connectionName, sourceEntityId, sql, columns]

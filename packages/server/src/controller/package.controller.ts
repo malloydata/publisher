@@ -3,7 +3,7 @@
 
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
-import { getVersionPromotionMode } from "../config";
+import { getVersionPromotionMode, isVersioningEnabled } from "../config";
 import {
    BadRequestError,
    FrozenConfigError,
@@ -71,6 +71,18 @@ function formatPublishRejections(
       .filter(Boolean)
       .join("\n");
    return message || undefined;
+}
+
+/**
+ * Say, on a publish from a location with package versioning off, that the
+ * package is installed in place as before versions, and that versions will be
+ * required.
+ */
+export function warnVersioningOff(packageName: string): void {
+   logger.warn(
+      `Package versioning is off, so package ${packageName} is installed in place, replacing the previous publish, as before versions. Versions will be required in a future release: set PUBLISHER_PACKAGE_VERSIONING=on and give publisher.json a semantic "version" (such as "1.0.0") to publish immutable versions.`,
+      { packageName },
+   );
 }
 
 export class PackageController {
@@ -263,64 +275,87 @@ export class PackageController {
             `Package ${packageName} has published versions, which are immutable; publish a new version instead of replacing it.`,
          );
       }
-      // Strict at publish: the author is in the loop here, so a bad explores
-      // is an actionable 400 instead of a silently hidden surface. (At
-      // startup/reload we fail safe and only warn — see Package.loadViaWorker.)
-      // The rollback differs by path so a rejected publish never destroys
-      // user content:
-      //   - location: a published version. Its tree was downloaded into a
-      //     fresh folder and the checks run before it is recorded, so a
-      //     failure removes only that download.
+      // Strict at publish: the author is in the loop here, so reject a bad
+      // explores with an actionable 400 instead of silently serving a hidden
+      // surface. (At startup/reload we fail safe and only warn — see
+      // Package.loadViaWorker.) The rollback differs by path so a rejected
+      // publish never destroys user content:
+      //   - location, versioning on: a published version. Its tree was
+      //     downloaded into a fresh folder and the checks run before it is
+      //     recorded, so a failure removes only that download.
+      //   - location, versioning off: the tree was just downloaded into a
+      //     fresh canonical, so validation runs inside installPackage's swap
+      //     window and a failure wipes that download (the existing rollback)
+      //     — nothing pre-existing to lose.
       //   - no-location: addPackage registered a *pre-existing* user directory,
       //     so we validate after the fact and `unloadPackage` (evict from
       //     memory, keep the files) rather than delete it.
       let result;
       try {
          if (body.location) {
-            if (!versions) {
-               throw new Error(
-                  `Environment ${environmentName} has no version registry`,
-               );
-            }
-            const location: unknown = body.location;
-            if (typeof location !== "string") {
+            const bodyLocation: unknown = body.location;
+            if (typeof bodyLocation !== "string") {
                throw new BadRequestError("`location` must be a string.");
             }
-            const fields = body as Record<string, unknown>;
-            if (
-               fields.description !== undefined &&
-               fields.description !== null &&
-               typeof fields.description !== "string"
-            ) {
-               throw new BadRequestError("`description` must be a string.");
+            const download = (stagingPath: string) =>
+               this.downloadInto(
+                  environmentName,
+                  packageName,
+                  bodyLocation,
+                  stagingPath,
+               );
+            // Versioning on: the tree is published as the immutable version
+            // its publisher.json declares, and one that declares none is
+            // refused (400).
+            if (versions && isVersioningEnabled()) {
+               return await this.publishVersion(
+                  versions,
+                  packageName,
+                  download,
+                  bodyLocation,
+                  body,
+               );
             }
-            const manifestLocation = versionManifestLocation(
-               fields.manifestLocation,
-            );
-            // The version is the one the tree's own publisher.json declares;
-            // the request carries none.
-            const published = await versions.publish(
+            // Versioning off, the transition default (#1381): installed in
+            // place, as every publish from a location was before versions,
+            // whatever its publisher.json declares. Versions already published
+            // are not replaced.
+            if (versions && (await versions.isVersioned(packageName))) {
+               throw new PackageVersionError(
+                  "PACKAGE_IS_VERSIONED",
+                  `Package ${packageName} has published versions, which are immutable, and package versioning is off, so this publish would replace them. Set PUBLISHER_PACKAGE_VERSIONING=on to publish a new version.`,
+               );
+            }
+            warnVersioningOff(packageName);
+            result = await environment.installPackage(
                packageName,
-               (stagingPath) =>
-                  this.downloadInto(
-                     environmentName,
-                     packageName,
-                     location,
-                     stagingPath,
-                  ),
+               download,
+               (pkg) => formatPublishRejections(pkg),
+               // The install records where it fetched from, and a publish
+               // that names a manifest binds it, both under the install's
+               // own lock. The downloaded tree's publisher.json carries
+               // neither: the location is the caller's, and the
+               // orchestrator computes the manifest, not the author.
+               // Without the location a later PATCH naming the same
+               // location could not be told from new content; without the
+               // manifest the package came up serving live and was fully
+               // reloaded moments later by the drift check.
                {
-                  sourceLocation: location,
-                  manifestLocation,
-                  description: body.description ?? undefined,
-                  promotion: getVersionPromotionMode(
-                     this.environmentStore.serverRootPath,
-                  ),
-                  validate: (pkg) => formatPublishRejections(pkg),
+                  update: {
+                     location: bodyLocation,
+                     // Only a manifest to bind. A fresh install serves live
+                     // already, so a null or empty value has nothing to
+                     // revert and would only recompile the package a
+                     // second time.
+                     ...(body.manifestLocation
+                        ? { manifestLocation: body.manifestLocation }
+                        : {}),
+                  },
                },
             );
-            return published.loaded;
+         } else {
+            result = await environment.addPackage(packageName);
          }
-         result = await environment.addPackage(packageName);
       } catch (error) {
          // A failure on the server's side (5xx: a mount the server cannot
          // write, an unreachable bucket) is also an operator's problem, and
@@ -350,19 +385,21 @@ export class PackageController {
          throw error;
       }
 
-      // `addPackage` is typed `Package | undefined`; a missing
+      // `addPackage`/`installPackage` are typed `Package | undefined`; a missing
       // result here is a should-never-happen internal fault. Fail loudly rather
       // than letting optional chaining silently skip the validation below.
       if (!result) {
          throw new Error(`Failed to create package ${packageName}`);
       }
 
-      const invalidMsg = formatPublishRejections(result);
-      if (invalidMsg) {
-         await environment.unloadPackage(packageName).catch(() => {
-            /* best-effort; the package is not persisted below */
-         });
-         throw new BadRequestError(invalidMsg);
+      if (!body.location) {
+         const invalidMsg = formatPublishRejections(result);
+         if (invalidMsg) {
+            await environment.unloadPackage(packageName).catch(() => {
+               /* best-effort; the package is not persisted below */
+            });
+            throw new BadRequestError(invalidMsg);
+         }
       }
 
       await this.environmentStore.addPackageToDatabase(
@@ -371,6 +408,39 @@ export class PackageController {
       );
 
       return result;
+   }
+
+   /**
+    * Publish the downloaded tree as the version its publisher.json declares:
+    * the request carries no version. The request's own fields are checked
+    * before anything is downloaded.
+    */
+   private async publishVersion(
+      versions: VersionService<Package>,
+      packageName: string,
+      download: (stagingPath: string) => Promise<void>,
+      location: string,
+      body: ApiPackage,
+   ): Promise<Package> {
+      const fields = body as Record<string, unknown>;
+      if (
+         fields.description !== undefined &&
+         fields.description !== null &&
+         typeof fields.description !== "string"
+      ) {
+         throw new BadRequestError("`description` must be a string.");
+      }
+      const manifestLocation = versionManifestLocation(fields.manifestLocation);
+      const published = await versions.publish(packageName, download, {
+         sourceLocation: location,
+         manifestLocation,
+         description: body.description ?? undefined,
+         promotion: getVersionPromotionMode(
+            this.environmentStore.serverRootPath,
+         ),
+         validate: (pkg) => formatPublishRejections(pkg),
+      });
+      return published.loaded;
    }
 
    public async deletePackage(environmentName: string, packageName: string) {
