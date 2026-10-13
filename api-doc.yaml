@@ -7592,7 +7592,9 @@ components:
             the package's materialization scope in `metadata.scope`, which
             decides whose tables it builds. Under `scope: "version"` each
             version builds into tables of its own: a self-assigned name gains
-            the version as a suffix (`order_summary__v1_2_0`). Under
+            the version and a hash of the environment, package and version as
+            a suffix (`order_summary__v1_2_0_3f9c2a1b`), so no other package's
+            version builds the same table. Under
             `scope: "package"` (the default) the versions share the package's
             tables, so an auto-run (no `buildInstructions`) of a version other
             than `latest` is refused with 400 (`reason` VERSION_NOT_LATEST): it

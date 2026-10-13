@@ -45,18 +45,34 @@ const tablesOf = (entries: Record<string, { physicalTableName: string }>) =>
    Object.values(entries).map((e) => e.physicalTableName);
 
 describe("versionTableSuffix", () => {
-   it("names a release by its numbers", () => {
-      expect(versionTableSuffix("1.2.3")).toBe("__v1_2_3");
+   const suffix = (
+      version: string,
+      packageName = "sales",
+      environmentName = "env",
+   ) => versionTableSuffix({ environmentName, packageName, version });
+
+   it("names a release by its numbers, and the same owner the same way every time", () => {
+      expect(suffix("1.2.3")).toMatch(/^__v1_2_3_[0-9a-f]{8}$/);
+      expect(suffix("1.2.3")).toBe(suffix("1.2.3"));
+   });
+
+   it("keeps two packages, or two environments, at one version apart", () => {
+      // They may build on one shared connection: one table between them, and
+      // archiving one version would drop the table the other serves.
+      expect(suffix("0.1.0", "a")).not.toBe(suffix("0.1.0", "b"));
+      expect(suffix("0.1.0", "a", "dev")).not.toBe(
+         suffix("0.1.0", "a", "prod"),
+      );
+      // A name and an environment that join the same way stay apart.
+      expect(suffix("1.0.0", "b", "a/")).not.toBe(suffix("1.0.0", "/b", "a"));
    });
 
    it("keeps versions apart that differ only in punctuation", () => {
-      const a = versionTableSuffix("1.0.0-rc.1");
-      const b = versionTableSuffix("1.0.0-rc-1");
+      const a = suffix("1.0.0-rc.1");
+      const b = suffix("1.0.0-rc-1");
       expect(a).toMatch(/^__v1_0_0_[0-9a-f]{8}$/);
       expect(a).not.toBe(b);
-      expect(versionTableSuffix("1.0.0+build.5")).not.toBe(
-         versionTableSuffix("1.0.0"),
-      );
+      expect(suffix("1.0.0+build.5")).not.toBe(suffix("1.0.0"));
    });
 });
 

@@ -43,7 +43,7 @@ A package loaded from `publisher.config.json`, registered from a directory with 
 
 **Promotion.** `versionPromotion` (`PUBLISHER_VERSION_PROMOTION`, or `publisher.config.json`): `on-publish` (the default) moves `latest` to a newly published higher version; `explicit` never does, and only `PUT …/latest` moves it.
 
-**Materializations** build one version at a time, chosen by `versionId`. Under `scope: "version"` each version builds and serves its own tables (`summary__v1_2_0`), its runs hold their own slot, and archiving it reclaims them. Under `scope: "package"` the versions share tables: an auto-run of a version other than `latest` answers 400 `VERSION_NOT_LATEST`, and a version binds a stored table only when its own definition built it. The standalone scheduler fires each published version on its own schedule.
+**Materializations** build one version at a time, chosen by `versionId`. Under `scope: "version"` each version builds and serves its own tables (`summary__v1_2_0_3f9c2a1b`: the version, and a hash of the environment, package and version, so packages never share them), its runs hold their own slot, and archiving it reclaims them. Under `scope: "package"` the versions share tables: an auto-run of a version other than `latest` answers 400 `VERSION_NOT_LATEST`, and a version binds a stored table only when its own definition built it. The standalone scheduler fires each published version on its own schedule.
 
 **Upgrading.** An existing `publisher.db` gains a `versions` table and two columns on startup; nothing is lost, and every existing package stays unversioned until its first publish from a location. The SDK percent-encodes `versionId` in resource URIs, so build metadata (`+build.5`) survives.
 

@@ -1695,7 +1695,13 @@ export class MaterializationService {
                opts.sourceNames,
                priorEntries,
                incremental,
-               owned !== undefined ? versionTableSuffix(owned) : "",
+               owned !== undefined
+                  ? versionTableSuffix({
+                       environmentName,
+                       packageName,
+                       version: owned,
+                    })
+                  : "",
             ));
          }
 
