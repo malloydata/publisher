@@ -13,7 +13,10 @@
  *
  * The split is deterministic, no model call:
  *
- * 1. A phrase is a list only when it has a comma or a semicolon outside
+ * 1. A question (a "?", or a first word such as "what", "how", "between",
+ *    "for") is never a list, nor is a text with an item over MAX_ITEM_WORDS
+ *    words: its commas set off clauses. Otherwise a phrase is a list only
+ *    when it has a comma or a semicolon outside
  *    parentheses and outside an example tail ("such as ...", "e.g. ..."),
  *    or three items set apart by spaced slashes ("daypart / hour / day").
  *    "first and last name", "profit and loss", "buy/sell" are never split.
@@ -22,8 +25,10 @@
  *    words or fewer and the joined words are not a phrase the package itself
  *    uses (a field name or doc that says "shipping and handling").
  *    "first and last name" becomes "first name", "last name".
- * 3. An item that starts with a modifier ("after discount", "per venue") is
- *    not an item: it stays on the item before it.
+ * 3. An item that starts with a modifier ("after discount", "not test",
+ *    "all sizes") is not an item: it stays on the item before it. A
+ *    description followed by its example values ("kind of account a
+ *    merchant holds, retail or SaaS") is not split.
  * 4. The shared subject is carried onto every item: a prefix before a colon
  *    ("guest details: name, phone"), a trailing "of the ..." or "for the ..."
  *    on the last item ("state, city and zip of the venue"), or the leading
@@ -40,12 +45,19 @@ export const MAX_ITEMS = 8;
 /** Most words in one part of an item cut at "and" / "or" / "/". */
 const MAX_PART_WORDS = 3;
 
+/** Most words in one item of a list; a longer item means the text is a sentence, not a list. */
+export const MAX_ITEM_WORDS = 8;
+
+/** First words of a question or an instruction: a sentence whose commas set off clauses, not items. */
+const SENTENCE_START =
+   /^(what|which|who|whom|whose|how|when|where|why|is|are|was|were|do|does|did|can|could|should|would|will|has|have|had|between|for|in|across|during|since|from|excluding|including|among|of|on|at|by|after|before|if|given|assuming|compared)\b/i;
+
 const EXAMPLE_TAIL =
    /\b(such as|e\.g\.|eg\.|for example|for instance|including|like)\b/i;
 
 /** Words that start a qualifier of the item before, not an item of their own. */
 const MODIFIER_START =
-   /^(after|before|per|excluding|excl\.?|including|incl\.?|with|without|net of|less|minus|plus|within|based on)\b/i;
+   /^(after|before|per|excluding|excl\.?|including|incl\.?|with|without|net of|less|minus|plus|within|based on|not|no|all|only|except|other than)\b/i;
 
 /** A trailing shared subject: "of the venue", "for each customer". */
 const SUFFIX = /^(.+?)\s+((?:of|for) (?:the|a|an|each|every|this|that) .+)$/i;
@@ -98,6 +110,8 @@ export function splitBundle(
    knownPhrase: (phrase: string) => boolean = () => false,
 ): string[] {
    let body = text.trim().replace(/\s+/g, " ");
+   // A question or a sentence is not a list: its commas set off clauses.
+   if (body.includes("?") || SENTENCE_START.test(body)) return [];
    // Three or more items set apart by spaced slashes are a list too.
    if (!/[,;]/.test(body) && (body.match(/ \/ /g) ?? []).length >= 2) {
       body = body.replace(/ \/ /g, ", ");
@@ -131,13 +145,24 @@ export function splitBundle(
    for (const raw of body.split(/\s*[,;]\s*/)) {
       const item = raw.replace(/^(?:and|or|&)\s+/i, "").trim();
       if (!item) continue;
-      if (items.length > 0 && MODIFIER_START.test(item)) {
+      if (items.length > 0 && MODIFIER_START.test(restore(item))) {
          items[items.length - 1] += `, ${item}`;
          continue;
       }
       items.push(item);
    }
    if (items.length === 0) return [];
+   if (items.some((i) => words(restore(i)).length > MAX_ITEM_WORDS)) return [];
+   // "kind of account a merchant holds, retail or SaaS": a description, then
+   // its example values, is one field.
+   if (
+      items.length === 2 &&
+      words(items[0]).length >= 4 &&
+      words(items[1]).length <= 4 &&
+      /\s(or|and)\s|\//i.test(items[1])
+   ) {
+      return [];
+   }
 
    // A trailing "of the ..." on the last item belongs to every item, unless
    // an earlier item has its own.

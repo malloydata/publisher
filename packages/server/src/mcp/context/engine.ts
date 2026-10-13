@@ -379,7 +379,9 @@ export async function runFcjQuery(args: {
                : {}),
             concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
             listRoutes: settings.listRoutes,
-            splitRules: settings.splitBundles,
+            // Only a request with a list target reads the split rules, so
+            // every other request's judge prompt is the same text as before.
+            splitRules: split !== undefined,
          });
       } catch (error) {
          logger.warn("[get_context fcj] The judge failed", {
@@ -442,7 +444,7 @@ export async function runFcjQuery(args: {
               connected,
               verdicts,
               twins: settings.alsoLikelyTwins ?? 2,
-              ignoreAbsence: settings.splitBundles,
+              ignoreAbsence: split !== undefined,
            })
          : [];
 
