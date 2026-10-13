@@ -526,7 +526,8 @@ describe("what a publish fetches, by location kind", () => {
  * What a publish leaves behind when it refuses a tree: nothing at the
  * package's path, no staged folder, and no version recorded. (A bucket `.zip`
  * download also leaves its archive beside the staged folder, as it does on
- * every publish; the boot sweep of `.staging/` removes it.)
+ * every publish on main; the boot sweep of `.staging/` removes it. #1390
+ * removes it at once, after which this can check `.staging/` is empty.)
  */
 async function expectNothingPublished(): Promise<void> {
    expect(fs.existsSync(path.join(envPath, PKG))).toBe(false);
