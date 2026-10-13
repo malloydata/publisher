@@ -63,27 +63,30 @@ const iconControlSx = {
 const dividerSx = { height: 20, alignSelf: "center", mx: 0.5, my: 0 } as const;
 
 /**
- * A segmented control, built as an outlined button is: the same edge, height
- * and radius as "+ Tile" beside it, the chosen segment tinted inside the
- * outline. A grey track with a raised chip read as a different kind of
- * control from the outlined buttons in the same row.
+ * A segmented control, built as an outlined button group: the same edge,
+ * height, radius and padding as "+ Tile" beside it, each segment the full
+ * height of the control with a rule between them, and the chosen one tinted
+ * edge to edge. An inset chip inside the outline read as a control within a
+ * control, a size smaller than the button next to it.
  */
 const segmentedSx = (edge: string) =>
    ({
       height: CONTROL_HEIGHT_PX,
       boxSizing: "border-box",
-      p: "2px",
-      gap: "2px",
       borderRadius: CONTROL_RADIUS,
       border: `1px solid ${edge}`,
+      overflow: "hidden",
       bgcolor: "background.paper",
       "& .MuiToggleButton-root": {
          border: "none",
-         borderRadius: "4px !important",
-         px: 1.25,
+         borderRadius: "0 !important",
+         m: "0 !important",
+         px: 1.5,
          py: 0,
+         height: "100%",
          ...TYPE.control,
          color: "text.secondary",
+         "& + .MuiToggleButton-root": { borderLeft: `1px solid ${edge}` },
          "&:hover": { bgcolor: "action.hover" },
          "&.Mui-selected, &.Mui-selected:hover": {
             bgcolor: "action.selected",

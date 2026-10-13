@@ -25,12 +25,10 @@ import {
    TILE_RADIUS,
    TYPE,
 } from "../controlTokens";
+import { RemoveBadge, removeBadgeRevealSx } from "../RemoveBadge";
 import { useFilterEditing } from "./filterEditing";
 import { summarizeGivenValue } from "./filterSummary";
 import { GivenInput, type GivenInputProps } from "./GivenInput";
-
-/** Class on the remove badge, shown while its filter is hovered or focused. */
-const REMOVE_BADGE = "filter-remove-badge";
 
 /**
  * One filter in a report's control row: a 32px button that names the filter
@@ -251,46 +249,15 @@ function FilterShell({
                      : hoverEdgeColor(theme.cardBorder, theme.tileTitle),
             },
             maxWidth: "100%",
-            [`& .${REMOVE_BADGE}`]: { opacity: 0 },
-            [`&:hover .${REMOVE_BADGE}, &:focus-within .${REMOVE_BADGE}`]: {
-               opacity: 1,
-            },
-            "@media (hover: none)": {
-               [`& .${REMOVE_BADGE}`]: { opacity: 1 },
-            },
+            ...removeBadgeRevealSx,
          })}
       >
          {children}
          {editing && (
-            <IconButton
-               className={REMOVE_BADGE}
-               aria-label={`Remove filter ${name}`}
-               onClick={() => editing.onRemove(name)}
-               sx={(mui) => ({
-                  position: "absolute",
-                  top: -8,
-                  right: -8,
-                  width: 18,
-                  height: 18,
-                  p: 0,
-                  borderRadius: "50%",
-                  border: `1px solid ${edgeColor(theme.cardBorder)}`,
-                  bgcolor: mui.palette.background.paper,
-                  color: mui.palette.text.secondary,
-                  transition: `opacity ${MOTION_FAST}`,
-                  ...reducedMotionSx,
-                  "&:hover": {
-                     bgcolor: mui.palette.background.paper,
-                     color: mui.palette.text.primary,
-                     borderColor: hoverEdgeColor(
-                        theme.cardBorder,
-                        theme.tileTitle,
-                     ),
-                  },
-               })}
-            >
-               <CloseIcon sx={{ fontSize: 12 }} />
-            </IconButton>
+            <RemoveBadge
+               label={`Remove filter ${name}`}
+               onRemove={() => editing.onRemove(name)}
+            />
          )}
       </Box>
    );

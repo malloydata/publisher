@@ -94,15 +94,6 @@ export function BuilderDialogs({
                   draft.tiles[at] = next;
                });
             }}
-            onRemove={() => {
-               if (menu !== undefined) tiles.removeTile(menu.index);
-            }}
-            {...(editor.document.tiles.length === 1 &&
-            editor.saved.tiles.length > 0
-               ? {
-                    removeBlocked: "A saved report needs at least one tile.",
-                 }
-               : {})}
             view={menuView}
             {...((editor.document.sources.find(
                (s) => s.name === menuTile?.source,

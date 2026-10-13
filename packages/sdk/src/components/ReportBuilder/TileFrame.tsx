@@ -8,6 +8,11 @@ import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
 import { CONTROL_RADIUS, hoverEdgeColor, TILE_RADIUS } from "../controlTokens";
+import {
+   REMOVE_BADGE_CLASS,
+   RemoveBadge,
+   removeBadgeRevealSx,
+} from "../RemoveBadge";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
 import { BARE_RING_OFFSET_PX, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
@@ -20,6 +25,7 @@ import {
 } from "../Dashboard/TileCard";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import {
+   isTextTile,
    tileKey,
    tileLabel,
    type DashboardTile,
@@ -44,6 +50,8 @@ export function TileFrame({
    onInsertAfter,
    onSelect,
    onOpenMenu,
+   onRemove,
+   removeBlocked,
    resizing = false,
    width,
    onResizeStart,
@@ -68,6 +76,10 @@ export function TileFrame({
    onInsertAfter?: () => void;
    onSelect: () => void;
    onOpenMenu: (anchor: HTMLElement) => void;
+   /** Take the tile off the report, from the × on its corner. */
+   onRemove: () => void;
+   /** Why it cannot be removed (a saved report keeps one tile); the × says so instead. */
+   removeBlocked?: string;
    /** This tile's edge is being dragged. */
    resizing?: boolean;
    /** Dragging the right edge sets the width; absent, the tile has no edge handle (one column, or tags the file does not own). */
@@ -164,6 +176,12 @@ export function TileFrame({
                   },
                   "&:hover .builder-affordance, &:focus-within .builder-affordance":
                      { opacity: 1 },
+                  // The remove ×, as a filter shows it: on hover and focus,
+                  // and while the tile is selected.
+                  ...removeBadgeRevealSx,
+                  ...(selected && {
+                     [`& .${REMOVE_BADGE_CLASS}`]: { opacity: 1 },
+                  }),
                   // No hover on a touch screen: the affordances stand.
                   "@media (hover: none)": {
                      "& .builder-affordance": { opacity: 1 },
@@ -189,43 +207,57 @@ export function TileFrame({
                   }}
                />
 
+               {/* Removing the tile: the × on its corner, the one removal
+                control in the builder (a filter's is the same). On the
+                selection ring's corner for bare prose, the card's otherwise. */}
+               <RemoveBadge
+                  label={`Remove ${tileLabel(tile)}`}
+                  onRemove={onRemove}
+                  {...(removeBlocked ? { disabledReason: removeBlocked } : {})}
+                  inset={bare ? BARE_RING_OFFSET_PX : 0}
+               />
+
                {/* The tile's menu: its chart and drill-through.
                 A press here is never the start of a drag: the
                 sensor refuses to activate from a button. */}
-               <IconButton
-                  className="builder-affordance"
-                  size="small"
-                  aria-label={`Settings for ${tileLabel(tile)}`}
-                  onClick={(event) => {
-                     event.stopPropagation();
-                     onOpenMenu(event.currentTarget);
-                  }}
-                  sx={{
-                     position: "absolute",
-                     // Inside the tile, top right: on a card, in its heading
-                     // row level with the title (the heading leaves room for
-                     // it: see `TILE_HEADING_CLASS` below); on prose, in its
-                     // top corner, which a readable line leaves empty. Not
-                     // astride the edge, half outside the tile it belongs to.
-                     top: bare ? 0 : `${MENU_INSET_PX}px`,
-                     right: bare ? 0 : `${MENU_INSET_PX}px`,
-                     borderRadius: CONTROL_RADIUS,
-                     width: 28,
-                     height: 28,
-                     zIndex: 2,
-                     color: "text.secondary",
-                     bgcolor: "action.hover",
-                     opacity: selected || menuOpen ? 1 : 0,
-                     transition: `opacity ${MOTION_FAST}`,
-                     ...reducedMotionSx,
-                     "&:hover": {
-                        opacity: 1,
-                        bgcolor: "action.selected",
-                     },
-                  }}
-               >
-                  <SpreadDotsIcon />
-               </IconButton>
+               {/* A text tile has no menu: it is edited in place and removed
+                from its ×. */}
+               {!isTextTile(tile) && (
+                  <IconButton
+                     className="builder-affordance"
+                     size="small"
+                     aria-label={`Settings for ${tileLabel(tile)}`}
+                     onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenMenu(event.currentTarget);
+                     }}
+                     sx={{
+                        position: "absolute",
+                        // Inside the tile, top right: on a card, in its heading
+                        // row level with the title (the heading leaves room for
+                        // it: see `TILE_HEADING_CLASS` below); on prose, in its
+                        // top corner, which a readable line leaves empty. Not
+                        // astride the edge, half outside the tile it belongs to.
+                        top: bare ? 0 : `${MENU_INSET_PX}px`,
+                        right: bare ? 0 : `${MENU_INSET_PX}px`,
+                        borderRadius: CONTROL_RADIUS,
+                        width: 28,
+                        height: 28,
+                        zIndex: 2,
+                        color: "text.secondary",
+                        bgcolor: "action.hover",
+                        opacity: selected || menuOpen ? 1 : 0,
+                        transition: `opacity ${MOTION_FAST}`,
+                        ...reducedMotionSx,
+                        "&:hover": {
+                           opacity: 1,
+                           bgcolor: "action.selected",
+                        },
+                     }}
+                  >
+                     <SpreadDotsIcon />
+                  </IconButton>
+               )}
 
                {/* The right edge, which sets the width: dragged, or focused and
                 stepped with the arrow keys a column at a time (Home and End go

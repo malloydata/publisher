@@ -111,8 +111,8 @@ describe("ReportBuilder: a notebook is one column", () => {
       expect(
          screen.queryByRole("separator", { name: /^Width of / }),
       ).toBeNull();
-      fireEvent.click(screen.getByLabelText("Settings for intro"));
-      expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
+      // A text tile has no menu; a query tile's offers no width.
+      expect(screen.queryByLabelText("Settings for intro")).toBeNull();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       expect(screen.queryByRole("button", { name: "Width ½" })).toBeNull();
    });

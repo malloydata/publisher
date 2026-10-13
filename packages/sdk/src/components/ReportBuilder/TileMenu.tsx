@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 import AdsClickIcon from "@mui/icons-material/AdsClick";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { Button, Popover, Stack, Typography } from "@mui/material";
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useDraft } from "./useDraft";
-import { dangerTextColor } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
@@ -22,7 +20,8 @@ import { ChartPicker } from "./ChartPicker";
  * strip under the header. A chart pick commits at once, so the tile redraws
  * under the open menu (`useDraft`'s `apply`).
  *
- * A text tile has only Remove: its words are written on the tile itself.
+ * A text tile has no menu: its words are written on the tile itself, and it is
+ * removed from the × on its corner, as every tile is.
  */
 export interface TileMenuProps {
    anchor: HTMLElement | null;
@@ -30,10 +29,6 @@ export interface TileMenuProps {
    onClose: () => void;
    /** Apply the edited tile. Called once, on close, only when something changed. */
    onCommit: (next: DashboardTile) => void;
-   /** Take the tile off the dashboard. Offered on every tile: order is this file's. */
-   onRemove: () => void;
-   /** Why removing is refused, shown beside a Remove that stays focusable; absent when it is allowed. */
-   removeBlocked?: string;
    /**
     * Open the clickable-cells window for this tile's source. Absent when the
     * source declares no dimension in this file, so there is nothing a drill
@@ -57,14 +52,11 @@ export function TileMenu({
    tile,
    onClose,
    onCommit,
-   onRemove,
-   removeBlocked,
    onDrills,
    view,
 }: TileMenuProps) {
-   const removeReasonId = useId();
    const { theme } = usePublisherTheme();
-   const { draft, apply, close, discard } = useDraft(
+   const { draft, apply, close } = useDraft(
       tile,
       anchor !== null,
       onCommit,
@@ -184,42 +176,7 @@ export function TileMenu({
                   ) : (
                      <span />
                   )}
-                  <Button
-                     color="error"
-                     size="small"
-                     startIcon={<DeleteOutlineIcon />}
-                     // aria-disabled, not disabled, so the reason stays reachable by keyboard.
-                     aria-disabled={removeBlocked !== undefined || undefined}
-                     aria-describedby={
-                        removeBlocked !== undefined ? removeReasonId : undefined
-                     }
-                     disableRipple={removeBlocked !== undefined}
-                     sx={(muiTheme) => ({
-                        // The host's destructive red (its error palette's
-                        // deeper shade), so a host themes it rather than this.
-                        color: dangerTextColor(muiTheme),
-                        ...(removeBlocked !== undefined
-                           ? { opacity: 0.5, cursor: "default" }
-                           : {}),
-                     })}
-                     onClick={() => {
-                        if (removeBlocked !== undefined) return;
-                        discard();
-                        onRemove();
-                     }}
-                  >
-                     Delete
-                  </Button>
                </Stack>
-               {removeBlocked !== undefined && (
-                  <Typography
-                     id={removeReasonId}
-                     variant="caption"
-                     sx={{ color: theme.tileTitle }}
-                  >
-                     {removeBlocked}
-                  </Typography>
-               )}
             </Stack>
          )}
       </Popover>

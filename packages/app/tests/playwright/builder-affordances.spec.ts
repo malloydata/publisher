@@ -57,12 +57,10 @@ test.describe("builder affordances", () => {
       const tile = page.getByLabel("Tile order_tile");
       await expect(tile).toBeVisible();
 
-      await page.getByRole("button", { name: /^Settings for / }).click();
-      const remove = page.getByRole("button", { name: "Delete" });
+      // The × on the tile's corner, shown while it is hovered.
+      await tile.hover();
+      const remove = page.getByRole("button", { name: /^Remove / });
       await expect(remove).toHaveAttribute("aria-disabled", "true");
-      await expect(
-         page.getByText("A saved report needs at least one tile."),
-      ).toBeVisible();
       await expect(remove).toHaveAccessibleDescription(
          "A saved report needs at least one tile.",
       );

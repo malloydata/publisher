@@ -3,15 +3,15 @@
 
 import {
    encodeResourceUri,
-   Loading,
-   LOADING_COPY,
    NarrowEditGate,
+   Report,
    type ReportLayout,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
 import React, { Suspense, useMemo } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
+import { loadBuilder } from "./loadBuilder";
 
 /**
  * The builder's entry is loaded here and nowhere else. It carries the Malloy
@@ -20,7 +20,7 @@ import { useLeaveGuard } from "../useLeaveGuard";
  * report for editing.
  */
 const ReportEditor = React.lazy(() =>
-   import("@malloy-publisher/sdk/builder").then((module) => ({
+   loadBuilder().then((module) => ({
       default: module.ReportEditor,
    })),
 );
@@ -51,14 +51,22 @@ export default function DashboardEditPage({
       () => logReportEvent({ environmentName, packageName }),
       [environmentName, packageName],
    );
+   // While the builder's code and data load, the report as the reader drew
+   // it rather than a spinner: the builder then replaces it in place, drawing
+   // the same page from the same cached results, so switching to edit does not
+   // blank the page. No `onGivensChange`: this copy does not write the URL.
+   const reading = (
+      <Report
+         resourceUri={encodeResourceUri({ environmentName, packageName })}
+         path={path}
+      />
+   );
    return (
       // The reader's page width and edges, the same for either layout, so the
       // margins do not move between modes.
       <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
          <NarrowEditGate>
-            <Suspense
-               fallback={<Loading text={LOADING_COPY.opening("builder")} />}
-            >
+            <Suspense fallback={reading}>
                <ReportEditor
                   // Remounts on a route change so another report starts from a fresh read.
                   key={`${environmentName}/${packageName}/${path}`}
@@ -70,6 +78,7 @@ export default function DashboardEditPage({
                   layout={layout}
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
+                  loading={reading}
                />
             </Suspense>
          </NarrowEditGate>

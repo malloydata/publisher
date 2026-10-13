@@ -542,13 +542,15 @@ describe("ReportBuilder: tiles added and removed", () => {
       );
    });
 
-   it("removes a tile from its menu, and saves it at once", async () => {
+   it("removes a tile from the × on its corner, and saves it at once", async () => {
       let written: string | undefined;
       await mountWithCatalog((source) => {
          written = source;
       });
+      // Not from its menu: the menu holds the chart and drill only.
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+      expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+      fireEvent.click(screen.getByLabelText("Remove By category"));
       expect(screen.queryByLabelText("Tile by_cat")).toBeNull();
 
       fireEvent.click(
@@ -567,15 +569,13 @@ describe("ReportBuilder: tiles added and removed", () => {
 describe("ReportBuilder: the last tile", () => {
    it("cannot be removed while the saved dashboard has tiles, and says why on screen", async () => {
       await mount();
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-      fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      const remove = screen.getByRole("button", { name: /^Delete/ });
+      fireEvent.click(screen.getByLabelText("Remove By category"));
+      // The last tile's × stays focusable, says why, and does nothing.
+      const remove = screen.getByLabelText("Remove by_brand");
       expect(remove.getAttribute("aria-disabled")).toBe("true");
-      const reason = screen.getByText(
+      expect(remove.getAttribute("aria-description")).toBe(
          "A saved report needs at least one tile.",
       );
-      expect(remove.getAttribute("aria-describedby")).toBe(reason.id);
       fireEvent.click(remove);
       expect(screen.getByLabelText("Tile by_brand")).toBeDefined();
    });
@@ -742,7 +742,6 @@ source: a is scoped_orders extend {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
       expect(screen.queryByRole("button", { name: "Drill" })).toBeNull();
-      expect(button("Delete")).toBeDefined();
    });
 });
 

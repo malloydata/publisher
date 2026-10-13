@@ -35,6 +35,10 @@ What an SDK host sees:
 
 In the builder, a report's filters are configured on the filter row itself: a remove badge on each button's corner, its settings from its popover, "+ Filter" at the end of the row, and a filter no tile reads yet shown dashed and marked unused. The row of chips above the controls is gone.
 
+A tile is removed the same way: a × on its corner while it is hovered, focused or selected, rather than Delete in its "⋯" menu, which now holds the chart and drill only (a text tile has no menu). The last tile of a saved report keeps its × but says why it cannot go.
+
+**Switching from reading to editing no longer blanks the page.** The Console keeps the report on screen while the builder's code and data load, and starts fetching the builder's code when the pointer reaches Edit. A tile the builder has not changed runs exactly as the reader runs it, so it is drawn from the reader's cached result instead of re-running. `ReportEditor` takes `loading`, what to draw while the report opens (default a spinner), for a host that wants the same.
+
 **The package page says what failed to load.** A file the server could not serve as intended (for example one whose artifact tag still sets `kind=`, which 0.9.8 stopped reading, so it listed under Models rather than Reports) is named with the server's own message and fix. Lower-severity notes are folded behind a count. The Reports heading's create button is now **+ Report**, accessible name "Add report", like every other section's add button.
 
 **Console.** Buttons are 32px with 6px corners rather than pills, cards and menus 8px, dialogs 12px; breadcrumbs are text with slashes.

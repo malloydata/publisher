@@ -504,6 +504,14 @@ export function ReportBuilder({
                      selectTile(index);
                      tiles.setMenu({ anchor, index });
                   }}
+                  onRemove={tiles.removeTile}
+                  {...(editor.document.tiles.length === 1 &&
+                  editor.saved.tiles.length > 0
+                     ? {
+                          removeBlocked:
+                             "A saved report needs at least one tile.",
+                       }
+                     : {})}
                   openAdd={openAdd}
                   editTile={tiles.editTile}
                   {...(renderTile ? { renderTile } : {})}

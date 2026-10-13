@@ -42,6 +42,8 @@ export function BuilderGrid({
    menuIndex,
    onSelect,
    onOpenMenu,
+   onRemove,
+   removeBlocked,
    openAdd,
    editTile,
    renderTile,
@@ -60,6 +62,10 @@ export function BuilderGrid({
    menuIndex: number | undefined;
    onSelect: (index: number) => void;
    onOpenMenu: (anchor: HTMLElement, index: number) => void;
+   /** Take a tile off the report. */
+   onRemove: (index: number) => void;
+   /** Why no tile can be removed now; set, each × says so instead. */
+   removeBlocked?: string;
    openAdd: (at?: number) => void;
    editTile: (key: string, change: (tile: DashboardTile) => void) => void;
    renderTile?: (
@@ -159,6 +165,8 @@ export function BuilderGrid({
                               : {})}
                            onSelect={() => onSelect(index)}
                            onOpenMenu={(anchor) => onOpenMenu(anchor, index)}
+                           onRemove={() => onRemove(index)}
+                           {...(removeBlocked ? { removeBlocked } : {})}
                         >
                            {isTextTile(each) ? (
                               <TextTileBody

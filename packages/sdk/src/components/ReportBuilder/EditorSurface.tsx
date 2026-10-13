@@ -23,9 +23,19 @@ import { useReportListing } from "../Package/useDocumentLocation";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
-import type { DashboardDocument, QueryTile } from "./document";
+import {
+   tileKey,
+   type DashboardDocument,
+   type DashboardTile as DocumentTile,
+   type QueryTile,
+} from "./document";
 import type { SavesTo } from "./documentSession";
-import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import {
+   previewGivens,
+   previewTileQuery,
+   tileExpressionKey,
+   type PreviewTileQuery,
+} from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
@@ -315,6 +325,15 @@ export function EditorSurface({
          ),
       [manifest],
    );
+   // The tiles as the file was opened, by key: a tile still equal to its
+   // opened self runs exactly as the reader runs it (below).
+   const openedTiles = useMemo(
+      () =>
+         new Map(
+            opened.document.tiles.map((tile) => [tileKey(tile), tile] as const),
+         ),
+      [opened.document],
+   );
    const renderTile = useMemo(
       () =>
          function LiveTile(
@@ -334,15 +353,25 @@ export function EditorSurface({
                      <Loading text="Running…" />
                   </TileCard>
                );
-            const query = previewTileQuery(
-               doc,
-               tile,
-               runnable,
-               applied,
-               servedReads.get(
-                  tileExpressionKey(`${tile.source} -> ${tile.name}`),
-               ),
+            const servedReadsOf = servedReads.get(
+               tileExpressionKey(`${tile.source} -> ${tile.name}`),
             );
+            // A tile not yet edited runs the served view with the served
+            // tile's givens: the request the reader sends, so it shares the
+            // reader's cached result and opening the builder re-runs nothing.
+            // The preview rebuilds the query from the document so an edit
+            // shows before it is saved, which an untouched tile does not need.
+            const untouched =
+               preamble === undefined &&
+               servedReadsOf !== undefined &&
+               sameTile(openedTiles.get(tileKey(tile)), tile);
+            const query: PreviewTileQuery = untouched
+               ? {
+                    expression: `${tile.source} -> ${tile.name}`,
+                    givenNames: [...servedReadsOf],
+                    reads: [...servedReadsOf],
+                 }
+               : previewTileQuery(doc, tile, runnable, applied, servedReadsOf);
             return (
                <DashboardTile
                   environmentName={environmentName}
@@ -375,6 +404,7 @@ export function EditorSurface({
          },
       [
          doc,
+         openedTiles,
          manifestSettled,
          runnable,
          servedReads,
@@ -452,5 +482,15 @@ export function EditorSurface({
             </Typography>
          </Box>
       </Stack>
+   );
+}
+
+/** Whether a tile is unchanged from its opened self: same view, bindings, chart and heading. */
+function sameTile(
+   opened: DocumentTile | undefined,
+   now: DocumentTile,
+): boolean {
+   return (
+      opened !== undefined && JSON.stringify(opened) === JSON.stringify(now)
    );
 }
