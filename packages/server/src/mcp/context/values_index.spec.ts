@@ -6,10 +6,14 @@ import {
    compileFcjFixture,
    type FcjFixture,
 } from "../../test_helpers/fcj_fixture";
+import embeddings from "../../test_helpers/value_embeddings_fixture.json";
+import { normalizeText } from "../tools/get_context_value_match";
 import type { DocParts } from "./doc_parts";
 import { valueSpans } from "./value_tokens";
+import { toUnit } from "./vectors";
 import {
    buildValueIndex,
+   MEANING_SHORT_FLOOR,
    ValueIndex,
    type IndexValueFetcher,
    type IndexValueRequest,
@@ -232,6 +236,140 @@ describe("value matching", () => {
             ],
          },
       ]);
+   });
+});
+
+describe("value matching by meaning", () => {
+   // Real text-embedding-3-small vectors at 512 dimensions, recorded once
+   // (test_helpers/value_embeddings_fixture.json), so the thresholds are
+   // tested against the embedder they were set for.
+   const recorded = (
+      embeddings as unknown as { vectors: Record<string, number[]> }
+   ).vectors;
+   const vec = (text: string) => toUnit(recorded[text]);
+   const rows: Array<[string, string]> = [
+      ["state", "California"],
+      ["state", "Colorado"],
+      ["state", "Connecticut"],
+      ["state", "New York"],
+      ["state", "New Jersey"],
+      ["city", "New York"],
+      ["city", "Newark"],
+      ["city", "Denver"],
+      ["category", "Athletic Shoes"],
+      ["category", "Sandals"],
+      ["category", "Boots"],
+      ["category", "Accessories"],
+      ["code", "CO2"],
+      ["code", "COD"],
+      ["code", "Co-op"],
+      ["org", "Company"],
+   ];
+   let index: ValueIndex;
+   beforeAll(() => {
+      index = new ValueIndex(
+         rows.map(([dimension, value]) => ({
+            value,
+            normalized: normalizeText(value),
+            count: 1,
+            dimension,
+            origin: "data",
+         })),
+      );
+      index.setVectors(new Map(index.distinctValues().map((v) => [v, vec(v)])));
+   });
+   const meaning = (phrase: string) =>
+      index
+         .searchByMeaning(phrase, vec(phrase))
+         .map((m) => [m.dimension, m.value, m.score, m.how]);
+
+   it("embeds each distinct value once", () => {
+      expect(index.embedded).toBe(15);
+   });
+
+   it("matches an exact value at 1, and nothing more than MEANING_MARGIN below it", () => {
+      // Colorado is 0.64 from Denver: a close meaning, but below 1 - 0.15.
+      expect(meaning("Denver")).toEqual([["city", "Denver", 1, "meaning"]]);
+   });
+
+   it("matches a typo by meaning as well as by spelling", () => {
+      expect(meaning("Calfornia")).toEqual([
+         ["state", "California", 0.6347, "meaning"],
+      ]);
+   });
+
+   it("matches a value with other words: NYC to New York, sneakers to Athletic Shoes", () => {
+      // Neither shares a word or a three-letter run with the value.
+      expect(index.search("NYC")).toEqual([]);
+      expect(index.search("sneakers")).toEqual([]);
+      expect(meaning("NYC")).toEqual([
+         ["city", "New York", 0.8014, "meaning"],
+         ["state", "New York", 0.8014, "meaning"],
+      ]);
+      expect(meaning("sneakers")).toEqual([
+         ["category", "Athletic Shoes", 0.5839, "meaning"],
+         ["category", "Sandals", 0.501, "meaning"],
+      ]);
+   });
+
+   it("holds a short code to the higher floor: CO matches none of CO2, COD, Co-op or Colorado", () => {
+      // Their cosines (0.61, 0.57, 0.54, 0.45) clear MEANING_FLOOR but not
+      // MEANING_SHORT_FLOOR.
+      expect(MEANING_SHORT_FLOOR).toBe(0.7);
+      expect(meaning("CO")).toEqual([]);
+   });
+
+   it("nominates dimensions with the value's spread dividing its cosine, and respects allow", () => {
+      expect(
+         index.nominateByMeaning([{ phrase: "NYC", vec: vec("NYC") }]),
+      ).toEqual([
+         {
+            dimension: "city",
+            score: 0.4007,
+            matches: [
+               {
+                  value: "New York",
+                  dimension: "city",
+                  score: 0.8014,
+                  how: "meaning",
+               },
+            ],
+         },
+         {
+            dimension: "state",
+            score: 0.4007,
+            matches: [
+               {
+                  value: "New York",
+                  dimension: "state",
+                  score: 0.8014,
+                  how: "meaning",
+               },
+            ],
+         },
+      ]);
+      expect(
+         index
+            .nominateByMeaning(
+               [{ phrase: "NYC", vec: vec("NYC") }],
+               (d) => d === "state",
+            )
+            .map((n) => n.dimension),
+      ).toEqual(["state"]);
+   });
+
+   it("matches nothing without vectors or with a vector of another length", () => {
+      const bare = new ValueIndex([
+         {
+            value: "New York",
+            normalized: "new york",
+            count: 1,
+            dimension: "state",
+            origin: "data",
+         },
+      ]);
+      expect(bare.searchByMeaning("NYC", vec("NYC"))).toEqual([]);
+      expect(index.searchByMeaning("NYC", new Float32Array(8))).toEqual([]);
    });
 });
 

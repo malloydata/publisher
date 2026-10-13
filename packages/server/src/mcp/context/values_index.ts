@@ -13,16 +13,27 @@
  * Governance. Values are data, so only sources with no gate are read, and
  * they are read once at load through the ordinary query path with no givens,
  * so a source the query path would refuse contributes nothing. A gated
- * source's values are never stored here; they are reachable only through the
- * query-time lookup with the caller's givens (get_context_values.ts). Values
- * are matched in the process and are never embedded (an embedding would send
- * them to the provider, which only the `full` egress preset allows; that
- * option is not built).
+ * source's values are never stored here and never embedded; they are
+ * reachable only through the query-time lookup with the caller's givens
+ * (get_context_values.ts). The values of `#(index)` dimensions on ungated
+ * sources, and the value lists docs give, ARE embedded with
+ * `retrieval.fcj.valueEmbeddings` on (the default): the modeler opted those
+ * dimensions in with the tag, so their values go to the embedding provider,
+ * as the matched values already go to the judge's model.
  *
- * Matching, in order, stopping at the first that produces hits: exact after
- * normalizing (case, accents, punctuation, spacing); word matches with edit
- * distance up to 2 (see scoreValue); three-letter-gram overlap for longer
- * strings. A value found in many dimensions ("N/A", "2024", "CO") is weak
+ * Two ways to match, each giving the find stage its own ranked list:
+ *
+ * - Spelling (`search`), in order, stopping at the first that produces hits:
+ *   exact after normalizing (case, accents, punctuation, spacing); word
+ *   matches with edit distance up to 2 (see scoreValue); three-letter-gram
+ *   overlap for longer strings.
+ * - Meaning (`searchByMeaning`): the cosine of the phrase's embedding against
+ *   each value's, so "sneakers" finds "Athletic Shoes" and "NYC" finds "New
+ *   York". A value must reach MEANING_FLOOR (MEANING_SHORT_FLOOR for a phrase
+ *   of three characters or fewer, whose embedding sits near many short
+ *   strings) and be within MEANING_MARGIN of the phrase's best value.
+ *
+ * Either way, a value found in many dimensions ("N/A", "2024", "CO") is weak
  * evidence, so a dimension's nomination is divided by how many dimensions
  * store that value, the same idea as rare-word weighting in keyword search.
  */
@@ -43,6 +54,7 @@ import {
 } from "../tools/get_context_value_match";
 import type { Catalog, CatalogNode } from "./catalog";
 import type { DocParts } from "./doc_parts";
+import { dot } from "./vectors";
 
 /** One stored value of one dimension. */
 export interface IndexedValue {
@@ -138,7 +150,8 @@ export interface ValueMatch {
    value: string;
    dimension: string;
    score: number;
-   how: "exact" | "words" | "ngram";
+   /** Spelling: exact, words or ngram. Meaning: the score is the cosine. */
+   how: "exact" | "words" | "ngram" | "meaning";
 }
 
 /** A dimension a phrase nominated, with the values that did it. */
@@ -160,6 +173,34 @@ function trigrams(normalized: string): Set<string> {
 const NGRAM_MIN_CHARS = 6;
 const NGRAM_MIN_OVERLAP = 0.5;
 
+/*
+ * The meaning thresholds, set for OpenAI text-embedding-3-small at 512
+ * dimensions (the engine's embedder). Measured cosines: "NYC" to "New York"
+ * 0.80, "Big Apple" to "New York" 0.66, "sneakers" to "Athletic Shoes" 0.58,
+ * "Calfornia" to "California" 0.64; unrelated values sit between 0.2 and
+ * 0.45. "CO" is 0.61 to "CO2", 0.57 to "COD", 0.54 to "Co-op" and 0.45 to
+ * "Colorado", so a short phrase needs the higher floor. Another embedder
+ * needs its own numbers.
+ */
+/** Lowest cosine a value may have to match a phrase by meaning. */
+export const MEANING_FLOOR = 0.5;
+/** The floor for a phrase of at most MEANING_SHORT_CHARS letters and digits. */
+export const MEANING_SHORT_FLOOR = 0.7;
+export const MEANING_SHORT_CHARS = 3;
+/** A value more than this below the phrase's best value does not match. */
+export const MEANING_MARGIN = 0.15;
+/** Most distinct values one phrase matches by meaning. */
+export const MEANING_MAX_VALUES = 20;
+
+/** The vectors of the distinct value strings, packed row by row. */
+interface MeaningVectors {
+   texts: string[];
+   /** Rows of `values` holding each text, by position in `texts`. */
+   rows: number[][];
+   matrix: Float32Array;
+   dims: number;
+}
+
 export class ValueIndex {
    readonly values: IndexedValue[];
    private readonly byNormalized = new Map<string, number[]>();
@@ -167,6 +208,7 @@ export class ValueIndex {
    private readonly byTrigram = new Map<string, number[]>();
    /** Distinct dimensions storing each normalized value. */
    private readonly spread = new Map<string, number>();
+   private meaning: MeaningVectors | undefined;
 
    constructor(values: IndexedValue[]) {
       this.values = values;
@@ -193,6 +235,90 @@ export class ValueIndex {
    /** How many dimensions store this value (after normalizing). */
    spreadOf(value: string): number {
       return this.spread.get(normalizeText(value)) ?? 0;
+   }
+
+   /** The distinct value strings, each embedded once whatever its dimensions. */
+   distinctValues(): string[] {
+      return [...new Set(this.values.map((v) => v.value))];
+   }
+
+   /**
+    * Attach unit vectors by value string (from the `value_embeddings` sync).
+    * Values without a vector are matched by spelling only.
+    */
+   setVectors(byValue: ReadonlyMap<string, Float32Array>): void {
+      const rowsOf = new Map<string, number[]>();
+      this.values.forEach((v, i) => {
+         if (byValue.has(v.value)) push(rowsOf, v.value, i);
+      });
+      const texts = [...rowsOf.keys()];
+      if (texts.length === 0) {
+         this.meaning = undefined;
+         return;
+      }
+      const dims = byValue.get(texts[0])!.length;
+      const kept = texts.filter((t) => byValue.get(t)!.length === dims);
+      const matrix = new Float32Array(kept.length * dims);
+      kept.forEach((t, i) => matrix.set(byValue.get(t)!, i * dims));
+      this.meaning = {
+         texts: kept,
+         rows: kept.map((t) => rowsOf.get(t)!),
+         matrix,
+         dims,
+      };
+   }
+
+   /** Distinct values that carry a vector. */
+   get embedded(): number {
+      return this.meaning?.texts.length ?? 0;
+   }
+
+   /**
+    * Values that mean what `phrase` means, by the cosine of `vec` (the
+    * phrase's unit vector) against each value's, best first. See the
+    * thresholds above; every dimension holding a kept value is reported.
+    */
+   searchByMeaning(
+      phrase: string,
+      vec: Float32Array,
+      allow: (dimension: string) => boolean = () => true,
+   ): ValueMatch[] {
+      const m = this.meaning;
+      if (!m || vec.length !== m.dims) return [];
+      const compact = normalizeText(phrase).replace(/ /g, "");
+      if (!compact) return [];
+      const floor =
+         compact.length <= MEANING_SHORT_CHARS
+            ? MEANING_SHORT_FLOOR
+            : MEANING_FLOOR;
+      const hits: Array<{ t: number; score: number }> = [];
+      for (let t = 0; t < m.texts.length; t++) {
+         const score = dot(
+            vec,
+            m.matrix.subarray(t * m.dims, (t + 1) * m.dims),
+         );
+         if (score < floor) continue;
+         if (!m.rows[t].some((i) => allow(this.values[i].dimension))) continue;
+         hits.push({ t, score });
+      }
+      if (hits.length === 0) return [];
+      hits.sort((a, b) => b.score - a.score || a.t - b.t);
+      const cut = hits[0].score - MEANING_MARGIN;
+      const out: ValueMatch[] = [];
+      for (const h of hits.slice(0, MEANING_MAX_VALUES)) {
+         if (h.score < cut) break;
+         for (const i of m.rows[h.t]) {
+            const v = this.values[i];
+            if (!allow(v.dimension)) continue;
+            out.push({
+               value: v.value,
+               dimension: v.dimension,
+               score: Math.round(Math.min(1, h.score) * 10_000) / 10_000,
+               how: "meaning",
+            });
+         }
+      }
+      return sortMatches(dedupe(out));
    }
 
    /**
@@ -290,9 +416,28 @@ export class ValueIndex {
       phrases: readonly string[],
       allow: (dimension: string) => boolean = () => true,
    ): ValueNomination[] {
+      return this.nominateFrom(phrases.map((p) => this.search(p, allow)));
+   }
+
+   /**
+    * The same, by meaning: each phrase with its unit vector. A phrase with no
+    * vector nominates nothing.
+    */
+   nominateByMeaning(
+      phrases: ReadonlyArray<{ phrase: string; vec: Float32Array }>,
+      allow: (dimension: string) => boolean = () => true,
+   ): ValueNomination[] {
+      return this.nominateFrom(
+         phrases.map((p) => this.searchByMeaning(p.phrase, p.vec, allow)),
+      );
+   }
+
+   private nominateFrom(
+      perPhrase: ReadonlyArray<readonly ValueMatch[]>,
+   ): ValueNomination[] {
       const byDim = new Map<string, ValueNomination>();
-      for (const phrase of phrases) {
-         for (const m of this.search(phrase, allow)) {
+      for (const matches of perPhrase) {
+         for (const m of matches) {
             const weight = m.score / Math.max(1, this.spreadOf(m.value));
             const nom = byDim.get(m.dimension) ?? {
                dimension: m.dimension,
@@ -326,6 +471,17 @@ function push(map: Map<string, number[]>, key: string, i: number) {
    const list = map.get(key);
    if (list) list.push(i);
    else map.set(key, [i]);
+}
+
+/** One match per (value, dimension). */
+function dedupe(list: ValueMatch[]): ValueMatch[] {
+   const seen = new Set<string>();
+   return list.filter((m) => {
+      const k = `${m.dimension}\u0000${m.value}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+   });
 }
 
 function sortMatches(list: ValueMatch[]): ValueMatch[] {

@@ -84,6 +84,7 @@ describe("publisher.json retrieval block", () => {
          docParts: "auto",
          values: true,
          valueCap: 50_000,
+         valueEmbeddings: true,
          judge: "auto",
          contenderShare: 0,
          collapseCopies: false,
@@ -237,7 +238,7 @@ describe("publisher.json retrieval block", () => {
          'Invalid publisher.json retrieval.fcj.perTarget: expected an integer from 1 to 500, got 2.5. Fix: "perTarget": 30',
       );
       expect(() => parsePackageRetrieval({ fcj: { window: 3 } })).toThrow(
-         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode, alsoLikely, alsoLikelyTwins, joinedCopies, listRoutes, dropRoutesAt, unservedCopies, splitBundles, splitItemPicks, dateRange, listUnion, readingsRule.",
+         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, valueEmbeddings, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode, alsoLikely, alsoLikelyTwins, joinedCopies, listRoutes, dropRoutesAt, unservedCopies, splitBundles, splitItemPicks, dateRange, listUnion, readingsRule.",
       );
       expect(() => parsePackageRetrieval({ fcj: { connect: "tree" } })).toThrow(
          'Invalid publisher.json retrieval.fcj.connect: expected one of clusters, list, got "tree". Fix: "connect": "clusters" (source groups) or "list" (the find stage\'s top listTopK per target).',

@@ -10,6 +10,7 @@ import {
    openTempDb,
    type FcjFixture,
 } from "../../test_helpers/fcj_fixture";
+import { fcjValueFetcher } from "../../test_helpers/fcj_index_fixture";
 import {
    numberedLines,
    scriptedChat,
@@ -255,6 +256,93 @@ describe("index build", () => {
             "or a 5xx is retried up to 5 attempts. The rows already embedded are stored, so the " +
             "next build embeds only the rest.",
       );
+   });
+
+   describe("value vectors", () => {
+      const withValues = (
+         settings = DEFAULT_FCJ_SETTINGS,
+         provider = stubEmbeddingProvider(),
+      ) =>
+         buildFcjIndex({
+            pkgIndex: fixture.pkgIndex,
+            db,
+            provider,
+            environmentName: "env",
+            packageName: "fixture",
+            settings,
+            valueRead: {
+               environmentStore: {} as never,
+               fetcher: fcjValueFetcher,
+            },
+         });
+      const VALUES = [
+         "Denver",
+         "Boulder",
+         "Denver International (DIA)",
+         "Chicago O'Hare (ORD)",
+      ];
+
+      it("embeds each distinct stored value once, and reuses them on a rebuild", async () => {
+         const first = await withValues();
+         expect(first.values.distinctValues()).toEqual(VALUES);
+         expect(first.values.embedded).toBe(4);
+         expect(first.report.valueVectors).toEqual({
+            values: 4,
+            embedded: 4,
+            reused: 0,
+            deleted: 0,
+            charsEmbedded: VALUES.join("").length,
+            ms: first.report.valueVectors.ms,
+         });
+         const rows = await db.all<{ node_key: string; facet: string }>(
+            "SELECT node_key, facet FROM value_embeddings ORDER BY node_key",
+         );
+         expect(rows.map((r) => [r.node_key, r.facet])).toEqual(
+            [...VALUES].sort().map((v) => [v, "value"]),
+         );
+         // The field rows are untouched by the value rows.
+         expect(first.report.vectors.rows).toBe(51);
+         const second = await withValues();
+         expect(second.report.valueVectors).toMatchObject({
+            embedded: 0,
+            reused: 4,
+         });
+         expect(second.values.embedded).toBe(4);
+      });
+
+      it("embeds nothing with valueEmbeddings off", async () => {
+         const off = await withValues({
+            ...DEFAULT_FCJ_SETTINGS,
+            valueEmbeddings: false,
+         });
+         expect(off.report.valueVectors).toEqual({
+            values: 4,
+            embedded: 0,
+            reused: 0,
+            deleted: 0,
+            charsEmbedded: 0,
+            ms: 0,
+            skipped: "retrieval.fcj.valueEmbeddings is false",
+         });
+         expect(off.values.embedded).toBe(0);
+         const rows = await db.all("SELECT * FROM value_embeddings");
+         expect(rows).toEqual([]);
+      });
+
+      it("keeps the build when the values cannot be embedded, and says so", async () => {
+         const stub = stubEmbeddingProvider();
+         const failing = Object.create(stub) as typeof stub;
+         failing.embedBatch = async (texts, timeoutMs, retry) => {
+            if (texts.includes("Boulder")) throw new Error("rate limited");
+            return stub.embedBatch(texts, timeoutMs, retry);
+         };
+         const built = await withValues(DEFAULT_FCJ_SETTINGS, failing);
+         expect(built.report.vectors.embedded).toBe(51);
+         expect(built.values.embedded).toBe(0);
+         expect(built.report.valueVectors.failure).toStartWith(
+            "The value vectors step failed after embedding 0 of 4 new rows (0 reused): rate limited.",
+         );
+      });
    });
 
    it("adds three question rows per field and view when the model writes them", async () => {

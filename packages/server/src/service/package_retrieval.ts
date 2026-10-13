@@ -136,6 +136,14 @@ export interface FcjSettings {
    values: boolean;
    /** Most distinct values indexed per dimension, the most frequent kept. */
    valueCap: number;
+   /**
+    * PROVISIONAL, on by default. With `values` on, the stored values are also
+    * embedded at index time (`value_embeddings`), and the find stage ranks
+    * dimensions by the meaning of a target's value phrases as a fourth list,
+    * beside the spelling match. Gated sources' values are never embedded.
+    * Off: spelling only, as before.
+    */
+   valueEmbeddings: boolean;
    /** One LLM call per cluster that picks the fields to return. */
    judge: StageEnabled;
    /**
@@ -293,6 +301,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    docParts: "auto",
    values: true,
    valueCap: 50_000,
+   valueEmbeddings: true,
    judge: "auto",
    contenderShare: 0,
    collapseCopies: false,
@@ -659,6 +668,7 @@ function parseFcj(raw: unknown): FcjSettings {
       docParts: parseEnabled(obj.docParts, "retrieval.fcj.docParts"),
       values: fcjBoolean(obj, "values"),
       valueCap: int("valueCap", 1, 1_000_000),
+      valueEmbeddings: fcjBoolean(obj, "valueEmbeddings"),
       judge: parseEnabled(obj.judge, "retrieval.fcj.judge"),
       contenderShare: real("contenderShare", 0, 1),
       collapseCopies: fcjBoolean(obj, "collapseCopies"),

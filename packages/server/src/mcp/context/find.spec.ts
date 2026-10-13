@@ -75,7 +75,12 @@ describe("find", () => {
    it("lets a value nominate a dimension: Denver puts both city and arrives_at on the list", () => {
       const [r] = run([target(2, "dimension", "flights to Denver")]);
       expect(r.valuePhrases).toEqual(["Denver"]);
-      expect(r.lists).toEqual({ close: 30, keyword: 6, value: 2 });
+      expect(r.lists).toEqual({
+         close: 30,
+         keyword: 6,
+         value: 2,
+         valueMeaning: 0,
+      });
       const arrives = r.candidates[0];
       expect(arrives.key).toBe("dimension:flights@travel.malloy:arrives_at");
       expect(arrives.ranks).toEqual({ close: 5, keyword: 1, value: 2 });
@@ -90,9 +95,49 @@ describe("find", () => {
       expect(city.valueScore).toBe(1);
    });
 
+   it("adds a meaning list for value phrases when given their vectors", () => {
+      const meaningRun = (t: FindTarget) =>
+         find({
+            index: f.index,
+            targets: [t],
+            queries: new Map([[t.index, toUnit(embedText(t.text))]]),
+            phraseVectors: new Map(),
+            perTarget: 30,
+            keyword: true,
+            values: true,
+            allow: () => true,
+         })[0];
+      const r = meaningRun(target(3, "dimensional_value", "Denver"));
+      // The target's text is its own phrase; its vector is the query's.
+      expect(r.meaningPhrases).toEqual(["Denver"]);
+      // The stub embedder puts "Denver International (DIA)" at 0.58 from
+      // "Denver": above the floor, but more than the margin below 1.
+      expect(r.lists).toEqual({
+         close: 0,
+         keyword: 0,
+         value: 2,
+         valueMeaning: 1,
+      });
+      expect(r.candidates[0]).toMatchObject({
+         key: "dimension:cities@travel.malloy:city",
+         ranks: { value: 1, valueMeaning: 1 },
+         valueMeaningScore: 1,
+      });
+      expect(r.candidates[0].score).toBeCloseTo(2 / 61, 10);
+      // A dimension target with nothing value-looking asks nothing.
+      const plain = meaningRun(target(4, "dimension", "arrival airport"));
+      expect(plain.meaningPhrases).toEqual([]);
+      expect(plain.lists.valueMeaning).toBe(0);
+   });
+
    it("answers a dimensional_value target from values and keywords only", () => {
       const [r] = run([target(3, "dimensional_value", "Denver")]);
-      expect(r.lists).toEqual({ close: 0, keyword: 0, value: 2 });
+      expect(r.lists).toEqual({
+         close: 0,
+         keyword: 0,
+         value: 2,
+         valueMeaning: 0,
+      });
       expect(top(r, 2)).toEqual([
          "dimension:cities@travel.malloy:city",
          "dimension:flights@travel.malloy:arrives_at",
