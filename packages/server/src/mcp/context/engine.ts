@@ -46,6 +46,7 @@ import { fcjChat, fcjStateOf, kickFcjBuild } from "./engine_state";
 import {
    find,
    KINDS_BY_FIND_TARGET,
+   meaningPhrasesOf,
    type FindResult,
    type FindTarget,
 } from "./find";
@@ -146,20 +147,46 @@ export function inScope(request: ResolvedRequest) {
    };
 }
 
-/** Embed every target's text in one call; an empty map with no provider. */
+/**
+ * Embed every target's text, and with `valueEmbeddings` every value phrase
+ * that is not a target's text (meaningPhrasesOf), in one call. Empty maps
+ * with no provider.
+ */
 async function embedTargets(
    index: FcjIndex,
    targets: readonly FindTarget[],
-): Promise<Map<number, Float32Array>> {
-   const out = new Map<number, Float32Array>();
+   valuePhrases: boolean,
+): Promise<{
+   queries: Map<number, Float32Array>;
+   phrases: Map<string, Float32Array> | undefined;
+}> {
+   const queries = new Map<number, Float32Array>();
    const provider = index.provider;
-   if (!provider || targets.length === 0) return out;
+   if (!provider || targets.length === 0)
+      return { queries, phrases: undefined };
+   const withPhrases = valuePhrases && index.values.embedded > 0;
+   const texts = new Set(targets.map((t) => t.text));
+   const extra: string[] = [];
+   if (withPhrases) {
+      for (const t of targets) {
+         for (const p of meaningPhrasesOf(t, (term) =>
+            index.keyword.hasTerm(term),
+         )) {
+            if (!texts.has(p) && !extra.includes(p)) extra.push(p);
+         }
+      }
+   }
    const vectors = await provider.embedBatch(
-      targets.map((t) => (provider.queryPrefix ?? "") + t.text),
+      [...targets.map((t) => t.text), ...extra].map(
+         (x) => (provider.queryPrefix ?? "") + x,
+      ),
       EMBEDDING_QUERY_TIMEOUT_MS,
    );
-   targets.forEach((t, i) => out.set(t.index, toUnit(vectors[i])));
-   return out;
+   targets.forEach((t, i) => queries.set(t.index, toUnit(vectors[i])));
+   if (!withPhrases) return { queries, phrases: undefined };
+   const phrases = new Map<string, Float32Array>();
+   extra.forEach((p, i) => phrases.set(p, toUnit(vectors[targets.length + i])));
+   return { queries, phrases };
 }
 
 /** A node as the shipped card builder wants it, under one of its model paths. */
@@ -189,6 +216,9 @@ export function findTrace(index: FcjIndex, results: readonly FindResult[]) {
       text: r.target.text,
       lists: r.lists,
       value_phrases: r.valuePhrases,
+      ...(r.meaningPhrases.length > 0
+         ? { meaning_phrases: r.meaningPhrases }
+         : {}),
       candidates: r.candidates.map((c, rank) => {
          const node = index.catalog.nodes.get(c.key)!;
          return {
@@ -290,10 +320,17 @@ export async function runFcjQuery(args: {
    // Stage 1.
    let started = performance.now();
    let queries = new Map<number, Float32Array>();
+   let phraseVectors: Map<string, Float32Array> | undefined;
    try {
-      queries = embeddingConfigured()
-         ? await embedTargets(index, searched)
-         : new Map();
+      if (embeddingConfigured()) {
+         const embedded = await embedTargets(
+            index,
+            searched,
+            settings.values && settings.valueEmbeddings,
+         );
+         queries = embedded.queries;
+         phraseVectors = embedded.phrases;
+      }
    } catch (error) {
       logger.warn("[get_context fcj] The search text could not be embedded", {
          error: error instanceof Error ? error.message : String(error),
@@ -317,6 +354,7 @@ export async function runFcjQuery(args: {
          index,
          targets: searched,
          queries,
+         ...(phraseVectors ? { phraseVectors } : {}),
          perTarget: settings.perTarget,
          keyword: settings.keyword,
          values: settings.values,
@@ -347,6 +385,7 @@ export async function runFcjQuery(args: {
       index,
       found: foundForConnect,
       queries,
+      ...(phraseVectors ? { phraseVectors } : {}),
       settings,
       allow,
    });

@@ -16,6 +16,9 @@
  * wants are deleted. A separate table, because the shipped sync deletes every
  * row of `entity_embeddings` it did not write.
  *
+ * The same sync stores the value index's vectors (values_index.ts) in
+ * `value_embeddings`, one row per distinct value string; `table` picks which.
+ *
  * Brute force in memory rather than a scan in DuckDB: the vectors are needed
  * for every target of every request, and a few hundred thousand 512-float
  * rows is tens of megabytes.
@@ -93,15 +96,21 @@ export class VectorSyncError extends Error {
    }
 }
 
+/** The tables the sync writes; both have the same columns (schema.ts). */
+export type VectorTable = "catalog_embeddings" | "value_embeddings";
+
 export async function syncVectors(args: {
    db: DuckDBConnection;
    provider: EmbeddingModel;
    environmentName: string;
    packageName: string;
    rows: readonly VectorRow[];
+   /** Default `catalog_embeddings`. */
+   table?: VectorTable;
    shouldStop?: () => boolean;
 }): Promise<VectorSyncOutcome> {
    const { db, provider, environmentName, packageName } = args;
+   const table: VectorTable = args.table ?? "catalog_embeddings";
    const prefix = provider.documentPrefix ?? "";
    const wanted = new Map<
       string,
@@ -117,7 +126,7 @@ export async function syncVectors(args: {
    }
    const stored = await db.all<StoredRow>(
       `SELECT node_key, facet, content_hash, embedding_model, embedding
-       FROM catalog_embeddings WHERE environment_name = ? AND package_name = ?`,
+       FROM ${table} WHERE environment_name = ? AND package_name = ?`,
       [environmentName, packageName],
    );
    const vectors = new Map<string, Facet[]>();
@@ -149,7 +158,7 @@ export async function syncVectors(args: {
       }
       if (!want) {
          await db.run(
-            `DELETE FROM catalog_embeddings WHERE environment_name = ? AND package_name = ? AND node_key = ? AND facet = ?`,
+            `DELETE FROM ${table} WHERE environment_name = ? AND package_name = ? AND node_key = ? AND facet = ?`,
             [environmentName, packageName, row.node_key, row.facet],
          );
          deleted += 1;
@@ -173,7 +182,7 @@ export async function syncVectors(args: {
          );
       } catch (error) {
          throw new VectorSyncError(
-            `The vectors step failed after embedding ${embedded} of ${toEmbed.length} new rows ` +
+            `The ${table === "value_embeddings" ? "value vectors" : "vectors"} step failed after embedding ${embedded} of ${toEmbed.length} new rows ` +
                `(${reused} reused): ${error instanceof Error ? error.message : String(error)}. ` +
                `Each embedding request of up to ${batchSize} rows has a ${EMBEDDING_BATCH_TIMEOUT_MS} ms ` +
                `deadline (EMBEDDING_BATCH_TIMEOUT_MS), and a timeout, a 429 or a 5xx is retried up to ` +
@@ -202,7 +211,7 @@ export async function syncVectors(args: {
          );
       });
       await db.run(
-         `INSERT INTO catalog_embeddings (environment_name, package_name, node_key, facet, content_hash, embedding_model, dims, embedding, updated_at)
+         `INSERT INTO ${table} (environment_name, package_name, node_key, facet, content_hash, embedding_model, dims, embedding, updated_at)
           VALUES ${batch.map(() => "(?, ?, ?, ?, ?, ?, ?, CAST(? AS FLOAT[]), ?)").join(", ")}
           ON CONFLICT (environment_name, package_name, node_key, facet) DO UPDATE SET
             content_hash = EXCLUDED.content_hash, embedding_model = EXCLUDED.embedding_model,
