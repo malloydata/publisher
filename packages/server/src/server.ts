@@ -22,6 +22,7 @@ import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
 import { ReportController } from "./controller/report.controller";
+import { SkillController } from "./controller/skill.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -305,6 +306,11 @@ app.use(httpMetricsMiddleware);
 // true of everything except the responses one middleware happens to answer
 // early, and the next early-answering middleware may not be JSON.
 app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
+// Health endpoints (Kubernetes liveness/readiness) before every middleware a
+// probe does not need: the rate limiter exempts them anyway, and static-file
+// serving would stat the filesystem first. A liveness probe that queues behind
+// a busy event loop should cost nothing more once it runs.
+registerHealthEndpoints(app);
 app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
@@ -428,6 +434,7 @@ environmentStore.setPackageLoadedHook((environmentName, pkg) =>
 );
 const packageController = new PackageController(environmentStore);
 const reportController = new ReportController(environmentStore);
+const skillController = new SkillController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -1023,10 +1030,6 @@ app.use(
 
 // Set body-parser JSON limit to 1Mb (default: 100kb)
 app.use(bodyParser.json({ limit: "1mb" }));
-
-// Register health check endpoints on main app:
-// - Required for production/Kubernetes monitoring (main server on PUBLISHER_PORT)
-registerHealthEndpoints(app);
 
 // Register Prometheus metrics endpoint
 try {
@@ -1858,6 +1861,113 @@ app.get(
                   includeHiddenFilesAndSources,
                   versionId: req.query.versionId,
                },
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// The skill name can carry a slash (`<skill>/<stem>` for a reference file), so
+// the parameter is a wildcard rather than :skillName. Express would otherwise
+// route `revenue-rules/margin` to nothing.
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.listSkills(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills/*`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getSkill(
+               req.params.environmentName,
+               req.params.packageName,
+               // Express has already decoded the wildcard; decoding again throws on a bare %.
+               (req.params as unknown as Record<string, string>)[0] ?? "",
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.listAgents(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName`,
+   async (req, res) => {
+      try {
+         const skills = req.query.skills ?? "full";
+         if (skills !== "full" && skills !== "summary") {
+            res.status(400).json({
+               message: `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
+            });
+            return;
+         }
+         res.status(200).json(
+            await skillController.getAgent(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.agentName,
+               skills,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName/skills/*`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getAgentSkillFile(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.agentName,
+               // Express has already decoded the wildcard; decoding again throws on a bare %.
+               (req.params as unknown as Record<string, string>)[0] ?? "",
             ),
          );
       } catch (error) {

@@ -38,6 +38,8 @@ Concretely:
 - **Package content is first-party code.** A package's models, notebooks, and `public/` files are
   treated as code the operator chose to run, the same way you would treat your own web app
   deployed on your own origin. Publisher does not scan, sandbox, or vet them.
+  Package-authored skill and agent text is served unauthenticated over MCP and REST too, bounded
+  by the realpath rule (nothing that resolves outside the package) and the per-file size caps.
 - **Registering a package is an operator action.** Packages come from `publisher.config.json` or a
   `POST` to the packages endpoint. That endpoint is gated only by `frozenConfig`, so on a
   reachable server with the default config it is open — but so is the query API, and an attacker

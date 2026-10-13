@@ -15,7 +15,7 @@ import {
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Database } from "../../client";
+import { Database, type AgentSummary } from "../../client";
 import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -40,6 +40,7 @@ import ContentTypeIcon, {
 } from "./ContentTypeIcon";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
+import { describeCron } from "../Materializations/cron";
 import { PackageSection } from "../PackageSection";
 import { draftKey } from "../DocumentCreate/documentPath";
 import {
@@ -315,6 +316,7 @@ export default function Package({
    ]);
 
    const description = pkgQuery.data?.data?.description ?? "";
+   const agents = pkgQuery.data?.data?.agents ?? [];
    const readmePath = (
       reports.find((r) => r.path === README_NOTEBOOK) ??
       reports.find((r) => isRootReadme(r.path))
@@ -619,6 +621,18 @@ export default function Package({
                   {models.length === 0 && <EmptyRow label="No models" />}
                </PackageSection>
 
+               {agents.length > 0 && (
+                  <PackageSection
+                     title="Agents"
+                     count={agents.length}
+                     description="Declared in publisher.json. Name one in an agent session to work as it. Schedules are listed only; nothing runs them yet."
+                  >
+                     {agents.map((agent) => (
+                        <PackageAgentRow key={agent.name} agent={agent} />
+                     ))}
+                  </PackageSection>
+               )}
+
                <PackageSection title="Data" count={databases.length}>
                   {databases.map((database) => (
                      <PackageItemRow
@@ -694,6 +708,35 @@ function PackageItemRow({
          {...(onClick === undefined ? {} : { onClick })}
          {...(trailingAction === undefined ? {} : { trailingAction })}
       />
+   );
+}
+
+function PackageAgentRow({ agent }: { agent: AgentSummary }) {
+   return (
+      <>
+         <PackageItemRow
+            type="agent"
+            label={agent.name ?? ""}
+            {...(agent.description ? { description: agent.description } : {})}
+            {...(agent.model && agent.model !== "inherit"
+               ? { rightLabel: agent.model }
+               : {})}
+         />
+         {(agent.schedules ?? []).map((schedule) => {
+            const cron = describeCron(schedule.cron ?? "");
+            return (
+               <Typography
+                  key={`${schedule.cron}|${schedule.task}`}
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", ml: 6, mb: 0.5 }}
+               >
+                  {cron.valid ? cron.description : schedule.cron} (UTC), task{" "}
+                  {schedule.task}. Not run yet.
+               </Typography>
+            );
+         })}
+      </>
    );
 }
 

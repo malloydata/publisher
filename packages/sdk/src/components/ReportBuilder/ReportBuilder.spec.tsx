@@ -734,14 +734,13 @@ source: a is scoped_orders extend {
       );
    });
 
-   it("explains itself when the source declares no dimension here", async () => {
+   it("offers no Drill when the source declares no dimension here", async () => {
+      // A window whose only content is why its Apply is off is a dead end;
+      // the menu leaves the entry out instead.
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(button("Drill"));
-      expect(
-         screen.getByText(/declares no dimensions of its own/),
-      ).toBeDefined();
-      expect(button("Apply").hasAttribute("disabled")).toBe(true);
+      expect(screen.queryByRole("button", { name: "Drill" })).toBeNull();
+      expect(button("Delete")).toBeDefined();
    });
 });
 

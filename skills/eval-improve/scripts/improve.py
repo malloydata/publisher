@@ -4,9 +4,10 @@
   python improve.py --run <workdir>/runs/<label> --set <set-dir> --watch-mode
   # the model directory comes from [model] repo in the set's eval.toml
 
-One agent per `owner: model` cluster, each holding `skill:eval-improve`, each
-producing at most one smallest edit with probe receipts. Appends one `candidate`
-event per cluster to the run's `events.jsonl`.
+One agent per fixable cluster (`owner: model` or `owner: package-skill`), each
+holding `skill:eval-improve`, each producing at most one smallest edit with
+probe receipts. Appends one `candidate` event per cluster to the run's
+`events.jsonl`.
 
 THIS SCRIPT CONTAINS NO MODELING DOCTRINE
 
@@ -71,13 +72,13 @@ IMPROVE_TOOLS = ("mcp__publisher__get_context",
                  "mcp__publisher__execute_query",
                  "mcp__publisher__compile_model",
                  "mcp__publisher__reload_package",
+                 "mcp__publisher__get_skill",
+                 "mcp__publisher__get_status",
                  "Read", "Edit", "Write", "Grep", "Glob",
                  "Bash(bash ./sync_and_reload.sh)")
 
-RELOAD = """curl -s -m 60 -X POST "{mcp_url}" \\
-  -H "Content-Type: application/json" \\
-  -H "Accept: application/json, text/event-stream" \\
-  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"reload_package","arguments":{{"environmentName":"{environment}","packageName":"{package}"}}}}}}' \\
+# REST, not MCP: an MCP reply escapes its inner JSON, so grepping it for the sha matches nothing.
+RELOAD = """curl -s -m 60 "{rest_url}/api/v0/environments/{environment}/packages/{package}?reload=true" \\
   | grep -o '"sourceContentSha":"[^"]*"' | head -1"""
 
 SYNC_SCRIPT = """#!/bin/bash
@@ -87,9 +88,29 @@ echo "reloaded; if sourceContentSha did not change, the edit did not reach the s
 """
 
 
+SYNC_HELPER = "sync_and_reload.sh"
+
+
 def git(args: list[str], cwd: pathlib.Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
                           text=True).stdout
+
+
+def candidate_diff(model_dir: pathlib.Path, extra: tuple[str, ...] = ()) -> str:
+    """The agent's edit: tracked changes plus new files, minus our own helper.
+
+    `git diff` alone omits untracked files, so a new skills/ file left an empty
+    patch that `git clean` then deleted. `--no-index` diffs each against
+    /dev/null without touching the index.
+    """
+    out = git(["diff", *extra, "--", "."], model_dir)
+    new = git(["ls-files", "--others", "--exclude-standard", "--", "."],
+              model_dir).splitlines()
+    for f in new:
+        if f != SYNC_HELPER:
+            out += git(["diff", "--no-index", *extra, "--", "/dev/null", f],
+                       model_dir)
+    return out
 
 
 # Thin on purpose: the cluster, the cases, the one operational fact the skill
@@ -111,7 +132,8 @@ MAKING YOUR EDIT REACH THE SERVER
 
 After each edit run `bash ./sync_and_reload.sh`. It prints `sourceContentSha`.
 If that value does not change, your edit did NOT reach the server and every
-probe you run afterwards is testing the old model.
+probe you run afterwards is testing the old model. This covers a package skill
+under skills/ as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
 
@@ -259,7 +281,8 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         return {**json.loads(out.read_text()), "_cached": True}
     d.mkdir(parents=True, exist_ok=True)
 
-    reload_cmd = RELOAD.format(mcp_url=a.mcp_url, environment=a.environment,
+    reload_cmd = RELOAD.format(rest_url=a.rest_url.rstrip("/"),
+                               environment=a.environment,
                                package=a.package)
     sync = ""
     if not a.watch_mode:
@@ -268,7 +291,7 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         if served:
             sync = (f'rsync -a --delete --exclude .git '
                     f'"{a.model_dir.resolve()}/" "{served.resolve()}/"\n')
-    helper = a.model_dir / "sync_and_reload.sh"
+    helper = a.model_dir / SYNC_HELPER
     helper.write_text(SYNC_SCRIPT.format(sync=sync, reload=reload_cmd))
     helper.chmod(0o755)
 
@@ -298,9 +321,9 @@ def improve_cluster(issue: dict[str, Any], cases: dict[str, Any],
         save_transcript=d / "improver.jsonl")
     (d / "improver.md").write_text(r.text)
 
-    diff = git(["diff", "--", "."], a.model_dir)
+    diff = candidate_diff(a.model_dir)
     (d / "edit.patch").write_text(diff)
-    stat = git(["diff", "--stat", "--", "."], a.model_dir).strip()
+    stat = candidate_diff(a.model_dir, ("--stat",)).strip()
 
     # While the edit is still in the tree: the mechanical half of Step 4. Only
     # catches drift and rubric sentences that contradict the model -- a golden
@@ -347,6 +370,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--environment", default=None)
     ap.add_argument("--package", default=None)
     ap.add_argument("--mcp-url", default=None)
+    ap.add_argument("--rest-url", default=None,
+                    help="REST base; the reload receipt is read from here, "
+                         "because the MCP reply double-encodes its JSON. "
+                         "Default: the [model] server in the set's eval.toml")
     # No built-in port: a fixed default once named the server holding the
     # model under test, which cannot verify its own goldens. The fallback is
     # the [truth] section of the set's eval.toml. With neither, the value
@@ -406,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
                              "--environment")
     a.package = cfg.need(a.package, "model", "package", "--package")
     a.mcp_url = a.mcp_url or cfg.model_mcp_url()
+    a.rest_url = a.rest_url or cfg.model_publisher()
     a.truth_publisher = a.truth_publisher or cfg.truth_publisher()
     a.truth_environment = a.truth_environment or cfg.get("truth", "environment")
     a.skills_root = a.skills_root or cfg.get("paths", "skills_root")
@@ -439,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
         if e.get("kind") == "issue_status":
             status[e["issue_id"]] = e["status"]
     issues = [e for e in events if e.get("kind") == "issue"
-              and e.get("owner") == "model"
+              and e.get("owner") in ("model", "package-skill")
               and status.get(e["issue_id"]) == "open"]
     if a.only:
         want = {x.strip() for x in a.only.split(",")}
@@ -450,13 +478,14 @@ def main(argv: list[str] | None = None) -> int:
     if a.limit is not None:
         issues = issues[:a.limit]
     if not issues:
-        print("no open model-owned issues; run diagnose.py first, or every "
-              "cluster is owned by retrieval, agent-skill, or dataset")
+        print("no open model- or package-skill-owned issues; run diagnose.py "
+              "first, or every cluster is owned by retrieval, agent-skill, "
+              "or dataset")
         return 0
 
     art = a.run / "artifacts"
     art.mkdir(parents=True, exist_ok=True)
-    print(f"{len(issues)} model-owned clusters, agent {a.model}, "
+    print(f"{len(issues)} model/package-skill clusters, agent {a.model}, "
           f"{'isolated' if a.isolate else 'cumulative'}, "
           f"{'watch mode' if a.watch_mode else 'snapshot sync'}")
 

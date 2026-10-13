@@ -119,12 +119,21 @@ export function parseReference(
  * that would break the filesystem channel, so the mapping is appended to the
  * bundled copy only. One source file, one correct rendering per channel.
  */
-export function referencePointer(skillName: string, files: string[]): string {
+export function referencePointer(
+   skillName: string,
+   files: string[],
+   channel: "bundled" | "package" = "bundled",
+): string {
    const stems = files.map((f) => path.basename(f, ".md"));
+   // Prompts are registered once at server start, for bundled skills only.
+   const how =
+      channel === "bundled"
+         ? `served as separate prompts, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, get the prompt named \`${skillName}/<name>\` instead.`
+         : `served as separate guides, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, call get_skill with skill_name \`${skillName}/<name>\` and the same \`scopes\` you used for this skill instead.`;
    return [
       `## Reference files over MCP`,
       ``,
-      `This skill's \`${REFERENCE_DIR}/\` files are served as separate prompts, one per file, fetched only when you ask for them. Where the text above says to read \`${REFERENCE_DIR}/<name>.md\`, get the prompt named \`${skillName}/<name>\` instead.`,
+      `This skill's \`${REFERENCE_DIR}/\` files are ${how}`,
       ``,
       `Available: ${stems.join(", ")}.`,
    ].join("\n");
@@ -159,8 +168,13 @@ function manifestSkillNames(skillsDir: string): Set<string> {
    ]);
 }
 
-/** Reference files for one skill, sorted, or [] when it has none. */
-function referenceFiles(skillDir: string): string[] {
+/**
+ * Reference files for one skill, sorted, or [] when it has none.
+ *
+ * Exported for the package-skill reader, which shares this repo's on-disk
+ * skill layout but not its manifest gating (see mcp/skills/package_skills.ts).
+ */
+export function referenceFiles(skillDir: string): string[] {
    const dir = path.join(skillDir, REFERENCE_DIR);
    if (!fs.existsSync(dir)) return [];
    return fs

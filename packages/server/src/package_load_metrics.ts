@@ -65,7 +65,10 @@ export type PackageLoadStatus =
 
 /** Phase timings a single package load reports (subset of the total). */
 export interface PackageLoadPhaseTimings {
-   /** Ceiling on Malloy compile CPU (compile region minus schema-fetch wait). */
+   /**
+    * Ceiling on Malloy compile CPU (compile region minus schema-fetch wait),
+    * including the work the worker does for the main thread.
+    */
    compileDurationMs: number;
    /** Wall-clock awaiting proxied connection schema fetches. */
    schemaFetchDurationMs: number;
@@ -84,7 +87,7 @@ function ensureInstruments(): void {
       "malloy_package_load_compile_duration",
       {
          description:
-            "Per-load Malloy compile time (compile region minus proxied schema-fetch wait; a ceiling on compile CPU). Label: status.",
+            "Per-load Malloy compile time (compile region minus proxied schema-fetch wait; a ceiling on compile CPU), including the build plan, render-tag results and pre-aggregation companions the worker prepares for the main thread. Label: status.",
          unit: "ms",
          advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
       },

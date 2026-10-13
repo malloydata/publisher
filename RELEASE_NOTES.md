@@ -47,7 +47,46 @@ A package loaded from `publisher.config.json`, registered from a directory with 
 
 **Upgrading.** An existing `publisher.db` gains a `versions` table and two columns on startup; nothing is lost, and every existing package stays unversioned until its first publish from a location. The SDK percent-encodes `versionId` in resource URIs, so build metadata (`+build.5`) survives.
 
-## [Unreleased] — Reports: one document type, anywhere in a package, with a `layout`
+## [Unreleased] — Report builder fixes: a quieter new report, filters that stop covering tiles, tooltips at the cursor
+
+**New report writes less.** A report created from the package page's **New report** no longer starts with an `intro` text tile holding `# <title>` and a line asking for a description. The page already shows the title and offers the description in place, so a new report said both twice. The file now lists only the query tile you picked, and that tile carries `# label="<view title>"`, so it reads "Top products" rather than "Top products tile". Existing reports are not touched. A tool that expected a new file's first tile to be `intro` should stop relying on it.
+
+**The filter bar no longer covers tiles.** In a grid report the pinned filter bar now draws a hairline under itself while tiles scroll beneath it, and leaves a gap, rather than cutting tile headings off at an edge you could not see. A linear report's filters no longer pin at all: there they are a full panel, and pinned they took a third of a laptop screen. This applies to the reader and the builder alike.
+
+**Smaller builder fixes.**
+
+- In a linear report the "+" under the last tile and the "Add tile" button below the list no longer draw on top of each other.
+- A tile's menu offers **Drill** only when its source declares a dimension in the report, instead of opening a window that explained why its Apply was disabled.
+- While a tile's edge is dragged narrower, the columns it frees show as an empty slot, so the gap reads as room rather than a broken layout.
+
+**Chart tooltips open at the cursor.** A tooltip that opened on a single pointer move, typically a chart scrolled under a still pointer, was drawn in the top-left corner of the window. The renderer recorded the pointer only while a tooltip was already showing, so the move that opened one was lost. The fix is in `@malloydata/render`, and Publisher carries it as a patch to 0.0.435 until a release includes it. The patch applies to the Publisher Console, which bundles the renderer; an application embedding `@malloy-publisher/sdk` resolves its own copy and keeps the bug until it upgrades the renderer.
+
+**Wide tables show their scrollbar.** The Console's thin, overlay scrollbars hid a result table's horizontal scrollbar until you scrolled, so a narrow tile looked cut off rather than wider than its card. Result tables keep a visible scrollbar again, themed for light and dark.
+
+## [0.9.9] — Loading a package no longer holds the server's event loop while it compiles
+
+Loading a package with large models could stop the server answering anything, health probes included, for tens of seconds. The package-load worker compiled the models, and then the main thread compiled them again: to derive the persist build plan, to give the render-tag check a result schema for every annotated query and view, and to build each model's `#@ preaggregate` companion. Several versions of such a package loading together, as on a restart, ran these back to back on the one thread, long enough to fail a Kubernetes liveness probe.
+
+- The load worker derives the build plan, prepares the render-tag queries and compiles the pre-aggregation companions alongside the compile it already runs. The main thread only runs the renderer's check over the prepared results and loads the compiled companions. The plan, and the warnings a load reports, are unchanged.
+- What the load worker logs is sent to the main thread as it is written and logged there, naming the package, so it reaches the OpenTelemetry log export along with everything else, even from a load that times out.
+- Each load worker keeps the table and SQL schemas it has fetched, so a model's repeated and later requests for the same table no longer round-trip through the main thread. `PACKAGE_LOAD_SCHEMA_CACHE_BYTES` bounds their serialized size (default 16 MiB per worker, a few times that in heap; `0` disables it; a value that is not a byte count stops the server from starting). Entries are scoped per environment and per connection instance, so editing a connection drops them, as it already drops the schemas Malloy caches on the connection.
+- A burst of loads is spread across all `PACKAGE_LOAD_WORKERS` workers. Before, every load that arrived while the first worker was still starting ran on that worker, concurrently.
+- `/health`, `/health/liveness` and `/health/readiness` answer ahead of the rate limiter and static-file serving.
+- A load that follows a timed-out one no longer fails at once on the worker that timed out, which was still exiting; it waits for that worker's replacement.
+
+`PACKAGE_LOAD_JOB_TIMEOUT_MS` still bounds a load's compile, and a load may now run to twice it before its worker is stopped. The work a load worker does for the main thread interleaves with the compile, and the worker starts none of it after three quarters of the timeout. Past that point it leaves the remaining render-tag results and companions to the main thread, model by model, and the build plan, once any model's part of it is missing, to the main thread as a whole. The main thread then does that work as before. A package whose compile fits the timeout still loads, and only one that comes close to it does any of this work on the main thread. A load that hangs is now stopped at twice the timeout. The workers use more CPU per load than before and the main thread correspondingly less, and `malloy_package_load_compile_duration` now includes the work the worker does for the main thread. `publisher_materialization_build_plan_compute_duration_ms` has a `computed_in` label: `worker` for a plan the worker derived, measured from the first model's plan collection to the plan's completion, which other models' compiles interleave with, and `main_thread` for one the main thread derived.
+
+## [0.9.9] - A package can ship its own skills and declare agents
+
+A package can now carry guidance for the agents that work with it. A `skills/` directory at the package root holds agent skills in the agentskills.io format, served next to the bundled ones by a new `get_skill` MCP tool and `GET .../packages/{pkg}/skills`; a package skill with the name of a bundled one replaces it for that package. An `agents` object in `publisher.json` declares named agents, each with a description, an instructions file, its own skills, and optional scheduled tasks. They are served by a new `get_agent` MCP tool and `GET .../packages/{pkg}/agents` and `.../agents/{name}`, listed on `Package.agents`, and shown in an Agents section on the package page.
+
+`get_agent` returns each skill file in full by default; `skills: "summary"` (REST `?skills=summary`) lists each file's name, description and size instead, and `skill_path` (REST `.../agents/{name}/skills/{path}`) reads one file with the same `source` pin.
+
+Publisher serves a definition and never runs one. A client adopts an agent by fetching it and following it in its own session, and the bundled `malloy-run-agent` skill does that when the user names an agent. A definition carries no tool, permission or hook setting: an agent entry with a key this server does not know (`tools`, `hooks` and the like included) is dropped, and a broken agent never fails the package, it is left out with a `Fix:` warning. Schedules are validated (5-field UTC cron, task file in the package) and shown, but nothing executes them yet.
+
+Two things to know when upgrading. `Package` gains two read-only fields, `servedRevision` (minted per load) and `sourceContentSha` (a hash of the model files, package skill files, the `agents` object and every file an agent reads, so it moves on an edit to any of them; a `version` bump, data files and other manifest keys do not). `reload_package` returns both, and `sourceContentSha` unchanged after an edit to a hashed file means the edit never reached the served copy. And the MCP surface grows from eight tools to ten; a client that pins the tool list will see `get_skill` and `get_agent` as new. A package without `skills/` or `agents` behaves exactly as before, and an older Publisher serves a package that has them without the extras.
+
+## [0.9.8] — Reports: one document type, anywhere in a package, with a `layout`
 
 Dashboards and notebooks are now one document type, the **report**, and a report can live anywhere in a package. A report is any `.malloy` file outside `public/` that carries a model-level `## artifact` tag, other than the root `index.malloy`; a `.malloynb` is a linear report wherever it is. `dashboards/` and `notebooks/` are now ordinary directory names: nothing about a file depends on which directory holds it, and a report two directories deep is served like one at the root. Every file served from those two directories before is classified the same way by its tags alone, with one exception, listed under "What may change" below.
 

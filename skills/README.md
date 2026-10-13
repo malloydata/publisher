@@ -42,7 +42,7 @@ Two rules make it work:
 ## Shared vs Publisher-specific
 
 - **Shared engine skills** (Credible serves these from the npm package): `malloy-model`, `malloy-model-as-you-go`, `malloy-materialization`, `malloy-analysis`, `malloy-charts`, `malloy-queries`, `malloy-define`, `malloy-discover`, `malloy-reports`, `malloy-review`, `malloy-gotchas-modeling`, `malloy-analysis-report`, `malloy-phrase-detection`, `malloy-html-data-apps`, `malloy-lookml-review`, `malloy-powerbi-review`.
-- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started` (Publisher's own host/router entry points; `malloy-getting-started` also holds the catalogue of every skill). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
+- **Publisher-specific skills** (not shared): `malloy-modeling`, `malloy-publish`, `malloy-document`, `malloy-getting-started`, `malloy-run-agent` (Publisher's own host/router entry points; `malloy-getting-started` also holds the catalogue of every skill). These name Publisher's own tools directly. Credible uses its own `credible-*` skills for the same roles (`credible-index`, `credible-modeling`, `credible-publish`, `credible-document`, `credible-dashboards`). The one exception is `malloy-getting-started`, which Credible's `modeling-ide` manifest also serves.
 
 ## Evaluation skills
 
@@ -71,11 +71,11 @@ Shared skills refer to MCP tools by **bare name** (`get_context`, `execute_query
 
 **`get_context` is now literally correct here.** This server exposes a tool by that exact name, taking the same typed `search_targets` and `scopes` the shared skills describe and answering in the same shape. Until it landed, this repo shipped skills describing a request its own server rejected, and this section existed to paper over that. What remains of the mapping is smaller:
 
-| Shared skills say | This server exposes |
-| --- | --- |
-| `get_context` | `get_context` |
-| `execute_query` | `execute_query` |
-| `search_malloy_docs` | `search_malloy_docs` |
+| Shared skills say        | This server exposes      |
+| ------------------------ | ------------------------ |
+| `get_context`            | `get_context`            |
+| `execute_query`          | `execute_query`          |
+| `search_malloy_docs`     | `search_malloy_docs`     |
 | `search_database_schema` | `search_database_schema` |
 
 `list_packages` supplies the environment and package names `get_context`'s `scopes` requires, and `compile_model` / `reload_package` / `get_status` are Publisher-only and appear only in the host/router skills. Publisher registers these tools under exactly the bare names above, so on a Publisher host the mapping is the identity and the host/router skills name them as written.

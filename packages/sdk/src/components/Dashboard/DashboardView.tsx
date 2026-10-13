@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DashboardManifest } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -16,6 +16,8 @@ import {
 import { GivensPanel, type GivensLayout } from "../given";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { Prose } from "../Prose";
+import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
+import { usePublisherTheme } from "../../theme/ThemeContext";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import {
    DashboardGrid,
@@ -29,6 +31,7 @@ import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import { useReportEvents } from "../Report/telemetry";
 import { TileCard, type TileChrome } from "./TileCard";
 import { tileIgnoredFilterLabels } from "./TileFilterTag";
+import { useStuck } from "./useStuck";
 
 /** Narrowest a tile that sets no `colspan` is allowed to render. */
 const MIN_TILE_PX = 240;
@@ -231,20 +234,16 @@ export function DashboardView({
             <DashboardHeader manifest={manifest} chrome={chrome} />
          )}
 
-         {/* Sticky so the controls stay in reach while the tiles scroll under.
-             Only when there are controls: GivensPanel draws nothing without
-             them, and an empty box would still cost the Stack a gap. */}
+         {/* Sticky so the controls stay in reach while the tiles scroll under,
+             in a grid only: a linear report's controls are a full panel, and
+             pinned they would take a third of a laptop screen from the prose
+             they sit above. Only when there are controls: GivensPanel draws
+             nothing without them, and an empty box would still cost the Stack
+             a gap. */}
          {specs.length > 0 && (
-            <Box
-               sx={{
-                  position: "sticky",
-                  top: 0,
-                  zIndex: STICKY_CONTROLS_Z,
-                  bgcolor: "background.default",
-               }}
-            >
+            <StickyControls sticky={chrome === "card"}>
                <GivensPanel {...controls.panel} layout={controlsLayout} />
-            </Box>
+            </StickyControls>
          )}
 
          {modelPath === undefined ? (
@@ -408,5 +407,55 @@ export function DashboardProse({
             </Box>
          )}
       </Stack>
+   );
+}
+
+/**
+ * A control row that pins to the top of the scroller and, while pinned, draws
+ * a hairline under itself, so tiles scrolling beneath read as passing under a
+ * bar rather than being cut off by nothing. Shared by the reader and the
+ * builder so both pin the same way.
+ */
+export function StickyControls({
+   sticky = true,
+   children,
+}: {
+   sticky?: boolean;
+   children: ReactNode;
+}) {
+   const { theme } = usePublisherTheme();
+   const { sentinelRef, stuck } = useStuck();
+   if (!sticky) return <Box>{children}</Box>;
+   const edge = theme.cardBorder.replace(/^1px solid /, "");
+   return (
+      <>
+         {/* The sentinel the pin is detected from; it costs the parent Stack
+             no gap, since it is a zero-height sibling and Stack gaps are on
+             the bar's own margin. */}
+         <Box
+            ref={sentinelRef}
+            aria-hidden
+            sx={{ height: 0, m: "0 !important" }}
+         />
+         <Box
+            data-stuck={stuck || undefined}
+            sx={{
+               position: "sticky",
+               top: 0,
+               zIndex: STICKY_CONTROLS_Z,
+               bgcolor: "background.default",
+               // Room under the bar for the edge, so the line never sits on
+               // the controls themselves.
+               pb: 1,
+               // A shadow rather than a border: drawing the edge must not
+               // change the bar's height, or the page jumps as it pins.
+               boxShadow: stuck ? `0 1px 0 ${edge}` : "none",
+               transition: `box-shadow ${MOTION_FAST}`,
+               ...reducedMotionSx,
+            }}
+         >
+            {children}
+         </Box>
+      </>
    );
 }
