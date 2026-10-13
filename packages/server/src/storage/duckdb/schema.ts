@@ -795,6 +795,24 @@ export async function createCatalogTables(db: DuckDBConnection): Promise<void> {
       updated_at TIMESTAMP NOT NULL
     )
   `);
+   // The embeddings of those values (`retrieval.fcj.valueEmbeddings`): one row
+   // per distinct value string (node_key is the value, facet is "value"), the
+   // same columns and sync rule as catalog_embeddings, so a reload embeds only
+   // values it has not seen. A gated source's values are never here.
+   await db.run(`
+    CREATE TABLE IF NOT EXISTS value_embeddings (
+      environment_name VARCHAR NOT NULL,
+      package_name VARCHAR NOT NULL,
+      node_key VARCHAR NOT NULL,
+      facet VARCHAR NOT NULL,
+      content_hash VARCHAR NOT NULL,
+      embedding_model VARCHAR NOT NULL,
+      dims INTEGER NOT NULL,
+      embedding FLOAT[] NOT NULL,
+      updated_at TIMESTAMP NOT NULL,
+      PRIMARY KEY (environment_name, package_name, node_key, facet)
+    )
+  `);
 }
 
 // Tables in the pre-rename `projects` schema, children first so DROP order
@@ -847,6 +865,7 @@ async function dropAllTables(db: DuckDBConnection): Promise<void> {
       "node_questions",
       "catalog_embeddings",
       "dimension_values",
+      "value_embeddings",
    ];
 
    logger.info("Dropping tables:", tables.join(", "));

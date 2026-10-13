@@ -6,7 +6,7 @@
  * search, once per package load.
  *
  *   catalog -> doc parts -> derived text -> value index -> questions ->
- *   vectors -> keyword index
+ *   vectors -> value vectors -> keyword index
  *
  * The build runs in the same process-wide queue as the shipped embedding
  * sync (one provider, one rate limit) and its result is held per Package
@@ -97,6 +97,17 @@ export interface FcjBuildReport {
    };
    keywordDocs: number;
    values: ValueBuildReport | { skipped: string };
+   /** The value index's embeddings (`valueEmbeddings`); cost is about charsEmbedded / 4 tokens. */
+   valueVectors: {
+      values: number;
+      embedded: number;
+      reused: number;
+      deleted: number;
+      charsEmbedded: number;
+      ms: number;
+      skipped?: string;
+      failure?: string;
+   };
    ms: number;
 }
 
@@ -393,6 +404,19 @@ export async function buildFcjIndex(args: {
       };
    }
 
+   // Value vectors: each distinct stored value, embedded once. A failure
+   // leaves the values matched by spelling only and is named in the report;
+   // the build goes on, unlike a failure of the vectors step above.
+   const valueVectorReport = await embedValues({
+      db,
+      provider: args.provider,
+      environmentName,
+      packageName,
+      values,
+      enabled: settings.values && settings.valueEmbeddings,
+      ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
+   });
+
    // Keyword index, over the same texts.
    const keyword = new KeywordIndex(
       searched.map((node) => ({
@@ -447,6 +471,7 @@ export async function buildFcjIndex(args: {
       vectors: vectorReport,
       keywordDocs: keyword.size,
       values: valueReport,
+      valueVectors: valueVectorReport,
       ms: Date.now() - started,
    };
    logger.info("[get_context fcj] Built the search index", {
@@ -467,4 +492,71 @@ export async function buildFcjIndex(args: {
       provider: args.provider,
       report,
    };
+}
+
+/** Embed the value index's distinct values into `value_embeddings` and attach them. */
+export async function embedValues(args: {
+   db: DuckDBConnection;
+   provider: EmbeddingModel | null;
+   environmentName: string;
+   packageName: string;
+   values: ValueIndex;
+   enabled: boolean;
+   shouldStop?: () => boolean;
+}): Promise<FcjBuildReport["valueVectors"]> {
+   const started = Date.now();
+   const texts = args.values.distinctValues();
+   const report: FcjBuildReport["valueVectors"] = {
+      values: texts.length,
+      embedded: 0,
+      reused: 0,
+      deleted: 0,
+      charsEmbedded: 0,
+      ms: 0,
+   };
+   if (!args.enabled) {
+      return { ...report, skipped: "retrieval.fcj.valueEmbeddings is false" };
+   }
+   if (!args.provider) {
+      return { ...report, skipped: "no embedding provider is configured" };
+   }
+   try {
+      const out = await syncVectors({
+         db: args.db,
+         provider: args.provider,
+         environmentName: args.environmentName,
+         packageName: args.packageName,
+         rows: texts.map((t) => ({ node: t, facet: "value", text: t })),
+         table: "value_embeddings",
+         ...(args.shouldStop ? { shouldStop: args.shouldStop } : {}),
+      });
+      const byValue = new Map<string, Float32Array>();
+      for (const [value, facets] of out.vectors) {
+         if (facets[0]) byValue.set(value, facets[0].vec);
+      }
+      args.values.setVectors(byValue);
+      return {
+         ...report,
+         embedded: out.embedded,
+         reused: out.reused,
+         deleted: out.deleted,
+         charsEmbedded: out.charsEmbedded,
+         ms: Date.now() - started,
+      };
+   } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(
+         "[get_context fcj] The stored values could not be embedded; they are matched by spelling only",
+         {
+            environmentName: args.environmentName,
+            packageName: args.packageName,
+            error: message,
+         },
+      );
+      return {
+         ...report,
+         ms: Date.now() - started,
+         failure: message.slice(0, 500),
+      };
+   }
 }
