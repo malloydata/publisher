@@ -157,6 +157,26 @@ export const createPublisherTheme = (
                      background: isDark ? "#1e293b" : greyScale[100],
                   },
                },
+               // A result table that scrolls sideways keeps a visible
+               // scrollbar, as the renderer draws it: an overlay scrollbar
+               // (what `scrollbar-width` above gives on macOS) hides until you
+               // scroll, so a narrowed tile read as cut off rather than as
+               // having more columns. Any standard `scrollbar-*` value makes
+               // Chrome ignore the `::-webkit-scrollbar` rules, so both are
+               // put back to `auto` here, and the track is themed to match.
+               ".malloy-table.root": {
+                  scrollbarWidth: "auto",
+                  scrollbarColor: "auto",
+                  "&::-webkit-scrollbar, &::-webkit-scrollbar-track, &::-webkit-scrollbar-corner":
+                     {
+                        background: isDark ? "#1e293b" : greyScale[100],
+                     },
+                  "&::-webkit-scrollbar-thumb": {
+                     background: isDark ? "#475569" : greyScale[300],
+                     border: "none",
+                     borderRadius: "4px",
+                  },
+               },
                "div[data-radix-popper-content-wrapper]": {
                   zIndex: "1300 !important",
                },
