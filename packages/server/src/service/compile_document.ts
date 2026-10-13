@@ -35,6 +35,11 @@ import {
    type NotebookCellSpan,
 } from "./notebook";
 import { extractSourcesFromModelDef } from "./source_extraction";
+import {
+   CELLS_REMOVED,
+   CELLS_REMOVED_MESSAGE,
+   notebookLintProblems,
+} from "./notebook_lint";
 import { readReportTagOfText, type ReportLayout } from "./report";
 
 /**
@@ -176,9 +181,31 @@ function problemLine(problem: LogMessage): number | undefined {
 }
 
 /**
+ * The lint's `report-cells-removed` finding for text whose tag is the retired
+ * cell format, at the tag's line: append scope skips the lint, and the file and
+ * package scopes report the same finding through it. Read at a fixed eligible
+ * path, since the tag alone decides it.
+ */
+function cellsRemovedProblems(source: string): LogMessage[] {
+   const problems = notebookLintProblems("document.malloy", source, "").filter(
+      (problem) => problem.code === CELLS_REMOVED,
+   );
+   return problems.length > 0
+      ? problems
+      : [
+           {
+              code: CELLS_REMOVED,
+              severity: "error",
+              message: CELLS_REMOVED_MESSAGE,
+           } as LogMessage,
+        ];
+}
+
+/**
  * Compile `source` as a document, or return undefined when it is not one (no
  * model-level artifact tag, or text the cell reader cannot read), in which case
- * the ordinary compile answers.
+ * the ordinary compile answers. A linear tag with no `tiles` is the retired cell
+ * format, answered with its finding and no document.
  */
 export async function compileDocument(input: {
    base: ModelMaterializer;
@@ -188,6 +215,8 @@ export async function compileDocument(input: {
 }): Promise<DocumentCompileResult | undefined> {
    const { base, source, modelName, gates } = input;
    const tag = readReportTagOfText(source);
+   if (tag.status === "cells-removed")
+      return { problems: cellsRemovedProblems(source) };
    if (tag.status !== "report") return undefined;
    const parse = parseNotebookText(source);
    if (isNotebookReaderError(parse)) return undefined;
@@ -457,7 +486,7 @@ export async function compileDocument(input: {
          };
       });
    if (!manifest) {
-      // Written as cells: no tile layout, so the file's own cells are the document.
+      // A grid tag with no tiles yet: no tile layout, so the file's own cells are the document.
       return { problems, document: { layout: tag.layout, cells } };
    }
    const { entryFile: _entry, ...rest } = manifest;

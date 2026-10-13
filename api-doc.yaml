@@ -1777,7 +1777,9 @@ paths:
           on a tag line, outside a string. Text without one is refused with 400.
         - REPLACE (with `expectedHash`): only a file the package currently reads
           as an editable report: a tagged `.malloy` report of either layout,
-          including a tagged grid report that has no tiles yet. A model, an
+          including a tagged grid report that has no tiles yet, and a file
+          whose tag makes no report (a `kind=` tag, or the retired `run:`
+          cell format), so it can be rewritten as tiles. A model, an
           untagged file, a `.malloynb`, the root `index.malloy` and anything in
           `public/` cannot be overwritten, wherever they live, and answer 400.
 
@@ -1785,7 +1787,9 @@ paths:
         identified by its path, so a taken basename is not refused.
 
         The text is compiled first, as the file, and refused with its problems
-        when it does not compile; nothing is written. The write is atomic (a
+        when it does not compile, or when its tag makes no report (for
+        example a linear tag with no `tiles`, `report-cells-removed`);
+        nothing is written. The write is atomic (a
         sibling temporary file renamed over the target). If the reload that
         follows fails to compile the package, the previous text is restored (or
         a new file removed) and the package reloaded again, so a save never
@@ -2065,10 +2069,13 @@ paths:
         may import.
 
         A report's `layout` is decided by its tags, first match wins: the
-        tag's `layout=` (`grid` or `linear`); else the deprecated `kind=`
-        (`dashboard` is grid, `notebook` is linear); else grid for a
-        query-level `# artifact`; else grid for a model-level tag that lists
-        `tiles` or carries a `dashboard { … }` grid tag; else linear.
+        tag's `layout=` (`grid` or `linear`); else grid for a query-level
+        `# artifact`; else grid for a model-level tag that lists `tiles` or
+        carries a `dashboard { … }` grid tag; else linear. A tag that sets
+        `kind=` is no report (`report-kind-removed`), and neither is a linear
+        tag that lists no `tiles`: that is the retired `run:` cell format
+        (`report-cells-removed`). An empty `tiles=[]` is a linear report with
+        no tiles yet.
 
         A report is identified by its `path`. `name`, its basename, is a
         display label only: two reports may share one.
@@ -2125,15 +2132,13 @@ paths:
       description: |
         Everything a viewer needs to render one report, addressed by its path in
         the package, including its extension, exactly as list-reports gives
-        it (`sales/q3.malloy`). A report written as tiles, of either layout, carries the
+        it (`sales/q3.malloy`). A `.malloy` report, of either layout, carries the
         manifest fields (`tiles` or `query`, `dashboardColumns`,
         `startingGivens`, `autorun`, `givens`): its tiles run through the model
-        query endpoint with `givens`, using `path` as the model. A linear
-        report written as `run:` cells, or a `.malloynb`, carries `notebook`
-        instead: its cells as get-notebook returned them. A `.malloy` report's
-        cells run through the model query endpoint, each cell's `text` as
-        `query` and `path` as the model; a `.malloynb`'s through the
-        deprecated execute-notebook-cell.
+        query endpoint with `givens`, using `path` as the model. A
+        `.malloynb`, the one cell format left, carries `notebook` instead: its
+        cells as get-notebook returned them, run through the deprecated
+        execute-notebook-cell.
       parameters:
         - name: environmentName
           in: path
@@ -3959,11 +3964,8 @@ components:
             with that error instead of opening. The per-file report findings
             each name their line and the fix and carry a `code`; they are
             computed at discovery and are also returned by `/compile` at file
-            and package scope. Eight codes are `error` and fail `/compile`:
-            `notebook-statement-above-artifact` and `notebook-tag-above-artifact`
-            (a statement or a tag above a served notebook's `## artifact`),
-            `notebook-markdown-above-artifact` (a `(markdown)` annotation above
-            it), `notebook-columns-conflict` (a tiled dashboard's
+            and package scope. These codes are `error` and fail `/compile`:
+            `notebook-columns-conflict` (a tiled dashboard's
             `dashboard_columns` disagrees with `dashboard { columns }`),
             `notebook-markdown-opener-text` (more than a
             name after `(markdown)` on a block's opener),
@@ -3973,10 +3975,12 @@ components:
             (the reader could not read a linear report's cells), plus
             `report-kind-removed` (a tag that sets `kind=`, which is no longer
             read, so the file is not a report; the finding names the `layout=`
-            to write) and `report-layout-unknown` (a `layout=` other than
-            `grid` or `linear`). The rest are `warn` (a mistyped `(markdown)`
-            opener, `report-layout-implicit` for a tag that names no layout and lists
-            no tiles, a block that never closes, and similar).
+            to write), `report-cells-removed` (a linear tag that lists no
+            `tiles`, the retired `run:` cell format, so the file is not a
+            report; the fix is to list its tiles in `tiles=[…]`) and
+            `report-layout-unknown` (a `layout=` other than `grid` or
+            `linear`). The rest are `warn` (a mistyped `(markdown)` opener, a
+            block that never closes, and similar).
             Skill and agent findings, all `warn`: a package skill under
             `skills/` that is not served (unreadable or linked-out `SKILL.md`,
             a frontmatter `name` that is not its directory name, a `skills/`
@@ -4983,15 +4987,15 @@ components:
           description: >-
             Human title: the artifact tag's `title`, else the first line of the
             `"` notes above the tag, else,
-            for a linear report, its first markdown heading, else `name`.
+            for a `.malloynb`, its first markdown heading, else `name`.
         description:
           type: string
           description: The report's doc comment, when it has one.
         editable:
           type: boolean
           description: >-
-            Whether the builder opens it as it is: false for a `.malloynb` and
-            for a linear report written as `run:` cells.
+            Whether the builder opens it as it is: true for a `.malloy` report,
+            false for a `.malloynb`.
         error:
           type: string
           description: >-
@@ -5000,11 +5004,10 @@ components:
 
     ReportManifest:
       description: |
-        A `Report` plus what a viewer needs to draw it. A report written as
-        tiles, of either layout, carries `tiles`, `dashboardColumns`,
-        `startingGivens`, `autorun` and `givens`, whose tiles and suggest
-        queries run through `POST …/models/{path}/query` with `givens`. A
-        linear report written as `run:` cells, or a `.malloynb`, carries
+        A `Report` plus what a viewer needs to draw it. A `.malloy` report, of
+        either layout, carries `tiles`, `dashboardColumns`, `startingGivens`,
+        `autorun` and `givens`, whose tiles and suggest queries run through
+        `POST …/models/{path}/query` with `givens`. A `.malloynb` carries
         `notebook` instead.
       allOf:
         - $ref: "#/components/schemas/Report"
@@ -5014,7 +5017,8 @@ components:
               type: array
               description: >-
                 The report's tiles, each run as its own query (or shown as text),
-                in order. Absent on a `run:`-cell report.
+                in order. Absent on a `.malloynb`, and on a report that failed
+                to compile.
               items:
                 $ref: "#/components/schemas/ReportTile"
             dashboardColumns:
@@ -5049,12 +5053,9 @@ components:
               allOf:
                 - $ref: "#/components/schemas/ReportCells"
               description: >-
-                For a linear report written as `run:` cells, or a `.malloynb`: its
-                cells and model. Run a `.malloy`
-                report's cell through the model query endpoint, its `text` as
-                `query`; a `.malloynb`'s with execute-notebook-cell. Absent on a
-                report written as tiles, and on a
-                report that failed to compile.
+                For a `.malloynb`: its cells and model, each cell run with
+                execute-notebook-cell. Absent on a `.malloy` report, and on a
+                `.malloynb` that failed to compile.
 
     ReportTile:
       type: object
@@ -5151,8 +5152,8 @@ components:
     ReportCells:
       type: object
       description: >-
-        A linear report written as cells, or a `.malloynb`: its cells, unexecuted,
-        and its model.
+        A `.malloynb`, or a linear `.malloy` report read as cells (its
+        definitions, then its tiles): its cells, unexecuted, and its model.
       properties:
         type:
           type: string
@@ -5481,8 +5482,7 @@ components:
               description: >-
                 The tile layout of a linear report written as one (`## artifact {
                 layout=linear tiles=[…] }`), in the shape a dashboard has, with
-                `layout` `linear` and one column. Absent on a notebook written as
-                cells. Its tiles run through the model query endpoint at
+                `layout` `linear` and one column. Absent on a `.malloynb`. Its tiles run through the model query endpoint at
                 `modelPath`; `notebookCells` carries the same content as cells for
                 readers that do not draw a layout.
 

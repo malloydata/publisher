@@ -154,7 +154,7 @@ describe("Reports anywhere in a package (E2E)", () => {
       });
    });
 
-   it("serves a grid report's manifest by path, and a run:-cell report's cells", async () => {
+   it("serves each report's manifest by path, of either layout", async () => {
       const grid = await getJson<{
          layout: string;
          tiles?: { query?: string }[];
@@ -179,24 +179,29 @@ describe("Reports anywhere in a package (E2E)", () => {
       const story = await getJson<{
          layout: string;
          editable: boolean;
-         tiles?: unknown;
-         notebook?: {
-            notebookCells?: { type: string; kind?: string; text: string }[];
-         };
+         tiles?: { kind?: string; query?: string }[];
+         notebook?: unknown;
       }>(api("/reports/deep/story.malloy"));
       expect(story.layout).toBe("linear");
-      expect(story.editable).toBe(false);
-      expect(story.tiles).toBeUndefined();
-      const cells = story.notebook?.notebookCells ?? [];
-      const queryCell = cells.findIndex((c) => c.kind === "query");
-      expect(queryCell).toBeGreaterThanOrEqual(0);
+      expect(story.editable).toBe(true);
+      expect(story.notebook).toBeUndefined();
+      expect(story.tiles?.map((t) => t.kind)).toEqual(["text", "query"]);
 
-      // A cell runs through the governed query endpoint, the report's path
+      // A tile runs through the governed query endpoint, the report's path
       // as the model; the reports resource has no cell route.
       const ran = await env.query("deep/story.malloy", {
-         query: cells[queryCell].text,
+         query: `run: ${story.tiles?.[1].query}`,
       });
       expect(ran.status).toBe(200);
+      // The deprecated notebooks route reads the same report as cells: its
+      // definitions, then its tiles.
+      const asCells = await getJson<{
+         notebookCells?: { kind?: string }[];
+      }>(api("/notebooks/deep/story.malloy"));
+      const queryCell = (asCells.notebookCells ?? []).findIndex(
+         (c) => c.kind === "query",
+      );
+      expect(queryCell).toBeGreaterThanOrEqual(0);
       expect(
          (await fetch(api(`/reports/deep/story.malloy/cells/${queryCell}`)))
             .status,

@@ -125,7 +125,7 @@ export { customers }`,
       );
       fs.writeFileSync(
          path.join(tempDir, "report.malloy"),
-         `## artifact { layout=linear title="Sales Report" }\n`,
+         `## artifact { layout=linear title="Sales Report" tiles=[] }\n`,
       );
    }
 
@@ -752,7 +752,7 @@ export { pub2, pub3 }`,
       );
       fs.writeFileSync(
          path.join(tempDir, "notebooks/nb.malloy"),
-         `## artifact { layout=linear }\nsource: nb is duckdb.sql("select 1 as id")\n`,
+         `## artifact { layout=linear tiles=[] }\nsource: nb is duckdb.sql("select 1 as id")\n`,
       );
       fs.writeFileSync(
          path.join(tempDir, "dashboards/d.malloy"),
