@@ -150,10 +150,10 @@ export interface LoadPackageRequest {
    /**
     * How long into the job the worker keeps doing work for the main thread:
     * render-tag results, pre-aggregation companions and the build plan. It is
-    * checked before each render-tag target and before each model's companion
-    * and plan parts. Past it, a model's remaining render-tag targets and its
-    * companion are left to the main thread, and so is the whole plan once a
-    * model's parts are missing, so a slow package loads as it would with all
+    * checked before each render-tag target and before each model's companion,
+    * which its plan parts are read from. Past it, a model's remaining
+    * render-tag targets and its companion are left to the main thread, and so
+    * is the whole plan once a model's parts are missing, so a slow package loads as it would with all
     * of that work on the main thread. A share of the job timeout; the pool
     * gives the job room for it on top of the compile (see the pool's
     * jobLimitMs).
