@@ -449,10 +449,12 @@ export function derivationTerminals(
  * never by parsing the id (a URL may contain `@`). A matched entry the caller
  * declared comes back as a {@link CallerSource}, to be gated from its compiled
  * struct; one the model declared must be a name the on-disk model declares. A
- * query-source join also resolves its base; a composite join resolves its own
- * id AND every member. Only the join itself may fall back to text when it has
- * no `sourceID` (an inline `extend`): every base any `ALIAS is BASE` spelling
- * gives it must then prove out.
+ * query-source join the caller wrote also resolves its base, while one the
+ * model declares is anchored as itself (its gate entry already carries the
+ * base's); a composite join resolves its own id AND every member. An inline
+ * `extend` of a model source anchors on the source it extends. Only a join
+ * that names nothing resolvable falls back to text: every base any
+ * `ALIAS is BASE` spelling gives it must then prove out.
  */
 export function resolveCallerJoin(
    callerJoin: CallerJoin,
@@ -486,8 +488,14 @@ export function resolveCallerJoin(
          context.isModelSource(name),
       );
 
-   // Keyed like the on-disk gate map: by the entry's own `as ?? name`.
-   const byContentsKey = (key: string, forBoundary: boolean): boolean => {
+   // Keyed like the on-disk gate map: by the entry's own `as ?? name`. Says
+   // how the key anchored: on a source the caller declared, on one the model
+   // declares, or on a name that only a text chain reaches.
+   type Anchor = "caller" | "model" | "chain";
+   const byContentsKey = (
+      key: string,
+      forBoundary: boolean,
+   ): Anchor | false => {
       const entry = contentsStruct(compiledModelDef, key);
       if (entry && isCaller(entry.location)) {
          // Gated from its struct by the caller; the boundary has only text.
@@ -500,19 +508,19 @@ export function resolveCallerJoin(
                boundaryUnprovenAt ??= chain.at;
             }
          }
-         return true;
+         return "caller";
       }
       const name = entry ? aliasOf(entry) : key;
       if (context.isModelSource(name)) {
          add(name, forBoundary);
-         return true;
+         return "model";
       }
       if (entry) return fail(name);
       // A name no source entry holds, such as a caller `query:`.
       const chain = chainOf(key);
       if (!chain.proven) return fail(chain.at);
       for (const terminal of chain.terminals) add(terminal, forBoundary);
-      return true;
+      return "chain";
    };
 
    // The author's query exactly as declared: a refinement keeps its name.
@@ -528,7 +536,10 @@ export function resolveCallerJoin(
       );
    };
 
-   const bySourceID = (sourceID: string, forBoundary: boolean): boolean => {
+   const bySourceID = (
+      sourceID: string,
+      forBoundary: boolean,
+   ): Anchor | false => {
       const keys = Object.entries(compiledModelDef.contents)
          .filter(
             ([, value]) =>
@@ -537,7 +548,34 @@ export function resolveCallerJoin(
          )
          .map(([key]) => key);
       if (keys.length === 0) return fail(sourceID);
-      return keys.every((key) => byContentsKey(key, forBoundary));
+      let anchor: Anchor = "model";
+      for (const key of keys) {
+         const got = byContentsKey(key, forBoundary);
+         if (!got) return false;
+         if (got !== "model") anchor = got;
+      }
+      return anchor;
+   };
+
+   // Whether every `contents` entry carrying `sourceID` is one the on-disk
+   // model declares: not the caller's, and a name the model declares. A
+   // read-only probe, unlike `bySourceID`, which records what it resolves.
+   const modelDeclaresSourceID = (sourceID: string): boolean => {
+      const entries = Object.entries(compiledModelDef.contents).filter(
+         ([, value]) =>
+            isSourceDef(value) &&
+            (value as unknown as IrStruct).sourceID === sourceID,
+      );
+      return (
+         entries.length > 0 &&
+         entries.every(
+            ([key, value]) =>
+               !isCaller((value as unknown as IrStruct).location) &&
+               context.isModelSource(
+                  aliasOf(value as unknown as IrStruct) ?? key,
+               ),
+         )
+      );
    };
 
    const resolveStruct = (
@@ -548,9 +586,33 @@ export function resolveCallerJoin(
    ): boolean => {
       if (depth > RESOLVE_MAX_DEPTH) return fail(callerJoin.alias);
       let anchored = false;
+      let declaredByModel = false;
       if (struct.sourceID) {
-         if (!bySourceID(struct.sourceID, forBoundary)) return false;
+         const anchor = bySourceID(struct.sourceID, forBoundary);
+         if (!anchor) return false;
          anchored = true;
+         declaredByModel = anchor === "model";
+      } else {
+         // An inline `X extend { … }` has no sourceID of its own (Malloy
+         // strips it from any modified source). When the result is
+         // persistable — `X` was a query source or a `sql_select` — Malloy
+         // records what it extends, and when that is a source the MODEL
+         // declares the extension is the caller entering that source with
+         // additions on top: anchor on it, and gate it as that source. The
+         // additions themselves are the caller's and are held by the graft,
+         // which must land on the recompiled query. When `X` is a source the
+         // caller declared, or an inline extend of a TABLE source (no
+         // `extends` at all), nothing changes: the `query_source` branch
+         // below walks the compiled base, as before. Resolving a caller
+         // source here would hand it to `decideCallerSource`, which decides
+         // a caller source from its own struct and over-denies this shape.
+         const extendsID = (struct as { extends?: string }).extends;
+         if (extendsID && modelDeclaresSourceID(extendsID)) {
+            const anchor = bySourceID(extendsID, forBoundary);
+            if (!anchor) return false;
+            anchored = true;
+            declaredByModel = anchor === "model";
+         }
       }
       if (struct.type === "composite") {
          composite = true;
@@ -573,14 +635,23 @@ export function resolveCallerJoin(
          if (isJoinItself && q && isUnmodifiedModelQuery(q)) {
             curatedQuery = q.name;
          }
-         const ref = q?.structRef;
-         if (typeof ref === "string") {
-            if (!byContentsKey(ref, forBoundary)) return false;
-         } else if (ref && typeof ref === "object") {
-            if (!resolveStruct(ref, false, forBoundary, depth + 1))
-               return false;
-         } else {
-            return fail(callerJoin.alias);
+         // A query source the model declares is anchored as itself: its
+         // on-disk gate entry already carries its base's gates (query-source
+         // derivation is additive), and the boundary curates it by name. Its
+         // base is walked only when the query source is the caller's, since
+         // then nothing on disk vouches for what it reads. An author base may
+         // be an inline `table(...) extend { … }` with no sourceID at all, and
+         // walking it would fail closed on a legal declaration.
+         if (!declaredByModel) {
+            const ref = q?.structRef;
+            if (typeof ref === "string") {
+               if (!byContentsKey(ref, forBoundary)) return false;
+            } else if (ref && typeof ref === "object") {
+               if (!resolveStruct(ref, false, forBoundary, depth + 1))
+                  return false;
+            } else {
+               return fail(callerJoin.alias);
+            }
          }
          anchored = true;
       }

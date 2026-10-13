@@ -7,7 +7,7 @@ import FilterListIcon from "@mui/icons-material/FilterList";
 import { Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
-import { STICKY_CONTROLS_Z } from "../Dashboard/DashboardView";
+import { StickyControls } from "../Dashboard/DashboardView";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { BuilderControl } from "./controls";
 
@@ -24,6 +24,7 @@ export function FilterStrip({
    onAdd,
    addDisabledReason,
    onRemove,
+   sticky = true,
    children,
 }: {
    controls: BuilderControl[];
@@ -36,6 +37,8 @@ export function FilterStrip({
    addDisabledReason?: string;
    /** Take a control off the dashboard, as its window's Remove does. */
    onRemove: (name: string) => void;
+   /** Pin the strip to the top of the scroller: a grid's, not a linear report's. */
+   sticky?: boolean;
    /** The host's live control row. */
    children?: ReactNode;
 }) {
@@ -48,139 +51,136 @@ export function FilterStrip({
        Remove does. The live control row the caller
        passes in sits directly under, showing the same controls as a
        reader gets them — from the saved file. */}
-         <Stack
-            sx={{
-               gap: 1,
-               position: "sticky",
-               // Pinned at the top of the scroller, so the controls stay in
-               // reach on a long page.
-               top: 0,
-               // The page's ground, as the reader's sticky control row uses:
-               // this bar is page chrome, not the chart canvas.
-               zIndex: STICKY_CONTROLS_Z,
-               bgcolor: "background.default",
-               pb: 1,
-            }}
-         >
-            <Stack
-               direction="row"
-               sx={{ gap: 2, alignItems: "center", minHeight: 32 }}
-            >
+         {/* Pinned the way the reader's control row is, and only where the
+          reader pins it: in a grid. */}
+         <StickyControls sticky={sticky}>
+            <Stack sx={{ gap: 1 }}>
                <Stack
                   direction="row"
-                  // A named group, so the label is announced.
-                  role="group"
-                  aria-label="Filters"
-                  sx={{
-                     gap: 1,
-                     alignItems: "center",
-                     flexWrap: "wrap",
-                     flex: 1,
-                     minWidth: 0,
-                  }}
+                  sx={{ gap: 2, alignItems: "center", minHeight: 32 }}
                >
-                  <FilterListIcon
-                     sx={{ fontSize: 18, color: theme.tileTitle, opacity: 0.7 }}
-                  />
-                  <Typography
-                     variant="subtitle2"
-                     sx={{ color: theme.tileTitle, mr: 0.5 }}
+                  <Stack
+                     direction="row"
+                     // A named group, so the label is announced.
+                     role="group"
+                     aria-label="Filters"
+                     sx={{
+                        gap: 1,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        flex: 1,
+                        minWidth: 0,
+                     }}
                   >
-                     Filters
-                  </Typography>
-                  {controlList.length === 0 && (
+                     <FilterListIcon
+                        sx={{
+                           fontSize: 18,
+                           color: theme.tileTitle,
+                           opacity: 0.7,
+                        }}
+                     />
                      <Typography
-                        variant="body2"
-                        sx={{ color: theme.tileTitle, opacity: 0.8 }}
+                        variant="subtitle2"
+                        sx={{ color: theme.tileTitle, mr: 0.5 }}
                      >
-                        None yet.
+                        Filters
                      </Typography>
-                  )}
-                  {controlList.map((control) => {
-                     const unknown = unknownFieldsOf(
-                        control.name,
-                        control.type,
-                     );
-                     return (
-                        <Tooltip
-                           key={control.name}
-                           title={
-                              unknown.length > 0
-                                 ? `$${control.name} · cannot filter on: ${unknown.join(", ")}`
-                                 : `$${control.name} · ${
-                                      control.origin === "dashboard"
-                                         ? "declared here"
-                                         : "from the model"
-                                   } · ${control.boundTiles} of ${tileCount} tiles`
-                           }
+                     {controlList.length === 0 && (
+                        <Typography
+                           variant="body2"
+                           sx={{ color: theme.tileTitle, opacity: 0.8 }}
                         >
-                           <Chip
-                              size="small"
-                              // Unused says so in words, not only by fading:
-                              // the state survives colour and touch.
-                              label={`${control.label ?? control.name}${control.boundTiles === 0 ? " · unused" : ""}`}
-                              aria-label={`Edit filter ${control.name}`}
-                              // Warning where a binding names a field the source
-                              // does not have: the package would refuse the file.
-                              color={unknown.length > 0 ? "warning" : "default"}
-                              variant={
-                                 control.origin === "dashboard"
-                                    ? "filled"
-                                    : "outlined"
+                           None yet.
+                        </Typography>
+                     )}
+                     {controlList.map((control) => {
+                        const unknown = unknownFieldsOf(
+                           control.name,
+                           control.type,
+                        );
+                        return (
+                           <Tooltip
+                              key={control.name}
+                              title={
+                                 unknown.length > 0
+                                    ? `$${control.name} · cannot filter on: ${unknown.join(", ")}`
+                                    : `$${control.name} · ${
+                                         control.origin === "dashboard"
+                                            ? "declared here"
+                                            : "from the model"
+                                      } · ${control.boundTiles} of ${tileCount} tiles`
                               }
-                              onClick={() => onEdit(control)}
-                              onDelete={() => onRemove(control.name)}
-                              deleteIcon={
-                                 <CancelIcon
-                                    aria-label={`Remove filter ${control.name}`}
-                                 />
-                              }
-                              sx={{
-                                 // Faint when nothing binds it: declared, but not yet a
-                                 // control a reader would see.
-                                 opacity: control.boundTiles === 0 ? 0.6 : 1,
-                                 cursor: "pointer",
-                                 transition: `opacity ${MOTION_FAST}`,
-                                 ...reducedMotionSx,
-                              }}
-                           />
-                        </Tooltip>
-                     );
-                  })}
-                  {/* Beside the chips and shaped like one, as the next filter
+                           >
+                              <Chip
+                                 size="small"
+                                 // Unused says so in words, not only by fading:
+                                 // the state survives colour and touch.
+                                 label={`${control.label ?? control.name}${control.boundTiles === 0 ? " · unused" : ""}`}
+                                 aria-label={`Edit filter ${control.name}`}
+                                 // Warning where a binding names a field the source
+                                 // does not have: the package would refuse the file.
+                                 color={
+                                    unknown.length > 0 ? "warning" : "default"
+                                 }
+                                 variant={
+                                    control.origin === "dashboard"
+                                       ? "filled"
+                                       : "outlined"
+                                 }
+                                 onClick={() => onEdit(control)}
+                                 onDelete={() => onRemove(control.name)}
+                                 deleteIcon={
+                                    <CancelIcon
+                                       aria-label={`Remove filter ${control.name}`}
+                                    />
+                                 }
+                                 sx={{
+                                    // Faint when nothing binds it: declared, but not yet a
+                                    // control a reader would see.
+                                    opacity: control.boundTiles === 0 ? 0.6 : 1,
+                                    cursor: "pointer",
+                                    transition: `opacity ${MOTION_FAST}`,
+                                    ...reducedMotionSx,
+                                 }}
+                              />
+                           </Tooltip>
+                        );
+                     })}
+                     {/* Beside the chips and shaped like one, as the next filter
                    would be: outlined where they are filled, so it reads as the
                    empty slot rather than another filter. */}
-                  {/* A disabled button takes no pointer events, so the tooltip
+                     {/* A disabled button takes no pointer events, so the tooltip
                       saying why sits on a wrapper. */}
-                  <Tooltip title={addDisabledReason ?? ""}>
-                     <span>
-                        <Chip
-                           component="button"
-                           size="small"
-                           variant="outlined"
-                           icon={<AddIcon />}
-                           label="Filter"
-                           aria-label="Add filter"
-                           aria-haspopup="dialog"
-                           disabled={addDisabledReason !== undefined}
-                           onClick={() => onAdd()}
-                           sx={{
-                              cursor: "pointer",
-                              color: theme.tileTitle,
-                              borderStyle: "dashed",
-                              "& .MuiChip-icon": {
-                                 color: "inherit",
-                                 fontSize: 16,
-                              },
-                           }}
-                        />
-                     </span>
-                  </Tooltip>
+                     <Tooltip title={addDisabledReason ?? ""}>
+                        <span>
+                           <Chip
+                              component="button"
+                              size="small"
+                              variant="outlined"
+                              icon={<AddIcon />}
+                              label="Filter"
+                              aria-label="Add filter"
+                              aria-haspopup="dialog"
+                              disabled={addDisabledReason !== undefined}
+                              onClick={() => onAdd()}
+                              sx={{
+                                 cursor: "pointer",
+                                 color: theme.tileTitle,
+                                 borderStyle: "dashed",
+                                 "& .MuiChip-icon": {
+                                    color: "inherit",
+                                    fontSize: 16,
+                                 },
+                              }}
+                           />
+                        </span>
+                     </Tooltip>
+                  </Stack>
                </Stack>
-            </Stack>
 
-            {children}
-         </Stack>
+               {children}
+            </Stack>
+         </StickyControls>
       </>
    );
 }

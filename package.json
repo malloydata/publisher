@@ -112,5 +112,8 @@
     "proxy-addr": "^2.0.8",
     "seroval": "^1.6.3",
     "seroval-plugins": "^1.6.3"
+  },
+  "patchedDependencies": {
+    "@malloydata/render@0.0.435": "patches/@malloydata%2Frender@0.0.435.patch"
   }
 }

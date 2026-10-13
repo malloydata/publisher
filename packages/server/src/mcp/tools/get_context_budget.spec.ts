@@ -57,6 +57,7 @@ function bigPackage() {
       getQueries: () => [],
    };
    return {
+      listSkills: () => [],
       listModels: async () => [{ path: "big.malloy" }],
       getModel: () => model,
    };

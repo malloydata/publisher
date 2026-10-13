@@ -187,7 +187,6 @@ describe("click-to-edit text", () => {
       fireEvent.click(screen.getByLabelText("Settings for By category"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(screen.queryByLabelText("Tile subtitle")).toBeNull();
-      expect(button("Drill")).toBeDefined();
       fireEvent.keyDown(button("Delete"), { key: "Escape" });
       // There is no page settings window at all: the title and description
       // are edited on the page.

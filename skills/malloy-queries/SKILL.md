@@ -95,7 +95,7 @@ run: source -> {
 
 ## Field Paths and Joins
 
-**Use the joins the model declares.** When you answer a question over a published model, every query is rooted on one source, and you reach a joined source's fields by a dotted path within the query body (for example `stores.region`). Do not write `join_one` or `join_many` in an answer query, and never invent a join key. (A join written in a query does compile, and model files and notebooks use them; the rule is that an answer uses the joins the model declares.) If the field you need is on a source the model does not join, say so and ask the user to add the join to the model.
+**Use the joins the model declares.** When you answer a question over a published model, every query is rooted on one source, and you reach a joined source's fields by a dotted path within the query body (for example `stores.region`). Do not write `join_one` or `join_many` in an answer query, and never invent a join key. (A join written in a query does compile, and model files and notebooks use them; the rule is that an answer uses the joins the model declares.) If the field you need is on a source the model does not join, say so and ask the user to add the join to the model. If you do write a join in query text, it is gated as if you had entered that source yourself: a locked source refuses the query with a 403 that names your alias, and a row-filtered source filters the rows your join sees, so a denial on a join you wrote means the joined source refused you, not that the model is broken.
 
 The `->` operator separates a **source** from a **view** (query transformation). It does NOT navigate between joined sources.
 

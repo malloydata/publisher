@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import * as net from "net";
 import {
    AccessDeniedError,
+   AgentNotFoundError,
    BadRequestError,
    ConnectionAuthError,
    ConnectionError,
@@ -27,6 +28,7 @@ import {
    ResponseUnserializableError,
    QueryTimeoutError,
    ServiceUnavailableError,
+   SkillNotFoundError,
 } from "./errors";
 
 describe("internalErrorToHttpError", () => {
@@ -43,6 +45,17 @@ describe("internalErrorToHttpError", () => {
             "The database rejected the connection's credentials. Check the connection's user, password, key or token.",
          reason: "CONNECTION_AUTH_FAILED",
       });
+   });
+
+   it("maps SkillNotFoundError and AgentNotFoundError to 404", () => {
+      for (const error of [
+         new SkillNotFoundError("no skill"),
+         new AgentNotFoundError("no agent"),
+      ]) {
+         const { status, json } = internalErrorToHttpError(error);
+         expect(status).toBe(404);
+         expect(json).toEqual({ code: 404, message: error.message });
+      }
    });
 
    it("maps BadRequestError to 400", () => {

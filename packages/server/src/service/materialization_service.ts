@@ -53,7 +53,6 @@ import { errMessage } from "../utils";
 import {
    collectIncrementalDeclarations,
    CompiledBuildPlan,
-   compilePackageBuildPlan,
    computeSourceEntityId,
    deriveAnnotationFields,
    deriveColumns,
@@ -62,6 +61,7 @@ import {
    resolveQueryMetadata,
    compilerBuildId,
 } from "./build_plan";
+import { compilePackageBuildPlan } from "./build_plan_compile";
 import {
    warehouseDeltaTarget,
    type DeltaTarget,

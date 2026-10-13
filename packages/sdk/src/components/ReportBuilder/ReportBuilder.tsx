@@ -472,6 +472,7 @@ export function ReportBuilder({
                   </>
                ) : (
                   <FilterStrip
+                     sticky={!notebook}
                      controls={bindings.controlList}
                      tileCount={editor.document.tiles.length}
                      unknownFieldsOf={bindings.unknownFieldsOf}

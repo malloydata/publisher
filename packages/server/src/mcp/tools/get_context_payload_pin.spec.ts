@@ -219,6 +219,7 @@ const WIDE_MODEL = {
 };
 
 const packageOf = (models: Record<string, unknown>) => ({
+   listSkills: () => [],
    listModels: async () => Object.keys(models).map((p) => ({ path: p })),
    getModel: (p: string) => models[p],
 });

@@ -170,7 +170,7 @@ function describe(value: unknown): string {
  * a path that starts with `..` as a whole segment. A name that merely begins
  * with two dots (`..prompts`) is an ordinary name and stays inside.
  */
-function stepsOutside(within: string): boolean {
+export function stepsOutside(within: string): boolean {
    return (
       within === ".." ||
       within.startsWith(`..${path.sep}`) ||

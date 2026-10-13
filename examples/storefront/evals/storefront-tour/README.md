@@ -46,6 +46,13 @@ The conventions themselves are written down in
 [`as-received/questions.md`](as-received/questions.md), as part of the material
 the questions arrived with. They are deliberately nowhere in the model.
 
+The package's `skills/storefront-conventions` guide does teach the net-sales
+filter, which is the product as shipped, so the default `--package-skills tool`
+arm measures the question with that guidance on. To compare against no guidance,
+serve a copy of the package without `skills/` and run a second arm with
+`--package <that copy> --package-skills off`; `off` refuses while the server
+still serves package skills.
+
 ### One wrong doc, left wrong on purpose
 
 `storefront.malloy` documents its `customers` source as "People who have placed

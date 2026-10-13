@@ -1,0 +1,3 @@
+# Glossary
+
+net = after refunds

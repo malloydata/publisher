@@ -33,7 +33,7 @@
     },
     "packages/app": {
       "name": "@malloy-publisher/app",
-      "version": "0.9.1",
+      "version": "0.9.9",
       "dependencies": {
         "@malloy-publisher/sdk": "workspace:*",
         "@mui/icons-material": "^7.0.2",
@@ -108,7 +108,7 @@
     },
     "packages/sdk": {
       "name": "@malloy-publisher/sdk",
-      "version": "0.9.1",
+      "version": "0.9.9",
       "dependencies": {
         "@dnd-kit/collision": "^0.5.0",
         "@dnd-kit/dom": "^0.5.0",
@@ -175,7 +175,7 @@
     },
     "packages/server": {
       "name": "@malloy-publisher/server",
-      "version": "0.9.1",
+      "version": "0.9.9",
       "bin": {
         "malloy-publisher": "dist/server.mjs",
       },
@@ -269,6 +269,9 @@
         "typescript": "^5.3.3",
       },
     },
+  },
+  "patchedDependencies": {
+    "@malloydata/render@0.0.435": "patches/@malloydata%2Frender@0.0.435.patch",
   },
   "overrides": {
     "@malloydata/malloy-explorer": "0.0.338-dev260215172810",
