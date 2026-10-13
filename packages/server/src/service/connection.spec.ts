@@ -3901,6 +3901,93 @@ describe("buildPgConnectionString", () => {
       },
    );
 
+   describe("sslmode=no-verify in a raw connectionString", () => {
+      const build = (connectionString: string) =>
+         buildPgConnectionString(
+            { connectionString },
+            { name: "pg_att", applyConnectionOptions: true },
+         );
+
+      it("rewrites a URI's no-verify to require, which libpq understands", () => {
+         expect(
+            build("postgresql://u:p@db.example.com/lake?sslmode=no-verify"),
+         ).toBe("postgresql://u:p@db.example.com/lake?sslmode=require");
+         expect(
+            build(
+               "postgres://u:p@db/lake?application_name=a&sslmode=no-verify&x=y",
+            ),
+         ).toBe(
+            "postgres://u:p@db/lake?application_name=a&sslmode=require&x=y",
+         );
+      });
+
+      it("rewrites a keyword/value string's no-verify, quoted or not, and leaves the rest alone", () => {
+         expect(
+            build("host=db.example.com dbname=lake sslmode=no-verify user=u"),
+         ).toBe("host=db.example.com dbname=lake sslmode=require user=u");
+         expect(build("host=db sslmode = 'no-verify'")).toBe(
+            "host=db sslmode=require",
+         );
+      });
+
+      it("rewrites no-verify alongside adding the statement timeout", () => {
+         expect(
+            buildPgConnectionString(
+               {
+                  connectionString: "host=db sslmode=no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
+               { name: "pg_att", applyConnectionOptions: true },
+            ),
+         ).toBe("host=db sslmode=require options='-c statement_timeout=5000'");
+      });
+
+      it("leaves every other sslmode, and a string without one, unchanged", () => {
+         for (const mode of [
+            "disable",
+            "allow",
+            "prefer",
+            "require",
+            "verify-ca",
+            "verify-full",
+         ]) {
+            expect(build(`postgresql://u:p@db/lake?sslmode=${mode}`)).toBe(
+               `postgresql://u:p@db/lake?sslmode=${mode}`,
+            );
+            expect(build(`host=db sslmode=${mode}`)).toBe(
+               `host=db sslmode=${mode}`,
+            );
+         }
+         expect(build("postgresql://u:p@db/lake")).toBe(
+            "postgresql://u:p@db/lake",
+         );
+         expect(build("postgresql://u:p@db/no-verify?sslmode=require")).toBe(
+            "postgresql://u:p@db/no-verify?sslmode=require",
+         );
+      });
+
+      it("leaves a DuckLake catalog's string raw", () => {
+         expect(
+            buildPgConnectionString(
+               { connectionString: "host=db sslmode=no-verify" },
+               { name: "lake", applyConnectionOptions: false },
+            ),
+         ).toBe("host=db sslmode=no-verify");
+      });
+   });
+
+   it("maps the PGSSLMODE fallback no-verify to require, not plaintext", () => {
+      process.env.PGSSLMODE = "no-verify";
+      expect(
+         buildPgConnectionString(fields, {
+            name: "pg_att",
+            applyConnectionOptions: true,
+         }),
+      ).toBe(
+         "host=db.example.com port=5432 dbname=lake user=u password=p sslmode=require",
+      );
+   });
+
    it("leaves a connectionString's sslmode alone and warns that the field was ignored", () => {
       const warn = sinon.stub(logger, "warn");
       try {

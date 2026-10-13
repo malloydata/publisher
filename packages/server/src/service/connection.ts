@@ -679,10 +679,41 @@ function decodeUriComponentOrRaw(value: string): string {
    }
 }
 
+/** Rewrites `sslmode=no-verify` to `sslmode=require` in a URI or keyword/value string. */
+function requireForNoVerifySslmode(connectionString: string): string {
+   if (/^postgres(ql)?:\/\//i.test(connectionString)) {
+      const queryStart = connectionString.indexOf("?");
+      if (queryStart === -1) return connectionString;
+      const params = connectionString
+         .slice(queryStart + 1)
+         .split("&")
+         .map((param) => {
+            const [key, ...rest] = param.split("=");
+            return decodeUriComponentOrRaw(key) === "sslmode" &&
+               decodeUriComponentOrRaw(rest.join("=")) === "no-verify"
+               ? "sslmode=require"
+               : param;
+         });
+      return `${connectionString.slice(0, queryStart)}?${params.join("&")}`;
+   }
+   let result = connectionString;
+   for (const pair of conninfoPairs(connectionString).reverse()) {
+      if (pair.key === "sslmode" && pair.value === "no-verify") {
+         result =
+            result.slice(0, pair.start) +
+            "sslmode=require" +
+            result.slice(pair.end);
+      }
+   }
+   return result;
+}
+
 /**
- * A raw connectionString with the connection's statement timeout added, in
- * whichever of libpq's two forms the string is written: a URI takes it as an
- * `options` query parameter, a keyword/value string as an `options` pair.
+ * A raw connectionString with `sslmode=no-verify` rewritten to `require` (node-pg
+ * spells "encrypt, don't verify" that way; libpq rejects it) and the connection's
+ * statement timeout added, in whichever of libpq's two forms the string is
+ * written: a URI takes the timeout as an `options` query parameter, a
+ * keyword/value string as an `options` pair.
  *
  * libpq honors only the last `options`, so the timeout is merged into that one
  * rather than added beside it, which would drop the string's other server
@@ -691,11 +722,12 @@ function decodeUriComponentOrRaw(value: string): string {
  * session SET runs after connecting. Unchanged when the connection sets no
  * statement timeout.
  */
-function withLibpqStatementTimeout(
+function libpqConnectionString(
    name: string,
-   connectionString: string,
+   rawConnectionString: string,
    pg: components["schemas"]["PostgresConnection"],
 ): string {
+   const connectionString = requireForNoVerifySslmode(rawConnectionString);
    const ms = postgresStatementTimeoutMs(name, pg);
    if (ms === undefined) return connectionString;
    const merged = (existing: string | undefined): string => {
@@ -750,7 +782,9 @@ function withLibpqStatementTimeout(
  * `statementTimeoutMilliseconds` reach the string. It is false for a DuckLake
  * catalog, whose string is built exactly as it was before those fields existed;
  * true for an attached database and a federated source. When false, or when
- * the field is unset, TLS comes from the deployment PGSSLMODE as before.
+ * the field is unset, TLS comes from the deployment PGSSLMODE as before. A raw
+ * connectionString is used as written when false (platform-owned, so a
+ * `sslmode=no-verify` in it is not rewritten); when true, no-verify becomes require.
  *
  * Exported for tests.
  */
@@ -769,7 +803,7 @@ export function buildPgConnectionString(
                `connectionString; sslmode is ignored and the connectionString's own sslmode applies.`,
          );
       }
-      return withLibpqStatementTimeout(name, pg.connectionString, pg);
+      return libpqConnectionString(name, pg.connectionString, pg);
    }
 
    const parts: string[] = [];
@@ -797,7 +831,7 @@ export function buildPgConnectionString(
 
    if (pgSSLMode) {
       const mapping: Record<string, string> = {
-         "no-verify": "disable",
+         "no-verify": "require",
          disable: "disable",
          allow: "allow",
          prefer: "prefer",
