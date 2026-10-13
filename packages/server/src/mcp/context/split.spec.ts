@@ -180,4 +180,28 @@ describe("splitBundle", () => {
          "returns",
       ]);
    });
+
+   it("never splits a question or a sentence", () => {
+      for (const t of [
+         "Which venue had the highest total check revenue in August 2026, and how much was it?",
+         "Across July to September 2026, what share of alcoholic item lines were cocktails",
+         "For credit transactions, what would be the average fee that the card scheme GlobalCard would charge",
+         "Between 2026-09-05 and 2026-09-14 inclusive, how many real agent turns used Claude Haiku",
+         "the number of orders that were opened across every venue in the network, voided orders included",
+      ]) {
+         expect(splitBundle(t)).toEqual([]);
+      }
+   });
+
+   it("keeps a qualifier or example values on the field they describe", () => {
+      for (const t of [
+         "kind of account a merchant holds, retail or SaaS",
+         "customer region, including no region",
+         "company size segment, all sizes",
+         "real users, not test or internal",
+         "real traffic, not synthetic",
+      ]) {
+         expect(splitBundle(t)).toEqual([]);
+      }
+   });
 });
