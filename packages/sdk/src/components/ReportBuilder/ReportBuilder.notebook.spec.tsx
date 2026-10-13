@@ -88,13 +88,22 @@ const mountText = async (
    );
 
 describe("ReportBuilder: a notebook is one column", () => {
-   it("draws its text and description bare, as the notebook reader does", async () => {
+   it("draws its tiles as a grid does: query tiles in cards, text and description as prose", async () => {
+      // The layouts differ in arrangement only, not in how a tile is drawn.
       await mountText(NOTEBOOK);
-      for (const card of document.querySelectorAll("[data-chrome]"))
-         expect(card.getAttribute("data-chrome")).toBe("none");
-      expect(document.querySelectorAll("[data-chrome]").length).toBeGreaterThan(
-         0,
-      );
+      const tile = (name: string) =>
+         screen
+            .getByLabelText(`Tile ${name}`)
+            .querySelector("[data-chrome]")
+            ?.getAttribute("data-chrome");
+      expect(tile("intro")).toBe("none");
+      expect(tile("by_cat")).toBe("card");
+      expect(
+         screen
+            .getByRole("group", { name: "Description" })
+            .querySelector("[data-chrome]")
+            ?.getAttribute("data-chrome"),
+      ).toBe("none");
    });
 
    it("offers no width: no resize edge, no width presets", async () => {

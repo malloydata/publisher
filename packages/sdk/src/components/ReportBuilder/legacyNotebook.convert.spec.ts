@@ -98,7 +98,7 @@ describe("convertLegacyNotebook: the storefront category review", () => {
       ).toEqual(["text", "text", "query", "text", "query", "text", "query"]);
 
       const texts = doc.tiles.filter(isTextTile).map((t) => t.markdown);
-      expect(texts[0]).toStartWith("# Category review\n\nPick a **Category**");
+      expect(texts[0]).toStartWith("Pick a **Category**");
       expect(texts[1]).toBe(
          "The monthly trend says which way revenue is moving.",
       );

@@ -14,7 +14,6 @@ import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { CellReport } from "./CellReport";
-import { LinearReport } from "./LinearReport";
 import {
    failureCategory,
    ReportEventsContext,
@@ -74,7 +73,7 @@ export interface ReportProps {
     * shown, a drill — for the host to log or count; see `ReportEvent`.
     */
    onEvent?: ReportEventHandler;
-   /** A grid report's tile chrome: `card` (default) or `none`. */
+   /** Ignored: kept so existing callers compile. Both layouts draw the same cards. */
    chrome?: TileChrome;
 }
 
@@ -222,6 +221,10 @@ export function Report({
    if (manifest.notebook) {
       body = (
          <CellReport
+            {...(manifest.title ? { title: manifest.title } : {})}
+            {...(manifest.description
+               ? { description: manifest.description }
+               : {})}
             resourceUri={encodeResourceUri({
                environmentName,
                packageName,
@@ -236,21 +239,8 @@ export function Report({
             onDrillNavigate={drillNavigate}
          />
       );
-   } else if (manifest.layout === "linear") {
-      body = (
-         <LinearReport
-            manifest={manifest}
-            environmentName={environmentName}
-            packageName={packageName}
-            versionId={versionId}
-            documentName={path}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onDrillNavigate={drillNavigate}
-            maxResultSize={maxResultSize}
-         />
-      );
    } else {
+      // Either layout: the same view, arranged as the manifest's layout says.
       body = (
          <DashboardView
             manifest={manifest}

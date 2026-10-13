@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { Alert } from "@mui/material";
+import { useCallback, useMemo, useState } from "react";
 import type { DashboardManifest } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -16,33 +16,26 @@ import {
 import { GivensPanel, type GivensLayout } from "../given";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { Prose } from "../Prose";
-import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
-import { usePublisherTheme } from "../../theme/ThemeContext";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
-import {
-   DashboardGrid,
-   BARE_DESCRIPTION_MARGIN_PX,
-   DEFAULT_COLUMNS,
-   GRID_GAP_PX,
-   NOTEBOOK_GAP_PX,
-} from "./DashboardGrid";
+import { DashboardGrid, GRID_GAP_PX } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import { useReportEvents } from "../Report/telemetry";
-import { TileCard, type TileChrome } from "./TileCard";
+import type { TileChrome } from "./TileCard";
 import { tileIgnoredFilterLabels } from "./TileFilterTag";
-import { useStuck } from "./useStuck";
+import { layoutRules } from "../Report/layoutRules";
+import {
+   ReportHeader,
+   ReportPage,
+   StickyControls,
+   TextTileFrame,
+} from "../Report/ReportPage";
 
 /** Narrowest a tile that sets no `colspan` is allowed to render. */
 const MIN_TILE_PX = 240;
 
-/**
- * The sticky control row's stacking level: above anything a tile raises
- * inside itself as it scrolls under (a result's floating buttons sit at 1–2),
- * and below MUI's app bar, popovers and dialogs. Shared so the builder's
- * control row sits at the same level as the reader's.
- */
-export const STICKY_CONTROLS_Z = 4;
+/** Re-exported for hosts that import it from here; defined with the page parts. */
+export { STICKY_CONTROLS_Z } from "../Report/ReportPage";
 
 export interface DashboardViewProps {
    /** The dashboard, or the tile layout a layout notebook carries. */
@@ -65,7 +58,11 @@ export interface DashboardViewProps {
    onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
    height?: number;
    maxResultSize?: number;
-   /** `none` renders tiles as a document, with no cards or title block. */
+   /**
+    * Ignored: kept so existing callers compile. A linear report and a grid
+    * draw the same header, cards and controls, and differ only in how tiles
+    * are arranged, which the manifest says.
+    */
    chrome?: TileChrome;
    /**
     * How the control row is drawn: `bar` for a dashboard, `panel` for a
@@ -101,7 +98,6 @@ export function DashboardView({
    onNavigate,
    height,
    maxResultSize,
-   chrome = "card",
    controlsLayout = "bar",
    preamble,
    runModelPath,
@@ -217,35 +213,30 @@ export function DashboardView({
    // on the first compile error, so an uncompilable file answers 424 instead.
    if (manifest.error) {
       return (
-         <Stack spacing={2}>
-            <DashboardHeader manifest={manifest} chrome={chrome} />
+         <ReportPage header={<DashboardHeader manifest={manifest} />}>
             <Alert severity="error">{manifest.error}</Alert>
-         </Stack>
+         </ReportPage>
       );
    }
 
    const modelPath = runModelPath ?? manifest.path;
    const tiles = manifest.tiles ?? [];
-   const columns = manifest.dashboardColumns ?? DEFAULT_COLUMNS;
+   // The layout decides the arrangement only, as it does in the builder.
+   const { columns } = layoutRules(manifest.layout, manifest.dashboardColumns);
 
    return (
-      <Stack spacing={2}>
-         {chrome === "card" && (
-            <DashboardHeader manifest={manifest} chrome={chrome} />
-         )}
-
-         {/* Sticky so the controls stay in reach while the tiles scroll under,
-             in a grid only: a linear report's controls are a full panel, and
-             pinned they would take a third of a laptop screen from the prose
-             they sit above. Only when there are controls: GivensPanel draws
-             nothing without them, and an empty box would still cost the Stack
-             a gap. */}
-         {specs.length > 0 && (
-            <StickyControls sticky={chrome === "card"}>
-               <GivensPanel {...controls.panel} layout={controlsLayout} />
-            </StickyControls>
-         )}
-
+      <ReportPage
+         header={<DashboardHeader manifest={manifest} />}
+         // Only when there are controls: GivensPanel draws nothing without
+         // them, and an empty bar would still cost the page a gap.
+         controls={
+            specs.length > 0 ? (
+               <StickyControls>
+                  <GivensPanel {...controls.panel} layout={controlsLayout} />
+               </StickyControls>
+            ) : undefined
+         }
+      >
          {modelPath === undefined ? (
             <Alert severity="error">
                This dashboard has no model path, so there is nothing to run.
@@ -258,7 +249,7 @@ export function DashboardView({
                tiles={tiles}
                columns={columns}
                minTilePx={MIN_TILE_PX}
-               rowGapPx={chrome === "none" ? NOTEBOOK_GAP_PX : GRID_GAP_PX}
+               rowGapPx={GRID_GAP_PX}
                // Position too, not the expression alone: `tiles=[…]` can repeat
                // one, which is a typo rather than a request for two identical
                // panels, and keying on the expression made the duplicate warn
@@ -269,7 +260,9 @@ export function DashboardView({
                renderTile={(tile, index) =>
                   // An absent `kind` is a query tile, as it was before text tiles.
                   tile.kind === "text" || tile.query === undefined ? (
-                     <TextTile markdown={tile.markdown ?? ""} chrome={chrome} />
+                     // Prose, never a card, in either layout: a text tile is
+                     // part of the page, not a result.
+                     <TextTile markdown={tile.markdown ?? ""} />
                   ) : (
                      <DashboardTile
                         index={index}
@@ -288,7 +281,6 @@ export function DashboardView({
                         height={height ?? TILE_MAX_HEIGHT}
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
-                        chrome={chrome}
                         ignoredFilters={tileIgnoredFilterLabels(
                            tile.givenNames,
                            specs,
@@ -329,133 +321,35 @@ export function DashboardView({
                }}
             />
          )}
-      </Stack>
+      </ReportPage>
    );
 }
 
 /** A text tile: its markdown and nothing else, no heading. */
-function TextTile({
-   markdown,
-   chrome,
-}: {
-   markdown: string;
-   chrome: TileChrome;
-}) {
+function TextTile({ markdown }: { markdown: string }) {
    return (
-      <TileCard chrome={chrome} kind="text">
+      <TextTileFrame>
          <Prose variant="document">{markdown}</Prose>
-      </TileCard>
+      </TextTileFrame>
    );
 }
 
 /**
- * The dashboard's prose header: its title, and the description as MARKDOWN
- * (Malloy carries a `##"` block through with its newlines intact).
+ * The report's header as the reader draws it: the shared {@link ReportHeader}
+ * with the title, and the description as markdown prose (Malloy carries a
+ * `##"` block through with its newlines intact) in a text tile's frame.
  */
-function DashboardHeader({
-   manifest,
-   chrome,
-}: {
-   manifest: DashboardManifest;
-   chrome: TileChrome;
-}) {
+function DashboardHeader({ manifest }: { manifest: DashboardManifest }) {
    return (
-      <DashboardProse
-         // The description follows the text-tile rule: drawn in the same chrome
-         // the document's text tiles take, so a dashboard boxes it as it boxes
-         // a text tile, and a notebook (which passes `none`) leaves it bare.
-         chrome={chrome}
+      <ReportHeader
          title={manifest.title ?? manifest.name}
-         {...(manifest.description
-            ? { description: manifest.description }
-            : {})}
+         description={
+            manifest.description ? (
+               <TextTileFrame>
+                  <Prose variant="document">{manifest.description}</Prose>
+               </TextTileFrame>
+            ) : undefined
+         }
       />
-   );
-}
-
-/**
- * The prose header over just the two fields it needs, so the BUILDER can draw
- * the same header over a `DashboardDocument`, which is not a manifest.
- *
- * The description is drawn as a text tile is, in the document's own tile
- * chrome: the same box and the same type as the markdown between the tiles,
- * so the page's prose reads as one kind of thing wherever it sits.
- */
-export function DashboardProse({
-   title,
-   description,
-   chrome = "card",
-}: {
-   title: string;
-   description?: string;
-   /** The chrome the document's tiles take, which the description matches. */
-   chrome?: TileChrome;
-}) {
-   return (
-      <Stack sx={{ gap: 2 }}>
-         {/* No explicit weight: the host theme's h5 weight applies. */}
-         <Typography variant="h5">{title}</Typography>
-         {description && (
-            <Box
-               sx={
-                  chrome === "none"
-                     ? { my: `${BARE_DESCRIPTION_MARGIN_PX}px` }
-                     : undefined
-               }
-            >
-               <TextTile markdown={description} chrome={chrome} />
-            </Box>
-         )}
-      </Stack>
-   );
-}
-
-/**
- * A control row that pins to the top of the scroller and, while pinned, draws
- * a hairline under itself, so tiles scrolling beneath read as passing under a
- * bar rather than being cut off by nothing. Shared by the reader and the
- * builder so both pin the same way.
- */
-export function StickyControls({
-   sticky = true,
-   children,
-}: {
-   sticky?: boolean;
-   children: ReactNode;
-}) {
-   const { theme } = usePublisherTheme();
-   const { sentinelRef, stuck } = useStuck();
-   if (!sticky) return <Box>{children}</Box>;
-   const edge = theme.cardBorder.replace(/^1px solid /, "");
-   return (
-      <>
-         {/* The sentinel the pin is detected from; it costs the parent Stack
-             no gap, since it is a zero-height sibling and Stack gaps are on
-             the bar's own margin. */}
-         <Box
-            ref={sentinelRef}
-            aria-hidden
-            sx={{ height: 0, m: "0 !important" }}
-         />
-         <Box
-            data-stuck={stuck || undefined}
-            sx={{
-               position: "sticky",
-               top: 0,
-               zIndex: STICKY_CONTROLS_Z,
-               bgcolor: "background.default",
-               // Room under the bar for the edge, so the line never sits on
-               // the controls themselves.
-               pb: 1,
-               // A shadow rather than a border: drawing the edge must not
-               // change the bar's height, or the page jumps as it pins.
-               boxShadow: stuck ? `0 1px 0 ${edge}` : "none",
-               transition: `box-shadow ${MOTION_FAST}`,
-               ...reducedMotionSx,
-            }}
-         >
-            {children}
-         </Box>
-      </>
    );
 }

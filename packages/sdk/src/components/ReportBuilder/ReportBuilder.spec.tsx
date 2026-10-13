@@ -442,7 +442,7 @@ describe("ReportBuilder: fields, when the package is known", () => {
       expect(submit()).toHaveProperty("disabled", true);
    });
 
-   it("marks a control whose binding names a missing field, on its chip", async () => {
+   it("marks a control whose binding names a missing field, on its filter button", async () => {
       const source = SOURCE.replace(
          "where: cat ~ $CATEGORY",
          "where: catgory ~ $CATEGORY",
@@ -455,8 +455,10 @@ describe("ReportBuilder: fields, when the package is known", () => {
             catalog={catalog}
          />,
       );
-      const chip = screen.getByLabelText("Edit filter CATEGORY");
-      expect(chip.className).toContain("colorWarning");
+      const button = screen.getByLabelText("Edit filter CATEGORY");
+      expect(
+         button.closest("[data-filter]")?.getAttribute("data-problem"),
+      ).toBe("true");
    });
 });
 

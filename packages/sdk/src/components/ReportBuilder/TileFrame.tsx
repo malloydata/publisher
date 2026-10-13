@@ -7,14 +7,12 @@ import type { PointerEvent, ReactNode } from "react";
 import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
+import { CONTROL_RADIUS, hoverEdgeColor, TILE_RADIUS } from "../controlTokens";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
+import { BARE_RING_OFFSET_PX, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import {
-   BARE_RING_OFFSET_PX,
-   GRID_GAP_PX,
-   NOTEBOOK_GAP_PX,
-} from "../Dashboard/DashboardGrid";
-import {
+   TILE_HEADING_CLASS,
    TileCard,
    TileHeading,
    type TileChrome,
@@ -148,6 +146,12 @@ export function TileFrame({
                   // in is the faded, dashed one — the pair every
                   // drag-and-drop grid draws. Doubled so they outrank
                   // the hover rule below on the tile in hand.
+                  // Room at the end of a card's heading for the menu
+                  // button, so a long title wraps before it rather than
+                  // running under it.
+                  ...(!bare && {
+                     [`& .${TILE_HEADING_CLASS}`]: { pr: "36px" },
+                  }),
                   "&&[data-dnd-dragging]": {
                      opacity: 1,
                      outline: "none",
@@ -198,26 +202,25 @@ export function TileFrame({
                   }}
                   sx={{
                      position: "absolute",
-                     // A tab on the tile's top edge, the same on a card and
-                     // on bare content: centred on the card's border, or on
-                     // a bare tile's ring, so it never covers the tile's title
-                     // or text.
-                     top: `${-((bare ? BARE_RING_OFFSET_PX + 1 : 0) + 12)}px`,
-                     right: bare ? 0 : "12px",
-                     border: theme.cardBorder,
-                     borderRadius: 1,
-                     // A 24px hit target at least, whatever the glyph.
+                     // Inside the tile, top right: on a card, in its heading
+                     // row level with the title (the heading leaves room for
+                     // it: see `TILE_HEADING_CLASS` below); on prose, in its
+                     // top corner, which a readable line leaves empty. Not
+                     // astride the edge, half outside the tile it belongs to.
+                     top: bare ? 0 : `${MENU_INSET_PX}px`,
+                     right: bare ? 0 : `${MENU_INSET_PX}px`,
+                     borderRadius: CONTROL_RADIUS,
                      width: 28,
-                     height: 24,
+                     height: 28,
                      zIndex: 2,
-                     color: theme.tileTitle,
-                     bgcolor: theme.tile,
-                     opacity: selected || menuOpen ? 0.9 : 0,
+                     color: "text.secondary",
+                     bgcolor: "action.hover",
+                     opacity: selected || menuOpen ? 1 : 0,
                      transition: `opacity ${MOTION_FAST}`,
                      ...reducedMotionSx,
                      "&:hover": {
                         opacity: 1,
-                        bgcolor: theme.tile,
+                        bgcolor: "action.selected",
                      },
                   }}
                >
@@ -319,7 +322,7 @@ export function TileFrame({
                         // Centred in the gap below the tile, not on its edge: on
                         // a one-line notebook text tile, an edge-centred button
                         // covered the middle of the text it sits under.
-                        bottom: `-${(bare ? NOTEBOOK_GAP_PX : GRID_GAP_PX) / 2 + 12}px`,
+                        bottom: `-${GRID_GAP_PX / 2 + 12}px`,
                         left: "50%",
                         transform: "translateX(-50%)",
                         width: 24,
@@ -345,6 +348,9 @@ export function TileFrame({
       </TileSortable>
    );
 }
+
+/** How far the tile menu button sits in from a card's top and right edges: level with the title. */
+const MENU_INSET_PX = 14;
 
 /** How far the selection ring stands outside what it selects: its 2px offset plus its 2px width. */
 export const SELECTION_RING_PX = 4;
@@ -391,8 +397,11 @@ export const selectionSx = (
          "&:hover::before": { borderColor: hoverRing },
       };
    // A card carries its own padding, so its ring hugs its edge.
+   // Hover deepens the card's own edge and lifts it; the ring is selection's
+   // alone. A hover ring the shape of the selection ring made a pointed-at tile
+   // and a selected one look alike.
    return {
-      borderRadius: 1,
+      borderRadius: TILE_RADIUS,
       outline: `2px solid ${ring}`,
       outlineOffset: 2,
       ...(flash && {
@@ -401,8 +410,10 @@ export const selectionSx = (
       transition,
       ...reducedMotionSx,
       "&:hover": {
-         outlineColor: hoverRing,
          boxShadow: theme.shadow.lift,
+         "& > .MuiPaper-root": {
+            borderColor: hoverEdgeColor(theme.cardBorder, theme.tileTitle),
+         },
       },
    };
 };

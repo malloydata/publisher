@@ -435,11 +435,8 @@ export function EditorSurface({
             {...(onEvent ? { onEvent } : {})}
             controls={
                isSuccess ? (
-                  // The reader's control layout for the document as it stands: a linear report's panel, a grid's bar.
-                  <GivensPanel
-                     {...panel}
-                     layout={doc.layout === "linear" ? "panel" : "bar"}
-                  />
+                  // The reader's control row: filter buttons, in either layout.
+                  <GivensPanel {...panel} layout="bar" />
                ) : undefined
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
