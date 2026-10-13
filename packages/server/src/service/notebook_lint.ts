@@ -52,6 +52,9 @@ export interface NotebookLintFinding {
 /** The code of the finding for a linear tag with no `tiles`, the retired cell format (`report.ts`). */
 export const CELLS_REMOVED = "report-cells-removed";
 
+/** The code of the finding for a `layout=` value Publisher does not know. */
+export const LAYOUT_UNKNOWN = "report-layout-unknown";
+
 /**
  * Why a linear tag with no `tiles` makes no report, after its `Line N:`: the
  * cell format it was written in is retired (`report.ts`), so the file is an
@@ -570,7 +573,7 @@ export function lintNotebookText(
       ) {
          add(
             line,
-            "report-layout-unknown",
+            LAYOUT_UNKNOWN,
             `\`layout=${declaredLayout}\` is not a layout Publisher knows (grid, linear), so the tag's other properties decide it. Fix: write \`layout=grid\` or \`layout=linear\`.`,
             "error",
          );
@@ -601,7 +604,12 @@ export function lintNotebookText(
             `\`kind=${tag.kind}\` is no longer read, so this file is not a report. Fix: remove \`kind=${tag.kind}\` and write \`layout=grid\` or \`layout=linear\`.`,
          ];
       if (tag.status === "cells-removed")
-         return [CELLS_REMOVED, CELLS_REMOVED_MESSAGE];
+         return tag.unknownLayout !== undefined
+            ? [
+                 LAYOUT_UNKNOWN,
+                 `\`layout=${tag.unknownLayout}\` is not a layout Publisher knows (grid, linear), and the tag lists no tiles, so this file is not a report. Fix: write \`layout=grid\` or \`layout=linear\`, and list the tiles in \`tiles=[…]\`.`,
+              ]
+            : [CELLS_REMOVED, CELLS_REMOVED_MESSAGE];
       const [parseError] = motlyParseErrors([tagText]);
       return [
          "notebook-artifact-unparsed",

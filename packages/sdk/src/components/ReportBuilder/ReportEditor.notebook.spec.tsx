@@ -184,6 +184,24 @@ describe("ReportEditor as a notebook", () => {
       expect(getModel.mock.calls[0][2]).toBe("dashboards/tour.malloy");
    });
 
+   it("refuses a file written as `run:` cells, saying why, and reports a category, never the reason", async () => {
+      served =
+         '## artifact { layout=linear }\nimport { orders } from "../m.malloy"\n\nrun: orders -> by_month\n';
+      const onEvent = mock((_event: ReportEvent) => {});
+      mount({}, onEvent);
+      expect(
+         await screen.findByText(/written as `run:` cells is no longer read/),
+      ).toBeDefined();
+      expect(onEvent.mock.calls[0][0]).toMatchObject({
+         type: "report.load_failed",
+         surface: "edit",
+         category: "invalid",
+      });
+      // A category, never the message: the reason can carry the file's text.
+      expect(onEvent.mock.calls[0][0]).not.toHaveProperty("reason");
+      expect(writes).toEqual([]);
+   });
+
    // DEPRECATED FEATURE COVERAGE — delete together with
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {

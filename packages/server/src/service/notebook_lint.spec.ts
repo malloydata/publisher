@@ -524,6 +524,26 @@ describe("notebook lint", () => {
          ]);
       });
 
+      it("names an unknown layout, not the cell format, for a tileless tag", () => {
+         expect(all(`## artifact { layout=dashboard }\n${SOURCE}`)).toEqual([
+            {
+               line: 1,
+               code: "report-layout-unknown",
+               message:
+                  "Line 1: `layout=dashboard` is not a layout Publisher knows (grid, linear), and the tag lists no tiles, so this file is not a report. Fix: write `layout=grid` or `layout=linear`, and list the tiles in `tiles=[…]`.",
+               severity: "error",
+            },
+         ]);
+      });
+
+      it("says a `tiles` that is not a list does not parse, with the tile-entry fix", () => {
+         const [finding] = all(
+            `## artifact { layout=linear tiles=foo }\n${SOURCE}`,
+         );
+         expect(finding?.code).toBe("notebook-artifact-unparsed");
+         expect(finding?.severity).toBe("error");
+      });
+
       it("still reads a linear tag with an empty tile list", () => {
          expect(all(`${HEADER}${SOURCE}`)).toEqual([]);
          expect(all(`${HEADER}${SOURCE}${RUN}`).map((f) => f.code)).toEqual([

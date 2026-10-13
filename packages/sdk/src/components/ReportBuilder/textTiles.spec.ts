@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { CELLS_REMOVED_REASON } from "./reportTag";
 import {
    isQueryTile,
    isTextTile,
@@ -156,7 +157,7 @@ describe("readDashboardDocument: text tiles and layout", () => {
          `## artifact { layout=linear title="Old" }\nimport { a } from "../m.malloy"\n\nrun: a -> v\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.reason).toContain("no longer read");
+      expect(result.reason).toBe(CELLS_REMOVED_REASON);
    });
 
    it("refuses a grid report with no tiles list for a missing tile list", async () => {
@@ -164,7 +165,7 @@ describe("readDashboardDocument: text tiles and layout", () => {
          `## artifact { layout=grid title="D" }\nimport { a } from "../m.malloy"\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.reason).not.toContain("no longer read");
+      expect(result.reason).not.toBe(CELLS_REMOVED_REASON);
       expect(result.reason).toContain("tiles");
    });
 
@@ -173,7 +174,7 @@ describe("readDashboardDocument: text tiles and layout", () => {
          `## artifact { title="D" }\nimport { a } from "../m.malloy"\n`,
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
-      expect(result.reason).toContain("no longer read");
+      expect(result.reason).toBe(CELLS_REMOVED_REASON);
    });
 
    it("reads an empty tiles list on a notebook as a layout notebook with no tiles", async () => {

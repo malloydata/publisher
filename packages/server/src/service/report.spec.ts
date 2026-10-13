@@ -71,12 +71,29 @@ describe("readReportTag: what model-level notes make a file", () => {
    });
 
    it("reads layout values exactly: case and unknown words name no layout", () => {
+      // No tiles and an unknown layout: no report, and the lint names the layout.
       expect(readReportTag(["## artifact { layout=Grid }"])).toEqual({
+         status: "cells-removed",
+         unknownLayout: "Grid",
+      });
+      expect(readReportTag(["## artifact { layout=linear }"])).toEqual({
          status: "cells-removed",
       });
       expect(
          readReportTag(['## artifact { layout=wide tiles=["a -> v"] }']),
       ).toMatchObject({ layout: "grid" });
+   });
+
+   it("reads a `tiles` that is not a list as a tag it cannot use", () => {
+      expect(
+         readReportTag(["## artifact { layout=linear tiles=foo }"]),
+      ).toEqual({ status: "unparsed" });
+      expect(
+         readReportTag(["## artifact { layout=grid tiles { a } }"]),
+      ).toEqual({ status: "unparsed" });
+      expect(readReportTag(["## artifact { layout=linear tiles=[] }"])).toEqual(
+         { status: "report", layout: "linear" },
+      );
    });
 
    it("makes no report of a tag that sets `kind=`, whatever else it says", () => {

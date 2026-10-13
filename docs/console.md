@@ -73,9 +73,9 @@ is a Console convenience.
   **Data** and **Materializations**, in that order, plus the package's README rendered
   underneath (a report at the package root whose basename is `README`). Reports lists every report in
   the package, whatever directory it sits in, each row marked with its layout (linear or grid) and
-  opened by its path, and carries the **New report** button on its heading row. Apps is hidden
+  opened by its path, and carries the **+ Report** button on its heading row. Apps is hidden
   when the package has none. Reports is hidden when empty too, unless creating is offered: then it
-  shows a "No reports yet" row with a **New report** button.
+  shows a "No reports yet" row with an **Add report** button.
   The Materializations section lists the package's build runs and carries the three controls that
   change them: **Scope**, **Schedule** and **Add materialization**.
   A report is listed by its title, or by its file name without directory or extension when it has
@@ -107,7 +107,7 @@ is a Console convenience.
   there is no Save. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
   outside prose is refused with a 400, so the builder opens such a file but cannot save it from the
   Console; gates live in the model file.
-- **Create a report** — the package page's **New report** action takes a model, a source and its
+- **Create a report** — the package page's **+ Report** button takes a model, a source and its
   view (one select), a title and a layout (linear unless you pick grid), writes `<slug>.malloy` at the
   **package root** (or at another path you type; it never overwrites an existing file) and opens it in
   the builder. No directory is created for you. A host with its own record creates it there instead.
@@ -115,7 +115,7 @@ is a Console convenience.
   the record and can store; a workspace that keeps drafts in the browser beside a writable server
   still gets it, and writes to the package. It is not offered when neither route exists, on a record
   that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
-  and **New report**, and an editor opened by URL asks for **Edit anyway** first.
+  and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
 - **Read a legacy notebook** — a `.malloynb` in a package renders as a linear report: its markdown,

@@ -106,14 +106,16 @@ function parseLayoutValue(value: string | undefined): ReportLayout | undefined {
  *   report; the lint says to write `layout=`.
  * - `cells-removed`: the tag reads as linear and lists no `tiles`, the retired
  *   form of a linear report written as `run:` cells, so not a report; the lint
- *   says to list the tiles.
+ *   says to list the tiles. `unknownLayout` is set when the tag names a layout
+ *   Publisher does not know (`layout=Grid`), which is what made it read as
+ *   linear, so the lint names that instead.
  * - `report`: a report, with its layout.
  */
 export type ReportTag =
    | { status: "none" }
    | { status: "unparsed" }
    | { status: "kind-removed"; kind: string }
-   | { status: "cells-removed" }
+   | { status: "cells-removed"; unknownLayout?: string }
    | { status: "report"; layout: ReportLayout };
 
 /**
@@ -125,7 +127,8 @@ export type ReportTag =
  * The layout, first match wins: `layout=grid|linear`; else grid when the tag
  * lists `tiles` (an empty list counts) or a model-level `dashboard { … }` grid
  * tag is present; else linear. A linear tag with no `tiles` key (an empty list
- * counts as one) is the retired cell format, so no report.
+ * counts as one) is the retired cell format, so no report. A `tiles` that is
+ * not a list (`tiles=foo`) is a tag the reader cannot use: unparsed.
  */
 export function readReportTag(modelNotes: readonly string[]): ReportTag {
    const tags = motlyTag(modelNotes);
@@ -137,10 +140,16 @@ export function readReportTag(modelNotes: readonly string[]): ReportTag {
    const kind = tagText(artifact, "kind");
    if (kind !== undefined) return { status: "kind-removed", kind };
    const hasTiles = artifact.has("tiles");
+   if (hasTiles && artifact.array("tiles") === undefined)
+      return { status: "unparsed" };
+   const declared = tagText(artifact, "layout");
    const layout =
-      parseLayoutValue(tagText(artifact, "layout")) ??
+      parseLayoutValue(declared) ??
       (hasTiles || tags?.tag("dashboard") !== undefined ? "grid" : "linear");
-   if (layout === "linear" && !hasTiles) return { status: "cells-removed" };
+   if (layout === "linear" && !hasTiles)
+      return declared !== undefined && parseLayoutValue(declared) === undefined
+         ? { status: "cells-removed", unknownLayout: declared }
+         : { status: "cells-removed" };
    return { status: "report", layout };
 }
 

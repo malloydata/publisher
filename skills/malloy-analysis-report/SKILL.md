@@ -2,6 +2,7 @@
 name: malloy-analysis-report
 description: Combine validated Malloy queries into a report (a linear report, read top to bottom). Use when the user asks to "create a report", "combine these into a report", or wants a persistent multi-query artifact.
 ---
+
 <!--
 Copyright (c) Credible Data Inc.
 SPDX-License-Identifier: MIT
@@ -127,6 +128,7 @@ Use this as a default; deviate when the analysis warrants. A grounded report nam
 Read `skill:malloy-charts` before picking visualizations: it owns chart-type selection, properties, and the placement rules for chart annotations. `skill:malloy-queries` covers Malloy query patterns and the critical placement rules for chart-annotation tags.
 
 When in doubt:
+
 - KPIs / single numbers -> `# big_value`, often nested inside `# dashboard`.
 - Trend over time -> `# line_chart`, usually on the primary date dimension.
 - Category comparisons -> `# bar_chart`, ordered by the metric.
@@ -174,6 +176,7 @@ view: summary is {
 ```
 
 Key rendering rules to keep in mind when shaping a tile:
+
 - FIRST `group_by` = x-axis, FIRST `aggregate` = y-axis.
 - Override field roles with `# x`, `# y`, `# series` on individual fields.
 - For multiple measure series, place `# y` above the `aggregate:` keyword.
@@ -182,7 +185,7 @@ Key rendering rules to keep in mind when shaping a tile:
 
 ## Editing an existing report
 
-For small targeted changes (fix one view, insert one tile), edit that view or text block in place and add its entry to `tiles=[…]`, rather than recreating the whole report. For structural rewrites (reordering many tiles, changing the narrative arc), rewrite the report file. An existing `.malloynb` is read, not edited: to change its story, write a `.malloy` report. An existing report's tag that says `kind=notebook` is the deprecated spelling of `layout=linear`; fix it when you edit the file. A linear file with no `tiles=[…]`, written as bare `run:` statements, is no longer a report: rewrite it as tiles (`skill:malloy-reports`, `reference/linear.md`).
+For small targeted changes (fix one view, insert one tile), edit that view or text block in place and add its entry to `tiles=[…]`, rather than recreating the whole report. For structural rewrites (reordering many tiles, changing the narrative arc), rewrite the report file. An existing `.malloynb` is read, not edited: to change its story, write a `.malloy` report. A tag that sets `kind=notebook` is no longer read, so the file is not a report (`report-kind-removed`): replace it with `layout=linear` and list the tiles. A linear file with no `tiles=[…]`, written as bare `run:` statements, is no longer a report: rewrite it as tiles (`skill:malloy-reports`, `reference/linear.md`).
 
 ## IMPORTANT
 

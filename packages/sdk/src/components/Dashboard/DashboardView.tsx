@@ -111,14 +111,19 @@ export function DashboardView({
    onLinkNavigate,
 }: DashboardViewProps) {
    // Where a relative link in the report's prose resolves from, and how the
-   // host navigates to it.
-   const links = useMemo<ProseLinkContext>(
-      () => ({
-         environmentName,
-         packageName,
-         sourcePath: manifest.path ?? documentName,
-         ...(onLinkNavigate ? { onNavigate: onLinkNavigate } : {}),
-      }),
+   // host navigates to it. Only a host with a router gets its links resolved:
+   // without one they stay plain anchors, since this view cannot know the
+   // host's routes (a version segment, a different prefix).
+   const links = useMemo<ProseLinkContext | undefined>(
+      () =>
+         onLinkNavigate
+            ? {
+                 environmentName,
+                 packageName,
+                 sourcePath: manifest.path ?? documentName,
+                 onNavigate: onLinkNavigate,
+              }
+            : undefined,
       [
          environmentName,
          packageName,
@@ -363,7 +368,7 @@ function TextTile({
    links,
 }: {
    markdown: string;
-   links: ProseLinkContext;
+   links: ProseLinkContext | undefined;
 }) {
    return (
       <TextTileFrame>
@@ -384,7 +389,7 @@ function DashboardHeader({
    links,
 }: {
    manifest: DashboardManifest;
-   links: ProseLinkContext;
+   links: ProseLinkContext | undefined;
 }) {
    return (
       <ReportHeader

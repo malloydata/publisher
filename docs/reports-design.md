@@ -141,9 +141,10 @@ In order, first match wins:
 1. `layout=grid` or `layout=linear` in the tag.
 2. A model-level `## artifact` that lists `tiles` or a model-level `dashboard {…}` grid tag (on the
    artifact line or a line of its own) is **grid**.
-3. Anything else is **linear**: a `.malloy` that lists tiles, or a `.malloynb`. A linear tag with no tiles
-   was the `run:`-cell form; that form was later retired, and such a file is no report
-   (`report-cells-removed`).
+3. Anything else is **linear**.
+
+   _Later:_ a `.malloy` tag that comes out linear with no `tiles` key was the `run:`-cell form, which was
+   retired; such a file is no report (`report-cells-removed`).
 
 A tag that sets `kind=` is no report at all: `kind=` was the old spelling of the layout, removed
 rather than deprecated because reports have no users yet, and reading it silently as a layout, or

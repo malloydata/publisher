@@ -155,6 +155,28 @@ describe("served linear report cells", () => {
       expect(markdown.result).toBeUndefined();
    });
 
+   it("grafts a tile cell against the whole compiled model", async () => {
+      const nb = model(LAYOUT) as unknown as {
+         runnableNotebookCells: { runnable?: unknown }[];
+         resolveNotebookCellGraftScope(
+            index: number,
+            runnable: unknown,
+         ): Promise<{
+            graftScope?: { cacheScope: string };
+            usesOwnScope: boolean;
+         }>;
+      };
+      // Cells 3 and 4 are the tile cells, `run: <tile>` over the compiled report.
+      for (const index of [3, 4]) {
+         const resolved = await nb.resolveNotebookCellGraftScope(
+            index,
+            nb.runnableNotebookCells[index].runnable,
+         );
+         expect(resolved.usesOwnScope).toBe(false);
+         expect(resolved.graftScope?.cacheScope).toBe("model");
+      }
+   });
+
    it("attaches identical cells on the worker path and on Model.create", async () => {
       const { MalloyConfig } = await import("@malloydata/malloy");
       const { DuckDBConnection } = await import("@malloydata/db-duckdb");

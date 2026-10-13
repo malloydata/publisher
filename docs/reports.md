@@ -153,8 +153,12 @@ In order, first match wins:
 1. `layout=grid` or `layout=linear` in the tag.
 2. A tag that lists `tiles` (an empty list counts), or a model-level `dashboard { … }` grid tag on any `##`
    line of the file, is grid.
-3. Anything else is linear, which a `.malloy` file is only when it lists tiles. A linear tag with no
-   `tiles` is the retired cell format and makes no report (see [Files written as `run:` cells](#files-written-as-run-cells)).
+3. Anything else is linear.
+
+A `.malloy` file whose tag comes out linear, by step 1 or step 3, is a report only when the tag has a
+`tiles` key (an empty list counts). With none it is the retired cell format and makes no report (see
+[Files written as `run:` cells](#files-written-as-run-cells)); a `.malloynb` is linear with no tag at all.
+A `tiles` that is not a list (`tiles=foo`) makes the tag unreadable, so no report either.
 
 So **a linear report that lists tiles must say `layout=linear`**, or step 2 reads it as grid. Write
 `layout=` on every report, which is what the builder and the create dialog always do, and a file never
@@ -272,8 +276,9 @@ query tile is `{ kind: "query", query, … }`. Anything that runs a report's til
 Write a report in one order: the header (`##!` flags, `//` comments, the `"` description, the artifact
 tag), then imports and givens, then the prose blocks in tile order, then the extension that defines the
 tile views. Tiles read in `tiles=[…]` order wherever their blocks sit; grouping the blocks before the
-extension is what the builder writes, and it inserts a new block after the last one. A statement or a
-`#` tag above `## artifact` is an error, and the report is served with that error instead of opening.
+extension is what the builder writes, and it inserts a new block after the last one. Keep statements and
+`#` tags below `## artifact`: nothing refuses one above it, but the header is where readers and the builder
+look for the tag and the description.
 
 <a id="grid-layout"></a>
 
@@ -441,10 +446,14 @@ source: category_tiles is order_items extend {
 
 ### Files written as `run:` cells
 
-An older linear form was a file of `run:` statements with `(markdown)` notes between them, under a
-`## artifact { layout=linear }` tag with no `tiles`. Publisher no longer reads it. Such a file is not a
+An older linear form was a file of `run:` statements with `(markdown)` notes between them, under an
+artifact tag with no `tiles`, either `## artifact { layout=linear }` or one naming no layout at all.
+Publisher no longer reads it. Such a file is not a
 report: it is not listed, its route opens nothing, and the builder refuses it. The package page names it
-with `report-cells-removed` and the fix, and the compile check answers the same finding.
+with `report-cells-removed` and the fix, and the compile check answers the same finding. A tag whose
+`layout=` is misspelled (`layout=Grid`) and that lists no tiles is named `report-layout-unknown` instead.
+The file still compiles as a model, and `PUT …/models/{path}` with the `expectedHash` of its current text
+replaces it in place, so it can be rewritten as tiles where it is.
 
 To bring one back, rewrite it as tiles, the form above:
 
@@ -782,9 +791,10 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
   the artifact tag that Publisher does not read.
 - **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan`, an unknown
   property on the entry, and a named block no entry lists.
-- **The tag and the header.** An artifact tag that does not parse (`notebook-artifact-unparsed`), a
-  statement or tag above it, and prose the reader cannot place, each as an `error` naming the line and the
-  fix.
+- **The tag and the prose.** An artifact tag that does not parse (`notebook-artifact-unparsed`, error);
+  a `#(markdown)` note with no statement to take it (`notebook-markdown-attached-nowhere`, error); a
+  floating or unnamed `(markdown)` note that no text tile shows (`notebook-markdown-block-unnamed`); each
+  naming the line and the fix.
 - **The layout.** A `layout=` other than `grid` or `linear` (`report-layout-unknown`, error); a tag that
   sets `kind=`, which is no longer read and makes no report (`report-kind-removed`, error, with the
   `layout=` to write); a linear tag with no `tiles`, the retired cell format, which makes no report
@@ -860,8 +870,9 @@ report into the package and reloads it. One rule for both layouts:
 - **Create** (omit `expectedHash`) at any `.malloy` path in the package that does not exist yet, outside
   `public/` and never at the root `index.malloy`. Missing directories are created inside the package. The
   text must carry an artifact tag. A file already at that path answers `409`.
-- **Replace** (with `expectedHash`) only a file the package currently serves as an editable report. The
-  endpoint cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`, wherever they live.
+- **Replace** (with `expectedHash`) only a file with an artifact tag: a report the package serves, or a
+  tagged file it refuses as one (a retired cell-format file, a `kind=` tag), so that file can be rewritten
+  as tiles in place. The endpoint cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`, wherever they live.
   A file that changed since you read it answers `409`, and nothing is merged.
 - The text is compiled first (at `scope: "file"`) and refused with its problems when it does not compile.
   The write is atomic under the package lock, the package reloads in place, and the previous text is
@@ -876,7 +887,7 @@ Two reports may share a basename in different directories; there is no name-coll
 ## Editing in the Console
 
 Every report page has an **Edit** button in the header, beside the breadcrumbs, and the package page has a
-**New report** action: pick a model, a source and its view, a title and a layout (linear by default), and
+**+ Report** button: pick a model, a source and its view, a title and a layout (linear by default), and
 the file is written as `<slug>.malloy` at the **package root**, or at another location you type, and opened
 in the builder. No directory is ever created for you.
 
@@ -906,7 +917,7 @@ that tile with the reason shown; so is a tile inherited from a declaration on th
 A grid report with `tiles=[]` (only possible by hand-editing) opens in the builder but is not served until it
 has a tile, and the builder will not remove the last tile of a report saved with tiles. A filter on a
 dimension reached through a join keeps its full dotted path (`products.category`), written quoted. On a
-screen narrower than 600px the Console hides **Edit** and **New report**, and an editor opened by URL asks
+screen narrower than 600px the Console hides **Edit** and **+ Report**, and an editor opened by URL asks
 for **Edit anyway** first.
 
 What makes it different from a classic BI tool is what the editing produces. There is no proprietary layout

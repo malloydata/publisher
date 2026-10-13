@@ -68,10 +68,16 @@ A report compiles with **all** its `import`s in scope, so it can import several 
 **No data-specific insights in markdown.** Data refreshes will make them stale.
 
 ```malloy
-##(markdown) WRONG: will become stale when data refreshes. Revenue spiked 23% in March.
+##|(markdown) spike_note
+WRONG: will become stale when data refreshes. Revenue spiked 23% in March.
+|##
 
-##(markdown) RIGHT: frames the question and lets the query answer it. How is revenue trending?
+##|(markdown) trend_q
+RIGHT: frames the question and lets the query answer it. How is revenue trending?
+|##
 ```
+
+Each is a text tile, listed in `tiles=[…]` by name, for example `trend_q { kind=text }`.
 
 To add `limit`, `where`, or other options to an existing view, refine it with `+`: `my_view + { limit: 15 }`.
 
@@ -83,18 +89,18 @@ A `.malloynb` (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated
 
 ## Common mistakes
 
-| Mistake                                                                    | Fix                                                                                                       |
-| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| A tile list without `layout=linear`                                        | Read as a grid. Write `layout=linear`.                                                                    |
-| A linear tag with no `tiles=[…]`                                           | The retired cell format: no report (`report-cells-removed`). List the tiles.                              |
-| `view_name { limit: 10 }`                                                  | Use `+`: `view_name + { limit: 10 }`                                                                      |
-| A statement or a `#` tag above `## artifact`                               | Only `##!` flags, `//` comments and unnamed `"` notes go in the header. Move the statement below the tag. |
-| `## Heading` for a section title                                           | That line is model tags, not prose. Write the heading inside a `##\|(markdown) name` text tile.           |
-| `##\| markdown` or `##\|markdown` (no parentheses)                         | Write `##\|(markdown) name`.                                                                              |
-| Text on the opener line after `##\|(markdown)`                             | Only the tile's name may follow it. Put the text on the next line.                                        |
-| `run:` in a report that lists `tiles=[…]`                                  | Never shown. Define a `view:`, list `"source -> view"` in `tiles`, delete the `run:`.                     |
-| `tiles=[intro { kind=text }, orders_tiles -> headline]` (entry not quoted) | Every `source -> view` entry is a quoted string. Unquoted, the tag does not parse.                        |
-| A bare `intro` in `tiles` for a `##\|(markdown) intro` block               | A bare name is the query-tile form for a `query:`. Write `intro { kind=text }`.                           |
-| `colspan` or `break` on a linear report's tile entry                       | Ignored and reported (`notebook-tile-layout-ignored`). Remove them, or switch to `layout=grid`.           |
-| `#(filter)` in any form                                                    | Deprecated. Declare a `given:` on the model's source instead.                                             |
-| Data-specific insights in a text tile                                      | Frame questions instead.                                                                                  |
+| Mistake                                                                    | Fix                                                                                             |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| A tile list without `layout=linear`                                        | Read as a grid. Write `layout=linear`.                                                          |
+| A linear tag with no `tiles=[…]`                                           | The retired cell format: no report (`report-cells-removed`). List the tiles.                    |
+| `view_name { limit: 10 }`                                                  | Use `+`: `view_name + { limit: 10 }`                                                            |
+| Floating `##(markdown)` prose in a tiled report                            | Never shown (`notebook-markdown-block-unnamed`). Make it a named text tile and list it.         |
+| `## Heading` for a section title                                           | That line is model tags, not prose. Write the heading inside a `##\|(markdown) name` text tile. |
+| `##\| markdown` or `##\|markdown` (no parentheses)                         | Write `##\|(markdown) name`.                                                                    |
+| Text on the opener line after `##\|(markdown)`                             | Only the tile's name may follow it. Put the text on the next line.                              |
+| `run:` in a report that lists `tiles=[…]`                                  | Never shown. Define a `view:`, list `"source -> view"` in `tiles`, delete the `run:`.           |
+| `tiles=[intro { kind=text }, orders_tiles -> headline]` (entry not quoted) | Every `source -> view` entry is a quoted string. Unquoted, the tag does not parse.              |
+| A bare `intro` in `tiles` for a `##\|(markdown) intro` block               | A bare name is the query-tile form for a `query:`. Write `intro { kind=text }`.                 |
+| `colspan` or `break` on a linear report's tile entry                       | Ignored and reported (`notebook-tile-layout-ignored`). Remove them, or switch to `layout=grid`. |
+| `#(filter)` in any form                                                    | Deprecated. Declare a `given:` on the model's source instead.                                   |
+| Data-specific insights in a text tile                                      | Frame questions instead.                                                                        |

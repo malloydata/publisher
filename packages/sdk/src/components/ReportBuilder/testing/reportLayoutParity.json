@@ -120,6 +120,11 @@
          "name": "a file with no artifact tag is no report",
          "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
          "expected": null
+      },
+      {
+         "name": "a `tiles` that is not a list is a tag the reader cannot use: no report",
+         "source": "## artifact { layout=linear tiles=foo }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "expected": null
       }
    ]
 }

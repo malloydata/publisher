@@ -38,6 +38,7 @@ import { extractSourcesFromModelDef } from "./source_extraction";
 import {
    CELLS_REMOVED,
    CELLS_REMOVED_MESSAGE,
+   LAYOUT_UNKNOWN,
    notebookLintProblems,
 } from "./notebook_lint";
 import { readReportTagOfText, type ReportLayout } from "./report";
@@ -188,7 +189,9 @@ function problemLine(problem: LogMessage): number | undefined {
  */
 function cellsRemovedProblems(source: string): LogMessage[] {
    const problems = notebookLintProblems("document.malloy", source, "").filter(
-      (problem) => problem.code === CELLS_REMOVED,
+      // A tag naming an unknown layout is reported as that instead (`report.ts`).
+      (problem) =>
+         problem.code === CELLS_REMOVED || problem.code === LAYOUT_UNKNOWN,
    );
    return problems.length > 0
       ? problems
@@ -466,9 +469,10 @@ export async function compileDocument(input: {
       { ...facts, compiledTileGivens: compiledTiles },
       { restrictedTiles },
    );
-   const hasTiles = manifest?.tiles !== undefined;
+   // A report's cells are its definitions (imports, givens) only: the queries
+   // are tiles, and a file's `run:` statements are never a report's content.
    const cells = read.cells
-      .filter((cell) => !hasTiles || cell.kind === "definition")
+      .filter((cell) => cell.kind === "definition")
       .map((cell): DocumentCell => {
          const restricted = restrictedCells.has(cell);
          if (cell.kind === "markdown") {
@@ -486,7 +490,7 @@ export async function compileDocument(input: {
          };
       });
    if (!manifest) {
-      // A grid tag with no tiles yet: no tile layout, so the file's own cells are the document.
+      // A grid tag with no tiles yet: no tile layout, only its definitions.
       return { problems, document: { layout: tag.layout, cells } };
    }
    const { entryFile: _entry, ...rest } = manifest;

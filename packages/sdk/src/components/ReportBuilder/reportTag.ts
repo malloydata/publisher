@@ -26,7 +26,7 @@ export type ReportTag =
    | { status: "none" }
    | { status: "unparsed"; errors: string[] }
    | { status: "kind-removed"; kind: string }
-   | { status: "cells-removed" }
+   | { status: "cells-removed"; unknownLayout?: string }
    | { status: "report"; layout: ReportLayout };
 
 type Parsed = { tag: TagReads; log: Array<{ message: string }> };
@@ -34,6 +34,7 @@ type TagReads = {
    tag(key: string): TagReads | undefined;
    text(key: string): string | undefined;
    has(key: string): boolean;
+   array(key: string): unknown[] | undefined;
 };
 
 /** A tag property as text; `text()` throws on a malformed date literal, which reads as no value. */
@@ -52,6 +53,10 @@ const onTagRoute = (note: string) => /^##\|?(?:[ \t\r\n]|$)/.test(note);
 export const kindRemovedReason = (kind: string) =>
    `\`kind=${kind}\` is no longer read, so this file is not a report. Fix: remove \`kind=${kind}\` and write \`layout=grid\` or \`layout=linear\`.`;
 
+/** Why a tileless tag naming an unknown layout makes no report, and the fix: the server's message, capitalized. */
+export const unknownLayoutReason = (layout: string) =>
+   `\`layout=${layout}\` is not a layout Publisher knows (grid, linear), and the tag lists no tiles, so this file is not a report. Fix: write \`layout=grid\` or \`layout=linear\`, and list the tiles in \`tiles=[…]\`.`;
+
 /** Why a linear tag with no `tiles` makes no report, and the fix: the server's message, capitalized. */
 export const CELLS_REMOVED_REASON =
    "A linear report written as `run:` cells is no longer read, so this file is not a report. Fix: list its tiles in `tiles=[…]` (a text tile per prose block, a query tile per view), or remove the `## artifact` tag.";
@@ -64,7 +69,8 @@ export const CELLS_REMOVED_REASON =
  * The layout, first match wins: `layout=grid|linear`; else grid when the tag
  * lists `tiles` (an empty list counts) or a model-level `dashboard { … }` grid
  * tag is present; else linear. A linear tag with no `tiles` key (an empty
- * list counts as one) is the retired cell format, and no report.
+ * list counts as one) is the retired cell format, and no report. A `tiles`
+ * that is not a list (`tiles=foo`) is a tag the reader cannot use: unparsed.
  */
 export function readReportTag(
    modelNotes: readonly string[],
@@ -88,13 +94,18 @@ export function readReportTag(
    if (kind !== undefined) return { status: "kind-removed", kind };
    const named = textOf(artifact, "layout");
    const hasTiles = artifact.has("tiles");
+   if (hasTiles && artifact.array("tiles") === undefined)
+      return { status: "unparsed", errors };
    const layout: ReportLayout =
       named === "grid" || named === "linear"
          ? named
          : hasTiles || tag?.tag("dashboard") !== undefined
            ? "grid"
            : "linear";
-   if (layout === "linear" && !hasTiles) return { status: "cells-removed" };
+   if (layout === "linear" && !hasTiles)
+      return named !== undefined && named !== "grid" && named !== "linear"
+         ? { status: "cells-removed", unknownLayout: named }
+         : { status: "cells-removed" };
    return { status: "report", layout };
 }
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { CELLS_REMOVED_REASON } from "./reportTag";
 import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
@@ -954,13 +955,14 @@ describe("the compiler stays lazy", () => {
 
 describe("the layout of a report", () => {
    it("reads the same layout wherever the file lives: the folder no longer matters", async () => {
+      // `null`: no report, whatever the folder.
       const cases = [
-         ["## artifact { }\nrun: q -> { aggregate: c }\n", true],
-         [`## artifact { tiles=["a -> v"] }\n`, false],
-         [`## artifact { layout=linear tiles=["a -> v"] }\n`, true],
-         ["## artifact { layout=grid tiles=[] }\n", false],
+         ["## artifact { }\nrun: q -> { aggregate: c }\n", null],
+         [`## artifact { tiles=["a -> v"] }\n`, "grid"],
+         [`## artifact { layout=linear tiles=["a -> v"] }\n`, "linear"],
+         ["## artifact { layout=grid tiles=[] }\n", "grid"],
       ] as const;
-      for (const [source, linear] of cases)
+      for (const [source, layout] of cases)
          for (const where of [
             undefined,
             "x.malloy",
@@ -969,10 +971,12 @@ describe("the layout of a report", () => {
             "sales/q3/x.malloy",
          ]) {
             const result = await readDashboardDocument(source, where);
-            const isLinear = readFailed(result)
-               ? result.reason.includes("no longer read")
-               : result.document.layout === "linear";
-            expect([where, isLinear]).toEqual([where, linear]);
+            const read = readFailed(result)
+               ? result.reason === CELLS_REMOVED_REASON
+                  ? null
+                  : result.reason
+               : result.document.layout;
+            expect([where, read]).toEqual([where, layout]);
          }
    });
 });

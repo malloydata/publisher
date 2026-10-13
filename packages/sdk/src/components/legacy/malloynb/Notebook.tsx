@@ -37,6 +37,7 @@ export default function Notebook(props: NotebookProps) {
             givens={props.givens}
             onGivensChange={props.onGivensChange}
             onNavigate={props.onDrillNavigate}
+            {...(props.onNavigate ? { onLinkNavigate: props.onNavigate } : {})}
             maxResultSize={props.maxResultSize}
          />
       );

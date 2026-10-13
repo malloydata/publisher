@@ -20,6 +20,7 @@ import {
    CELLS_REMOVED_REASON,
    kindRemovedReason,
    readReportTag,
+   unknownLayoutReason,
 } from "./reportTag";
 import { parseTagLines } from "./tagParse";
 import {
@@ -327,7 +328,13 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
    if (reportTag.status === "kind-removed")
       return { ok: false, reason: kindRemovedReason(reportTag.kind) };
    if (reportTag.status === "cells-removed")
-      return { ok: false, reason: CELLS_REMOVED_REASON };
+      return {
+         ok: false,
+         reason:
+            reportTag.unknownLayout !== undefined
+               ? unknownLayoutReason(reportTag.unknownLayout)
+               : CELLS_REMOVED_REASON,
+      };
    const layout = reportTag.layout;
 
    const artifactAt = locateArtifactTag(lines);

@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { readForEditor } from "./readForEditor";
+import { CELLS_REMOVED_REASON, unknownLayoutReason } from "./reportTag";
 
 describe("readForEditor", () => {
    it("opens a layout file as it is", async () => {
@@ -16,8 +17,17 @@ describe("readForEditor", () => {
       const result = await readForEditor(
          `## artifact { layout=linear }\nimport { o } from "../m.malloy"\n\nrun: o -> v\n`,
       );
-      expect(result.ok === false && result.reason).toContain("no longer read");
-      expect(result.ok === false && result.reason).toContain("tiles=[…]");
+      // The reason, with no line: the server's finding names the tag's line.
+      expect(result.ok === false && result.reason).toBe(CELLS_REMOVED_REASON);
+   });
+
+   it("names an unknown layout rather than the cell format", async () => {
+      const result = await readForEditor(
+         `## artifact { layout=Grid }\nimport { o } from "../m.malloy"\n`,
+      );
+      expect(result.ok === false && result.reason).toBe(
+         unknownLayoutReason("Grid"),
+      );
    });
 
    it("says why a file that is not a notebook will not open, with its line", async () => {
