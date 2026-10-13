@@ -461,8 +461,11 @@ export function extractSourcesFromModelDef(
    // `__compile_check.malloy` that `/compile`'s append scope compiles), and
    // a synthetic compile (a notebook cell) gets its own
    // `internal://<method>/<uuid>` URL from Malloy. The note's text is folded
-   // into the key as well, so a same-position, different-text collision
-   // would be refused rather than accepted.
+   // into the key as well. That is redundancy, not a guarantee: `at` spans
+   // the annotation itself rather than the annotated statement, so one span
+   // holds one text and a same-position, different-text pair is not
+   // constructible today; the text is there so that if that ever changes the
+   // collision is refused rather than accepted.
    const gatedSourceOwnAuthorizeNoteKeys = new Set<string>();
    const noteKey = (note: AnnotationNote): string =>
       `${note.at.url}#${note.at.range.start.line}:${note.at.range.start.character}-${note.at.range.end.line}:${note.at.range.end.character}#${note.text}`;

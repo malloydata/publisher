@@ -98,6 +98,9 @@ describe("a gated source joined inside a diamond import", () => {
       "facts.malloy": FACTS,
       "security.malloy": SECURITY,
    };
+   // The `cached` arm builds a `CacheManager`, which no production path
+   // does today: a forward guard for a runtime that caches compiled imports,
+   // not coverage of a shipped path.
    for (const cached of [false, true]) {
       it(`is Malloy's copied gate, not a misplaced annotation (cache ${cached ? "on" : "off"})`, async () => {
          expect(await compile(files, "security.malloy", cached)).toEqual([]);
