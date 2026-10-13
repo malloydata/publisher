@@ -73,7 +73,8 @@ import {
 } from "../service/deprecated/manifest_keys";
 import * as fs from "fs";
 import * as path from "path";
-import { parentPort, threadId } from "node:worker_threads";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { parentPort, threadId, workerData } from "node:worker_threads";
 import recursive from "recursive-readdir";
 import { fileURLToPath, pathToFileURL } from "url";
 
@@ -142,8 +143,31 @@ import {
    gateGivenSource,
    suggestGivenLookup,
 } from "../service/given";
-import { ignoreDotfiles } from "../utils";
+import { errMessage, ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
+import {
+   setEligibilityRefusalSink,
+   type EligibilityRefusalReason,
+} from "../materialization_metrics";
+import { logger } from "../logger";
+import {
+   tryCompileSynthesizedPreaggregation,
+   type SynthesizedPreaggregation,
+   type SynthesizedRuntimeFactory,
+} from "../service/preaggregation_compile";
+import { type InFlightAnswer, SchemaCache } from "./schema_cache";
+import { plainLogEntry } from "./worker_log";
+import { renderTagTargets } from "../service/render_tag_targets";
+import {
+   collectModelBuildPlan,
+   deriveBuildPlanOutcome,
+   emptyBuildPlanParts,
+   mergeBuildPlanParts,
+   resolveConnectionDigests,
+   resolvePackageConnections,
+   type BuildPlanParts,
+   type WirePackageMaterialization,
+} from "../service/build_plan";
 import type {
    ConnectionMetadata,
    ConnectionMetadataRequest,
@@ -160,6 +184,8 @@ import type {
    SchemaForTablesResponse,
    SerializedModel,
    SerializedNotebookCell,
+   WorkerBuildPlan,
+   WorkerLogMessage,
 } from "./protocol";
 
 if (!parentPort) {
@@ -229,17 +255,91 @@ function dispatchMainResponse(message: MainToWorkerMessage): void {
 // Proxy connection: stand-in for non-duckdb connections at compile time
 // ──────────────────────────────────────────────────────────────────────
 
+type CachedSchema = TableSourceDef | SQLSourceDef;
+
+/**
+ * Schemas this worker has fetched through the main thread, kept across loads
+ * within the pool's PACKAGE_LOAD_SCHEMA_CACHE_BYTES of serialized schema (see
+ * getPackageLoadSchemaCacheBytes). A 50-model package's 37 tables come to
+ * 61 KB, the widest (108 columns) to 6.8 KB, so the default holds a few
+ * thousand typical tables per worker. Heap use is a few times the serialized
+ * size. The pool always sends the budget; without one, nothing is cached.
+ */
+const schemaCache = new SchemaCache<CachedSchema>(
+   (workerData as { schemaCacheBytes?: number } | null)?.schemaCacheBytes ?? 0,
+);
+
+/** What a job carries while it runs in this worker (see runJob). */
+interface JobContext {
+   jobId: string;
+   packagePath: string;
+   refusals: Partial<Record<EligibilityRefusalReason, number>>;
+}
+
+/**
+ * The job whose code is running, carried across its awaits. Scoping per job
+ * keeps what one job logs or refuses out of another's, however the jobs on
+ * this worker interleave.
+ */
+const jobContext = new AsyncLocalStorage<JobContext>();
+
+setEligibilityRefusalSink(() => jobContext.getStore()?.refusals);
+
+// The logger here writes only to this thread's stdout: OpenTelemetry's log
+// export is set up on the main thread alone. Every log call, whatever its
+// level or form, reaches the logger's `write` as the entry winston built from
+// it, so a job's entries are taken there and sent to the main thread as they
+// are written, to be logged by its logger (see the pool's handleWorkerLog).
+// An entry below the configured level is dropped here, as the logger would
+// drop it. Outside a job, entries write as before.
+const writeEntry = logger.write.bind(logger) as (entry: unknown) => boolean;
+(logger as unknown as { write: (entry: unknown) => boolean }).write = (
+   entry: unknown,
+) => {
+   const job = jobContext.getStore();
+   if (!job) return writeEntry(entry);
+   if (logger.isLevelEnabled(String((entry as { level?: unknown }).level))) {
+      const { level, message, meta } = plainLogEntry(entry);
+      const msg: WorkerLogMessage = {
+         type: "log",
+         jobId: job.jobId,
+         packagePath: job.packagePath,
+         level,
+         message,
+         meta,
+      };
+      port.postMessage(msg);
+   }
+   return true;
+};
+
 class ProxyConnection {
    public readonly name: string;
    public readonly dialectName: string;
    private readonly digest: string;
    private readonly jobId: string;
+   /** Prefix of this connection's schema-cache keys. */
+   private readonly cacheScope: string;
 
-   constructor(metadata: ConnectionMetadata, jobId: string) {
+   constructor(
+      metadata: ConnectionMetadata,
+      jobId: string,
+      environmentScope: string,
+   ) {
       this.name = metadata.name;
       this.dialectName = metadata.dialectName;
       this.digest = metadata.digest;
       this.jobId = jobId;
+      // The environment is part of the key, not only the digest: a digest can
+      // be a configured fingerprint, and two environments' connections must
+      // never share what one of them can see. The generation retires the
+      // entries when the main thread replaces the connection.
+      this.cacheScope = [
+         environmentScope,
+         this.name,
+         this.digest,
+         metadata.generation,
+      ].join("\0");
    }
 
    getDigest(): string {
@@ -247,6 +347,89 @@ class ProxyConnection {
    }
 
    async fetchSchemaForTables(
+      tables: Record<string, string>,
+      options: FetchSchemaOptions,
+   ): Promise<{
+      schemas: Record<string, TableSourceDef>;
+      errors: Record<string, string>;
+   }> {
+      // A refresh is the main thread's to decide: its connection's own cache
+      // knows when it fetched each schema, and this one does not. What it
+      // answers replaces the entries, as a refresh does in Malloy's cache.
+      if (options.refreshTimestamp !== undefined) {
+         const refreshed = await this.fetchSchemaForTablesFromMain(
+            tables,
+            options,
+         );
+         this.cacheTableSchemas(tables, refreshed.schemas);
+         return refreshed;
+      }
+      const schemas: Record<string, TableSourceDef> = {};
+      const errors: Record<string, string> = {};
+      const joined: [string, Promise<InFlightAnswer<CachedSchema>>][] = [];
+      const missing: Record<string, string> = {};
+      for (const [key, tablePath] of Object.entries(tables)) {
+         const cacheKey = this.tableCacheKey(tablePath);
+         const hit = schemaCache.get(cacheKey);
+         const pending =
+            hit === undefined ? schemaCache.joinInFlight(cacheKey) : undefined;
+         if (hit) {
+            schemas[key] = hit as TableSourceDef;
+         } else if (pending) {
+            joined.push([key, pending]);
+         } else {
+            missing[key] = tablePath;
+         }
+      }
+      if (Object.keys(missing).length > 0) {
+         const request = this.fetchSchemaForTablesFromMain(missing, options);
+         for (const [key, tablePath] of Object.entries(missing)) {
+            schemaCache.trackInFlight(
+               this.tableCacheKey(tablePath),
+               request.then((r) => ({
+                  value: r.schemas[key],
+                  error: r.errors[key],
+               })),
+            );
+         }
+         const fetched = await request;
+         this.cacheTableSchemas(missing, fetched.schemas);
+         Object.assign(schemas, fetched.schemas);
+         Object.assign(errors, fetched.errors);
+      }
+      // A table another request was already fetching takes that fetch's
+      // outcome, its error included: errors come back per table, so the error
+      // is this table's own, and asking again would send one more request for
+      // every model waiting on it.
+      for (const [key, pending] of joined) {
+         const answer = await pending;
+         if (answer.value) {
+            schemaCache.noteJoinedHit();
+            schemas[key] = answer.value as TableSourceDef;
+         } else {
+            errors[key] = answer.error ?? "No schema returned for the table";
+         }
+      }
+      return { schemas, errors };
+   }
+
+   private cacheTableSchemas(
+      requested: Record<string, string>,
+      schemas: Record<string, TableSourceDef>,
+   ): void {
+      for (const [key, schema] of Object.entries(schemas)) {
+         const tablePath = requested[key];
+         if (tablePath !== undefined) {
+            schemaCache.set(this.tableCacheKey(tablePath), schema);
+         }
+      }
+   }
+
+   private tableCacheKey(tablePath: string): string {
+      return `${this.cacheScope}\0table\0${tablePath}`;
+   }
+
+   private async fetchSchemaForTablesFromMain(
       tables: Record<string, string>,
       options: FetchSchemaOptions,
    ): Promise<{
@@ -275,6 +458,48 @@ class ProxyConnection {
    }
 
    async fetchSchemaForSQLStruct(
+      sentence: SQLSourceRequest,
+      options: FetchSchemaOptions,
+   ): Promise<
+      | { structDef: SQLSourceDef; error?: undefined }
+      | { error: string; structDef?: undefined }
+   > {
+      const cacheKey = `${this.cacheScope}\0sql\0${sentence.connection}\0${sentence.selectStr}`;
+      // See fetchSchemaForTables: a refresh is the main thread's to decide.
+      if (options.refreshTimestamp !== undefined) {
+         const refreshed = await this.fetchSchemaForSQLStructFromMain(
+            sentence,
+            options,
+         );
+         if (refreshed.structDef !== undefined) {
+            schemaCache.set(cacheKey, refreshed.structDef);
+         }
+         return refreshed;
+      }
+      const hit = schemaCache.get(cacheKey);
+      if (hit) return { structDef: hit as SQLSourceDef };
+      const pending = schemaCache.joinInFlight(cacheKey);
+      if (pending) {
+         const answer = await pending;
+         if (answer.value) {
+            schemaCache.noteJoinedHit();
+            return { structDef: answer.value as SQLSourceDef };
+         }
+         return { error: answer.error ?? "No schema returned for the SQL" };
+      }
+      const request = this.fetchSchemaForSQLStructFromMain(sentence, options);
+      schemaCache.trackInFlight(
+         cacheKey,
+         request.then((r) => ({ value: r.structDef, error: r.error })),
+      );
+      const result = await request;
+      if (result.structDef !== undefined) {
+         schemaCache.set(cacheKey, result.structDef);
+      }
+      return result;
+   }
+
+   private async fetchSchemaForSQLStructFromMain(
       sentence: SQLSourceRequest,
       options: FetchSchemaOptions,
    ): Promise<
@@ -434,6 +659,7 @@ function buildWorkerMalloyConfig(job: LoadPackageRequest): MalloyConfig {
                   const proxy = new ProxyConnection(
                      response.metadata,
                      job.requestId,
+                     job.environmentName,
                   );
                   proxies.set(effectiveName, proxy);
                   inflight.delete(effectiveName);
@@ -710,9 +936,9 @@ interface ApiQueryWire {
 type ApiGivenWire = MalloyGivenApi;
 
 // Source / query introspection is shared with the in-process path; see
-// service/source_extraction.ts. The worker has no logger, so a filter parse
-// failure is swallowed silently (no `onParseError` callback) — matching the
-// prior worker-local behavior.
+// service/source_extraction.ts. A filter parse failure is swallowed silently
+// here (no `onParseError` callback): the main thread logs it when it builds the
+// model's filters.
 function extractSources(
    modelDef: ModelDef,
    givens: ApiGivenWire[] | undefined,
@@ -745,9 +971,8 @@ function extractSources(
 /**
  * Collects `validateAuthorizeProbes`'s non-fatal `onRowLevelGateUnexpressible`
  * findings as plain strings for the wire
- * (`SerializedModel.authorizeWarnings`) — the worker has no logger (see
- * `extractSources`'s doc above), so these ride to the main thread, which does,
- * to be logged once per compiled model.
+ * (`SerializedModel.authorizeWarnings`), for the main thread to log once per
+ * compiled model, alongside the model they describe.
  */
 function authorizeWarningCollector(): {
    onRowLevelGateUnexpressible: (sourceName: string, detail: string) => void;
@@ -804,17 +1029,13 @@ function captureReadText(inner: { readURL: (url: URL) => Promise<string> }): {
    };
 }
 
-function buildRuntimeForModel(
+/** A Runtime for the job: its connections and its build manifest. */
+function jobRuntime(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
-): {
-   runtime: Runtime;
-   urlReader: HackyDataStylesAccumulator;
-   textFor: (url: URL) => string | undefined;
-} {
-   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
-   const urlReader = new HackyDataStylesAccumulator(reader);
-   const runtime = new Runtime({
+   urlReader: { readURL: (url: URL) => Promise<string> },
+): Runtime {
+   return new Runtime({
       urlReader,
       config: malloyConfig,
       buildManifest:
@@ -828,13 +1049,65 @@ function buildRuntimeForModel(
               }
             : undefined,
    });
+}
+
+function buildRuntimeForModel(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+): {
+   runtime: Runtime;
+   urlReader: HackyDataStylesAccumulator;
+   textFor: (url: URL) => string | undefined;
+} {
+   const { reader, textFor } = captureReadText(makeWorkerUrlReader(job));
+   const urlReader = new HackyDataStylesAccumulator(reader);
+   const runtime = jobRuntime(job, malloyConfig, urlReader);
    return { runtime, urlReader, textFor };
+}
+
+/**
+ * Per-load state for the work this worker does on the main thread's behalf:
+ * the build plan, render-tag results and pre-aggregation companions. Each
+ * model's share is done right after its own compile, so no compiled model is
+ * held past it.
+ */
+interface LoadContext {
+   /**
+    * Past this (a `performance.now()` time) the work is left to the main
+    * thread; see LoadPackageRequest.mainThreadWorkBudgetMs.
+    */
+   softDeadline: number;
+   /** Each `.malloy` model's plan parts, when the request asked for a plan. */
+   planParts?: Map<string, BuildPlanParts>;
+   /** Each model's position in the package's model order. */
+   modelOrder: Map<string, number>;
+   /**
+    * A model failed to compile in a load that wants a plan. That load is
+    * Package.create's, which fails on any model's compile error, so the work
+    * for the main thread stops: it would be thrown away.
+    */
+   failed: boolean;
+   /**
+    * The first model, in model order, whose plan parts could not be
+    * collected. The plan has failed, so models after it stop collecting; the
+    * ones before it go on, so the failure reported is the one the main
+    * thread's derivation, which goes model by model, would report.
+    */
+   planError?: { order: number; message: string };
+   /** When the first model's plan collection started. */
+   planStart?: number;
+   /**
+    * A model reached its plan parts past the soft deadline, so the plan is
+    * left to the main thread, which derives it from the whole package.
+    */
+   planLeftToMainThread: boolean;
 }
 
 async function compileMalloyModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   load: LoadContext,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
@@ -931,9 +1204,8 @@ async function compileMalloyModel(
       // callback) -- `sourceName` may be an inheritor, not only the
       // DECLARING source. `modelDef.contents[sourceName]` is the same
       // struct the probe was grafted onto, so `refSummary` is already
-      // resolved against it either way. The worker has no logger (see this
-      // function's doc), so a warning rides the same wire channel as
-      // `onRowLevelGateUnexpressible` above.
+      // resolved against it either way. A warning rides the same wire channel
+      // as `onRowLevelGateUnexpressible` above.
       onOwnRowLevelConditionCompiled: (sourceName, condition, route) => {
          const struct = modelDef.contents[sourceName];
          if (!struct || !isSourceDef(struct)) return;
@@ -954,6 +1226,17 @@ async function compileMalloyModel(
       },
    });
 
+   const compileDurationMs = performance.now() - compileStart;
+   const { renderTagResults, preaggregateCompanion } =
+      await prepareForMainThread(job, malloyConfig, load, {
+         modelPath,
+         materializer: mm,
+         model: compiled,
+         importBaseURL,
+         queries,
+         sources,
+      });
+
    return {
       modelPath,
       modelType: "model",
@@ -973,12 +1256,161 @@ async function compileMalloyModel(
       // coordinates were computed against. See SerializedModel.
       modelSourceText: textFor(modelURL),
       dataStyles: urlReader.getHackyAccumulatedDataStyles(),
-      compileDurationMs: performance.now() - compileStart,
+      compileDurationMs,
       problems: job.collectProblems ? compiled.problems : undefined,
       authorizeWarnings:
          authorizeWarningCollection.warnings.length > 0
             ? authorizeWarningCollection.warnings
             : undefined,
+      renderTagResults,
+      preaggregateCompanion,
+   };
+}
+
+/**
+ * Do one compiled model's share of what this worker does for the main thread:
+ * prepare its render-tag results, compile its pre-aggregation companion, and
+ * collect its build-plan parts. The load's soft deadline is checked before each
+ * render-tag target and before the companion and plan parts. Past it, the rest
+ * of the model's render-tag targets and its companion are left to the main
+ * thread, and so is the whole plan, which the main thread then derives from the
+ * package. Either way the main thread does that work as it would without the
+ * worker, so a slow package loads rather than failing on the job limit (see the
+ * pool's jobLimitMs). Never throws: a failure here fails at most the plan, not
+ * the model.
+ */
+async function prepareForMainThread(
+   job: LoadPackageRequest,
+   malloyConfig: MalloyConfig,
+   load: LoadContext,
+   model: {
+      modelPath: string;
+      materializer: ModelMaterializer;
+      model: Awaited<ReturnType<ModelMaterializer["getModel"]>>;
+      importBaseURL: URL;
+      queries: Parameters<typeof renderTagTargets>[0];
+      sources: Parameters<typeof renderTagTargets>[1];
+   },
+): Promise<{
+   renderTagResults?: { label: string; result?: Malloy.Result }[];
+   preaggregateCompanion?: { modelDef?: unknown };
+}> {
+   if (load.failed) return {};
+   const pastDeadline = (): boolean => performance.now() >= load.softDeadline;
+   const { modelPath, materializer, importBaseURL } = model;
+
+   // Prepared here rather than on the main thread, where compiling every
+   // annotated view of a large model blocks the event loop (see
+   // SerializedModel.renderTagResults). Every model prepares its targets at
+   // once, so the ones prepared before the deadline are kept, and the main
+   // thread prepares only those after them.
+   const renderTagResults: { label: string; result?: Malloy.Result }[] = [];
+   for (const target of renderTagTargets(model.queries, model.sources)) {
+      if (load.failed || pastDeadline()) break;
+      try {
+         const prepared = await materializer
+            .loadQuery(target.queryString)
+            .getPreparedResult();
+         // Without its SQL, which the renderer's tag check never reads and
+         // which is close to half of each result's size.
+         const { sql: _sql, ...result } = prepared.toStableResult();
+         renderTagResults.push({
+            label: target.label,
+            result: result as Malloy.Result,
+         });
+      } catch {
+         // A view or query that fails to prepare is reported by the normal
+         // compile path; the render-tag check skips it.
+         renderTagResults.push({ label: target.label });
+      }
+   }
+
+   const order = load.modelOrder.get(modelPath) ?? 0;
+   let wantsPlan =
+      load.planParts !== undefined &&
+      !load.failed &&
+      !load.planLeftToMainThread &&
+      !(load.planError && load.planError.order < order);
+   if (wantsPlan && pastDeadline()) {
+      load.planLeftToMainThread = true;
+      wantsPlan = false;
+   }
+
+   // The runtime the companion compiles in: the model's own, reading the
+   // synthesized model's text from the overlay.
+   const companionRuntime: SynthesizedRuntimeFactory = async (overlay) => {
+      const files = makeWorkerUrlReader(job);
+      return {
+         runtime: jobRuntime(job, malloyConfig, {
+            readURL: (url: URL) => {
+               const text = overlay.get(url.href);
+               return text !== undefined
+                  ? Promise.resolve(text)
+                  : files.readURL(url);
+            },
+         }),
+         importBaseURL,
+      };
+   };
+   // One compile serves the main thread, which hydrates it against the job's
+   // build manifest, and the plan: a build manifest is read only when a query
+   // is prepared, never by a compile. Undefined when neither wants it or it is
+   // left to the main thread; null when the model declares no usable rollup.
+   const companion: SynthesizedPreaggregation | null | undefined =
+      (job.withPreaggregateCompanions || wantsPlan) &&
+      !load.failed &&
+      !pastDeadline()
+         ? ((await tryCompileSynthesizedPreaggregation({
+              packagePath: job.packagePath,
+              modelPath,
+              contents: model.model._modelDef.contents as Record<
+                 string,
+                 unknown
+              >,
+              getRuntime: companionRuntime,
+           })) ?? null)
+         : undefined;
+
+   // Checked again: another model may have left the plan to the main thread,
+   // or the deadline passed, while this one's companion compiled.
+   if (wantsPlan && (load.planLeftToMainThread || pastDeadline())) {
+      load.planLeftToMainThread = true;
+      wantsPlan = false;
+   }
+   if (wantsPlan && companion !== undefined && !load.failed) {
+      load.planStart ??= performance.now();
+      try {
+         const parts = emptyBuildPlanParts();
+         await collectModelBuildPlan(parts, {
+            modelPath,
+            packagePath: job.packagePath,
+            materializer,
+            malloyModel: model.model,
+            getRuntime: companionRuntime,
+            synthesized: companion,
+         });
+         load.planParts?.set(modelPath, parts);
+      } catch (error) {
+         if (!load.planError || order < load.planError.order) {
+            load.planError = {
+               order,
+               message: `${modelPath}: ${errMessage(error)}`,
+            };
+         }
+      }
+   } else if (wantsPlan) {
+      // The deadline passed while the companion was being decided.
+      load.planLeftToMainThread = true;
+   }
+
+   return {
+      renderTagResults,
+      preaggregateCompanion:
+         !job.withPreaggregateCompanions || companion === undefined
+            ? undefined
+            : companion
+              ? { modelDef: companion.model._modelDef }
+              : {},
    };
 }
 
@@ -1204,10 +1636,11 @@ async function compileOneModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   load: LoadContext,
 ): Promise<SerializedModel> {
    try {
       if (modelPath.endsWith(MODEL_FILE_SUFFIX)) {
-         return await compileMalloyModel(job, malloyConfig, modelPath);
+         return await compileMalloyModel(job, malloyConfig, modelPath, load);
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
          return await compileNotebookModel(job, malloyConfig, modelPath);
@@ -1221,6 +1654,10 @@ async function compileOneModel(
          },
       };
    } catch (error) {
+      // A model that fails to compile fails a load that wants a plan, so
+      // the work the remaining models would do for the main thread would be
+      // thrown away.
+      if (job.computeBuildPlan) load.failed = true;
       const modelType: SerializedModel["modelType"] = modelPath.endsWith(
          NOTEBOOK_FILE_SUFFIX,
       )
@@ -1282,15 +1719,34 @@ async function loadPackage(
    // regardless of whether any fetch ever happens during setup (none do
    // today, but this stops that assumption from silently mattering).
    const compileRegionStart = performance.now();
+   const schemaCacheHitsAtStart = schemaCache.hits;
    schemaWait.begin(job.requestId);
+   const load: LoadContext = {
+      softDeadline: loadStart + job.mainThreadWorkBudgetMs,
+      planParts: job.computeBuildPlan
+         ? new Map<string, BuildPlanParts>()
+         : undefined,
+      modelOrder: new Map(modelPaths.map((modelPath, i) => [modelPath, i])),
+      failed: false,
+      planLeftToMainThread: false,
+   };
    const models = await Promise.all(
       modelPaths.map((modelPath) =>
-         compileOneModel(job, malloyConfig, modelPath),
+         compileOneModel(job, malloyConfig, modelPath, load),
       ),
    );
 
-   const loadEnd = performance.now();
+   const compileEnd = performance.now();
    const schemaFetchDurationMs = schemaWait.waitMs;
+   const schemaFetchCount = schemaWait.fetches;
+   const schemaCacheHits = schemaCache.hits - schemaCacheHitsAtStart;
+   const buildPlan = await finishWorkerBuildPlan(
+      malloyConfig,
+      modelPaths,
+      load,
+      packageMetadata.materialization ?? null,
+   );
+   const loadEnd = performance.now();
    return {
       type: "load-package-result",
       requestId: job.requestId,
@@ -1304,12 +1760,77 @@ async function loadPackage(
          // it slightly negative).
          compileDurationMs: Math.max(
             0,
-            loadEnd - compileRegionStart - schemaFetchDurationMs,
+            compileEnd - compileRegionStart - schemaFetchDurationMs,
          ),
          schemaFetchDurationMs,
-         schemaFetchCount: schemaWait.fetches,
+         schemaFetchCount,
+         schemaCacheHits,
       },
+      buildPlan,
    };
+}
+
+/**
+ * Merge the models' plan parts, in model order, into the package's persist
+ * build plan, deriving it as `computePackageBuildPlan` does. Undefined when no
+ * plan was asked for, when a model failed to compile, which fails the load, or
+ * when the plan was left to the main thread at the soft deadline.
+ */
+async function finishWorkerBuildPlan(
+   malloyConfig: MalloyConfig,
+   modelPaths: string[],
+   load: LoadContext,
+   materializationConfig: WirePackageMaterialization | null,
+): Promise<WorkerBuildPlan | undefined> {
+   if (!load.planParts || load.failed || load.planLeftToMainThread) {
+      return undefined;
+   }
+   const start = performance.now();
+   const refusals = (): Partial<Record<EligibilityRefusalReason, number>> => ({
+      ...(jobContext.getStore()?.refusals ?? {}),
+   });
+   const digestSkipped: string[] = [];
+   try {
+      if (load.planError) throw new Error(load.planError.message);
+      const parts = emptyBuildPlanParts();
+      for (const modelPath of modelPaths) {
+         if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+         const own = load.planParts.get(modelPath);
+         if (!own) throw new Error(`Model ${modelPath} did not compile`);
+         mergeBuildPlanParts(parts, own);
+      }
+      const connections = await resolvePackageConnections(
+         {
+            getMalloyConnection: (name: string) =>
+               malloyConfig.connections.lookupConnection(name),
+         },
+         parts.graphs.map((g) => g.connectionName),
+      );
+      const connectionDigests = await resolveConnectionDigests(
+         connections,
+         parts.graphs,
+         (name) => digestSkipped.push(name),
+      );
+      const outcome = deriveBuildPlanOutcome(
+         { ...parts, connectionDigests },
+         materializationConfig,
+      );
+      return {
+         ok: true,
+         outcome,
+         durationMs: performance.now() - (load.planStart ?? start),
+         digestSkipped,
+         eligibilityRefused: refusals(),
+      };
+   } catch (error) {
+      return {
+         ok: false,
+         error: errMessage(error),
+         durationMs: performance.now() - (load.planStart ?? start),
+         digestSkipped,
+         eligibilityRefused: refusals(),
+      };
+   }
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1352,8 +1873,13 @@ port.on("message", (message: MainToWorkerMessage) => {
 });
 
 async function runJob(job: LoadPackageRequest): Promise<void> {
+   const context: JobContext = {
+      jobId: job.requestId,
+      packagePath: job.packagePath,
+      refusals: {},
+   };
    try {
-      const result = await loadPackage(job);
+      const result = await jobContext.run(context, () => loadPackage(job));
       port.postMessage(result);
    } catch (error) {
       const errMsg: LoadPackageError = {
