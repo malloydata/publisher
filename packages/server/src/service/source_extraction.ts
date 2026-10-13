@@ -457,8 +457,9 @@ export function extractSourcesFromModelDef(
    //
    // Position identifies a note only while one compile never parses two
    // different texts under one URL. File URLs hold that because the
-   // intercepting reader matches on the URL string, and a synthetic compile
-   // (a notebook cell, `/compile`'s append scope) gets its own
+   // intercepting reader matches on the URL string (including the virtual
+   // `__compile_check.malloy` that `/compile`'s append scope compiles), and
+   // a synthetic compile (a notebook cell) gets its own
    // `internal://<method>/<uuid>` URL from Malloy. The note's text is folded
    // into the key as well, so a same-position, different-text collision
    // would be refused rather than accepted.
