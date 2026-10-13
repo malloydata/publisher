@@ -12,6 +12,7 @@ import React, { Suspense, useMemo } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
 import { loadBuilder } from "./loadBuilder";
+import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
 
 /**
  * The builder's entry is loaded here and nowhere else. It carries the Malloy
@@ -64,7 +65,7 @@ export default function DashboardEditPage({
    return (
       // The reader's page width and edges, the same for either layout, so the
       // margins do not move between modes.
-      <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
+      <Box sx={TITLED_PAGE_FRAME_SX}>
          <NarrowEditGate>
             <Suspense fallback={reading}>
                <ReportEditor

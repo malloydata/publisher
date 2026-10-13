@@ -17,6 +17,7 @@ import { MONO_FONT_FAMILY } from "../../../theme/colors";
 import { isEditSearch } from "../../common/documentRoutes";
 import ReportPage from "../ReportPage/ReportPage";
 import RoutedDocument from "./RoutedDocument";
+import { PAGE_FRAME_SX } from "../pageFrame";
 
 function ModelPage() {
    const params = useParams();
@@ -42,8 +43,6 @@ function ModelPage() {
          </div>
       );
    }
-
-   const wrapperSx = { p: 3, maxWidth: 1200, mx: "auto" } as const;
 
    // A report. Its route is its package path without `.malloy`, so
    // `sales/q3` is `sales/q3.malloy`, and `?edit` on it opens the builder;
@@ -120,7 +119,7 @@ function ModelPage() {
 
    if (modelPath?.endsWith(".malloy")) {
       return (
-         <Box sx={wrapperSx}>
+         <Box sx={PAGE_FRAME_SX}>
             <Model
                resourceUri={resourceUri}
                runOnDemand={true}
@@ -176,7 +175,7 @@ function NothingToOpen({
    const looksLikeFile = /\.[^./]+$/.test(modelPath);
    const mono = { fontFamily: MONO_FONT_FAMILY };
    return (
-      <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+      <Box sx={PAGE_FRAME_SX}>
          <Typography variant="h6" sx={{ fontWeight: "fontWeightMedium" }}>
             Nothing to open at this path
          </Typography>

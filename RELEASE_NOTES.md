@@ -41,7 +41,7 @@ A tile is removed the same way: a × on its corner while it is hovered, focused 
 
 **The package page says what failed to load.** A file the server could not serve as intended (for example one whose artifact tag still sets `kind=`, which 0.9.8 stopped reading, so it listed under Models rather than Reports) is named with the server's own message and fix. Lower-severity notes are folded behind a count. The Reports heading's create button is now **+ Report**, accessible name "Add report", like every other section's add button.
 
-**Console.** Buttons are 32px with 6px corners rather than pills, cards and menus 8px, dialogs 12px; breadcrumbs are text with slashes.
+**Console.** Buttons are 32px with 6px corners rather than pills, cards and menus 8px, dialogs 12px; breadcrumbs are text with slashes. A report, in reading and in editing, sits in the model page's frame: at most 1200px wide rather than 1600px, its title 48px under the top bar like the model's and the package's, so moving between a model and a report does not shift the page.
 
 ## [0.9.10] — A gated source author-joined inside a diamond import no longer fails the load as a misplaced annotation
 
