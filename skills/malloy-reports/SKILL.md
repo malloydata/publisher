@@ -15,7 +15,7 @@ SPDX-License-Identifier: MIT
 What other tools call a dashboard and a notebook are both reports here. The **layout** is the only difference:
 
 - **`layout=grid`**: tiles across a grid behind one filter row, scanned at a glance (a dashboard). Read `reference/grid.md` before you lay one out.
-- **`layout=linear`**: tiles and prose top to bottom, read in order (a notebook, a data story). Read `reference/linear.md` before you write one, and before you edit a report written as `run:` cells.
+- **`layout=linear`**: tiles and prose top to bottom, read in order (a notebook, a data story). Read `reference/linear.md` before you write one.
 
 Everything else (filters, text tiles, drill, the builder, the lint, the write path) is the same for both, and switching layout later is a one-property edit.
 
@@ -176,13 +176,13 @@ Package warnings after a reload are the report's test suite. Fix all of them, an
 | `notebook-layout-run`                                                         | A `run:` beside `tiles`. Make it a view, list it, delete the `run:`                                                               |
 | `notebook-tile-layout-ignored`                                                | `colspan` or `break` on a linear report. Remove them, or switch to `layout=grid`                                                  |
 | `report-kind-removed`                                                         | The tag sets `kind=`, which is no longer read, so the file is no report. Write the `layout=` the finding gives                    |
-| `report-layout-implicit`                                                      | A tag with no tiles and no `layout=`. Add `layout=`                                                                               |
+| `report-cells-removed`                                                        | A linear tag with no `tiles`, the retired cell format, so the file is no report. List its tiles (`reference/linear.md`)           |
 | `report-on-surface`                                                           | A model `index.malloy` imports (or `explores` lists) is tagged, so its sources left the surface. Untag it, or move the report out |
 | `index-is-not-a-report`                                                       | The root `index.malloy` carries a tag. Remove it; put the report in its own file                                                  |
 | `report-name-ambiguous`                                                       | Two grid reports share a file name, so the deprecated by-name dashboards route answers 409 for it. Rename one of the files        |
 | `Tile … reads <source>, which index.malloy doesn't export`                    | Add the source to the `export { ... }` in `index.malloy`. Never add an `explores` to `publisher.json`                             |
 | A grid's `columns`, `colspan`, or `dashboard_columns=` findings               | `reference/grid.md`                                                                                                               |
-| A statement or tag above the artifact tag; prose the reader cannot place      | `reference/linear.md`, the cell rules                                                                                             |
+| A statement or tag above the artifact tag; prose the reader cannot place      | `reference/linear.md`                                                                                                             |
 
 **Read the status the reload itself returns, not the listing.** One report that fails to compile fails the whole package load (424), and a package already serving keeps its previous version, so the listing still looks healthy. `GET /api/v0/status` still knows: a package serving an older model than its files appears in `loadErrors` with `stale: true`. If the reload is 200 and your report is not listed, discovery skipped it: usually a missing or misspelled artifact tag, or a file under `public/`.
 
@@ -217,7 +217,7 @@ For a grid, write `layout=grid`, add `dashboard { columns=12 }` after the tag's 
 
 ## Editing in the Console
 
-A person can open any report in the Console's builder (**Edit** on the report page; **New report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; its layout switch rewrites `layout=` and nothing else. A report written as `run:` cells opens converted to tiles, and the first Save asks before it rewrites the file (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
+A person can open any report in the Console's builder (**Edit** on the report page; **+ Report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; its layout switch rewrites `layout=` and nothing else. A file written as `run:` cells, the retired linear form, is no report and does not open (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
 
 ## What "done" means
 
@@ -232,6 +232,6 @@ A person can open any report in the Console's builder (**Edit** on the report pa
 ## Reference
 
 - `reference/grid.md`: the grid recipe, its traps, and one query as the whole page.
-- `reference/linear.md`: linear reports, `run:` cells, legacy `.malloynb`, style, and common mistakes.
+- `reference/linear.md`: linear reports, rewriting a retired `run:`-cell file, legacy `.malloynb`, style, and common mistakes.
 - `docs/reports.md`: the full guide this skill condenses.
 - `docs/givens.md`: the givens the controls are generated from.

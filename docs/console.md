@@ -98,10 +98,8 @@ is a Console convenience.
   offers every source the package publishes; when the file cannot already see the chosen source,
   the builder adds a named import for it. The classic dashboard-building feel, over a file you can
   still read and review ([reports.md](reports.md#editing-in-the-console)).
-  A report written as `run:` cells (the older linear form) opens already converted to tiles and
-  unsaved. Nothing is written until you save, and the first **Save** asks before it rewrites the
-  file: the builder cannot take that back, though the file's history in your repository can.
-  **Cancel** writes nothing. A legacy `.malloynb` is read-only.
+  A file written as `run:` cells, the retired linear form, is not a report and does not open; the
+  package page names it and says how to rewrite it as tiles. A legacy `.malloynb` is read-only.
   **Save** (or Cmd/Ctrl+S) writes the report back into the package at once, with no review step, and
   the builder stays open; the button reads **Saved**, greyed, until the next edit, and its tooltip
   says where it writes (the package file, this browser, or where the host app keeps it). **View** in

@@ -21,13 +21,26 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Reports written as `run:` cells are no longer reports (BREAKING)
+
+**A `.malloy` file whose artifact tag reads as linear and lists no `tiles` is no longer a report.** That was the older linear form: `run:` statements with `(markdown)` notes between them. Publisher stops listing it, its route opens nothing, `GET …/reports/{path}` does not serve it, and the builder refuses to open it rather than converting it. The package names each such file with a new `error` finding, `report-cells-removed`, whose message gives the fix, and the compile check answers the same finding. The file still compiles as a model, so nothing that imports it breaks.
+
+Who is affected: anyone with a linear report written as cells. To tell, reload the package and look for `report-cells-removed` in its warnings, or on the package page. To fix one, rewrite it as tiles: each prose note becomes a named `##|(markdown) name` text tile, each `run:` becomes a `view:` on an extension of its source, and the tag lists them in `tiles=[…]` in reading order. [docs/reports.md](docs/reports.md#files-written-as-run-cells) has the steps, and the bundled `examples/storefront/category-review.malloy` was rewritten this way. The `report-layout-implicit` finding is gone: a tag with no `layout=` and no tiles is now this case.
+
+What an SDK host sees:
+
+- **`Report` no longer renders cells.** It draws a report's tiles through `DashboardView`, and a manifest that carries cells draws none of them. `CellReport` is removed.
+- **The builder no longer converts.** `readDashboardDocument` refuses a cell-format file with a reason that names the fix. `ReadFailure.legacyNotebook`, `ReportBuilder`'s `conversion` prop, the conversion dialog, and the `converted` flag on the `report.saved` event are removed.
+- **`DashboardView` takes `onLinkNavigate`**, for links inside text tiles and the description, as `Report` passes it.
+- **`.malloynb` support is unchanged and fenced off.** Its renderer now lives in one folder of the SDK's legacy code, marked deprecated, and a lint rule stops anything else from importing it. `Notebook` still renders a `.malloynb`.
+
 ## [Unreleased] — A multi-pick filter keeps the value you just picked when you click away
 
 In a filter that takes several values (`control=multiselect` on a `filter<string>` given), picking a value and then clicking anywhere else on the page removed the value again: the filter read "All" and the query ran unfiltered. The list stays open after a pick so you can pick another value, and leaving it re-picked the option still highlighted, which in a multi-pick takes it back out. A picked value now stays. Text you typed without picking from the list is still kept when you click away, as before. Single-value pickers were never affected.
 
 ## [Unreleased] — Reports: one look for every layout and format, a row of filter buttons, and package problems on the package page
 
-**Every report draws the same page.** A grid report, a linear report written as tiles and a linear report written as `run:` cells now draw the same header, the same filter row, query results in the same cards and prose as bare text, in the reader and in the builder alike. The layout decides only how tiles are arranged: a linear report is one full-width column with tiles inserted between others, a grid has columns and widths. Before, a linear report drew no cards, wider gaps and its own title block, and a cell-format report drew a panel of filter fields and its own result frames.
+**Every report draws the same page.** A grid report and a linear report now draw the same header, the same filter row, query results in the same cards and prose as bare text, in the reader and in the builder alike. The layout decides only how tiles are arranged: a linear report is one full-width column with tiles inserted between others, a grid has columns and widths. Before, a linear report drew no cards, wider gaps and its own title block.
 
 What an SDK host sees:
 
@@ -37,7 +50,6 @@ What an SDK host sees:
 - **The report title is an `h1`.** An untitled linear report is titled with its file name, as an untitled grid already was.
 - **The report page carries `data-layout`** (`grid` or `linear`) in the reader and the builder alike, for a host or a test that needs to tell the two apart now that both draw cards. A test that checked a linear report by the absence of cards should check this instead.
 - **`Report` takes `manifestStaleTime`**, how long a read of the report is reused without asking the server again (default 0, so a change made elsewhere shows on the next mount). The Console sets a few seconds on the reader it draws while the builder loads, which is how opening the builder reads the report once.
-- **`CellReport` takes `title` and `description`**, drawn in the shared header; `Report` passes them from the manifest.
 
 In the builder, a report's filters are configured on the filter row itself: a remove badge on each button's corner, its settings from its popover, "+ Filter" at the end of the row, and a filter no tile reads yet shown dashed and marked unused. The row of chips above the controls is gone.
 
