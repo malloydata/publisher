@@ -33,7 +33,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
 ```
 
 | What you publish                                                | Answer                                                                                                                                                                                         |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- |
 | A new version                                                   | 200. It is recorded, loaded and checked like any publish. A version that fails the checks is refused with 400, and the versions already published keep serving.                                |
 | A version already published, with the same content              | 200, and nothing is written: `latest` stays where it is. Placing a version onto a server that already holds it is safe to retry. A `manifestLocation` on that request binds the version to it. |
 | A version already published, with different content             | 409 `VERSION_CONFLICT`. Bump the version.                                                                                                                                                      |
@@ -42,7 +42,7 @@ curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages \
 | A `version` that is not a semantic version                      | 400 `MANIFEST_VERSION_INVALID`. Nothing is written.                                                                                                                                            |
 | An archived version, again                                      | 410 `VERSION_ARCHIVED`. Unarchive it instead.                                                                                                                                                  |
 | Into a package watch mode mounts in place                       | 400. A watch mount is your source directory, which is never immutable.                                                                                                                         |
-| A `manifestLocation` that is not a `gs://` or `s3://` URI       | 400.                                                                                                                                                                                           |
+| A `manifestLocation` that is a relative path, or another scheme | 400. A `gs://` or `s3://` URI, a `file://` URL and an absolute path (a mounted volume) are read.                                                                                               |     |
 
 "The same content" is a hash of the package tree: every file's path and bytes, and every symlink's target text, with `.git` skipped.
 

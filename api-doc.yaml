@@ -3636,8 +3636,10 @@ components:
           type: ["string", "null"]
           minLength: 1
           description: >-
-            URI (gs:// or s3://) of the build manifest to bind, or null to clear
-            the binding and serve live. An empty string is refused with 400.
+            Where the build manifest to bind is: a gs:// or s3:// URI, a
+            file:// URL, or an absolute path on this server (a mounted volume).
+            Null clears the binding and serves live. An empty string or a
+            relative path is refused with 400.
       required:
         - manifestLocation
 
@@ -4436,9 +4438,12 @@ components:
         manifestLocation:
           type: ["string", "null"]
           description: |
-            URI (gs:// or s3://) of the externally-computed manifest for this package.
-            On (re)load the publisher reads it and binds persist references
-            (sourceEntityId -> physicalTableName). Null = serve live.
+            Where the externally-computed manifest for this package is: a gs://
+            or s3:// URI, a file:// URL, or an absolute path on this server (a
+            mounted volume). On (re)load the publisher reads it and binds
+            persist references (sourceEntityId -> physicalTableName). Null =
+            serve live. For a package with published versions, a relative path
+            is refused with 400.
         queryMetadata:
           oneOf:
             - $ref: "#/components/schemas/QueryMetadata"

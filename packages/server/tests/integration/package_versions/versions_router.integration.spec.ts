@@ -432,12 +432,12 @@ describe("versions routes", () => {
       ]).toEqual([200, undefined]);
    });
 
-   it("PATCH refuses a description that is not text, and a manifest that is not gs:// or s3://", async () => {
+   it("PATCH refuses a description that is not text, and a manifest location it cannot read", async () => {
       for (const body of [
          { description: 7 },
          { description: ["x"] },
-         { manifestLocation: "/var/data/manifest.json" },
-         { manifestLocation: "file:///etc/passwd" },
+         { manifestLocation: "manifests/manifest.json" },
+         { manifestLocation: "https://example.com/manifest.json" },
          { manifestLocation: 3 },
       ]) {
          expect([
@@ -663,7 +663,7 @@ describe("versions routes", () => {
       expect((await listing("?versionId=")).status).toBe(200);
    });
 
-   it("a publish refuses a manifest that is not gs:// or s3://, before it fetches anything", async () => {
+   it("a publish refuses a relative manifest path, before it fetches anything", async () => {
       const res = await fetch(
          `${baseUrl}/api/v0/environments/${ENV_NAME}/packages`,
          {
@@ -672,7 +672,7 @@ describe("versions routes", () => {
             body: JSON.stringify({
                name: "never-published",
                location: writePackage("1.0.0", 1),
-               manifestLocation: "/var/data/manifest.json",
+               manifestLocation: "manifests/manifest.json",
             }),
          },
       );
@@ -693,10 +693,12 @@ describe("versions routes", () => {
       );
    });
 
-   it("binds only a gs:// or s3:// manifest URI", async () => {
+   it("binds only a manifest location the loader reads", async () => {
+      // An absolute path or a file:// URL is read (see
+      // manifest_location.integration.spec.ts); a relative path is not.
       for (const manifestLocation of [
-         "file:///etc/passwd",
-         "/var/data/manifest.json",
+         "manifests/m.json",
+         "./m.json",
          "https://example.com/m.json",
          "gs://",
          "",
