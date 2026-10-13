@@ -249,3 +249,34 @@ export function ownLevelNotes(
 ): AnnotationNote[] {
    return [...(annote?.blockNotes ?? []), ...(annote?.notes ?? [])];
 }
+
+/** Where a note was parsed: a document URL and the span of the annotation. */
+export interface NotePosition {
+   url: string;
+   range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+   };
+}
+
+/**
+ * Whether two notes were parsed from the exact same place. Malloy's parse is
+ * deterministic, so the same text yields a note at the same `url` + `range`
+ * on every compile; this is what identifies one note across two compiles of
+ * one file, where object identity cannot. Compared field by field, never via
+ * `JSON.stringify` (key order is not guaranteed to match).
+ */
+export function sameNotePosition(a: NotePosition, b: NotePosition): boolean {
+   return (
+      a.url === b.url &&
+      a.range.start.line === b.range.start.line &&
+      a.range.start.character === b.range.start.character &&
+      a.range.end.line === b.range.end.line &&
+      a.range.end.character === b.range.end.character
+   );
+}
+
+/** {@link sameNotePosition} as a string, for use as a `Set`/`Map` key. */
+export function notePositionKey(at: NotePosition): string {
+   return `${at.url}#${at.range.start.line}:${at.range.start.character}-${at.range.end.line}:${at.range.end.character}`;
+}

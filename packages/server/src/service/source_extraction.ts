@@ -32,6 +32,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import {
    annotationTexts,
    modelAnnotations,
+   notePositionKey,
    ownLevelNotes,
    ownLevelNoteTexts,
    type AnnotationNote,
@@ -441,34 +442,19 @@ export function extractSourcesFromModelDef(
    // source the field happens to live on — a join field's copied note names
    // the JOINED source, not the joiner.
    const gatedSourceOwnAuthorizeNotes = new Set<AnnotationNote>();
-   // The same notes by the position they were parsed from. Object identity
-   // is the first test, and it holds whenever Malloy copied the note by
-   // reference. It does NOT hold when the model compiled the declaring file
-   // more than once — a diamond import (`security.malloy` imports both
-   // `dims.malloy` and `facts.malloy`, and `facts.malloy` imports
-   // `dims.malloy` too) parses `dims.malloy` once per path, so the struct a
-   // join embeds carries one parse's note while `contents` holds the other's.
-   // The two are byte-identical and were parsed from the same `source:` line,
-   // which is what a copied gate IS; an annotation an author typed on a join
-   // line was parsed from THAT line, in the joiner's file, and matches no
-   // source's own position. So a position match is as authoritative as an
-   // identity match, and the fallback keeps a diamond-imported gated join
-   // from failing the load as a misplaced annotation.
-   //
-   // Position identifies a note only while one compile never parses two
-   // different texts under one URL. File URLs hold that because the
-   // intercepting reader matches on the URL string (including the virtual
-   // `__compile_check.malloy` that `/compile`'s append scope compiles), and
-   // a synthetic compile (a notebook cell) gets its own
-   // `internal://<method>/<uuid>` URL from Malloy. The note's text is folded
-   // into the key as well. That is redundancy, not a guarantee: `at` spans
-   // the annotation itself rather than the annotated statement, so one span
-   // holds one text and a same-position, different-text pair is not
-   // constructible today; the text is there so that if that ever changes the
-   // collision is refused rather than accepted.
+   // The same notes by the position they were parsed from, for a file the
+   // model compiled more than once (a diamond import): each compile yields
+   // its own note objects, so a join from one path carries a note the
+   // namespace holds another copy of, and identity alone misreads the copy
+   // as typed on the join line. Position identifies a note only while one
+   // compile never parses two texts under one URL, which holds because the
+   // intercepting reader matches file URLs as strings (`/compile`'s append
+   // scope included) and a synthetic compile gets its own
+   // `internal://<method>/<uuid>` URL. The text is folded in as redundancy:
+   // `at` spans the annotation itself, so one span holds one text today.
    const gatedSourceOwnAuthorizeNoteKeys = new Set<string>();
    const noteKey = (note: AnnotationNote): string =>
-      `${note.at.url}#${note.at.range.start.line}:${note.at.range.start.character}-${note.at.range.end.line}:${note.at.range.end.character}#${note.text}`;
+      `${notePositionKey(note.at)}#${note.text}`;
    const isGatedSourceOwnNote = (note: AnnotationNote): boolean =>
       gatedSourceOwnAuthorizeNotes.has(note) ||
       gatedSourceOwnAuthorizeNoteKeys.has(noteKey(note));
