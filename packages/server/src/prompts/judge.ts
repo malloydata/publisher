@@ -94,4 +94,23 @@ Give one element per target, with an empty "candidates" list for a target this g
  * reports what this search did not find, never what the model lacks.
  */
 export const JUDGE_SPLIT_RULES = `- A target marked "one item of the list in target N" asks for that item of target N's list alone. Pick the candidates that serve that item under it; they answer target N too, so they need not be repeated there.
+- An item is about its own subject: "buyer organization domain" asks for the buyer's domain. When no candidate is about the item's own subject, give the item an empty list. Never pick the nearest field of another entity for it (a vendor's or a product's domain is not the buyer's).
 - You see the top candidates of one search, not the whole data model. Never write that a field or data is unavailable, missing, absent or does not exist. When nothing listed serves a target or an item, give it an empty list and say it was not found by this search.`;
+
+/**
+ * The split rules, plus, with `splitItemPicks` above 0, the most picks an
+ * item may have. Code keeps that many after the judge whatever it returns.
+ */
+export function judgeSplitRules(itemPicks: number): string {
+   return itemPicks > 0
+      ? `${JUDGE_SPLIT_RULES}\n- For an item, pick at most ${itemPicks} candidates, best first.`
+      : JUDGE_SPLIT_RULES;
+}
+
+/**
+ * Added to the judge's instructions with `readingsRule` on, for any default
+ * or a package's own: the readings rule for every target type (the measure
+ * rule already says it for measures) and the building blocks of a rate.
+ */
+export const JUDGE_READINGS_RULES = `- For any target, of any type: when its phrase has more than one plausible reading and the candidates' docs do not say which field to use, pick a field for each reading and say in the reason which reading each one serves. The agent will ask the user which one they meant; a reading left out cannot be offered.
+- For a rate or per-unit target (a share, a ratio, an average per order or per customer), also pick the measures it is computed from (its numerator and its denominator), beside the rate itself.`;
