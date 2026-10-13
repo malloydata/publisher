@@ -5,7 +5,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
    DEFAULT_JUDGE_INSTRUCTIONS,
    DEFAULT_JUDGE_LIST_INSTRUCTIONS,
+   JUDGE_READINGS_RULES,
    JUDGE_REPLY_FORMAT,
+   JUDGE_SPLIT_RULES,
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
 import { setRetrievalConfig } from "../../retrieval_config";
@@ -340,5 +342,41 @@ ${JUDGE_REPLY_FORMAT}`,
          concurrency: 1,
       });
       expect(systems).toEqual([DEFAULT_JUDGE_LIST_INSTRUCTIONS]);
+   });
+
+   it("adds the readings rule, then the split rules with the item cap, only when asked", async () => {
+      const cluster = listCluster();
+      const systems: string[] = [];
+      const chat = {
+         completeJson: async (req: {
+            system: string;
+            validate: (v: unknown) => unknown;
+         }) => {
+            systems.push(req.system);
+            return { value: req.validate({ picks: [], caveats: [] }) };
+         },
+      } as unknown as ChatModel;
+      const base = { index: p.index, clusters: [cluster], targets, chat };
+      await judge({ ...base, concurrency: 1, readingsRule: true });
+      await judge({
+         ...base,
+         concurrency: 1,
+         readingsRule: true,
+         splitRules: true,
+         itemPicks: 3,
+      });
+      await judge({ ...base, concurrency: 1, splitRules: true });
+      expect(systems).toEqual([
+         `${DEFAULT_JUDGE_LIST_INSTRUCTIONS}\n\n${JUDGE_READINGS_RULES}`,
+         `${DEFAULT_JUDGE_LIST_INSTRUCTIONS}\n\n${JUDGE_READINGS_RULES}\n\n${JUDGE_SPLIT_RULES}\n- For an item, pick at most 3 candidates, best first.`,
+         `${DEFAULT_JUDGE_LIST_INSTRUCTIONS}\n\n${JUDGE_SPLIT_RULES}`,
+      ]);
+      expect(JUDGE_READINGS_RULES).toContain("pick a field for each reading");
+      expect(JUDGE_READINGS_RULES).toContain(
+         "also pick the measures it is computed from",
+      );
+      expect(JUDGE_SPLIT_RULES).toContain(
+         "When no candidate is about the item's own subject, give the item an empty list.",
+      );
    });
 });

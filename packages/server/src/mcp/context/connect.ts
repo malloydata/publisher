@@ -45,6 +45,7 @@ import { JOIN_WALK_MAX_HOPS, type CatalogNode } from "./catalog";
 import {
    mentionsPeriod,
    rankTarget,
+   unionLists,
    type Candidate,
    type FindResult,
    type FindTarget,
@@ -65,6 +66,7 @@ export type ConnectSettings = Pick<
    | "contenderShare"
    | "connect"
    | "listTopK"
+   | "listUnion"
 >;
 
 /** A source's case for being a home. */
@@ -87,6 +89,12 @@ export interface ClusterCandidate {
    hops: number;
    /** The candidate's find-stage record inside the cluster (ranks, cosine, values). */
    found: Candidate;
+   /**
+    * `listUnion`: set on a candidate below the fused top `listTopK` that is
+    * in the judge's list because one of find's own lists ranks it within
+    * `listUnion`: which list (or both). `rank` is then its fused rank.
+    */
+   union?: "close" | "keyword" | "close+keyword";
 }
 
 export interface ClusterExtra {
@@ -524,19 +532,41 @@ function connectList(args: Parameters<typeof connect>[0]): ConnectResult {
    };
    const byRank = new Map<number, ClusterCandidate[]>();
    for (const r of found) {
-      byRank.set(
-         r.target.index,
-         r.candidates.slice(0, settings.listTopK).map((c, i) => {
-            admit(ownerOf(c.key));
-            return {
+      const list: ClusterCandidate[] = r.candidates
+         .slice(0, settings.listTopK)
+         .map((c, i) => ({
+            key: c.key,
+            score: c.score,
+            rank: i + 1,
+            hops: 0,
+            found: c,
+         }));
+      // `listUnion`: the fused rank buries a field that one of find's own
+      // lists ranks high, so such a field joins the list after the top
+      // listTopK. A split list's items keep their capped lists.
+      const k = settings.listUnion ?? 0;
+      if (k > 0 && r.target.partOf === undefined) {
+         const below = [
+            ...r.candidates
+               .slice(settings.listTopK)
+               .map((c, i) => ({ c, rank: settings.listTopK + i + 1 })),
+            ...(r.beyond ?? []).map((c) => ({ c, rank: c.fusedRank })),
+         ];
+         for (const { c, rank } of below) {
+            const union = unionLists(c, k);
+            if (!union || list.some((x) => x.key === c.key)) continue;
+            list.push({
                key: c.key,
                score: c.score,
-               rank: i + 1,
+               rank,
                hops: 0,
                found: c,
-            };
-         }),
-      );
+               union,
+            });
+         }
+      }
+      for (const c of list) admit(ownerOf(c.key));
+      byRank.set(r.target.index, list);
    }
    const targets = found.map((r) => r.target);
    // A period's dates come from the sources of every measure target's best

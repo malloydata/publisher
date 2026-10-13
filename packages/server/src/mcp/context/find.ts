@@ -93,6 +93,12 @@ export interface FindResult {
    lists: { close: number; keyword: number; value: number };
    /** The phrases the value index was asked about. */
    valuePhrases: string[];
+   /**
+    * With `listUnion` above 0: candidates past `perTarget` that rank within
+    * `listUnion` on the meaning (close) or keyword list alone, each with its
+    * 1-based fused rank. Read by connect's list union only.
+    */
+   beyond?: Array<Candidate & { fusedRank: number }>;
 }
 
 /** The value phrases of a target: its example values, else its value-looking parts. */
@@ -232,7 +238,10 @@ export function find(args: {
    values: boolean;
    /** The request's scope. */
    allow: (node: CatalogNode) => boolean;
+   /** `listUnion`: also keep, past perTarget, candidates this high on the close or keyword list alone. */
+   unionTopK?: number;
 }): FindResult[] {
+   const k = args.unionTopK ?? 0;
    return args.targets.map((target) => {
       const ranked = rankTarget(
          args.index,
@@ -241,13 +250,41 @@ export function find(args: {
          args.allow,
          { keyword: args.keyword, values: args.values, depth: LIST_DEPTH },
       );
+      const beyond =
+         k > 0
+            ? ranked.all
+                 .map((c, i) => ({ ...c, fusedRank: i + 1 }))
+                 .slice(args.perTarget)
+                 .filter((c) => inListTop(c, k))
+            : [];
       return {
          target,
          candidates: ranked.all.slice(0, args.perTarget),
          lists: ranked.lists,
          valuePhrases: ranked.valuePhrases,
+         ...(beyond.length > 0 ? { beyond } : {}),
       };
    });
+}
+
+/** Which of find's own lists rank a candidate within `k`: "close", "keyword", both, or none. */
+export function unionLists(
+   c: Pick<Candidate, "ranks">,
+   k: number,
+): "close" | "keyword" | "close+keyword" | undefined {
+   const close = (c.ranks.close ?? Infinity) <= k;
+   const keyword = (c.ranks.keyword ?? Infinity) <= k;
+   return close && keyword
+      ? "close+keyword"
+      : close
+        ? "close"
+        : keyword
+          ? "keyword"
+          : undefined;
+}
+
+function inListTop(c: Pick<Candidate, "ranks">, k: number): boolean {
+   return unionLists(c, k) !== undefined;
 }
 
 /** Whether a phrase mentions a period, for the connect stage's date extras. */

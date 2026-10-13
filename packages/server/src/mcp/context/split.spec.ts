@@ -49,6 +49,37 @@ describe("splitBundle", () => {
       ]);
    });
 
+   it("carries the first item's modifier onto a later item that starts with its subject", () => {
+      expect(
+         splitBundle(
+            "buyer organization name, organization domain, visiting company identity",
+         ),
+      ).toEqual([
+         "buyer organization name",
+         "buyer organization domain",
+         "visiting company identity",
+      ]);
+      expect(splitBundle("customer email, email domain, signup date")).toEqual([
+         "customer email",
+         "customer email domain",
+         "signup date",
+      ]);
+   });
+
+   it("does not carry a modifier that is never a subject, or from a long first item", () => {
+      expect(splitBundle("total revenue, revenue per order, refunds")).toEqual([
+         "total revenue",
+         "revenue per order",
+         "refunds",
+      ]);
+      expect(
+         splitBundle("check subtotal before tax and gratuity, tax, gratuity"),
+      ).toEqual(["check subtotal before tax and gratuity", "tax", "gratuity"]);
+      expect(
+         splitBundle("buyer organization name, buyer organization domain"),
+      ).toEqual(["buyer organization name", "buyer organization domain"]);
+   });
+
    it("does not carry a leading word onto items that name their own head", () => {
       expect(
          splitBundle("product category, traffic source, customer country"),

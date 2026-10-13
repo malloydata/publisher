@@ -43,8 +43,8 @@ export interface AlsoLikelyField {
    key: string;
    /** Its wire id. */
    id: string;
-   rule: "named" | "twin";
-   /** For a twin: the id of the pick it shares a name with. */
+   rule: "named" | "twin" | "date_range";
+   /** For a twin: the id of the pick it shares a name with. For a date_range field: the measure it was added for. */
    of?: string;
    /** The sentence the response carries. */
    reason: string;

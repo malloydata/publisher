@@ -33,7 +33,10 @@
  *    ("guest details: name, phone"), a trailing "of the ..." or "for the ..."
  *    on the last item ("state, city and zip of the venue"), or the leading
  *    word of a first item of two or three words when most other items are
- *    one word ("venue state, city, address").
+ *    one word ("venue state, city, address"), or the first item's leading
+ *    words onto a later item that starts with that item's subject word
+ *    ("buyer organization name, organization domain" gives "buyer
+ *    organization domain").
  *
  * At most MAX_ITEMS items are returned; a list longer than that is still
  * searched whole.
@@ -218,11 +221,32 @@ export function splitBundle(
       }
    }
 
+   // A later item that starts with a word of a short first item, past that
+   // item's first word, names the same subject without its modifier: "buyer
+   // organization name, organization domain" means the buyer's domain. The
+   // first item's words before that word are carried onto it ("buyer
+   // organization domain"), unless one of them is a word that is never a
+   // subject ("total", "net", ...).
+   const carried = (p: string): string => {
+      if (lead || first.length < 2 || first.length > 3) return p;
+      const head = words(p)[0]?.toLowerCase();
+      const at = first.findIndex((w, k) => k > 0 && w.toLowerCase() === head);
+      if (at <= 0) return p;
+      const before = first.slice(0, at);
+      if (before.some((w) => NOT_A_SUBJECT.has(w.toLowerCase()))) return p;
+      return `${before.join(" ")} ${p}`;
+   };
+
    const out: string[] = [];
    parts.forEach((p, i) => {
       const startsWithLead =
          lead && p.toLowerCase().startsWith(`${lead.toLowerCase()} `);
-      const withLead = i > 0 && lead && !startsWithLead ? `${lead} ${p}` : p;
+      const withLead =
+         i > 0 && lead && !startsWithLead
+            ? `${lead} ${p}`
+            : i > 0
+              ? carried(p)
+              : p;
       const piece = restore(
          [prefix, withLead, suffix].filter((s) => s !== "").join(" "),
       );

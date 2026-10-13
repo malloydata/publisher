@@ -141,6 +141,27 @@ export function fusedFound(
    return out;
 }
 
+/**
+ * `splitItemPicks`: keep each item's first `cap` picks, in the judge's order,
+ * and record the rest as `capped`. The whole phrase's own picks are never
+ * capped. 0 keeps every pick.
+ */
+export function capItemPicks(
+   plan: SplitPlan,
+   verdicts: readonly JudgeVerdict[],
+   cap: number,
+): JudgeVerdict[] {
+   if (cap <= 0) return [...verdicts];
+   return verdicts.map((v) => ({
+      ...v,
+      picks: v.picks.map((p) =>
+         plan.parentOf.has(p.target) && p.keys.length > cap
+            ? { ...p, keys: p.keys.slice(0, cap), capped: p.keys.slice(cap) }
+            : p,
+      ),
+   }));
+}
+
 /** Fold the items' candidates, coverage and unresolved state back into their originals. */
 export function mergeConnected(
    plan: SplitPlan,
@@ -255,6 +276,12 @@ export function splitTrace(
                v.picks
                   .filter((p) => p.target === t)
                   .flatMap((p) => p.keys.map(idOf)),
+            ),
+            // Picks past `splitItemPicks`, taken out of the response.
+            capped: verdicts.flatMap((v) =>
+               v.picks
+                  .filter((p) => p.target === t)
+                  .flatMap((p) => (p.capped ?? []).map(idOf)),
             ),
          };
       }),

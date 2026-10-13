@@ -40,6 +40,7 @@ import {
    type ResultEntity,
 } from "../tools/get_context_tool";
 import { alsoLikelyFields } from "./also_likely";
+import { dateRangeFields } from "./date_range";
 import type { CatalogNode } from "./catalog";
 import { fcjChat, fcjStateOf, kickFcjBuild } from "./engine_state";
 import {
@@ -65,6 +66,7 @@ import { optionId, routesOf } from "./routes";
 import { toUnit } from "./vectors";
 import { phraseCheckerOf } from "./split";
 import {
+   capItemPicks,
    forConnect,
    fusedFound,
    mergeConnected,
@@ -319,6 +321,7 @@ export async function runFcjQuery(args: {
          keyword: settings.keyword,
          values: settings.values,
          allow,
+         unionTopK: settings.connect === "list" ? settings.listUnion : 0,
       }),
       request,
       allow,
@@ -382,6 +385,8 @@ export async function runFcjQuery(args: {
             // Only a request with a list target reads the split rules, so
             // every other request's judge prompt is the same text as before.
             splitRules: split !== undefined,
+            itemPicks: settings.splitItemPicks,
+            readingsRule: settings.readingsRule,
          });
       } catch (error) {
          logger.warn("[get_context fcj] The judge failed", {
@@ -401,6 +406,9 @@ export async function runFcjQuery(args: {
             ),
          ),
       );
+      if (split) {
+         verdicts = capItemPicks(split, verdicts, settings.splitItemPicks);
+      }
       const now = meter.snapshot();
       stages.push({
          name: "judge",
@@ -447,6 +455,17 @@ export async function runFcjQuery(args: {
               ignoreAbsence: split !== undefined,
            })
          : [];
+   // The "date or time range" rule: after the judge and "also likely",
+   // since it reads which measures came back.
+   const dateRange =
+      judged && settings.dateRange
+         ? dateRangeFields({
+              index,
+              texts: targets.map((t) => t.text),
+              verdicts,
+              alsoLikely,
+           })
+         : [];
 
    started = performance.now();
    const answer = await respond({
@@ -457,7 +476,7 @@ export async function runFcjQuery(args: {
       verdicts,
       targets,
       environmentStore,
-      alsoLikely,
+      alsoLikely: [...alsoLikely, ...dateRange],
    });
    stages.push({
       name: "respond",
@@ -536,6 +555,16 @@ export async function runFcjQuery(args: {
                        ...(a.of ? { of: a.of } : {}),
                        reason: a.reason,
                     })),
+                    // Fields the "date or time range" rule added (dateRange).
+                    ...(settings.dateRange
+                       ? {
+                            date_range: dateRange.map((a) => ({
+                               id: a.id,
+                               of: a.of,
+                               reason: a.reason,
+                            })),
+                         }
+                       : {}),
                  },
               },
            }
@@ -787,6 +816,8 @@ export function connectTrace(index: FcjIndex, connected: ConnectResult) {
                   rank: x.rank,
                   score: Math.round(x.score * 1e6) / 1e6,
                   hops: x.hops,
+                  // In the judge's list only by `listUnion`: which find list ranks it high.
+                  ...(x.union ? { union: x.union } : {}),
                   ...describe(x.key),
                })),
             ),
