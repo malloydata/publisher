@@ -31,8 +31,9 @@ import {
    DEFAULT_JUDGE_INSTRUCTIONS,
    DEFAULT_JUDGE_LIST_INSTRUCTIONS,
    DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS,
+   JUDGE_READINGS_RULES,
    JUDGE_REPLY_FORMAT,
-   JUDGE_SPLIT_RULES,
+   judgeSplitRules,
 } from "../../prompts/judge";
 import type { ChatModel } from "../../providers/types";
 import { getEgressPreset } from "../../retrieval_config";
@@ -68,6 +69,8 @@ export interface JudgePick {
    reason?: string;
    /** Route keys the judge picked and `dropRoutesAt` took out, for the trace. */
    droppedRoutes?: string[];
+   /** Keys of a split item's picks past `splitItemPicks`, taken out, for the trace. */
+   capped?: string[];
 }
 
 export interface JudgeVerdict {
@@ -546,8 +549,12 @@ export async function judge(args: {
    concurrency: number;
    /** `listRoutes`: routes shown per field in a list (0, the default, shows none). */
    listRoutes?: number;
-   /** `splitBundles`: add JUDGE_SPLIT_RULES to the instructions. */
+   /** `splitBundles`: add the split rules to the instructions. */
    splitRules?: boolean;
+   /** `splitItemPicks`: the most picks per item the split rules ask for (0: no line). */
+   itemPicks?: number;
+   /** `readingsRule`: add JUDGE_READINGS_RULES to the instructions. */
+   readingsRule?: boolean;
 }): Promise<JudgeVerdict[]> {
    return runPooled(args.clusters, args.concurrency, async (cluster) => {
       const cap = cluster.peers ? (args.listRoutes ?? 0) : 0;
@@ -562,8 +569,13 @@ export async function judge(args: {
                ? DEFAULT_JUDGE_LIST_ROUTES_INSTRUCTIONS
                : DEFAULT_JUDGE_LIST_INSTRUCTIONS
             : DEFAULT_JUDGE_INSTRUCTIONS);
+      const system = [
+         base,
+         ...(args.readingsRule ? [JUDGE_READINGS_RULES] : []),
+         ...(args.splitRules ? [judgeSplitRules(args.itemPicks ?? 0)] : []),
+      ].join("\n\n");
       const reply = await args.chat.completeJson({
-         system: args.splitRules ? `${base}\n\n${JUDGE_SPLIT_RULES}` : base,
+         system,
          prompt: renderJudgePrompt(
             args.index,
             cluster,

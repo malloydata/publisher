@@ -285,6 +285,84 @@ describe("connect", () => {
       ]);
    });
 
+   it('with connect: "list" and listUnion, a candidate one find list ranks high joins the fused top K, marked', () => {
+      const targets = [t(0, "dimension", "start date in the month")];
+      const queries = new Map([
+         [0, toUnit(embedText("start date in the month"))],
+      ]);
+      const settings = {
+         ...DEFAULT_FCJ_SETTINGS,
+         connect: "list" as const,
+         listTopK: 2,
+         listUnion: 4,
+      };
+      const found = find({
+         index: f.index,
+         targets,
+         queries,
+         perTarget: 3,
+         keyword: true,
+         values: true,
+         allow: () => true,
+         unionTopK: settings.listUnion,
+      });
+      const r = found[0];
+      // What the union must add: below the top 2, ranked 4 or better by
+      // meaning or by keyword alone, whether in the top 3 or past it.
+      const below = [
+         ...r.candidates.slice(2).map((c, i) => ({ ...c, rank: i + 3 })),
+         ...(r.beyond ?? []).map((c) => ({ ...c, rank: c.fusedRank })),
+      ].filter(
+         (c) => (c.ranks.close ?? 99) <= 4 || (c.ranks.keyword ?? 99) <= 4,
+      );
+      expect(below.length).toBeGreaterThan(0);
+      expect(
+         (r.beyond ?? []).every(
+            (c) =>
+               c.fusedRank > 3 &&
+               Math.min(c.ranks.close ?? 99, c.ranks.keyword ?? 99) <= 4,
+         ),
+      ).toBe(true);
+      const list = connect({
+         index: f.index,
+         found,
+         queries,
+         settings,
+         allow: () => true,
+      }).clusters[0].candidates.get(0)!;
+      expect(list.filter((x) => !x.union).map((x) => [x.key, x.rank])).toEqual(
+         r.candidates.slice(0, 2).map((c, i) => [c.key, i + 1]),
+      );
+      expect(
+         list
+            .filter((x) => x.union)
+            .map((x) => [x.key, x.rank])
+            .sort(),
+      ).toEqual(below.map((c) => [c.key, c.rank]).sort());
+      for (const x of list.filter((y) => y.union)) {
+         const close = (x.found.ranks.close ?? 99) <= 4;
+         const keyword = (x.found.ranks.keyword ?? 99) <= 4;
+         expect(x.union).toBe(
+            close && keyword ? "close+keyword" : close ? "close" : "keyword",
+         );
+      }
+      // Off, the list is the fused top K and nothing is marked.
+      const off = connect({
+         index: f.index,
+         found,
+         queries,
+         settings: { ...settings, listUnion: 0 },
+         allow: () => true,
+      }).clusters[0].candidates.get(0)!;
+      expect(off.map((x) => x.key).sort()).toEqual(
+         r.candidates
+            .slice(0, 2)
+            .map((c) => c.key)
+            .sort(),
+      );
+      expect(off.some((x) => x.union)).toBe(false);
+   });
+
    it('with connect: "list", a period adds the dates of every source among the measure\'s best three, each named', () => {
       const c = run(
          [

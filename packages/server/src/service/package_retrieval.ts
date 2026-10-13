@@ -231,6 +231,37 @@ export interface FcjSettings {
     * the option off.
     */
    splitBundles: boolean;
+   /**
+    * PROVISIONAL, 0 (no cap) by default; read with `splitBundles` only. Most
+    * picks kept per item of a split list, in the judge's order. The rest are
+    * dropped and named in the split trace (`capped`). Same-named copies on
+    * other sources can still come back as "also likely" twins.
+    */
+   splitItemPicks: number;
+   /**
+    * PROVISIONAL, off by default. The "date or time range" rule: when the
+    * request text names a date or time range (a year, a month name, a
+    * quarter, "last", "since", "this", "past", "daily", "weekly", "YTD" and
+    * the like), then for each source a returned measure sits on, up to two of
+    * that source's date or time fields are added after the judge, unless a
+    * date or time field of that source already came back (date_range.ts).
+    */
+   dateRange: boolean;
+   /**
+    * PROVISIONAL, 0 (off) by default; read with `connect: "list"`. Above 0,
+    * the judge's list per target is the fused top `listTopK` plus any find
+    * candidate ranked this high or better in the meaning list or the keyword
+    * list alone. Such a candidate is marked `union` in the connect trace.
+    */
+   listUnion: number;
+   /**
+    * PROVISIONAL, off by default. Adds the readings rule to the judge's
+    * instructions, for every target type: a phrase with more than one
+    * plausible reading, that the model docs do not settle, gets a field for
+    * each reading; a rate or per-unit target also gets the measures it is
+    * computed from.
+    */
+   readingsRule: boolean;
 }
 
 export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
@@ -276,6 +307,10 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    dropRoutesAt: 3,
    unservedCopies: 3,
    splitBundles: false,
+   splitItemPicks: 0,
+   dateRange: false,
+   listUnion: 0,
+   readingsRule: false,
 };
 
 export interface PackageRetrievalSettings {
@@ -638,6 +673,10 @@ function parseFcj(raw: unknown): FcjSettings {
       dropRoutesAt: int("dropRoutesAt", 0, 20),
       unservedCopies: int("unservedCopies", 0, 20),
       splitBundles: fcjBoolean(obj, "splitBundles"),
+      splitItemPicks: int("splitItemPicks", 0, 50),
+      dateRange: fcjBoolean(obj, "dateRange"),
+      listUnion: int("listUnion", 0, 200),
+      readingsRule: fcjBoolean(obj, "readingsRule"),
    };
 }
 
