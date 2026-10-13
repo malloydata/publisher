@@ -29,7 +29,7 @@ Who is affected: anyone with a linear report written as cells. To tell, reload t
 
 What an SDK host sees:
 
-- **`Report` no longer renders cells.** It draws a report's tiles through `DashboardView`, and a manifest that carries cells draws none of them.
+- **`Report` no longer renders cells.** It draws a report's tiles through `DashboardView`, and a manifest that carries cells draws none of them. Two behaviours that were particular to cells go with them: a report's starting `givens { … }` apply without being written into the URL, as a grid's already did; and controls are shown only for the givens the tiles read, so a given only an `#(authorize)` gate reads is the host's to supply unless a tile reads it too.
 - **The builder no longer converts.** `readDashboardDocument` refuses a cell-format file with a reason that names the fix. `ReadFailure.legacyNotebook`, `ReportBuilder`'s `conversion` prop, the conversion dialog, and the `converted` flag on the `report.saved` event are removed.
 - **`readReportTagOfText` (from `/builder`) can answer `{ status: "cells-removed" }`**, with `unknownLayout` set when the tag names a layout Publisher does not know. Text it used to read as `{ status: "report", layout: "linear" }` (a linear tag with no `tiles`) is no longer a report, so a host that switches over `ReportTag.status`, or keeps its own copy of the rule, needs the new case.
 - **`DashboardView` takes `onLinkNavigate`**, for links inside text tiles and the description, as `Report` passes it. Without it, relative links stay as written.
