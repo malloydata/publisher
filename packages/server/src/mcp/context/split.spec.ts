@@ -154,4 +154,30 @@ describe("splitBundle", () => {
          splitBundle("a1, b2, c3, d4, e5, f6, g7, h8, i9, j10"),
       ).toHaveLength(8);
    });
+
+   it("keeps 'by ...' as an item, and carries no adjective or long first item", () => {
+      expect(
+         splitBundle(
+            "year-over-year comparison, new vs returning customers, by territory",
+         ),
+      ).toEqual([
+         "year-over-year comparison",
+         "new vs returning customers",
+         "by territory",
+      ]);
+      expect(
+         splitBundle(
+            "net revenue after discounts and refunds, order count, AOV",
+         ),
+      ).toEqual([
+         "net revenue after discounts and refunds",
+         "order count",
+         "AOV",
+      ]);
+      expect(splitBundle("net revenue, refunds, returns")).toEqual([
+         "net revenue",
+         "refunds",
+         "returns",
+      ]);
+   });
 });

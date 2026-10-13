@@ -26,9 +26,9 @@
  *    not an item: it stays on the item before it.
  * 4. The shared subject is carried onto every item: a prefix before a colon
  *    ("guest details: name, phone"), a trailing "of the ..." or "for the ..."
- *    on the last item ("state, city and zip of the venue"), or the first
- *    item's leading word when most other items are one word ("venue state,
- *    city, address").
+ *    on the last item ("state, city and zip of the venue"), or the leading
+ *    word of a first item of two or three words when most other items are
+ *    one word ("venue state, city, address").
  *
  * At most MAX_ITEMS items are returned; a list longer than that is still
  * searched whole.
@@ -45,7 +45,7 @@ const EXAMPLE_TAIL =
 
 /** Words that start a qualifier of the item before, not an item of their own. */
 const MODIFIER_START =
-   /^(after|before|per|excluding|excl\.?|including|incl\.?|with|without|by|net of|less|minus|plus|at|over|under|within|based on)\b/i;
+   /^(after|before|per|excluding|excl\.?|including|incl\.?|with|without|net of|less|minus|plus|within|based on)\b/i;
 
 /** A trailing shared subject: "of the venue", "for each customer". */
 const SUFFIX = /^(.+?)\s+((?:of|for) (?:the|a|an|each|every|this|that) .+)$/i;
@@ -75,6 +75,12 @@ const NOT_A_SUBJECT = new Set([
    "weekly",
    "yearly",
    "annual",
+   "net",
+   "gross",
+   "new",
+   "old",
+   "first",
+   "last",
 ]);
 
 function words(s: string): string[] {
@@ -169,7 +175,7 @@ export function splitBundle(
    // none of them has the first item's head noun.
    let lead = "";
    const first = words(parts[0]);
-   if (!prefix && first.length >= 2 && parts.length > 1) {
+   if (!prefix && first.length >= 2 && first.length <= 3 && parts.length > 1) {
       const mod = first[0];
       const headNoun = first.at(-1)!.toLowerCase();
       const others = parts.slice(1);
