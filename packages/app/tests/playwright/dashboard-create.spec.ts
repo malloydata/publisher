@@ -104,7 +104,8 @@ test.describe("dashboard-create", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      // The title, edited where it is shown (the intro text tile repeats it as a heading).
+      // The title, shown in the header and nowhere else: a new report carries
+      // no intro text tile repeating it as a heading.
       await expect(
          page.getByRole("button", { name: "Created here", exact: true }),
       ).toBeVisible();
@@ -127,10 +128,11 @@ test.describe("dashboard-create", () => {
       await expect(
          page.getByRole("heading", { name: "Created and saved" }),
       ).toBeVisible({ timeout: 60_000 });
-      // The one tile the new dashboard was created with, headed by its
-      // humanized view name and carrying the run expression as its tooltip,
-      // the way every not a report heads a panel.
-      const tile = page.getByText("By brand tile", { exact: true });
+      // The one tile the new dashboard was created with, headed by the
+      // `# label` New report wrote for it (the view's title, not the
+      // extension's `by_brand_tile` humanized) and carrying the run
+      // expression as its tooltip, the way every report heads a panel.
+      const tile = page.getByText("By brand", { exact: true });
       await expect(tile).toBeVisible({ timeout: 30_000 });
       await expect(tile).toHaveAttribute(
          "title",
