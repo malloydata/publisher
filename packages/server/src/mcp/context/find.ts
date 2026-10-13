@@ -54,6 +54,11 @@ export interface FindTarget {
    kinds: readonly string[];
    /** Literals the caller extracted, for the value index. */
    exampleValues?: readonly string[];
+   /**
+    * With `splitBundles`: this target is one item of the list in the target
+    * whose index this is (split.ts). Engine-made; never on a caller's target.
+    */
+   partOf?: number;
 }
 
 /** The node kinds each target type selects. */

@@ -63,6 +63,29 @@ import {
 import { respond } from "./respond";
 import { optionId, routesOf } from "./routes";
 import { toUnit } from "./vectors";
+import { phraseCheckerOf } from "./split";
+import {
+   forConnect,
+   fusedFound,
+   mergeConnected,
+   mergeVerdicts,
+   planSplit,
+   splitTrace,
+   type SplitPlan,
+} from "./split_targets";
+
+/** Per index, whether the package uses a phrase as written (split.ts). */
+const phraseCheckers = new WeakMap<FcjIndex, (phrase: string) => boolean>();
+function knownPhraseOf(index: FcjIndex): (phrase: string) => boolean {
+   let check = phraseCheckers.get(index);
+   if (!check) {
+      check = phraseCheckerOf(
+         [...index.catalog.nodes.values()].flatMap((n) => [n.name, n.doc]),
+      );
+      phraseCheckers.set(index, check);
+   }
+   return check;
+}
 
 export type TraceMode = "none" | "summary" | "full";
 
@@ -255,13 +278,19 @@ export async function runFcjQuery(args: {
    const stages: StageRow[] = [];
    const targets = findTargetsOf(request);
    const allow = inScope(request);
+   // `splitBundles`: a list target is also searched item by item.
+   const plan: SplitPlan | undefined = settings.splitBundles
+      ? planSplit(targets, settings.listTopK, knownPhraseOf(index))
+      : undefined;
+   const split = plan && plan.items.size > 0 ? plan : undefined;
+   const searched = split ? split.targets : targets;
 
    // Stage 1.
    let started = performance.now();
    let queries = new Map<number, Float32Array>();
    try {
       queries = embeddingConfigured()
-         ? await embedTargets(index, targets)
+         ? await embedTargets(index, searched)
          : new Map();
    } catch (error) {
       logger.warn("[get_context fcj] The search text could not be embedded", {
@@ -280,11 +309,11 @@ export async function runFcjQuery(args: {
          },
       );
    }
-   const found = withPinnedDimensions(
+   const foundAll = withPinnedDimensions(
       index,
       find({
          index,
-         targets,
+         targets: searched,
          queries,
          perTarget: settings.perTarget,
          keyword: settings.keyword,
@@ -294,26 +323,36 @@ export async function runFcjQuery(args: {
       request,
       allow,
    );
+   // The caller's targets' lists (a split one fused with its items') and the
+   // lists connect reads (each item's cut to its cap).
+   const found = split ? fusedFound(split, foundAll) : foundAll;
+   const foundForConnect = split ? forConnect(split, foundAll) : foundAll;
    const gatedWarning = gatedValueWarning(index, request, targets, allow);
    stages.push({
       name: "find",
       status: "ran",
       ms: Math.round(performance.now() - started),
-      in: targets.length,
-      out: found.reduce((n, r) => n + r.candidates.length, 0),
+      in: searched.length,
+      out: foundAll.reduce((n, r) => n + r.candidates.length, 0),
       llm_calls: 0,
       tokens: { input: 0, output: 0 },
    });
 
    // Stage 2.
    started = performance.now();
-   const connected = connect({ index, found, queries, settings, allow });
+   const connectedAll = connect({
+      index,
+      found: foundForConnect,
+      queries,
+      settings,
+      allow,
+   });
    stages.push({
       name: "connect",
       status: "ran",
       ms: Math.round(performance.now() - started),
-      in: found.reduce((n, r) => n + r.candidates.length, 0),
-      out: connected.clusters.length,
+      in: foundForConnect.reduce((n, r) => n + r.candidates.length, 0),
+      out: connectedAll.clusters.length,
       llm_calls: 0,
       tokens: { input: 0, output: 0 },
    });
@@ -325,12 +364,12 @@ export async function runFcjQuery(args: {
       settings.judge !== false && activeLlmSettings() ? fcjChat() : null;
    let verdicts: JudgeVerdict[];
    const used = meter.snapshot();
-   if (chat && connected.clusters.length > 0) {
+   if (chat && connectedAll.clusters.length > 0) {
       try {
          verdicts = await judge({
             index,
-            clusters: connected.clusters,
-            targets,
+            clusters: connectedAll.clusters,
+            targets: searched,
             chat: meter.wrap(chat),
             ...(pkg.getRetrievalSettings?.()?.prompts.judge
                ? {
@@ -340,6 +379,7 @@ export async function runFcjQuery(args: {
                : {}),
             concurrency: Math.max(1, activeLlmSettings()?.concurrency ?? 1),
             listRoutes: settings.listRoutes,
+            splitRules: settings.splitBundles,
          });
       } catch (error) {
          logger.warn("[get_context fcj] The judge failed", {
@@ -352,7 +392,7 @@ export async function runFcjQuery(args: {
          settings.dropRoutesAt,
          (key) => optionId(index.catalog, key),
          new Set(
-            found.flatMap((r) =>
+            foundAll.flatMap((r) =>
                r.candidates
                   .map((c) => index.catalog.nodes.get(c.key)?.id)
                   .filter((id): id is string => id !== undefined),
@@ -364,7 +404,7 @@ export async function runFcjQuery(args: {
          name: "judge",
          status: "ran",
          ms: Math.round(performance.now() - started),
-         in: connected.clusters.length,
+         in: connectedAll.clusters.length,
          out: verdicts.reduce((n, v) => n + v.picks.length, 0),
          llm_calls: now.calls - used.calls,
          tokens: {
@@ -373,17 +413,23 @@ export async function runFcjQuery(args: {
          },
       });
    } else {
-      verdicts = unjudged(connected, targets);
+      verdicts = unjudged(connectedAll, searched);
       stages.push({
          name: "judge",
          status: "skipped",
          ms: 0,
-         in: connected.clusters.length,
+         in: connectedAll.clusters.length,
          out: verdicts.reduce((n, v) => n + v.picks.length, 0),
          llm_calls: 0,
          tokens: { input: 0, output: 0 },
       });
    }
+
+   // A split target's items fold back into it: respond and the response see
+   // only the caller's targets.
+   const itemVerdicts = verdicts;
+   if (split) verdicts = mergeVerdicts(split, verdicts);
+   const connected = split ? mergeConnected(split, connectedAll) : connectedAll;
 
    // "Also likely" fields: after the judge only, since they read its picks
    // and its notes.
@@ -396,6 +442,7 @@ export async function runFcjQuery(args: {
               connected,
               verdicts,
               twins: settings.alsoLikelyTwins ?? 2,
+              ignoreAbsence: settings.splitBundles,
            })
          : [];
 
@@ -450,6 +497,16 @@ export async function runFcjQuery(args: {
               full: {
                  fcj: {
                     find: findTrace(index, found),
+                    ...(split
+                       ? {
+                            split: splitTrace(
+                               split,
+                               foundAll,
+                               itemVerdicts,
+                               (k) => optionId(index.catalog, k),
+                            ),
+                         }
+                       : {}),
                     connect: connectTrace(index, connected),
                     judge: verdicts.map((v) => ({
                        cluster: v.cluster,

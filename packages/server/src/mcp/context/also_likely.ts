@@ -81,6 +81,12 @@ export function alsoLikelyFields(args: {
    verdicts: readonly JudgeVerdict[];
    /** Most twins per pick (`retrieval.fcj.alsoLikelyTwins`). */
    twins: number;
+   /**
+    * With `splitBundles`: a caveat or reason sentence that says something is
+    * missing names no field to add ("no buyer domain field" must not add a
+    * domain field of another entity).
+    */
+   ignoreAbsence?: boolean;
 }): AlsoLikelyField[] {
    const { index, found, connected, verdicts } = args;
    const nodes = index.catalog.nodes;
@@ -149,6 +155,11 @@ export function alsoLikelyFields(args: {
    if (pickIds.length === 0) return [];
    const words = verdicts
       .flatMap((v) => [...v.caveats, ...v.picks.map((p) => p.reason ?? "")])
+      .flatMap((text) =>
+         args.ignoreAbsence
+            ? sentencesOf(text).filter((s) => !isAbsenceSentence(s))
+            : [text],
+      )
       .join(" ")
       .toLowerCase();
 
@@ -236,4 +247,19 @@ export function alsoLikelyFields(args: {
       hold(a.id);
    }
    return out;
+}
+
+/** A note's sentences, cut at a full stop, question mark or semicolon. */
+export function sentencesOf(text: string): string[] {
+   return text
+      .split(/(?<=[.;?!])\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+}
+
+/** Whether a sentence says something is missing or was not found. */
+export function isAbsenceSentence(sentence: string): boolean {
+   return /\b(not (available|found|present|included|provided|listed|exist\w*|contain\w*|have|has|include\w*)|no (\w+ ){0,3}(field|fields|data|column|columns|dimension|dimensions|measure|measures|name|names|domain)\b|does not|do not|doesn't|don't|cannot|can't|unavailable|missing|absent|lacks?|only an? (id|identifier))/i.test(
+      sentence,
+   );
 }

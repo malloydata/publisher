@@ -219,6 +219,16 @@ export interface FcjSettings {
     * their behaviour: found once on their own source, reached by routes.
     */
    unservedCopies: number;
+   /**
+    * PROVISIONAL, off by default. A target whose search_text is a list
+    * ("state, city and zip of the venue") is also searched item by item
+    * (split.ts), each item with its shared subject; the whole phrase is always
+    * searched too. The judge sees the whole phrase's list and each item's,
+    * and the picks merge back under the target. With it on, the judge is told
+    * to say "not found by this search", never that a field does not exist,
+    * and the "named" also-likely rule ignores absence sentences.
+    */
+   splitBundles: boolean;
 }
 
 export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
@@ -263,6 +273,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    listRoutes: 3,
    dropRoutesAt: 3,
    unservedCopies: 3,
+   splitBundles: false,
 };
 
 export interface PackageRetrievalSettings {
@@ -624,6 +635,7 @@ function parseFcj(raw: unknown): FcjSettings {
       listRoutes: int("listRoutes", 0, 20),
       dropRoutesAt: int("dropRoutesAt", 0, 20),
       unservedCopies: int("unservedCopies", 0, 20),
+      splitBundles: fcjBoolean(obj, "splitBundles"),
    };
 }
 
