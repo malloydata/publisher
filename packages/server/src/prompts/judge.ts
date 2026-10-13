@@ -89,8 +89,8 @@ export const JUDGE_REPLY_FORMAT = `Reply with one JSON object and nothing else:
 Give one element per target, with an empty "candidates" list for a target this group cannot answer. Use only the candidate numbers listed under that target or under "Also in this group".`;
 
 /**
- * Added to the judge's instructions with `splitBundles` on (any default or a
- * package's own): the rule for a list's items, and the rule that the judge
+ * Added to the judge's instructions, with `splitBundles` on, on a request
+ * that has a list target (any default or a package's own): the rule for a list's items, and the rule that the judge
  * reports what this search did not find, never what the model lacks.
  */
 export const JUDGE_SPLIT_RULES = `- A target marked "one item of the list in target N" asks for that item of target N's list alone. Pick the candidates that serve that item under it; they answer target N too, so they need not be repeated there.

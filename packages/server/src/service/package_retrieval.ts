@@ -224,9 +224,11 @@ export interface FcjSettings {
     * ("state, city and zip of the venue") is also searched item by item
     * (split.ts), each item with its shared subject; the whole phrase is always
     * searched too. The judge sees the whole phrase's list and each item's,
-    * and the picks merge back under the target. With it on, the judge is told
-    * to say "not found by this search", never that a field does not exist,
-    * and the "named" also-likely rule ignores absence sentences.
+    * and the picks merge back under the target. On a request with a list
+    * target, the judge is also told to say "not found by this search", never
+    * that a field does not exist, and the "named" also-likely rule ignores
+    * absence sentences. A request with no list target runs exactly as with
+    * the option off.
     */
    splitBundles: boolean;
 }
