@@ -1276,10 +1276,10 @@ async function compileMalloyModel(
  * are left to the main thread, and so is the whole plan, which the main thread
  * then derives from the package. A model whose companion compile started
  * before the deadline still collects its plan parts after it, since they need
- * no further compile. Either way the main thread does that work as it would without the
- * worker, so a slow package loads rather than failing on the job limit (see the
- * pool's jobLimitMs). Never throws: a failure here fails at most the plan, not
- * the model.
+ * no recompile of the model. Either way the main thread does that work as it
+ * would without the worker, so a slow package loads rather than failing on the
+ * job limit (see the pool's jobLimitMs). Never throws: a failure here fails at
+ * most the plan, not the model.
  */
 async function prepareForMainThread(
    job: LoadPackageRequest,
@@ -1375,8 +1375,9 @@ async function prepareForMainThread(
 
    // Checked again: another model may have left the plan to the main thread
    // while this one's companion compiled. The deadline is not: with its
-   // companion compiled, this model's plan parts need no compile, and leaving
-   // the plan here would have the main thread compile every model for it.
+   // companion compiled, this model's plan parts need no recompile of the
+   // model, and leaving the plan here would have the main thread compile every
+   // model for it.
    if (wantsPlan && load.planLeftToMainThread) {
       wantsPlan = false;
    }

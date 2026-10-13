@@ -541,9 +541,9 @@ source: t is base -> { group_by: a }
       // compile fits a 4000 ms timeout with room to spare before the worker's
       // deadline at three quarters of it (3000 ms), and the job, at 4500 ms or
       // more, runs past the timeout itself. The companion ends past the
-      // deadline, and the plan parts read from it need no compile, so the
-      // worker still collects them rather than leaving the whole plan, and a
-      // compile of every model, to this thread.
+      // deadline, and the plan parts read from it need no recompile of the
+      // model, so the worker still collects them rather than leaving the whole
+      // plan, and a compile of every model, to this thread.
       fs.writeFileSync(
          path.join(tempDir, "orders.malloy"),
          `##! experimental { persistence composite_sources }

@@ -153,10 +153,11 @@ export interface LoadPackageRequest {
     * checked before each render-tag target and before each model's companion,
     * which its plan parts are read from. Past it, a model's remaining
     * render-tag targets and its companion are left to the main thread, and so
-    * is the whole plan once a model's parts are missing, so a slow package loads as it would with all
-    * of that work on the main thread. A share of the job timeout; the pool
-    * gives the job room for it on top of the compile (see the pool's
-    * jobLimitMs).
+    * is the whole plan once a model's parts are missing, so a slow package
+    * loads as it would with all of that work on the main thread. A model whose
+    * companion compile started before it still collects its plan parts after
+    * it. A share of the job timeout; the pool gives the job room for it on top
+    * of the compile (see the pool's jobLimitMs).
     */
    mainThreadWorkBudgetMs: number;
    /**
@@ -349,10 +350,11 @@ export interface LoadPackageResult {
    };
    /**
     * Present when the request set `computeBuildPlan`, every model compiled,
-    * and every model's plan parts were collected before the soft deadline
-    * (see `mainThreadWorkBudgetMs`). Absent otherwise: a model that fails to
-    * compile fails a load that wants a plan, and a plan the worker did not
-    * finish in time is derived by the main thread.
+    * and every model reached its companion compile before the soft deadline
+    * (see `mainThreadWorkBudgetMs`), so the worker collected every model's
+    * plan parts. Absent otherwise: a model that fails to compile fails a load
+    * that wants a plan, and a plan the worker left at the deadline is derived
+    * by the main thread.
     */
    buildPlan?: WorkerBuildPlan;
 }
