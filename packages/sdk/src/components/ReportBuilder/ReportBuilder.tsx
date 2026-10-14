@@ -468,7 +468,12 @@ export function ReportBuilder({
          {/* Pulled out by the ring's inset, so the content inside it lands on
           the same edges as the reader's view: editing and reading are the same
           page, and the margins must not move between them. */}
-         <Stack sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}>
+         <Stack
+            // Where Save writes, for a host or a test to read: the words are
+            // the status's tooltip, not a line on the page.
+            data-saves-to={savesTo}
+            sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}
+         >
             {/* The reader's page, with the ring's inset (minus the top:
              nothing at the top of the page can be selected). */}
             <ReportPage

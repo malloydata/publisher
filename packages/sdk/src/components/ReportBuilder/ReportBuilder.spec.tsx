@@ -712,11 +712,10 @@ source: a is scoped_orders extend {
          }),
       );
 
+      // Switched on, a cell opens this report; another is one more pick.
+      fireEvent.click(screen.getByLabelText("cat is clickable"));
       fireEvent.mouseDown(
-         screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
-      );
-      fireEvent.click(
-         screen.getByRole("option", { name: /This report/, hidden: true }),
+         screen.getByRole("combobox", { name: "Where cat goes", hidden: true }),
       );
       fireEvent.click(
          screen.getByRole("option", { name: /regions/, hidden: true }),
@@ -724,7 +723,7 @@ source: a is scoped_orders extend {
       fireEvent.keyDown(document.body, { key: "Escape" });
       fireEvent.mouseDown(
          screen.getByRole("combobox", {
-            name: /Sets the filter/,
+            name: "Control cat sets",
             hidden: true,
          }),
       );

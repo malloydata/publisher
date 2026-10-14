@@ -109,9 +109,7 @@ test.describe("dashboard-create", () => {
       await expect(
          page.getByRole("button", { name: "Created here", exact: true }),
       ).toBeVisible();
-      await expect(
-         page.getByText("Save writes the file into the package."),
-      ).toBeVisible();
+      await expect(page.locator('[data-saves-to="package"]')).toHaveCount(1);
 
       // An edit, saved into the package.
       // The title is edited where it is shown.

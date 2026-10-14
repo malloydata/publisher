@@ -378,8 +378,17 @@ export function ReportEditor(props: ReportEditorProps) {
               ...(readFailure !== undefined ? { readFailure } : {}),
               ...(versionId !== undefined ? { versionId } : {}),
            });
-   // The description is already the Save caption, so the note does not repeat it.
-   const note = caption === saveLabel ? "" : caption;
+   // Only what is out of the ordinary: Save off, a pinned version, a copy
+   // that could not be read. Where an ordinary save goes is the bar's status
+   // to say (its tooltip), and a line under every report repeating it was
+   // noise. The description is already the Save caption, so it is not
+   // repeated either.
+   const ordinary =
+      savesTo === "package" &&
+      takesWrites === true &&
+      !pinnedPackageSave &&
+      readFailure === undefined;
+   const note = ordinary || caption === saveLabel ? "" : caption;
 
    // After every hook, so the hook order does not depend on the URI. Same
    // reasoning as `Dashboard`'s own check.

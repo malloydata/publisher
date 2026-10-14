@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — The builder's windows: Add a tile, Add a filter and Clickable cells, redrawn
+
+**Add a tile** is every view in the package in one searchable list, grouped by source, each by its title and Malloy name with its chart's icon; the arrow keys move and Enter adds. The picked view runs beside it as the tile it would add, with the page's filters, over its Title and a row of only the charts it can take. The Query / Text toggle is gone: **Add text instead** is in the footer. **Add a filter** shows each field's type, offers the control as five pictured kinds (one the field cannot take is greyed with the reason, rather than chosen and then refused), sums up which tiles it applies to until **Choose tiles** opens the list, and previews the filter's button. **Clickable cells** (it was titled Drill) is a switch per dimension, with "Opens … sets …" beside each one switched on. The Add menu and the tile menu are drawn as the builder's other cards.
+
+The line under every report saying where Save writes is shown only when it says something out of the ordinary (Save off, a pinned version, a copy that could not be read); the builder carries `data-saves-to` instead, for a host or a test to read.
+
+For an SDK host: `ReportBuilder` takes `renderViewPreview` for the picker's preview (`ReportEditor` passes one); `AppDialog` takes `initialFocus`, a ref focused once the window has opened, since a child's `autoFocus` loses to the focus trap. A test that drove the picker's Source dropdown and "View x" buttons picks an option named `"<title> (<view>)"` instead; one that chose a filter kind from the "Filter kind" dropdown clicks the radio of that name.
+
 ## [Unreleased] — Results stay on screen while they re-run, and switching to edit no longer blanks the report
 
 **A result that re-runs keeps its previous answer up until the new one lands.** Changing a filter used to drop every tile on the page to "Running…" and draw it again from nothing; now each keeps its rows, eased back after a moment, with a thin progress bar along its top, and the new rows replace them in place. This is in `useQueryResult` (react-query's `keepPreviousData`), so it holds for every surface that runs a query through `ResultPanel`: report tiles, `QueryResult`, model cells. A host test that waited for "Running…" after a change of givens waits for the new rows instead; the panel is `aria-busy` meanwhile.

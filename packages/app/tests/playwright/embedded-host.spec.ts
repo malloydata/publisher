@@ -288,9 +288,7 @@ test.describe("embedded host", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      await expect(
-         page.getByText("Save writes the file into the package."),
-      ).toBeVisible();
+      await expect(page.locator('[data-saves-to="package"]')).toHaveCount(1);
       await editText(firstTextTile(page), "Scratch host edit.");
       await saveChanges(page);
       expect(writes).toHaveLength(1);

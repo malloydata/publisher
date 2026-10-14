@@ -118,8 +118,12 @@ describe("ReportEditor, when the server takes writes", () => {
       await new BrowserDocumentStorage().saveDocument(DRAFT, "stale draft");
       await screen.findByText("Storefront");
       expect(
-         screen.getByText("Save writes the file into the package."),
-      ).toBeDefined();
+         document.querySelector('[data-saves-to="package"]'),
+      ).not.toBeNull();
+      // The ordinary case is not a line on the page; the status says it.
+      expect(
+         screen.queryByText("Save writes the file into the package."),
+      ).toBeNull();
 
       editInline("By category", "Tile title", "Categories");
       fireEvent.click(button("Save"));

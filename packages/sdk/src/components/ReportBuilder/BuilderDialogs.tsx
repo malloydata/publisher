@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { ComponentProps, ReactNode } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
@@ -10,6 +10,7 @@ import { isQueryTile } from "./document";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
+import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { useControlBindings } from "./useControlBindings";
 import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileEditing } from "./useTileEditing";
@@ -45,6 +46,8 @@ export function BuilderDialogs({
 }) {
    const { filterDialog, setFilterDialog } = bindings;
    const { menu, setMenu } = tiles;
+   // The tile Clickable cells was opened from, for its window to name.
+   const [drillTile, setDrillTile] = useState<string | undefined>();
    // The catalog's view behind the tile whose menu is open, for the charts the
    // picker may offer: a reference tile's base view, else a view of the tile's own name.
    const menuAt =
@@ -102,7 +105,14 @@ export function BuilderDialogs({
             {...((editor.document.sources.find(
                (s) => s.name === menuTile?.source,
             )?.dimensions?.length ?? 0) > 0
-               ? { onDrills: () => setDrillSource(menuTile?.source) }
+               ? {
+                    onDrills: () => {
+                       setDrillTile(
+                          menuTile ? tileDisplayTitle(menuTile) : undefined,
+                       );
+                       setDrillSource(menuTile?.source);
+                    },
+                 }
                : {})}
          />
          <DrillDialog
@@ -111,6 +121,7 @@ export function BuilderDialogs({
             source={editor.document.sources.find((s) => s.name === drillSource)}
             givenNames={bindings.controlList.map((c) => c.name)}
             dashboards={dashboards ?? []}
+            {...(drillTile ? { tileLabel: drillTile } : {})}
             onClose={() => setDrillSource(undefined)}
             onApply={(drills) =>
                editor.update((draft) => {

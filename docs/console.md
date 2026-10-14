@@ -89,7 +89,13 @@ is a Console convenience.
   report, drag a tile by its heading or its padding to move it, drag the grip on its right edge to set
   its width (a label says the width it will snap to), and set its chart and clickable cells, or duplicate it,
   from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to
-  insert one between two. Add filters from **Add** or with **+ Filter** on the filter row. Titles,
+  insert one between two. **Add → Tile** lists every view in the package, grouped by source and
+  searchable, and runs the picked one as a preview beside its title and chart choices (**Add text
+  instead** puts a text tile there). Add filters from **Add** or with **+ Filter** on the filter row:
+  pick the field (its type is shown), the control from five pictured kinds (a kind the field cannot
+  take is greyed, with why), and, under **Choose tiles**, which tiles it applies to; a preview shows
+  its button. **Clickable cells** is a switch per dimension, with where a click opens and which filter
+  it sets. Titles,
   descriptions and text tiles are edited where they are shown: under the pointer they take a faint
   wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
   back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
