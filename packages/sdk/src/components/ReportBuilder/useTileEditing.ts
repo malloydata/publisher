@@ -58,8 +58,11 @@ export function useTileEditing({
       selectTile(insertAt ?? editor.document.tiles.length);
    };
 
-   /** An empty text tile at the end, named for the first free `text_N`. */
-   const addText = () => {
+   /** An empty text tile where the picker was opened (the end, from the toolbar), named for the first free `text_N`. */
+   const addText = () => insertText(insertAt);
+   /** An empty text tile at the end, wherever the picker was last opened. */
+   const appendText = () => insertText(undefined);
+   const insertText = (at: number | undefined) => {
       setAddingTile(false);
       editor.update((draft) => {
          const taken = new Set(
@@ -67,14 +70,14 @@ export function useTileEditing({
          );
          let n = 1;
          while (taken.has(`text_${n}`)) n++;
-         draft.tiles.splice(insertAt ?? draft.tiles.length, 0, {
+         draft.tiles.splice(at ?? draft.tiles.length, 0, {
             kind: "text",
             name: `text_${n}`,
             markdown: "",
             ...(rules.widths ? { colspan: rules.columns } : {}),
          });
       });
-      selectTile(insertAt ?? editor.document.tiles.length);
+      selectTile(at ?? editor.document.tiles.length);
    };
 
    /** Change one tile where it stands, found by key so a preview order cannot misdirect it. */
@@ -100,6 +103,7 @@ export function useTileEditing({
       closeAdd,
       addTile,
       addText,
+      appendText,
       editTile,
       removeTile,
    };

@@ -8,6 +8,7 @@ import {
    editText,
    queryTiles,
    tileByKey,
+   openAddTile,
 } from "./helpers/builder";
 import {
    exampleFixture,
@@ -56,7 +57,7 @@ test.describe("layout notebooks", () => {
       await editText(tileByKey(page, "text.text_1"), "A note added in place.");
 
       // A query tile beside the one the notebook was created with.
-      await page.getByRole("button", { name: "Add tile", exact: true }).click();
+      await openAddTile(page);
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
       await dialog.getByRole("button", { name: "View sales_by_month" }).click();
       await dialog
@@ -81,7 +82,7 @@ test.describe("layout notebooks", () => {
       // So is the description.
       await page.getByRole("button", { name: "Add a description" }).click();
       await page.getByLabel("Markdown").fill("A one-line description");
-      await page.getByLabel("Markdown").press("Escape");
+      await page.getByLabel("Markdown").press("ControlOrMeta+Enter");
       await expect(page.getByText("A one-line description")).toBeVisible();
 
       await saveChanges(page);

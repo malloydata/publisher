@@ -34,7 +34,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
  * a text link, round 37px icons, a 37px pill), because each control took a
  * different library default.
  */
-const controlSx = (edge: string, hoverEdge: string) =>
+export const controlSx = (edge: string, hoverEdge: string) =>
    ({
       height: CONTROL_HEIGHT_PX,
       minHeight: CONTROL_HEIGHT_PX,
@@ -52,7 +52,7 @@ const controlSx = (edge: string, hoverEdge: string) =>
       },
    }) as const;
 
-const iconControlSx = {
+export const iconControlSx = {
    width: CONTROL_HEIGHT_PX,
    height: CONTROL_HEIGHT_PX,
    borderRadius: CONTROL_RADIUS,
@@ -60,7 +60,12 @@ const iconControlSx = {
 } as const;
 
 /** Short rules between groups: the height of a label, not of the row. */
-const dividerSx = { height: 20, alignSelf: "center", mx: 0.5, my: 0 } as const;
+export const dividerSx = {
+   height: 20,
+   alignSelf: "center",
+   mx: 0.5,
+   my: 0,
+} as const;
 
 /**
  * A segmented control, built as an outlined button group: the same edge,
@@ -69,7 +74,7 @@ const dividerSx = { height: 20, alignSelf: "center", mx: 0.5, my: 0 } as const;
  * edge to edge. An inset chip inside the outline read as a control within a
  * control, a size smaller than the button next to it.
  */
-const segmentedSx = (edge: string) =>
+export const segmentedSx = (edge: string) =>
    ({
       height: CONTROL_HEIGHT_PX,
       boxSizing: "border-box",

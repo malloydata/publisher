@@ -34,6 +34,7 @@ import { EditorSurface } from "./EditorSurface";
 import { useHostCopy } from "./useHostCopy";
 import { useOpenedDocument } from "./useOpenedDocument";
 import { useSaveChannel } from "./useSaveChannel";
+import type { BuilderControlsHandler } from "./builderControls";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -131,6 +132,13 @@ export type ReportEditorProps = (
     * header View) leaves it unset and guards with `onDirtyChange`.
     */
    onExit?: () => void;
+   /**
+    * Take over the builder's page-level controls (save status and Save, undo
+    * and redo, the layout switch, Add): handed over as `BuilderControls`
+    * whenever they change, with no toolbar drawn on the page. Draw them with
+    * `BuilderBar` in the host's header, or place each in its own chrome.
+    */
+   onControlsChange?: BuilderControlsHandler;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
    /**
@@ -168,6 +176,7 @@ export function ReportEditor(props: ReportEditorProps) {
       loading,
       onDirtyChange,
       onExit,
+      onControlsChange,
       kind,
       path,
       textSource,
@@ -473,6 +482,7 @@ export function ReportEditor(props: ReportEditorProps) {
                onSave={save}
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
+               {...(onControlsChange ? { onControlsChange } : {})}
                {...(allowLayoutChange !== undefined
                   ? { allowLayoutChange }
                   : {})}

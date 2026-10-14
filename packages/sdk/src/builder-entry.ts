@@ -22,6 +22,14 @@ if (typeof globalThis.process === "undefined") {
 }
 
 export { ReportBuilder } from "./components/ReportBuilder/ReportBuilder";
+export {
+   BuilderBar,
+   type BuilderBarProps,
+} from "./components/ReportBuilder/BuilderBar";
+export type {
+   BuilderControls,
+   BuilderControlsHandler,
+} from "./components/ReportBuilder/builderControls";
 export type {
    BuilderGiven,
    ReportBuilderProps,

@@ -21,6 +21,23 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — The report builder's controls move to the header; a host can place them itself
+
+**The builder's page-level controls are one bar in the header.** In the Console, where **Edit** sits on a report, the builder draws its save status, undo and redo, the Linear / Grid switch, an **Add** menu (a tile, text or a filter) and **Done**, with **Save** beside Done while there are unsaved edits. The page under it is the report as it reads: no toolbar on the title's line, no pencils after every title. Done returns to the report and asks first when edits are unsaved, as **View** did; View is gone from the builder.
+
+On the page itself:
+
+- **Text is edited where it stands.** A title, subtitle, description or text tile takes a faint wash under the pointer, in place of a pencil. A text tile opens in place in the report's own type, with a ring round it, rather than as an outlined box with Done and Cancel under it: leaving it or Cmd/Ctrl+Enter keeps the edit, and **Escape now drops it** (it used to keep it), as a title's Escape already did.
+- **The tile menu is a menu**: **Chart**, a submenu, and **Clickable cells…**. A tile's width stays a drag of its right edge, or the arrow keys on that edge. A choice that cannot apply stays listed, greyed, with its reason under it. The source and view are a caption at its foot.
+- **The width handle** is a grip tab at the middle of the selected tile's right edge. While it is dragged, a label says the width it will snap to (`8 of 12 · Two-thirds`), and the columns are drawn as faint bands behind the tiles.
+- **A tile moves from its heading and padding**, never from a press inside its table or chart, which scrolls, selects and shows tooltips as it does in the reader.
+
+What an SDK host sees:
+
+- **`ReportEditor` and `ReportBuilder` take `onControlsChange`.** Passed, the editor draws no toolbar and hands its page-level controls over as `BuilderControls` whenever they change (the save status and `save`, `undo`/`redo`, `layout`, the `add` actions, and `exit` when `onExit` is set), with stable actions, and `undefined` when it goes away. **`BuilderBar`** draws them as the Console's bar. Both are exported from `@malloy-publisher/sdk/builder`. A host that passes nothing keeps the toolbar on the title's line, unchanged.
+- **Escape in an open text tile drops the draft**, and its Done and Cancel buttons are gone. A test or automation that clicked Done presses Cmd/Ctrl+Enter, or moves focus out of the field; one that clicked Cancel presses Escape.
+- **The tile menu's Viz type field is gone**: its choices are the **Chart** submenu's `menuitemradio` items, and Drill is **Clickable cells…**.
+
 ## [Unreleased] — Server: package loads share the event loop with other requests, queries reuse each model's query model, and a load-phase metric
 
 Package loads and queries do less on the main thread. Nothing an API or MCP caller sees changes: the same plans, findings, warnings and answers.

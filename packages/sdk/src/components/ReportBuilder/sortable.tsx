@@ -30,9 +30,10 @@ export const GAP_TYPE = "gap";
 /**
  * The sensors: the library's own, with one addition.
  *
- * `activatorElements`: the whole tile starts a pointer drag,
- * not only the grip. A 22px corner that appears on hover is not a target a
- * reader finds; the whole card is. The grip stays the `handle`, which is what
+ * `activatorElements`: the whole tile starts a pointer drag, not only the
+ * grip, except inside its rendered result (see `preventActivation`). A 22px
+ * corner that appears on hover is not a target a reader finds; the card's
+ * heading and padding are. The grip stays the `handle`, which is what
  * gives it keyboard focus and the screen-reader instructions — and, by the
  * library's own rule, a press on the handle drags at once while a press
  * anywhere else on the card waits for a short hold or a few pixels of travel,
@@ -45,12 +46,16 @@ export const builderSensors = [
    PointerSensor.configure({
       activatorElements: (source) => [source.element],
       // A press on a control of the tile's own that is not a button — the
-      // resize edge — is that control's gesture, never a move. The library's
-      // own check only knows buttons, links and inputs, and it listens on the
-      // tile natively, before any React handler on the control could stop it.
+      // resize edge — is that control's gesture, never a move. So is a press
+      // inside the result: a table scrolls and selects, a chart shows its
+      // tooltips, and a move that started there fought both. A tile moves from
+      // its heading and its padding. The library's own check only knows
+      // buttons, links and inputs, and it listens on the tile natively, before
+      // any React handler on the control could stop it.
       preventActivation: (event, source) =>
          (event.target instanceof Element &&
-            event.target.closest(`[${NO_DRAG}]`) !== null) ||
+            event.target.closest(`[${NO_DRAG}], ${RESULT_SELECTOR}`) !==
+               null) ||
          (PointerSensor.defaults.preventActivation?.(event, source) ?? false),
    }),
    KeyboardSensor,
@@ -58,6 +63,9 @@ export const builderSensors = [
 
 /** Marks an element inside a tile whose presses must never start a move. */
 export const NO_DRAG = "data-no-drag";
+
+/** A rendered result inside a tile: its table, chart or cards, where a press is the result's, not a move. */
+const RESULT_SELECTOR = ".malloy-render, .malloy-table";
 
 /**
  * What a tile looks like while it is dragged: a COPY follows the pointer, and

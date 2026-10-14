@@ -72,6 +72,27 @@ const choose = (name: string, option: string) =>
       optionsOf(name).find((o) => o.textContent === option) as HTMLElement,
    );
 
+/** The open tile menu's Chart submenu: its choices, by their label. */
+const primary = (item: HTMLElement) =>
+   item.querySelector(".MuiListItemText-primary")?.textContent;
+const chartItems = () => {
+   fireEvent.click(
+      screen.getByRole("menuitem", { name: /^Chart/, hidden: true }),
+   );
+   const menu = screen.getByRole("menu", { name: "Chart", hidden: true });
+   return within(menu).getAllByRole("menuitemradio", { hidden: true });
+};
+const enabledCharts = () =>
+   chartItems()
+      .filter((o) => o.getAttribute("aria-disabled") !== "true")
+      .map(primary);
+const pickChart = (option: string) =>
+   fireEvent.click(
+      chartItems().find((o) => primary(o) === option) as HTMLElement,
+   );
+const chartItem = () =>
+   screen.getByRole("menuitem", { name: /^Chart/, hidden: true });
+
 describe("ReportBuilder: charts", () => {
    it("sets a tile's chart from its menu and writes the one line", async () => {
       let written: string | undefined;
@@ -79,7 +100,7 @@ describe("ReportBuilder: charts", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      const names = enabledNames("a by_cat");
+      const names = enabledCharts();
       // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
       expect(names).toEqual([
          "From the view",
@@ -89,7 +110,7 @@ describe("ReportBuilder: charts", () => {
          "Scatter",
          "Shape map",
       ]);
-      choose("a by_cat", "Line");
+      pickChart("Line");
       closeMenu();
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
@@ -106,8 +127,8 @@ describe("ReportBuilder: charts", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
-      choose("a by_cat", "Bar");
-      choose("a by_cat", "From the view");
+      pickChart("Bar");
+      pickChart("From the view");
       closeMenu();
       const save = screen.queryByRole("button", {
          name: "Save",
@@ -123,14 +144,7 @@ describe("ReportBuilder: charts", () => {
          written = source;
       });
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      expect(
-         screen
-            .getByRole("combobox", {
-               name: "Viz type, a by_brand",
-               hidden: true,
-            })
-            .getAttribute("aria-disabled"),
-      ).toBe("true");
+      expect(chartItem().getAttribute("aria-disabled")).toBe("true");
       expect(screen.getByText(/is not one the builder models/)).toBeDefined();
       closeMenu();
       editInline("By brand", "Tile title", "Brands");
@@ -147,14 +161,7 @@ describe("ReportBuilder: charts", () => {
       const document = await openDocument(source);
       render(<ReportBuilder source={source} document={document} />);
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      expect(
-         screen
-            .getByRole("combobox", {
-               name: "Viz type, orders by_brand",
-               hidden: true,
-            })
-            .getAttribute("aria-disabled"),
-      ).toBe("true");
+      expect(chartItem().getAttribute("aria-disabled")).toBe("true");
       expect(
          screen.getByText(/so its chart is set in the model/),
       ).toBeDefined();

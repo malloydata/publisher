@@ -7,6 +7,7 @@ import {
    editorOpen,
    pickChart,
    queryTiles,
+   openAddTile,
 } from "./helpers/builder";
 import {
    exampleFixture,
@@ -91,7 +92,7 @@ test.describe("builder chart type", () => {
       );
 
       // A second query, added from the toolbar, set to a bar.
-      await page.getByRole("button", { name: "Add tile", exact: true }).click();
+      await openAddTile(page);
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
       await dialog.getByRole("combobox", { name: "Source" }).click();
       await page.getByRole("option", { name: "order_items" }).first().click();
