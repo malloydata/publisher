@@ -1765,6 +1765,10 @@ describe("EnvironmentStore Service", () => {
    );
 
    it("fails initialization on a versionPromotion outside its set", async () => {
+      // The store beforeEach made is still initializing in the background;
+      // let it finish, or it can recreate the test directory while afterEach
+      // is removing it (EEXIST on its mkdir).
+      await environmentStore.finishedInitialization;
       writeFileSync(
          path.join(serverRootPath, "publisher.config.json"),
          JSON.stringify({ versionPromotion: "manual", environments: [] }),
