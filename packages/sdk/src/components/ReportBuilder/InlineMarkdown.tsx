@@ -3,7 +3,7 @@
 
 import { Box, InputBase, Typography } from "@mui/material";
 import { editableSx } from "./inlineEdit";
-import { PROSE_MAX_WIDTH, TYPE } from "../controlTokens";
+import { PROSE_MAX_WIDTH } from "../controlTokens";
 import { MOD } from "./useBuilderShortcuts";
 import {
    useCallback,
@@ -42,6 +42,7 @@ export function InlineMarkdown({
    variant?: ProseVariant;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    // The keys the field takes, read out with it.
    const hintId = useId();
    const [editing, setEditing] = useState(false);
@@ -178,7 +179,7 @@ export function InlineMarkdown({
             onBlur={() => close()}
             sx={{
                p: 0,
-               ...TYPE.prose,
+               ...ui.type.prose,
                color: "inherit",
                maxWidth: PROSE_MAX_WIDTH,
                "& textarea": { p: 0 },

@@ -30,7 +30,6 @@ import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { loadMalloyRenderer } from "./loadRenderer";
 import type { ResolvedTheme } from "../../theme/types";
-import { TILE_RADIUS } from "../controlTokens";
 import {
    DRILL_CELL_CLASS,
    moveDrillStop,
@@ -448,10 +447,10 @@ function RenderedResultInner({
    // tile with, so the renderer's own cards and ours are the same shape.
    const cardGeometry = useMemo<DashboardCardGeometry>(
       () => ({
-         radius: TILE_RADIUS,
+         radius: baseTheme.ui.radius.tile,
          padding: `${DASHBOARD_CARD_PADDING_PX}px`,
       }),
-      [],
+      [baseTheme.ui.radius.tile],
    );
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the

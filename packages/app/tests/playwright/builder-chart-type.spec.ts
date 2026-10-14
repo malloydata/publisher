@@ -5,9 +5,10 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import {
    createDocument,
    editorOpen,
-   pickChart,
-   queryTiles,
    openAddTile,
+   pickChart,
+   pickView,
+   queryTiles,
 } from "./helpers/builder";
 import {
    exampleFixture,
@@ -94,9 +95,7 @@ test.describe("builder chart type", () => {
       // A second query, added from the toolbar, set to a bar.
       await openAddTile(page);
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
-      await dialog.getByRole("combobox", { name: "Source" }).click();
-      await page.getByRole("option", { name: "order_items" }).first().click();
-      await dialog.getByRole("button", { name: "View sales_by_month" }).click();
+      await pickView(dialog, "sales_by_month", "order_items");
       await dialog
          .getByRole("button", { name: "Add tile", exact: true })
          .click();

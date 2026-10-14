@@ -24,10 +24,10 @@ export const nudgedSpan = (current: number, delta: 1 | -1, columns: number) =>
 export const GRID_GAP_PX = 16;
 
 /**
- * How far a bare (uncarded) tile's selection ring sits from its prose: inside
- * half the {@link GRID_GAP_PX} between tiles, so neighbouring rings never meet.
+ * How far a bare (uncarded) tile's selection ring sits from its prose: half the
+ * {@link GRID_GAP_PX} between tiles, so a ring never reaches into the next tile.
  */
-export const BARE_RING_OFFSET_PX = 6;
+export const BARE_RING_OFFSET_PX = GRID_GAP_PX / 2;
 
 /**
  * The `grid-column` one tile occupies: its `# colspan`, and a `# break` forcing

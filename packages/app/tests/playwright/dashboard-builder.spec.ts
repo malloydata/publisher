@@ -7,7 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
-import { saveChanges } from "./helpers/save";
+import { expectUnsaved, saveChanges } from "./helpers/save";
 
 /**
  * The dashboard builder, end to end in a browser: open a package dashboard in
@@ -97,9 +97,7 @@ test.describe("dashboard-builder", () => {
       await expect(
          page.getByText("Tiled, edited", { exact: true }),
       ).toBeVisible();
-      await expect(
-         page.getByRole("button", { name: "Save", exact: true }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
 
       await saveChanges(page);
 
@@ -145,9 +143,7 @@ test.describe("dashboard-builder", () => {
          );
       }
       await page.mouse.up();
-      await expect(
-         page.getByRole("button", { name: "Save", exact: true }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
 
       // Each tile's chart still sits INSIDE its tile. The regression this
       // guards was not a missing chart but a displaced one: a stale render
@@ -192,8 +188,6 @@ test.describe("dashboard-builder", () => {
          revenue.boundingBox(),
       ]);
       expect(a && b && b.y > a.y + a.height - 1).toBe(true);
-      await expect(
-         page.getByRole("button", { name: "Save", exact: true }),
-      ).toBeEnabled();
+      await expectUnsaved(page);
    });
 });

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { findViewOption } from "./testing/inline";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
@@ -138,7 +139,7 @@ describe("ReportEditor, starting empty", () => {
             })
          )[0],
       );
-      fireEvent.click(await screen.findByLabelText("View by_brand"));
+      fireEvent.click(await findViewOption("by_brand"));
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),

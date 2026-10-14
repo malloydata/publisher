@@ -1,13 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { viewOption } from "./testing/inline";
 import {
    cleanup,
    fireEvent,
    render,
    screen,
    waitFor,
-   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "bun:test";
 import { ReportBuilder } from "./ReportBuilder";
@@ -63,15 +63,7 @@ const addTileOn = (name: string) => {
    fireEvent.click(
       screen.getByRole("button", { name: "Add tile", hidden: true }),
    );
-   fireEvent.mouseDown(
-      screen.getByRole("combobox", { name: /Source/, hidden: true }),
-   );
-   fireEvent.click(
-      within(
-         screen.getAllByRole("listbox", { hidden: true }).at(-1)!,
-      ).getByRole("option", { name: new RegExp(`^${name}`), hidden: true }),
-   );
-   fireEvent.click(screen.getByLabelText("View by_x"));
+   fireEvent.click(viewOption("by_x", name));
    fireEvent.click(
       screen.getByRole("button", { name: "Add tile", hidden: false }),
    );

@@ -94,8 +94,7 @@ describe("ReportBuilder: text tiles", () => {
          written = source;
       });
       fireEvent.click(button("Add tile"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       expect(
          within(tile("text_1")).getByText(TEXT_TILE_PLACEHOLDER),
       ).toBeDefined();
@@ -113,9 +112,22 @@ describe("ReportBuilder: text tiles", () => {
    it("names each new text tile for the first free number", async () => {
       await mount();
       for (const expected of ["text_1", "text_2"]) {
-         fireEvent.click(button("Add tile"));
-         fireEvent.click(screen.getByRole("button", { name: "Text" }));
-         fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+         // The page's own Add tile, which comes first: a window still closing
+         // from the last pass has an Add tile of its own.
+         fireEvent.click(
+            screen.getAllByRole("button", {
+               name: "Add tile",
+               hidden: true,
+            })[0]!,
+         );
+         fireEvent.click(
+            screen
+               .getAllByRole("button", {
+                  name: "Add text instead",
+                  hidden: true,
+               })
+               .at(-1)!,
+         );
          expect(tile(expected)).toBeDefined();
       }
    });

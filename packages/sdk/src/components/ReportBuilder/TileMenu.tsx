@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import CheckIcon from "@mui/icons-material/Check";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
@@ -14,6 +15,7 @@ import {
 } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
 import { useDraft } from "./useDraft";
+import { edgeColor } from "../controlTokens";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
@@ -23,9 +25,9 @@ import type { ChartState } from "./chartLine";
 /**
  * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
  * never means scrolling away from it. Its chart (a submenu, each pick drawn at
- * once) and its clickable cells; its title and subtitle are edited on the
- * tile, its width is set by dragging its right edge, and it is removed from
- * the × on its corner. Its row is set by dragging it — a drop
+ * once), its clickable cells, and a copy of it; its title and subtitle are
+ * edited on the tile, its width is set by dragging its right edge, and it is
+ * removed from the × on its corner. Its row is set by dragging it — a drop
  * into the empty end of a row is what "start a new row" means — and its card
  * is the reader's to decide, so neither is a toggle here. Which controls it
  * answers to is not here either: filters are configured in one place, the
@@ -48,6 +50,10 @@ export interface TileMenuProps {
     * explains why its own Apply is off.
     */
    onDrills?: () => void;
+   /** Copy the tile, right after it. Absent, the menu offers no Duplicate. */
+   onDuplicate?: () => void;
+   /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
+   duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
    view?: Pick<CatalogView, "chart" | "aggregateOnly">;
 }
@@ -65,9 +71,12 @@ export function TileMenu({
    onClose,
    onCommit,
    onDrills,
+   onDuplicate,
+   duplicateBlocked,
    view,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const { draft, apply, close } = useDraft(
       tile,
       anchor !== null,
@@ -156,6 +165,7 @@ export function TileMenu({
    return (
       <>
          <Menu
+            className={reportClasses.menu}
             open={anchor !== null && draft !== undefined}
             anchorEl={anchor}
             onClose={close}
@@ -166,7 +176,18 @@ export function TileMenu({
                disabledItemsFocusable: true,
                "aria-label": query ? `${query.source} ${query.name}` : "Tile",
             }}
-            slotProps={{ paper: { sx: { minWidth: 240 } } }}
+            // Set like the builder's other menus: a rounded, bordered card.
+            slotProps={{
+               paper: {
+                  sx: {
+                     minWidth: 240,
+                     mt: 0.5,
+                     borderRadius: ui.radius.menu,
+                     border: `1px solid ${edgeColor(theme.cardBorder)}`,
+                     boxShadow: ui.shadow.menu,
+                  },
+               },
+            }}
          >
             {query && (
                <MenuItem
@@ -213,6 +234,17 @@ export function TileMenu({
                   {label("Clickable cells…", undefined, drillBlocked)}
                </MenuItem>
             )}
+            {query && onDuplicate && (
+               <MenuItem
+                  disabled={duplicateBlocked !== undefined}
+                  onClick={() => {
+                     close();
+                     onDuplicate();
+                  }}
+               >
+                  {label("Duplicate", undefined, duplicateBlocked)}
+               </MenuItem>
+            )}
             {query?.declaration.kind === "opaque" && (
                <Typography
                   variant="body2"
@@ -234,10 +266,8 @@ export function TileMenu({
                   sx={{
                      px: 2,
                      py: 0.5,
-                     fontSize: 12,
+                     ...ui.type.code,
                      color: "text.secondary",
-                     fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, monospace",
                   }}
                >
                   {query.source} → {query.name}
@@ -246,6 +276,7 @@ export function TileMenu({
          </Menu>
 
          <Menu
+            className={reportClasses.menu}
             open={sub?.kind === "chart"}
             anchorEl={sub?.anchor ?? null}
             onClose={() => setSub(undefined)}

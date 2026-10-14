@@ -87,9 +87,15 @@ is a Console convenience.
   status, undo and redo, the **Linear / Grid** switch, an **Add** menu (a tile, text or a filter), and
   **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
   report, drag a tile by its heading or its padding to move it, drag the grip on its right edge to set
-  its width (a label says the width it will snap to), and set its chart and clickable cells
+  its width (a label says the width it will snap to), and set its chart and clickable cells, or duplicate it,
   from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to
-  insert one between two. Add filters from **Add** or with **+ Filter** on the filter row. Titles,
+  insert one between two. **Add → Tile** lists every view in the package, grouped by source and
+  searchable, and runs the picked one as a preview beside its title and chart choices (**Add text
+  instead** puts a text tile there). Add filters from **Add** or with **+ Filter** on the filter row:
+  pick the field (its type is shown), the control from five pictured kinds (a kind the field cannot
+  take is greyed, with why), and, under **Choose tiles**, which tiles it applies to; a preview shows
+  its button. **Clickable cells** is a switch per dimension, with where a click opens and which filter
+  it sets. Titles,
   descriptions and text tiles are edited where they are shown: under the pointer they take a faint
   wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
   back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
@@ -102,11 +108,13 @@ is a Console convenience.
   still read and review ([reports.md](reports.md#editing-in-the-console)).
   A file written as `run:` cells, the retired linear form, is not a report and does not open; the
   package page names it and says how to rewrite it as tiles. A legacy `.malloynb` is read-only.
-  **Save** (or Cmd/Ctrl+S) appears beside **Done** while there are unsaved edits, and writes the
-  report back into the package at once, with no review step; the builder stays open and the status
-  reads **Saved**, with a tooltip saying where it writes (the package file, this browser, or where the
-  host app keeps it). **Done** leaves, and asks first when edits are unsaved. On a server that does not take writes
-  there is no Save. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
+  Edits are kept in this browser as they are made, and the status reads **Draft saved**: leaving the
+  builder any other way loses nothing and asks nothing, and opening the report for editing again puts
+  them back, with a note saying so. **Done** writes them into the package at once, with no review step,
+  and shows the report; a write that is refused keeps the builder open with the reason. Cmd/Ctrl+S
+  writes without leaving. **Discard edits**, from the status, puts the saved report back (Undo brings
+  the edits back). Only text still being typed into an open field asks before you leave. On a server
+  that does not take writes there is nothing to write to. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
   outside prose is refused with a 400, so the builder opens such a file but cannot save it from the
   Console; gates live in the model file.
 - **Create a report** — the package page's **+ Report** button takes a model, a source and its

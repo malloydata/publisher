@@ -5,6 +5,9 @@ import { parseTag } from "@malloydata/malloy-tag";
 import type { CompiledModel } from "../../client";
 import { exportedSources } from "../DocumentCreate/exportedSources";
 import { CHART_TAGS } from "./chartLine";
+import { chartOf, docOf } from "./viewAnnotations";
+
+export { chartOf, docOf };
 
 export { CHART_TAGS };
 
@@ -61,25 +64,6 @@ export interface CatalogSource {
 
 export interface PackageCatalog {
    sources: CatalogSource[];
-}
-
-/** `#(doc) Revenue by product category\n` -> `Revenue by product category`. */
-export function docOf(annotations: string[] | undefined): string | undefined {
-   for (const raw of annotations ?? []) {
-      const m = /^#\(doc\)\s*(.*)$/s.exec(raw.trim());
-      if (m) return m[1].trim();
-   }
-   return undefined;
-}
-
-/** `# bar_chart\n` -> `bar_chart`. Only the renderer's own chart tags count. */
-export function chartOf(annotations: string[] | undefined): string | undefined {
-   for (const raw of annotations ?? []) {
-      // A `-name` removes a tag, so it is never the chart the view declares.
-      const name = /^#\s*(?:-[A-Za-z_]+\s+)*([a-z_]+)/.exec(raw.trim())?.[1];
-      if (name && CHART_TAGS.includes(name)) return name;
-   }
-   return undefined;
 }
 
 /**

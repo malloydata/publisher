@@ -1,17 +1,22 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import FilterListIcon from "@mui/icons-material/FilterList";
+import InsertChartOutlinedIcon from "@mui/icons-material/InsertChartOutlined";
+import NotesIcon from "@mui/icons-material/Notes";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
 import {
    Box,
    Button,
+   ButtonBase,
    Divider,
    IconButton,
-   ListItemText,
    Menu,
    MenuItem,
    Stack,
@@ -20,9 +25,12 @@ import {
    Tooltip,
    useMediaQuery,
 } from "@mui/material";
-import { useState } from "react";
+import type { Theme } from "@mui/material";
+import { useState, type ReactNode } from "react";
+import { MOTION_FAST } from "../../theme/motion";
+import type { ReportUi } from "../../theme/ui";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { edgeColor, hoverEdgeColor, TYPE } from "../controlTokens";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import type { BuilderControls } from "./builderControls";
 import {
    controlSx,
@@ -60,6 +68,10 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
    const hoverEdge = hoverEdgeColor(theme.cardBorder, theme.tileTitle);
    const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
    const unsaved = controls?.save !== undefined && controls.status !== "saved";
+   // Done writes the edits itself when the builder offers it, so Save is then
+   // only the keyboard's (⌘S), for a checkpoint without leaving.
+   const finish = controls?.done ?? onDone;
+   const separateSave = unsaved && controls?.done === undefined;
    const add = controls?.add;
    const canAdd =
       add !== undefined &&
@@ -76,6 +88,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
       <Stack
          direction="row"
          role="toolbar"
+         className={reportClasses.builderBar}
          aria-label="Report builder"
          sx={{
             alignItems: "center",
@@ -86,48 +99,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
       >
          {controls && (
             <>
-               {controls.save && (
-                  <Tooltip title={controls.saveTarget}>
-                     <Box
-                        component="span"
-                        role="status"
-                        aria-live="polite"
-                        sx={(mui) => ({
-                           display: "inline-flex",
-                           alignItems: "center",
-                           gap: 0.75,
-                           pr: 0.75,
-                           ...TYPE.control,
-                           color:
-                              controls.status === "saved"
-                                 ? mui.palette.text.secondary
-                                 : mui.palette.text.primary,
-                        })}
-                     >
-                        {controls.status === "saved" ? (
-                           <CheckIcon aria-hidden sx={{ fontSize: 16 }} />
-                        ) : (
-                           <Box
-                              aria-hidden
-                              sx={(mui) => ({
-                                 width: 7,
-                                 height: 7,
-                                 borderRadius: "50%",
-                                 bgcolor:
-                                    controls.status === "saving"
-                                       ? mui.palette.text.disabled
-                                       : mui.palette.warning.main,
-                              })}
-                           />
-                        )}
-                        {controls.status === "saved"
-                           ? "Saved"
-                           : controls.status === "saving"
-                             ? "Saving…"
-                             : "Unsaved changes"}
-                     </Box>
-                  </Tooltip>
-               )}
+               {controls.save && <SaveStatus controls={controls} />}
                {!compact && (
                   <>
                      <Tooltip title={`Undo (${MOD}Z)`}>
@@ -138,7 +110,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                               aria-label="Undo"
                               disabled={!controls.canUndo}
                               onClick={controls.undo}
-                              sx={iconControlSx}
+                              sx={iconControlSx(theme.ui)}
                            >
                               <UndoIcon fontSize="small" />
                            </IconButton>
@@ -150,7 +122,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                               aria-label="Redo"
                               disabled={!controls.canRedo}
                               onClick={controls.redo}
-                              sx={iconControlSx}
+                              sx={iconControlSx(theme.ui)}
                            >
                               <RedoIcon fontSize="small" />
                            </IconButton>
@@ -173,7 +145,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                                  if (next && next !== controls.layout?.value)
                                     controls.layout?.set(next);
                               }}
-                              sx={segmentedSx(edge)}
+                              sx={segmentedSx(edge, theme.ui)}
                            >
                               <ToggleButton
                                  value="linear"
@@ -215,44 +187,50 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                               anchorEl={addAnchor}
                               open={addAnchor !== null}
                               onClose={() => setAddAnchor(null)}
+                              // A pick opens a window or an editor that takes focus;
+                              // the menu handing it back to Add as it closed took it
+                              // away again (the add-tile search lost its caret).
+                              disableRestoreFocus
                               anchorOrigin={{
                                  vertical: "bottom",
                                  horizontal: "right",
                               }}
                               transformOrigin={{
-                                 vertical: "top",
+                                 vertical: -6,
                                  horizontal: "right",
                               }}
+                              slotProps={{
+                                 paper: { sx: menuPaperSx(edge, theme.ui) },
+                              }}
+                              MenuListProps={{ sx: { p: 0.5 } }}
                            >
                               {add?.tile && (
-                                 <MenuItem onClick={pick(add.tile)}>
-                                    <ListItemText
-                                       primary="Tile"
-                                       secondary="A view from the model"
-                                    />
-                                 </MenuItem>
+                                 <AddItem
+                                    icon={<InsertChartOutlinedIcon />}
+                                    title="Tile"
+                                    detail="A view from the model"
+                                    onClick={pick(add.tile)}
+                                 />
                               )}
                               {add?.text && (
-                                 <MenuItem onClick={pick(add.text)}>
-                                    <ListItemText
-                                       primary="Text"
-                                       secondary="Prose between the tiles"
-                                    />
-                                 </MenuItem>
+                                 <AddItem
+                                    icon={<NotesIcon />}
+                                    title="Text"
+                                    detail="Prose between the tiles"
+                                    onClick={pick(add.text)}
+                                 />
                               )}
                               {(add?.filter || add?.filterUnavailable) && (
-                                 <MenuItem
-                                    onClick={pick(add.filter)}
+                                 <AddItem
+                                    icon={<FilterListIcon />}
+                                    title="Filter"
+                                    detail={
+                                       add.filterUnavailable ??
+                                       "A control the tiles read"
+                                    }
                                     disabled={add.filter === undefined}
-                                 >
-                                    <ListItemText
-                                       primary="Filter"
-                                       secondary={
-                                          add.filterUnavailable ??
-                                          "A control the tiles read"
-                                       }
-                                    />
-                                 </MenuItem>
+                                    onClick={pick(add.filter)}
+                                 />
                               )}
                            </Menu>
                         </>
@@ -261,20 +239,40 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                )}
             </>
          )}
-         {(onDone || unsaved) && controls && (
+         {(finish || separateSave) && controls && (
             <Divider orientation="vertical" sx={dividerSx} />
          )}
-         {onDone && (
-            <Button
-               variant={unsaved ? "outlined" : "contained"}
-               disableElevation
-               onClick={onDone}
-               sx={controlSx(edge, hoverEdge)}
+         {finish && (
+            <Tooltip
+               // Only for a pointer that rests: the click that starts a save
+               // leaves the pointer here, and the tip popped up over Saving….
+               enterDelay={800}
+               enterNextDelay={800}
+               title={
+                  controls?.done && unsaved
+                     ? `Saves your edits, then shows the report · ${controls.saveTarget}`
+                     : ""
+               }
             >
-               Done
-            </Button>
+               <span>
+                  <Button
+                     variant={separateSave ? "outlined" : "contained"}
+                     disableElevation
+                     disabled={controls?.status === "saving"}
+                     onClick={finish}
+                     // Wide enough for "Saving…", so the label changes in
+                     // place: the bar is set against the header's right
+                     // edge, and a wider button pushed every control left.
+                     sx={{ ...controlSx(edge, hoverEdge, theme.ui), width: 92 }}
+                  >
+                     {controls?.done && controls.status === "saving"
+                        ? "Saving…"
+                        : "Done"}
+                  </Button>
+               </span>
+            </Tooltip>
          )}
-         {controls?.save && unsaved && (
+         {controls?.save && separateSave && (
             <Tooltip title={`Save (${MOD}S) · ${controls.saveTarget}`}>
                <span>
                   <Button
@@ -282,7 +280,10 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                      disableElevation
                      disabled={controls.status === "saving"}
                      onClick={controls.save}
-                     sx={{ ...controlSx(edge, hoverEdge), minWidth: 72 }}
+                     sx={{
+                        ...controlSx(edge, hoverEdge, theme.ui),
+                        minWidth: 72,
+                     }}
                   >
                      {controls.status === "saving" ? "Saving…" : "Save"}
                   </Button>
@@ -290,5 +291,306 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
             </Tooltip>
          )}
       </Stack>
+   );
+}
+
+/**
+ * Where the edits stand: saved, saving, kept in this browser, or (with no
+ * draft) unsaved. While there are edits to drop, it opens a menu offering
+ * Discard edits, which is one undoable edit back to the saved report.
+ */
+function SaveStatus({ controls }: { controls: BuilderControls }) {
+   const { theme } = usePublisherTheme();
+   const ui = theme.ui;
+   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+   const { status, draftKeptAt, discard } = controls;
+   const words =
+      status === "saved"
+         ? "Saved"
+         : status === "saving"
+           ? "Saving…"
+           : draftKeptAt !== undefined
+             ? "Draft saved"
+             : "Unsaved changes";
+   const hint =
+      status === "unsaved" && draftKeptAt !== undefined
+         ? "Your edits are kept in this browser. Done saves them to the report."
+         : controls.saveTarget;
+   // One element for every state, set the same way: the same type and
+   // padding, an icon slot of one size (a dot, or the check), and the
+   // chevron's room kept whether or not the menu is offered. Each state used
+   // to be drawn differently (a menu button for a draft, bare text otherwise),
+   // so Draft saved → Saving… → Saved changed font, padding and width at every
+   // step, and the controls beside it jumped. A minimum width, with the words
+   // set against the undo buttons, keeps them still.
+   const menu = discard !== undefined && status === "unsaved";
+   const sx = (mui: Theme) => ({
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "flex-end",
+      gap: 0.75,
+      minWidth: 132,
+      height: ui.size.control,
+      px: 1,
+      borderRadius: ui.radius.control,
+      font: "inherit",
+      ...ui.type.control,
+      whiteSpace: "nowrap" as const,
+      color:
+         status === "saved"
+            ? mui.palette.text.secondary
+            : mui.palette.text.primary,
+      transition: `color ${MOTION_FAST}, background-color ${MOTION_FAST}`,
+      ...(menu ? { "&:hover": { bgcolor: mui.palette.action.hover } } : {}),
+   });
+   const inner = (
+      <>
+         <Box
+            component="span"
+            aria-hidden
+            sx={{
+               width: 16,
+               height: 16,
+               flex: "none",
+               display: "inline-flex",
+               alignItems: "center",
+               justifyContent: "center",
+            }}
+         >
+            {status === "saved" ? (
+               <CheckIcon sx={{ fontSize: 16 }} />
+            ) : (
+               <Box
+                  component="span"
+                  sx={(mui) => ({
+                     width: 7,
+                     height: 7,
+                     borderRadius: "50%",
+                     bgcolor:
+                        status === "saving" || draftKeptAt !== undefined
+                           ? mui.palette.text.disabled
+                           : mui.palette.warning.main,
+                  })}
+               />
+            )}
+         </Box>
+         <Box component="span" aria-hidden>
+            {words}
+         </Box>
+         <ExpandMoreIcon
+            aria-hidden
+            sx={{
+               fontSize: 16,
+               ml: -0.25,
+               visibility: menu ? "visible" : "hidden",
+            }}
+         />
+      </>
+   );
+   // The words a screen reader hears as they change, beside the control
+   // rather than in it, so a button around them is named by its words.
+   const announce = (
+      <Box
+         component="span"
+         role="status"
+         aria-live="polite"
+         sx={VISUALLY_HIDDEN}
+      >
+         {words}
+      </Box>
+   );
+   return (
+      <>
+         {announce}
+         <Tooltip title={hint} describeChild>
+            {menu ? (
+               <ButtonBase
+                  className={reportClasses.saveStatus}
+                  aria-label={words}
+                  aria-haspopup="menu"
+                  aria-expanded={anchor !== null}
+                  onClick={(event) => setAnchor(event.currentTarget)}
+                  sx={sx}
+               >
+                  {inner}
+               </ButtonBase>
+            ) : (
+               <Box
+                  component="span"
+                  className={reportClasses.saveStatus}
+                  sx={sx}
+               >
+                  {inner}
+               </Box>
+            )}
+         </Tooltip>
+         <Menu
+            className={reportClasses.menu}
+            anchorEl={anchor}
+            open={anchor !== null}
+            onClose={() => setAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+            transformOrigin={{ vertical: -4, horizontal: "left" }}
+            slotProps={{
+               paper: {
+                  sx: {
+                     minWidth: 240,
+                     borderRadius: ui.radius.menu,
+                     border: `1px solid ${edgeColor(theme.cardBorder)}`,
+                     boxShadow: ui.shadow.menu,
+                  },
+               },
+            }}
+            MenuListProps={{ dense: true, sx: { py: 0.5 } }}
+         >
+            {draftKeptAt !== undefined && (
+               <Box
+                  component="li"
+                  role="presentation"
+                  sx={{
+                     px: 1.75,
+                     pt: 0.75,
+                     pb: 1,
+                     ...ui.type.caption,
+                     color: "text.secondary",
+                  }}
+               >
+                  Kept in this browser at{" "}
+                  {new Date(draftKeptAt).toLocaleTimeString([], {
+                     hour: "numeric",
+                     minute: "2-digit",
+                  })}
+               </Box>
+            )}
+            <MenuItem
+               onClick={() => {
+                  setAnchor(null);
+                  discard();
+               }}
+               sx={{
+                  mx: 0.5,
+                  borderRadius: ui.radius.control,
+                  gap: 1.25,
+                  color: "error.main",
+                  // The menu focuses its item on open; a full focus ring
+                  // there read as two stray rules across the menu.
+                  "&.Mui-focusVisible": {
+                     outline: "none",
+                     bgcolor: "action.hover",
+                  },
+               }}
+            >
+               <RestartAltIcon fontSize="small" />
+               Discard edits
+            </MenuItem>
+         </Menu>
+      </>
+   );
+}
+
+/** In the accessibility tree, not on screen: the status line's announcement. */
+const VISUALLY_HIDDEN = {
+   position: "absolute",
+   width: 1,
+   height: 1,
+   margin: -1,
+   padding: 0,
+   overflow: "hidden",
+   clip: "rect(0 0 0 0)",
+   whiteSpace: "nowrap",
+   border: 0,
+} as const;
+
+/** The builder's menus: a card set like its windows, rounded and bordered. */
+const menuPaperSx = (edge: string, ui: ReportUi) => ({
+   minWidth: 260,
+   mt: 0.5,
+   borderRadius: ui.radius.menu,
+   border: `1px solid ${edge}`,
+   boxShadow: ui.shadow.menu,
+});
+
+/**
+ * One thing the Add menu adds: its picture in a tile, its name, and a line
+ * saying what it is (or, when it cannot be added, why not).
+ */
+function AddItem({
+   icon,
+   title,
+   detail,
+   disabled = false,
+   onClick,
+}: {
+   icon: ReactNode;
+   title: string;
+   detail: string;
+   disabled?: boolean;
+   onClick: () => void;
+}) {
+   const { theme } = usePublisherTheme();
+   const ui = theme.ui;
+   return (
+      <MenuItem
+         onClick={onClick}
+         disabled={disabled}
+         sx={(mui) => ({
+            gap: 1.5,
+            px: 1.25,
+            py: 1,
+            borderRadius: ui.radius.control,
+            alignItems: "center",
+            "& .add-icon": {
+               width: 32,
+               height: 32,
+               flex: "none",
+               borderRadius: ui.radius.tile,
+               display: "flex",
+               alignItems: "center",
+               justifyContent: "center",
+               color: mui.palette.text.secondary,
+               bgcolor: mui.palette.action.hover,
+               transition: `color ${MOTION_FAST}, background-color ${MOTION_FAST}`,
+               "& svg": { fontSize: 18 },
+            },
+            "&:hover .add-icon, &.Mui-focusVisible .add-icon": {
+               color: theme.accent,
+               bgcolor: `color-mix(in srgb, ${theme.accent} 10%, ${mui.palette.background.paper})`,
+            },
+            // The menu focuses its first item on open; a full ring there read
+            // as a box drawn round a box.
+            "&.Mui-focusVisible": {
+               outline: "none",
+               bgcolor: mui.palette.action.hover,
+            },
+            "&.Mui-disabled": { opacity: 1 },
+            "&.Mui-disabled .add-text": { opacity: 0.5 },
+            "&.Mui-disabled .add-icon": { opacity: 0.5 },
+         })}
+      >
+         <Box className="add-icon" aria-hidden>
+            {icon}
+         </Box>
+         <Box className="add-text" sx={{ minWidth: 0 }}>
+            <Box
+               sx={{
+                  ...ui.type.control,
+                  fontWeight: ui.type.label.fontWeight,
+                  lineHeight: 1.3,
+               }}
+            >
+               {title}
+            </Box>
+            <Box
+               sx={{
+                  ...ui.type.caption,
+                  color: "text.secondary",
+                  whiteSpace: "normal",
+                  maxWidth: 220,
+               }}
+            >
+               {detail}
+            </Box>
+         </Box>
+      </MenuItem>
    );
 }

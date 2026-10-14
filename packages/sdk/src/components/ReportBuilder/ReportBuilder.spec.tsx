@@ -13,7 +13,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { ReportEvent } from "../Report/telemetry";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
-import { closeMenu, editInline } from "./testing/inline";
+import { closeMenu, editInline, viewOption } from "./testing/inline";
 import { dragEdge } from "./testing/resize";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
@@ -428,18 +428,19 @@ describe("ReportBuilder: fields, when the package is known", () => {
       fireEvent.change(screen.getByLabelText("Field to filter"), {
          target: { value: "sale_price" },
       });
-      const kind = () => screen.getByRole("combobox", { name: /Filter kind/ });
+      const kind = (name: string) =>
+         within(
+            screen.getByRole("radiogroup", { name: "Filter kind" }),
+         ).getByRole("radio", { name });
       const submit = () =>
          screen.getByRole("button", { name: "Add filter", hidden: false });
-      expect(kind().textContent).toBe("Number range");
+      expect(kind("Number range").getAttribute("aria-checked")).toBe("true");
       expect(submit()).toHaveProperty("disabled", false);
-      // But an EXPLICIT kind the field cannot take is a problem, said plainly.
-      fireEvent.mouseDown(kind());
-      fireEvent.click(screen.getByRole("option", { name: /Pick one/ }));
-      expect(
-         screen.getByText("sale_price is a number; this filter compares text."),
-      ).toBeDefined();
-      expect(submit()).toHaveProperty("disabled", true);
+      // A kind the field cannot take is not on offer: listed, off, and why.
+      const pickOne = kind("Pick one");
+      expect(pickOne.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(pickOne);
+      expect(kind("Number range").getAttribute("aria-checked")).toBe("true");
    });
 
    it("marks a control whose binding names a missing field, on its filter button", async () => {
@@ -523,7 +524,7 @@ describe("ReportBuilder: tiles added and removed", () => {
          written = source;
       });
       fireEvent.click(button("Add tile"));
-      fireEvent.click(screen.getByLabelText("View sales_by_state"));
+      fireEvent.click(viewOption("sales_by_state"));
       fireEvent.change(screen.getByLabelText("Tile title"), {
          target: { value: "Revenue by state" },
       });
@@ -711,11 +712,10 @@ source: a is scoped_orders extend {
          }),
       );
 
+      // Switched on, a cell opens this report; another is one more pick.
+      fireEvent.click(screen.getByLabelText("cat is clickable"));
       fireEvent.mouseDown(
-         screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
-      );
-      fireEvent.click(
-         screen.getByRole("option", { name: /This report/, hidden: true }),
+         screen.getByRole("combobox", { name: "Where cat goes", hidden: true }),
       );
       fireEvent.click(
          screen.getByRole("option", { name: /regions/, hidden: true }),
@@ -723,7 +723,7 @@ source: a is scoped_orders extend {
       fireEvent.keyDown(document.body, { key: "Escape" });
       fireEvent.mouseDown(
          screen.getByRole("combobox", {
-            name: /Sets the filter/,
+            name: "Control cat sets",
             hidden: true,
          }),
       );

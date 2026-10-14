@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -17,14 +18,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import {
-   CONTROL_HEIGHT_PX,
-   CONTROL_RADIUS,
-   edgeColor,
-   hoverEdgeColor,
-   TILE_RADIUS,
-   TYPE,
-} from "../controlTokens";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import { RemoveBadge, removeBadgeRevealSx } from "../RemoveBadge";
 import { useFilterEditing } from "./filterEditing";
 import { summarizeGivenValue } from "./filterSummary";
@@ -52,6 +46,7 @@ import { GivenInput, type GivenInputProps } from "./GivenInput";
 export function FilterButton(props: GivenInputProps) {
    const { given, value, onChange } = props;
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const editing = useFilterEditing();
    const [anchor, setAnchor] = useState<HTMLElement | null>(null);
    const name = given.name ?? "";
@@ -69,12 +64,12 @@ export function FilterButton(props: GivenInputProps) {
             onClick={(event) => setAnchor(event.currentTarget)}
             sx={(mui) => ({
                height: "100%",
-               borderRadius: CONTROL_RADIUS,
+               borderRadius: ui.radius.control,
                pl: "10px",
                pr: set ? "4px" : "8px",
                gap: "6px",
                fontFamily: "inherit",
-               fontSize: 13,
+               fontSize: ui.type.control.fontSize,
                lineHeight: 1,
                minWidth: 0,
                color: mui.palette.text.primary,
@@ -92,7 +87,7 @@ export function FilterButton(props: GivenInputProps) {
             <Box
                component="span"
                sx={{
-                  fontWeight: 500,
+                  fontWeight: ui.type.control.fontWeight,
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
@@ -132,6 +127,7 @@ export function FilterButton(props: GivenInputProps) {
       <>
          {problem ? <Tooltip title={problem}>{button}</Tooltip> : button}
          <Popover
+            className={reportClasses.filterPopover}
             open={open}
             anchorEl={anchor}
             onClose={() => setAnchor(null)}
@@ -147,7 +143,7 @@ export function FilterButton(props: GivenInputProps) {
                      width: 300,
                      maxWidth: "calc(100vw - 32px)",
                      boxSizing: "border-box",
-                     borderRadius: TILE_RADIUS,
+                     borderRadius: ui.radius.tile,
                      border: theme.cardBorder,
                      boxShadow: theme.shadow.lift,
                   },
@@ -169,7 +165,7 @@ export function FilterButton(props: GivenInputProps) {
                >
                   {problem && (
                      <Typography
-                        sx={{ ...TYPE.caption, color: "warning.main" }}
+                        sx={{ ...ui.type.caption, color: "warning.main" }}
                      >
                         {problem}
                      </Typography>
@@ -182,7 +178,7 @@ export function FilterButton(props: GivenInputProps) {
                         setAnchor(null);
                         editing.onEdit(name);
                      }}
-                     sx={{ px: 0.75, minWidth: 0, ...TYPE.control }}
+                     sx={{ px: 0.75, minWidth: 0, ...ui.type.control }}
                   >
                      Filter settings…
                   </Button>
@@ -214,9 +210,11 @@ function FilterShell({
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const editing = useFilterEditing();
    return (
       <Box
+         className={reportClasses.filter}
          data-filter={name}
          data-set={set || undefined}
          data-problem={problem ? true : undefined}
@@ -224,9 +222,9 @@ function FilterShell({
             position: "relative",
             display: "inline-flex",
             alignItems: "center",
-            height: CONTROL_HEIGHT_PX,
+            height: ui.size.control,
             boxSizing: "border-box",
-            borderRadius: CONTROL_RADIUS,
+            borderRadius: ui.radius.control,
             border: "1px solid",
             borderStyle: unused ? "dashed" : "solid",
             borderColor: problem
@@ -280,6 +278,7 @@ export function FilterSettingsButton({
    unused?: boolean;
 }) {
    const editing = useFilterEditing();
+   const ui = usePublisherTheme().theme.ui;
    if (!editing) return null;
    const problem = editing.stateOf(name)?.problem;
    const shell = (
@@ -290,11 +289,11 @@ export function FilterSettingsButton({
             onClick={() => editing.onEdit(name)}
             sx={(mui) => ({
                height: "100%",
-               borderRadius: CONTROL_RADIUS,
+               borderRadius: ui.radius.control,
                px: "10px",
                gap: "6px",
                fontFamily: "inherit",
-               fontSize: 13,
+               fontSize: ui.type.control.fontSize,
                lineHeight: 1,
                color: mui.palette.text.secondary,
                whiteSpace: "nowrap",
@@ -315,6 +314,7 @@ export function FilterSettingsButton({
 /** The row's last slot in the builder: declare or bind another filter. */
 export function AddFilterButton() {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const editing = useFilterEditing();
    if (!editing) return null;
    const disabled = editing.addDisabledReason !== undefined;
@@ -331,15 +331,15 @@ export function AddFilterButton() {
                disabled={disabled}
                onClick={() => editing.onAdd()}
                sx={(mui) => ({
-                  height: CONTROL_HEIGHT_PX,
-                  minHeight: CONTROL_HEIGHT_PX,
+                  height: ui.size.control,
+                  minHeight: ui.size.control,
                   px: 1.25,
-                  borderRadius: CONTROL_RADIUS,
+                  borderRadius: ui.radius.control,
                   borderStyle: "dashed",
                   borderColor: edgeColor(theme.cardBorder),
                   color: mui.palette.text.secondary,
                   boxShadow: "none",
-                  ...TYPE.control,
+                  ...ui.type.control,
                   "& .MuiButton-startIcon": { mr: 0.5 },
                   "& .MuiButton-startIcon svg": { fontSize: 16 },
                })}

@@ -4,7 +4,7 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
 import fs from "fs";
 import path from "path";
-import { editText } from "./helpers/builder";
+import { chooseLayout, editText, pickView } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 import {
    exampleFixture,
@@ -123,8 +123,10 @@ test.describe("embedded host", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      // Where Save writes is the Save button's tooltip, labelling it.
-      await expect(page.getByLabel("Kept in the host's record")).toBeVisible();
+      // Where Save writes is the save status's tooltip, describing it.
+      await expect(
+         page.locator(".publisher-save-status"),
+      ).toHaveAccessibleDescription("Kept in the host's record");
       await expect(page.getByText("read-only here")).toHaveCount(0);
 
       await editText(firstTextTile(page), "Edited in the host.");
@@ -153,15 +155,15 @@ test.describe("embedded host", () => {
       await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "storefront.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First query" }).click();
-      await page
-         .getByRole("option", {
-            name: "order_items → sales_by_month",
-            exact: true,
-         })
-         .click();
+      await pickView(
+         dialog,
+         "sales_by_month",
+         "order_items in storefront.malloy",
+      );
+      // The pick fills the title in; wait for it, so typing replaces it.
+      await expect(dialog.getByLabel("Report title")).toHaveValue(
+         "Sales by month",
+      );
       await dialog.getByLabel("Report title").fill("Hosted notebook");
       await dialog.getByRole("button", { name: "Create report" }).click();
 
@@ -207,17 +209,16 @@ test.describe("embedded host", () => {
       await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await dialog.getByRole("combobox", { name: "Layout" }).click();
-      await page.getByRole("option", { name: /^Grid/ }).click();
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "storefront.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First query" }).click();
-      await page
-         .getByRole("option", {
-            name: "order_items → sales_by_month",
-            exact: true,
-         })
-         .click();
+      await chooseLayout(dialog, "Grid");
+      await pickView(
+         dialog,
+         "sales_by_month",
+         "order_items in storefront.malloy",
+      );
+      // The pick fills the title in; wait for it, so typing replaces it.
+      await expect(dialog.getByLabel("Report title")).toHaveValue(
+         "Sales by month",
+      );
       await dialog.getByLabel("Report title").fill("Hosted dashboard");
       await dialog.getByRole("button", { name: "Create report" }).click();
       await expect(page).toHaveURL(
@@ -288,9 +289,7 @@ test.describe("embedded host", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      await expect(
-         page.getByText("Save writes the file into the package."),
-      ).toBeVisible();
+      await expect(page.locator('[data-saves-to="package"]')).toHaveCount(1);
       await editText(firstTextTile(page), "Scratch host edit.");
       await saveChanges(page);
       expect(writes).toHaveLength(1);
