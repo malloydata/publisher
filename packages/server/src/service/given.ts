@@ -126,6 +126,8 @@ export interface MalloyGivenApi extends GivenControlSpec {
    annotations?: string[];
    /** True when the declaration carries `#(secure)`: the host's to set; the builder hides its control only on a document held as text. */
    secure?: boolean;
+   /** True when the given declares no default: a query that reads it fails until a value is supplied. */
+   required?: boolean;
    /**
     * The given's default as a Malloy source literal — one literal per declared
     * `type`. Examples across the type range: `'WN'` or `"WN"` (string), `2003`
@@ -267,6 +269,16 @@ export function readGivenControlSpec(
  * storage tier's serve shape does exactly that. A `record`
  * given, if the grammar gains one, still renders bare.
  */
+/** Whether a given declares no default: its parsed default and its rendered text are both absent. */
+function givenDeclaresNoDefault(given: MalloyGiven): boolean {
+   const loose = given as unknown as {
+      default?: unknown;
+      _internal?: { default?: unknown; defaultText?: string };
+   };
+   const parsed = "default" in loose ? loose.default : loose._internal?.default;
+   return parsed === undefined && loose._internal?.defaultText === undefined;
+}
+
 export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
    const type = given.type;
    const renderedType =
@@ -298,6 +310,9 @@ export function malloyGivenToApi(given: MalloyGiven): MalloyGivenApi {
       // own private `_internal` at every `as MalloyGiven` cast site.
       default: (given as { _internal?: { defaultText?: string } })._internal
          ?.defaultText,
+      // From the parsed default and the rendered text together, so neither
+      // going missing alone makes a given with a default look required.
+      ...(givenDeclaresNoDefault(given) && { required: true }),
    };
 }
 

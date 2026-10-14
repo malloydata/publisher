@@ -176,6 +176,81 @@ describe("filters a host writes into the query (literalReads)", () => {
    });
 });
 
+describe("a required filter with no value", () => {
+   const manifest = {
+      ...base,
+      givens: [
+         {
+            name: "RECALL_YEAR",
+            type: "number",
+            label: "Recall Year",
+            required: true,
+         },
+      ],
+      tiles: [
+         {
+            kind: "query",
+            query: "recalls -> by_year",
+            givenNames: ["RECALL_YEAR"],
+            label: "By year",
+         },
+         {
+            kind: "query",
+            query: "recalls -> everything",
+            givenNames: [],
+            label: "Everything",
+         },
+      ],
+   } as DashboardManifest;
+   const sent = () =>
+      executeQueryModel.mock.calls.map(
+         (call) => (call[3] as { query?: string }).query,
+      );
+
+   it("runs no tile that reads it, and asks for it once for the page", async () => {
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="recalls"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(
+         await screen.findByText(
+            "Pick a value for Recall Year to see this report.",
+         ),
+      ).toBeDefined();
+      expect(screen.getByText("Waiting for Recall Year.")).toBeDefined();
+      await waitFor(() =>
+         expect(sent()).toContain("run: recalls -> everything"),
+      );
+      expect(sent()).not.toContain("run: recalls -> by_year");
+      // The control says it, rather than "Any".
+      expect(
+         screen.getByRole("button", { name: "Recall Year: Required" }),
+      ).toBeDefined();
+   });
+
+   it("runs every tile once it has a value, with no prompt", async () => {
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="recalls-set"
+            givens={{ RECALL_YEAR: "2020" }}
+         />,
+         { wrapper: serverWrapper },
+      );
+      await waitFor(() => expect(sent()).toContain("run: recalls -> by_year"));
+      expect(
+         screen.queryByText("Pick a value for Recall Year to see this report."),
+      ).toBeNull();
+   });
+});
+
 describe("DashboardView chrome", () => {
    // A linear report and a grid draw the same page: query tiles in cards, text
    // tiles as bare prose, and the title block. `chrome` is accepted and ignored.

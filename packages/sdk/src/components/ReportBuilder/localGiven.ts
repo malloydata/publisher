@@ -44,10 +44,13 @@ export function localGivenSpec(local: LocalGiven): Given {
    };
 }
 
-/** The default the server would publish: it unwraps a filter's `f'…'`, so an empty one shows no caption. */
+/**
+ * The default the server would publish: it unwraps a filter's `f'…'`, so an
+ * empty one is `""` (filters nothing, shows no caption). Never undefined for a
+ * declaration with a default: an absent `default` means the given is required.
+ */
 function displayDefault(local: LocalGiven): string | undefined {
    if (!local.type?.startsWith("filter<")) return local.default;
    const body = local.default?.match(/^f(['"])([\s\S]*)\1$/)?.[2];
-   if (body === undefined) return local.default;
-   return body === "" ? undefined : body;
+   return body ?? local.default;
 }

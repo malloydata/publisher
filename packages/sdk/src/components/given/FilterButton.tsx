@@ -21,6 +21,7 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
 import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import { RemoveBadge, removeBadgeRevealSx } from "../RemoveBadge";
 import { useFilterEditing } from "./filterEditing";
+import { isRequiredGiven } from "./required";
 import { summarizeGivenValue } from "./filterSummary";
 import { GivenInput, type GivenInputProps } from "./GivenInput";
 import { givenToParam } from "./paramCodec";
@@ -66,6 +67,7 @@ export function FilterButton(props: GivenInputProps) {
          open={open}
          problem={problem}
          fixed={fixed !== undefined}
+         required={!set && isRequiredGiven(given)}
       >
          <ButtonBase
             aria-haspopup="dialog"
@@ -317,6 +319,7 @@ function FilterShell({
    unused = false,
    problem,
    fixed = false,
+   required = false,
    children,
 }: {
    name: string;
@@ -326,6 +329,8 @@ function FilterShell({
    problem?: string;
    /** The model's filter: no remove badge, since the builder cannot take it off. */
    fixed?: boolean;
+   /** Required and unset: edged in the warning colour, since nothing that reads it runs. */
+   required?: boolean;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
@@ -337,6 +342,7 @@ function FilterShell({
          data-filter={name}
          data-set={set || undefined}
          data-problem={problem ? true : undefined}
+         data-required={required || undefined}
          sx={(mui) => ({
             position: "relative",
             display: "inline-flex",
@@ -346,13 +352,14 @@ function FilterShell({
             borderRadius: ui.radius.control,
             border: "1px solid",
             borderStyle: unused ? "dashed" : "solid",
-            borderColor: problem
-               ? mui.palette.warning.main
-               : set
-                 ? `color-mix(in srgb, ${theme.accent} 45%, transparent)`
-                 : open
-                   ? theme.accent
-                   : edgeColor(theme.cardBorder),
+            borderColor:
+               problem || required
+                  ? mui.palette.warning.main
+                  : set
+                    ? `color-mix(in srgb, ${theme.accent} 45%, transparent)`
+                    : open
+                      ? theme.accent
+                      : edgeColor(theme.cardBorder),
             bgcolor: set
                ? `color-mix(in srgb, ${theme.accent} 8%, ${mui.palette.background.paper})`
                : mui.palette.background.paper,

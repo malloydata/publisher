@@ -6,7 +6,7 @@
  * the builder's row as it does in the reader's, settable, but not removable or
  * configured: the builder never edits the model.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { DashboardManifest } from "../../client";
 import {
@@ -31,6 +31,10 @@ const SUBJECT = {
 };
 const SINCE = { name: "SINCE", label: "Since", type: "date" };
 
+const executeQueryModel = mock(
+   (_env: string, _pkg: string, _path: string, _body: { query?: string }) =>
+      pending(),
+);
 const getModel = mock((_env: string, _pkg: string, path: string) =>
    Promise.resolve({
       data:
@@ -48,7 +52,7 @@ mockServerProvider(
    {
       models: {
          getModel,
-         executeQueryModel: mock(() => pending()),
+         executeQueryModel,
          listModels: mock(() => Promise.resolve({ data: [] })),
       },
       reports: {
@@ -61,7 +65,10 @@ mockServerProvider(
 
 const { ReportEditor } = await import("./ReportEditor");
 
-beforeEach(() => clearCache());
+beforeEach(() => {
+   clearCache();
+   executeQueryModel.mockClear();
+});
 
 const open = (
    extra: { onOpenModel?: (modelPath: string) => void } = {},
@@ -254,5 +261,52 @@ source: recalls_tiles is recalls extend {
          await screen.findByRole("button", { name: "Open the model" }),
       );
       expect(onOpenModel).toHaveBeenCalledWith("auto_recalls.malloy");
+   });
+});
+
+describe("a required filter the model reads, in the builder", () => {
+   it("runs no tile that reads it and asks for it, as the reader does", async () => {
+      packageFile = `## artifact { title="Recalls" tiles=["recalls_tiles -> by_year", "recalls_tiles -> everything"] } dashboard { columns=12 }
+import "auto_recalls.malloy"
+
+source: recalls_tiles is recalls extend {
+  view: by_year is by_year_view
+  view: everything is everything_view
+}`;
+      served = {
+         givens: [
+            {
+               name: "RECALL_YEAR",
+               label: "Recall Year",
+               type: "number",
+               required: true,
+            },
+         ],
+         tiles: [
+            {
+               kind: "query",
+               query: "recalls_tiles -> by_year",
+               givenNames: ["RECALL_YEAR"],
+            },
+            {
+               kind: "query",
+               query: "recalls_tiles -> everything",
+               givenNames: [],
+            },
+         ],
+      };
+      open();
+      expect(
+         await screen.findByText(
+            "Pick a value for Recall Year to see this report.",
+         ),
+      ).toBeDefined();
+      expect(screen.getByText("Waiting for Recall Year.")).toBeDefined();
+      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
+      const queries = executeQueryModel.mock.calls.map((call) =>
+         JSON.stringify(call[3]),
+      );
+      expect(queries.some((q) => q.includes("everything"))).toBe(true);
+      expect(queries.some((q) => q.includes("by_year"))).toBe(false);
    });
 });

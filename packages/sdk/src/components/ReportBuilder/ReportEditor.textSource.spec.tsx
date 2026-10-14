@@ -463,5 +463,11 @@ source: a is orders extend {
          ),
       ).toBeDefined();
       expect(compileModelSource).not.toHaveBeenCalled();
+      // Its tiles are drawn, but nothing runs them: no source is declared.
+      expect(
+         (await screen.findAllByText("Not run: this document did not compile."))
+            .length,
+      ).toBeGreaterThan(0);
+      expect(executeQueryModel).not.toHaveBeenCalled();
    });
 });

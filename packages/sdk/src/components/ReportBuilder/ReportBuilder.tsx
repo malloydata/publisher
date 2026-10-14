@@ -5,7 +5,7 @@ import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { nudgedSpan } from "../Dashboard/DashboardGrid";
+import { nudgedSpan, useDefaultTileSpan } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
@@ -314,8 +314,22 @@ export function ReportBuilder({
    });
    const { dragging } = reorder;
    // Dragging a tile's right edge sets its width, written once on release.
+   // A tile with no `# colspan` is drawn as the reader draws it, at least
+   // MIN_TILE_PX wide, rather than one column: the width handle and the row
+   // arithmetic start from that span. Only drawn; nothing is written until
+   // the author sets a width.
+   const defaultSpan = useDefaultTileSpan(gridBox, columns);
+   const laidOut = useMemo(
+      () =>
+         editor.document.tiles.map((tile) =>
+            tile.colspan === undefined
+               ? { ...tile, colspan: defaultSpan }
+               : tile,
+         ),
+      [editor.document.tiles, defaultSpan],
+   );
    const resizing = useTileResize({
-      tiles: editor.document.tiles,
+      tiles: laidOut,
       columns,
       gridBox,
       onStart: selectTile,
@@ -372,14 +386,19 @@ export function ReportBuilder({
                (isQueryTile(tile) && tile.declaration.kind === "inherited")
             )
                return;
-            const span = nudgedSpan(tile.colspan ?? 1, delta, columns);
-            if (span === (tile.colspan ?? 1)) return;
+            const span = nudgedSpan(
+               tile.colspan ?? defaultSpan,
+               delta,
+               columns,
+            );
+            if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
                draft.tiles[selected].colspan = span;
             });
          },
       }),
       [
+         defaultSpan,
          editor,
          menu,
          filterDialog,
@@ -632,6 +651,7 @@ export function ReportBuilder({
                   reorder={reorder}
                   resizing={resizing}
                   gridBox={gridBox}
+                  defaultSpan={defaultSpan}
                   rules={rules}
                   canAdd={!!catalog}
                   selected={selected}

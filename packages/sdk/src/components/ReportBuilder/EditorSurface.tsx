@@ -26,6 +26,12 @@ import {
 } from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
+import {
+   missingRequiredGivens,
+   requiredPrompt,
+   waitingOn,
+   waitingText,
+} from "../given/required";
 import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
@@ -366,6 +372,12 @@ export function EditorSurface({
       ...(preamble !== undefined ? { preamble } : {}),
       ...(hostGivens ? { hostGivens } : {}),
    });
+   // Required filters with no value yet: as in the reader, a tile that
+   // reads one waits, and the page asks for them.
+   const missing = useMemo(
+      () => missingRequiredGivens(specs, applied, hostGivens),
+      [specs, applied, hostGivens],
+   );
    // A given only a gate reads has no control, so the host's value is added; each tile then sends just the names it reads.
    const tileHostGivens = useMemo(
       () =>
@@ -378,6 +390,15 @@ export function EditorSurface({
    );
 
    const manifestSettled = !served || isSuccess || isError;
+   // Held text that did not compile, or that the host's `compileSource`
+   // refused: nothing declares its sources, so a tile run would only fail with
+   // "Reference to undefined object". Its tiles are drawn but never run; the
+   // problem itself is said once, above the page.
+   const notCompiled =
+      textSource !== undefined &&
+      (compileText.problem !== undefined ||
+         compiled.isError ||
+         compileErrors.length > 0);
    // The tiles as the file was opened, by key: a tile still equal to its
    // opened self runs exactly as the reader runs it (below).
    const openedTiles = useMemo(
@@ -396,6 +417,21 @@ export function EditorSurface({
          ) {
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             // Until then the tile's own card and heading stand, so nothing pops in when it runs.
+            if (notCompiled)
+               return (
+                  <TileCard chrome={chrome}>
+                     <TileHeading
+                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        subtitle={heading ? heading.subtitle : tile.subtitle}
+                     />
+                     <Typography
+                        variant="body2"
+                        sx={{ color: "text.secondary", py: 1 }}
+                     >
+                        Not run: this document did not compile.
+                     </Typography>
+                  </TileCard>
+               );
             if (!manifestSettled)
                return (
                   <TileCard chrome={chrome}>
@@ -450,6 +486,15 @@ export function EditorSurface({
                   hostGivens={tileHostGivens}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
+                  {...(() => {
+                     const waiting = waitingOn(
+                        missing,
+                        query.reads ?? query.givenNames,
+                     );
+                     return waiting.length > 0
+                        ? { waitingFor: waitingText(waiting) }
+                        : {};
+                  })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
                   height={TILE_MAX_HEIGHT}
                />
@@ -459,6 +504,8 @@ export function EditorSurface({
          doc,
          openedTiles,
          manifestSettled,
+         notCompiled,
+         missing,
          runnable,
          servedReads,
          environmentName,
@@ -522,6 +569,9 @@ export function EditorSurface({
                The server could not compile this document:{" "}
                {compileErrors.map((problem) => problem.message).join("; ")}
             </Alert>
+         )}
+         {missing.length > 0 && !notCompiled && (
+            <Alert severity="info">{requiredPrompt(missing)}</Alert>
          )}
          {textSource && compileText.problem !== undefined && (
             <Alert severity="error">

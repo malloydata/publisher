@@ -449,6 +449,8 @@ export interface ReportGivenDeclaration {
    name: string;
    type: string;
    default?: string;
+   /** It declares no default, so a query that reads it fails until a value is supplied. */
+   required?: boolean;
    annotations: string[];
 }
 
@@ -635,6 +637,12 @@ export function readReportModelFacts(
          // Raw as declared. `givenSpec` unwraps a filter literal at the point it
          // publishes the field, so the two forms are not both in flight here.
          default: given.defaultText,
+         // Both forms absent, not either: the parsed default is the authority,
+         // and the rendered text alone could go missing without the given
+         // losing its default.
+         ...(given.default === undefined && given.defaultText === undefined
+            ? { required: true }
+            : {}),
          annotations: (given.annotations?.blockNotes ?? [])
             .concat(given.annotations?.notes ?? [])
             .map((note) => note.text),
@@ -930,6 +938,7 @@ function givenSpec(
          declaration.default !== undefined
             ? unwrapFilterLiteral(declaration.default)
             : declaration.default,
+      ...(declaration.required ? { required: true } : {}),
       // The `#(…)` app route only. This is NARROWER than the model surface, on
       // purpose: `malloyGivenToApi` classifies by the parsed route, this by the
       // opening character, and `parsePrefix` has four bracket pairs, so

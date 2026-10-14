@@ -70,7 +70,7 @@ describe("previewGivens", () => {
       });
    });
 
-   it("shows a filter default as the server publishes it: unwrapped, and none when empty", () => {
+   it("shows a filter default as the server publishes it: unwrapped, and empty when empty", () => {
       const filtered: DashboardDocument = {
          ...document,
          localGivens: [
@@ -85,7 +85,9 @@ describe("previewGivens", () => {
          ],
       };
       const [empty, state] = previewGivens(filtered, []);
-      expect(empty.default).toBeUndefined();
+      // As the server publishes it: "", which filters nothing (absent would
+      // read as no default declared).
+      expect(empty.default).toBe("");
       expect(state.default).toBe("WN");
       // The document keeps the literal the file is written from.
       expect(filtered.localGivens?.[1].default).toBe("f'WN'");
