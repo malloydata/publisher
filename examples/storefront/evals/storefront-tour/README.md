@@ -172,7 +172,8 @@ the case matrix, and the notebook of aggregate tables.
 python3 $EVAL package --set $SET --label baseline-01
 ```
 
-On the bundled model a run scores about 9 of 12. Summer sales and customer
+On the bundled model a run scores about 8 of 12, with best customers a near
+match unless the agent says "best" is not modeled. Summer sales and customer
 count fail, as the section above says they should. Top customer by spend failed
 or came close in all three runs so far, and it is not one of the designed gaps:
 the package's conventions guide warns that `total_sales` includes cancelled and
