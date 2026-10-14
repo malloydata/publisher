@@ -7,7 +7,6 @@ import type { ReactNode } from "react";
 import { usePublisherTheme } from "../theme/ThemeContext";
 import type { ReportUi } from "../theme/ui";
 import type { NavigationClick } from "./click_helper";
-import { MONO_FONT_FAMILY } from "./styles";
 
 import { PROSE_MAX_WIDTH } from "./controlTokens";
 
@@ -167,7 +166,7 @@ const stylesFor = (ui: ReportUi): Record<ProseVariant, SxProps<Theme>> => ({
       },
       "& p": { m: "0.5em 0" },
       "& ul, & ol": { m: "0.5em 0", pl: 3 },
-      "& code": { fontFamily: MONO_FONT_FAMILY, fontSize: "0.9em" },
+      "& code": { fontFamily: ui.font.mono, fontSize: "0.9em" },
    },
 });
 

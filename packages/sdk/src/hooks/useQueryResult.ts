@@ -75,8 +75,9 @@ export function useQueryResult(
    { enabled = true }: { enabled?: boolean } = {},
 ) {
    const { apiClients } = useServer();
+   const key = queryResultKey(spec);
    return useQueryWithApiError({
-      queryKey: queryResultKey(spec),
+      queryKey: key,
       // The signal cancels a run the page no longer wants: a tile whose givens
       // changed under it, or one that unmounted. react-query reverts a
       // cancelled query to its previous state rather than to an error, so an
@@ -101,9 +102,27 @@ export function useQueryResult(
       // "Running…" and back: every tile on a page blanked and redrew on each
       // filter pick. The last result stays up until the new one lands, and
       // `isPlaceholderData` says it is the previous answer.
-      placeholderData: keepPreviousData,
+      placeholderData: (previous, previousQuery) =>
+         previousQuery && onlyGivensDiffer(previousQuery.queryKey, key)
+            ? keepPreviousData(previous)
+            : undefined,
       ...CHART_RESULT_QUERY_OPTIONS,
    });
+}
+
+/** Where the applied values sit in {@link queryResultKey}. */
+const GIVENS_AT = 8;
+
+/**
+ * The same request but for its control values. Only then is the last answer
+ * worth showing while the new one runs: a tile switched to another view, or a
+ * query changed for any other reason, showed the old view's rows under the
+ * new title. The wrapper appends the server; that has to match too.
+ */
+export function onlyGivensDiffer(previous: QueryKey, next: QueryKey): boolean {
+   return previous.every(
+      (part, i) => i === GIVENS_AT || i >= next.length || part === next[i],
+   );
 }
 
 /** What a result surface holds while a query runs: hand it to `ResultPanel`. */

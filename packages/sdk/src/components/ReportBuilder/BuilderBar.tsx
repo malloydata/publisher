@@ -330,7 +330,7 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
       justifyContent: "flex-end",
       gap: 0.75,
       minWidth: 132,
-      height: 32,
+      height: ui.size.control,
       px: 1,
       borderRadius: ui.radius.control,
       font: "inherit",

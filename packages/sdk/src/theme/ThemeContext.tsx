@@ -65,9 +65,18 @@ export function ThemeProvider({
    ui,
    children,
 }: ThemeProviderProps) {
+   // Keyed on the tokens' content, not the object: a host writing `ui={{…}}`
+   // inline hands a new object every render, and a new theme every render
+   // repainted every chart on the page.
+   const uiKey = JSON.stringify(ui ?? null);
+   const merged = useMemo(
+      () => mergeUi(ui),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [uiKey],
+   );
    const theme = useMemo(
-      () => ({ ...resolveTheme(layers, mode), ui: mergeUi(ui) }),
-      [layers, mode, ui],
+      () => ({ ...resolveTheme(layers, mode), ui: merged }),
+      [layers, mode, merged],
    );
    const value = useMemo<ThemeContextValue>(
       () => ({ theme, layers, mode, userChoice, setMode, allowUserToggle }),

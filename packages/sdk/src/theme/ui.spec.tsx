@@ -61,4 +61,31 @@ describe("ThemeProvider's ui", () => {
       render(<Probe />);
       expect(seen).toBe(DEFAULT_UI.radius.tile);
    });
+
+   it("keeps one theme across renders for the same tokens, however they are passed", () => {
+      const seen: { ui: unknown }[] = [];
+      const Probe = () => {
+         seen.push(usePublisherTheme().theme);
+         return null;
+      };
+      // Stable, as ServerProvider's are: the layers are not what is tested.
+      const layers: [] = [];
+      const tree = (n: number) => (
+         <ThemeProvider
+            layers={layers}
+            mode="light"
+            userChoice={undefined}
+            setMode={() => {}}
+            // A new object each render, as an inline prop is.
+            ui={{ radius: { tile: "0px" } }}
+         >
+            <Probe key={n} />
+         </ThemeProvider>
+      );
+      const view = render(tree(1));
+      view.rerender(tree(1));
+      expect(seen.length).toBeGreaterThan(1);
+      expect(seen.at(-1)?.ui).toBe(seen[0]?.ui);
+      expect(seen.at(-1)).toBe(seen[0]);
+   });
 });

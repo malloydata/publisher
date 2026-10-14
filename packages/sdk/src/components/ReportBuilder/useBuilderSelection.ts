@@ -143,6 +143,8 @@ const KEEPS_SELECTION = [
    "[data-tile-key]",
    '[role="group"][aria-label="Description"]',
    '[role="toolbar"][aria-label="Report builder"]',
+   // The inline toolbar, for a host that draws no bar of its own.
+   '[aria-label="Builder actions"]',
    ".MuiPopover-root",
    ".MuiPopper-root",
    ".MuiDialog-root",
