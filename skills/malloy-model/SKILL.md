@@ -205,31 +205,39 @@ gets unwieldy.
 
 ## Parameterizing sources with `given:` (preferred)
 
-Native Malloy **`given:` parameters** are how you expose tunable knobs (date range, region, manufacturer) on a source. `#(filter)` is deprecated: never add one. A `given:` is a first-class runtime parameter you reference in the model's own logic; callers supply values at query time and the model uses them however it declares. Enable them with `##! experimental.givens` at the top of the model.
+Native Malloy **`given:` parameters** are runtime values a model reads in its own logic; callers supply them at query time. `#(filter)` is deprecated: never add one. Enable givens with `##! experimental.givens` at the top of the model.
+
+**A given belongs in the model only when the data's meaning or access depends on it:**
+
+- a row-level gate: `#(authorize)`, `#(access_filter)`, a `#(secure)` given, `$GROUPS`;
+- a value every query must supply (the no-default row in the table below);
+- a parameter a measure, dimension or view is defined with;
+- scoping the author means to apply to every consumer of the source: chat, MCP and every report.
+
+**A filter a reader picks on a dashboard or notebook is not modeling.** Manufacturer, a date range, region, a "major recalls only" toggle: don't add it to a source. Leave the source unfiltered, and let the report declare the given and bind it on its tiles (`skill:malloy-reports`). A model-level `where:` applies to every read of the source, chat and every other report included, and a report cannot take it over, because binding is per declaration, not per name. The report builder shows such a filter but cannot remove or reconfigure it.
 
 ```malloy
 ##! experimental.givens
 
-given:
-  manufacturer_filter :: filter<string> is f''
-  subject_filter :: filter<string> is f''
+# A value every query must supply: the table is partitioned by day.
+given: EVENT_DATE :: date
 
-source: recalls is duckdb.table('data/auto_recalls.csv') extend {
-  where: Manufacturer ~ $manufacturer_filter, Subject ~ $subject_filter
-  measure: recall_count is count()
+source: events is duckdb.table('data/events.parquet') extend {
+  where: event_date = $EVENT_DATE
+  measure: event_count is count()
 }
 ```
 
-A given is **declared bare** but **referenced with a `$` sigil** in expressions (`$manufacturer_filter`), as above.
+A given is **declared bare** but **referenced with a `$` sigil** in expressions (`$EVENT_DATE`), as above.
 
-- **Give every optional filter a neutral, match-all default** - a `filter<>` given defaulting to `f''` - so an unsupplied value returns unfiltered rows, matching how `#(filter)` behaves when a value is omitted. Because the given bakes an always-on `where:` into the source, a non-neutral default (e.g. a date floor) applies to *every* read of the source, not just the ones that opt in - so keep defaults neutral. Defaults must be Malloy literals.
+- **An optional given in the model gets a neutral, match-all default** (a `filter<>` given defaulting to `f''`), so an unsupplied value returns unfiltered rows. Because it bakes an always-on `where:` into the source, a non-neutral default (a date floor, say) applies to *every* read of the source. Defaults must be Malloy literals.
 - **Givens don't auto-inject a `where:`.** Unlike `#(filter)`, you write the filter expression that references the given yourself (e.g. `where: dimension ~ $given_name`).
 - **Every `#(filter)` use has a `given:` form.** Never add a `#(filter)` annotation to a model, not even for `required`, `implicit`, or a date/number range:
 
 | You want | Write this | Not this |
 |---|---|---|
-| An optional value or list filter | `given: REGION :: filter<string> is f''` and `where: region ~ $REGION` | `#(filter) dimension=region type=in` |
-| A date or number range | `given: MIN_SALE :: filter<number> is f''` (or `filter<date>`) and `where: sale_price ~ $MIN_SALE`. The caller sends a filter expression such as `>= 50`. | two `#(filter)` lines, `greater_than` and `less_than` |
+| An optional value or list filter a reader picks | In the **report**, not the model: `given: REGION :: filter<string> is f''` there, bound on its tiles with `+ { where: region ~ $REGION }` (`skill:malloy-reports`). In the model only for one of the cases above. | `#(filter) dimension=region type=in` |
+| A date or number range a reader picks | In the **report** the same way: `given: MIN_SALE :: filter<number> is f''` (or `filter<date>`), bound with `+ { where: sale_price ~ $MIN_SALE }`. The caller sends a filter expression such as `>= 50`. | two `#(filter)` lines, `greater_than` and `less_than` |
 | A value every query must supply (the primary key is only unique within it, or the table is too big to scan whole) | a given with **no default**, e.g. `given: EVENT_DATE :: date` and `where: event_date = $EVENT_DATE`. A query that omits it fails with "Given 'EVENT_DATE' has no value and no default". | `#(filter) ... required` |
 | A row filter the system applies, not the caller | `#(access_filter) org_id in $ORG_IDS`, with `ORG_IDS` set by a trusted tier (see the trust caveat below) | `#(filter) ... implicit` |
 
@@ -259,7 +267,7 @@ Publisher formats the value from the dimension's type (`'value'`, bare `true`/`f
 
 `#(filter)` is not a security boundary. A caller skips it with `bypass_filters=true` (REST) or `bypassFilters: true` (POST body), or by writing their own query text. Use givens with `#(authorize)` / `#(access_filter)` for access control.
 
-**To migrate** a source, replace each annotation using the table above, then delete it. `type=greater_than` and `type=less_than` are exclusive, so a plain comparison you convert one to is `>` or `<`, not `>=` or `<=`. `docs/givens.md` § "Coming from `#(filter)`" has a worked conversion.
+**To migrate** a source, replace each annotation using the table above, then delete it. An optional filter (`type=in`, `like`, `equal`, a range) moves to the reports that offer it, declared and bound there, and the source is left unfiltered; a `required` one stays in the model as a no-default given. `type=greater_than` and `type=less_than` are exclusive, so a plain comparison you convert one to is `>` or `<`, not `>=` or `<=`. `docs/givens.md` § "Coming from `#(filter)`" has a worked conversion.
 
 ## Access Control: `#(authorize)` and `#(access_filter)`
 

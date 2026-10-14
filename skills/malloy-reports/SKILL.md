@@ -45,7 +45,7 @@ Tool names below are bare (`get_context`); match each against the tools you actu
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package: `get_context` if you have it, otherwise the REST model endpoint for `index.malloy` (it answers 404 for a file off the surface) or the `.malloy` files. Never guess a name. A guessed field in a query fails the whole package load, not just that one report; a guessed tile or suggest source is quieter, and only shows up in the package warnings. If the package root holds an `index.malloy` (every scaffolded package does), a tile reads only the sources that file exports.
 2. **PICK THE LAYOUT AND THE TILES.** Which views, in what order, and on a grid how wide each sits. A query tile is a `view:` you declare in the report, named as `"source -> view"`.
-3. **DECLARE THE GIVENS** the report will filter by, in the report file itself, with their control tags (see "Filter controls"). The builder edits the report file and nothing else, so a filter it can add, change or remove is a declaration in that file. A given the model already declares and reads is imported by name, never declared again (see "Givens that stay in the model").
+3. **DECLARE THE GIVENS** the report will filter by, in the report file itself, with their control tags (see "Filter controls"). A report holds its own filters: the builder edits the report file and nothing else, so a filter it can add, change or remove is a declaration in that file. A given the model already declares and reads is imported by name, never declared again; if it is only a reader's filter, move it into the report instead (see "Givens that stay in the model").
 4. **COMPOSE THE FILE** at its path (the package root unless asked otherwise), following the template below, but do not save it yet. Name the sources you need in the import. Each tile binds its controls with a refinement, `view: t is v + { where: category ~ $CATEGORY }`, one clause per given it answers to; a `filter<...>` binds with `~`, a plain `date` or `number` given is a value and binds with `>=`, `<=` or `=`. Only the givens some tile references become controls. Then import every source or query any referenced given names in a `suggest`; **a `suggest` naming a `query=` needs that query's own source imported as well**, because an import is not transitive.
 5. **COMPILE IT** with your compile tool (`POST …/models/<path>/compile` over REST) at the path the file will have, with **`"scope": "file"`**: a report opens with an `import`, which the default `append` scope refuses, and an existing file compiled at `append` collides with itself. **`"scope": "file"` does not check tiles, drills or suggest queries.** To see those before you save, compile the same text at `"scope": "package"` with `modelPath` set to the report's path: it runs the lint step 6 reads and returns its findings with code `dashboard-lint` (or `render-tag`). Editing an untagged model several reports import also wants `"scope": "package"`, which recompiles every file as saved.
 6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** Save by writing the file, or with `PUT …/models/<path>` over REST (omit `expectedHash` to create; it creates at any new path and replaces only a file the package already serves as a report). Then your reload tool, or `GET …/packages/<pkg>?reload=true`. A 424 means the package did not load and your edit is not live. **The `warnings` key is absent when there are none.** Then read `GET …/packages/<pkg>/reports/<path>`: its `givens` are exactly the controls that will render, and its `layout` is the layout Publisher read. See "Read the lint".
@@ -140,6 +140,71 @@ A given stays in the model, declared once there, when a model source, view or me
 
 - **Import a name and also declare it: a compile error.** Drop the local declaration.
 - **Declare a name the model already reads, without importing it: no error at all.** The control renders and moves, and the model's own `where:` or gate never sees the value.
+
+**A model that already scopes a source by an optional filter given** (`where: Manufacturer ~ $manufacturer_filter` in the model) needs a decision:
+
+- **It is a reader's filter and you may change the model: move it.** Delete the given and its `where:` clause from the model, declare it in the report with its control tags, and bind it on each tile that should answer to it. A reader's filter is anything a person picks on the page; a given stays in the model only for the reasons `malloy-model` lists (a gate, a value every query must supply, a parameter a field is defined with, scoping meant for every consumer).
+- **The model can't change, or the given is semantic or governance: import it** as above. Say so plainly: the filter shows in the reader and in the builder, and can be set in both, but the builder cannot remove or reconfigure it. It is the model's.
+
+Before, in the model:
+
+```malloy
+##! experimental.givens
+given:
+  manufacturer_filter :: filter<string> is f''
+  subject_filter :: filter<string> is f''
+  major_recall_filter :: filter<boolean> is f''
+  recall_date_filter :: filter<date> is f''
+
+source: recalls is duckdb.table('data/auto_recalls.csv') extend {
+  where:
+    Manufacturer ~ $manufacturer_filter,
+    Subject ~ $subject_filter,
+    `Major Recall` ~ $major_recall_filter,
+    `Report Received Date` ~ $recall_date_filter
+  dimension: `Major Recall` is ifnull(`Potentially Affected`, 0) > 100000
+}
+```
+
+After: the model declares no givens and `recalls` has no `where:`; the report declares the four and binds each tile:
+
+```malloy
+##! experimental.givens
+##| artifact { layout=grid title="Recalls"
+  tiles=["recalls_tiles -> recalls_by_year", "recalls_tiles -> recalls_by_manufacturer"]
+} dashboard { columns=12 }
+|##
+import { recalls } from "auto_recalls.malloy"
+
+# label="Manufacturer" control=multiselect suggest { source=recalls dimension=Manufacturer }
+given: manufacturer_filter :: filter<string> is f''
+# label="Subject"
+given: subject_filter :: filter<string> is f''
+# label="Major recalls only"
+given: major_recall_filter :: filter<boolean> is f''
+# label="Filed"
+given: recall_date_filter :: filter<date> is f''
+
+source: recalls_tiles is recalls extend {
+  # colspan=6
+  view: recalls_by_year is by_year + {
+    where:
+      Manufacturer ~ $manufacturer_filter,
+      Subject ~ $subject_filter,
+      `Major Recall` ~ $major_recall_filter,
+      `Report Received Date` ~ $recall_date_filter
+  }
+  # colspan=6
+  view: recalls_by_manufacturer is by_manufacturer + {
+    where:
+      Subject ~ $subject_filter,
+      `Major Recall` ~ $major_recall_filter,
+      `Report Received Date` ~ $recall_date_filter
+  }
+}
+```
+
+A tile view takes a name of its own: `view: by_year is by_year + { … }` is "Cannot redefine 'by_year'". Each tile binds only the givens it should answer to: `recalls_by_manufacturer` leaves the manufacturer filter off, since it is the breakdown by manufacturer. Every given here is a `filter<…>`, so each binds with `~`; a plain `date` or `number` given binds with `>=`, `<=` or `=` (step 4).
 
 A given has to be in the report file's own scope to be bindable: declared there or imported. Never add a `#(filter)` annotation: it is deprecated, a report renders no control for it, and every use has a `given:` form (`malloy-model` covers the migration). `malloy-model` and `docs/givens.md` cover givens themselves.
 

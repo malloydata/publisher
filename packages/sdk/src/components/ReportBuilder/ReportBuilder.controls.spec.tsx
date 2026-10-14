@@ -164,6 +164,15 @@ describe("BuilderBar", () => {
       expect(save).toHaveBeenCalledTimes(1);
    });
 
+   it("keeps its spoken status to a 1px box, so it never widens the host", () => {
+      render(<BuilderBar controls={base} onDone={() => {}} />);
+      const status = getComputedStyle(screen.getByRole("status"));
+      expect(status.position).toBe("absolute");
+      expect(status.width).toBe("1px");
+      expect(status.height).toBe("1px");
+      expect(status.margin).toBe("-1px");
+   });
+
    it("draws Done alone while the builder opens", () => {
       render(<BuilderBar controls={undefined} onDone={() => {}} />);
       expect(screen.getByRole("button", { name: "Done" })).toBeDefined();

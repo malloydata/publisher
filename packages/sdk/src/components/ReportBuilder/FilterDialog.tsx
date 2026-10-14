@@ -93,6 +93,8 @@ export interface FilterDialogProps {
    control?: BuilderControl;
    /** Model givens not yet bound anywhere, offered as "from the model". */
    available: readonly BuilderControl[];
+   /** Names a new filter must not take, beyond the page's own and `available`'s. */
+   takenNames?: readonly string[];
    /**
     * The fields a binding on THIS tile may name: the dimensions of the source
     * it reads. Per tile, because a composite dashboard exists to span sources,
@@ -223,6 +225,7 @@ export function FilterDialog({
    document,
    control,
    available,
+   takenNames,
    fieldsFor,
    onClose,
    onApply,
@@ -270,6 +273,7 @@ export function FilterDialog({
       document,
       control,
       available,
+      ...(takenNames ? { takenNames } : {}),
       fieldsFor,
       onApply,
    });

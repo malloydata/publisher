@@ -5,7 +5,12 @@ import { describe, expect, it } from "bun:test";
 import type { GivenValue } from "../../hooks/givenValue";
 import type { DashboardDocument, QueryTile } from "./document";
 import { queryTile } from "./testing/fixtures";
-import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import {
+   givensReadThroughModel,
+   previewGivens,
+   previewTileQuery,
+   tileExpressionKey,
+} from "./preview";
 
 const tile = (
    name: string,
@@ -65,7 +70,7 @@ describe("previewGivens", () => {
       });
    });
 
-   it("shows a filter default as the server publishes it: unwrapped, and none when empty", () => {
+   it("shows a filter default as the server publishes it: unwrapped, and empty when empty", () => {
       const filtered: DashboardDocument = {
          ...document,
          localGivens: [
@@ -80,7 +85,9 @@ describe("previewGivens", () => {
          ],
       };
       const [empty, state] = previewGivens(filtered, []);
-      expect(empty.default).toBeUndefined();
+      // As the server publishes it: "", which filters nothing (absent would
+      // read as no default declared).
+      expect(empty.default).toBe("");
       expect(state.default).toBe("WN");
       // The document keeps the literal the file is written from.
       expect(filtered.localGivens?.[1].default).toBe("f'WN'");
@@ -102,6 +109,114 @@ describe("previewGivens", () => {
          },
       };
       expect(previewGivens(withModel, [spec])).toEqual([spec]);
+   });
+});
+
+describe("givens read through the model", () => {
+   // The auto_recalls shape: the report binds nothing; the model's source
+   // filters itself by four givens in its own `where:`.
+   const recalls: DashboardDocument = {
+      layout: "grid",
+      title: "Recalls",
+      imports: [{ kind: "all", from: "auto_recalls.malloy" }],
+      sources: [{ name: "recalls_tiles", base: "recalls" }],
+      tiles: [
+         { ...tile("by_year", "by_year"), source: "recalls_tiles" },
+         { ...tile("by_maker", "by_maker"), source: "recalls_tiles" },
+      ],
+   };
+   const MODEL = [
+      { name: "manufacturer_filter", type: "filter<string>" },
+      { name: "subject_filter", type: "filter<string>" },
+      { name: "major_recall_filter", type: "boolean" },
+      { name: "recall_date_filter", type: "filter<date>" },
+   ];
+   const served = new Map([
+      [
+         "recalls_tiles -> by_year",
+         ["manufacturer_filter", "recall_date_filter", "major_recall_filter"],
+      ],
+      ["recalls_tiles -> by_maker", ["manufacturer_filter", "subject_filter"]],
+   ]);
+
+   it("shows a given only the model reads, in the manifest's order", () => {
+      const reads = givensReadThroughModel(recalls, recalls, served);
+      expect(
+         previewGivens(recalls, MODEL, reads).map((spec) => spec.name),
+      ).toEqual(MODEL.map((spec) => spec.name));
+      // Without the reads, the row the builder drew before: empty.
+      expect(previewGivens(recalls, MODEL)).toEqual([]);
+   });
+
+   it("leaves out what this file bound, so a removed binding takes its control", () => {
+      const bound: DashboardDocument = {
+         ...recalls,
+         tiles: [
+            {
+               ...tile("by_year", "by_year", [
+                  { field: "category", given: "CATEGORY" },
+               ]),
+               source: "recalls_tiles",
+            },
+         ],
+      };
+      const reads = givensReadThroughModel(
+         bound,
+         bound,
+         new Map([
+            ["recalls_tiles -> by_year", ["CATEGORY", "manufacturer_filter"]],
+         ]),
+      );
+      expect([...reads]).toEqual(["manufacturer_filter"]);
+   });
+
+   it("puts this file's bound declarations first, then the model's", () => {
+      const mixed: DashboardDocument = {
+         ...recalls,
+         localGivens: [{ name: "SINCE", type: "date", default: "@2020-01-01" }],
+         tiles: [
+            {
+               ...tile("by_year", "by_year", [
+                  { field: "recall_date", given: "SINCE", op: ">=" },
+               ]),
+               source: "recalls_tiles",
+            },
+         ],
+      };
+      const reads = givensReadThroughModel(mixed, mixed, served);
+      expect(
+         previewGivens(mixed, MODEL, reads).map((spec) => spec.name),
+      ).toEqual([
+         "SINCE",
+         "manufacturer_filter",
+         "major_recall_filter",
+         "recall_date_filter",
+      ]);
+   });
+
+   it("reads a new tile by a served tile of the same expression, and nothing otherwise", () => {
+      const added: DashboardDocument = {
+         ...recalls,
+         tiles: [
+            ...recalls.tiles,
+            { ...tile("by_maker", "by_maker"), source: "recalls_tiles" },
+            { ...tile("fresh", "fresh"), source: "recalls_tiles" },
+         ],
+      };
+      expect(
+         [
+            ...givensReadThroughModel(added, { ...recalls, tiles: [] }, served),
+         ].sort(),
+      ).toEqual(
+         [
+            "major_recall_filter",
+            "manufacturer_filter",
+            "recall_date_filter",
+            "subject_filter",
+         ].sort(),
+      );
+      const onlyNew = { ...recalls, tiles: [added.tiles[3]!] };
+      expect(givensReadThroughModel(onlyNew, recalls, served).size).toBe(0);
    });
 });
 
@@ -201,9 +316,14 @@ describe("previewTileQuery", () => {
       expect(q.givenNames).toEqual(["CATEGORY"]);
    });
 
-   it("leaves out an unsent given with no value yet, and one nobody declares", () => {
+   it("applies an unsent given's declared default until a value is set, and skips one nobody declares", () => {
+      // No value set: SINCE's default applies, as the server applies a
+      // given's default once the report is saved; CATEGORY's default is an
+      // empty filter, which filters nothing, so it adds no clause.
       const q = previewTileQuery(document, queryTile(document, 0), new Set());
-      expect(q.expression).toBe("overview -> key_figures");
+      expect(q.expression).toBe(
+         "overview -> key_figures + { where: created_at >= @2023-01-01 }",
+      );
       expect(q.givenNames).toEqual([]);
       const stray: QueryTile = tile("t", "v", [
          { field: "x", given: "NOBODY" },
