@@ -19,14 +19,13 @@ import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
 import { chartChoices } from "./ChartPicker";
 import type { ChartState } from "./chartLine";
-import { widthLabel } from "./widthLabel";
 
 /**
  * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
  * never means scrolling away from it. Its chart (a submenu, each pick drawn at
- * once), its width on a grid (the same as dragging its right edge), and its
- * clickable cells; its title and subtitle are edited on the tile, and it is
- * removed from the × on its corner. Its row is set by dragging it — a drop
+ * once) and its clickable cells; its title and subtitle are edited on the
+ * tile, its width is set by dragging its right edge, and it is removed from
+ * the × on its corner. Its row is set by dragging it — a drop
  * into the empty end of a row is what "start a new row" means — and its card
  * is the reader's to decide, so neither is a toggle here. Which controls it
  * answers to is not here either: filters are configured in one place, the
@@ -51,16 +50,6 @@ export interface TileMenuProps {
    onDrills?: () => void;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
    view?: Pick<CatalogView, "chart" | "aggregateOnly">;
-   /** The grid's column count, on a grid: the menu then offers the tile's width. */
-   columns?: number;
-}
-
-/** The widths a menu offers on a grid of `columns`: the common fractions that land on whole columns, then the full width. */
-export function widthChoices(columns: number): number[] {
-   const spans = [1 / 4, 1 / 3, 1 / 2, 2 / 3, 3 / 4, 1]
-      .map((fraction) => columns * fraction)
-      .filter((span) => Number.isInteger(span) && span >= 1);
-   return [...new Set(spans)];
 }
 
 const customChart = (lines: string[] | undefined) =>
@@ -77,7 +66,6 @@ export function TileMenu({
    onCommit,
    onDrills,
    view,
-   columns,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
    const { draft, apply, close } = useDraft(
@@ -88,7 +76,7 @@ export function TileMenu({
    );
    // Which submenu is open, anchored to its item.
    const [sub, setSub] = useState<
-      { kind: "chart" | "width"; anchor: HTMLElement } | undefined
+      { kind: "chart"; anchor: HTMLElement } | undefined
    >(undefined);
 
    const query = draft !== undefined && isQueryTile(draft) ? draft : undefined;
@@ -139,22 +127,14 @@ export function TileMenu({
          }
       });
 
-   const span = draft?.colspan ?? 1;
-   const widths =
-      columns !== undefined && columns > 1 ? widthChoices(columns) : [];
-   const widthBlocked =
-      query !== undefined && !editable
-         ? "Its width is set in the model too."
-         : undefined;
    const drillBlocked = !editable
       ? undefined
       : onDrills
         ? undefined
         : "Its source declares no dimension a click could filter by.";
 
-   const subOpen =
-      (kind: "chart" | "width") => (event: { currentTarget: HTMLElement }) =>
-         setSub({ kind, anchor: event.currentTarget });
+   const subOpen = (kind: "chart") => (event: { currentTarget: HTMLElement }) =>
+      setSub({ kind, anchor: event.currentTarget });
    const label = (text: string, value?: string, reason?: string) => (
       <>
          <ListItemText
@@ -208,31 +188,6 @@ export function TileMenu({
                         ? undefined
                         : choices.find((c) => c.value === chartState)?.label,
                      chartBlocked,
-                  )}
-                  <ChevronRightIcon
-                     fontSize="small"
-                     sx={{ ml: 1, color: "text.secondary" }}
-                  />
-               </MenuItem>
-            )}
-            {widths.length > 0 && (
-               <MenuItem
-                  aria-haspopup="menu"
-                  aria-expanded={sub?.kind === "width"}
-                  disabled={widthBlocked !== undefined}
-                  onClick={subOpen("width")}
-                  onKeyDown={(event) => {
-                     if (event.key === "ArrowRight")
-                        setSub({
-                           kind: "width",
-                           anchor: event.currentTarget,
-                        });
-                  }}
-               >
-                  {label(
-                     "Width",
-                     widthBlocked ? undefined : `${span} of ${columns}`,
-                     widthBlocked,
                   )}
                   <ChevronRightIcon
                      fontSize="small"
@@ -323,42 +278,6 @@ export function TileMenu({
                      )}
                   </MenuItem>
                ))}
-         </Menu>
-
-         <Menu
-            open={sub?.kind === "width"}
-            anchorEl={sub?.anchor ?? null}
-            onClose={() => setSub(undefined)}
-            anchorOrigin={{ vertical: "top", horizontal: "left" }}
-            transformOrigin={{ vertical: "top", horizontal: "right" }}
-            MenuListProps={{ dense: true, "aria-label": "Width" }}
-         >
-            {columns !== undefined &&
-               (widths.includes(span) ? widths : [span, ...widths]).map(
-                  (each) => (
-                     <MenuItem
-                        key={each}
-                        role="menuitemradio"
-                        aria-checked={each === span}
-                        onClick={() => {
-                           apply((t) => {
-                              t.colspan = each;
-                           });
-                           setSub(undefined);
-                        }}
-                     >
-                        <ListItemText primary={widthLabel(each, columns)} />
-                        {each === span && (
-                           <ListItemIcon sx={{ minWidth: 0, ml: 2 }}>
-                              <CheckIcon
-                                 fontSize="small"
-                                 sx={{ color: theme.accent }}
-                              />
-                           </ListItemIcon>
-                        )}
-                     </MenuItem>
-                  ),
-               )}
          </Menu>
       </>
    );

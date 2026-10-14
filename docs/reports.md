@@ -901,8 +901,8 @@ behind the tiles and a label saying the width during the drag; the edge is also 
 it, Left and Right step one column, Home and End go to one column and full width).
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Chart** and, on a grid, **Width**, each a submenu, and **Clickable cells…**; a tile is
-removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
+The ⋯ menu holds **Chart**, a submenu, and **Clickable cells…**; a tile's width is set by dragging its
+right edge (or focusing that edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
 they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
 keeps it, Escape drops it, and Cmd/Ctrl+S saves from inside the field.
