@@ -60,6 +60,10 @@ export default function DashboardEditPage({
       <Report
          resourceUri={encodeResourceUri({ environmentName, packageName })}
          path={path}
+         // Drawn twice (while the builder's code loads, then while it opens),
+         // and read again by the builder: one read serves all three, as the
+         // builder's own reuse window does.
+         manifestStaleTime={10_000}
       />
    );
    return (

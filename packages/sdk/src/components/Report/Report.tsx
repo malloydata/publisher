@@ -76,6 +76,13 @@ export interface ReportProps {
    onEvent?: ReportEventHandler;
    /** Ignored: kept so existing callers compile. Both layouts draw the same cards. */
    chrome?: TileChrome;
+   /**
+    * How long a read of the report is reused without asking the server again,
+    * in ms. Default 0: every mount asks, so a change made elsewhere shows. A
+    * host that draws the same report twice in a row can set a few seconds, as
+    * the Console does while the builder loads over it.
+    */
+   manifestStaleTime?: number;
 }
 
 /**
@@ -97,6 +104,7 @@ export function Report({
    maxResultSize,
    onEvent,
    chrome,
+   manifestStaleTime = 0,
 }: ReportProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -111,12 +119,16 @@ export function Report({
       isError,
       error,
    } = useQueryWithApiError({
-      ...reportQueryOptions(apiClients, {
-         environmentName,
-         packageName,
-         path,
-         versionId,
-      }),
+      ...reportQueryOptions(
+         apiClients,
+         {
+            environmentName,
+            packageName,
+            path,
+            versionId,
+         },
+         manifestStaleTime,
+      ),
       enabled: uriNamesBoth && path !== "",
    });
 

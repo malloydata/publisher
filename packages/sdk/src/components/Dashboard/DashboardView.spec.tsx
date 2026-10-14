@@ -163,6 +163,35 @@ describe("DashboardView header", () => {
    });
 });
 
+describe("DashboardView layout marker", () => {
+   it("marks the page with its layout, and a report that failed to load too", () => {
+      const { container, unmount } = render(
+         <DashboardView
+            manifest={{ ...base, layout: "linear" }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(container.querySelector('[data-layout="linear"]')).not.toBeNull();
+      unmount();
+
+      const failed = render(
+         <DashboardView
+            manifest={{ ...base, layout: "grid", error: "did not compile" }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(
+         failed.container.querySelector('[data-layout="grid"]'),
+      ).not.toBeNull();
+   });
+});
+
 describe("DashboardView control row", () => {
    it("draws no sticky row when the document declares no controls", async () => {
       const { container } = render(

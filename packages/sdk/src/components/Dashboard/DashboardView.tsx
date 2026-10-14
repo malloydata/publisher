@@ -209,11 +209,20 @@ export function DashboardView({
       [drill],
    );
 
+   // The layout decides the arrangement only, as it does in the builder.
+   const { columns, layout } = layoutRules(
+      manifest.layout,
+      manifest.dashboardColumns,
+   );
+
    // Reachable on the in-process load path only: production aborts the package
    // on the first compile error, so an uncompilable file answers 424 instead.
    if (manifest.error) {
       return (
-         <ReportPage header={<DashboardHeader manifest={manifest} />}>
+         <ReportPage
+            layout={layout}
+            header={<DashboardHeader manifest={manifest} />}
+         >
             <Alert severity="error">{manifest.error}</Alert>
          </ReportPage>
       );
@@ -221,11 +230,6 @@ export function DashboardView({
 
    const modelPath = runModelPath ?? manifest.path;
    const tiles = manifest.tiles ?? [];
-   // The layout decides the arrangement only, as it does in the builder.
-   const { columns, layout } = layoutRules(
-      manifest.layout,
-      manifest.dashboardColumns,
-   );
 
    return (
       <ReportPage

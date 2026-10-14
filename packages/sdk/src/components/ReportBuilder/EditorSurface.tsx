@@ -20,7 +20,10 @@ import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useReportListing } from "../Package/useDocumentLocation";
-import { reportQueryOptions } from "../Report/reportQuery";
+import {
+   BUILDER_HANDOFF_STALE_MS,
+   reportQueryOptions,
+} from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
@@ -119,12 +122,16 @@ export function EditorSurface({
       // The reader's read of the same report, so opening the builder from the
       // reader does not read it again. A report in the cell format has only the
       // tag's starting values until it is saved.
-      ...reportQueryOptions(apiClients, {
-         environmentName,
-         packageName,
-         path: modelPath,
-         versionId,
-      }),
+      ...reportQueryOptions(
+         apiClients,
+         {
+            environmentName,
+            packageName,
+            path: modelPath,
+            versionId,
+         },
+         BUILDER_HANDOFF_STALE_MS,
+      ),
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
    });

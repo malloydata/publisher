@@ -35,15 +35,28 @@ export async function openFilter(
 
 /**
  * Close whatever filter popover is open. A picker's own list closes on the
- * first Escape, the popover on the next. Escape reaches the popover only while
- * focus is inside it, which a control that removes itself (a clear ×) can
- * end, so a click outside it is the fallback.
+ * first Escape, the popover on the next. Each key waits for the popover to
+ * leave, so no spare Escape reaches the page behind it (in the builder one
+ * drops the selected tile). Escape reaches the popover only while focus is
+ * inside it, which a control that removes itself (a clear ×) can end, so a
+ * click outside it is the fallback.
  */
 export async function closeFilter(page: Page): Promise<void> {
    const open = page.getByRole("dialog", { name: / filter$/ });
-   for (let i = 0; i < 3 && (await open.count()) > 0; i++)
+   const gone = () =>
+      open
+         .first()
+         .waitFor({ state: "detached", timeout: 1_000 })
+         .then(() => true)
+         .catch(() => false);
+   for (let i = 0; i < 2 && (await open.count()) > 0; i++) {
       await page.keyboard.press("Escape");
-   if ((await open.count()) > 0) await page.mouse.click(2, 2);
+      if (await gone()) break;
+   }
+   if ((await open.count()) > 0) {
+      await page.mouse.click(2, 2);
+      await gone();
+   }
    await expect(open).toHaveCount(0);
 }
 

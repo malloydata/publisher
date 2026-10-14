@@ -486,6 +486,8 @@ export function CellRunnerView({
       // The page every report draws, whatever its format: the header, the
       // pinned row of filter buttons, then the cells as prose and tiles.
       <ReportPage
+         // Cells read top to bottom, so a report of cells is linear.
+         layout="linear"
          header={
             title || description ? (
                <ReportHeader

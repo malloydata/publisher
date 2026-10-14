@@ -157,6 +157,11 @@ test.describe("notebook-givens", () => {
       await expect(
          filter.getByText("Default: Jeans", { exact: false }),
       ).toBeVisible();
+      await closeFilter(page);
+      const cutoff = await openFilter(page, "cutoff");
+      await expect(
+         cutoff.getByText("Default: 2024-01-01", { exact: false }),
+      ).toBeVisible();
    });
 
    test("default given value drives the initial cell result", async ({

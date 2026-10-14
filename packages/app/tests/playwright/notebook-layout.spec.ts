@@ -95,7 +95,7 @@ test.describe("layout notebooks", () => {
       expect(saved).toContain("layout=linear");
       expect(saved).not.toContain("kind=notebook");
 
-      // The reader draws every tile with no card around it.
+      // The reader draws it in one column, query tiles in cards.
       const reader = await context.newPage();
       await reader.goto(`/${pe.env}/${pe.pkg}/${slug}`);
       await expect(reader.getByText("A note added in place.")).toBeVisible({
