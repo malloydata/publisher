@@ -26,6 +26,7 @@ import {
 } from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
+import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
    isQueryTile,
@@ -76,6 +77,7 @@ export function EditorSurface({
    onSave,
    onDirtyChange,
    onExit,
+   onOpenModel,
    onControlsChange,
    draftKey,
    allowLayoutChange,
@@ -101,6 +103,7 @@ export function EditorSurface({
    onSave?: (source: string, layout: ReportLayout) => Promise<void>;
    onDirtyChange: (dirty: boolean, wouldLose: boolean) => void;
    onExit?: () => void;
+   onOpenModel?: (modelPath: string) => void;
    onControlsChange?: BuilderControlsHandler;
    /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
    draftKey?: string;
@@ -311,28 +314,43 @@ export function EditorSurface({
       );
       const declared = new Set((doc.localGivens ?? []).map((g) => g.name));
       const models = [...new Set(doc.imports.map((i) => i.from))];
-      const model =
+      // The model by its package path, for "Open the model": an import is
+      // relative to the report's own folder.
+      const modelFile =
          models.length === 1
-            ? `the model ${models[0]}`
+            ? packagePathOf(modelPath, models[0]!)
             : models.length === 0 && textSource
-              ? `the model ${textSource.modelPath}`
-              : "a model this report imports";
-      const reason = (name: string) => {
+              ? textSource.modelPath
+              : undefined;
+      const reason = (name: string): FixedFilter => {
          const scoping = doc.sources
             .filter((source) => source.scopedBy?.includes(name))
             .map((source) => source.name);
          if (scoping.length > 0)
-            return `Applied to every tile on ${scoping.join(", ")} by this report's own source. Edit the file to change it.`;
+            return {
+               reason: `Applied to every tile on ${scoping.join(", ")} by this report's own source. Edit the file to change it.`,
+            };
          if (declared.has(name))
-            return "Read by a query in this report the builder cannot edit. Edit the file to change it.";
-         return `Set in ${model}. Edit the model to change it.`;
+            return {
+               reason:
+                  "Read by a query in this report the builder cannot edit. Edit the file to change it.",
+            };
+         return modelFile !== undefined
+            ? {
+                 reason: `Set in the model ${modelFile}. Edit the model to change it.`,
+                 modelPath: modelFile,
+              }
+            : {
+                 reason:
+                    "Set in a model this report imports. Edit the model to change it.",
+              };
       };
       return new Map(
          [...modelReads]
             .filter((name) => !bound.has(name))
             .map((name) => [name, reason(name)]),
       );
-   }, [doc, modelReads, textSource]);
+   }, [doc, modelReads, textSource, modelPath]);
    const { declaredTypes, applied, panel } = useDocumentControls({
       specs,
       loaded: isSuccess,
@@ -545,6 +563,7 @@ export function EditorSurface({
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
+            {...(onOpenModel ? { onOpenModel } : {})}
             {...(onControlsChange ? { onControlsChange } : {})}
             {...(draftKey !== undefined ? { draftKey } : {})}
             {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
@@ -653,4 +672,14 @@ function useCompileText(
    return state.problem !== undefined
       ? { problem: state.problem }
       : { text: state.text };
+}
+
+/** An import's path (`../storefront.malloy`) as a package path, from the importing file's own path. */
+function packagePathOf(fromFile: string, imported: string): string {
+   const parts = fromFile.split("/").slice(0, -1);
+   for (const part of imported.split("/")) {
+      if (part === "..") parts.pop();
+      else if (part !== "." && part !== "") parts.push(part);
+   }
+   return parts.join("/");
 }

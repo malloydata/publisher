@@ -23,6 +23,7 @@ import { RemoveBadge, removeBadgeRevealSx } from "../RemoveBadge";
 import { useFilterEditing } from "./filterEditing";
 import { summarizeGivenValue } from "./filterSummary";
 import { GivenInput, type GivenInputProps } from "./GivenInput";
+import { givenToParam } from "./paramCodec";
 
 /**
  * One filter in a report's control row: a 32px button that names the filter
@@ -160,20 +161,7 @@ export function FilterButton(props: GivenInputProps) {
             }}
          >
             <GivenInput {...props} />
-            {editing && fixed !== undefined && (
-               <Typography
-                  sx={(mui) => ({
-                     mt: 1.5,
-                     pt: 1,
-                     borderTop: `1px solid ${mui.palette.divider}`,
-                     ...ui.type.caption,
-                     color: mui.palette.text.secondary,
-                  })}
-               >
-                  {fixed}
-               </Typography>
-            )}
-            {editing && fixed === undefined && (
+            {editing && (
                <Box
                   sx={(mui) => ({
                      mt: 1.5,
@@ -192,21 +180,127 @@ export function FilterButton(props: GivenInputProps) {
                         {problem}
                      </Typography>
                   )}
-                  <Button
-                     size="small"
-                     aria-label={`Edit filter ${name}`}
-                     aria-haspopup="dialog"
-                     onClick={() => {
-                        setAnchor(null);
-                        editing.onEdit(name);
-                     }}
-                     sx={{ px: 0.75, minWidth: 0, ...ui.type.control }}
-                  >
-                     Filter settings…
-                  </Button>
+                  {fixed !== undefined && (
+                     <Typography
+                        sx={(mui) => ({
+                           ...ui.type.caption,
+                           color: mui.palette.text.secondary,
+                        })}
+                     >
+                        {fixed}
+                     </Typography>
+                  )}
+                  <StartingValue
+                     name={name}
+                     type={given.type}
+                     text={startingTextOf(value, given.type)}
+                  />
+                  {fixed === undefined ? (
+                     <Button
+                        size="small"
+                        aria-label={`Edit filter ${name}`}
+                        aria-haspopup="dialog"
+                        onClick={() => {
+                           setAnchor(null);
+                           editing.onEdit(name);
+                        }}
+                        sx={{ px: 0.75, minWidth: 0, ...ui.type.control }}
+                     >
+                        Filter settings…
+                     </Button>
+                  ) : (
+                     state?.openModel && (
+                        <Button
+                           size="small"
+                           onClick={() => {
+                              setAnchor(null);
+                              state.openModel?.();
+                           }}
+                           sx={{ px: 0.75, minWidth: 0, ...ui.type.control }}
+                        >
+                           Open the model
+                        </Button>
+                     )
+                  )}
                </Box>
             )}
          </Popover>
+      </>
+   );
+}
+
+/**
+ * A filter's value as the report's `givens { … }` writes it: as the query
+ * endpoint spells it, the URL's spelling. For a `filter<…>` that is the filter
+ * text itself, not an `f'…'` literal: the server unwraps a literal without
+ * un-escaping it, so `f'O\'Brien'` would start the report at `O\'Brien`.
+ * Undefined when there is no value to start from.
+ */
+function startingTextOf(
+   value: GivenInputProps["value"],
+   type: string | undefined,
+): string | undefined {
+   if (value === undefined || value === null) return undefined;
+   return givenToParam(value, type);
+}
+
+/** A starting value as it compares: a filter's `f'…'` literal, as a file may write it, unwrapped. */
+function startingComparable(
+   text: string | undefined,
+   type: string | undefined,
+): string | undefined {
+   if (text === undefined || !type?.startsWith("filter<")) return text;
+   return /^f(['"])([\s\S]*)\1$/.exec(text)?.[2] ?? text;
+}
+
+/**
+ * Where the report opens this filter, in the builder: "Open the report with
+ * this value", or back to its default. Any filter has one, the model's
+ * included, since where a report opens is the report's to say.
+ */
+function StartingValue({
+   name,
+   type,
+   text,
+}: {
+   name: string;
+   type: string | undefined;
+   /** The current value as the file would spell it; undefined when unset. */
+   text: string | undefined;
+}) {
+   const editing = useFilterEditing();
+   const ui = usePublisherTheme().theme.ui;
+   if (!editing?.setStartingValue) return null;
+   const set = editing.setStartingValue;
+   const start = startingComparable(editing.startingValueOf?.(name), type);
+   const buttonSx = { px: 0.75, minWidth: 0, ...ui.type.control };
+   return (
+      <>
+         {start !== undefined && start === text && (
+            <Typography
+               sx={(mui) => ({
+                  ...ui.type.caption,
+                  color: mui.palette.text.secondary,
+                  px: 0.75,
+               })}
+            >
+               The report opens with this value.
+            </Typography>
+         )}
+         {text !== undefined && text !== start && (
+            <Button size="small" onClick={() => set(name, text)} sx={buttonSx}>
+               Open the report with this value
+            </Button>
+         )}
+         {start !== undefined && (
+            <Button
+               size="small"
+               onClick={() => set(name, undefined)}
+               sx={buttonSx}
+            >
+               Open at the default instead
+            </Button>
+         )}
       </>
    );
 }

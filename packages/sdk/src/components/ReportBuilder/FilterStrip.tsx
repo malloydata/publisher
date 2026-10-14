@@ -27,6 +27,13 @@ import type { BuilderControl } from "./controls";
  * Without a live row (no server to run the controls), every filter is drawn
  * as a settings button, so the file's filters can still be edited.
  */
+/** A filter the builder shows and sets but cannot change: why, and the model that sets it, if one does. */
+export interface FixedFilter {
+   reason: string;
+   /** The model's package path, for "Open the model". */
+   modelPath?: string;
+}
+
 export function FilterStrip({
    controls: controlList,
    unknownFieldsOf,
@@ -35,6 +42,9 @@ export function FilterStrip({
    addDisabledReason,
    onRemove,
    fixedFilters,
+   onOpenModel,
+   startingValues,
+   onStartingValue,
    children,
 }: {
    controls: BuilderControl[];
@@ -46,8 +56,14 @@ export function FilterStrip({
    addDisabledReason?: string;
    /** Take a control off the dashboard, as its window's Remove does. */
    onRemove: (name: string) => void;
-   /** Filters a tile reads other than through a binding, by name, with why they are fixed here. */
-   fixedFilters?: ReadonlyMap<string, string>;
+   /** Filters a tile reads other than through a binding, by name: why they are fixed here, and the model that sets one. */
+   fixedFilters?: ReadonlyMap<string, FixedFilter>;
+   /** Open a model by its package path, when the host can. */
+   onOpenModel?: (modelPath: string) => void;
+   /** The report's starting values (`givens { … }`), as the file spells them. */
+   startingValues?: Readonly<Record<string, string>>;
+   /** Set a filter's starting value, or drop it with undefined. */
+   onStartingValue?: (name: string, text: string | undefined) => void;
    /** The host's live control row. */
    children?: ReactNode;
 }) {
@@ -59,7 +75,16 @@ export function FilterStrip({
             // Read other than through a binding the builder writes: fixed
             // here, whatever the builder knows of it.
             const fixed = fixedFilters?.get(name);
-            if (fixed !== undefined) return { origin: "model", fixed };
+            if (fixed !== undefined) {
+               const { modelPath } = fixed;
+               return {
+                  origin: "model",
+                  fixed: fixed.reason,
+                  ...(modelPath !== undefined && onOpenModel
+                     ? { openModel: () => onOpenModel(modelPath) }
+                     : {}),
+               };
+            }
             const control = byName.get(name);
             if (!control) return undefined;
             const unknown = unknownFieldsOf(control.name, control.type);
@@ -89,6 +114,12 @@ export function FilterStrip({
          onRemove,
          onAdd,
          ...(addDisabledReason !== undefined ? { addDisabledReason } : {}),
+         ...(onStartingValue
+            ? {
+                 startingValueOf: (name: string) => startingValues?.[name],
+                 setStartingValue: onStartingValue,
+              }
+            : {}),
       };
    }, [
       controlList,
@@ -99,6 +130,9 @@ export function FilterStrip({
       onAdd,
       addDisabledReason,
       fixedFilters,
+      onOpenModel,
+      startingValues,
+      onStartingValue,
    ]);
    return (
       // Pinned as the reader's control row is.

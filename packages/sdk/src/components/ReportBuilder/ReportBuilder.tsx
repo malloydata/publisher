@@ -28,7 +28,7 @@ import {
    type DashboardDocument,
    type QueryTile,
 } from "./document";
-import { FilterStrip } from "./FilterStrip";
+import { FilterStrip, type FixedFilter } from "./FilterStrip";
 import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
@@ -203,7 +203,12 @@ export interface ReportBuilderProps {
     * `source:`), each with why it cannot be changed here. They can be set,
     * as in the reader, but not removed or configured.
     */
-   fixedFilters?: ReadonlyMap<string, string>;
+   fixedFilters?: ReadonlyMap<string, FixedFilter>;
+   /**
+    * Open a model by its package path: offered as "Open the model" on a filter
+    * the model sets. Omitted, the filter only says where it is set.
+    */
+   onOpenModel?: (modelPath: string) => void;
    /**
     * Names a filter the builder adds must not take, beyond the givens on the
     * page: a host that resolves held text itself passes every given the model
@@ -267,6 +272,7 @@ export function ReportBuilder({
    visibleSources,
    addFilterDisabledReason,
    fixedFilters,
+   onOpenModel,
    takenGivenNames,
    onControlsChange,
    draftKey,
@@ -528,6 +534,20 @@ export function ReportBuilder({
                            : {})}
                         onRemove={bindings.dropControl}
                         {...(fixedFilters ? { fixedFilters } : {})}
+                        {...(onOpenModel ? { onOpenModel } : {})}
+                        {...(editor.document.startingGivens
+                           ? { startingValues: editor.document.startingGivens }
+                           : {})}
+                        onStartingValue={(name, text) =>
+                           editor.update((draft) => {
+                              const next = { ...(draft.startingGivens ?? {}) };
+                              if (text === undefined) delete next[name];
+                              else next[name] = text;
+                              if (Object.keys(next).length > 0)
+                                 draft.startingGivens = next;
+                              else delete draft.startingGivens;
+                           })
+                        }
                      >
                         {controls}
                      </FilterStrip>

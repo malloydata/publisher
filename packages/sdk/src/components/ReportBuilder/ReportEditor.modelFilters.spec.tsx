@@ -36,7 +36,9 @@ const getModel = mock((_env: string, _pkg: string, path: string) =>
       data:
          path === "README.malloy"
             ? { path, sourceText: packageFile }
-            : { path, sources: [], sourceInfos: [] },
+            : path === "reports/recalls.malloy"
+              ? { path, sourceText: packageFile }
+              : { path, sources: [], sourceInfos: [] },
    }),
 );
 const getReport = mock(() =>
@@ -61,11 +63,15 @@ const { ReportEditor } = await import("./ReportEditor");
 
 beforeEach(() => clearCache());
 
-const open = () =>
+const open = (
+   extra: { onOpenModel?: (modelPath: string) => void } = {},
+   path = "README.malloy",
+) =>
    render(
       <ReportEditor
          resourceUri="publisher://environments/env/packages/pkg"
-         path="README.malloy"
+         path={path}
+         {...extra}
       />,
       { wrapper: serverWrapper },
    );
@@ -185,5 +191,68 @@ source: recalls_tiles is recalls extend {
       });
       expect(popover.textContent).not.toContain("Set in the model");
       expect(popover.textContent).toContain("recalls_tiles");
+   });
+});
+
+describe("what a report says about a filter it cannot change", () => {
+   const RECALLS = `## artifact { title="Recalls" tiles=["recalls_tiles -> by_year"] } dashboard { columns=12 }
+import "auto_recalls.malloy"
+
+source: recalls_tiles is recalls extend {
+  view: by_year is by_year_view
+}`;
+   const READS_MANUFACTURER = {
+      givens: [MANUFACTURER],
+      startingGivens: { manufacturer_filter: "Ford" },
+      tiles: [
+         {
+            kind: "query" as const,
+            query: "recalls_tiles -> by_year",
+            givenNames: ["manufacturer_filter"],
+         },
+      ],
+   };
+
+   it("can open the report with the model filter's current value", async () => {
+      packageFile = RECALLS;
+      served = READS_MANUFACTURER;
+      open();
+      fireEvent.click(
+         await screen.findByRole("button", { name: /^Manufacturer: / }),
+      );
+      fireEvent.click(
+         await screen.findByRole("button", {
+            name: "Open the report with this value",
+         }),
+      );
+      // The report now holds it: the popover says so, and Undo takes it back.
+      expect(
+         await screen.findByText("The report opens with this value."),
+      ).toBeDefined();
+      expect(
+         (
+            screen.getByRole("button", {
+               name: "Undo",
+               hidden: true,
+            }) as HTMLButtonElement
+         ).disabled,
+      ).toBe(false);
+   });
+
+   it("opens the model by its package path, from a report in a folder", async () => {
+      packageFile = RECALLS.replace(
+         'import "auto_recalls.malloy"',
+         'import "../auto_recalls.malloy"',
+      );
+      served = READS_MANUFACTURER;
+      const onOpenModel = mock((_path: string) => {});
+      open({ onOpenModel }, "reports/recalls.malloy");
+      fireEvent.click(
+         await screen.findByRole("button", { name: /^Manufacturer: / }),
+      );
+      fireEvent.click(
+         await screen.findByRole("button", { name: "Open the model" }),
+      );
+      expect(onOpenModel).toHaveBeenCalledWith("auto_recalls.malloy");
    });
 });

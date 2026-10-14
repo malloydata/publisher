@@ -28,6 +28,14 @@ export interface FilterEditing {
    onAdd: () => void;
    /** Why adding is off; set, the add button is disabled and says why. */
    addDisabledReason?: string;
+   /**
+    * Where the report opens each filter (`## artifact { givens { … } }`), as
+    * written in the file; undefined when it opens at the declared default.
+    * Any filter has one, the model's included: it is the report's to say.
+    */
+   startingValueOf?: (name: string) => string | undefined;
+   /** Open the report with this filter at `text` (as the file spells it), or at its default when undefined. */
+   setStartingValue?: (name: string, text: string | undefined) => void;
 }
 
 export interface FilterEditState {
@@ -40,6 +48,8 @@ export interface FilterEditState {
     * in this file: why it can be set but not removed or configured here.
     */
    fixed?: string;
+   /** Open the model that sets it, when the host can. */
+   openModel?: () => void;
 }
 
 export const FilterEditingContext = createContext<FilterEditing | undefined>(

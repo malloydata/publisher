@@ -134,6 +134,12 @@ export type ReportEditorProps = (
     */
    onExit?: () => void;
    /**
+    * Open a model by its package path (`storefront.malloy`). Offered as "Open
+    * the model" on a filter a model sets, which the builder can set but not
+    * change; omitted, the filter only says where it is set.
+    */
+   onOpenModel?: (modelPath: string) => void;
+   /**
     * Take over the builder's page-level controls (save status and Save, undo
     * and redo, the layout switch, Add): handed over as `BuilderControls`
     * whenever they change, with no toolbar drawn on the page. Draw them with
@@ -205,6 +211,7 @@ export function ReportEditor(props: ReportEditorProps) {
       loading,
       onDirtyChange,
       onExit,
+      onOpenModel,
       onControlsChange,
       keepDraft,
       kind,
@@ -546,6 +553,7 @@ export function ReportEditor(props: ReportEditorProps) {
                onSave={save}
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
+               {...(onOpenModel ? { onOpenModel } : {})}
                {...(onControlsChange ? { onControlsChange } : {})}
                {...(draftKey !== undefined ? { draftKey } : {})}
                {...(allowLayoutChange !== undefined
