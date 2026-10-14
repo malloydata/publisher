@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardManifest } from "../../client";
 import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -142,15 +142,16 @@ export function EditorSurface({
    });
    // A text source takes its manifest from compiling the text as the viewer.
    const runModelPath = textSource?.modelPath ?? modelPath;
+   const compileText = useCompileText(opened.source, textSource?.compileSource);
    const compiled = useCompiledDocument(
       {
          environmentName,
          packageName,
          modelPath: runModelPath,
-         source: opened.source,
+         source: compileText.text ?? opened.source,
          ...(textSource?.givens ? { givens: textSource.givens } : {}),
       },
-      { enabled: textSource !== undefined },
+      { enabled: textSource !== undefined && compileText.text !== undefined },
    );
    const compiledDocument = compiled.data?.document;
    const manifest: DashboardManifest | undefined = textSource
@@ -159,7 +160,9 @@ export function EditorSurface({
          : undefined
       : data;
    const isSuccess = textSource ? compiled.isSuccess : manifestLoaded;
-   const isError = textSource ? compiled.isError : manifestFailed;
+   const isError = textSource
+      ? compiled.isError || compileText.problem !== undefined
+      : manifestFailed;
    const preamble = textSource
       ? documentPreamble(compiledDocument?.cells)
       : undefined;
@@ -489,6 +492,12 @@ export function EditorSurface({
                {compileErrors.map((problem) => problem.message).join("; ")}
             </Alert>
          )}
+         {textSource && compileText.problem !== undefined && (
+            <Alert severity="error">
+               This document could not be prepared to compile:{" "}
+               {compileText.problem}
+            </Alert>
+         )}
          {textSource && compiled.isError && (
             <Alert severity="error">
                The server could not compile this document:{" "}
@@ -496,7 +505,7 @@ export function EditorSurface({
             </Alert>
          )}
          <ReportBuilder
-            {...(textSource
+            {...(textSource && !textSource.compileSource
                ? {
                     addFilterDisabledReason:
                        "This document holds no given: of its own. Bind a filter the model offers from its chip.",
@@ -581,4 +590,51 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       borderless?: unknown;
    };
    return runs as DocumentTile;
+}
+
+/**
+ * The text a held document is compiled from: its own, or what the host's
+ * `compileSource` makes of it. Read once per opened text, so a host passing
+ * a new function each render does not recompile.
+ */
+function useCompileText(
+   source: string,
+   compileSource: ((text: string) => string | Promise<string>) | undefined,
+): { text?: string; problem?: string } {
+   const transform = useRef(compileSource);
+   transform.current = compileSource;
+   const hosted = compileSource !== undefined;
+   const [state, setState] = useState<{
+      from: string;
+      text?: string;
+      problem?: string;
+   }>();
+   useEffect(() => {
+      if (!hosted) return;
+      let live = true;
+      Promise.resolve()
+         .then(() => transform.current!(source))
+         .then(
+            (text) => {
+               if (live) setState({ from: source, text });
+            },
+            (error: unknown) => {
+               if (live)
+                  setState({
+                     from: source,
+                     problem:
+                        error instanceof Error ? error.message : String(error),
+                  });
+            },
+         );
+      return () => {
+         live = false;
+      };
+   }, [source, hosted]);
+   if (!hosted) return { text: source };
+   // Until this text is resolved, nothing: never the previous text's result.
+   if (state?.from !== source) return {};
+   return state.problem !== undefined
+      ? { problem: state.problem }
+      : { text: state.text };
 }

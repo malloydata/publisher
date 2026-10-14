@@ -166,8 +166,9 @@ export type ReportEditorProps = (
  * sources the document may name. The manifest is that compile's `document`, and
  * every tile, cell and control option runs as the document's definitions
  * followed by one `run:`, so each viewer sees what their own identity allows.
- * The document carries no `import`, `##!` or `given:`, so "Add filter" is off
- * and only the model's givens can be bound.
+ * The server's compile refuses an `import`, `##!` or `given:` in the text, so
+ * "Add filter" is off and only the model's givens can be bound, unless the
+ * host resolves the document's own givens itself (`compileSource`).
  */
 export interface TextSourceOptions {
    /** The model the text is compiled and run on top of. */
@@ -176,6 +177,19 @@ export interface TextSourceOptions {
    hiddenGivens?: readonly string[];
    /** The values for the givens the host sets: sent with the compile and with each tile that reads one. */
    givens?: Record<string, HostGivenValue>;
+   /**
+    * The text to compile in place of the document's own, for a host that
+    * resolves what the server's compile refuses in held text: the document's
+    * own `given:` declarations, say, written out as literal values. Called
+    * with the text as opened; the editor still edits and saves that text.
+    *
+    * A host that passes it owns how its text compiles, so "Add filter" is
+    * on: it writes a `given:` into the text like any report, and the builder
+    * runs each tile with that filter's value written in as a literal, since
+    * the server does not know the given. Without it, "Add filter" is off,
+    * because the server refuses a `given:` in held text.
+    */
+   compileSource?: (text: string) => string | Promise<string>;
 }
 
 export function ReportEditor(props: ReportEditorProps) {

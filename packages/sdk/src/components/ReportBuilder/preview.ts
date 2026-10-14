@@ -8,10 +8,10 @@ import { chartLineText, isChartPick } from "./chartLine";
 import {
    isQueryTile,
    type DashboardDocument,
-   type LocalGiven,
    type QueryTile,
 } from "./document";
 import { malloyPath } from "../../utils/malloyText";
+import { localGivenSpec } from "./localGiven";
 
 /**
  * What a reader would see if the DOCUMENT were the file: the controls, and
@@ -55,7 +55,7 @@ export function previewGivens(
    for (const local of document.localGivens ?? []) {
       if (!bound.has(local.name)) continue;
       seen.add(local.name);
-      out.push(givenFromLocal(local));
+      out.push(localGivenSpec(local));
    }
    for (const spec of modelSpecs) {
       if (
@@ -106,44 +106,14 @@ export function givensReadThroughModel(
    return reads;
 }
 
-/** A `given:` this file declares, as the `Given` the control row renders. */
-function givenFromLocal(local: LocalGiven): Given {
-   const shown = displayDefault(local);
-   return {
-      name: local.name,
-      type: local.type,
-      ...(shown === undefined ? {} : { default: shown }),
-      ...(local.label === undefined ? {} : { label: local.label }),
-      ...(local.description === undefined
-         ? {}
-         : { description: local.description }),
-      ...(local.control === undefined
-         ? {}
-         : { control: local.control as Given["control"] }),
-      ...(local.suggest
-         ? {
-              suggest: {
-                 ...(local.suggest.source === undefined
-                    ? {}
-                    : { source: local.suggest.source }),
-                 ...(local.suggest.query === undefined
-                    ? {}
-                    : { query: local.suggest.query }),
-                 dimension: local.suggest.dimension,
-              },
-           }
-         : {}),
-      ...(local.rangeMin === undefined ? {} : { rangeMin: local.rangeMin }),
-      ...(local.rangeMax === undefined ? {} : { rangeMax: local.rangeMax }),
-   };
-}
-
-/** The default the server would publish: it unwraps a filter's `f'…'`, so an empty one shows no caption. */
-function displayDefault(local: LocalGiven): string | undefined {
-   if (!local.type?.startsWith("filter<")) return local.default;
-   const body = local.default?.match(/^f(['"])([\s\S]*)\1$/)?.[2];
-   if (body === undefined) return local.default;
-   return body === "" ? undefined : body;
+/**
+ * A declaration's default as a clause can use it: none when it filters
+ * nothing (an empty `f''`), so an unset filter adds no clause, as before.
+ */
+function defaultLiteral(spelled: string | undefined): string | undefined {
+   const text = spelled?.trim();
+   if (!text || /^f(['"])\1$/.test(text)) return undefined;
+   return text;
 }
 
 /**
@@ -264,6 +234,12 @@ export function previewTileQuery(
    const localTypes = new Map(
       (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
+   // Each declaration's default, already a Malloy literal (`f'Jeans'`,
+   // `@2023-01-01`): what applies when no value is set, as the server applies
+   // a given's default.
+   const localDefaults = new Map(
+      (document.localGivens ?? []).map((local) => [local.name, local.default]),
+   );
    // The extension's own `where:` filters every tile on it, as the served manifest counts.
    const scopedBy =
       document.sources.find((source) => source.name === on)?.scopedBy ?? [];
@@ -285,10 +261,11 @@ export function previewTileQuery(
       if (!localTypes.has(filter.given)) continue;
       // Applied as a literal, so the control still changes this tile.
       reads.add(filter.given);
-      const literal = malloyLiteral(
-         values.get(filter.given),
-         localTypes.get(filter.given),
-      );
+      const literal =
+         malloyLiteral(
+            values.get(filter.given),
+            localTypes.get(filter.given),
+         ) ?? defaultLiteral(localDefaults.get(filter.given));
       if (literal !== undefined) clauses.push(`${comparison} ${literal}`);
    }
    const refinement = clauses.join(", ");

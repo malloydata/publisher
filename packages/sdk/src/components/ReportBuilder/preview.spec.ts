@@ -314,9 +314,14 @@ describe("previewTileQuery", () => {
       expect(q.givenNames).toEqual(["CATEGORY"]);
    });
 
-   it("leaves out an unsent given with no value yet, and one nobody declares", () => {
+   it("applies an unsent given's declared default until a value is set, and skips one nobody declares", () => {
+      // No value set: SINCE's default applies, as the server applies a
+      // given's default once the report is saved; CATEGORY's default is an
+      // empty filter, which filters nothing, so it adds no clause.
       const q = previewTileQuery(document, queryTile(document, 0), new Set());
-      expect(q.expression).toBe("overview -> key_figures");
+      expect(q.expression).toBe(
+         "overview -> key_figures + { where: created_at >= @2023-01-01 }",
+      );
       expect(q.givenNames).toEqual([]);
       const stray: QueryTile = tile("t", "v", [
          { field: "x", given: "NOBODY" },

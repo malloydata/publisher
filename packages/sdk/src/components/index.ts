@@ -12,6 +12,9 @@ export { AppDialog } from "./AppDialog";
 export { UnsavedChangesDialog } from "./UnsavedChangesDialog";
 export { BackLink } from "./BackLink";
 export { NarrowEditGate } from "./NarrowEditGate";
+// For a host that holds a report as text and resolves its own givens.
+export { localGivenSpec } from "./ReportBuilder/localGiven";
+export { malloyLiteral } from "../utils/malloyLiteral";
 export {
    clearReportDraft,
    draftStorageAvailable,
