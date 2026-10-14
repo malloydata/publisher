@@ -57,7 +57,11 @@ export interface SessionSaveInfo {
 export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    editor: SessionEditor<D, L>;
    onSave?: SaveHandler<D>;
-   onDirtyChange?: (dirty: boolean) => void;
+   /**
+    * Whether there are unsaved edits, and (second) whether leaving now would
+    * lose any: false while the edits are kept elsewhere (`keepsEdits`).
+    */
+   onDirtyChange?: (dirty: boolean, wouldLose: boolean) => void;
    /** The host's way out, opted into: draws Close, which asks first when edits are unsaved. */
    onExit?: () => void;
    onChange?: (document: D) => void;
@@ -116,12 +120,12 @@ export function useBuilderSession<
    // Also on mount, so a host that remounted the builder on new text is told the slate is clean rather than carrying the previous mount's answer.
    // A layout effect, so a host's leave guard sees the flag in the same task as the edit.
    useLayoutEffect(() => {
-      onDirtyChange?.(wouldLose);
-   }, [wouldLose, onDirtyChange]);
+      onDirtyChange?.(hasEdits, wouldLose);
+   }, [hasEdits, wouldLose, onDirtyChange]);
    // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
-   useEffect(() => () => onDirtyChangeRef.current?.(false), []);
+   useEffect(() => () => onDirtyChangeRef.current?.(false, false), []);
    const unitRef = useRef(unit);
    unitRef.current = unit;
    // The line saying the undo happened goes with the next edit or save; leaving it up over new work would say something stale.

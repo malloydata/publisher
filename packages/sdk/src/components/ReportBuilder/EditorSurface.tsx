@@ -97,7 +97,7 @@ export function EditorSurface({
    replaces?: string;
    /** Save the text, with the layout the document has as it is saved. */
    onSave?: (source: string, layout: ReportLayout) => Promise<void>;
-   onDirtyChange: (dirty: boolean) => void;
+   onDirtyChange: (dirty: boolean, wouldLose: boolean) => void;
    onExit?: () => void;
    onControlsChange?: BuilderControlsHandler;
    /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */

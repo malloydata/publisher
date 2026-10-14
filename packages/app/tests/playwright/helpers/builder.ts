@@ -130,6 +130,11 @@ export async function createDocument(
    });
    await chooseLayout(dialog, kind === "Dashboard" ? "Grid" : "Linear");
    await pickView(dialog, "sales_by_month", "order_items in storefront.malloy");
+   // The pick fills the title in; wait for it, so typing replaces it rather
+   // than racing it.
+   await expect(dialog.getByLabel("Report title")).toHaveValue(
+      "Sales by month",
+   );
    await dialog.getByLabel("Report title").fill(title);
    await dialog.getByRole("button", { name: "Create report" }).click();
    // At the package root: no directory is created for a new report.

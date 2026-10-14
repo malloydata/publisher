@@ -354,10 +354,15 @@ export function ReportEditor(props: ReportEditorProps) {
       });
    }, [fetchFailed, modelQuery.error, modelPath, layout]);
    // Stable: the builder fires this from an effect that depends on it.
+   // The editor's own record is every unsaved edit: it decides whether a
+   // newer version of the file may replace what is open, and with a draft
+   // kept, reporting only what leaving would lose let the other author's
+   // version replace the author's edits. The host's leave guard gets what
+   // leaving would lose.
    const reportDirty = useCallback(
-      (value: boolean) => {
+      (value: boolean, wouldLose: boolean) => {
          setDirty(value);
-         onDirtyChangeRef.current?.(value);
+         onDirtyChangeRef.current?.(wouldLose);
       },
       [setDirty],
    );

@@ -169,8 +169,13 @@ export interface ReportBuilderProps {
     * cannot answer that: the saved baseline lives in this hook, so a parent
     * comparing the document it is handed against the one it passed in reads
     * dirty immediately after a successful save.
+    *
+    * The second argument is whether leaving now would LOSE edits: the same,
+    * unless a draft is kept (`draftKey`), when it is only text still being
+    * typed into an open field. A leave guard reads that one; anything
+    * deciding whether to replace the document reads the first.
     */
-   onDirtyChange?: (dirty: boolean) => void;
+   onDirtyChange?: (dirty: boolean, wouldLose: boolean) => void;
    /**
     * Where `onSave` puts the file, for the event it reports. The builder
     * cannot tell — it is handed a function — and a save into the package, into
@@ -211,8 +216,9 @@ export interface ReportBuilderProps {
     * Keep unsaved edits in this browser under this key, and put them back
     * when the builder next opens on the same key: so leaving never loses work,
     * and a host can offer one way out, `done` (write, then leave), with no
-    * "leave with unsaved changes?" on the way. `onDirtyChange` then reports
-    * only what a draft cannot hold, text still being typed into an open field.
+    * "leave with unsaved changes?" on the way. `onDirtyChange`'s second
+    * argument then reports only what a draft cannot hold, text still being
+    * typed into an open field.
     * One key per report and place it is saved to. Absent, nothing is kept.
     */
    draftKey?: string;
