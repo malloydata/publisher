@@ -94,7 +94,7 @@ const [planMix, byIndustry, kpisRows] = await Promise.all([
 
 Prefer defining the views in the model (one per tile, pre-aggregated and sorted) over building long query strings in JS.
 
-**Same question, same query text.** A results cache, and any prefetch, is keyed on the exact string. Two pages reading the same view with different text (one adds an `order_by`) pay for two round trips for one answer, and a prefetch that warms different text from what the destination page sends warms nothing. Build each tile's query in one place and reuse that string wherever the same rows are needed.
+**Same question, same query text.** `Publisher.query` caches nothing, but a cache the app keeps, a shared in-flight request, and any prefetch are all keyed on the exact string. Two pages reading the same view with different text (one adds an `order_by`) pay for two round trips for one answer, and a prefetch that warms different text from what the destination page sends warms nothing. Build each tile's query in one place and reuse that string wherever the same rows are needed.
 
 **Set ARIA and data attributes as attributes.** A small element helper that does `Object.assign(document.createElement(tag), props)` silently drops `aria-modal`, `aria-label`, `aria-busy` and `data-*`: they are not properties, so assigning them does nothing and no error says so. Route any `aria-*`, `data-*` and `role` key through `setAttribute`. And a clickable row is a control: give it `tabIndex = 0` and Enter/Space handling, or keyboard users cannot open what a mouse user can.
 

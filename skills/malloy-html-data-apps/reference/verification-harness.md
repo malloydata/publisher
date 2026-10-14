@@ -264,7 +264,9 @@ await context.addInitScript(() => {
 // again after page.reload() in the same context (the repeat visit). Target:
 // under 0.1 first, 0 repeat. Embedded, every shift on the page counts.
 
-// The frame must never scroll: the document is exactly as tall as its frame.
+// An auto-sized frame (the console, Publisher.embed without a height) must never
+// scroll: the document is exactly as tall as its frame. Skip this for a
+// fixed-height embed, which is meant to scroll inside its frame.
 const innerScroll = await appFrame.evaluate(() => document.documentElement.scrollHeight - innerHeight);
 if (innerScroll > 0) problems.push(`app scrolls ${innerScroll}px inside its frame`);
 
@@ -280,7 +282,7 @@ page.on("request", (r) => { if (r.url().includes("/query")) { const k = r.url() 
 | The clicked row's screen position, sampled every frame while the drawer opens | moves 0px |
 | Host scroll position during the open | unchanged |
 | Drawer header top | equals the top of the host's visible area (below the host's own header) |
-| Drawer bottom | equals the bottom of the visible area |
+| Drawer bottom | equals the bottom of the visible area, within a few pixels (the band moves in steps of the observer's thresholds) |
 | Drawer body `scrollTop` on open, and after drilling into a second subject from inside it | 0 |
 | 12 wheel turns over the drawer | the body scrolls; the host and the app move 0px |
 | 4 wheel turns over the scrim | the host and the app move 0px |

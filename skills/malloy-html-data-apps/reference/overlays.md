@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT
 
 ## Why `position: fixed` breaks when embedded
 
-A host that embeds the app (Credible, the Publisher console, a page using `Publisher.embed`) sizes the iframe to the app's full content height and scrolls its own container. So inside the frame:
+A host that auto-sizes the frame (the Publisher console, a page using `Publisher.embed` without a `height`, any host that honours the resize messages) sizes the iframe to the app's full content height and scrolls its own container. So inside the frame:
 
 - `window.innerHeight` is the whole document, thousands of pixels;
 - `window.scrollY` is always 0, because the frame never scrolls; the host does;
@@ -31,7 +31,6 @@ const listeners = new Set();
 export const onView = (fn) => (listeners.add(fn), () => listeners.delete(fn));
 
 if (EMBEDDED && "IntersectionObserver" in window) {
-  document.documentElement.classList.add("is-embedded");
   const STEP = 100, holder = document.createElement("div"), strips = [], vis = {};
   holder.className = "view-strips";                        // height 0: see the rules below
   const io = new IntersectionObserver((entries) => {
@@ -49,15 +48,23 @@ if (EMBEDDED && "IntersectionObserver" in window) {
   }, { threshold: Array.from({ length: 21 }, (_, i) => i / 20) });   // every 5% of a strip
 
   // Cover the content and STOP AT ITS BOTTOM EDGE, measured the way the SDK
-  // measures the height it reports (the lowest bottom among body's children).
+  // measures the height it reports: the lowest bottom among body's children,
+  // plus body's bottom padding.
   const contentBottom = () => Math.ceil(Math.max(0, ...[...document.body.children]
     .filter((k) => k !== holder && !k.classList.contains("overlay"))
-    .map((k) => k.getBoundingClientRect().bottom + window.scrollY)));
+    .map((k) => k.getBoundingClientRect().bottom + window.scrollY))
+    + (parseFloat(getComputedStyle(document.body).paddingBottom) || 0));
   const cover = () => {
     const end = contentBottom(), need = Math.max(1, Math.ceil(end / STEP));
     while (strips.length < need) { const s = document.createElement("div"); s.__i = strips.length; strips.push(s); holder.append(s); io.observe(s); }
     while (strips.length > need) { const s = strips.pop(); io.unobserve(s); s.remove(); delete vis[s.__i]; }
-    strips.forEach((s, i) => { s.style.top = i * STEP + "px"; s.style.height = Math.max(1, Math.min(STEP, end - i * STEP)) + "px"; });
+    strips.forEach((s, i) => {
+      const h = Math.max(1, Math.min(STEP, end - i * STEP)) + "px";
+      s.style.top = i * STEP + "px";
+      // A strip that is fully visible before and after a resize crosses no threshold,
+      // so the observer would keep its old rect: observe it afresh.
+      if (s.style.height !== h) { s.style.height = h; io.unobserve(s); io.observe(s); }
+    });
   };
   document.body.append(holder);
   cover();
@@ -77,8 +84,6 @@ export function visibleBand() {
 ```css
 .view-strips { position: absolute; top: 0; left: 0; width: 1px; height: 0; pointer-events: none; visibility: hidden; }
 .view-strips > div { position: absolute; left: 0; width: 1px; }
-/* Embedded, the host scrolls; our document never does. */
-html.is-embedded { overflow: hidden; }
 ```
 
 ## Place one layer over the band
@@ -112,7 +117,7 @@ A tray or toast pinned to the bottom of the screen follows the same rule: embedd
 - **Read the band synchronously; never wait on a fresh measurement to open.** An async probe with a timeout fallback raced the click, lost, and opened the drawer at the top of the document.
 - **Pin the overlay's top to the top of the band; let only its height give way.** Pushing the top up to honour a minimum height puts the header above the screen when only the bottom of the app is visible.
 - **Nothing you add may extend the content.** Sentinels, strips, an overlay layer: anything whose box reaches past the content's bottom edge is scrollable overflow. The document then becomes taller than the frame the host sized, the reader's first wheel turns scroll the app *inside* its frame, and everything placed by the band is offset by that much. Measured: strips rounded up to the next 100px made every drawer open 7 to 46px too high, header under the host's breadcrumb bar, bottom short of the window. Keep sentinels in a zero-height holder, end the last one at the content edge, and keep overlays inside the band.
-- **The frame never scrolls.** `html { overflow: hidden }` when embedded, after the rule above makes sure nothing is clipped. Every wheel turn then belongs to the host, and there is no dead stretch of inner scrolling before the page moves.
+- **An auto-sized frame never scrolls.** It cannot, as long as nothing extends the content (the rule above), and the harness asserts it. Do not force it with `overflow: hidden` on the document: the app cannot tell an auto-sized frame from a fixed-height one (`Publisher.embed({ height })`, a page with `<meta name="publisher:fit" content="viewport">`), and a fixed-height frame needs the app to scroll inside it. Hidden overflow there makes everything below the fold unreachable.
 - **Work in document coordinates.** `intersectionRect` is in viewport coordinates; an absolutely positioned layer is placed in document coordinates. Add `window.scrollY` at the moment you read it. They agree only while the frame is unscrolled, which is exactly the assumption the previous bug broke.
 - **Focus without scrolling.** `el.focus({ preventScroll: true })`, both when focusing into the panel and when handing focus back on close. A plain `focus()` scrolls whatever ancestor (including the host) it takes to bring the element into view.
 - **Consume scroll that is not the panel's.** A non-passive `wheel` and `touchmove` listener on the layer calls `preventDefault()` unless the event is inside the panel body and the body can still scroll that way. `overscroll-behavior: contain` on the body stops chaining at its ends. Without both, the wheel inside a drawer scrolled the page behind it by 2,000 to 3,000px.
