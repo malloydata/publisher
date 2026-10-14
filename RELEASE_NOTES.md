@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A caller's extend of a gated source, or of a model named query, now follows the gate it inherits
+
+A caller who sends `source: mine is orders extend {}` and `run: mine` got a 403 from `/compile` that `/query` did not give, even when the `#(authorize)` lock on `orders` admitted them (#1400). `/compile` now decides it as `/query` does.
+
+`/query` had a related gap that `/compile` shared: a caller-declared derivation through a model _named query_ or query source (`source: mine is q_model extend {}`, `source: mine is gated -> { … }`, a caller join to one) was refused for every caller, including those the gate admits, and a row-gated one never returned its filtered rows. These now admit a permitted caller, with the same rows `run: q_model -> …` returns, and still refuse the rest. An extend of a named query over an _ungated_ source, previously refused, now admits any caller. That is a refusal change: a request that used to answer 403 now answers 200 for a caller the gate admits.
+
+A derivation whose chain cannot be proven stays refused: a named query reached through an import, a chain past 64 names, a composite member with a row filter. See [docs/authorize.md](docs/authorize.md).
+
 ## [Unreleased] — A host can theme the report reader and builder to its own design system
 
 **`ServerProvider` (and `ThemeProvider`) take `ui`: the chrome's design tokens.** Radii (control, tile, menu, dialog), control and chip heights, the type scale (page title, tile title, prose, control, caption, label, code), the mono face and the menu shadow, any subset, the rest staying the SDK's. Every report and builder surface reads them from the theme (`theme.ui`) instead of the fixed values it drew with before, so an embedding app such as Credible matches its own system by passing its values. They are the host's, not the server's, so they are a prop rather than part of the `Theme` object. Defaults are unchanged: a host that passes nothing sees no difference.

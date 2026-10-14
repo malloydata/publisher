@@ -30,7 +30,7 @@ const PUBLISHER_JSON = JSON.stringify({
 
 // `gated` is locked to $ROLE='analyst'; `open_src` is unrestricted; `row_gated`
 // is locked by a ROW-FIELD condition (`org_id`), not just a given.
-const MODEL = `##! experimental.givens
+const MODEL = `##! experimental { givens composite_sources }
 
 given:
   ROLE :: string
@@ -54,6 +54,18 @@ source: tagged is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend {
   measure: c is count()
 }
+
+#(access_filter) org_id in $GROUPS
+source: row_pair is duckdb.sql("SELECT 1 as x, 1 as org_id UNION ALL SELECT 2, 2") extend {
+  measure: c is count()
+}
+
+source: combo is compose(row_pair, open_src)
+
+query: q_gated is gated -> { select: x }
+query: q_row is row_pair -> { select: x, org_id }
+query: q_open is open_src -> { select: x }
+source: qs_gated is gated -> { select: x }
 `;
 
 /**
@@ -265,6 +277,175 @@ describe("compile-path authorize gate (compileSource)", () => {
                [ephemeral, sentinel],
             );
             expect(folded).toEqual([twin, sentinel]);
+         });
+      });
+   });
+
+   describe("a derivation the caller declares through a model query or query source, on both endpoints", () => {
+      const pick = (text: string) => `${text}\nrun: mine -> { select: x }`;
+      const shapes: Record<string, string> = {
+         "a query source straight over a gated source": pick(
+            "source: mine is gated -> { select: x }",
+         ),
+         "a caller query over a gated source, extended": `query: q is gated -> { select: x }\nsource: mine is q extend {}\nrun: mine -> { select: x }`,
+         "an extend of a model named query": pick(
+            "source: mine is q_gated extend {}",
+         ),
+         "an extend of a model query source": pick(
+            "source: mine is qs_gated extend {}",
+         ),
+         "a caller join to an extend of a model named query": `source: m is q_gated extend {}\nsource: mine is open_src extend { join_one: j is m on j.x = x }\nrun: mine -> { select: x, jx is j.x }`,
+         "a caller join to an extend of a gated source": `source: m is gated extend {}\nsource: mine is open_src extend { join_one: j is m on j.x = x }\nrun: mine -> { select: x, jx is j.x }`,
+      };
+      const admitted = { ROLE: "analyst" };
+      const refused = { ROLE: "nobody" };
+      const sqlOf = (text: string, givens?: Record<string, GivenValue>) =>
+         env.compileSource("pkg", "model.malloy", text, true, givens);
+      const queryOf = async (
+         text: string,
+         givens: Record<string, GivenValue>,
+      ) => {
+         const { model } = (
+            await env.getPackage("pkg")
+         ).getCompileAuthorizationModel("model.malloy");
+         const { compactResult, result } = await model!.getQueryResults(
+            undefined,
+            undefined,
+            text,
+            undefined,
+            false,
+            givens,
+            undefined,
+            undefined,
+            "full",
+         );
+         return {
+            rows: compactResult as unknown as Record<string, unknown>[],
+            sql: result.sql ?? "",
+         };
+      };
+
+      for (const [name, text] of Object.entries(shapes)) {
+         it(`ADMITS ${name} for a caller the lock admits`, async () => {
+            expect((await queryOf(text, admitted)).rows).toHaveLength(1);
+            expect((await compile(text, admitted)).problems).toEqual([]);
+            expect((await sqlOf(text, admitted)).problems).toEqual([]);
+         });
+
+         it(`REFUSES ${name} for a caller the lock refuses`, async () => {
+            await expect(queryOf(text, refused)).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+            await expect(compile(text, refused)).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+            await expect(sqlOf(text, refused)).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+         });
+      }
+
+      it("ADMITS an extend of an UNGATED model named query for any caller", async () => {
+         const text = pick("source: mine is q_open extend {}");
+         expect((await queryOf(text, refused)).rows).toHaveLength(1);
+         expect((await compile(text, refused)).problems).toEqual([]);
+      });
+
+      describe("a row gate reached through a model named query", () => {
+         const text = pick("source: mine is q_row extend {}");
+
+         it("returns the FILTERED rows /query returns for the authored equivalent, with the filter in the SQL", async () => {
+            const { rows, sql } = await queryOf(text, { GROUPS: [1] });
+            expect(rows).toEqual([{ x: 1 }]);
+            expect(sql).toMatch(/"org_id" IN \(1\)/);
+            const authored = await queryOf("run: q_row -> { select: x }", {
+               GROUPS: [1],
+            });
+            expect(authored.rows).toEqual(rows);
+         });
+
+         it("denies a caller who never supplied the given, on both endpoints", async () => {
+            await expect(queryOf(text, {})).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+            await expect(compile(text)).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+         });
+
+         it("admits /compile once the given is supplied", async () => {
+            expect((await compile(text, { GROUPS: [1] })).problems).toEqual([]);
+         });
+      });
+
+      describe("fails closed", () => {
+         const modelInternals = async () => {
+            const { model } = (
+               await env.getPackage("pkg")
+            ).getCompileAuthorizationModel("model.malloy");
+            return model as unknown as {
+               queries: { name: string; sourceName?: string }[];
+               entryPointGatesBySource: Map<
+                  string,
+                  { label: string; route: string; exprs: string[] }[]
+               >;
+               foldRequestDeclaredTwins(
+                  own: string,
+                  text: string,
+                  walked: unknown[],
+               ): unknown[];
+            };
+         };
+
+         it("denies a named query that carries no source name (an import hop)", async () => {
+            const internals = await modelInternals();
+            const query = internals.queries.find((q) => q.name === "q_gated")!;
+            const saved = query.sourceName;
+            query.sourceName = undefined;
+            try {
+               const text = pick("source: mine is q_gated extend {}");
+               await expect(queryOf(text, admitted)).rejects.toBeInstanceOf(
+                  AccessDeniedError,
+               );
+               await expect(compile(text, admitted)).rejects.toBeInstanceOf(
+                  AccessDeniedError,
+               );
+            } finally {
+               query.sourceName = saved;
+            }
+         });
+
+         it("denies a derivation past the name budget", async () => {
+            const hops = Array.from(
+               { length: 70 },
+               (_, i) =>
+                  `source: s${i + 1} is ${i === 0 ? "gated" : `s${i}`} extend {}`,
+            );
+            const text = `${hops.join("\n")}\nrun: s70 -> { select: x }`;
+            await expect(queryOf(text, admitted)).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+         });
+
+         it("denies a composite whose resolved member carries a row gate", async () => {
+            const text = pick("source: mine is combo extend {}");
+            await expect(queryOf(text, { GROUPS: [1] })).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+         });
+
+         it("keeps a sentinel entry beside a twin found through a named query", async () => {
+            const internals = await modelInternals();
+            const [twin] = internals.entryPointGatesBySource.get("gated")!;
+            const ephemeral = { ...twin, label: "mine" };
+            const sentinel = { ...twin, label: "mine", exprs: ["false"] };
+            expect(
+               internals.foldRequestDeclaredTwins(
+                  "mine",
+                  "source: mine is q_gated extend {}",
+                  [ephemeral, sentinel],
+               ),
+            ).toEqual([twin, sentinel]);
          });
       });
    });

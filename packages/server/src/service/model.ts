@@ -2103,10 +2103,14 @@ export class Model {
 
    /**
     * A run target the caller's own text declared (`source: mine is gated
-    * extend {}`) has no `modelDef.contents` key to graft onto, so its walk
-    * entries classify `rejected` even when the inherited gate admits the
-    * caller. Swap each for its on-disk twin on a base the text provably
-    * derives from; every other entry stays, so an unexplained gate still denies.
+    * extend {}`, or a derivation through a model named query) has no
+    * `modelDef.contents` key to graft onto, so its walk entries classify
+    * `rejected` even when the inherited gate admits the caller. Swap each for
+    * its on-disk twin on a base the text provably derives from; every other
+    * entry stays, so an unexplained gate still denies. Runs on `/query` and
+    * `/compile` alike: the landing proof after it decides whether a graft
+    * lands, and a twin from a sibling base with identical gate text can graft on
+    * the wrong base and be refused there (over-denial, never fail-open).
     */
    private foldRequestDeclaredTwins(
       ownSourceName: string,
@@ -2116,7 +2120,17 @@ export class Model {
       if (this.entryPointGatesBySource.has(ownSourceName)) return walked;
       const proof = this.requestChainGates(ownSourceName, callerText);
       if (!proof.proven) return walked;
-      const twins = proof.gatesByBase.flatMap(([, gates]) => gates);
+      return this.swapForOnDiskTwins(
+         walked,
+         proof.gatesByBase.flatMap(([, gates]) => gates),
+      );
+   }
+
+   /** Each `walked` entry replaced by the first unused `twins` entry with the same route and expressions. */
+   private swapForOnDiskTwins(
+      walked: GateEntry[],
+      twins: GateEntry[],
+   ): GateEntry[] {
       const used = new Set<GateEntry>();
       return walked.map((entry) => {
          const twin = twins.find(
@@ -2727,6 +2741,7 @@ export class Model {
          basesOf,
          (name) => this.entryPointGatesBySource.has(name),
          REQUEST_CHAIN_MAX_NAMES,
+         (name) => this.modelQuerySource(name),
       );
       if (!chain.proven) {
          return {
@@ -2745,6 +2760,10 @@ export class Model {
             (name) => (this.entryPointGatesBySource.get(name)?.length ?? 0) > 0,
          ),
       };
+   }
+
+   private modelQuerySource(name: string): string | undefined {
+      return this.queries?.find((q) => q.name === name)?.sourceName;
    }
 
    /**
@@ -2797,6 +2816,7 @@ export class Model {
          isModelQuery: (name: string) =>
             (this.modelDef?.contents[name] as { type?: string } | undefined)
                ?.type === "query",
+         modelQuerySource: (name: string) => this.modelQuerySource(name),
          authorUrls,
       };
       return collectCallerJoins(prepared, region, authorUrls).map(
@@ -2868,9 +2888,23 @@ export class Model {
          true,
       );
       if (gates.length > 0) {
+         // The inherited gate of a source the caller declared has no contents
+         // key to graft onto; its on-disk twin does.
+         const twins = source.chain.proven
+            ? source.chain.terminals.flatMap(
+                 (base) => this.entryPointGatesBySource.get(base) ?? [],
+              )
+            : [];
+         const swapped = this.swapForOnDiskTwins(gates, twins);
          return Promise.all(
-            gates.map((entry) =>
-               this.resolveGateShape(entry, compiledModelDef, graftScope),
+            swapped.map((entry, i) =>
+               entry === gates[i]
+                  ? this.resolveGateShape(entry, compiledModelDef, graftScope)
+                  : this.resolveGateShape(
+                       entry,
+                       this.modelDef ?? compiledModelDef,
+                       graftScope,
+                    ),
             ),
          );
       }
@@ -3261,7 +3295,10 @@ export class Model {
          graftScope?: GraftScope;
          /** See {@link assertAuthorizedFromCompiledRunnable}. */
          skipOwnSourceGate?: boolean;
-         /** The caller's appended text at `/compile` append scope; see {@link foldRequestDeclaredTwins}. */
+         /**
+          * The caller's appended text at `/compile` append scope; see {@link foldRequestDeclaredTwins}.
+          * Kept apart from `callerQueryText`, whose presence arms the launder check.
+          */
          compileCallerText?: string;
          /**
           * The request's own submitted query text, when it has any — read by
@@ -3270,7 +3307,8 @@ export class Model {
           * path, the only one that compiles text a CALLER wrote. Deliberately
           * absent for a notebook cell: a cell's text is the AUTHOR's (the
           * request carries only a `cellIndex`), so a source declared there is
-          * model content and keeps the author-side fail-open.
+          * model content and keeps the author-side fail-open. Also the text
+          * {@link foldRequestDeclaredTwins} folds on the query path.
           */
          callerQueryText?: string;
          /**
@@ -3314,7 +3352,7 @@ export class Model {
          graftScope,
          {
             skipOwnSourceGate: options?.skipOwnSourceGate,
-            callerText: options?.compileCallerText,
+            callerText: options?.compileCallerText ?? options?.callerQueryText,
          },
       );
 
