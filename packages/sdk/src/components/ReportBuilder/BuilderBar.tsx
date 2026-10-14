@@ -10,6 +10,7 @@ import UndoIcon from "@mui/icons-material/Undo";
 import {
    Box,
    Button,
+   ButtonBase,
    Divider,
    IconButton,
    ListItemText,
@@ -21,7 +22,9 @@ import {
    Tooltip,
    useMediaQuery,
 } from "@mui/material";
+import type { Theme } from "@mui/material";
 import { useState } from "react";
+import { MOTION_FAST } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { edgeColor, hoverEdgeColor, TYPE } from "../controlTokens";
 import type { BuilderControls } from "./builderControls";
@@ -246,7 +249,10 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                      disableElevation
                      disabled={controls?.status === "saving"}
                      onClick={finish}
-                     sx={{ ...controlSx(edge, hoverEdge), minWidth: 72 }}
+                     // Wide enough for "Saving…", so the label changes in
+                     // place: the bar is set against the header's right
+                     // edge, and a wider button pushed every control left.
+                     sx={{ ...controlSx(edge, hoverEdge), width: 92 }}
                   >
                      {controls?.done && controls.status === "saving"
                         ? "Saving…"
@@ -295,42 +301,79 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
       status === "unsaved" && draftKeptAt !== undefined
          ? "Your edits are kept in this browser. Done saves them to the report."
          : controls.saveTarget;
-   // Drawn without a role, so a button around it is named by its words; the
-   // live region that announces them sits beside it (`announce`).
-   const body = (
-      <Box
-         component="span"
-         aria-hidden
-         sx={(mui) => ({
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 0.75,
-            ...TYPE.control,
-            color:
-               status === "saved"
-                  ? mui.palette.text.secondary
-                  : mui.palette.text.primary,
-         })}
-      >
-         {status === "saved" ? (
-            <CheckIcon aria-hidden sx={{ fontSize: 16 }} />
-         ) : (
-            <Box
-               aria-hidden
-               sx={(mui) => ({
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  bgcolor:
-                     status === "saving" || draftKeptAt !== undefined
-                        ? mui.palette.text.disabled
-                        : mui.palette.warning.main,
-               })}
-            />
-         )}
-         {words}
-      </Box>
+   // One element for every state, set the same way: the same type and
+   // padding, an icon slot of one size (a dot, or the check), and the
+   // chevron's room kept whether or not the menu is offered. Each state used
+   // to be drawn differently (a menu button for a draft, bare text otherwise),
+   // so Draft saved → Saving… → Saved changed font, padding and width at every
+   // step, and the controls beside it jumped. A minimum width, with the words
+   // set against the undo buttons, keeps them still.
+   const menu = discard !== undefined && status === "unsaved";
+   const sx = (mui: Theme) => ({
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "flex-end",
+      gap: 0.75,
+      minWidth: 132,
+      height: 32,
+      px: 1,
+      borderRadius: "6px",
+      font: "inherit",
+      ...TYPE.control,
+      whiteSpace: "nowrap" as const,
+      color:
+         status === "saved"
+            ? mui.palette.text.secondary
+            : mui.palette.text.primary,
+      transition: `color ${MOTION_FAST}, background-color ${MOTION_FAST}`,
+      ...(menu ? { "&:hover": { bgcolor: mui.palette.action.hover } } : {}),
+   });
+   const inner = (
+      <>
+         <Box
+            component="span"
+            aria-hidden
+            sx={{
+               width: 16,
+               height: 16,
+               flex: "none",
+               display: "inline-flex",
+               alignItems: "center",
+               justifyContent: "center",
+            }}
+         >
+            {status === "saved" ? (
+               <CheckIcon sx={{ fontSize: 16 }} />
+            ) : (
+               <Box
+                  component="span"
+                  sx={(mui) => ({
+                     width: 7,
+                     height: 7,
+                     borderRadius: "50%",
+                     bgcolor:
+                        status === "saving" || draftKeptAt !== undefined
+                           ? mui.palette.text.disabled
+                           : mui.palette.warning.main,
+                  })}
+               />
+            )}
+         </Box>
+         <Box component="span" aria-hidden>
+            {words}
+         </Box>
+         <ExpandMoreIcon
+            aria-hidden
+            sx={{
+               fontSize: 16,
+               ml: -0.25,
+               visibility: menu ? "visible" : "hidden",
+            }}
+         />
+      </>
    );
+   // The words a screen reader hears as they change, beside the control
+   // rather than in it, so a button around them is named by its words.
    const announce = (
       <Box
          component="span"
@@ -341,38 +384,25 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
          {words}
       </Box>
    );
-   if (!discard || status !== "unsaved")
-      return (
-         <Tooltip title={hint} describeChild>
-            <Box component="span" sx={{ pr: 0.75 }}>
-               {body}
-               {announce}
-            </Box>
-         </Tooltip>
-      );
    return (
       <>
          {announce}
          <Tooltip title={hint} describeChild>
-            <Button
-               aria-label={words}
-               aria-haspopup="menu"
-               aria-expanded={anchor !== null}
-               endIcon={<ExpandMoreIcon />}
-               onClick={(event) => setAnchor(event.currentTarget)}
-               sx={{
-                  textTransform: "none",
-                  color: "inherit",
-                  px: 1,
-                  minWidth: 0,
-                  "& .MuiButton-endIcon": {
-                     ml: 0.25,
-                     "& svg": { fontSize: 16 },
-                  },
-               }}
-            >
-               {body}
-            </Button>
+            {menu ? (
+               <ButtonBase
+                  aria-label={words}
+                  aria-haspopup="menu"
+                  aria-expanded={anchor !== null}
+                  onClick={(event) => setAnchor(event.currentTarget)}
+                  sx={sx}
+               >
+                  {inner}
+               </ButtonBase>
+            ) : (
+               <Box component="span" sx={sx}>
+                  {inner}
+               </Box>
+            )}
          </Tooltip>
          <Menu
             anchorEl={anchor}
