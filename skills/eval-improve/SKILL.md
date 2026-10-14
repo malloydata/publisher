@@ -67,7 +67,7 @@ data with no question in front of them?* Reject:
 
 - a field that hard-codes this question's filter and serves no other question
 - this question's text, qid, or expected numbers in a doc, comment, or name
-- a join copied from gold SQL that you have not probed as a real relationship
+- a join copied from a golden's query that you have not probed as a real relationship
 
 The golden is a hypothesis source. The data is still the verifier.
 
@@ -76,11 +76,15 @@ The golden is a hypothesis source. The data is still the verifier.
 Every structural claim needs a query you ran: join key, primary key, filter
 value existence, snapshot assumption, value space, cardinality.
 
-```sql
-SELECT COUNT(*), COUNT(DISTINCT col) FROM t;
-SELECT a.k, COUNT(*) FROM a JOIN b ON … GROUP BY 1 ORDER BY 2 DESC;
-SELECT col, COUNT(*) FROM t GROUP BY 1 ORDER BY 2 DESC LIMIT 5;
+```malloy
+run: t -> { aggregate: row_count is count(), distinct_keys is count(col) }
+run: b -> { group_by: k; aggregate: n is count(); order_by: n desc; limit: 5 }
+run: t -> { group_by: col; aggregate: n is count(); order_by: n desc; limit: 5 }
 ```
+
+Run probes in Malloy, against the raw tables (the truth package, or a bare
+`connection.table()` source), never as SQL. The second line is the join probe:
+any `n` above 1 means `k` is not a key on `b`, so a `join_one` on it fans out.
 
 A false `primary_key` compiles and silently corrupts every aggregate. Of one
 pilot's 11 accepted edits, 4 of 5 wrong ones died to a single

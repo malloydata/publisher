@@ -134,7 +134,7 @@ Output, exactly this shape:
    plainly the answer explained itself, and however the rubric is worded. Say
    in `why` that you are overriding a rubric clause, so the clause gets fixed.
    This rule exists because a set shipped one: a question asked for sales over
-   the company's season, the answer gave the meteorological window 25% lower
+   the company's season, the answer gave the meteorological window 20% lower
    and said which window it used, and a clause granting `near_match` for a
    stated window kept a materially wrong answer out of the pass rate
    entirely -- the arm reported 100%.

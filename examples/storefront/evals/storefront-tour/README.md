@@ -19,9 +19,12 @@ of this repository (`evals/.gitignore`).
 | (`examples/storefront-tour-truth/`) | the raw tables the goldens are derived from, with no modelling. It lives OUTSIDE the storefront package on purpose: Publisher serves every `.malloy` under a package directory, so a truth package kept in here is served as one of storefront's own models and the answerer can query the raw tables |
 | `eval.toml` | where each step finds its servers: the model package and its ports, the truth package and the truth server's ports |
 
-Every golden is `verified`: derived once as SQL over the raw parquet, once as
-Malloy through the truth package, on axes that differ, and promoted only where
-the two agreed.
+Every golden is `verified`: derived twice in Malloy over the truth package's
+raw tables, by two queries that reach the number by different routes, and
+promoted only where the two agreed. Summer sales, for example, is the season
+window summed directly, and the year's total less every line outside the
+window. Neither derivation is SQL, and neither goes through the model under
+test.
 
 ## Some of these SHOULD fail
 
@@ -38,7 +41,7 @@ expect these cases to flip — that flip is the evidence the edit worked.
 
 | Question | The business means | The model offers | Why it cannot get there |
 |---|---|---|---|
-| What were our summer sales in 2025? | 25 May – 15 Sep, the sales calendar: **$267,423** | a date column and a revenue measure | no field, given, filter or doc expresses a season, so an agent reads "summer" as June–August and lands 25% low |
+| What were our summer sales in 2025? | 25 May – 15 Sep, the sales calendar: **$267,423** | a date column and a revenue measure | no field, given, filter or doc expresses a season, so an agent reads "summer" as June–August and lands 20% low |
 | How many customers do we have? | people the company has **delivered** to: **943** | `customer_count`, which returns 974 through `order_items` and 1,000 on the customers source | nothing expresses delivery. 966 and 960 are the other near misses |
 | What were net sales in 2025, excluding cancelled and returned items? | **$834,216** | `total_sales`, which carries no status filter and returns gross | reachable, because `status` is a dimension — this one tests whether the agent builds the filter rather than trusting the named measure |
 

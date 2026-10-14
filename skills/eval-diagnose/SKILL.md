@@ -281,7 +281,7 @@ with both queries. Otherwise it is still `NOT-RETURNED` / `LOW-RANK`.
 Use when the entity was found and used, and the definition or the data behind it
 is wrong (bad grain, wrong join key, inverted filter). Owner: model. A doc whose
 factual claim the data contradicts (a population statement, a grain claim) is
-also model-definition: the SQL may be right while the stated contract is false,
+also model-definition: the field may compute correctly while its doc is false,
 and an agent that trusts the doc answers wrongly without ever failing a query.
 Probe the claim before writing the issue.
 
