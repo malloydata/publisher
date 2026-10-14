@@ -142,6 +142,12 @@ export function StickyControls({ children }: { children: ReactNode }) {
             // Room under the bar for the edge, so the line never sits on the
             // controls themselves.
             pb: 1,
+            // And room over them, for what stands above a control (a filter's
+            // × in the builder): pinned, the bar's top is the scroller's edge,
+            // and the badge was cut off there. Taken back by the margin, so the
+            // row sits where it did while unpinned.
+            pt: 1,
+            mt: -1,
             // A shadow rather than a border: drawing the edge must not change
             // the bar's height, or the page jumps as it pins.
             boxShadow: stuck
