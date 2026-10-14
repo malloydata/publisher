@@ -21,7 +21,8 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
-import { DashboardController } from "./controller/dashboard.controller";
+import { ReportController } from "./controller/report.controller";
+import { SkillController } from "./controller/skill.controller";
 import { DatabaseController } from "./controller/database.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
@@ -30,7 +31,6 @@ import { WatchModeController } from "./controller/watch-mode.controller";
 import {
    BadRequestError,
    internalErrorToHttpError,
-   NotImplementedError,
    ServiceUnavailableError,
 } from "./errors";
 import {
@@ -92,15 +92,23 @@ import {
    normalizeQueryArray,
    parseNonNegativeIntParam,
 } from "./query_param_utils";
-import {
-   booleanParamOr400,
-   optionalBooleanParamOr400,
-   setCollectionReloadError,
-} from "./route_params";
+import { booleanParamOr400, setCollectionReloadError } from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
-import { classifySpaFallback } from "./spa_fallback";
+import { resolveSpaFallback, type LoadedRoutes } from "./spa_fallback";
+import { timeReportRead } from "./report_metrics";
+import {
+   isLegacyReportAlias,
+   recordConsoleAliasUse,
+} from "./service/legacy_report_views";
+import { registerDeprecatedRoutes } from "./routes/deprecated";
+import { reportWriteRoute } from "./routes/report_write";
+import {
+   jsonRoute,
+   setVersionIdError,
+   wildcardParam,
+} from "./routes/json_route";
 import {
    RATE_LIMIT_ENV,
    parseRateLimit,
@@ -297,6 +305,11 @@ app.use(httpMetricsMiddleware);
 // true of everything except the responses one middleware happens to answer
 // early, and the next early-answering middleware may not be JSON.
 app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
+// Health endpoints (Kubernetes liveness/readiness) before every middleware a
+// probe does not need: the rate limiter exempts them anyway, and static-file
+// serving would stat the filesystem first. A liveness probe that queues behind
+// a busy event loop should cost nothing more once it runs.
+registerHealthEndpoints(app);
 app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
 // Probe the V8 heap ceiling once at startup and warn if it's below
 // the recommended floor. The row/byte caps from Steps 1–3 still
@@ -419,7 +432,8 @@ environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
 );
 const packageController = new PackageController(environmentStore);
-const dashboardController = new DashboardController(environmentStore);
+const reportController = new ReportController(environmentStore);
+const skillController = new SkillController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
@@ -950,13 +964,6 @@ if (!isDevelopment) {
    );
 }
 
-const setVersionIdError = (res: express.Response) => {
-   const { json, status } = internalErrorToHttpError(
-      new NotImplementedError("Version IDs not implemented."),
-   );
-   res.status(status).json(json);
-};
-
 app.use(
    cors({
       origin: "http://localhost:5173",
@@ -966,10 +973,6 @@ app.use(
 
 // Set body-parser JSON limit to 1Mb (default: 100kb)
 app.use(bodyParser.json({ limit: "1mb" }));
-
-// Register health check endpoints on main app:
-// - Required for production/Kubernetes monitoring (main server on PUBLISHER_PORT)
-registerHealthEndpoints(app);
 
 // Register Prometheus metrics endpoint
 try {
@@ -1789,6 +1792,113 @@ app.get(
    },
 );
 
+// The skill name can carry a slash (`<skill>/<stem>` for a reference file), so
+// the parameter is a wildcard rather than :skillName. Express would otherwise
+// route `revenue-rules/margin` to nothing.
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.listSkills(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills/*`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getSkill(
+               req.params.environmentName,
+               req.params.packageName,
+               // Express has already decoded the wildcard; decoding again throws on a bare %.
+               (req.params as unknown as Record<string, string>)[0] ?? "",
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.listAgents(
+               req.params.environmentName,
+               req.params.packageName,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName`,
+   async (req, res) => {
+      try {
+         const skills = req.query.skills ?? "full";
+         if (skills !== "full" && skills !== "summary") {
+            res.status(400).json({
+               message: `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
+            });
+            return;
+         }
+         res.status(200).json(
+            await skillController.getAgent(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.agentName,
+               skills,
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName/skills/*`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await skillController.getAgentSkillFile(
+               req.params.environmentName,
+               req.params.packageName,
+               req.params.agentName,
+               // Express has already decoded the wildcard; decoding again throws on a bare %.
+               (req.params as unknown as Record<string, string>)[0] ?? "",
+            ),
+         );
+      } catch (error) {
+         logger.error(error);
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
 app.put(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
    // A dashboard save compiles the submitted text and then writes it under the
@@ -1798,215 +1908,33 @@ app.put(
    // while holding no slot, so slot-holding compiles on that package pile up
    // behind it.
    queryConcurrency(),
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-      try {
-         // Express stores wildcard matches in params['0'].
-         const result = await dashboardController.putDashboardSource(
-            req.params.environmentName,
-            req.params.packageName,
-            (req.params as Record<string, string>)["0"],
-            req.body,
-         );
-         // 201 for a file that did not exist, the way a created materialization
-         // answers; 200 for one that was replaced.
-         res.status(result.created ? 201 : 200).json(result);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         // A refused write is the endpoint working: a stale hash, a dashboard
-         // that does not compile, a path that is not a dashboard. Logging all
-         // of those at `error` made the level meaningless on this route and
-         // buried the one case that is genuinely wrong — a write that compiled,
-         // landed, and could not be reloaded.
-         const detail = {
-            environmentName: req.params.environmentName,
-            packageName: req.params.packageName,
-            modelPath: (req.params as Record<string, string>)["0"],
-            status,
-            error,
-         };
-         if (status >= 500) logger.error("Dashboard write failed", detail);
-         else logger.warn("Dashboard write refused", detail);
-         res.status(status).json(json);
-      }
-   },
+   reportWriteRoute(reportController),
 );
 
 app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await dashboardController.listDashboards(
-               req.params.environmentName,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports`,
+   timeReportRead("list"),
+   jsonRoute((req) =>
+      reportController.listReports(
+         req.params.environmentName,
+         req.params.packageName,
+      ),
+   ),
 );
 
 app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/dashboards/:dashboardName`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await dashboardController.getDashboard(
-               req.params.environmentName,
-               req.params.packageName,
-               req.params.dashboardName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
+   `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports/*`,
+   timeReportRead("get"),
+   jsonRoute((req) =>
+      reportController.getReport(
+         req.params.environmentName,
+         req.params.packageName,
+         wildcardParam(req),
+      ),
+   ),
 );
 
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await modelController.listNotebooks(
-               req.params.environmentName,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// Execute notebook cell route must come BEFORE the general get notebook route
-// to avoid the wildcard matching incorrectly
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*/cells/:cellIndex`,
-   queryConcurrency(),
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         const cellIndex = parseInt(req.params.cellIndex, 10);
-         if (isNaN(cellIndex)) {
-            res.status(400).json({
-               error: "Invalid cell index",
-            });
-            return;
-         }
-
-         // Express stores wildcard matches in params['0']
-         const notebookPath = (req.params as Record<string, string>)["0"];
-
-         // Parse optional filter_params (JSON query string) and bypass_filters
-         let filterParams: Record<string, string | string[]> | undefined;
-         if (typeof req.query.filter_params === "string") {
-            try {
-               filterParams = JSON.parse(req.query.filter_params);
-            } catch {
-               res.status(400).json({
-                  error: "Invalid filter_params: must be valid JSON",
-               });
-               return;
-            }
-         }
-         // Absence must stay distinguishable from an explicit `false` here:
-         // the Deprecation header below fires on `bypassFilters !== undefined`.
-         const bypass = optionalBooleanParamOr400(req, res, "bypass_filters");
-         if (!bypass.ok) {
-            return;
-         }
-         const bypassFilters = bypass.value;
-
-         let givens: Record<string, GivenValue> | undefined;
-         if (typeof req.query.givens === "string") {
-            try {
-               givens = JSON.parse(req.query.givens);
-            } catch {
-               res.status(400).json({
-                  error: "Invalid givens: must be valid JSON",
-               });
-               return;
-            }
-         }
-
-         const result = await modelController.executeNotebookCell(
-            req.params.environmentName,
-            req.params.packageName,
-            notebookPath,
-            cellIndex,
-            filterParams,
-            bypassFilters,
-            givens,
-         );
-         setFilterDeprecationHeaders(res, {
-            filterParams,
-            bypassFilters,
-         });
-         res.status(200).json(result);
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/notebooks/*?`,
-   async (req, res) => {
-      if (req.query.versionId) {
-         setVersionIdError(res);
-         return;
-      }
-
-      try {
-         // Express stores wildcard matches in params['0']
-         const notebookPath = (req.params as Record<string, string>)["0"];
-         res.status(200).json(
-            await modelController.getNotebook(
-               req.params.environmentName,
-               req.params.packageName,
-               notebookPath,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
+registerDeprecatedRoutes(app, API_PREFIX, environmentStore);
 
 app.post(
    `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
@@ -2255,92 +2183,45 @@ if (!isDevelopment) {
          /[<>&]/g,
          (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
       );
-   // `req.path` arrives percent-encoded, while environment names are stored
-   // decoded. A malformed escape is not a name we know, so it compares as one
-   // that will not match rather than throwing.
-   const decodeSegment = (segment: string | undefined) => {
-      if (segment === undefined) return "";
-      try {
-         return decodeURIComponent(segment);
-      } catch {
-         return segment;
-      }
+   // Deliberately the in-memory lists rather than `getEnvironment`, which
+   // resolves from storage (see `LoadedRoutes`). The cost: an environment or
+   // package not loaded yet (a cold start, a lazily loaded environment) gets
+   // the 404 page, which names the canonical URL that does load it.
+   const loadedPackage = (environmentName: string, packageName: string) =>
+      environmentStore
+         .getLoadedEnvironments()
+         .find(
+            (environment) =>
+               environment.getEnvironmentName() === environmentName,
+         )
+         ?.getLoadedPackages()
+         .find((pkg) => pkg.getPackageName() === packageName);
+   const loadedRoutes: LoadedRoutes = {
+      hasEnvironment: (environmentName) =>
+         environmentStore
+            .getLoadedEnvironments()
+            .some(
+               (environment) =>
+                  environment.getEnvironmentName() === environmentName,
+            ),
+      hasPackage: (environmentName, packageName) =>
+         loadedPackage(environmentName, packageName) !== undefined,
+      isReportRoute: (environmentName, packageName, routePath) => {
+         const pkg = loadedPackage(environmentName, packageName);
+         return (
+            pkg !== undefined &&
+            (pkg.isServedReport(`${routePath}.malloy`) ||
+               isLegacyReportAlias(pkg, routePath))
+         );
+      },
    };
    app.get("*", (req, res) => {
       // Not everything unmatched is an app route. A request that names a file
       // gets a real answer rather than the app shell with a 200, which reads as
       // success and then leaves the app blaming the file for a wrong path. See
-      // classifySpaFallback for why the decision is by extension.
-      let fallback = classifySpaFallback(req.path, API_PREFIX);
-      // The classifier only sees the shape of a path, and several real things
-      // share a shape with a package asset. Resolve the names against what is
-      // actually loaded before acting on its guess.
-      //
-      // Deliberately the in-memory lists rather than `getEnvironment`, which
-      // resolves from storage: this is the last handler before the app shell and
-      // it answers unauthenticated traffic for any path nothing else claimed, so
-      // it must not do I/O a caller can trigger by guessing. That also keeps this
-      // handler synchronous. The cost is real and worth stating precisely: an
-      // environment OR package that is not loaded yet gets the 404 page instead
-      // of a redirect. That covers a cold start, and an environment resolved
-      // lazily by the static route (which loads its packages on demand, so they
-      // can be absent here while that URL serves them). In those cases the page
-      // names the canonical URL and following it does load them. The exception is
-      // a package that fails to compile: it is absent here, and the canonical URL
-      // answers 424, so there the page leads somewhere that reports the real
-      // problem rather than somewhere that works.
-      const loadedEnvironment = (name: string) =>
-         environmentStore
-            .getLoadedEnvironments()
-            .find((environment) => environment.getEnvironmentName() === name);
-      if (fallback.kind === "redirect") {
-         // `/assets/foo/bar.js` has the same shape as `/<env>/<pkg>/<file>`.
-         // Redirecting it lands on the static route, which answers a name it
-         // cannot resolve with JSON naming an internal failure ("Environment ...
-         // could not be resolved", "Package nope not found", or a 400 for a
-         // malformed name) and echoes the segment back, which the static route's
-         // own 404s deliberately avoid doing. BOTH names have to be real, not
-         // just the environment: a good environment with a bad package reaches
-         // exactly that reflected JSON.
-         const environment = loadedEnvironment(
-            decodeSegment(fallback.environmentName),
-         );
-         const packageName = decodeSegment(fallback.packageName);
-         const known = environment
-            ?.getLoadedPackages()
-            .some((pkg) => pkg.getPackageName() === packageName);
-         if (!known) {
-            // Null, not the names: a redirect candidate whose names did not
-            // resolve is not an app route either, so it must not be rescued into
-            // the app shell by the branch below.
-            fallback = {
-               kind: "assetNotFound",
-               path: req.path,
-               appRouteCandidate: null,
-            };
-         }
-      }
-      if (fallback.kind === "assetNotFound" && fallback.appRouteCandidate) {
-         // `/<env>` or `/<env>/<pkg>` where a name merely ends in a servable
-         // extension, which names may: `report.html` is a legal package name. It
-         // is an app route after all, but only if these are things this server
-         // actually has. Checking the package too is what keeps
-         // `/examples/style.css` a 404: without it, any asset request under a real
-         // environment went back to answering with the app shell and a 200, which
-         // is the whole defect this handler removes.
-         const { environmentName, packageName } = fallback.appRouteCandidate;
-         const environment = loadedEnvironment(decodeSegment(environmentName));
-         const isAppRoute =
-            environment !== undefined &&
-            (packageName === undefined ||
-               environment
-                  .getLoadedPackages()
-                  .some(
-                     (pkg) =>
-                        pkg.getPackageName() === decodeSegment(packageName),
-                  ));
-         if (isAppRoute) fallback = { kind: "spa" };
-      }
+      // classifySpaFallback for why the decision is by extension, and
+      // resolveSpaFallback for how its guesses are settled.
+      const fallback = resolveSpaFallback(req.path, API_PREFIX, loadedRoutes);
       if (fallback.kind === "redirect") {
          // 302, not a permanent redirect: this maps a mistaken URL onto the
          // right one, and a path the app may later claim as a route of its own
@@ -2378,6 +2259,7 @@ if (!isDevelopment) {
             );
          return;
       }
+      recordConsoleAliasUse(req.path, loadedPackage);
       res.sendFile(SPA_INDEX, (err) => {
          if (!err) return;
          // The SPA bundle isn't built. This happens when running directly

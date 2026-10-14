@@ -4,28 +4,22 @@
 /// <reference types="bun-types" />
 
 /**
- * A served notebook (`notebooks/*.malloy` with a model-level `## artifact`
- * note) on a package that declares a surface. It is a model to every endpoint
+ * A linear report (`notebooks/local.malloy`, written as tiles) on a package
+ * that declares a surface. It is a model to every endpoint
  * that takes a model path, but it admits nothing of its own: what its model GET
  * publishes and what a query against it may read are held to the surface, the
  * same as a dashboard's.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import path from "path";
-import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const ENV_NAME = "served-notebook-env";
 const PACKAGE_NAME = "notebooks-malloyyo-surface";
 const NOTEBOOK = "notebooks/local.malloy";
-
-const fixtureDir = path.resolve(
-   __dirname,
-   "../../fixtures/notebooks-malloyyo-surface",
-);
 
 interface Named {
    name?: string;
@@ -42,50 +36,17 @@ interface ModelBody {
 }
 
 describe("Served notebook on a package with a surface (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-
-   const pkgUrl = (sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PACKAGE_NAME}${sub}`;
-   const post = (sub: string, body: object) =>
-      fetch(pkgUrl(sub), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(body),
-      });
+   let env: PackageEnv;
+   const pkgUrl = (sub: string) => env.api(sub);
+   const post = (sub: string, body: object) => env.post(pkgUrl(sub), body);
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PACKAGE_NAME, location: fixtureDir }],
-            connections: [],
-         }),
+      env = await startPackageEnv("served-notebook-env", {
+         [PACKAGE_NAME]: fixture(PACKAGE_NAME),
       });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-   });
+   }, 300_000);
 
-   afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
-      await env?.stop();
-      env = null;
-   });
+   afterAll(() => env?.stop());
 
    const getModel = async (): Promise<ModelBody> => {
       const res = await fetch(pkgUrl(`/models/${NOTEBOOK}`));
@@ -126,8 +87,8 @@ describe("Served notebook on a package with a surface (E2E)", () => {
 
    it("describes on the model GET only the runs over published names", async () => {
       const notebook = await getModel();
-      // Positive control: a run over the notebook's surface-derived source.
-      expect(runColumns(notebook.modelInfo)).toEqual([["n"]]);
+      // A report written as tiles has no runs of its own to describe.
+      expect(runColumns(notebook.modelInfo)).toEqual([]);
       expect(notebook.modelInfo).not.toContain("secret_total");
 
       for (const file of ["notebooks/cells.malloy", "dashboards/runs.malloy"]) {
@@ -144,13 +105,39 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(runColumns(dashboard.modelInfo)).toEqual([["shown_count"]]);
    });
 
-   it("withholds from the notebook GET a run over a source derived from a hidden one", async () => {
+   it("withholds from the deprecated notebook GET a tile over a source derived from a hidden one", async () => {
       const res = await fetch(pkgUrl(`/notebooks/${NOTEBOOK}`));
       expect(res.status).toBe(200);
-      const body = (await res.json()) as { modelInfo?: string };
+      const body = (await res.json()) as {
+         modelInfo?: string;
+         notebookCells?: { text?: string; queryInfo?: string }[];
+      };
       expect(body.modelInfo).not.toContain("secret_total");
-      // Positive control: the runs over the surface and over a source derived from it.
-      expect(runColumns(body.modelInfo)).toEqual([["order_count"], ["n"]]);
+      const infoOf = (text: string) =>
+         body.notebookCells?.find((cell) => cell.text === text)?.queryInfo;
+      expect(infoOf("run: loc -> { aggregate: secret_total }")).toBeUndefined();
+      // Positive control: the tiles over the surface and over a source derived from it.
+      expect(infoOf("run: orders -> { aggregate: order_count }")).toContain(
+         "order_count",
+      );
+      expect(infoOf("run: on_surface -> { aggregate: n }")).toBeDefined();
+   });
+
+   it("serves the report's tiles, and runs one over a source derived from the surface", async () => {
+      const report = (await (
+         await fetch(pkgUrl(`/reports/${NOTEBOOK}`))
+      ).json()) as { tiles?: { kind?: string; query?: string }[] };
+      expect(report.tiles?.map((t) => t.kind)).toEqual([
+         "text",
+         "query",
+         "query",
+         "text",
+         "query",
+      ]);
+      const res = await post(`/models/${NOTEBOOK}/query`, {
+         query: `run: ${report.tiles?.[2].query}`,
+      });
+      expect(res.status).toBe(200);
    });
 
    it("still returns the declared givens, and withholds file text that names a hidden-derived source", async () => {
@@ -160,7 +147,7 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(body.sourceText).toBeUndefined();
    });
 
-   it("does not list the notebook as a model, and lists it as a notebook", async () => {
+   it("does not list the notebook as a model, and lists it as a report", async () => {
       const models = (await (await fetch(pkgUrl("/models"))).json()) as {
          path?: string;
       }[];
@@ -168,7 +155,7 @@ describe("Served notebook on a package with a surface (E2E)", () => {
       expect(models.map((m) => m.path)).toContain("index.malloy");
       expect(models.map((m) => m.path)).not.toContain(NOTEBOOK);
 
-      const notebooks = (await (await fetch(pkgUrl("/notebooks"))).json()) as {
+      const notebooks = (await (await fetch(pkgUrl("/reports"))).json()) as {
          path?: string;
          title?: string;
          description?: string;

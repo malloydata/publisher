@@ -1,0 +1,2 @@
+## artifact { layout=grid title="CSV-shaped name" tiles=["orders -> by_brand"] }
+import { orders } from "../orders.malloy"

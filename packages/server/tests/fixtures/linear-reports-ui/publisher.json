@@ -1,0 +1,5 @@
+{
+   "name": "linear-reports-ui",
+   "version": "1.0.0",
+   "description": "Fixture for the Console's linear-report tests: Apply batching, starting givens, and drill from a run: cell. The orders model, givens and the two drill-target dashboards are copies of dashboards-test's."
+}

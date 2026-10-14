@@ -29,6 +29,9 @@ export function installRecordPath(
 }
 export const MODEL_FILE_SUFFIX = ".malloy";
 export const NOTEBOOK_FILE_SUFFIX = ".malloynb";
+/** The guide to migrating from deprecated `#(filter)` annotations to `given:` parameters. */
+export const GIVENS_DOCS_URL =
+   "https://github.com/malloydata/publisher/blob/main/docs/givens.md";
 
 /**
  * Conventional name for the model file that declares a package's published

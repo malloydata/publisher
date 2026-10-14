@@ -639,7 +639,9 @@ source: joiner is duckdb.table('orgtable') extend {
    });
 });
 
-describe("filter binding guard — #(filter) injection stays bound to its original field", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `#(filter)` (see RELEASE_NOTES deprecations).
+describe("deprecated: #(filter) — filter binding guard — #(filter) injection stays bound to its original field", () => {
    it("an injected #(filter) where: stays bound when the caller re-extends the dimension (except+rename)", async () => {
       const { model, duckdb, dir } = await createModel(`
 #(filter) dimension=val type=equal
@@ -1198,35 +1200,42 @@ source: gated_parent is duckdb.table('orgtable') extend {
       }
    });
 
-   it("serves for a #(filter)-injected source", async () => {
-      const { model, duckdb, dir } = await createModel(`
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `#(filter)` (see RELEASE_NOTES deprecations).
+   describe("deprecated: #(filter)", () => {
+      it("serves for a #(filter)-injected source", async () => {
+         const { model, duckdb, dir } = await createModel(`
 #(filter) dimension=note type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    measure: n is count()
 }
 `);
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.getQueryResults(
-            undefined,
-            undefined,
-            "run: filtered_parent extend { where: id = 1 } -> { aggregate: n is count() }",
-            { note: "x" },
-            false,
-            {},
-         );
-         expect((result.compactResult as unknown as { n: number }[])[0].n).toBe(
-            1,
-         );
-      } finally {
-         await cleanup(duckdb, dir);
-      }
+         try {
+            expect(compilationErrorOf(model)).toBeUndefined();
+            const result = await model.getQueryResults(
+               undefined,
+               undefined,
+               "run: filtered_parent extend { where: id = 1 } -> { aggregate: n is count() }",
+               { note: "x" },
+               false,
+               {},
+            );
+            expect(
+               (result.compactResult as unknown as { n: number }[])[0].n,
+            ).toBe(1);
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      });
    });
 
-   it("serves for the notebook-cell equivalent", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
-         {
-            "nb.malloynb": `>>>malloy
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("serves for the notebook-cell equivalent", async () => {
+         const { model, duckdb, dir } = await createModelWithFiles(
+            {
+               "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -1240,19 +1249,20 @@ source: gated_parent is duckdb.table('orgtable') extend {
 >>>malloy
 run: gated_parent extend { where: id = 1 } -> { aggregate: n is count() }
 `,
-         },
-         "nb.malloynb",
-      );
-      try {
-         expect(compilationErrorOf(model)).toBeUndefined();
-         const result = await model.executeNotebookCell(1, {}, false, {
-            GROUPS: [1],
-         });
-         expect(result.result).toBeDefined();
-         expect(firstCellResultValue(result.result!)).toBe(1);
-      } finally {
-         await cleanup(duckdb, dir);
-      }
+            },
+            "nb.malloynb",
+         );
+         try {
+            expect(compilationErrorOf(model)).toBeUndefined();
+            const result = await model.executeNotebookCell(1, {}, false, {
+               GROUPS: [1],
+            });
+            expect(result.result).toBeDefined();
+            expect(firstCellResultValue(result.result!)).toBe(1);
+         } finally {
+            await cleanup(duckdb, dir);
+         }
+      });
    });
 });
 
@@ -1286,7 +1296,9 @@ source: base_filtered is duckdb.table('orgtable') extend {
    });
 });
 
-describe("filter binding guard — #(filter) cross-file notebook import fallback", () => {
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `#(filter)` (see RELEASE_NOTES deprecations).
+describe("deprecated: #(filter) — filter binding guard — #(filter) cross-file notebook import fallback", () => {
    // Loaded via `Package.create`: the innocent case below needs the
    // sibling-model lookup to serve at all, so proving it through a bare
    // `Model.create` (no `Package`, no resolver) would pass vacuously.

@@ -11,15 +11,15 @@ import {
 import { saveChanges } from "./helpers/save";
 
 /**
- * A document's kind is a tag in its file, not a folder: the Console finds a
+ * A report's layout is a tag in its file, not a folder: the Console finds a
  * notebook filed in dashboards/ (and a dashboard in notebooks/) at either
  * address, and the builder saves it back to the path it is listed at. Each
  * test writes into a throwaway copy of the storefront package.
  */
 
-const layout = (kind: "dashboard" | "notebook", title: string, note: string) =>
+const layout = (reportLayout: "grid" | "linear", title: string, note: string) =>
    `##! experimental.givens
-## artifact { kind=${kind} title="${title}" tiles=["order_items -> sales_by_month", intro { kind=text }] }
+## artifact { layout=${reportLayout} title="${title}" tiles=["order_items -> sales_by_month", intro { kind=text }] }
 import { order_items } from "../storefront.malloy"
 
 ##|(markdown) intro
@@ -32,7 +32,7 @@ const MISFILED_DASHBOARD = "Misfiled dashboard note.";
 
 let pe: PackageEnv;
 
-test.describe("a kind that disagrees with its folder", () => {
+test.describe("a layout that disagrees with its folder", () => {
    // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
       pe = await registerPackageEnv(
@@ -43,12 +43,12 @@ test.describe("a kind that disagrees with its folder", () => {
          {
             // A notebook in dashboards/, a dashboard in notebooks/.
             "dashboards/misfiled.malloy": layout(
-               "notebook",
+               "linear",
                "Misfiled notebook",
                MISFILED_NOTEBOOK,
             ),
             "notebooks/mixed.malloy": layout(
-               "dashboard",
+               "grid",
                "Mixed dashboard",
                MISFILED_DASHBOARD,
             ),
@@ -83,7 +83,8 @@ test.describe("a kind that disagrees with its folder", () => {
          await expect(page.getByText(MISFILED_NOTEBOOK)).toBeVisible({
             timeout: 60_000,
          });
-         await expect(page.locator('[data-chrome="card"]')).toHaveCount(0);
+         // Read as what its tag says, wherever its folder.
+         await expect(page.locator('[data-layout="linear"]')).toHaveCount(1);
       }
 
       await openEditor(page, "notebooks", "misfiled");
@@ -104,6 +105,7 @@ test.describe("a kind that disagrees with its folder", () => {
          await expect(page.getByText(MISFILED_DASHBOARD)).toBeVisible({
             timeout: 60_000,
          });
+         await expect(page.locator('[data-layout="grid"]')).toHaveCount(1);
          await expect(page.locator('[data-chrome="card"]').first()).toBeVisible(
             {
                timeout: 60_000,

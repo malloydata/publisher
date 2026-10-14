@@ -2,19 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { type LogMessage } from "@malloydata/malloy";
-import { isUnparsedDashboardTagFinding } from "./dashboard";
+import { isUnparsedReportTagFinding } from "./report_manifest";
 import {
-   attachedNowhereFix,
    callAccessor,
    codePointMap,
-   DASHBOARDS_DIR,
-   documentKind,
    isArtifactNoteText,
-   isDocumentModelPath,
    isMarkdownNote,
    isRuleNode,
-   MARKDOWN_ROUTE,
-   NOTEBOOKS_DIR,
+   modelNoteBody,
+   modelNotesOfParse,
    parseMarkdownOpener,
    readMarkdownBlocks,
    routeOfNote,
@@ -31,22 +27,42 @@ import {
    tagNumeric,
    tagText,
 } from "./motly";
+import {
+   isReportEligiblePath,
+   mayCarryArtifactTag,
+   readReportTag,
+} from "./report";
 
-/** One finding on a file under `notebooks/` or `dashboards/`. */
+/** One finding on a report file (`report.ts`), wherever it lives. */
 export interface NotebookLintFinding {
    /** 1-based. */
    line: number;
    code: string;
    /** Starts with `Line N:` and ends with the fix. */
    message: string;
-   /** An error is a file that cannot do what it says; a warn is one that does something other than it reads as. */
+   /**
+    * An error is a file that cannot do what it says; a warn is one that does
+    * something other than it reads as, or a deprecated spelling that still
+    * reads as written. There is no third severity: strict clients of
+    * `PackageWarning` and `CompileProblem` accept only these.
+    */
    severity: "warn" | "error";
 }
 
-/** `text` is reserved for the dashboard text tile; it is not an unknown kind. */
-const KNOWN_KINDS = ["notebook", "dashboard", "text"];
+/** The code of the finding for a linear tag with no `tiles`, the retired cell format (`report.ts`). */
+export const CELLS_REMOVED = "report-cells-removed";
 
-const ARTIFACT_KIND_FIX = "Fix: write `## artifact { kind=notebook }`.";
+/** The code of the finding for a `layout=` value Publisher does not know. */
+export const LAYOUT_UNKNOWN = "report-layout-unknown";
+
+/**
+ * Why a linear tag with no `tiles` makes no report, after its `Line N:`: the
+ * cell format it was written in is retired (`report.ts`), so the file is an
+ * ordinary model. Shared with the compile check, which reports it at append
+ * scope, where the lint does not run.
+ */
+export const CELLS_REMOVED_MESSAGE =
+   "a linear report written as `run:` cells is no longer read, so this file is not a report. Fix: list its tiles in `tiles=[…]` (a text tile per prose block, a query tile per view), or remove the `## artifact` tag.";
 
 const TILE_ENTRY_FIX =
    'Fix: every `source -> view` entry in `tiles` is a quoted string (`"orders_tiles -> headline"`), and a text entry is a bare name followed by `{ kind=text }` (`intro { kind=text }`).';
@@ -68,16 +84,24 @@ const tileBlockFix = (name: string, body: string) =>
    `write \`##|(markdown) ${name}\`, put \`${body}\` on the line below it, and list \`${name} { kind=text }\` in \`tiles\``;
 
 /**
- * Findings that explain why a notebook or dashboard file will not show what its
- * author wrote, read off Malloy's parse tree and token stream. Reads the parse
- * step only, so a file that does not compile still gets the fix-it for the
- * mistake behind its compile error.
+ * Findings that explain why a report file will not show what its author wrote,
+ * read off Malloy's parse tree and token stream. Reads the parse step only, so a
+ * file that does not compile still gets the fix-it for the mistake behind its
+ * compile error.
+ *
+ * Any `.malloy` that can be a report (`isReportEligiblePath`) is linted: a file
+ * with no artifact tag returns nothing, so where it lives does not matter.
  */
 export function lintNotebookText(
    modelPath: string,
    text: string,
 ): NotebookLintFinding[] {
-   if (!isDocumentModelPath(modelPath)) return [];
+   if (
+      !modelPath.endsWith(".malloy") ||
+      !isReportEligiblePath(modelPath) ||
+      !mayCarryArtifactTag(text)
+   )
+      return [];
    let parse;
    try {
       parse = translateToParse(text).parse;
@@ -104,34 +128,14 @@ export function lintNotebookText(
    const map = codePointMap(text);
    const tokenText = (token: ParseToken) =>
       text.slice(map[token.startIndex], map[token.stopIndex + 1]);
-   // The artifact tag decides what the file is; the folder only when the tag names no kind.
-   let tagKind: string | undefined;
-   let hasTiles = false;
-   for (let i = 0; i < tokens.length; i++) {
-      const name = symbolOf(tokens[i]);
-      if (name !== "DOC_ANNOTATION" && name !== "DOC_BLOCK_ANNOTATION_BEGIN")
-         continue;
-      let note = tokenText(tokens[i]);
-      for (
-         let j = i + 1;
-         name === "DOC_BLOCK_ANNOTATION_BEGIN" &&
-         j < tokens.length &&
-         symbolOf(tokens[j]) === "BLOCK_ANNOTATION_TEXT";
-         j++
-      )
-         note += tokenText(tokens[j]);
-      if (!isArtifactNoteText(note)) continue;
-      const tag = motlyTag([note])?.tag("artifact");
-      tagKind = tagText(tag, "kind");
-      // A tag that does not parse still says `tiles=`, and the layout lint explains its parse error.
-      hasTiles = (tag?.has("tiles") ?? false) || /\btiles\s*=/.test(note);
-      break;
-   }
-   const kind = documentKind(modelPath, tagKind);
-   // The cell format only: a notebook written as tiles is read and linted like a dashboard.
-   const inNotebooks = kind === "notebook" && !hasTiles;
-   const layoutNotebook = kind === "notebook" && hasTiles;
-   const page = kind === "notebook" ? "notebook" : "dashboard";
+   // The artifact tag decides what the file is and which layout it has
+   // (`report.ts`), read by the same reader discovery uses.
+   const tagNotes = modelNotesOfParse(parse, text);
+   const tag = readReportTag(tagNotes);
+   if (tag.status === "none") return [];
+   // A linear report lists its tiles (`report.ts`), so it is read and linted like a grid one.
+   const linear = tag.status === "report" && tag.layout === "linear";
+   const page = linear ? "notebook" : "dashboard";
    const nodeText = (node: ParseNode) =>
       node.start && node.stop
          ? text.slice(map[node.start.startIndex], map[node.stop.stopIndex + 1])
@@ -157,16 +161,13 @@ export function lintNotebookText(
    for (let i = 0; i < (root.childCount ?? 0); i++)
       children.push(root.getChild(i));
 
-   let artifact: { text: string; line: number; startIndex: number } | undefined;
+   let artifact: { text: string; line: number } | undefined;
    let givensEnabled = false;
    let firstGiven: number | undefined;
-   const spans: [number, number][] = [];
    let closerLine: number | undefined;
-   // What sits above the artifact tag that only the header may hold, judged once the tag is found.
-   const aboveArtifact: { line: number; code: string; what: string }[] = [];
    const modelNotes: string[] = [];
    const docNotes: { line: number; text: string }[] = [];
-   children.forEach((child, index) => {
+   children.forEach((child) => {
       if (!isRuleNode(child)) {
          const token = child?.symbol;
          const name = token ? symbolOf(token) : undefined;
@@ -182,8 +183,6 @@ export function lintNotebookText(
          return;
       }
       closerLine = undefined;
-      if (child.start && child.stop)
-         spans.push([child.start.startIndex, child.stop.stopIndex]);
       const group = callAccessor(child, "docAnnotations") as
          | ParseNode
          | undefined;
@@ -192,10 +191,8 @@ export function lintNotebookText(
             []) as ParseNode[];
          for (const note of notes) {
             const noteText = nodeText(note);
-            const route = routeOfNote(noteText);
-            const first = noteText.split("\n", 1)[0];
             // A block note ends at its closer, which is not part of the tag text.
-            const bodyText = noteText.replace(/\r?\n\|##[^\n]*\n?$/, "");
+            const bodyText = modelNoteBody(noteText);
             modelNotes.push(bodyText);
             if (/^##!\s*experimental\b[\s\S]*\bgivens\b/.test(noteText))
                givensEnabled = true;
@@ -204,26 +201,7 @@ export function lintNotebookText(
                artifact = {
                   text: bodyText,
                   line: lineOfNode(note),
-                  startIndex: note.start.startIndex,
                };
-            } else if (!artifact && inNotebooks) {
-               if (route === MARKDOWN_ROUTE || route === "text") {
-                  aboveArtifact.push({
-                     line: lineOfNode(note),
-                     code: "notebook-markdown-above-artifact",
-                     what: quoted(first),
-                  });
-                  // Flags and the `"` route (a description) may sit in the header.
-               } else if (
-                  !/^##!/.test(noteText) &&
-                  !/^#{1,2}\|?"/.test(noteText)
-               ) {
-                  aboveArtifact.push({
-                     line: lineOfNode(note),
-                     code: "notebook-tag-above-artifact",
-                     what: quoted(first),
-                  });
-               }
             }
          }
          const last = notes[notes.length - 1];
@@ -235,7 +213,7 @@ export function lintNotebookText(
       if (callAccessor(child, "defineGivenStatement")) {
          firstGiven ??= keywordLine(child, "GIVEN");
       }
-      if (layoutNotebook && callAccessor(child, "runStatement")) {
+      if (linear && callAccessor(child, "runStatement")) {
          const line = keywordLine(child, "RUN");
          add(
             line,
@@ -249,54 +227,17 @@ export function lintNotebookText(
             add(
                note.line,
                "notebook-markdown-attached-nowhere",
-               `\`${quoted(note.text)}\` annotates no statement, since what follows it (the end of the file, an import or export, or a \`##\` model-level note) takes no annotation. Fix: ${inNotebooks ? attachedNowhereFix(/^#\|/.test(note.text)) : `${tileEntryFix("name")}, with the text as its body, or delete it.`}`,
+               `\`${quoted(note.text)}\` annotates no statement, since what follows it (the end of the file, an import or export, or a \`##\` model-level note) takes no annotation. Fix: ${tileEntryFix("name")}, with the text as its body, or delete it.`,
                "error",
             );
          }
-         if (inNotebooks && notes.some((n) => !isMarkdownNote(n.text))) {
-            const next = children[index + 1];
-            const nextRun = children
-               .slice(index + 1)
-               .find((sibling) => callAccessor(sibling, "runStatement"));
-            add(
-               lineOfNode(child),
-               "notebook-orphaned-tag",
-               `this # tag is followed by ${describeNext(next)}, not by a run:, so it annotates nothing. Render tags sit directly above their run:. Fix: move the tag, and any #" caption, directly above ${nextRun ? `the run: on line ${keywordLine(nextRun, "RUN")}` : "its run:"}.`,
-            );
-         }
-      } else if (inNotebooks && !artifact) {
-         for (const note of leadingNotes(child).filter((n) =>
-            isMarkdownNote(n.text),
-         )) {
-            aboveArtifact.push({
-               line: note.line,
-               code: "notebook-markdown-above-artifact",
-               what: quoted(note.text),
-            });
-         }
-         const first = firstCodeToken(child);
-         aboveArtifact.push({
-            line: first?.line ?? lineOfNode(child),
-            code: "notebook-statement-above-artifact",
-            what: quoted(
-               first
-                  ? text.slice(map[first.startIndex]).split(/\r?\n/, 1)[0]
-                  : nodeText(child).split("\n", 1)[0],
-            ),
-         });
       }
    });
 
-   // A query-level `# artifact` also makes a dashboard, so only a file with neither tag is a helper.
-   const queryLevelArtifact =
-      !inNotebooks &&
-      (tokens as ParseToken[]).some(
-         (token) =>
-            symbolOf(token) !== "DOC_ANNOTATION" &&
-            /^#\s*artifact\b/.test(tokenText(token)),
-      );
-   // A helper model's lines would only be noise to quote.
-   if (!artifact && !queryLevelArtifact) return [];
+   if (!artifact) return [];
+   // A tag that makes no report is reported alone: what the rest of the lint
+   // would say depends on a layout the file does not have.
+   if (tag.status !== "report") return [tagFinding(artifact)];
    const belowTag = (line: number) =>
       artifact !== undefined && line > artifact.line;
    // Where a statement's own leading notes sit: the only place a `(markdown)` note is read.
@@ -307,14 +248,6 @@ export function lintNotebookText(
             leadingNoteLines.add(note.line);
    lintBlocks();
    lintHeadings();
-   for (const { line, code, what } of aboveArtifact) {
-      add(
-         line,
-         code,
-         `\`${what}\` sits above the \`## artifact\` tag, and only \`##!\` flags, \`//\` comments and \`"\` notes may. Fix: move it below the artifact tag.`,
-         "error",
-      );
-   }
 
    if (firstGiven !== undefined && !givensEnabled) {
       add(
@@ -324,61 +257,11 @@ export function lintNotebookText(
       );
    }
 
-   if (artifact) lintArtifact(artifact);
-   if (artifact && !inNotebooks) lintUnreferencedMarkdownBlocks(artifact);
-   if (artifact && !inNotebooks) lintDescriptionBelow(artifact.line);
-
-   if (inNotebooks && artifact) lintComments(artifact.startIndex);
+   lintArtifact(artifact);
+   lintUnreferencedMarkdownBlocks(artifact);
+   lintDescriptionBelow(artifact.line);
 
    return findings.sort((a, b) => a.line - b.line);
-
-   /** Comments no cell holds, when they sit directly above the cell they read as describing. */
-   function lintComments(from: number): void {
-      const all = tokens as ParseToken[];
-      const isComment = (t: ParseToken) =>
-         t.channel !== 0 && /COMMENT/.test(symbolOf(t) ?? "");
-      const endLine = (t: ParseToken) =>
-         t.line +
-         (tokenText(t)
-            .replace(/[\r\n]+$/, "")
-            .match(/\n/g)?.length ?? 0);
-      // A prose note is a cell of its own, so a comment above one is not describing a statement or tag.
-      const isNoteToken = (t: ParseToken) =>
-         children.some(
-            (c) =>
-               c.start !== undefined &&
-               c.stop !== undefined &&
-               t.startIndex >= c.start.startIndex &&
-               t.stopIndex <= c.stop.stopIndex &&
-               callAccessor(c, "docAnnotations") !== undefined,
-         );
-      const attached: boolean[] = [];
-      for (let i = all.length - 1; i >= 0; i--) {
-         const next = all[i + 1];
-         attached[i] =
-            next !== undefined &&
-            symbolOf(next) !== "EOF" &&
-            next.line === endLine(all[i]) + 1 &&
-            (isComment(next) ? attached[i + 1] : !isNoteToken(next));
-      }
-      all.forEach((token, i) => {
-         if (!isComment(token) || token.startIndex < from) return;
-         if (!attached[i]) return;
-         const before = all[i - 1];
-         if (before && endLine(before) === token.line) return;
-         if (
-            spans.some(
-               ([lo, hi]) => token.startIndex >= lo && token.stopIndex <= hi,
-            )
-         )
-            return;
-         add(
-            token.line,
-            "notebook-comment-not-shown",
-            "this comment sits directly above a cell but is not part of it, so the notebook does not show it. Fix: write it as a `##(markdown)` prose note, or move it inside the statement it describes.",
-         );
-      });
-   }
 
    /** The `#` notes a statement opens with, up to its first token that is not one; a block's is its opener line. */
    function leadingNotes(node: ParseNode): { text: string; line: number }[] {
@@ -402,32 +285,6 @@ export function lintNotebookText(
             break;
       }
       return notes;
-   }
-
-   function describeNext(next: ParseNode | undefined): string {
-      if (!next) return "the end of the file";
-      if (!isRuleNode(next)) {
-         const token = next.symbol;
-         return !token || symbolOf(token) === "EOF"
-            ? "the end of the file"
-            : `\`${tokenText(token)}\``;
-      }
-      if (callAccessor(next, "docAnnotations")) return "a note";
-      const first = nodeText(next).trim().split("\n")[0].slice(0, 40);
-      return `\`${first}\``;
-   }
-
-   /** The first token of a statement that is code, not one of the tag lines above it. */
-   function firstCodeToken(node: ParseNode): ParseToken | undefined {
-      const from = node.start?.startIndex ?? 0;
-      const to = node.stop?.stopIndex ?? -1;
-      return tokens?.find(
-         (t) =>
-            t.channel === 0 &&
-            t.startIndex >= from &&
-            t.stopIndex <= to &&
-            !/ANNOTATION/.test(symbolOf(t) ?? ""),
-      );
    }
 
    /** The line of a statement's keyword, which is below its tag lines. */
@@ -457,9 +314,7 @@ export function lintNotebookText(
          if (/^##"\S/.test(line)) {
             const rest = quoted(line).slice(3);
             const fix = belowTag(token.line)
-               ? inNotebooks
-                  ? `Did you mean \`##(markdown) ${rest}\`?`
-                  : `Fix: ${tileEntryFix("name")}, with the text as its body.`
+               ? `Fix: ${tileEntryFix("name")}, with the text as its body.`
                : `Did you mean \`##" ${rest}\`?`;
             add(
                token.line,
@@ -469,9 +324,7 @@ export function lintNotebookText(
             continue;
          }
          if (/^##\(markdown\)\S/.test(line)) {
-            const fix = inNotebooks
-               ? `Did you mean \`##(markdown) ${quoted(line).slice(12)}\`?${placement("##", token.line)}`
-               : `Fix: ${tileEntryFix("name")}, with the text as its body.`;
+            const fix = `Fix: ${tileEntryFix("name")}, with the text as its body.`;
             add(
                token.line,
                "notebook-block-opener-spacing",
@@ -486,18 +339,11 @@ export function lintNotebookText(
             add(
                token.line,
                "notebook-markdown-opener",
-               `\`${quoted(line)}\` is not on the \`(markdown)\` route, so it is not shown as prose. ${
-                  inNotebooks
-                     ? `Did you mean \`##(markdown)\`?${placement("##", token.line)}`
-                     : `Fix: ${tileEntryFix("name")}, with the text as its body.`
-               }`,
+               `\`${quoted(line)}\` is not on the \`(markdown)\` route, so it is not shown as prose. Fix: ${tileEntryFix("name")}, with the text as its body.`,
             );
             continue;
          }
-         if (
-            !inNotebooks &&
-            (isMarkdownNote(line) || routeOfNote(line) === "text")
-         ) {
+         if (isMarkdownNote(line) || routeOfNote(line) === "text") {
             add(
                token.line,
                "notebook-markdown-block-unnamed",
@@ -513,9 +359,7 @@ export function lintNotebookText(
          ) {
             const fix = !belowTag(token.line)
                ? 'Did you mean `##"`?'
-               : inNotebooks
-                 ? "Did you mean `##(markdown)`?"
-                 : `Fix: ${tileEntryFix("name")}, with the text as its body.`;
+               : `Fix: ${tileEntryFix("name")}, with the text as its body.`;
             add(
                token.line,
                "notebook-heading-line",
@@ -557,21 +401,13 @@ export function lintNotebookText(
    }
 
    function nestedMarkdownMessage(note: string): string {
-      return `\`${quoted(note)}\` sits inside a statement, where nothing reads a \`(markdown)\` note, so it is not shown. Fix: ${
-         inNotebooks
-            ? "move it above the statement it describes"
-            : `a ${page} reads no attached note, so ${tileEntryFix("name")}, with the text as its body, or delete it`
-      }.`;
+      return `\`${quoted(note)}\` sits inside a statement, where nothing reads a \`(markdown)\` note, so it is not shown. Fix: a ${page} reads no attached note, so ${tileEntryFix("name")}, with the text as its body, or delete it.`;
    }
 
    /** What else applies to a `(markdown)` spelling fix where the note sits, since a note is read only in its own place. */
    function placement(sigil: "#" | "##", line: number): string {
       if (sigil === "#" && !leadingNoteLines.has(line))
-         return inNotebooks
-            ? " It also sits inside a statement, where nothing reads a `(markdown)` note, so move it above the statement it describes."
-            : " It also sits inside a statement, and a dashboard reads no attached note, so use a text tile or delete it.";
-      if (sigil === "##" && inNotebooks && !belowTag(line))
-         return " It also sits above the `## artifact` tag, where a `(markdown)` note is not read, so put it below the tag.";
+         return " It also sits inside a statement, and a dashboard reads no attached note, so use a text tile or delete it.";
       return "";
    }
 
@@ -595,14 +431,11 @@ export function lintNotebookText(
          const spelled = `(${markdown?.route})`;
          // Only a top-level statement's leading notes are read; a note nested in a statement is not.
          const topLevel = sigil === "##" || leadingNoteLines.has(line);
-         const dashboardTile = sigil === "##" && !inNotebooks;
+         const dashboardTile = sigil === "##";
          const glued = /^("|\(markdown\))(\S.*)$/.exec(rest);
          if (glued) {
             const [, glueRoute, after] = glued;
-            // A `"` block is a description above a notebook's tag and in a dashboard, a cell below it.
-            const description =
-               glueRoute === '"' &&
-               (sigil === "#" || !inNotebooks || !belowTag(line));
+            const description = glueRoute === '"';
             // A dashboard's description below its tag is read only when nothing sits above it, so a text tile is the safe fix.
             const asTile =
                dashboardTile && (glueRoute !== '"' || belowTag(line));
@@ -642,11 +475,11 @@ export function lintNotebookText(
                   `\`${quoted(markdown.rest)}\` follows \`${sigil}|${spelled}\` on its opener line, where only one bare word may go (a name), so the block would show it as its first line. Fix: ${dashboardTile ? tileBlockFix("name", markdown.rest) : "move it into the body, on the line below the opener"}.${placement(sigil, line)}`,
                   "error",
                );
-            } else if (markdown.name && (sigil === "#" || inNotebooks)) {
+            } else if (markdown.name && sigil === "#") {
                add(
                   line,
                   "notebook-markdown-block-named",
-                  `the name \`${markdown.name}\` on this \`${spelled}\` block means nothing ${sigil === "#" ? "on a block attached to a statement" : "in a notebook, which shows every block as a cell"}, and it is not shown. Fix: remove the name.`,
+                  `the name \`${markdown.name}\` on this \`${spelled}\` block means nothing on a block attached to a statement, and it is not shown. Fix: remove the name.`,
                );
             } else if (!markdown.name && dashboardTile) {
                add(
@@ -659,7 +492,7 @@ export function lintNotebookText(
             add(
                line,
                "notebook-markdown-opener",
-               `\`${opener.trim()}\` opens a block that is not on the \`(markdown)\` route, so its body is not ${sigil === "#" ? "the statement's prose" : inNotebooks ? "a markdown cell" : "a text tile"}. ${dashboardTile ? `Fix: ${tileEntryFix("name")}.` : `Did you mean \`${sigil}|(markdown)\`?${placement(sigil, line)}`}`,
+               `\`${opener.trim()}\` opens a block that is not on the \`(markdown)\` route, so its body is not ${sigil === "#" ? "the statement's prose" : "a text tile"}. ${dashboardTile ? `Fix: ${tileEntryFix("name")}.` : `Did you mean \`${sigil}|(markdown)\`?${placement(sigil, line)}`}`,
             );
          }
          let j = i + 1;
@@ -705,9 +538,7 @@ export function lintNotebookText(
                   ? ""
                   : !belowTag(end.line)
                     ? 'on its own `##"` line, or '
-                    : inNotebooks
-                      ? "on its own `##(markdown)` line, or "
-                      : `in its own text tile (${tileEntryFix("name")}), or `;
+                    : `in its own text tile (${tileEntryFix("name")}), or `;
             add(
                end.line,
                "notebook-text-after-closer",
@@ -731,6 +562,59 @@ export function lintNotebookText(
          "notebook-description-below-artifact",
          `this \`"\` note below \`## artifact\` is the ${page}'s description only because nothing sits above the tag. Fix: move it above \`## artifact\`.`,
       );
+   }
+
+   /** The layout half of the tag (`report.ts`, §2): `layout=` is the spelling. */
+   function lintLayout(line: number, declaredLayout: string | undefined): void {
+      if (
+         declaredLayout !== undefined &&
+         declaredLayout !== "grid" &&
+         declaredLayout !== "linear"
+      ) {
+         add(
+            line,
+            LAYOUT_UNKNOWN,
+            `\`layout=${declaredLayout}\` is not a layout Publisher knows (grid, linear), so the tag's other properties decide it. Fix: write \`layout=grid\` or \`layout=linear\`.`,
+            "error",
+         );
+      }
+   }
+
+   /**
+    * The one finding for a tag that makes no report: it does not parse, it sets
+    * the removed `kind=`, or it is a linear report written as `run:` cells.
+    */
+   function tagFinding(tagNote: {
+      text: string;
+      line: number;
+   }): NotebookLintFinding {
+      const [code, message] = tagFindingText(tagNote.text);
+      return {
+         line: tagNote.line,
+         code,
+         severity: "error",
+         message: `Line ${tagNote.line}: ${message}`,
+      };
+   }
+
+   function tagFindingText(tagText: string): [code: string, message: string] {
+      if (tag.status === "kind-removed")
+         return [
+            "report-kind-removed",
+            `\`kind=${tag.kind}\` is no longer read, so this file is not a report. Fix: remove \`kind=${tag.kind}\` and write \`layout=grid\` or \`layout=linear\`.`,
+         ];
+      if (tag.status === "cells-removed")
+         return tag.unknownLayout !== undefined
+            ? [
+                 LAYOUT_UNKNOWN,
+                 `\`layout=${tag.unknownLayout}\` is not a layout Publisher knows (grid, linear), and the tag lists no tiles, so this file is not a report. Fix: write \`layout=grid\` or \`layout=linear\`, and list the tiles in \`tiles=[…]\`.`,
+              ]
+            : [CELLS_REMOVED, CELLS_REMOVED_MESSAGE];
+      const [parseError] = motlyParseErrors([tagText]);
+      return [
+         "notebook-artifact-unparsed",
+         `the \`## artifact\` tag does not parse${parseError !== undefined ? ` (${parseError})` : ""}, so its properties are not read and this file is not a report. ${/\btiles\s*=/.test(tagText) ? TILE_ENTRY_FIX : "Fix: correct the tag so it parses."}`,
+      ];
    }
 
    /** A `(markdown)` block is a tile only when `tiles` names it with `{ kind=text }`. */
@@ -763,55 +647,16 @@ export function lintNotebookText(
          add(
             tagNote.line,
             "notebook-artifact-unparsed",
-            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${/\btiles\s*=/.test(tagNote.text) ? TILE_ENTRY_FIX : inNotebooks ? ARTIFACT_KIND_FIX : "Fix: correct the tag so it parses."}`,
+            `the \`## artifact\` tag does not parse (${parseError}), so its properties are not read. ${/\btiles\s*=/.test(tagNote.text) ? TILE_ENTRY_FIX : "Fix: correct the tag so it parses."}`,
             "error",
          );
          return;
       }
       const tag = motlyTag([tagNote.text])?.tag("artifact");
       if (!tag) return;
-      const declared = tagText(tag, "kind");
       const properties = Object.keys(tag.dict ?? {});
-      const home = kind === "notebook" ? NOTEBOOKS_DIR : DASHBOARDS_DIR;
-      if (!modelPath.startsWith(`${home}/`)) {
-         add(
-            tagNote.line,
-            "notebook-other-folder",
-            `this ${kind} is served from ${modelPath.split("/")[0]}/, where the other kind is created. It works either way. Fix: move it to ${home}/ if you want folders to match kinds.`,
-         );
-      }
-      if (inNotebooks) {
-         if (declared === undefined) {
-            add(
-               tagNote.line,
-               "notebook-kind-missing",
-               `this notebook's artifact tag has no \`kind\`. ${ARTIFACT_KIND_FIX}`,
-            );
-         } else if (declared !== "notebook") {
-            add(
-               tagNote.line,
-               "notebook-kind-unknown",
-               KNOWN_KINDS.includes(declared)
-                  ? `\`kind=${declared}\` is not a notebook kind. ${ARTIFACT_KIND_FIX}`
-                  : `\`kind=${declared}\` is not a kind Publisher knows (dashboard, notebook). ${ARTIFACT_KIND_FIX}`,
-            );
-         }
-         return;
-      }
-      if (declared === "text") {
-         add(
-            tagNote.line,
-            "notebook-kind-text-on-dashboard",
-            "`kind=text` marks a tile entry, so it does not mark this document. Fix: remove `kind`, or write `kind=dashboard` or `kind=notebook`.",
-         );
-      } else if (declared !== undefined && !KNOWN_KINDS.includes(declared)) {
-         add(
-            tagNote.line,
-            "notebook-kind-unknown",
-            `\`kind=${declared}\` is not a kind Publisher knows (dashboard, notebook). Fix: remove \`kind\`.`,
-         );
-      }
-      if (layoutNotebook) {
+      lintLayout(tagNote.line, tagText(tag, "layout"));
+      if (linear) {
          for (const entry of tag.array("tiles") ?? []) {
             const ignored = ["colspan", "break"].filter((p) => entry.has(p));
             if (ignored.length === 0) continue;
@@ -823,7 +668,7 @@ export function lintNotebookText(
          }
       }
       const columns = motlyTag(modelNotes)?.tag("dashboard");
-      if (layoutNotebook && columns?.has("columns")) {
+      if (linear && columns?.has("columns")) {
          const width = tagNumeric(columns, "columns");
          if (width !== 1) {
             add(
@@ -833,7 +678,7 @@ export function lintNotebookText(
             );
          }
       }
-      // A single query has no grid, and dashboard.ts already says so.
+      // A single query has no grid, and report_manifest.ts already says so.
       if (
          properties.includes("dashboard_columns") &&
          properties.includes("tiles")
@@ -870,9 +715,9 @@ export function lintNotebookText(
  * the same file, in its own words: an `## artifact` tag that does not parse. A
  * caller that runs both lints drops this copy, so the file is reported once.
  *
- * Decided by what the dashboard lint actually reported, not by the folder. A
- * `dashboards/` file that did not compile, or whose tag makes it a notebook,
- * gets no dashboard finding, and the notebook lint's is then the only one.
+ * Decided by what the dashboard lint actually reported: a file that did not
+ * compile gets no dashboard finding, and the notebook lint's is then the only
+ * one.
  */
 export function reportedByDashboardLint(
    finding: { code?: string },
@@ -884,7 +729,7 @@ export function reportedByDashboardLint(
       dashboardFindings.some(
          (f) =>
             f.model === modelPath &&
-            isUnparsedDashboardTagFinding(f.message ?? ""),
+            isUnparsedReportTagFinding(f.message ?? ""),
       )
    );
 }

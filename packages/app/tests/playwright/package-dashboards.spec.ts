@@ -4,11 +4,17 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+   closeFilter,
+   expectFilterValue,
+   filterButton,
+   openFilter,
+} from "./helpers/filters";
 import { tmpName } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
 
 /**
- * The dashboard viewer, end to end in a browser: the Artifacts section on the
+ * The dashboard viewer, end to end in a browser: the Reports section on the
  * package page, the control row the manifest's given specs produce, URL-carried
  * filter state, Apply mode, and the composite tile grid.
  *
@@ -24,6 +30,17 @@ const FIXTURE = path.resolve(
    "../../../server/tests/fixtures/dashboards-test",
 );
 const PKG = "dashboards-test";
+/**
+ * Linear `.malloy` reports beside copies of the orders model, its givens and
+ * the two dashboards its drills name: Apply batching, starting givens, and
+ * drill from a `run:` cell. A package of its own, so the dashboards-test
+ * listings other specs pin stay as they are.
+ */
+const LINEAR_FIXTURE = path.resolve(
+   __dirname,
+   "../../../server/tests/fixtures/linear-reports-ui",
+);
+const LINEAR_PKG = "linear-reports-ui";
 
 let env: string;
 let baseURL: string;
@@ -40,7 +57,10 @@ test.describe("package-dashboards", () => {
          headers: { "Content-Type": "application/json" },
          body: JSON.stringify({
             name: env,
-            packages: [{ name: PKG, location: FIXTURE }],
+            packages: [
+               { name: PKG, location: FIXTURE },
+               { name: LINEAR_PKG, location: LINEAR_FIXTURE },
+            ],
             connections: [],
          }),
       });
@@ -70,7 +90,7 @@ test.describe("package-dashboards", () => {
       await openPackage(page, env, PKG);
 
       await expect(
-         page.getByRole("heading", { name: "Artifacts", level: 6 }),
+         page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(
          page.getByRole("heading", { name: "Dashboards", exact: true }),
@@ -79,7 +99,10 @@ test.describe("package-dashboards", () => {
          page.getByRole("heading", { name: "Notebooks", exact: true }),
       ).toHaveCount(0);
       // One list: a dashboard row and a notebook row, each once, by name.
-      const artifacts = page.getByRole("region", { name: "Artifacts" });
+      const artifacts = page.getByRole("region", {
+         name: "Reports",
+         exact: true,
+      });
       await expect(
          artifacts.getByRole("button", { name: /Business Overview/ }),
       ).toHaveCount(1);
@@ -87,16 +110,21 @@ test.describe("package-dashboards", () => {
          artifacts.getByRole("button", { name: /Orders in a window/ }),
       ).toHaveCount(1);
       await expect(
-         artifacts.getByRole("button", { name: "New", exact: true }),
+         artifacts.getByRole("button", { name: "Add report", exact: true }),
       ).toBeVisible();
       await expect(
          page.getByRole("button", { name: /Business Overview/ }),
       ).toBeVisible();
 
-      // A dashboard belongs in the Dashboards section, not a second time under
-      // Semantic Models where clicking it would open the Explorer instead.
+      // A report belongs in the Reports section, not a second time under
+      // Models where clicking it would open the Explorer instead. (Its
+      // row in Reports shows the path, so the check is scoped to the models.)
+      const models = page.getByRole("region", { name: "Models", exact: true });
       await expect(
-         page.getByRole("button", { name: /dashboards\/overview\.malloy/ }),
+         models.getByRole("button", { name: /dashboards\/_shared\.malloy/ }),
+      ).toBeVisible();
+      await expect(
+         models.getByRole("button", { name: /dashboards\/overview\.malloy/ }),
       ).toHaveCount(0);
       // An untagged include in dashboards/ is not a dashboard and stays a model.
       await expect(
@@ -109,41 +137,12 @@ test.describe("package-dashboards", () => {
       );
    });
 
-   test("lists notebooks by title, the way it lists dashboards", async ({
-      page,
-   }) => {
-      await gotoHome(page);
-      await openEnvironment(page, env);
-      await openPackage(page, env, PKG);
-
-      await expect(
-         page.getByRole("heading", { name: "Artifacts", level: 6 }),
-      ).toBeVisible({ timeout: 60_000 });
-
-      // An explicit `## title=`, and a title read from the first markdown
-      // heading. Both rows keep the filename as the secondary label, so the
-      // path a reader needs in order to find the file is never lost.
-      const titled = page.getByRole("button", {
-         name: /Orders in a window/,
-      });
-      await expect(titled).toBeVisible();
-      await expect(titled).toContainText("orders-since.malloynb");
-      await expect(page.getByRole("button", { name: /Brands/ })).toContainText(
-         "brands.malloynb",
-      );
-
-      await titled.click();
-      await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/orders-since.malloynb$`),
-      );
-   });
-
    test("both lists are ordered by the name they show", async ({ page }) => {
       await gotoHome(page);
       await openEnvironment(page, env);
       await openPackage(page, env, PKG);
       await expect(
-         page.getByRole("heading", { name: "Artifacts", level: 6 }),
+         page.getByRole("heading", { name: "Reports", level: 6, exact: true }),
       ).toBeVisible({ timeout: 60_000 });
 
       // Polled rather than snapshotted once: the rows arrive after the section
@@ -202,21 +201,25 @@ test.describe("package-dashboards", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(page.getByText("Order health at a glance.")).toBeVisible();
 
-      // `control=select` becomes a combobox, labelled by `# label=` rather than
-      // by the given's name.
-      await expect(page.getByRole("combobox", { name: "Brand" })).toBeVisible();
-      // `range_min`/`range_max` become a two-handled range slider, and no
+      // One button per filter, named by `# label=` rather than by the given's
+      // name. `control=select` opens a combobox.
+      const brand = await openFilter(page, "Brand");
+      await expect(
+         brand.getByRole("combobox", { name: "Brand" }),
+      ).toBeVisible();
+      await closeFilter(page);
+      // `range_min`/`range_max` open a two-handled range slider, and no
       // control appears for the givens this dashboard's query does not
       // reference.
+      const amount = await openFilter(page, "Minimum amount");
       await expect(
-         page.getByRole("slider", { name: "Minimum amount from" }),
+         amount.getByRole("slider", { name: "Minimum amount from" }),
       ).toBeVisible();
       await expect(
-         page.getByRole("slider", { name: "Minimum amount to" }),
+         amount.getByRole("slider", { name: "Minimum amount to" }),
       ).toBeVisible();
-      await expect(page.getByRole("combobox", { name: "Region" })).toHaveCount(
-         0,
-      );
+      await closeFilter(page);
+      await expect(filterButton(page, "Region")).toHaveCount(0);
 
       await expect(page.locator("canvas, svg, table").first()).toBeVisible({
          timeout: 30_000,
@@ -228,9 +231,8 @@ test.describe("package-dashboards", () => {
    }) => {
       await openDashboard(page, "overview");
 
-      const brand = page.getByRole("combobox", { name: "Brand" });
-      await expect(brand).toBeVisible({ timeout: 30_000 });
-      await brand.click();
+      const filter = await openFilter(page, "Brand");
+      await filter.getByRole("combobox", { name: "Brand" }).click();
 
       // Options come from `suggest { source=orders dimension=brand }`, run
       // through the ordinary query endpoint.
@@ -244,10 +246,7 @@ test.describe("package-dashboards", () => {
 
       // And that link restores the control on a cold load.
       await page.goto(`/${env}/${PKG}/dashboards/overview?BRAND=Nike`);
-      await expect(page.getByRole("combobox", { name: "Brand" })).toHaveValue(
-         "Nike",
-         { timeout: 30_000 },
-      );
+      await expectFilterValue(page, "Brand", "Nike");
    });
 
    test("an unrelated query parameter survives load and a control change", async ({
@@ -270,8 +269,8 @@ test.describe("package-dashboards", () => {
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
 
       // And it still survives once a control writes to the query string.
-      const brand = page.getByRole("combobox", { name: "Brand" });
-      await brand.click();
+      const filter = await openFilter(page, "Brand");
+      await filter.getByRole("combobox", { name: "Brand" }).click();
       await page.getByRole("option", { name: "Levi's" }).click({
          timeout: 30_000,
       });
@@ -295,11 +294,8 @@ test.describe("package-dashboards", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
 
-      const brand = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Brand" }),
-      });
-      await brand.hover();
-      await brand.getByRole("button", { name: "Clear" }).click();
+      // A set filter's button carries its own clear (×).
+      await page.getByRole("button", { name: "Clear Brand" }).click();
 
       // Its own parameter goes...
       await expect(page).not.toHaveURL(/[?&]BRAND=/);
@@ -315,10 +311,11 @@ test.describe("package-dashboards", () => {
       // had no test until a mutation sweep pointed out that both select tests
       // click the control directly and would pass with the arrow gone.
       await openDashboard(page, "overview");
-      const brand = page.locator(".MuiAutocomplete-root", {
+      const filter = await openFilter(page, "Brand");
+      const brand = filter.locator(".MuiAutocomplete-root", {
          has: page.getByRole("combobox", { name: "Brand" }),
       });
-      await expect(brand).toBeVisible({ timeout: 30_000 });
+      await expect(brand).toBeVisible();
       await expect(
          brand.locator(".MuiAutocomplete-popupIndicator"),
       ).toHaveCount(1);
@@ -333,15 +330,9 @@ test.describe("package-dashboards", () => {
          page.getByRole("heading", { name: "Orders by region" }),
       ).toBeVisible({ timeout: 30_000 });
 
-      // `# artifact { givens { REGION=f'US' } }` is where the control starts.
-      // A multiselect holds its selection as chips, so the input itself stays
-      // empty and the chip is what to look for.
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("US", { exact: true })).toBeVisible({
-         timeout: 30_000,
-      });
+      // `# artifact { givens { REGION=f'US' } }` is where the control starts,
+      // and the filter's button says so.
+      await expectFilterValue(page, "Region", "US");
 
       // Nothing to apply until something changes.
       const applyButton = page.getByRole("button", { name: "Apply" });
@@ -352,9 +343,8 @@ test.describe("package-dashboards", () => {
    test("a multiselect keeps its list open across picks", async ({ page }) => {
       await openDashboard(page, "regions");
 
-      const region = page.getByRole("combobox", { name: "Region" });
-      await expect(region).toBeVisible({ timeout: 30_000 });
-      await region.click();
+      const filter = await openFilter(page, "Region");
+      await filter.getByRole("combobox", { name: "Region" }).click();
       const options = page.getByRole("option");
       await expect(options.first()).toBeVisible({ timeout: 30_000 });
       const offered = await options.count();
@@ -366,7 +356,7 @@ test.describe("package-dashboards", () => {
       await expect(page.getByRole("option")).toHaveCount(offered);
    });
 
-   test("a composite dashboard renders one panel per tile", async ({
+   test("a grid report spanning views renders one panel per tile, with the union of their controls", async ({
       page,
    }) => {
       await openDashboard(page, "combined");
@@ -377,10 +367,8 @@ test.describe("package-dashboards", () => {
 
       // The control row is the union across tiles; `orders -> totals`
       // references nothing and so contributes none.
-      await expect(page.getByRole("combobox", { name: "Brand" })).toBeVisible();
-      await expect(
-         page.getByRole("combobox", { name: "Region" }),
-      ).toBeVisible();
+      await expect(filterButton(page, "Brand")).toBeVisible();
+      await expect(filterButton(page, "Region")).toBeVisible();
 
       // One panel per tile, headed by the humanized view name rather than the
       // run expression from `tiles=[…]`, which stays as the heading's tooltip.
@@ -398,10 +386,10 @@ test.describe("package-dashboards", () => {
    test("the grid lines up: two rows of two, each pair equal and flush", async ({
       page,
    }) => {
-      await openDashboard(page, "grid");
-      await expect(page.getByRole("heading", { name: "Grid" })).toBeVisible({
-         timeout: 30_000,
-      });
+      await openDashboard(page, "tiled");
+      await expect(
+         page.getByRole("heading", { name: "Tiled", level: 1 }),
+      ).toBeVisible({ timeout: 30_000 });
 
       // Cards and tiles are the same kind of grid item, which is the point: two
       // cards at 6 and two tiles at 6 have to come out as two rows that end in
@@ -415,7 +403,7 @@ test.describe("package-dashboards", () => {
       // its own. That is the documented rule ("a break is for interrupting a row
       // that would otherwise be shared"), so pinning the break needs a fixture
       // whose first row does not fill, which this one deliberately is not.
-      const items = page.locator(".dashboard-item");
+      const items = page.locator(".MuiPaper-root:has(.malloy-render)");
 
       // Retried as a block, because waiting for the four items to EXIST is not
       // waiting for them to be laid out. The grid items are in the DOM before
@@ -579,7 +567,7 @@ test.describe("package-dashboards", () => {
    // The affordance, which is what tells a reader a cell does anything at all.
    // Asserted on both surfaces because a drill's whole premise is that the tag
    // is declared once on a dimension and behaves the same wherever it is
-   // grouped: a notebook cell that navigates but doesn't say so is the same
+   // grouped: a report cell that navigates but doesn't say so is the same
    // feature only in principle.
    for (const surface of [
       {
@@ -592,11 +580,11 @@ test.describe("package-dashboards", () => {
          },
       },
       {
-         name: "notebook",
+         name: "linear report",
          open: async (page: Page) => {
-            await page.goto(`/${env}/${PKG}/brands.malloynb`);
+            await page.goto(`/${env}/${LINEAR_PKG}/brands`);
             await expect(
-               page.getByRole("heading", { name: "Brands" }),
+               page.getByRole("heading", { name: "Brands", level: 1 }).first(),
             ).toBeVisible({ timeout: 60_000 });
          },
       },
@@ -640,7 +628,7 @@ test.describe("package-dashboards", () => {
          },
       );
 
-      // `# drill { to=overview given=BRAND }` on the brand_name dimension, which
+      // `# drill { to="dashboards/overview" given=BRAND }` on the brand_name dimension, which
       // no dashboard declares: the tile is clickable because it groups by it.
       await cell(page, "orders -> by_brand", "Nike").click({ timeout: 30_000 });
 
@@ -651,10 +639,7 @@ test.describe("package-dashboards", () => {
       );
       // Arriving seeded means arriving filtered, so the destination's control
       // shows the drilled value.
-      await expect(page.getByRole("combobox", { name: "Brand" })).toHaveValue(
-         "Nike",
-         { timeout: 30_000 },
-      );
+      await expectFilterValue(page, "Brand", "Nike");
    });
 
    test("a two-destination drill offers a menu, and `self` filters in place", async ({
@@ -667,7 +652,7 @@ test.describe("package-dashboards", () => {
          },
       );
 
-      // `# drill { to=["regions", "self"] given=REGION }`: more than one
+      // `# drill { to=["dashboards/regions", "self"] given=REGION }`: more than one
       // destination is a choice, not a guess.
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
       // The destination reads as a sentence rather than as a filename, which is
@@ -679,16 +664,9 @@ test.describe("package-dashboards", () => {
       );
 
       // `self` never leaves the page; it sets the control instead.
-      await page
-         .getByRole("menuitem", { name: "Filter this dashboard" })
-         .click();
+      await page.getByRole("menuitem", { name: "Filter this report" }).click();
       await expect(page).toHaveURL(/[?&]REGION=EU/);
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("EU", { exact: true })).toBeVisible({
-         timeout: 30_000,
-      });
+      await expectFilterValue(page, "Region", "EU");
    });
 
    test("the other menu destination navigates to that dashboard", async ({
@@ -726,13 +704,15 @@ test.describe("package-dashboards", () => {
    }) => {
       await openDashboard(page, "combined");
 
-      const brand = page.getByRole("combobox", { name: "Brand" });
-      await expect(brand).toBeVisible({ timeout: 30_000 });
-      await brand.click();
+      const filter = await openFilter(page, "Brand");
+      await filter.getByRole("combobox", { name: "Brand" }).click();
       await page
          .getByRole("option", { name: "Nike" })
          .click({ timeout: 30_000 });
       await expect(page).toHaveURL(/[?&]BRAND=Nike/);
+      // The popover hides the page from the pointer and from the
+      // accessibility tree until it closes.
+      await closeFilter(page);
 
       await cell(page, "orders -> by_region", "EU").click({ timeout: 30_000 });
       await page.getByRole("menuitem", { name: "Regions" }).click();
@@ -750,22 +730,17 @@ test.describe("package-dashboards", () => {
       ).toBeVisible({ timeout: 30_000 });
       await expect(page).toHaveURL(seeded);
       // The value has to reach the control too, not just survive in the URL.
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
-      });
-      await expect(region.getByText("EU", { exact: true })).toBeVisible({
-         timeout: 30_000,
-      });
+      await expectFilterValue(page, "Region", "EU");
    });
 
-   test("a notebook cell drills into a dashboard", async ({ page }) => {
-      // The payoff of declaring drill on the dimension: `brands.malloynb` says
+   test("a linear report's cell drills into a dashboard", async ({ page }) => {
+      // The payoff of declaring drill on the dimension: `brands.malloy` says
       // nothing about drill, but its cell groups by `brand_name`, so the same
-      // click path works with no notebook-specific code.
-      await page.goto(`/${env}/${PKG}/brands.malloynb`);
-      await expect(page.getByRole("heading", { name: "Brands" })).toBeVisible({
-         timeout: 60_000,
-      });
+      // click path works with no report-specific code.
+      await page.goto(`/${env}/${LINEAR_PKG}/brands`);
+      await expect(
+         page.getByRole("heading", { name: "Brands", level: 1 }).first(),
+      ).toBeVisible({ timeout: 60_000 });
 
       await page
          .getByText("Nike", { exact: true })
@@ -773,23 +748,22 @@ test.describe("package-dashboards", () => {
          .click({ timeout: 60_000 });
 
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/dashboards/overview\\?BRAND=Nike$`),
+         new RegExp(`/${env}/${LINEAR_PKG}/dashboards/overview\\?BRAND=Nike$`),
       );
       await expect(
          page.getByRole("heading", { name: "Business Overview" }),
       ).toBeVisible({ timeout: 30_000 });
    });
 
-   // A notebook and a dashboard run the same givens state, the same controls,
-   // and the same drill, so the interactivity a reader gets should not depend on
-   // which of the two an author reached for. These are the dashboard tests
-   // above, aimed at a notebook.
-   test("a notebook's parameters are URL state, batched behind Apply", async ({
+   // A linear report and a grid run the same givens state, the same controls,
+   // and the same drill, so the interactivity a reader gets should not depend
+   // on which layout an author reached for. These are the grid tests above,
+   // aimed at a linear report.
+   test("a linear report's parameters are URL state, batched behind Apply", async ({
       page,
    }) => {
-      // `orders-since.malloynb` carries `## autorun=false`, the notebook
-      // spelling of the dashboard's `# artifact { autorun=false }`.
-      await page.goto(`/${env}/${PKG}/orders-since.malloynb`);
+      // `orders-since.malloy` carries `autorun=false` in its artifact tag.
+      await page.goto(`/${env}/${LINEAR_PKG}/orders-since`);
       await expect(
          page.getByRole("heading", { name: "Orders since" }),
       ).toBeVisible({ timeout: 60_000 });
@@ -798,7 +772,7 @@ test.describe("package-dashboards", () => {
       await expect(applyButton).toBeVisible();
       await expect(applyButton).toBeDisabled();
 
-      // The notebook's one cell counts orders on or after SINCE, which defaults
+      // The report's one cell counts orders on or after SINCE, which defaults
       // to 2024-01-01, all six of them. Deliberately not `.first()`: the count
       // is the only bare number on the page, so a second match means this is
       // matching something other than the result, and should fail.
@@ -806,10 +780,12 @@ test.describe("package-dashboards", () => {
       await expect(count("6")).toBeVisible({ timeout: 30_000 });
 
       // The control's label comes from the given declaration, which is where a
-      // dashboard's comes from too.
-      await page
+      // grid's comes from too.
+      const since = await openFilter(page, "Ordered since");
+      await since
          .getByRole("textbox", { name: "Ordered since" })
          .fill("03/01/2024");
+      await closeFilter(page);
 
       // Pending, not applied: the URL is untouched and the cell has not re-run,
       // which is the whole point of batching.
@@ -825,64 +801,108 @@ test.describe("package-dashboards", () => {
       await expect(count("6")).toBeHidden();
 
       // And the link restores the value on a cold load.
-      await page.goto(`/${env}/${PKG}/orders-since.malloynb?SINCE=2024-03-01`);
-      await expect(
-         page.getByRole("textbox", { name: "Ordered since" }),
-      ).toHaveValue("03/01/2024", { timeout: 30_000 });
+      await page.goto(`/${env}/${LINEAR_PKG}/orders-since?SINCE=2024-03-01`);
+      await expectFilterValue(page, "Ordered since", "Mar 1, 2024");
    });
 
-   test("a notebook starts where `## givens` says, and a URL beats it", async ({
+   test("a linear report starts where its `givens { … }` say, and a URL beats it", async ({
       page,
    }) => {
-      // `orders-start.malloynb` carries `## givens { SINCE="2024-03-01" }`, the
-      // notebook spelling of a dashboard's `# artifact { givens { … } }`.
-      await page.goto(`/${env}/${PKG}/orders-start.malloynb`);
-      const since = page.getByRole("textbox", { name: "Ordered since" });
-      await expect(since).toHaveValue("03/01/2024", { timeout: 60_000 });
+      // `orders-start.malloy` carries `givens { SINCE=@2024-03-01 }` in its tag.
+      await page.goto(`/${env}/${LINEAR_PKG}/orders-start`);
+      await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
 
       // Applied, not merely displayed: two of the six orders are in the window.
       const count = (n: string) => page.getByText(n, { exact: true });
       await expect(count("2")).toBeVisible({ timeout: 30_000 });
 
-      // And written into the URL, so what a reader copies out of the address bar
-      // is what they are looking at. A dashboard's starting values do the same
-      // (`dashboards/regions?REGION=US`).
-      await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
+      // A starting value is the file's, not the reader's, so it stays out of
+      // the URL, in either layout; only a value the reader sets is written there.
+      expect(page.url()).not.toContain("SINCE=");
 
       // A link overrides the file, so a shared URL shows the sender's view.
-      await page.goto(`/${env}/${PKG}/orders-start.malloynb?SINCE=2024-01-01`);
-      await expect(since).toHaveValue("01/01/2024", { timeout: 60_000 });
+      await page.goto(`/${env}/${LINEAR_PKG}/orders-start?SINCE=2024-01-01`);
+      await expectFilterValue(page, "Ordered since", "Jan 1, 2024", 60_000);
       await expect(count("6")).toBeVisible({ timeout: 30_000 });
    });
 
-   test("a notebook cell drills into the notebook itself", async ({ page }) => {
-      await page.goto(`/${env}/${PKG}/brands.malloynb`);
-      await expect(page.getByRole("heading", { name: "Brands" })).toBeVisible({
-         timeout: 60_000,
-      });
+   test("a linear report's cell drills into the report itself", async ({
+      page,
+   }) => {
+      await page.goto(`/${env}/${LINEAR_PKG}/brands`);
+      await expect(
+         page.getByRole("heading", { name: "Brands", level: 1 }).first(),
+      ).toBeVisible({ timeout: 60_000 });
 
-      // Same tag, same menu as on the `combined` dashboard: `to=["regions",
-      // "self"]`, where self means this document.
+      // Same tag, same menu as on the `combined` dashboard: `to=["dashboards/regions",
+      // "self"]`, where self means this report.
       await page
          .getByText("EU", { exact: true })
          .first()
          .click({ timeout: 60_000 });
-      // The surface names itself: a notebook filtering itself is not "this
-      // dashboard", though the tag it came from is the same one.
-      await page
-         .getByRole("menuitem", { name: "Filter this notebook" })
-         .click();
+      await page.getByRole("menuitem", { name: "Filter this report" }).click();
 
       // Filtering in place is a URL change, not a navigation: still the
-      // notebook, now with the given set.
+      // report, now with the given set.
       await expect(page).toHaveURL(
-         new RegExp(`/${env}/${PKG}/brands\\.malloynb\\?REGION=EU$`),
+         new RegExp(`/${env}/${LINEAR_PKG}/brands\\?REGION=EU$`),
       );
-      const region = page.locator(".MuiAutocomplete-root", {
-         has: page.getByRole("combobox", { name: "Region" }),
+      await expectFilterValue(page, "Region", "EU");
+   });
+
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations). Only what is
+   // particular to the format: its listing, and its `##` spellings of a
+   // report's `autorun=false` and starting `givens { … }`. Drill, controls
+   // and URL state are the linear-report tests above.
+   test.describe("deprecated: .malloynb notebooks", () => {
+      test("lists notebooks by title, the way it lists dashboards", async ({
+         page,
+      }) => {
+         await gotoHome(page);
+         await openEnvironment(page, env);
+         await openPackage(page, env, PKG);
+
+         await expect(
+            page.getByRole("heading", {
+               name: "Reports",
+               level: 6,
+               exact: true,
+            }),
+         ).toBeVisible({ timeout: 60_000 });
+
+         // An explicit `## title=`, and a title read from the first markdown
+         // heading. Both rows keep the filename as the secondary label, so the
+         // path a reader needs in order to find the file is never lost.
+         const titled = page.getByRole("button", {
+            name: /Orders in a window/,
+         });
+         await expect(titled).toBeVisible();
+         await expect(titled).toContainText("orders-since.malloynb");
+         await expect(
+            page.getByRole("button", { name: /Brands/ }),
+         ).toContainText("brands.malloynb");
+
+         await titled.click();
+         await expect(page).toHaveURL(
+            new RegExp(`/${env}/${PKG}/orders-since.malloynb$`),
+         );
       });
-      await expect(region.getByText("EU", { exact: true })).toBeVisible({
-         timeout: 30_000,
+
+      test("reads `## autorun=false` and `## givens { … }`", async ({
+         page,
+      }) => {
+         await page.goto(`/${env}/${PKG}/orders-since.malloynb`);
+         await expect(
+            page.getByRole("heading", { name: "Orders since" }),
+         ).toBeVisible({ timeout: 60_000 });
+         await expect(
+            page.getByRole("button", { name: "Apply" }),
+         ).toBeVisible();
+
+         await page.goto(`/${env}/${PKG}/orders-start.malloynb`);
+         await expectFilterValue(page, "Ordered since", "Mar 1, 2024", 60_000);
+         await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
       });
    });
 
@@ -1073,7 +1093,7 @@ test.describe("package-dashboards", () => {
          });
       });
 
-      // `grid` is the one-query form, so every card and cell on it is the
+      // `grid` is one tile holding a nested query, so every cell on it is the
       // renderer's own output rather than the SDK's tile chrome. The tile-title
       // half, which is Publisher's own `Typography`, is pinned by the test below
       // this one; it used to be the hole in this guard.
@@ -1170,18 +1190,9 @@ test.describe("package-dashboards", () => {
       );
    });
 
-   // The other card, and the last piece of the two that did not agree. Radius,
-   // padding, border, shadow and gap were reconciled already; the background was
-   // not, because the composite `Paper` left it unset and took MUI's white while
-   // the renderer card painted `theme.tile`. On a theme whose page is also white
-   // that is the difference between tiles that read as cards and tiles that read
-   // as nothing, and it is exactly the "they render differently" in #1069.
-   //
-   // Asserted across BOTH forms against one sentinel, rather than against a
-   // literal on the composite alone: the claim is that the two cards agree, so a
-   // test that only pins one of them would stay green if the renderer's card
-   // moved.
-   test("both dashboard forms paint their card with the theme's tile colour", async ({
+   // A tile's card takes the theme's tile colour rather than MUI's white, so on
+   // a theme whose page is also white the tiles still read as cards.
+   test("a tile paints its card with the theme's tile colour", async ({
       page,
    }) => {
       const TILE_COLOR = "rgb(4, 5, 6)";
@@ -1214,16 +1225,6 @@ test.describe("package-dashboards", () => {
             { timeout: 15_000 },
          )
          .toBe(TILE_COLOR);
-
-      await openDashboard(page, "grid");
-      const card = page.locator(".dashboard-item").first();
-      await expect(card).toBeVisible({ timeout: 30_000 });
-      await expect
-         .poll(
-            () => card.evaluate((el) => getComputedStyle(el).backgroundColor),
-            { timeout: 15_000 },
-         )
-         .toBe(TILE_COLOR);
    });
 
    // A dashboard's description is its narrative header, and it is MARKDOWN: the
@@ -1233,97 +1234,12 @@ test.describe("package-dashboards", () => {
    // asserts against: `<strong>` exists, and no literal `**` survives.
    test("a dashboard's description renders as markdown", async ({ page }) => {
       await openDashboard(page, "tiled");
-      const header = page.locator("h5", { hasText: "Tiled" }).locator("..");
+      // The title's row and the description below it.
+      const header = page.locator("h1", { hasText: "Tiled" }).locator("../..");
       await expect(header).toBeVisible({ timeout: 30_000 });
       await expect(
          header.locator("strong", { hasText: "tiles" }),
       ).toBeVisible();
       expect(await header.innerText()).not.toContain("**");
-   });
-
-   // The claim the one-form decision rests on: a view laid out with `# colspan`
-   // and `# break` lands in the same place as a composite tile as it does nested
-   // under a `# dashboard` query. `tiled` is `grid` re-authored as tiles, so the
-   // two pages have to come out with the same grid shape.
-   //
-   // Compared as proportions of each page's own grid, not as page coordinates:
-   // the renderer draws its items inside its own padded container and Publisher
-   // draws its tiles straight into the page, so the two grids start at different
-   // x. What has to match is the colspans, which is the ratio.
-   //
-   // Without this, "Publisher reads the layout tags too" is only asserted on the
-   // manifest, which is where the two spellings of the grid width agreed with
-   // each other while disagreeing with the page.
-   test("a tiled dashboard lays out the same as the one-query grid", async ({
-      page,
-   }) => {
-      const shapeOf = async (slug: string, itemSelector: string) => {
-         await openDashboard(page, slug);
-         let boxes: Array<{
-            left: number;
-            right: number;
-            top: number;
-            height: number;
-         }> = [];
-         // Retried as a block for the same reason as the grid test above: the
-         // items are in the DOM before their results render, and in that window
-         // every top is 0, so a single measurement can see one row.
-         await expect(async () => {
-            const items = page.locator(itemSelector);
-            await expect(items).toHaveCount(4);
-            boxes = await items.evaluateAll((elements) =>
-               elements.map((element) => {
-                  const rect = element.getBoundingClientRect();
-                  return {
-                     left: Math.round(rect.left),
-                     right: Math.round(rect.right),
-                     top: Math.round(rect.top),
-                     height: Math.round(rect.height),
-                  };
-               }),
-            );
-            for (const box of boxes) expect(box.height).toBeGreaterThan(0);
-            expect(new Set(boxes.map((b) => b.top)).size).toBe(2);
-         }).toPass({ timeout: 30_000 });
-
-         // Normalized against the page's own grid: its leftmost left and its
-         // rightmost right. Heights are deliberately not compared, since a tile
-         // is capped and a card is not, and pinning them would make this a test
-         // about TILE_MAX_HEIGHT rather than about the colspans.
-         const origin = Math.min(...boxes.map((b) => b.left));
-         const span = Math.max(...boxes.map((b) => b.right)) - origin;
-         const rows = [...new Set(boxes.map((b) => b.top))].sort(
-            (a, b) => a - b,
-         );
-         return rows.map((top) =>
-            boxes
-               .filter((b) => b.top === top)
-               .sort((a, b) => a.left - b.left)
-               .map((b) => [
-                  (b.left - origin) / span,
-                  (b.right - origin) / span,
-               ]),
-         );
-      };
-
-      // The renderer draws grid's items; Publisher's own grid draws tiled's, so
-      // the two are addressed by different selectors on purpose.
-      const gridRows = await shapeOf("grid", ".dashboard-item");
-      const tiledRows = await shapeOf(
-         "tiled",
-         ".MuiPaper-root:has(.malloy-render)",
-      );
-
-      expect(tiledRows).toHaveLength(gridRows.length);
-      for (const [index, row] of tiledRows.entries()) {
-         expect(row).toHaveLength(gridRows[index].length);
-         for (const [column, [left, right]] of row.entries()) {
-            const [gridLeft, gridRight] = gridRows[index][column];
-            // Three percent of the grid: the two forms use different gap and
-            // border chrome, and the question is whether the colspans agree.
-            expect(Math.abs(left - gridLeft)).toBeLessThan(0.03);
-            expect(Math.abs(right - gridRight)).toBeLessThan(0.03);
-         }
-      }
    });
 });

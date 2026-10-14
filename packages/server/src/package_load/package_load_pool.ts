@@ -54,10 +54,12 @@
  *   - **Worker dies mid-job.** `worker.exit` fails every in-flight job
  *     on that worker; the pool prunes the dead worker, and the next
  *     `loadPackage()` lazily respawns up to `maxWorkers`.
- *   - **Job timeout.** `PACKAGE_LOAD_JOB_TIMEOUT_MS` (default 120s) caps a
- *     single package load. On timeout we **terminate the worker** and
- *     reject the caller — we do not silently fall back, and we do not
- *     leave a zombie compile burning CPU on the worker.
+ *   - **Job timeout.** `PACKAGE_LOAD_JOB_TIMEOUT_MS` (default 120s) bounds
+ *     a single package load's compile; the job may run to twice it (see
+ *     JOB_LIMIT_FACTOR). On timeout we **terminate the worker**, retire it
+ *     so no queued load is sent to it while it exits, and reject the
+ *     caller — we do not silently fall back, and we do not leave a zombie
+ *     compile burning CPU on the worker.
  *
  * Schema-fetch RPC routing
  * ------------------------
@@ -88,6 +90,7 @@ import type {
    PackageScope,
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval";
+import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type {
    ConnectionMetadataRequest,
    ConnectionMetadataResponse,
@@ -103,6 +106,7 @@ import type {
    SchemaForTablesRequest,
    SchemaForTablesResponse,
    SerializedModel,
+   WorkerLogMessage,
    WorkerToMainMessage,
 } from "./protocol";
 
@@ -135,6 +139,30 @@ export function getPackageLoadWorkerCount(): number {
    return parsed;
 }
 
+/** Default for {@link getPackageLoadSchemaCacheBytes}. */
+export const DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Serialized bytes of schema each package-load worker caches across loads
+ * (`PACKAGE_LOAD_SCHEMA_CACHE_BYTES`; see `schema_cache.ts`). Unset or empty
+ * takes the default, and 0 disables the cache; anything else that is not a
+ * non-negative integer refuses to start, rather than silently disabling the
+ * cache or ignoring the setting.
+ */
+export function getPackageLoadSchemaCacheBytes(): number {
+   const raw = process.env.PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+   if (raw === undefined || raw.trim() === "") {
+      return DEFAULT_PACKAGE_LOAD_SCHEMA_CACHE_BYTES;
+   }
+   const parsed = Number(raw.trim());
+   if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new Error(
+         `PACKAGE_LOAD_SCHEMA_CACHE_BYTES must be a non-negative integer number of bytes (got ${JSON.stringify(raw)}).`,
+      );
+   }
+   return parsed;
+}
+
 /**
  * Wall-clock cap for a single load-package job. If a worker hangs we
  * don't want to leak a Promise forever. Twice the K8s liveness
@@ -149,6 +177,25 @@ const PACKAGE_LOAD_JOB_TIMEOUT_MS = (() => {
    if (!Number.isFinite(parsed) || parsed <= 0) return 120_000;
    return parsed;
 })();
+
+/**
+ * The share of a job's timeout the worker spends on work for the main thread,
+ * render-tag results, pre-aggregation companions and the build plan, before
+ * leaving the rest to it (see LoadPackageRequest.mainThreadWorkBudgetMs).
+ */
+const MAIN_THREAD_WORK_BUDGET_SHARE = 0.75;
+
+/**
+ * How many times `PACKAGE_LOAD_JOB_TIMEOUT_MS` the pool lets a job run. The
+ * timeout bounds the compile, as it did when the work for the main thread ran
+ * on the main thread after the job. That work now interleaves with the
+ * compile, and since the worker starts none of it past
+ * MAIN_THREAD_WORK_BUDGET_SHARE of the timeout, a job whose compile fits the
+ * timeout finishes within twice it: the remaining quarter is room for the
+ * pieces already under way when that point passes. A hung job is caught at
+ * twice the timeout.
+ */
+const JOB_LIMIT_FACTOR = 2;
 
 /**
  * How long a freshly-spawned worker has to send its `ready` handshake.
@@ -186,6 +233,12 @@ interface PoolWorker {
    ready: Promise<void>;
    inFlight: Set<string>; // job ids — capped at 1 by per-worker active job rule
    exited: boolean;
+   /**
+    * Stopping and not yet exited: terminated after a job timeout, or failed to
+    * start or errored. It takes no new job, but holds its slot until it exits,
+    * so the pool never runs more than `maxWorkers` threads.
+    */
+   retiring: boolean;
 }
 
 /**
@@ -203,6 +256,8 @@ export interface PackageLoadUrlReader {
 export interface LoadPackageJob {
    packagePath: string;
    packageName: string;
+   /** See {@link LoadPackageRequest.environmentName}. */
+   environmentName: string;
    /**
     * The live MalloyConfig. We don't ship it across the worker
     * boundary; we hold it on the main side and answer the worker's
@@ -221,6 +276,10 @@ export interface LoadPackageJob {
    replacement?: { modelPath: string; source: string };
    /** Return non-fatal compiler diagnostics for dry-run reporting. */
    collectProblems?: boolean;
+   /** See {@link LoadPackageRequest.computeBuildPlan}. */
+   computeBuildPlan?: boolean;
+   /** See {@link LoadPackageRequest.withPreaggregateCompanions}. */
+   withPreaggregateCompanions?: boolean;
 }
 
 /**
@@ -248,8 +307,12 @@ export interface LoadPackageOutcome {
       scope?: PackageScope;
       /** See {@link LoadPackageResult.packageMetadata.manifestWarnings}. */
       manifestWarnings?: string[];
+      /** Deprecated publisher.json keys the manifest declares, at any value. */
+      deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** See {@link LoadPackageResult.packageMetadata.retrieval}. */
       retrieval?: PackageRetrievalSettings;
+      /** See {@link LoadPackageResult.packageMetadata.agents}. */
+      agents?: unknown;
    };
    replacementMatchedExisting?: boolean;
    models: Array<
@@ -261,6 +324,8 @@ export interface LoadPackageOutcome {
    loadDurationMs: number;
    /** Per-load phase timing breakdown (see {@link LoadPackageResult.timings}). */
    timings: LoadPackageResult["timings"];
+   /** See {@link LoadPackageResult.buildPlan}. */
+   buildPlan?: LoadPackageResult["buildPlan"];
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -303,8 +368,22 @@ export class PackageLoadPool {
    private nextJobId = 0;
    private shuttingDown = false;
    private readonly workerScript: URL;
+   private readonly schemaCacheBytes: number;
+   private readonly mainThreadWorkBudgetMs: number;
+   private readonly jobTimeoutMs: number;
+   /** How long a job may run before it is terminated (see JOB_LIMIT_FACTOR). */
+   private readonly jobLimitMs: number;
 
-   constructor(maxWorkers: number, workerScript?: URL) {
+   constructor(
+      maxWorkers: number,
+      workerScript?: URL,
+      options: {
+         /** See LoadPackageRequest.mainThreadWorkBudgetMs. */
+         mainThreadWorkBudgetMs?: number;
+         /** Overrides PACKAGE_LOAD_JOB_TIMEOUT_MS. */
+         jobTimeoutMs?: number;
+      } = {},
+   ) {
       if (!Number.isFinite(maxWorkers) || maxWorkers < 1) {
          throw new Error(
             `PackageLoadPool requires maxWorkers >= 1 (got ${maxWorkers}). ` +
@@ -314,6 +393,12 @@ export class PackageLoadPool {
       }
       this.maxWorkers = maxWorkers;
       this.workerScript = workerScript ?? resolveWorkerScript();
+      this.schemaCacheBytes = getPackageLoadSchemaCacheBytes();
+      this.jobTimeoutMs = options.jobTimeoutMs ?? PACKAGE_LOAD_JOB_TIMEOUT_MS;
+      this.jobLimitMs = JOB_LIMIT_FACTOR * this.jobTimeoutMs;
+      this.mainThreadWorkBudgetMs =
+         options.mainThreadWorkBudgetMs ??
+         MAIN_THREAD_WORK_BUDGET_SHARE * this.jobTimeoutMs;
    }
 
    get size(): number {
@@ -401,7 +486,7 @@ export class PackageLoadPool {
     */
    private findIdleOrSpawnable(): PoolWorker | null {
       const alive = this.workers.filter((w) => !w.exited);
-      const idle = alive.find((w) => w.inFlight.size === 0);
+      const idle = alive.find((w) => !w.retiring && w.inFlight.size === 0);
       if (idle) return idle;
       if (alive.length < this.maxWorkers) {
          const pw = this.spawnWorker();
@@ -415,23 +500,28 @@ export class PackageLoadPool {
       pw: PoolWorker,
       qj: QueuedJob,
    ): Promise<void> {
+      // Reserve the worker before waiting for it to become ready. A spawned
+      // worker takes a moment to start, and until the job is in `inFlight`
+      // the dispatcher sees it as idle, so every job of a burst would land on
+      // the first worker spawned and run there concurrently.
+      this.nextJobId += 1;
+      const jobId = `job-${this.nextJobId}`;
+      pw.inFlight.add(jobId);
       try {
          await pw.ready;
       } catch (err) {
          // Spawn failed; this worker is dead. Reject this job and
          // try the next queued one — a different worker may already
          // be alive, or `findIdleOrSpawnable` will lazily spawn one.
+         pw.inFlight.delete(jobId);
          qj.reject(err as Error);
          this.tryDispatch();
          return;
       }
 
-      this.nextJobId += 1;
-      const jobId = `job-${this.nextJobId}`;
-
       const timeout = setTimeout(() => {
          this.handleJobTimeout(pw, jobId, qj.request.packagePath);
-      }, PACKAGE_LOAD_JOB_TIMEOUT_MS);
+      }, this.jobLimitMs);
 
       this.jobs.set(jobId, {
          jobId,
@@ -449,20 +539,19 @@ export class PackageLoadPool {
          timeout,
       });
 
-      // Register inFlight BEFORE postMessage so the next concurrent
-      // dispatcher pass sees this worker as busy (fixes Sha-Bang #1's
-      // 4/1 skew where simultaneous callers all tiebreak to alive[0]).
-      pw.inFlight.add(jobId);
-
       const message: LoadPackageRequest = {
          type: "load-package",
          requestId: jobId,
          packagePath: qj.request.packagePath,
          packageName: qj.request.packageName,
+         environmentName: qj.request.environmentName,
          defaultConnectionName: qj.request.defaultConnectionName,
          buildManifest: qj.request.buildManifest,
          replacement: qj.request.replacement,
          collectProblems: qj.request.collectProblems,
+         computeBuildPlan: qj.request.computeBuildPlan,
+         withPreaggregateCompanions: qj.request.withPreaggregateCompanions,
+         mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
       };
       pw.worker.postMessage(message);
    }
@@ -480,12 +569,15 @@ export class PackageLoadPool {
       packagePath: string,
    ): void {
       logger.error(
-         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${PACKAGE_LOAD_JOB_TIMEOUT_MS}ms; terminating worker #${pw.id}`,
+         `PackageLoadPool: job ${jobId} (${packagePath}) timed out after ${this.jobLimitMs}ms; terminating worker #${pw.id}`,
       );
+      // Before the caller hears of the timeout: a load it retries must not be
+      // sent to this worker, which is about to exit and would fail it.
+      pw.retiring = true;
       this.failJob(
          jobId,
          new Error(
-            `Package-load worker timed out after ${PACKAGE_LOAD_JOB_TIMEOUT_MS}ms (package=${packagePath})`,
+            `Package-load worker timed out after ${this.jobLimitMs}ms (package=${packagePath})`,
          ),
       );
       void pw.worker.terminate();
@@ -501,6 +593,7 @@ export class PackageLoadPool {
       );
       const worker = new Worker(this.workerScript, {
          name: `malloy-package-load-worker-${id}`,
+         workerData: { schemaCacheBytes: this.schemaCacheBytes },
       });
 
       let readyResolve!: () => void;
@@ -524,6 +617,9 @@ export class PackageLoadPool {
       ready.catch(() => {});
 
       const spawnTimer = setTimeout(() => {
+         // Retired before the rejection reaches a waiting load, so the loads
+         // queued behind it go to a new worker rather than to this one.
+         pw.retiring = true;
          readyReject(
             new Error(
                `Package-load worker #${id} failed to become ready within ${WORKER_SPAWN_TIMEOUT_MS}ms`,
@@ -538,6 +634,7 @@ export class PackageLoadPool {
          ready,
          inFlight: new Set(),
          exited: false,
+         retiring: false,
       };
 
       worker.on("message", (msg: WorkerToMainMessage) => {
@@ -549,6 +646,9 @@ export class PackageLoadPool {
             error: err,
          });
          clearTimeout(spawnTimer);
+         // An uncaught error ends the worker; until its exit event it would
+         // look idle and take every queued load. See spawnTimer above.
+         pw.retiring = true;
          readyReject(err);
       });
 
@@ -607,16 +707,19 @@ export class PackageLoadPool {
             this.errorJob(pw, msg);
             return;
          case "connection-metadata":
-            void this.handleConnectionMetadata(pw, msg);
+            this.answerWorker(pw, msg, this.handleConnectionMetadata(pw, msg));
             return;
          case "schema-for-tables":
-            void this.handleSchemaForTables(pw, msg);
+            this.answerWorker(pw, msg, this.handleSchemaForTables(pw, msg));
             return;
          case "schema-for-sql":
-            void this.handleSchemaForSql(pw, msg);
+            this.answerWorker(pw, msg, this.handleSchemaForSql(pw, msg));
             return;
          case "read-url":
-            void this.handleReadUrl(pw, msg);
+            this.answerWorker(pw, msg, this.handleReadUrl(pw, msg));
+            return;
+         case "log":
+            handleWorkerLog(msg);
             return;
          default: {
             const exhaustive: never = msg;
@@ -645,6 +748,46 @@ export class PackageLoadPool {
       this.tryDispatch();
    }
 
+   /**
+    * Send a worker the answer to one of its requests. A request is answered
+    * after an await, by which time a job timeout may have terminated the worker,
+    * and posting to a terminated worker throws (`InvalidStateError` under Bun
+    * 1.3). Nothing awaits the handler, so the throw would be an unhandled
+    * rejection, which ends the server process. A worker that has exited is
+    * skipped, and a throw from one that is exiting is logged.
+    */
+   private postToWorker(pw: PoolWorker, message: MainToWorkerMessage): void {
+      if (pw.exited) return;
+      try {
+         pw.worker.postMessage(message);
+      } catch (error) {
+         logger.warn(
+            `PackageLoadPool: dropped an answer to worker #${pw.id}, which has stopped`,
+            { error: error instanceof Error ? error.message : String(error) },
+         );
+      }
+   }
+
+   /**
+    * Run a request handler that nothing awaits, logging a failure instead of
+    * leaving it to end the process as an unhandled rejection.
+    */
+   private answerWorker(
+      pw: PoolWorker,
+      msg: { type: string; requestId: string },
+      handling: Promise<void>,
+   ): void {
+      handling.catch((error: unknown) => {
+         logger.error(
+            `PackageLoadPool: answering worker #${pw.id}'s ${msg.type} request failed`,
+            {
+               requestId: msg.requestId,
+               error: error instanceof Error ? error.message : String(error),
+            },
+         );
+      });
+   }
+
    /** Fail a job out-of-band (timeout, worker exit). */
    private failJob(jobId: string, error: Error): void {
       const ctx = this.jobs.get(jobId);
@@ -662,7 +805,7 @@ export class PackageLoadPool {
       const reply = (
          response: ConnectionMetadataResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -688,6 +831,7 @@ export class PackageLoadPool {
                   typeof conn.getDigest === "function"
                      ? conn.getDigest()
                      : msg.connectionName,
+               generation: connectionGeneration(conn),
             },
          });
       } catch (error) {
@@ -708,7 +852,7 @@ export class PackageLoadPool {
       const reply = (
          response: SchemaForTablesResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -752,7 +896,7 @@ export class PackageLoadPool {
       const reply = (
          response: SchemaForSqlResponse | RpcErrorResponse,
       ): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -804,7 +948,7 @@ export class PackageLoadPool {
    ): Promise<void> {
       const ctx = this.jobs.get(msg.jobId);
       const reply = (response: ReadUrlResponse | RpcErrorResponse): void => {
-         pw.worker.postMessage(response as MainToWorkerMessage);
+         this.postToWorker(pw, response as MainToWorkerMessage);
       };
       if (!ctx) {
          reply({
@@ -845,6 +989,36 @@ function buildFetchOptions(options: {
    return out;
 }
 
+const connectionGenerations = new WeakMap<object, number>();
+let lastConnectionGeneration = 0;
+
+/** A number unique to `conn`'s instance (see ConnectionMetadata.generation). */
+function connectionGeneration(conn: object): number {
+   let generation = connectionGenerations.get(conn);
+   if (generation === undefined) {
+      lastConnectionGeneration += 1;
+      generation = lastConnectionGeneration;
+      connectionGenerations.set(conn, generation);
+   }
+   return generation;
+}
+
+/**
+ * Log an entry a job wrote in the worker on this thread, whose logger reaches
+ * the OpenTelemetry log pipeline (see WorkerLogMessage), naming the package
+ * the job loads.
+ */
+export function handleWorkerLog(msg: WorkerLogMessage): void {
+   // As one entry rather than `log(level, message, meta)`, which reads a `%`
+   // in the message as a format directive and then drops the meta.
+   logger.log({
+      packagePath: msg.packagePath,
+      ...msg.meta,
+      level: msg.level,
+      message: msg.message,
+   });
+}
+
 /**
  * Hydrate the wire-typed serialized model fields back into their
  * full Malloy types. Cheap (one pass, no copy); `filterMap` is
@@ -862,6 +1036,7 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       })),
       loadDurationMs: result.loadDurationMs,
       timings: result.timings,
+      buildPlan: result.buildPlan,
    };
 }
 

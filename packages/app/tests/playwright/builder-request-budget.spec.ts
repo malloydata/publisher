@@ -88,11 +88,11 @@ async function measure(
    };
 }
 
-// A layout notebook with a query tile: an unsaved conversion draws placeholders until it is saved.
+// A linear report with a text tile and a query tile.
 const NOTEBOOK_PKG = "notebooks-malloyyo";
 const NOTEBOOK_FILE = "notebooks/browser_tour.malloy";
 const NOTEBOOK_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, "orders -> kpis"] }
+## artifact { layout=linear title="Browser tour" tiles=[first { kind=text }, "orders -> kpis"] }
 import "../models/orders.malloy"
 
 ##|(markdown) first
@@ -129,14 +129,15 @@ test.describe("builder request budget", () => {
       {
          name: "dashboard",
          env: () => pe,
-         path: "dashboards/overview",
+         path: "overview",
          ready: (page: Page) =>
             expect(page.locator("[data-malloy-render-as]").first()).toBeVisible(
                {
                   timeout: 60_000,
                },
             ),
-         link: /Overview|Storefront overview/,
+         // The grid one: overview-story.malloy shares its title.
+         link: /overview\.malloy/,
       },
       {
          name: "notebook",
@@ -169,7 +170,7 @@ test.describe("builder request budget", () => {
             () =>
                page
                   .goto(
-                     `/${editor.env().env}/${editor.env().pkg}/${editor.path}/edit`,
+                     `/${editor.env().env}/${editor.env().pkg}/${editor.path}?edit`,
                   )
                   .then(() => undefined),
             () => editor.ready(page),

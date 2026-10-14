@@ -20,7 +20,7 @@ const PKG = "notebooks-malloyyo";
 const TOUR = "notebooks/browser_tour.malloy";
 
 const TOUR_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, second { kind=text }, "orders -> kpis"] }
+## artifact { layout=linear title="Browser tour" tiles=[first { kind=text }, second { kind=text }, "orders -> kpis"] }
 import "../models/orders.malloy"
 
 ##|(markdown) first
@@ -95,11 +95,11 @@ test.describe("notebook exit guard", () => {
 
       await goBack(page);
       await expect(prompt(page)).toBeVisible();
-      await expect(page).toHaveURL(/\/edit$/);
+      await expect(page).toHaveURL(/\?edit$/);
 
       await prompt(page).getByRole("button", { name: "Keep editing" }).click();
       await expect(prompt(page)).toHaveCount(0);
-      await expect(page).toHaveURL(/\/edit$/);
+      await expect(page).toHaveURL(/\?edit$/);
       await expect(page.getByText("Half-typed thought")).toBeVisible();
    });
 
@@ -155,7 +155,7 @@ test.describe("notebook exit guard", () => {
       await prompt(page).getByRole("button", { name: "Keep editing" }).click();
 
       await expect(prompt(page)).toHaveCount(0);
-      await expect(page).toHaveURL(/\/edit$/);
+      await expect(page).toHaveURL(/\?edit$/);
       await expect(markdownField(page)).toHaveValue("Tabbed draft");
    });
 
@@ -167,7 +167,7 @@ test.describe("notebook exit guard", () => {
 
       await view(page).click();
       await prompt(page).getByRole("button", { name: "Keep editing" }).click();
-      await expect(page).toHaveURL(/\/edit$/);
+      await expect(page).toHaveURL(/\?edit$/);
 
       await saveChanges(page);
       await view(page).click();

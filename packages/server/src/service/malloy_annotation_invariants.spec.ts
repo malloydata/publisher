@@ -433,6 +433,66 @@ source: emp is duckdb.sql("SELECT 1 as id") extend {
       expect(joinFieldOwnNotes[0]).toBe(salariesOwnNotes[0]);
    });
 
+   it("note position: a copied note keeps the declaring `source:` line's `at`, `at` spans the annotation line itself, and two parses of one text agree on it", async () => {
+      // `source_extraction.ts`'s misplaced-annotation check matches a copied
+      // gate note by object identity OR by `at` (url + range), the latter for
+      // a file compiled once per import path. That rests on three facts
+      // about `at`, pinned here.
+      const text = `
+#(access_filter) org_id > 0
+source: salaries is duckdb.sql("SELECT 7 as org_id, 1 as id") extend {}
+
+source: emp is duckdb.sql("SELECT 1 as id") extend {
+  join_one: salaries on id = salaries.id
+}
+`;
+      const first = await compileModel(text);
+      const second = await compileModel(text);
+      const noteOf = (modelDef: ModelDef, name: string) => {
+         const notes = ownLevelNotes(
+            (modelDef.contents[name] as StructDef).annotations as
+               | RawAnnotations
+               | undefined,
+         ) as unknown as {
+            text: string;
+            at: {
+               url: string;
+               range: {
+                  start: { line: number; character: number };
+                  end: { line: number; character: number };
+               };
+            };
+         }[];
+         expect(notes.length).toBe(1);
+         return notes[0];
+      };
+      const own = noteOf(first, "salaries");
+      // 1. The copy on the join field carries the declaring line's `at`.
+      const emp = first.contents["emp"] as StructDef;
+      const joinField = emp.fields.find(
+         (f) => (f as unknown as { as?: string }).as === "salaries",
+      ) as unknown as { annotations?: RawAnnotations };
+      const copied = ownLevelNotes(
+         joinField.annotations,
+      )[0] as unknown as typeof own;
+      expect(copied.at.url).toBe(own.at.url);
+      expect(copied.at.range).toEqual(own.at.range);
+      // 2. `at` spans the annotation line, not the `source:` statement.
+      const annotationLine = text
+         .split("\n")
+         .findIndex((l) => l.startsWith("#(access_filter)"));
+      expect(own.at.range.start.line).toBe(annotationLine);
+      expect(own.at.range.end.line).toBe(annotationLine);
+      // 3. A second parse of the same text yields a DIFFERENT object with the
+      //    SAME position — which is what the position key relies on, and
+      //    what object identity alone cannot see.
+      const again = noteOf(second, "salaries");
+      expect(again).not.toBe(own);
+      expect(again.at.url).toBe(own.at.url);
+      expect(again.at.range).toEqual(own.at.range);
+      expect(again.text).toBe(own.text);
+   });
+
    it("`#(authorized)` (extra `d`) on a FIELD's annotation does not route to `authorize` either — the near miss is not source-position-specific", async () => {
       const modelDef = await compileModel(`
 source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
@@ -589,7 +649,7 @@ source: base5c is duckdb.sql("SELECT 7 as org_id") extend {
       // surface two publisher features read. `service/given.ts` reads
       // `_internal.defaultText` (Malloy's private surface, as its own comment
       // says) to populate `ApiGiven.default`, which is what introspection
-      // reports and what `dashboard.ts` seeds a dashboard's given controls
+      // reports and what `report_manifest.ts` seeds a dashboard's given controls
       // from.
       //
       // Both degrade SILENTLY if the field moves: every `default` becomes

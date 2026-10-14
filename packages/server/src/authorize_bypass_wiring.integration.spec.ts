@@ -125,9 +125,13 @@ describe("authorize bypass wiring, over HTTP", () => {
       expect(bypass).toBeUndefined();
    });
 
-   it("does not confuse bypassFilters for the authorize bypass", async () => {
-      const { bypass } = await post({}, { bypassFilters: true });
-      expect(bypass).toBeUndefined();
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `bypassFilters` (see RELEASE_NOTES deprecations).
+   describe("deprecated: bypassFilters", () => {
+      it("does not confuse bypassFilters for the authorize bypass", async () => {
+         const { bypass } = await post({}, { bypassFilters: true });
+         expect(bypass).toBeUndefined();
+      });
    });
 
    it("leaves gates enforced with no header at all", async () => {

@@ -111,7 +111,6 @@ export type CoreConnectionsPojo = {
 export type EnvironmentConnectionMetadata = {
    apiConnection: ApiConnection;
    attachedDatabases: AttachedDatabase[];
-   setupSQL?: string;
    hasAzureAttachment: boolean;
    hasSnowflakePrivateKey: boolean;
    isDuckLake: boolean;
@@ -1245,7 +1244,6 @@ export function assembleEnvironmentConnections(
       metadata.set(connection.name, {
          apiConnection,
          attachedDatabases,
-         setupSQL: connection.duckdbConnection?.setupSQL,
          hasAzureAttachment: attachedDatabases.some(
             (database) => database.type === "azure",
          ),

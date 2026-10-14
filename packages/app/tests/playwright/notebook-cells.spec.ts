@@ -22,15 +22,14 @@ import {
  * The notebook editor's tile operations against a real server: reorder by
  * pointer, add and remove a text tile, prose that mentions a gate, a file that
  * changed underneath the editor, and starting givens that live in the artifact
- * tag. The tour is a layout notebook; `autorun_off` stays in the cell format,
- * which the editor converts on open.
+ * tag.
  */
 
 const PKG = "notebooks-malloyyo";
 const TOUR = "notebooks/browser_tour.malloy";
 
 const TOUR_SOURCE = `##! experimental.givens
-## artifact { kind=notebook title="Browser tour" tiles=[first { kind=text }, second { kind=text }, third { kind=text }, "orders -> kpis", fourth { kind=text }, "orders -> by_month"] }
+## artifact { layout=linear title="Browser tour" tiles=[first { kind=text }, second { kind=text }, third { kind=text }, "orders -> kpis", fourth { kind=text }, "orders -> by_month"] }
 import "../models/orders.malloy"
 
 ##|(markdown) first
@@ -52,15 +51,22 @@ Fourth note.
 `;
 
 const AUTORUN_OFF = `##! experimental.givens
-## artifact { kind=notebook title="Autorun off" autorun=false givens { REGION=f'US' } }
+##| artifact { layout=linear title="Autorun off" autorun=false givens { REGION=f'US' }
+  tiles=[intro { kind=text }, "orders_tiles -> by_month_in_region"]
+}
+|##
 import "../models/orders.malloy"
 
 # label="Region" control=select suggest { source=orders dimension=region }
 given: REGION :: filter<string> is f''
 
-##(markdown) Pick a region, then apply.
+##|(markdown) intro
+Pick a region, then apply.
+|##
 
-run: orders -> by_month + { where: region ~ $REGION }
+source: orders_tiles is orders extend {
+  view: by_month_in_region is by_month + { where: region ~ $REGION }
+}
 `;
 
 let pe: PackageEnv;
@@ -87,7 +93,7 @@ test.describe("notebook tiles", () => {
    });
 
    const open = async (page: Page, slug = "browser_tour") => {
-      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}/edit`);
+      await page.goto(`/${pe.env}/${pe.pkg}/notebooks/${slug}?edit`);
       await editorOpen(page);
    };
 
@@ -164,10 +170,9 @@ test.describe("notebook tiles", () => {
       await open(page);
       await settled(page, 2);
 
-      await tileByKey(page, "text.second")
-         .getByLabel("Settings for second")
-         .click();
-      await page.getByRole("button", { name: "Delete" }).click();
+      const second = tileByKey(page, "text.second");
+      await second.hover();
+      await second.getByLabel("Remove second").click();
       await saveChanges(page);
       let file = await pe.readSource(TOUR);
       expect(file).not.toContain("Second note");

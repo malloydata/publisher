@@ -1387,10 +1387,6 @@ describe("assembleEnvironmentConnections — duckdb setupSQL", () => {
       );
 
       expect(metadata.has("my_duckdb")).toBe(true);
-      const meta = metadata.get("my_duckdb")!;
-      expect(meta.setupSQL).toBe(
-         "ATTACH 'ducklake:storage/orca.ducklake' AS orca;\nUSE orca.marts;",
-      );
       expect(pojo.connections["my_duckdb"]).toBeDefined();
       expect(pojo.connections["my_duckdb"].setupSQL).toBe(
          "ATTACH 'ducklake:storage/orca.ducklake' AS orca;\nUSE orca.marts;",

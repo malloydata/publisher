@@ -48,11 +48,11 @@ query: for_org is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const LAYOUT_NOTEBOOK = `##! experimental.givens
-## artifact { kind=notebook title="Unbound" }
+## artifact { layout=linear title="Unbound" tiles=["tile"] }
 given: ORG :: number
 source: orders is ${ROWS} extend { measure: c is count() }
 
-run: orders -> { where: org_id = $ORG; aggregate: c }
+query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
 const LEGACY_NOTEBOOK = `>>>markdown
@@ -62,10 +62,10 @@ ${GIVEN_AND_SOURCE}
 run: orders -> { where: org_id = $ORG; aggregate: c }`;
 
 const DASHBOARD = `##! experimental.givens
+## artifact { layout=grid title="Unbound" tiles=["tile"] } dashboard {columns=12}
 given: ORG :: number
 source: orders is ${ROWS} extend { measure: c is count() }
 
-# artifact { title="Unbound" } dashboard {columns=12}
 query: tile is orders -> { where: org_id = $ORG; aggregate: c }
 `;
 
@@ -190,16 +190,27 @@ describe("a query that bakes a default-less given loads", () => {
       });
    }
 
-   it("lists the legacy notebook's cell and runs it with the given", async () => {
-      write(SHAPES[2]);
-      const pkg = await Package.create("env", "pkg", tempDir, malloyConfig());
-      const model = pkg.getModel("nb.malloynb")!;
-      const notebook = await model.getNotebook();
-      expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(true);
-      const run = await model.executeNotebookCell(1, undefined, false, {
-         ORG: 2,
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("lists the legacy notebook's cell and runs it with the given", async () => {
+         write(SHAPES[2]);
+         const pkg = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig(),
+         );
+         const model = pkg.getModel("nb.malloynb")!;
+         const notebook = await model.getNotebook();
+         expect(notebook.notebookCells?.some((c) => c.type === "code")).toBe(
+            true,
+         );
+         const run = await model.executeNotebookCell(1, undefined, false, {
+            ORG: 2,
+         });
+         expect(count(run.result)).toBe(2);
       });
-      expect(count(run.result)).toBe(2);
    });
 
    it("lists the layout notebook's query cell", async () => {

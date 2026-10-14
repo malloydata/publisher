@@ -122,6 +122,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getModelType: () => "model",
+                  carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async () => {
                      throw error;
@@ -169,6 +170,7 @@ function storeCapturingMetadata(
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
                   getModelType: () => "model",
+                  carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async (..._args: unknown[]) => {
                      // Positional: sourceName, queryName, query, filterParams,

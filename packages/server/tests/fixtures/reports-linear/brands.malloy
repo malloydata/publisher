@@ -1,0 +1,22 @@
+##! experimental.givens
+##| artifact { layout=linear
+  tiles=[
+    heading { kind=text },
+    "brands_tiles -> amount_by_brand"
+  ]
+}
+|##
+
+// No title and no doc comment, so the listing takes the file name; and no
+// autorun, so it runs on every change.
+import "orders.malloy"
+import { BRAND } from "givens.malloy"
+
+##|(markdown) heading
+# Brands
+|##
+
+source: brands_tiles is orders extend {
+   # label="Amount by brand"
+   view: amount_by_brand is by_brand
+}

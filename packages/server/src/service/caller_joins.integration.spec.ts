@@ -65,9 +65,27 @@ source: comp is compose(gated, plain)
 source: comp_rg is compose(rowgated, plain)
 source: comp_plain is compose(plain, open_src)
 
+// Query sources over an ANONYMOUS base: the derivation carries the base's gate,
+// and there is no named base for a caller join to anchor on.
+#(access_filter) region in $GROUPS
+source: rg_anon is duckdb.table('t') extend { dimension: nm is name } -> { select: id, region, nm } extend { primary_key: id }
+source: rg_anon_qs is rg_anon -> { group_by: id, region } extend { primary_key: id }
+#(authorize) 'g_allowed' in $GROUPS
+source: lock_anon is duckdb.table('t') extend { dimension: secret is name } -> { select: id, secret } extend { primary_key: id }
+#(access_filter) region in $GROUPS
+source: hidden_anon is duckdb.table('t') extend {} -> { select: id, region } extend { primary_key: id }
+// A query source over a locked NAMED base, with no gate of its own: the lock
+// reaches it only through the derivation.
+source: qs_over_locked is gated -> { select: id, secret } extend { primary_key: id }
+// An exported query source over an unexported, row-gated, NAMED base.
+#(access_filter) region in $GROUPS
+source: hidden_rg is duckdb.table('t') extend { primary_key: id }
+source: qs_over_hidden_rg is hidden_rg -> { select: id, region } extend { primary_key: id }
+
 export {
   gated, rowgated, plain, open_src, gated_ext, gated_sql, gated_q,
-  rg_q, hq_exp, nq_author, comp, comp_rg, comp_plain
+  rg_q, hq_exp, nq_author, comp, comp_rg, comp_plain,
+  rg_anon, rg_anon_qs, lock_anon, qs_over_locked, qs_over_hidden_rg
 }
 `;
 
@@ -85,7 +103,7 @@ async function loadModel(boundary: boolean): Promise<Model> {
       new Map<string, Connection>([["duckdb", duck as Connection]]),
    );
    if (boundary) {
-      // What `Package` does for a package whose manifest lists `explores`.
+      // What `Package` does for a curated package (a root index.malloy).
       model.setDiscoveryCuration(true);
       model.setQueryBoundary({
          mode: "declared",
@@ -430,6 +448,96 @@ describe("a caller join into an #(access_filter) row gate", () => {
       expect(sql).toMatch(/"region" IN \('US'\)/);
    });
 
+   it("a query source over an anonymous base, joined plainly, is filtered", async () => {
+      const { rows, sql } = await run(
+         plainModel,
+         "run: plain extend { join_one: a is rg_anon on id = a.id } -> { group_by: id, a.region }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, region: "US" },
+         { id: 2, region: null },
+      ]);
+      expect(sql).toMatch(/"region" IN \('US'\)/);
+   });
+
+   it("a query-expression join over a query source with an anonymous base is filtered", async () => {
+      // The custom-field shape: one join per field, written in query text.
+      const { rows, sql } = await run(
+         plainModel,
+         "run: plain extend { join_one: cf is rg_anon -> { where: nm != 'zzz'; group_by: id, v is nm } on id = cf.id; dimension: fv is cf.v } -> { group_by: id, fv }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, fv: "a" },
+         { id: 2, fv: null },
+      ]);
+      expect(sql).toMatch(/"region" IN \('US'\)/);
+   });
+
+   it("a query source over a query source over an anonymous base is filtered", async () => {
+      const { rows } = await run(
+         plainModel,
+         "run: plain extend { join_one: a is rg_anon_qs on id = a.id } -> { group_by: id, a.region }",
+         { GROUPS: ["EU"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, region: null },
+         { id: 2, region: "EU" },
+      ]);
+   });
+
+   it("an inline extend over a query source with an anonymous base is filtered", async () => {
+      const { rows, sql } = await run(
+         plainModel,
+         "run: plain extend { join_one: e is rg_anon extend { dimension: z is 1 } on id = e.id } -> { group_by: id, e.region, e.z }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, region: "US", z: 1 },
+         // `z is 1` is a constant on the join side: it is 1 whether or not
+         // the join matched; the filtered column is what reads null.
+         { id: 2, region: null, z: 1 },
+      ]);
+      expect(sql).toMatch(/"region" IN \('US'\)/);
+   });
+
+   it("an inline extend of a CALLER-declared query source over a locked base is decided by the base's lock, not over-denied", async () => {
+      // `mine` is the caller's; `mine extend {}` has no sourceID and an
+      // `extends` naming a caller source, so it must resolve through the
+      // compiled base to the model's `gated`, as it did before.
+      const q =
+         "source: mine is gated -> { group_by: id, name }\nrun: plain extend { join_one: e is mine extend {} on id = e.id } -> { group_by: id, e.name }";
+      await expectDenied(plainModel, q, DENY, "e");
+      const { rows } = await run(plainModel, q, ADMIT);
+      expect(byId(rows)).toEqual([
+         { id: 1, name: "a" },
+         { id: 2, name: "b" },
+      ]);
+   });
+
+   it("a lock on a query source over an anonymous base is decided, not refused as unprovable", async () => {
+      const q =
+         "run: plain extend { join_one: l is lock_anon on id = l.id } -> { group_by: id, l.secret }";
+      await expectDenied(plainModel, q, DENY, "l");
+      const { rows } = await run(plainModel, q, ADMIT);
+      expect(byId(rows)).toEqual([
+         { id: 1, secret: "a" },
+         { id: 2, secret: "b" },
+      ]);
+   });
+
+   it("a query source over a locked NAMED base, declaring no gate of its own, is still decided by the inherited lock", async () => {
+      const q =
+         "run: plain extend { join_one: l is qs_over_locked on id = l.id } -> { group_by: id, l.secret }";
+      await expectDenied(plainModel, q, DENY, "l");
+      const { rows } = await run(plainModel, q, ADMIT);
+      expect(byId(rows)).toEqual([
+         { id: 1, secret: "a" },
+         { id: 2, secret: "b" },
+      ]);
+   });
+
    it("a composite join with a row-gated member is refused", async () => {
       await expectDenied(
          plainModel,
@@ -489,6 +597,48 @@ describe("the query boundary reaches caller joins", () => {
          boundaryModel,
          "run: plain extend { join_one: h is helper on id = h.id } -> { group_by: h.name }",
          ADMIT,
+      );
+   });
+
+   it("a join into an exported query source over an anonymous base is admitted and filtered; a hidden one is 404", async () => {
+      const { rows } = await run(
+         boundaryModel,
+         "run: plain extend { join_one: a is rg_anon on id = a.id } -> { group_by: id, a.region }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(rows)).toEqual([
+         { id: 1, region: "US" },
+         { id: 2, region: null },
+      ]);
+      await expectNotQueryable(
+         boundaryModel,
+         "run: plain extend { join_one: h is hidden_anon on id = h.id } -> { group_by: id, h.region }",
+         { GROUPS: ["US"] },
+      );
+   });
+
+   it("an exported query source over an unexported named base: a caller join and `run:` agree, and the base itself stays 404", async () => {
+      const expected = [
+         { id: 1, region: "US" },
+         { id: 2, region: null },
+      ];
+      const direct = await run(
+         boundaryModel,
+         "run: qs_over_hidden_rg -> { group_by: id, region }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(direct.rows)).toEqual([{ id: 1, region: "US" }]);
+      const joined = await run(
+         boundaryModel,
+         "run: plain extend { join_one: q is qs_over_hidden_rg on id = q.id } -> { group_by: id, q.region }",
+         { GROUPS: ["US"] },
+      );
+      expect(byId(joined.rows)).toEqual(expected);
+      expect(joined.sql).toMatch(/"region" IN \('US'\)/);
+      await expectNotQueryable(
+         boundaryModel,
+         "run: plain extend { join_one: h is hidden_rg on id = h.id } -> { group_by: id, h.region }",
+         { GROUPS: ["US"] },
       );
    });
 

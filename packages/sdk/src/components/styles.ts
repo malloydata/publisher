@@ -89,24 +89,6 @@ export const StyledCardMedia = styled(CardMedia)({
    padding: "0",
 });
 
-// New clean notebook styles
-// No width or side padding of its own: like the Dashboard, a notebook fills
-// the column its host gives it, so a package's pages share one set of edges.
-export const CleanNotebookContainer = styled("div")(({ theme }) => ({
-   backgroundColor: theme.palette.background.default,
-   borderRadius: "12px",
-   boxShadow: "none",
-   border: "none",
-}));
-
-export const CleanNotebookSection = styled("div")({
-   marginBottom: "48px",
-   padding: "0",
-   backgroundColor: "transparent",
-   border: "none",
-   boxShadow: "none",
-});
-
 export const CleanMetricCard = styled("div")({
    backgroundColor: "transparent",
    paddingTop: "12px",

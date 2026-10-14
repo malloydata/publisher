@@ -1,5 +1,5 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Tagged runs" }
+## artifact { layout=linear title="Tagged runs" }
 import "../models/orders.malloy"
 
 #" Revenue for each month.

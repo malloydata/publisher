@@ -15,8 +15,8 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  * segment, and 404'd with a misleading "Package manifest ... does not exist".
  * They must route within the package instead.
  *
- * No bundled example ships a README.malloynb, so the spec writes its own
- * README.malloynb + target notebook into the `storefront` package directory
+ * No bundled example ships a README.malloy, so the spec writes its own
+ * README.malloy + target notebook into the `storefront` package directory
  * before the suite runs, triggers a package reload, and cleans up after
  * (the same fixture pattern as notebook-givens.spec.ts). The target name
  * shares nothing with the package name, so a dropped package segment cannot
@@ -27,26 +27,34 @@ import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
  * sources, so the fixture writes below would land in version control.
  */
 
-const FIXTURE_README = "README.malloynb";
-const FIXTURE_TARGET = "linked_tour.malloynb";
+const FIXTURE_README = "README.malloy";
+const FIXTURE_TARGET = "linked_tour.malloy";
 
 const PKG_DIR = path.resolve(
    path.dirname(fileURLToPath(import.meta.url)),
    "../../../server/publisher_data/examples/storefront",
 );
 
-const README_SOURCE = `>>>markdown
+// A report's route is its path without `.malloy`, so that is what the link
+// names; `linked_tour.malloy` would open the model view instead.
+const README_SOURCE = `## artifact { layout=linear tiles=[toc { kind=text }] }
+
+##|(markdown) toc
 # Storefront README
 
 Table of contents:
 
-- [Linked tour](${FIXTURE_TARGET})
+- [Linked tour](linked_tour)
+|##
 `;
 
-const TARGET_SOURCE = `>>>markdown
+const TARGET_SOURCE = `## artifact { layout=linear tiles=[intro { kind=text }] }
+
+##|(markdown) intro
 # Linked tour
 
-Fixture notebook for the README-link routing regression spec.
+Fixture report for the README-link routing regression spec.
+|##
 `;
 
 async function reloadPackage(baseURL: string): Promise<void> {
@@ -81,21 +89,20 @@ test.describe("notebook-readme-links", () => {
       await openEnvironment(page, DEFAULT_ENV);
       await openPackage(page, DEFAULT_ENV, PACKAGES.storefront);
 
-      // The fixture README.malloynb renders a table of contents linking to
+      // The fixture README.malloy renders a table of contents linking to
       // another notebook. Clicking it must stay within the storefront package.
       const link = page.getByRole("link", { name: "Linked tour" });
       await expect(link).toBeVisible({ timeout: 60_000 });
       await link.click();
 
       await expect(page).toHaveURL(
-         new RegExp(
-            `/${DEFAULT_ENV}/${PACKAGES.storefront}/linked_tour\\.malloynb`,
-         ),
+         new RegExp(`/${DEFAULT_ENV}/${PACKAGES.storefront}/linked_tour$`),
       );
       // The target notebook renders its authored H1, proving it loaded rather
       // than the "does not exist" error the dropped-package route gave.
       await expect(
-         page.getByRole("heading", { name: "Linked tour", level: 1 }),
+         // The report's title and the prose's own heading both say it.
+         page.getByRole("heading", { name: "Linked tour", level: 1 }).first(),
       ).toBeVisible();
    });
 });

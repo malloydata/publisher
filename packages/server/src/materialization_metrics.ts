@@ -353,12 +353,18 @@ export function recordIncrementalStep(
 }
 
 /**
- * Record the wall-clock cost of compiling a package's build plan
- * (`Package.buildPlan`). This recompiles models at load, so it is worth
- * tracking as a discrete cost separate from the build itself.
+ * Record the wall-clock cost of a package's build plan at load
+ * (`Package.buildPlan`). `computed_in` separates the two populations: `worker`
+ * is the package-load worker deriving it from the compile it already ran (see
+ * WorkerBuildPlan.durationMs); `main_thread` is the derivation that compiles
+ * the package again on the event loop, which a load takes only when the
+ * worker left the plan at its soft deadline.
  */
-export function recordBuildPlanComputeDuration(durationMs: number): void {
-   buildPlanComputeDuration().record(durationMs);
+export function recordBuildPlanComputeDuration(
+   durationMs: number,
+   computedIn: "worker" | "main_thread",
+): void {
+   buildPlanComputeDuration().record(durationMs, { computed_in: computedIn });
 }
 
 /**
@@ -500,7 +506,28 @@ export function recordAttributionSkipped(
 export function recordEligibilityRefused(
    reason: EligibilityRefusalReason,
 ): void {
+   const counts = eligibilityRefusalSink?.();
+   if (counts) {
+      counts[reason] = (counts[reason] ?? 0) + 1;
+      return;
+   }
    eligibilityRefusedCounter().add(1, { reason });
+}
+
+let eligibilityRefusalSink:
+   | (() => Partial<Record<EligibilityRefusalReason, number>> | undefined)
+   | undefined;
+
+/**
+ * Route eligibility refusals to the counts `sink` returns instead of the
+ * meter, whenever it returns any. The package-load worker derives build plans
+ * on a thread whose meter is a no-op, so it counts each job's refusals in that
+ * job's own context and hands them back for the main thread to record.
+ */
+export function setEligibilityRefusalSink(
+   sink: () => Partial<Record<EligibilityRefusalReason, number>> | undefined,
+): void {
+   eligibilityRefusalSink = sink;
 }
 
 /**

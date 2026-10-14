@@ -408,7 +408,7 @@ source: published is duckdb.sql("select 1 as id") extend {
 
    describe('scope "append" refuses render tags in text that is a document', () => {
       // The refusal is for document text, which other viewers run; a plain fragment is the caller's own compile.
-      const DOCUMENT = "## artifact { kind=notebook }\n";
+      const DOCUMENT = "## artifact { layout=linear tiles=[] }\n";
       const docRefusalFor = (source: string, scope: "append") =>
          refusalFor(DOCUMENT + source, scope);
       const docErrorsFor = (source: string, scope: "append") =>
@@ -545,7 +545,7 @@ source: published is duckdb.sql("select 1 as id") extend {
                "@env.",
             ],
             "an @env. value in the ## artifact tag": [
-               `## artifact { kind=dashboard title=@env.HOME tiles=["base_source -> v"] }\nrun: base_source -> { aggregate: c }`,
+               `## artifact { layout=grid title=@env.HOME tiles=["base_source -> v"] }\nrun: base_source -> { aggregate: c }`,
                "@env.",
             ],
             "an @env. value in a tile string": [
@@ -647,7 +647,7 @@ source: published is duckdb.sql("select 1 as id") extend {
             fsSync.readFileSync(
                path.resolve(
                   __dirname,
-                  "../../../sdk/src/components/DashboardBuilder/testing/urlRenderTags.json",
+                  "../../../sdk/src/components/ReportBuilder/testing/urlRenderTags.json",
                ),
                "utf8",
             ),
@@ -748,7 +748,7 @@ source: published is duckdb.sql("select 1 as id") extend {
 
          it("is read as a document, so a render tag in it is refused", async () => {
             const error = await refusalFor(
-               `run: base_source -> { group_by: id } ## artifact { kind=notebook }\n${LEAK_FIELD}`,
+               `run: base_source -> { group_by: id } ## artifact { layout=linear }\n${LEAK_FIELD}`,
                "append",
             );
             expect(error.message).toContain(RENDER);
@@ -756,7 +756,7 @@ source: published is duckdb.sql("select 1 as id") extend {
 
          it("is not read as a document when the ## sits in a string", async () => {
             const outcome = await compile(
-               `run: base_source -> { group_by: x is '## artifact { kind=notebook }' }\n${LEAK_FIELD}`,
+               `run: base_source -> { group_by: x is '## artifact { layout=linear }' }\n${LEAK_FIELD}`,
                "append",
             ).then(
                () => undefined,

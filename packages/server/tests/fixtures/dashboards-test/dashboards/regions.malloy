@@ -8,8 +8,8 @@ import { REGION } from '../givens.malloy'
 // No `title=`: the title falls back to this doc comment. `autorun=false` batches
 // control changes behind an Apply button, and the starting value is written the
 // way Malloyyo documents it — as a bare filter literal.
-#" Orders by region
-# artifact { autorun=false givens { REGION=f'US' } }
+##" Orders by region
+## artifact { layout=grid autorun=false givens { REGION=f'US' } tiles=["regions"] }
 query: regions is orders -> {
    where: region_name ~ $REGION
    group_by: region_name

@@ -9,12 +9,13 @@ import type {
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
 import { compileDocument, type CompiledDocument } from "./compile_document";
+import { notebookReaderProblem } from "./notebook";
 import {
-   claimsToBeANotebook,
-   isNotebookModelPath,
-   notebookReaderProblem,
-} from "./notebook";
-import { isDashboardModelPath } from "./dashboard";
+   carriesArtifactTag,
+   isReportEligiblePath,
+   isUnderPublicDir,
+   reportWritePathProblem,
+} from "./report";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import { publisherMeter } from "../telemetry";
 import { Mutex } from "async-mutex";
@@ -39,12 +40,14 @@ import {
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
+   InvalidModelPathError,
    ModelCompilationError,
    NotQueryableError,
    PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
    UnparseableTextError,
+   WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
    PackageAdmissionRefusedError,
@@ -59,6 +62,7 @@ import {
 import {
    assertNoRenderTags,
    assertNoRestrictedConstructs,
+   exceedsDocumentBudget,
 } from "./compile_restriction";
 import { translatorMalloyError } from "./translator_error";
 import { recordAuthorizeGuardRejection } from "../authorize_metrics";
@@ -77,7 +81,8 @@ import {
    safeJoinUnderRoot,
 } from "../path_safety";
 import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
-import { URL_READER } from "../utils";
+import { errMessage, URL_READER } from "../utils";
+import { UNCODED_REPORT_FINDING } from "../report_metrics";
 import { getPackageLoadPool } from "../package_load/package_load_pool";
 import {
    buildEnvironmentMalloyConfig,
@@ -838,21 +843,25 @@ export class Environment {
          }
          // A document is gated cell by cell and tile by tile below, so one
          // restricted cell does not refuse the cells the caller may read.
+         // Text over a document's annotation budget is not parsed to find
+         // out: when it names `artifact` at all it is taken for a document, and
+         // the budget refuses it below.
          const documentCandidate =
             scope === "append" &&
             source !== undefined &&
-            claimsToBeANotebook(source);
+            (exceedsDocumentBudget(source)
+               ? source.includes("artifact")
+               : carriesArtifactTag(source));
          const runEarlyGate = async (): Promise<void> => {
             if (gateModel && hasExactGateModel && source !== undefined) {
                // Only the authorize gate (the *who* axis) applies to /compile.
                // The query boundary (`explores`/`queryableSources`, the *what*
                // axis) deliberately does NOT: compile is the authoring loop
-               // (validate -> save -> reload), and gating it made a curated
-               // package un-authorable — a QA session (HANDOFF CR-5) had every
-               // per-file compile 404 with "Query target is not queryable" the
-               // moment `queryableSources: "declared"` was set. The boundary is
-               // discovery curation, not access control (the skills say so
-               // outright); the accepted trade is that /compile can reveal a
+               // (validate -> save -> reload), and gating it would make a curated
+               // package un-authorable: every per-file compile would 404 once
+               // `queryableSources: "declared"` is set. The boundary is
+               // discovery curation, not access control; the accepted trade is
+               // that /compile can reveal a
                // non-exported source's schema (and, with includeSql, SQL) —
                // sources whose confidentiality matters are gated by
                // `#(authorize)`, which still applies here in full.
@@ -984,6 +993,7 @@ export class Environment {
                outcome = await getPackageLoadPool().loadPackage({
                   packagePath,
                   packageName,
+                  environmentName: this.environmentName,
                   malloyConfig: pkg.getMalloyConfig(),
                   defaultConnectionName: "duckdb",
                   buildManifest: boundManifestEntries,
@@ -1049,10 +1059,11 @@ export class Environment {
                }
             };
             // The findings a reload would add on the main thread after this
-            // same worker compile: render tags and the dashboard, given and
-            // drill lints. Read before the notebook lint below, which drops its
-            // copy of a finding only when the dashboard lint reported it too.
-            const { renderTagWarnings, dashboardWarnings } =
+            // same worker compile: render tags and the report, given and
+            // drill lints. Read before the per-file text lint below, which
+            // drops its copy of a finding only when the report lint reported
+            // it too.
+            const { renderTagWarnings, reportWarnings } =
                await Package.lintWorkerOutcome(
                   this.environmentName,
                   packageName,
@@ -1104,9 +1115,11 @@ export class Environment {
                   }
                }
                // A file that did not compile carries no text back, so it is read as saved (or as replaced).
+               // Any file that can be a report; the lint says nothing about a
+               // file with no artifact tag, wherever it lives.
                const lintText = !(
-                  isNotebookModelPath(compiled.modelPath) ||
-                  isDashboardModelPath(compiled.modelPath)
+                  compiled.modelPath.endsWith(".malloy") &&
+                  isReportEligiblePath(compiled.modelPath)
                )
                   ? undefined
                   : (compiled.modelSourceText ??
@@ -1131,7 +1144,7 @@ export class Environment {
                            !reportedByDashboardLint(
                               problem,
                               compiled.modelPath,
-                              dashboardWarnings,
+                              reportWarnings,
                            ),
                      ),
                      compiled.modelPath,
@@ -1156,8 +1169,11 @@ export class Environment {
             for (const warning of renderTagWarnings) {
                collect([asProblem(warning, "render-tag")], warning.model);
             }
-            for (const warning of dashboardWarnings) {
-               collect([asProblem(warning, "dashboard-lint")], warning.model);
+            for (const warning of reportWarnings) {
+               collect(
+                  [asProblem(warning, warning.code ?? UNCODED_REPORT_FINDING)],
+                  warning.model,
+               );
             }
             if (
                source !== undefined &&
@@ -2131,24 +2147,130 @@ export class Environment {
       try {
          return await fs.promises.readFile(target, "utf8");
       } catch (error) {
-         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+         const code = (error as NodeJS.ErrnoException).code;
+         // ENOTDIR: a directory on the path is a file, so nothing is here;
+         // resolving the directories refuses it (`_resolveModelFileDirLocked`).
+         if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
          return undefined;
+      }
+   }
+
+   /**
+    * Settle where a write to `target` really leads, creating nothing, and
+    * return the directories it would need, deepest first. The caller holds the
+    * package lock.
+    *
+    * The target is already confined lexically (`safeJoinUnderRoot`), but a
+    * directory in the package can be a symlink elsewhere, which `mkdir` and the
+    * write would follow. So the nearest existing directory (and the file, if it
+    * is a link) is resolved and must lie inside the resolved package root and
+    * outside `public/`, which a symlink or a differently cased name on a
+    * case-insensitive file system would otherwise reach. A path through an
+    * existing file is refused too.
+    */
+   private async _resolveModelFileDirLocked(
+      packageRoot: string,
+      target: string,
+   ): Promise<string[]> {
+      const missing: string[] = [];
+      let dir = path.dirname(target);
+      while (dir.startsWith(packageRoot)) {
+         const stat = await fs.promises.stat(dir).catch((error) => {
+            const code = (error as NodeJS.ErrnoException).code;
+            // ENOTDIR: an ancestor is a file, found as the walk goes up.
+            if (code === "ENOENT" || code === "ENOTDIR") return undefined;
+            throw error;
+         });
+         if (stat === undefined) {
+            missing.push(dir);
+            dir = path.dirname(dir);
+            continue;
+         }
+         if (!stat.isDirectory())
+            throw new InvalidModelPathError(
+               `Invalid model path: \`${path.relative(packageRoot, dir).split(path.sep).join("/")}\` ` +
+                  `is a file in the package, not a directory.`,
+            );
+         break;
+      }
+      const [realRoot, realExisting, realTarget] = await Promise.all([
+         fs.promises.realpath(packageRoot),
+         fs.promises.realpath(dir).catch(() => undefined),
+         // The file itself may be a link; where it leads is checked too.
+         missing.length > 0
+            ? undefined
+            : fs.promises.realpath(target).catch(() => undefined),
+      ]);
+      for (const real of [realExisting, realTarget]) {
+         if (real === undefined) continue;
+         if (real !== realRoot && !real.startsWith(`${realRoot}${path.sep}`)) {
+            throw new InvalidModelPathError(
+               `Invalid model path: it resolves outside the package.`,
+            );
+         }
+         if (
+            isUnderPublicDir(
+               path.relative(realRoot, real).split(path.sep).join("/"),
+            )
+         ) {
+            throw new InvalidModelPathError(
+               `Invalid model path: it resolves into \`public/\`, which is served ` +
+                  `as raw static files.`,
+            );
+         }
+      }
+      if (realExisting === undefined) {
+         throw new InvalidModelPathError(
+            `Invalid model path: it resolves outside the package.`,
+         );
+      }
+      return missing;
+   }
+
+   /** Make the directories {@link _resolveModelFileDirLocked} found missing; returned deepest first, to take back. */
+   private async _createModelFileDirsLocked(
+      missing: readonly string[],
+   ): Promise<string[]> {
+      // Shallowest first to create; returned deepest first to remove.
+      const created: string[] = [];
+      try {
+         for (const next of [...missing].reverse()) {
+            await fs.promises.mkdir(next);
+            created.unshift(next);
+         }
+      } catch (error) {
+         await this._removeCreatedDirsLocked(created);
+         throw error;
+      }
+      return created;
+   }
+
+   /** Take back directories a create made, deepest first; only empty ones go. */
+   private async _removeCreatedDirsLocked(dirs: string[]): Promise<void> {
+      for (const dir of dirs) {
+         await fs.promises.rmdir(dir).catch(() => undefined);
       }
    }
 
    /**
     * Put text at a model path, atomically: a sibling temporary file is renamed
     * over the target, so a reader never sees a half-written file and a crash
-    * leaves either the old text or the new. The caller holds the package lock.
+    * leaves either the old text or the new. The caller holds the package lock,
+    * and the directory exists: {@link _createModelFileDirsLocked} made it for a
+    * new file, and a restore writes where the previous text was.
     */
    private async _writeModelFileLocked(
       target: string,
       source: string,
    ): Promise<void> {
-      await fs.promises.mkdir(path.dirname(target), { recursive: true });
       const temporary = `${target}.${crypto.randomUUID()}.tmp`;
-      await fs.promises.writeFile(temporary, source, "utf8");
-      await fs.promises.rename(temporary, target);
+      try {
+         await fs.promises.writeFile(temporary, source, "utf8");
+         await fs.promises.rename(temporary, target);
+      } catch (error) {
+         await fs.promises.rm(temporary, { force: true });
+         throw error;
+      }
    }
 
    /**
@@ -2171,7 +2293,16 @@ export class Environment {
     * both pass their precondition. `verify` runs against the reloaded package
     * and likewise refuses by throwing; a refusal puts the previous text back
     * (or removes the file, when it is new), reloads again, and raises
-    * {@link WriteRolledBackError}.
+    * {@link WriteRolledBackError}. When putting it back fails too, that is
+    * logged as an error and raised as {@link WriteRollbackFailedError}: the
+    * package may then serve the new text, so the caller must not read it as
+    * "nothing changed". A restore that lands but whose reload fails is still a
+    * rollback — the previous text is on disk — and its message says the
+    * package may need a reload.
+    *
+    * Where the path really leads (through any link, into the package and out
+    * of `public/`) is settled before the file is read, so nothing outside the
+    * package is ever read through it.
     *
     * Anything that must NOT be under the lock — compiling above all — belongs
     * before this call: the lock is not reentrant, and compiling the proposed
@@ -2186,15 +2317,32 @@ export class Environment {
    ): Promise<{ previous: string | undefined; verified: T }> {
       assertSafePackageName(packageName);
       assertSafeRelativeModelPath(modelPath);
+      const pathProblem = reportWritePathProblem(modelPath);
+      if (pathProblem) throw new InvalidModelPathError(pathProblem);
       return this.withPackageLock(packageName, async () => {
          const target = safeJoinUnderRoot(
             this.environmentPath,
             packageName,
             modelPath,
          );
+         const missing = await this._resolveModelFileDirLocked(
+            safeJoinUnderRoot(this.environmentPath, packageName),
+            target,
+         );
          const previous = await this._readModelFileLocked(target);
          check(previous, this.packages.get(packageName));
-         await this._writeModelFileLocked(target, source);
+         const createdDirs = await this._createModelFileDirsLocked(missing);
+         try {
+            await this._writeModelFileLocked(target, source);
+         } catch (error) {
+            // Nothing was served from the new text, so there is no reload to
+            // undo: only a new file and the directories made for it.
+            if (previous === undefined) {
+               await fs.promises.rm(target, { force: true });
+               await this._removeCreatedDirsLocked(createdDirs);
+            }
+            throw error;
+         }
          try {
             // The locked form, because this whole callback already holds the
             // mutex that `getPackage` would take.
@@ -2204,16 +2352,46 @@ export class Environment {
             );
             return { previous, verified: await verify(reloaded) };
          } catch (error) {
-            if (previous !== undefined)
-               await this._writeModelFileLocked(target, previous);
-            else await fs.promises.rm(target, { force: true });
-            await this._loadOrGetPackageLocked(packageName, true).catch(
-               () => undefined,
-            );
-            logger.warn("Dashboard write rolled back", {
+            try {
+               if (previous !== undefined)
+                  await this._writeModelFileLocked(target, previous);
+               else {
+                  await fs.promises.rm(target, { force: true });
+                  // The directories this create made, emptied by the removal.
+                  await this._removeCreatedDirsLocked(createdDirs);
+               }
+            } catch (restoreError) {
+               // The one log line for this write: the route and the error
+               // mapping leave both rollback outcomes to this method.
+               logger.error("Report write rollback failed", {
+                  packageName,
+                  model: modelPath,
+                  error: errMessage(error),
+                  restoreError: errMessage(restoreError),
+               });
+               throw new WriteRollbackFailedError(
+                  `The package did not reload with the new \`${modelPath}\`, ` +
+                     `and putting the previous text back failed too, so the ` +
+                     `package may be serving the new text or none. Reload the ` +
+                     `package, and check \`${modelPath}\`.`,
+                  { cause: restoreError },
+               );
+            }
+            // The previous text is on disk again, so this is a rollback even
+            // when reloading it fails: what is left is a reload, not an edit.
+            let reloadError: unknown;
+            try {
+               await this._loadOrGetPackageLocked(packageName, true);
+            } catch (e) {
+               reloadError = e;
+            }
+            logger.warn("Report write rolled back", {
                packageName,
-               modelPath,
-               error,
+               model: modelPath,
+               error: errMessage(error),
+               ...(reloadError === undefined
+                  ? {}
+                  : { reloadError: errMessage(reloadError) }),
             });
             // Only a refusal worded for the caller is echoed; anything else can carry a server path.
             const reason =
@@ -2221,7 +2399,10 @@ export class Environment {
             throw new WriteRolledBackError(
                `The package did not reload with the new \`${modelPath}\`` +
                   `${reason ? ` (${reason})` : ""}, so the previous text was ` +
-                  `put back and nothing changed.`,
+                  (reloadError === undefined
+                     ? `put back and nothing changed.`
+                     : `put back, but the package did not reload it and may ` +
+                       `need a reload.`),
                { cause: error },
             );
          }
@@ -3657,7 +3838,7 @@ export class Environment {
          // The surface may have changed with no file changing, so the tile
          // findings are re-checked against it. (A manifest rebind above
          // reloads, which re-discovers and re-lints on its own.)
-         await _package.relintDashboards();
+         await _package.relintReports();
       }
 
       return _package.getPackageMetadata();

@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { useRouterClickHandler } from "@malloy-publisher/sdk";
-import { splitEdit } from "../../common/documentRoutes";
-import ChevronRight from "@mui/icons-material/ChevronRight";
 import Box from "@mui/material/Box";
 import Breadcrumbs from "@mui/material/Breadcrumbs";
 import Chip from "@mui/material/Chip";
@@ -13,9 +11,15 @@ import { useParams } from "react-router-dom";
 interface BreadcrumbChipProps {
    label: string;
    onClick: (event: MouseEvent) => void;
+   /** The page you are on: full-strength text, where the path above it is muted. */
+   current?: boolean;
 }
 
-function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
+function BreadcrumbChip({
+   label,
+   onClick,
+   current = false,
+}: BreadcrumbChipProps) {
    return (
       <Chip
          clickable
@@ -23,21 +27,22 @@ function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
          label={label}
          size="small"
          aria-label={`Navigate to ${label}`}
+         aria-current={current ? "page" : undefined}
          sx={(theme) => ({
-            // The page's own ground with a border, not a raised fill: a
-            // breadcrumb is a path, not five objects sitting on the page, and
-            // `background.paper` on a darker page drew each crumb as a lit
-            // box. Same construction the dashboard cards use.
+            // Text, not a row of outlined boxes: a breadcrumb is a path, and
+            // each crumb drawn as a control made the top of every page a row
+            // of buttons. The hover fill still says each one is a link.
             backgroundColor: "transparent",
-            border: `1px solid ${theme.palette.divider}`,
-            color: "text.primary",
-            fontWeight: 500,
-            fontSize: "0.875rem",
-            height: 32,
+            border: "none",
+            color: current ? "text.primary" : "text.secondary",
+            fontWeight: current ? 500 : 400,
+            fontSize: 13,
+            height: 28,
             cursor: "pointer",
-            borderRadius: "4px",
+            borderRadius: "6px",
             maxWidth: 320,
             "& .MuiChip-label": {
+               px: 0.75,
                overflow: "hidden",
                textOverflow: "ellipsis",
                whiteSpace: "nowrap",
@@ -60,9 +65,9 @@ function BreadcrumbChip({ label, onClick }: BreadcrumbChipProps) {
 
 export default function BreadcrumbNav() {
    const params = useParams();
-   // The builder's edit segment is a mode, not a place: the breadcrumb names
-   // the document and leads to it, in either mode.
-   const modelPath = params["*"] ? splitEdit(params["*"]).path : undefined;
+   // The builder is `?edit`, a mode, not a place: the path names the document
+   // in either mode, and a report may be named `edit`.
+   const modelPath = params["*"] ? params["*"].replace(/\/$/, "") : undefined;
    const navigate = useRouterClickHandler();
 
    if (!params.environmentName && !params.packageName && !modelPath) {
@@ -74,12 +79,19 @@ export default function BreadcrumbNav() {
          <Breadcrumbs
             aria-label="breadcrumb"
             separator={
-               <ChevronRight sx={{ fontSize: 14, color: "text.secondary" }} />
+               <Box
+                  component="span"
+                  aria-hidden
+                  sx={{ color: "text.disabled" }}
+               >
+                  /
+               </Box>
             }
          >
             {params.environmentName && (
                <BreadcrumbChip
                   label={params.environmentName}
+                  current={!params.packageName && !modelPath}
                   onClick={(event) =>
                      navigate(`/${params.environmentName}/`, event)
                   }
@@ -89,6 +101,7 @@ export default function BreadcrumbNav() {
             {params.packageName && (
                <BreadcrumbChip
                   label={params.packageName}
+                  current={!modelPath}
                   onClick={(event) =>
                      navigate(
                         `/${params.environmentName}/${params.packageName}/`,
@@ -101,6 +114,7 @@ export default function BreadcrumbNav() {
             {modelPath && (
                <BreadcrumbChip
                   label={modelPath}
+                  current
                   onClick={(event) =>
                      navigate(
                         `/${params.environmentName}/${params.packageName}/${modelPath}`,

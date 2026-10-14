@@ -1,0 +1,13 @@
+##! experimental.givens
+// `givens { … }` is where a report's controls begin: a value the reader
+// arrives at, rather than the declaration's default. It is written as a DATE
+// LITERAL, the natural spelling, which used to publish a full ISO timestamp
+// the query endpoint 400s on.
+## artifact { layout=linear givens { SINCE=@2024-03-01 } tiles=["orders_tiles -> in_window"] }
+
+import { orders } from "orders.malloy"
+import { SINCE } from "givens.malloy"
+
+source: orders_tiles is orders extend {
+   view: in_window is since_totals
+}

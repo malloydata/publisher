@@ -58,7 +58,12 @@ export async function pickChart(
    await page.keyboard.press("Escape");
 }
 
-/** Creates a document through the package page's New menu and returns its slug. */
+/**
+ * Creates a report through the package page's New report action and returns
+ * its route: its package path without `.malloy`, which at the package root
+ * (where New report writes by default) is its slug. `kind` picks the layout:
+ * `Dashboard` is grid, `Notebook` linear.
+ */
 export async function createDocument(
    page: Page,
    pe: PackageEnv,
@@ -66,35 +71,40 @@ export async function createDocument(
    title: string,
 ): Promise<string> {
    await page.goto(`/${pe.env}/${pe.pkg}`);
-   await page.getByRole("button", { name: "New", exact: true }).click({
-      timeout: 60_000,
-   });
-   await page.getByRole("menuitem", { name: kind }).click();
+   await page
+      .getByRole("button", { name: "Add report", exact: true })
+      .first()
+      .click({
+         timeout: 60_000,
+      });
    const dialog = page.getByRole("dialog");
-   await expect(dialog.getByLabel(`${kind} title`)).not.toHaveValue("", {
+   await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
       timeout: 30_000,
    });
-   await dialog.getByRole("combobox", { name: "Model" }).click();
-   await page.getByRole("option", { name: "storefront.malloy" }).click();
-   await dialog
-      .getByRole("combobox", {
-         name: kind === "Dashboard" ? "First tile" : "First query",
+   await dialog.getByRole("combobox", { name: "Layout" }).click();
+   await page
+      .getByRole("option", {
+         name: kind === "Dashboard" ? /^Grid/ : /^Linear/,
       })
       .click();
+   await dialog.getByRole("combobox", { name: "Model" }).click();
+   await page.getByRole("option", { name: "storefront.malloy" }).click();
+   await dialog.getByRole("combobox", { name: "First query" }).click();
    await page
       .getByRole("option", {
          name: "order_items → sales_by_month",
          exact: true,
       })
       .click();
-   await dialog.getByLabel(`${kind} title`).fill(title);
-   await dialog.getByRole("button", { name: `Create ${kind}` }).click();
-   const folder = kind === "Dashboard" ? "dashboards" : "notebooks";
-   await expect(page).toHaveURL(new RegExp(`/${folder}/[a-z0-9-]+/edit$`), {
-      timeout: 60_000,
-   });
+   await dialog.getByLabel("Report title").fill(title);
+   await dialog.getByRole("button", { name: "Create report" }).click();
+   // At the package root: no directory is created for a new report.
+   await expect(page).toHaveURL(
+      new RegExp(`/${pe.env}/${pe.pkg}/[a-z0-9-]+\\?edit$`),
+      { timeout: 60_000 },
+   );
    await editorOpen(page);
-   const slug = new URL(page.url()).pathname.split("/").slice(-2)[0]!;
+   const slug = new URL(page.url()).pathname.split("/").slice(-1)[0]!;
    // Deduplication changes the slug on a repeat run, never its prefix.
    expect(slug.startsWith(title.toLowerCase().replace(/ /g, "-"))).toBe(true);
    return slug;

@@ -4,27 +4,30 @@
 /// <reference types="bun-types" />
 
 /**
- * The served-notebook lint through the real server: the package's warnings, and
- * /compile at file, package and append scope.
+ * The report lint through the real server: the package's warnings, and
+ * /compile at file, package and append scope. `notebooks/header_statement.malloy`
+ * is written as `run:` cells, the retired format, so it is no report.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
-import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import {
+   fixture,
+   startPackageEnv,
+   type PackageEnv,
+   type Warning,
+} from "../../harness/reports";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const ENV_NAME = "notebook-lint-env";
 const PKG = "notebooks-lint";
 const LINTY = "notebooks/linty.malloy";
 const BROKEN_SOURCE =
-   "## artifact { kind=notebook }\ngiven: G :: string is 'a'\n##|\"\nprose\n";
+   "## artifact { layout=linear tiles=[intro { kind=text }] }\ngiven: G :: string is 'a'\n##|(markdown) intro\nprose\n";
+const CELLS = "notebooks/header_statement.malloy";
 const CLEAN = "notebooks/clean.malloy";
 const WRONG_KIND = "dashboards/wrong_kind.malloy";
 
-const fixtureDir = path.resolve(__dirname, `../../fixtures/${PKG}`);
+const fixtureDir = fixture(PKG);
 
 interface Problem {
    severity: string;
@@ -35,75 +38,37 @@ interface Problem {
 }
 
 describe("notebook lint through the real server (E2E)", () => {
-   let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
-   let baseUrl: string;
-
-   const pkgUrl = (sub: string) =>
-      `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${PKG}${sub}`;
+   let env: PackageEnv;
+   const pkgUrl = (sub: string) => env.api(sub);
    const compile = async (
       model: string,
       scope: "append" | "file" | "package",
       source?: string,
    ) => {
-      const res = await fetch(pkgUrl(`/models/${model}/compile`), {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            scope,
-            source:
-               source ?? fs.readFileSync(path.join(fixtureDir, model), "utf8"),
-         }),
+      const res = await env.post(pkgUrl(`/models/${model}/compile`), {
+         scope,
+         source:
+            source ?? fs.readFileSync(path.join(fixtureDir, model), "utf8"),
       });
       expect(res.status).toBe(200);
       return (await res.json()) as { status: string; problems: Problem[] };
    };
+   // The lint's warns, at their lines.
    const lintOf = (problems: Problem[], model: string) =>
       problems.filter(
          (p) => p.model === model && p.severity === "warn" && p.at,
       );
 
    beforeAll(async () => {
-      env = await startRestE2E();
-      baseUrl = env.baseUrl;
-      const res = await fetch(`${baseUrl}/api/v0/environments`, {
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify({
-            name: ENV_NAME,
-            packages: [{ name: PKG, location: fixtureDir }],
-            connections: [],
-         }),
-      });
-      if (!res.ok) {
-         throw new Error(
-            `Failed to create test environment (${res.status}): ${await res.text()}`,
-         );
-      }
-      const loaded = await fetch(pkgUrl(""));
-      if (!loaded.ok) throw new Error(`${PKG} did not load (${loaded.status})`);
-   });
+      env = await startPackageEnv("notebook-lint-env", { [PKG]: fixtureDir });
+   }, 300_000);
 
-   afterAll(async () => {
-      if (baseUrl) {
-         try {
-            await fetch(`${baseUrl}/api/v0/environments/${ENV_NAME}`, {
-               method: "DELETE",
-            });
-         } catch {
-            // best-effort
-         }
-      }
-      await env?.stop();
-      env = null;
-   });
+   afterAll(() => env?.stop());
 
    describe("the package's warnings", () => {
-      let warnings: { model?: string; message: string; severity?: string }[];
+      let warnings: (Warning & { message: string })[];
       beforeAll(async () => {
-         const res = await fetch(pkgUrl(""));
-         warnings =
-            ((await res.json()) as { warnings?: typeof warnings }).warnings ??
-            [];
+         warnings = (await env.warnings()) as typeof warnings;
       });
 
       it("carries each finding as a warn with its line", () => {
@@ -115,11 +80,11 @@ describe("notebook lint through the real server (E2E)", () => {
                   Number(/^Line (\d+):/.exec(w.message)?.[1]),
                ]);
          expect(of(LINTY)).toEqual([
-            ["warn", 1],
             ["warn", 4],
-            ["warn", 8],
+            ["warn", 9],
          ]);
-         expect(of(WRONG_KIND)).toEqual([["warn", 1]]);
+         // `kind=` is no longer read: the file is no report, and says so.
+         expect(of(WRONG_KIND)).toEqual([["error", 1]]);
       });
 
       it("says nothing about a clean notebook, and no notebook or dashboard draws an unknown-render-tag warning", () => {
@@ -133,14 +98,12 @@ describe("notebook lint through the real server (E2E)", () => {
          ).toEqual([]);
       });
 
-      it("carries a header statement, a column conflict and a bad text block as errors, and the alias and orphan block as warns", () => {
+      it("carries a file written as cells, a column conflict and a bad text block as errors, and the alias and orphan block as warns", () => {
          const severityOf = (model: string) =>
             warnings
                .filter((w) => w.model === model && /^Line \d+:/.test(w.message))
                .map((w) => [w.severity, w.message.split(":")[0]]);
-         expect(severityOf("notebooks/header_statement.malloy")).toEqual([
-            ["error", "Line 1"],
-         ]);
+         expect(severityOf(CELLS)).toEqual([["error", "Line 2"]]);
          expect(severityOf("dashboards/columns_conflict.malloy")).toEqual([
             ["error", "Line 1"],
          ]);
@@ -166,7 +129,9 @@ describe("notebook lint through the real server (E2E)", () => {
       it("serves the alias's width and, on a conflict, the canonical one", async () => {
          const width = async (name: string) =>
             (
-               (await (await fetch(pkgUrl(`/dashboards/${name}`))).json()) as {
+               (await (
+                  await fetch(pkgUrl(`/reports/dashboards/${name}.malloy`))
+               ).json()) as {
                   dashboardColumns?: number;
                }
             ).dashboardColumns;
@@ -193,9 +158,8 @@ describe("notebook lint through the real server (E2E)", () => {
                p.at?.range.start.line,
             ]),
          ).toEqual([
-            ["notebook-kind-missing", 0],
             ["notebook-markdown-opener", 3],
-            ["notebook-comment-not-shown", 7],
+            ["notebook-layout-run", 8],
          ]);
       });
 
@@ -209,33 +173,31 @@ describe("notebook lint through the real server (E2E)", () => {
                .map((p) => [p.model, p.code]),
          ).toEqual([
             ["dashboards/columns_conflict.malloy", "notebook-columns-conflict"],
-            [
-               "notebooks/header_statement.malloy",
-               "notebook-statement-above-artifact",
-            ],
+            ["dashboards/wrong_kind.malloy", "report-kind-removed"],
+            [CELLS, "report-cells-removed"],
             ["notebooks/linty.malloy", "render-tag"],
             // Once, from the dashboard lint, as a reload reports it.
             ["dashboards/artifact_unparsed.malloy", "dashboard-lint"],
          ]);
          expect(lintOf(problems, LINTY).map((p) => p.code)).toEqual([
-            "notebook-kind-missing",
             "notebook-markdown-opener",
-            "notebook-comment-not-shown",
+            "notebook-layout-run",
          ]);
-         expect(lintOf(problems, WRONG_KIND).map((p) => p.code)).toEqual([
-            "notebook-other-folder",
-         ]);
+         expect(
+            problems
+               .filter((p) => p.model === WRONG_KIND && p.at)
+               .map((p) => [p.code, p.severity]),
+         ).toEqual([["report-kind-removed", "error"]]);
       });
 
-      it("fails the compile of a notebook with a statement above its artifact tag, at that line", async () => {
-         const model = "notebooks/header_statement.malloy";
-         const { status, problems } = await compile(model, "file");
+      it("fails the compile of a file written as `run:` cells, at its tag's line", async () => {
+         const { status, problems } = await compile(CELLS, "file");
          expect(status).toBe("error");
          expect(
             problems
-               .filter((p) => p.model === model && p.severity === "error")
+               .filter((p) => p.model === CELLS && p.severity === "error")
                .map((p) => [p.code, p.at?.range.start.line]),
-         ).toEqual([["notebook-statement-above-artifact", 0]]);
+         ).toEqual([["report-cells-removed", 1]]);
       });
 
       describe("a notebook written as tiles", () => {
@@ -254,7 +216,7 @@ describe("notebook lint through the real server (E2E)", () => {
             expect(
                await findings(
                   "notebooks/tiles_run.malloy",
-                  `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}\nrun: a -> v\n`,
+                  `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}\nrun: a -> v\n`,
                ),
             ).toEqual([["notebook-layout-run", 6]]);
          });
@@ -263,7 +225,7 @@ describe("notebook lint through the real server (E2E)", () => {
             expect(
                await findings(
                   "notebooks/tiles_columns.malloy",
-                  `## artifact { kind=notebook tiles=[intro { kind=text }, "a -> v"] } dashboard { columns=12 }\n${SOURCE_LINE}${BLOCK}`,
+                  `## artifact { layout=linear tiles=[intro { kind=text }, "a -> v"] } dashboard { columns=12 }\n${SOURCE_LINE}${BLOCK}`,
                ),
             ).toEqual([["notebook-columns-ignored", 0]]);
          });
@@ -272,18 +234,18 @@ describe("notebook lint through the real server (E2E)", () => {
             expect(
                await findings(
                   "notebooks/tiles_layout.malloy",
-                  `## artifact { kind=notebook tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}`,
+                  `## artifact { layout=linear tiles=[intro { kind=text colspan=2 break }, "a -> v"] }\n${SOURCE_LINE}${BLOCK}`,
                ),
             ).toEqual([["notebook-tile-layout-ignored", 0]]);
          });
 
-         it("says a dashboard served from notebooks/ works, and where the kinds are created", async () => {
+         it("says nothing about a grid report in notebooks/: no folder is a kind's home", async () => {
             expect(
                await findings(
                   "notebooks/tiles_dashboard.malloy",
-                  `## artifact { kind=dashboard tiles=["a -> v"] }\n${SOURCE_LINE}`,
+                  `## artifact { layout=grid tiles=["a -> v"] }\n${SOURCE_LINE}`,
                ),
-            ).toEqual([["notebook-other-folder", 0]]);
+            ).toEqual([]);
          });
       });
 
@@ -320,11 +282,10 @@ describe("notebook lint through the real server (E2E)", () => {
                expect.objectContaining({ severity: "error" }),
             );
             expect(
-               problems
-                  .filter(
-                     (p) => p.model === CLEAN && p.severity === "warn" && p.at,
-                  )
-                  .map((p) => [p.code, p.at?.range.start.line]),
+               lintOf(problems, CLEAN).map((p) => [
+                  p.code,
+                  p.at?.range.start.line,
+               ]),
             ).toEqual([
                ["notebook-givens-not-enabled", 1],
                ["notebook-unterminated-block", 2],

@@ -398,14 +398,17 @@ export function errnoWireFields(
 /**
  * Map an error to the HTTP response it answers with. `log: false` classifies
  * without logging, for a caller that only needs the status and leaves the
- * response, and its log line, to the route handler.
+ * response, and its log line, to the route handler. `onLogged` is called when
+ * the mapping logged the error itself, so a route logs only what it did not.
  */
 export function internalErrorToHttpError(
    error: Error,
-   { log = true }: { log?: boolean } = {},
+   { log = true, onLogged }: { log?: boolean; onLogged?: () => void } = {},
 ) {
    const logInternal: typeof logInternalFailure = (...args) => {
-      if (log) logInternalFailure(...args);
+      if (!log) return;
+      logInternalFailure(...args);
+      onLogged?.();
    };
    const access = filesystemAccessFailure(error);
    if (access) {
@@ -439,6 +442,13 @@ export function internalErrorToHttpError(
       return httpError(404, error.message);
    } else if (error instanceof DashboardNotFoundError) {
       return httpError(404, error.message);
+   } else if (
+      error instanceof SkillNotFoundError ||
+      error instanceof AgentNotFoundError
+   ) {
+      return httpError(404, error.message);
+   } else if (error instanceof ConflictError) {
+      return httpError(409, error.message);
    } else if (error instanceof NotQueryableError) {
       return httpError(404, error.message);
    } else if (error instanceof QueryCompileError) {
@@ -511,8 +521,10 @@ export function internalErrorToHttpError(
       return httpError(409, error.message);
    } else if (error instanceof WriteConflictError) {
       return httpError(409, error.message);
+   } else if (error instanceof WriteRollbackFailedError) {
+      return httpError(500, error.message);
    } else if (error instanceof WriteRolledBackError) {
-      logInternal("Dashboard write rolled back", error, "warn");
+      // Logged once, where the rollback happened, with the cause.
       return httpError(500, error.message);
    } else if (error instanceof ServiceUnavailableError) {
       return httpError(503, error.message);
@@ -591,6 +603,14 @@ export class InvalidArgumentError extends BadRequestError {}
  */
 export class CompileRefusedError extends BadRequestError {}
 
+/**
+ * A model path the write path refuses: unsafe as written, the root
+ * `index.malloy`, in `public/`, or leading (through a link) outside the
+ * package. A subclass so the write metric counts it as `invalid_path` wherever
+ * it is raised; still a 400.
+ */
+export class InvalidModelPathError extends BadRequestError {}
+
 /** A document's text carries a URL-producing render tag or markup in a label; counted apart from a restricted construct. */
 export class RenderTagRefusedError extends CompileRefusedError {}
 
@@ -646,6 +666,32 @@ export class ModelNotFoundError extends Error {
 export class DashboardNotFoundError extends Error {
    constructor(message: string) {
       super(message);
+   }
+}
+
+/**
+ * No skill with that name is in force for the package. Covers both a name
+ * nothing defines and a reference file (`<skill>/<stem>`) that no served skill
+ * carries.
+ */
+export class SkillNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/** No agent with that name is served for the package, whether undeclared or dropped by validation. */
+export class AgentNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/** A request that names more than one thing where it must name one. 409. */
+export class ConflictError extends Error {
+   constructor(message: string) {
+      super(message);
+      this.name = "ConflictError";
    }
 }
 
@@ -1034,6 +1080,17 @@ export class WriteRolledBackError extends Error {
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
       this.name = "WriteRolledBackError";
+   }
+}
+
+/**
+ * A write whose reload failed, and whose restore failed too: the package may
+ * serve the new text or none. 500, because only an operator can settle it.
+ */
+export class WriteRollbackFailedError extends Error {
+   constructor(message: string, options?: ErrorOptions) {
+      super(message, options);
+      this.name = "WriteRollbackFailedError";
    }
 }
 

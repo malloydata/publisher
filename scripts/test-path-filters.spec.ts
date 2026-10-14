@@ -365,6 +365,7 @@ describe("the roster this file checks", () => {
     ).toEqual([
       ". test:hammer",
       ". test:scripts",
+      "packages/app test",
       "packages/cli test",
       "packages/cli test:integration",
       "packages/create-malloy-package test",

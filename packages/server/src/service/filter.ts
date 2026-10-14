@@ -48,7 +48,8 @@ export type FilterParams = Record<string, string | string[]>;
 // Annotation Parsing
 // ---------------------------------------------------------------------------
 
-const ANNOTATION_PREFIX = "#(filter)";
+/** The prefix every `#(filter)` annotation opens with. */
+export const FILTER_ANNOTATION_PREFIX = "#(filter)";
 
 /**
  * Parse a single `#(filter)` annotation string into a definition.
@@ -59,11 +60,11 @@ export function parseFilterAnnotation(
    annotation: string,
 ): FilterDefinition | null {
    const trimmed = annotation.trim();
-   if (!trimmed.startsWith(ANNOTATION_PREFIX)) {
+   if (!trimmed.startsWith(FILTER_ANNOTATION_PREFIX)) {
       return null;
    }
 
-   const body = trimmed.slice(ANNOTATION_PREFIX.length).trim();
+   const body = trimmed.slice(FILTER_ANNOTATION_PREFIX.length).trim();
    const tokens = tokenize(body);
 
    let name: string | undefined;

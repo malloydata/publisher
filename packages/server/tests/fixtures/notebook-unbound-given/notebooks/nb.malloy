@@ -1,10 +1,8 @@
 ##! experimental.givens
-## artifact { kind=notebook title="Unbound given" }
+## artifact { layout=linear title="Unbound given" tiles=["orders -> { where: org_id = $ORG; aggregate: c }"] }
 
 given: ORG :: number
 
 source: orders is duckdb.table('data/orgtable.csv') extend {
   measure: c is count()
 }
-
-run: orders -> { where: org_id = $ORG; aggregate: c }

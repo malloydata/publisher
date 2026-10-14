@@ -1,0 +1,24 @@
+##! experimental.givens
+##| artifact { layout=linear title="Brands"
+  tiles=[
+    "brands_tiles -> amount_by_brand",
+    "brands_tiles -> orders_by_region"
+  ]
+}
+|##
+
+// Nothing here mentions drill: the tags are on `orders.brand_name` and
+// `orders.region_name`, so a tile that groups by one is clickable, and a click
+// either leaves for a dashboard or filters this report in place. REGION is
+// imported so the report shows a control for it, which `to=self` needs
+// somewhere to put the clicked value.
+import "orders.malloy"
+import { REGION } from "givens.malloy"
+
+source: brands_tiles is orders extend {
+   # label="Amount by brand"
+   view: amount_by_brand is by_brand
+
+   # label="Orders by region"
+   view: orders_by_region is by_region
+}

@@ -97,6 +97,23 @@ describe("reload_package tool", () => {
       });
    });
 
+   it("reports sourceContentSha and servedRevision, the reload receipt", async () => {
+      const handler = captureHandler(
+         storeReturning({
+            name: "ecommerce",
+            sourceContentSha: "a".repeat(64),
+            servedRevision: "rev-1",
+         }),
+      );
+      expect(parse(await handler(args))).toEqual({
+         status: "reloaded",
+         mode: "in-place",
+         name: "ecommerce",
+         sourceContentSha: "a".repeat(64),
+         servedRevision: "rev-1",
+      });
+   });
+
    it("includes description and non-empty warnings", async () => {
       const warnings = [
          {
@@ -245,15 +262,19 @@ describe("reload_package tool", () => {
       expect(parsed.location).toBeUndefined();
    });
 
-   it("surfaces exploresWarnings (a mistyped explores entry is not swallowed)", async () => {
-      const exploresWarnings = [
-         "explore 'ordrs' does not resolve to a model in this package",
-      ];
-      const handler = captureHandler(
-         storeReturning({ name: "ecommerce", exploresWarnings }),
-      );
-      const parsed = parse(await handler(args));
-      expect(parsed.status).toBe("reloaded");
-      expect(parsed.exploresWarnings).toEqual(exploresWarnings);
+   // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
+   // RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("surfaces exploresWarnings (a mistyped explores entry is not swallowed)", async () => {
+         const exploresWarnings = [
+            "explore 'ordrs' does not resolve to a model in this package",
+         ];
+         const handler = captureHandler(
+            storeReturning({ name: "ecommerce", exploresWarnings }),
+         );
+         const parsed = parse(await handler(args));
+         expect(parsed.status).toBe("reloaded");
+         expect(parsed.exploresWarnings).toEqual(exploresWarnings);
+      });
    });
 });
