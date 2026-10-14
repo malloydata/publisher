@@ -87,7 +87,7 @@ is a Console convenience.
   status, undo and redo, the **Linear / Grid** switch, an **Add** menu (a tile, text or a filter), and
   **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
   report, drag a tile by its heading or its padding to move it, drag the grip on its right edge to set
-  its width (a label says the width it will snap to), and set its chart and clickable cells
+  its width (a label says the width it will snap to), and set its chart and clickable cells, or duplicate it,
   from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to
   insert one between two. Add filters from **Add** or with **+ Filter** on the filter row. Titles,
   descriptions and text tiles are edited where they are shown: under the pointer they take a faint

@@ -163,3 +163,31 @@ describe("BuilderBar", () => {
       expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
    });
 });
+
+describe("Duplicate, from a tile's menu", () => {
+   it("writes a copy as a view of its own, right after the original", async () => {
+      const saved = mock((_source: string) => {});
+      render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={saved}
+         />,
+      );
+      screen.getByLabelText("Settings for By category").click();
+      await waitFor(() =>
+         screen.getByRole("menuitem", { name: "Duplicate", hidden: true }),
+      );
+      screen.getByRole("menuitem", { name: "Duplicate", hidden: true }).click();
+      await waitFor(() =>
+         expect(screen.getAllByText("By category")).toHaveLength(2),
+      );
+      screen.getByRole("button", { name: "Save", hidden: true }).click();
+      await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
+      const text = saved.mock.calls[0]?.[0] ?? "";
+      expect(text).toContain('tiles=["a -> by_cat", "a -> by_category_tile"]');
+      expect(text).toMatch(
+         /# colspan=6\n\s*# label="By category"\n\s*view: by_category_tile is by_category/,
+      );
+   });
+});

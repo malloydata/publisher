@@ -23,9 +23,9 @@ import type { ChartState } from "./chartLine";
 /**
  * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
  * never means scrolling away from it. Its chart (a submenu, each pick drawn at
- * once) and its clickable cells; its title and subtitle are edited on the
- * tile, its width is set by dragging its right edge, and it is removed from
- * the × on its corner. Its row is set by dragging it — a drop
+ * once), its clickable cells, and a copy of it; its title and subtitle are
+ * edited on the tile, its width is set by dragging its right edge, and it is
+ * removed from the × on its corner. Its row is set by dragging it — a drop
  * into the empty end of a row is what "start a new row" means — and its card
  * is the reader's to decide, so neither is a toggle here. Which controls it
  * answers to is not here either: filters are configured in one place, the
@@ -48,6 +48,10 @@ export interface TileMenuProps {
     * explains why its own Apply is off.
     */
    onDrills?: () => void;
+   /** Copy the tile, right after it. Absent, the menu offers no Duplicate. */
+   onDuplicate?: () => void;
+   /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
+   duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
    view?: Pick<CatalogView, "chart" | "aggregateOnly">;
 }
@@ -65,6 +69,8 @@ export function TileMenu({
    onClose,
    onCommit,
    onDrills,
+   onDuplicate,
+   duplicateBlocked,
    view,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
@@ -211,6 +217,17 @@ export function TileMenu({
                   }}
                >
                   {label("Clickable cells…", undefined, drillBlocked)}
+               </MenuItem>
+            )}
+            {query && onDuplicate && (
+               <MenuItem
+                  disabled={duplicateBlocked !== undefined}
+                  onClick={() => {
+                     close();
+                     onDuplicate();
+                  }}
+               >
+                  {label("Duplicate", undefined, duplicateBlocked)}
                </MenuItem>
             )}
             {query?.declaration.kind === "opaque" && (

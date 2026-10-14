@@ -28,7 +28,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 On the page itself:
 
 - **Text is edited where it stands.** A title, subtitle, description or text tile takes a faint wash under the pointer, in place of a pencil. A text tile opens in place in the report's own type, with a ring round it, rather than as an outlined box with Done and Cancel under it: leaving it or Cmd/Ctrl+Enter keeps the edit, and **Escape now drops it** (it used to keep it), as a title's Escape already did.
-- **The tile menu is a menu**: **Chart**, a submenu, and **Clickable cells…**. A tile's width stays a drag of its right edge, or the arrow keys on that edge. A choice that cannot apply stays listed, greyed, with its reason under it. The source and view are a caption at its foot.
+- **The tile menu is a menu**: **Chart**, a submenu, **Clickable cells…**, and **Duplicate**, which writes the copy as a view of its own (`view: by_category_tile is by_category`) right after the original, so its title, chart and width can differ. A tile whose query is written in the file itself, or a pipeline, cannot be copied, and its Duplicate says so. A tile's width stays a drag of its right edge, or the arrow keys on that edge. A choice that cannot apply stays listed, greyed, with its reason under it. The source and view are a caption at its foot.
 - **The width handle** is a grip tab at the middle of the selected tile's right edge. While it is dragged, a label says the width it will snap to (`8 of 12 · Two-thirds`), and the columns are drawn as faint bands behind the tiles.
 - **A tile moves from its heading and padding**, never from a press inside its table or chart, which scrolls, selects and shows tooltips as it does in the reader.
 

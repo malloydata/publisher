@@ -4,7 +4,7 @@
 import { useState } from "react";
 import type { NewTile } from "./AddTileDialog";
 import { isTextTile, tileKey, type DashboardTile } from "./document";
-import { addTileToDocument } from "./addTileToDocument";
+import { addTileToDocument, duplicateTile } from "./addTileToDocument";
 import type { LayoutRules } from "../Report/layoutRules";
 import type { ReportEditorHandle } from "./useReportEditor";
 
@@ -95,6 +95,16 @@ export function useTileEditing({
       });
    };
 
+   /** A copy of the tile at `index`, right after it, selected. */
+   const duplicate = (index: number) => {
+      setMenu(undefined);
+      let landed: number | undefined;
+      editor.update((draft) => {
+         landed = duplicateTile(draft, index);
+      });
+      if (landed !== undefined) selectTile(landed);
+   };
+
    return {
       menu,
       setMenu,
@@ -106,5 +116,6 @@ export function useTileEditing({
       appendText,
       editTile,
       removeTile,
+      duplicate,
    };
 }
