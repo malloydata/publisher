@@ -428,18 +428,19 @@ describe("ReportBuilder: fields, when the package is known", () => {
       fireEvent.change(screen.getByLabelText("Field to filter"), {
          target: { value: "sale_price" },
       });
-      const kind = () => screen.getByRole("combobox", { name: /Filter kind/ });
+      const kind = (name: string) =>
+         within(
+            screen.getByRole("radiogroup", { name: "Filter kind" }),
+         ).getByRole("radio", { name });
       const submit = () =>
          screen.getByRole("button", { name: "Add filter", hidden: false });
-      expect(kind().textContent).toBe("Number range");
+      expect(kind("Number range").getAttribute("aria-checked")).toBe("true");
       expect(submit()).toHaveProperty("disabled", false);
-      // But an EXPLICIT kind the field cannot take is a problem, said plainly.
-      fireEvent.mouseDown(kind());
-      fireEvent.click(screen.getByRole("option", { name: /Pick one/ }));
-      expect(
-         screen.getByText("sale_price is a number; this filter compares text."),
-      ).toBeDefined();
-      expect(submit()).toHaveProperty("disabled", true);
+      // A kind the field cannot take is not on offer: listed, off, and why.
+      const pickOne = kind("Pick one");
+      expect(pickOne.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(pickOne);
+      expect(kind("Number range").getAttribute("aria-checked")).toBe("true");
    });
 
    it("marks a control whose binding names a missing field, on its filter button", async () => {

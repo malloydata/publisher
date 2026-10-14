@@ -162,13 +162,6 @@ export function AddTileDialog({
    );
    const listRef = useRef<HTMLDivElement>(null);
    const searchRef = useRef<HTMLInputElement>(null);
-   // The dialog's focus trap takes focus to its own container as it opens,
-   // after `autoFocus` has run, so the caret is put in the search once it has.
-   useEffect(() => {
-      if (!open) return;
-      const timer = window.setTimeout(() => searchRef.current?.focus(), 60);
-      return () => window.clearTimeout(timer);
-   }, [open]);
 
    // The source the tiles already read comes first, so the common case is one
    // click on a view near the top.
@@ -311,6 +304,7 @@ export function AddTileDialog({
          open={open}
          onClose={onClose}
          maxWidth="md"
+         initialFocus={searchRef}
          title="Add a tile"
          description="Pick a view from this package. You can change its title and chart now or later."
          actions={

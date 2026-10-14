@@ -37,6 +37,7 @@ export function AppDialog({
    maxWidth = "sm",
    showClose = false,
    actions,
+   initialFocus,
    children,
 }: {
    open: boolean;
@@ -50,6 +51,12 @@ export function AppDialog({
    showClose?: boolean;
    /** The buttons, in order. Cancel first, the thing it does last. */
    actions?: React.ReactNode;
+   /**
+    * The control to start in. Focused once the window has opened: a child's
+    * own `autoFocus` loses to the focus trap, which takes focus to the
+    * window's container as it opens, after the child has mounted.
+    */
+   initialFocus?: React.RefObject<HTMLElement | null>;
    children: React.ReactNode;
 }) {
    const titleId = useId();
@@ -60,6 +67,13 @@ export function AppDialog({
          maxWidth={maxWidth}
          fullWidth
          aria-labelledby={titleId}
+         {...(initialFocus
+            ? {
+                 TransitionProps: {
+                    onEntered: () => initialFocus.current?.focus(),
+                 },
+              }
+            : {})}
       >
          <DialogTitle
             id={titleId}
