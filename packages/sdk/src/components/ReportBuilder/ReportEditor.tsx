@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { clearReportDraft } from "./useReportDraft";
+import { clearReportDraft, reportDraftKey } from "./useReportDraft";
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
@@ -370,7 +370,13 @@ export function ReportEditor(props: ReportEditorProps) {
    // One per report, version and server: a draft is never restored onto a
    // file it was not made on.
    const draftKey = keepDraft
-      ? `${server}|${environmentName}/${packageName}@${versionId ?? ""}/${path ?? dashboardName}`
+      ? reportDraftKey({
+           server,
+           environmentName,
+           packageName,
+           versionId,
+           path: path ?? dashboardName,
+        })
       : undefined;
    const saveLabel =
       savesTo === "host" && workspace?.description

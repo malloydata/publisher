@@ -77,17 +77,19 @@ export interface ReportProps {
    chrome?: TileChrome;
    /**
     * How long a read of the report is reused without asking the server again,
-    * in ms. Default 0: every mount asks, so a change made elsewhere shows. A
-    * host that draws the same report twice in a row can set a few seconds, as
-    * the Console does while the builder loads over it.
+    * in ms. Default: the query client's staleness for the `report` key, which
+    * is 0 (every mount asks, so a change made elsewhere shows) unless the host
+    * sets one with `setQueryDefaults(["report"], …)`. A host that draws the
+    * same report twice in a row can set a few seconds, as the Console does
+    * while the builder loads over it.
     */
    manifestStaleTime?: number;
 }
 
 /**
  * A report of either layout, from `GET …/reports/{path}`: a grid drawn as a
- * dashboard, a linear report top to bottom, and a linear report written as
- * `run:` cells cell by cell, each through the governed query endpoint.
+ * dashboard, or a linear report top to bottom (a legacy `.malloynb` among
+ * them, read-only), each tile run through the governed query endpoint.
  *
  * Host-agnostic, like `Dashboard`: it takes props rather than reading a
  * router, and hands navigation and URL state back to whoever mounted it.
@@ -103,7 +105,7 @@ export function Report({
    maxResultSize,
    onEvent,
    chrome,
-   manifestStaleTime = 0,
+   manifestStaleTime,
 }: ReportProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();

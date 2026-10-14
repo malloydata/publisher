@@ -8760,6 +8760,11 @@ export class Model {
       return {
          type: "source",
          packageName: this.packageName,
+         // `path` is the field the API declares, and the one a client built
+         // from the spec (or a proxy that re-serializes through it) keeps.
+         path: this.modelPath,
+         // Deprecated: the same path under a name the spec never declared.
+         // Kept for a release for clients that read it.
          modelPath: this.modelPath,
          malloyVersion: MALLOY_VERSION,
          dataStyles: JSON.stringify(this.dataStyles),
