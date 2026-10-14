@@ -122,6 +122,14 @@ describe("clearReportDraft", () => {
       ).not.toBeNull();
    });
 
+   it("clears every version when versionId is present but undefined", () => {
+      clearReportDraft({ ...SALES, versionId: undefined });
+      expect(kept().filter((key) => key.includes("|"))).toEqual([
+         "https://a/api/v0|env/other@/sales/q3.malloy",
+         "https://a/api/v0|env/pkg@/q3.malloy",
+      ]);
+   });
+
    it("drops one draft by its key", () => {
       const key = reportDraftKey({ ...SALES, server: "https://a/api/v0" });
       clearReportDraft(key);

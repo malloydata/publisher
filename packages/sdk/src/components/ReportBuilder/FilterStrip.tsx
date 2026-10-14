@@ -34,7 +34,7 @@ export function FilterStrip({
    onAdd,
    addDisabledReason,
    onRemove,
-   modelFilters,
+   fixedFilters,
    children,
 }: {
    controls: BuilderControl[];
@@ -46,8 +46,8 @@ export function FilterStrip({
    addDisabledReason?: string;
    /** Take a control off the dashboard, as its window's Remove does. */
    onRemove: (name: string) => void;
-   /** Filters a tile reads through the model, by name, with why they are fixed here. */
-   modelFilters?: ReadonlyMap<string, string>;
+   /** Filters a tile reads other than through a binding, by name, with why they are fixed here. */
+   fixedFilters?: ReadonlyMap<string, string>;
    /** The host's live control row. */
    children?: ReactNode;
 }) {
@@ -56,9 +56,9 @@ export function FilterStrip({
       const byName = new Map(controlList.map((c) => [c.name, c]));
       return {
          stateOf: (name) => {
-            // Read through the model and bound by no tile here: the
-            // model's to change, whatever the builder knows of it.
-            const fixed = modelFilters?.get(name);
+            // Read other than through a binding the builder writes: fixed
+            // here, whatever the builder knows of it.
+            const fixed = fixedFilters?.get(name);
             if (fixed !== undefined) return { origin: "model", fixed };
             const control = byName.get(name);
             if (!control) return undefined;
@@ -76,9 +76,9 @@ export function FilterStrip({
          // reads, so the rest are drawn here.
          unrendered: live
             ? controlList
-                 // A filter the model reads has its control in the row already.
+                 // A fixed filter has its control in the row already.
                  .filter(
-                    (c) => c.boundTiles === 0 && !modelFilters?.has(c.name),
+                    (c) => c.boundTiles === 0 && !fixedFilters?.has(c.name),
                  )
                  .map((c) => ({ name: c.name, label: c.label ?? c.name }))
             : [],
@@ -98,7 +98,7 @@ export function FilterStrip({
       onRemove,
       onAdd,
       addDisabledReason,
-      modelFilters,
+      fixedFilters,
    ]);
    return (
       // Pinned as the reader's control row is.

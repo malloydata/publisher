@@ -90,8 +90,12 @@ export function clearReportDraft(
    }
    const { server, environmentName, packageName, path } = target;
    const report = `${environmentName}/${packageName}@`;
+   // Narrowed only by a version actually named: a spread that carries
+   // `versionId: undefined` still clears every version.
    const version =
-      "versionId" in target ? `${target.versionId ?? ""}/${path}` : undefined;
+      target.versionId !== undefined
+         ? `${target.versionId}/${path}`
+         : undefined;
    try {
       const storage = draftStore.storage();
       const matching: string[] = [];

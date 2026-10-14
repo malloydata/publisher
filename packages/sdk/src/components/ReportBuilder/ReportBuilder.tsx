@@ -198,12 +198,12 @@ export interface ReportBuilderProps {
     */
    addFilterDisabledReason?: string;
    /**
-    * Filters in the row that a tile reads through the model (a source's own
-    * `where:`) rather than a binding in this file, each with why it cannot
-    * be changed here. They can be set, as in the reader, but not removed or
-    * configured: the builder never edits the model.
+    * Filters in the row a tile reads other than through a binding the
+    * builder writes (the model's own `where:`, or this report's own
+    * `source:`), each with why it cannot be changed here. They can be set,
+    * as in the reader, but not removed or configured.
     */
-   modelFilters?: ReadonlyMap<string, string>;
+   fixedFilters?: ReadonlyMap<string, string>;
    /**
     * Names a filter the builder adds must not take, beyond the givens on the
     * page: a host that resolves held text itself passes every given the model
@@ -266,7 +266,7 @@ export function ReportBuilder({
    modelPath,
    visibleSources,
    addFilterDisabledReason,
-   modelFilters,
+   fixedFilters,
    takenGivenNames,
    onControlsChange,
    draftKey,
@@ -527,7 +527,7 @@ export function ReportBuilder({
                            ? { addDisabledReason: addFilterDisabledReason }
                            : {})}
                         onRemove={bindings.dropControl}
-                        {...(modelFilters ? { modelFilters } : {})}
+                        {...(fixedFilters ? { fixedFilters } : {})}
                      >
                         {controls}
                      </FilterStrip>

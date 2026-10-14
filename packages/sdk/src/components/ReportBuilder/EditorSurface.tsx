@@ -300,26 +300,39 @@ export function EditorSurface({
       () => previewGivens(doc, modelSpecs, modelReads),
       [doc, modelSpecs, modelReads],
    );
-   const modelFilters = useMemo(() => {
+   // A filter in the row the builder can show and set but not change: say
+   // where it is set instead. Not always the model: a report's own `source:`
+   // can apply a given to every tile on it with a `where:` of its own.
+   const fixedFilters = useMemo(() => {
       const bound = new Set(
          doc.tiles.flatMap((tile) =>
             isQueryTile(tile) ? (tile.filters ?? []).map((f) => f.given) : [],
          ),
       );
+      const declared = new Set((doc.localGivens ?? []).map((g) => g.name));
       const models = [...new Set(doc.imports.map((i) => i.from))];
-      const where =
+      const model =
          models.length === 1
             ? `the model ${models[0]}`
-            : "a model this report imports";
+            : models.length === 0 && textSource
+              ? `the model ${textSource.modelPath}`
+              : "a model this report imports";
+      const reason = (name: string) => {
+         const scoping = doc.sources
+            .filter((source) => source.scopedBy?.includes(name))
+            .map((source) => source.name);
+         if (scoping.length > 0)
+            return `Applied to every tile on ${scoping.join(", ")} by this report's own source. Edit the file to change it.`;
+         if (declared.has(name))
+            return "Read by a query in this report the builder cannot edit. Edit the file to change it.";
+         return `Set in ${model}. Edit the model to change it.`;
+      };
       return new Map(
          [...modelReads]
             .filter((name) => !bound.has(name))
-            .map((name) => [
-               name,
-               `Set in ${where}. Edit the model to change it.`,
-            ]),
+            .map((name) => [name, reason(name)]),
       );
-   }, [doc, modelReads]);
+   }, [doc, modelReads, textSource]);
    const { declaredTypes, applied, panel } = useDocumentControls({
       specs,
       loaded: isSuccess,
@@ -513,7 +526,7 @@ export function EditorSurface({
                : {})}
             source={opened.source}
             document={opened.document}
-            modelFilters={modelFilters}
+            fixedFilters={fixedFilters}
             {...(textSource?.takenGivenNames
                ? { takenGivenNames: textSource.takenGivenNames }
                : {})}

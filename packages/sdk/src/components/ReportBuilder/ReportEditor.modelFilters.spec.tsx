@@ -155,4 +155,35 @@ source: recalls_tiles is recalls extend {
          }),
       ).toBeNull();
    });
+
+   it("says a filter this report's own source applies is the file's, not the model's", async () => {
+      packageFile = `## artifact { title="Recalls" tiles=["recalls_tiles -> by_year"] } dashboard { columns=12 }
+import "auto_recalls.malloy"
+
+#(control) label="Since"
+given: SINCE :: date is @2020-01-01
+
+source: recalls_tiles is recalls extend {
+  where: recall_date >= $SINCE
+  view: by_year is by_year_view
+}`;
+      served = {
+         givens: [SINCE],
+         tiles: [
+            {
+               kind: "query",
+               query: "recalls_tiles -> by_year",
+               givenNames: ["SINCE"],
+            },
+         ],
+      };
+      open();
+      expect(await row()).toEqual(["Since"]);
+      fireEvent.click(screen.getByRole("button", { name: /^Since: / }));
+      const popover = await screen.findByRole("dialog", {
+         name: "Since filter",
+      });
+      expect(popover.textContent).not.toContain("Set in the model");
+      expect(popover.textContent).toContain("recalls_tiles");
+   });
 });
