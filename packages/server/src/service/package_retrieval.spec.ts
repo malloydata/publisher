@@ -103,6 +103,7 @@ describe("publisher.json retrieval block", () => {
          dateRange: false,
          listUnion: 0,
          readingsRule: false,
+         judgeLlm: null,
       });
       expect(
          parsePackageRetrieval({ fcj: { connect: "list", listTopK: 12 } }).fcj,
@@ -238,7 +239,7 @@ describe("publisher.json retrieval block", () => {
          'Invalid publisher.json retrieval.fcj.perTarget: expected an integer from 1 to 500, got 2.5. Fix: "perTarget": 30',
       );
       expect(() => parsePackageRetrieval({ fcj: { window: 3 } })).toThrow(
-         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, valueEmbeddings, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode, alsoLikely, alsoLikelyTwins, joinedCopies, listRoutes, dropRoutesAt, unservedCopies, splitBundles, splitItemPicks, dateRange, listUnion, readingsRule.",
+         "Invalid publisher.json retrieval.fcj: unknown key 'window'. Valid keys: perTarget, hopDiscount, coverFraction, measureWeight, maxClusters, clusterTopK, reachDepth, keyword, questions, docParts, values, valueCap, valueEmbeddings, judge, contenderShare, collapseCopies, connect, listTopK, questionsPrompt, questionsPerNode, alsoLikely, alsoLikelyTwins, joinedCopies, listRoutes, dropRoutesAt, unservedCopies, splitBundles, splitItemPicks, dateRange, listUnion, readingsRule, judgeLlm.",
       );
       expect(() => parsePackageRetrieval({ fcj: { connect: "tree" } })).toThrow(
          'Invalid publisher.json retrieval.fcj.connect: expected one of clusters, list, got "tree". Fix: "connect": "clusters" (source groups) or "list" (the find stage\'s top listTopK per target).',
@@ -246,6 +247,62 @@ describe("publisher.json retrieval block", () => {
       expect(() => parsePackageRetrieval({ fcj: { listTopK: 0 } })).toThrow(
          'Invalid publisher.json retrieval.fcj.listTopK: expected an integer from 1 to 500, got 0. Fix: "listTopK": 15',
       );
+   });
+
+   it("reads judgeLlm, the judge's own model, and rejects a bad one", () => {
+      expect(
+         parsePackageRetrieval({
+            fcj: {
+               judgeLlm: { provider: "anthropic", model: " claude-haiku-5-5 " },
+            },
+         }).fcj?.judgeLlm,
+      ).toEqual({ provider: "anthropic", model: "claude-haiku-5-5" });
+      expect(
+         parsePackageRetrieval({
+            fcj: {
+               judgeLlm: {
+                  provider: "vertex",
+                  model: "gemini-3.1-flash-lite",
+                  projectId: "p",
+                  location: "global",
+               },
+            },
+         }).fcj?.judgeLlm,
+      ).toEqual({
+         provider: "vertex",
+         model: "gemini-3.1-flash-lite",
+         projectId: "p",
+         location: "global",
+      });
+      expect(
+         parsePackageRetrieval({ fcj: { judgeLlm: null } }).fcj?.judgeLlm,
+      ).toBeNull();
+      expect(() =>
+         parsePackageRetrieval({
+            fcj: { judgeLlm: { provider: "claude", model: "x" } },
+         }),
+      ).toThrow(
+         'Invalid publisher.json retrieval.fcj.judgeLlm.provider: expected one of openai, openai-compatible, ollama, anthropic, google, vertex, got "claude". Fix: "judgeLlm": { "provider": "anthropic", "model": "claude-haiku-5-5" }',
+      );
+      expect(() =>
+         parsePackageRetrieval({
+            fcj: { judgeLlm: { provider: "anthropic" } },
+         }),
+      ).toThrow(
+         "Invalid publisher.json retrieval.fcj.judgeLlm.model: expected a non-empty string, got nothing.",
+      );
+      expect(() =>
+         parsePackageRetrieval({
+            fcj: { judgeLlm: { provider: "vertex", model: "g" } },
+         }),
+      ).toThrow(
+         "retrieval.fcj.judgeLlm.projectId: expected a non-empty string",
+      );
+      expect(() =>
+         parsePackageRetrieval({
+            fcj: { judgeLlm: { provider: "anthropic", model: "m", key: "k" } },
+         }),
+      ).toThrow("retrieval.fcj.judgeLlm: unknown key 'key'.");
    });
 
    it("an unknown key is an error that names the valid keys, so a typo or a later release's key is not silently ignored", () => {

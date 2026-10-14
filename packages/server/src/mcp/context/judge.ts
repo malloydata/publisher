@@ -79,6 +79,8 @@ export interface JudgeVerdict {
    caveats: string[];
    /** Route options the judge was shown (`listRoutes`), for the trace. */
    routeOptions?: number;
+   /** The first reply was not usable JSON and the re-ask fixed it, for the trace. */
+   jsonRepaired?: boolean;
 }
 
 /** Doc text the judge reads for one candidate; long docs are cut here, not dropped. */
@@ -591,6 +593,7 @@ export async function judge(args: {
          cluster: cluster.home,
          ...reply.value,
          ...(cap > 0 ? { routeOptions: shown } : {}),
+         ...(reply.repaired ? { jsonRepaired: true } : {}),
       };
    });
 }

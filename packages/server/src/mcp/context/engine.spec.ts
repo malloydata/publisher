@@ -142,6 +142,44 @@ describe("the fcj switch", () => {
          _clearChatModelForTests();
       }
    });
+
+   it("fails the request, never skips the judge, when judgeLlm has no key", async () => {
+      const chat = scriptedChat(() =>
+         JSON.stringify({
+            picks: [{ target: 1, candidates: [1] }],
+            caveats: [],
+         }),
+      );
+      _setChatModelForTests(chat.model);
+      const saved = [process.env.JUDGE_LLM_API_KEY, process.env.LLM_API_KEY];
+      delete process.env.JUDGE_LLM_API_KEY;
+      delete process.env.LLM_API_KEY;
+      try {
+         const { pkg } = await compileFcjFixture(undefined, undefined, {
+            ...DEFAULT_PACKAGE_RETRIEVAL,
+            engine: "fcj" as const,
+            fcj: {
+               ...DEFAULT_FCJ_SETTINGS,
+               judgeLlm: { provider: "anthropic", model: "claude-haiku-5-5" },
+            },
+         });
+         const handler = harness.handlerFor(pkg);
+         const { payload } = await untilSemantic(handler, {
+            search_targets: [
+               { target_type: "measure", search_text: "number of flights" },
+            ],
+            scopes,
+         });
+         expect(payload.retrieval_reason).toBe("llm-stage-failed");
+         expect(payload.retrieval_stage).toBe("judge");
+         // The index build may have used the chat model; the judge never did.
+         expect(chat.prompts.some((p) => p.includes("Target 1 ("))).toBe(false);
+      } finally {
+         if (saved[0] !== undefined) process.env.JUDGE_LLM_API_KEY = saved[0];
+         if (saved[1] !== undefined) process.env.LLM_API_KEY = saved[1];
+         _clearChatModelForTests();
+      }
+   });
 });
 
 /** Fifteen targets over every island of the fixture. */
