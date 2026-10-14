@@ -4,7 +4,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { DEFAULT_COLUMNS, nudgedSpan } from "../Dashboard/DashboardGrid";
+import { nudgedSpan } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
@@ -34,6 +34,8 @@ import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
+import { layoutRules } from "../Report/layoutRules";
+import { ReportPage } from "../Report/ReportPage";
 
 export type { BuilderGiven } from "./controls";
 
@@ -101,7 +103,7 @@ export interface ReportBuilderProps {
    renderTile?: (
       tile: QueryTile,
       heading?: TileHeadingSlots,
-      /** The document's tile chrome — bare on a notebook — so the live tile reads as the reader's. */
+      /** Always `card`, in either layout; kept for hosts written against it. */
       chrome?: TileChrome,
    ) => ReactNode;
    /**
@@ -246,13 +248,9 @@ export function ReportBuilder({
       flash,
       stepEditor,
    } = useBuilderSelection({ editor, gridBox });
-   // A linear report is one column whatever the file says, and the builder never writes its width.
-   const notebook = editor.document.layout === "linear";
-   const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
-   // The reader's tile chrome for this document: cards on a dashboard, bare
-   // flow on a notebook. Every tile, text block and the description take it,
-   // so editing a document draws it the way reading it does.
-   const chrome: TileChrome = notebook ? "none" : "card";
+   // What the layout decides: how tiles are arranged, never how they look.
+   const rules = layoutRules(editor.document.layout, editor.document.columns);
+   const { columns } = rules;
    // The name a reader's view titles an untitled document with.
    const documentSlug = modelPath
       ?.split("/")
@@ -281,8 +279,7 @@ export function ReportBuilder({
    });
    const tiles = useTileEditing({
       editor,
-      notebook,
-      columns,
+      rules,
       modelPath,
       textHeld: visibleSources !== undefined,
       selectTile,
@@ -325,7 +322,7 @@ export function ReportBuilder({
          },
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
-            if (dragging || selected === undefined || notebook) return;
+            if (dragging || selected === undefined || !rules.widths) return;
             const tile = editor.document.tiles[selected];
             if (
                !tile ||
@@ -349,7 +346,7 @@ export function ReportBuilder({
          clearSelection,
          selected,
          columns,
-         notebook,
+         rules,
          dragging,
       ],
    );
@@ -416,75 +413,75 @@ export function ReportBuilder({
           the same edges as the reader's view: editing and reading are the same
           page, and the margins must not move between them. */}
          <Stack sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}>
-            {/* The ring's inset, minus the top: nothing at the top of this stack
-             can be selected (the prose and the control row are not tiles). */}
-            <Stack
+            {/* The reader's page, with the ring's inset (minus the top:
+             nothing at the top of the page can be selected). */}
+            <ReportPage
+               layout={rules.layout}
                sx={{
-                  gap: 2,
                   px: `${SELECTION_RING_PX}px`,
                   pb: `${SELECTION_RING_PX}px`,
                }}
-            >
-               {editor.pendingOpen && (
-                  <Alert severity="info">
-                     This report is in the cell format. Saving rewrites it as a
-                     layout notebook, and a named query run once becomes that
-                     tile&apos;s view.
-                  </Alert>
-               )}
-               <BuilderHeader
-                  editor={editor}
-                  notebook={notebook}
-                  documentSlug={documentSlug}
-                  chrome={chrome}
-                  actions={actions}
-                  descriptionSelected={descriptionSelected}
-                  selectDescription={selectDescription}
-               />
-
-               {empty ? (
-                  <>
-                     <Stack
-                        sx={{
-                           alignItems: "flex-start",
-                           gap: 1,
-                           py: 3,
-                           px: 2,
-                           border: 1,
-                           borderStyle: "dashed",
-                           borderColor: "divider",
-                           borderRadius: 1,
-                        }}
+               notice={
+                  editor.pendingOpen && (
+                     <Alert severity="info">
+                        This report is in the cell format. Saving rewrites it as
+                        a layout notebook, and a named query run once becomes
+                        that tile&apos;s view.
+                     </Alert>
+                  )
+               }
+               header={
+                  <BuilderHeader
+                     editor={editor}
+                     documentSlug={documentSlug}
+                     actions={actions}
+                     descriptionSelected={descriptionSelected}
+                     selectDescription={selectDescription}
+                  />
+               }
+               controls={
+                  empty ? undefined : (
+                     <FilterStrip
+                        controls={bindings.controlList}
+                        unknownFieldsOf={bindings.unknownFieldsOf}
+                        onEdit={(control) => setFilterDialog({ control })}
+                        onAdd={() => setFilterDialog({})}
+                        {...(addFilterDisabledReason
+                           ? { addDisabledReason: addFilterDisabledReason }
+                           : {})}
+                        onRemove={bindings.dropControl}
                      >
-                        <Typography variant="body2">
-                           This report is not served until it has a tile.
-                        </Typography>
-                        {catalog && (
-                           <Button
-                              size="small"
-                              startIcon={<AddIcon />}
-                              onClick={() => openAdd()}
-                           >
-                              Add tile
-                           </Button>
-                        )}
-                     </Stack>
-                  </>
-               ) : (
-                  <FilterStrip
-                     sticky={!notebook}
-                     controls={bindings.controlList}
-                     tileCount={editor.document.tiles.length}
-                     unknownFieldsOf={bindings.unknownFieldsOf}
-                     onEdit={(control) => setFilterDialog({ control })}
-                     onAdd={() => setFilterDialog({})}
-                     {...(addFilterDisabledReason
-                        ? { addDisabledReason: addFilterDisabledReason }
-                        : {})}
-                     onRemove={bindings.dropControl}
+                        {controls}
+                     </FilterStrip>
+                  )
+               }
+            >
+               {empty && (
+                  <Stack
+                     sx={{
+                        alignItems: "flex-start",
+                        gap: 1,
+                        py: 3,
+                        px: 2,
+                        border: 1,
+                        borderStyle: "dashed",
+                        borderColor: "divider",
+                        borderRadius: 1,
+                     }}
                   >
-                     {controls}
-                  </FilterStrip>
+                     <Typography variant="body2">
+                        This report is not served until it has a tile.
+                     </Typography>
+                     {catalog && (
+                        <Button
+                           size="small"
+                           startIcon={<AddIcon />}
+                           onClick={() => openAdd()}
+                        >
+                           Add tile
+                        </Button>
+                     )}
+                  </Stack>
                )}
 
                {editor.error && (
@@ -498,9 +495,7 @@ export function ReportBuilder({
                   reorder={reorder}
                   resizing={resizing}
                   gridBox={gridBox}
-                  columns={columns}
-                  notebook={notebook}
-                  chrome={chrome}
+                  rules={rules}
                   canAdd={!!catalog}
                   selected={selected}
                   flash={flash}
@@ -510,6 +505,14 @@ export function ReportBuilder({
                      selectTile(index);
                      tiles.setMenu({ anchor, index });
                   }}
+                  onRemove={tiles.removeTile}
+                  {...(editor.document.tiles.length === 1 &&
+                  editor.saved.tiles.length > 0
+                     ? {
+                          removeBlocked:
+                             "A saved report needs at least one tile.",
+                       }
+                     : {})}
                   openAdd={openAdd}
                   editTile={tiles.editTile}
                   {...(renderTile ? { renderTile } : {})}
@@ -526,7 +529,7 @@ export function ReportBuilder({
                   confirmConversion={confirmConversion}
                   exitDialog={session.exitGuard.dialog}
                />
-            </Stack>
+            </ReportPage>
          </Stack>
       </OpenDraftContext.Provider>
    );

@@ -10,6 +10,7 @@ import {
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { loadBuilder } from "../pages/DashboardEditPage/loadBuilder";
 import { isEditSearch, withEdit, withoutEdit } from "./documentRoutes";
 
 /**
@@ -64,10 +65,17 @@ export function DocumentModeButton() {
    const report = settled ? locateReport(`${path}.malloy`, reports) : undefined;
    if (!report?.editable) return null;
    return (
-      <SecondaryButton
-         label="Edit"
-         icon={<EditOutlinedIcon />}
-         onClick={() => navigate(`${page}${withEdit(search)}`)}
-      />
+      // The builder's code starts downloading when the pointer reaches Edit or
+      // it takes focus, so it is usually in hand by the click: see `loadBuilder`.
+      <span
+         onPointerEnter={() => void loadBuilder()}
+         onFocus={() => void loadBuilder()}
+      >
+         <SecondaryButton
+            label="Edit"
+            icon={<EditOutlinedIcon />}
+            onClick={() => navigate(`${page}${withEdit(search)}`)}
+         />
+      </span>
    );
 }

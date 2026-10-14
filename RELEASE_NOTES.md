@@ -21,6 +21,30 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Reports: one look for every layout and format, a row of filter buttons, and package problems on the package page
+
+**Every report draws the same page.** A grid report, a linear report written as tiles and a linear report written as `run:` cells now draw the same header, the same filter row, query results in the same cards and prose as bare text, in the reader and in the builder alike. The layout decides only how tiles are arranged: a linear report is one full-width column with tiles inserted between others, a grid has columns and widths. Before, a linear report drew no cards, wider gaps and its own title block, and a cell-format report drew a panel of filter fields and its own result frames.
+
+What an SDK host sees:
+
+- **`GivensPanel` with `layout="bar"` draws a row of filter buttons** (`Category  All`, `Ordered since  Jan 1, 2023`), each opening its control in a popover, instead of a row of form fields. A test or automation that typed into a filter's field now opens its button first: the button's accessible name is `<label>: <value>`, the popover is named `<label> filter`. The `panel` layout is unchanged.
+- **`chrome` on `Report` and `DashboardView` is accepted and ignored.** A host that passed `chrome="none"` for a linear report gets cards around its query tiles, as a grid has; text tiles and the description are prose, never a card, in either layout.
+- **Report surfaces size their controls and tiles themselves**: 32px controls, 6px control corners, 8px tiles, a 14px semibold tile title, rather than the host theme's button sizes and `shape.borderRadius`. Colours still come from the host palette and the instance theme.
+- **The report title is an `h1`.** An untitled linear report is titled with its file name, as an untitled grid already was.
+- **The report page carries `data-layout`** (`grid` or `linear`) in the reader and the builder alike, for a host or a test that needs to tell the two apart now that both draw cards. A test that checked a linear report by the absence of cards should check this instead.
+- **`Report` takes `manifestStaleTime`**, how long a read of the report is reused without asking the server again (default 0, so a change made elsewhere shows on the next mount). The Console sets a few seconds on the reader it draws while the builder loads, which is how opening the builder reads the report once.
+- **`CellReport` takes `title` and `description`**, drawn in the shared header; `Report` passes them from the manifest.
+
+In the builder, a report's filters are configured on the filter row itself: a remove badge on each button's corner, its settings from its popover, "+ Filter" at the end of the row, and a filter no tile reads yet shown dashed and marked unused. The row of chips above the controls is gone.
+
+A tile is removed the same way: a × on its corner while it is hovered, focused or selected, rather than Delete in its "⋯" menu, which now holds the chart and drill only (a text tile has no menu). The last tile of a saved report keeps its × but says why it cannot go.
+
+**Switching from reading to editing no longer blanks the page.** The Console keeps the report on screen while the builder's code and data load, and starts fetching the builder's code when the pointer reaches Edit. A tile the builder has not changed runs exactly as the reader runs it, so it is drawn from the reader's cached result instead of re-running. The builder also reads the report's manifest from the reader's cache entry. `ReportEditor` takes `loading`, what to draw while the report opens (default a spinner), for a host that wants the same.
+
+**The package page says what failed to load.** A file the server could not serve as intended (for example one whose artifact tag still sets `kind=`, which 0.9.8 stopped reading, so it listed under Models rather than Reports) is named with the server's own message and fix. Lower-severity notes are folded behind a count. The Reports heading's create button is now **+ Report**, accessible name "Add report", like every other section's add button.
+
+**Console.** Buttons are 32px with 6px corners rather than pills, cards and menus 8px, dialogs 12px; breadcrumbs are text with slashes. A report, in reading and in editing, sits in the model page's frame: at most 1200px wide rather than 1600px, its title 48px under the top bar like the model's and the package's, so moving between a model and a report does not shift the page.
+
 ## [0.9.10] — A gated source author-joined inside a diamond import no longer fails the load as a misplaced annotation
 
 A package whose files import a gated source along two paths — `security.malloy` imports `dims.malloy` and `facts.malloy`, and `facts.malloy` imports `dims.malloy` too — failed to load with `An authorize annotation is never enforced at: on field "<join>" of source "<joiner>"` whenever a source in `facts.malloy` author-joined the gated source. Every file is loaded as its own model, so the gated file is compiled once per import path; the join embeds one parse's gate note while the namespace holds the other's, and the check that refuses a gate typed on a join line told a copied note from a typed one by object identity alone. A copied gate is also a note parsed from the gated source's own `source:` line, so the check now accepts a note at that position as the copy it is. A gate an author types on a join line is parsed from the join line itself and is still refused. A package-scope `/compile` of the same layout now reports clean too; every gate's enforcement is unchanged.

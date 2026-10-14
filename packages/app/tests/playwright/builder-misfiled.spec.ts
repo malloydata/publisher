@@ -83,7 +83,8 @@ test.describe("a layout that disagrees with its folder", () => {
          await expect(page.getByText(MISFILED_NOTEBOOK)).toBeVisible({
             timeout: 60_000,
          });
-         await expect(page.locator('[data-chrome="card"]')).toHaveCount(0);
+         // Read as what its tag says, wherever its folder.
+         await expect(page.locator('[data-layout="linear"]')).toHaveCount(1);
       }
 
       await openEditor(page, "notebooks", "misfiled");
@@ -104,6 +105,7 @@ test.describe("a layout that disagrees with its folder", () => {
          await expect(page.getByText(MISFILED_DASHBOARD)).toBeVisible({
             timeout: 60_000,
          });
+         await expect(page.locator('[data-layout="grid"]')).toHaveCount(1);
          await expect(page.locator('[data-chrome="card"]').first()).toBeVisible(
             {
                timeout: 60_000,

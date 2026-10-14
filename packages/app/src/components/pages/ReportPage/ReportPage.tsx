@@ -13,6 +13,7 @@ import { Box } from "@mui/material";
 import { useEffect, useMemo } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
+import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
 
 interface ReportPageProps {
    environmentName: string;
@@ -67,7 +68,7 @@ export default function ReportPage({
    }, [editable, narrow]);
 
    return (
-      <Box sx={{ p: 3, maxWidth: 1600, mx: "auto" }}>
+      <Box sx={TITLED_PAGE_FRAME_SX}>
          {/* A legacy `.malloynb` runs only through the deprecated notebook routes, which `Notebook` reads. */}
          {path.endsWith(".malloynb") ? (
             <Notebook

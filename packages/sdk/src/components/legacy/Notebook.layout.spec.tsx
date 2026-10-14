@@ -56,14 +56,22 @@ beforeEach(() => {
    executeQueryModel.mockClear();
 });
 
-it("renders a layout notebook as a bare dashboard grid", async () => {
+it("renders a layout notebook as a grid report draws its tiles", async () => {
    const { container } = render(
       <Notebook resourceUri="publisher://environments/env/packages/pkg/models/notebooks/tour.malloy" />,
       { wrapper: serverWrapper },
    );
 
    expect((await screen.findByText("intro")).tagName).toBe("STRONG");
-   expect(container.querySelector('[data-chrome="card"]')).toBeNull();
+   // Text as prose, a query tile in a card: the same look as a grid.
+   expect(
+      (await screen.findByText("intro"))
+         .closest("[data-chrome]")
+         ?.getAttribute("data-chrome"),
+   ).toBe("none");
+   await waitFor(() =>
+      expect(container.querySelector('[data-chrome="card"]')).not.toBeNull(),
+   );
    // Tiles run through the model query endpoint, not the cell endpoint.
    await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
    expect(executeQueryModel.mock.calls[0]?.[2]).toBe("notebooks/tour.malloy");
@@ -79,16 +87,17 @@ it("shows a layout notebook's title and description above its tiles", async () =
 
    expect(
       (await screen.findByRole("heading", { name: "Tour title" })).tagName,
-   ).toBe("H5");
+      // The page's main heading: the report title is the page.
+   ).toBe("H1");
    expect((await screen.findByText("description")).tagName).toBe("STRONG");
 });
 
-it("draws no header for a layout notebook with no title or description", async () => {
+it("titles an untitled layout notebook with its name, as a grid report does", async () => {
    render(
       <Notebook resourceUri="publisher://environments/env/packages/pkg/models/notebooks/tour.malloy" />,
       { wrapper: serverWrapper },
    );
 
    await screen.findByText("intro");
-   expect(screen.queryByRole("heading", { name: "tour" })).toBeNull();
+   expect(screen.getByRole("heading", { name: "tour" })).toBeDefined();
 });

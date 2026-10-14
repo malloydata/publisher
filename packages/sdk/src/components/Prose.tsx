@@ -8,6 +8,8 @@ import { usePublisherTheme } from "../theme/ThemeContext";
 import type { NavigationClick } from "./click_helper";
 import { MONO_FONT_FAMILY } from "./styles";
 
+import { PROSE_MAX_WIDTH, TYPE } from "./controlTokens";
+
 /**
  * Markdown authored inside a package — a dashboard's `##"` description, a
  * notebook's markdown cell, a README — rendered one way.
@@ -136,11 +138,13 @@ const STYLES: Record<ProseVariant, SxProps<Theme>> = {
       "& h1": { fontSize: "28px" },
       "& h2": { fontSize: "24px" },
       "& h3": { fontSize: "20px" },
+      // A readable line rather than the grid's width: prose ran 180
+      // characters across a wide tile, too long to read.
       "& p, & ul, & ol": {
          color: "text.primary",
-         lineHeight: 1.7,
+         ...TYPE.prose,
          mb: 1,
-         fontSize: "16px",
+         maxWidth: PROSE_MAX_WIDTH,
       },
       "& li": { mb: 0.5 },
    },

@@ -146,7 +146,7 @@ describe("rendering by layout", () => {
       expect(container.querySelector('[data-chrome="none"]')).toBeNull();
    });
 
-   it("draws a linear report's tiles bare, top to bottom", async () => {
+   it("draws a linear report's query tiles in cards, as a grid does", async () => {
       manifest = { ...TILES, layout: "linear" };
       const { container } = render(
          <Report resourceUri={URI} path="sales/q3.malloy" />,
@@ -157,9 +157,8 @@ describe("rendering by layout", () => {
       await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
       expect(executeQueryModel.mock.calls[0][2]).toBe("sales/q3.malloy");
       await waitFor(() =>
-         expect(container.querySelector('[data-chrome="none"]')).not.toBeNull(),
+         expect(container.querySelector('[data-chrome="card"]')).not.toBeNull(),
       );
-      expect(container.querySelector('[data-chrome="card"]')).toBeNull();
    });
 
    it("runs a .malloy run:-cell report's cells through the query endpoint, against the report itself", async () => {

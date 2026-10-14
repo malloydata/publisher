@@ -4,6 +4,7 @@
 import { expect, test } from "@playwright/test";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import { openFilter } from "./helpers/filters";
 
 /**
  * The storefront package ships `category-review.malloy` at its root, a linear
@@ -45,7 +46,8 @@ test.describe("package-served-notebook", () => {
       await expect(table).toContainText("Jacket");
       await expect(table).not.toContainText("Denim");
 
-      await page.getByRole("combobox", { name: "Category" }).click();
+      const filter = await openFilter(page, "Category");
+      await filter.getByRole("combobox", { name: "Category" }).click();
       await page.getByRole("option", { name: "Jeans" }).click({
          timeout: 30_000,
       });

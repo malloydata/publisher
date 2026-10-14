@@ -5,12 +5,9 @@ import { DragDropProvider } from "@dnd-kit/react";
 import AddIcon from "@mui/icons-material/Add";
 import { Box, Button } from "@mui/material";
 import type { ReactNode, RefObject } from "react";
-import {
-   DashboardGrid,
-   GRID_GAP_PX,
-   NOTEBOOK_GAP_PX,
-} from "../Dashboard/DashboardGrid";
+import { DashboardGrid, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
+import type { LayoutRules } from "../Report/layoutRules";
 import {
    isQueryTile,
    isTextTile,
@@ -38,15 +35,15 @@ export function BuilderGrid({
    reorder,
    resizing,
    gridBox,
-   columns,
-   notebook,
-   chrome,
+   rules,
    canAdd,
    selected,
    flash,
    menuIndex,
    onSelect,
    onOpenMenu,
+   onRemove,
+   removeBlocked,
    openAdd,
    editTile,
    renderTile,
@@ -55,9 +52,8 @@ export function BuilderGrid({
    reorder: ReturnType<typeof useTileReorder>;
    resizing: ReturnType<typeof useTileResize>;
    gridBox: RefObject<HTMLDivElement | null>;
-   columns: number;
-   notebook: boolean;
-   chrome: TileChrome;
+   /** How the document arranges tiles: columns, widths, inserting between. */
+   rules: LayoutRules;
    /** Whether there is a catalog to add a tile from. */
    canAdd: boolean;
    selected: number | undefined;
@@ -66,6 +62,10 @@ export function BuilderGrid({
    menuIndex: number | undefined;
    onSelect: (index: number) => void;
    onOpenMenu: (anchor: HTMLElement, index: number) => void;
+   /** Take a tile off the report. */
+   onRemove: (index: number) => void;
+   /** Why no tile can be removed now; set, each × says so instead. */
+   removeBlocked?: string;
    openAdd: (at?: number) => void;
    editTile: (key: string, change: (tile: DashboardTile) => void) => void;
    renderTile?: (
@@ -75,6 +75,7 @@ export function BuilderGrid({
    ) => ReactNode;
 }) {
    const { dragging, preview, onDragStart, onDragOver, onDragEnd } = reorder;
+   const { columns } = rules;
    const { resize, startResize, onResize, endResize } = resizing;
    // What the grid lays out: the document, except mid-gesture, where it is
    // the preview — the tile being resized at its previewed width, or the tiles
@@ -106,14 +107,14 @@ export function BuilderGrid({
             onDragEnd={onDragEnd}
          >
             <Box ref={gridBox} sx={{ position: "relative" }}>
-               {!notebook && (dragging || resize !== undefined) && (
+               {rules.widths && (dragging || resize !== undefined) && (
                   <GridGuides columns={columns} />
                )}
 
                <DashboardGrid
                   tiles={entries}
                   columns={columns}
-                  rowGapPx={chrome === "none" ? NOTEBOOK_GAP_PX : GRID_GAP_PX}
+                  rowGapPx={GRID_GAP_PX}
                   keyOf={(entry) =>
                      entry.kind === "gap"
                         ? gapId(entry.after)
@@ -130,18 +131,19 @@ export function BuilderGrid({
                            selected={index === selected}
                            flash={tileKey(each) === flash}
                            menuOpen={menuIndex === index}
-                           bare={chrome === "none"}
+                           // Prose has no card, in either layout.
+                           bare={isTextTile(each)}
                            // Not on the last tile: the "Add tile" under the
                            // list adds there already, and the two drew on top
                            // of each other.
-                           {...(notebook &&
+                           {...(rules.insertBetween &&
                            canAdd &&
                            index < editor.document.tiles.length - 1
                               ? {
                                    onInsertAfter: () => openAdd(index + 1),
                                 }
                               : {})}
-                           {...(columns > 1 && resizable(each)
+                           {...(rules.widths && resizable(each)
                               ? {
                                    resizing: resize?.index === index,
                                    width: {
@@ -163,11 +165,12 @@ export function BuilderGrid({
                               : {})}
                            onSelect={() => onSelect(index)}
                            onOpenMenu={(anchor) => onOpenMenu(anchor, index)}
+                           onRemove={() => onRemove(index)}
+                           {...(removeBlocked ? { removeBlocked } : {})}
                         >
                            {isTextTile(each) ? (
                               <TextTileBody
                                  tile={each}
-                                 chrome={chrome}
                                  onChange={(markdown) =>
                                     editTile(tileKey(each), (tile) => {
                                        if (isTextTile(tile))
@@ -177,11 +180,10 @@ export function BuilderGrid({
                               />
                            ) : renderTile && !editor.pendingOpen ? (
                               // Until the conversion is saved the package has none of its views to run.
-                              renderTile(each, heading(each), chrome)
+                              renderTile(each, heading(each), "card")
                            ) : (
                               <TilePlaceholder
                                  tile={each}
-                                 chrome={chrome}
                                  heading={heading(each)}
                                  {...(editor.pendingOpen
                                     ? {
@@ -196,7 +198,7 @@ export function BuilderGrid({
                />
             </Box>
          </DragDropProvider>
-         {notebook && canAdd && !empty && (
+         {rules.insertBetween && canAdd && !empty && (
             <Button
                size="small"
                startIcon={<AddIcon />}

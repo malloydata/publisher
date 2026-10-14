@@ -14,7 +14,6 @@ import {
    Snackbar,
    Stack,
    Tooltip,
-   Typography,
 } from "@mui/material";
 import React, { useEffect, useId, useState } from "react";
 import type { Given } from "../../client";
@@ -32,7 +31,14 @@ import ResultContainer from "../RenderedResult/ResultContainer";
 import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import ResultsDialog from "../ResultsDialog";
 import { CleanMetricCard, MONO_FONT_FAMILY } from "../styles";
-import { cellCaption, definitionSummary, stripProse } from "./cellKind";
+import {
+   cellCaption,
+   cellLabel,
+   definitionSummary,
+   stripProse,
+} from "./cellKind";
+import { TileCard, TileHeading } from "../Dashboard/TileCard";
+import { TextTileFrame } from "../Report/ReportPage";
 import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
@@ -229,10 +235,17 @@ export function NotebookCell({
    }, [cell, mode]);
 
    const caption = cell.kind === "query" ? cellCaption(cell) : undefined;
+   const label = cell.kind === "query" ? cellLabel(cell) : undefined;
+   // The prose a cell carries above its query: a text tile before the result's
+   // tile, as in a report written as tiles.
    const header = cell.markdown ? (
-      <Prose variant="document" links={links}>
-         {cell.markdown}
-      </Prose>
+      <Box sx={{ mb: 2 }}>
+         <TextTileFrame>
+            <Prose variant="document" links={links}>
+               {cell.markdown}
+            </Prose>
+         </TextTileFrame>
+      </Box>
    ) : null;
 
    const copyToClipboard = () => {
@@ -281,7 +294,7 @@ export function NotebookCell({
    return (
       (cell.type === "markdown" && (
          <Box>
-            <Box>
+            <TextTileFrame>
                {showCopyLink ? (
                   <Stack
                      direction="row"
@@ -312,7 +325,7 @@ export function NotebookCell({
                   onClose={() => setCopyMessage("")}
                   message={copyMessage}
                />
-            </Box>
+            </TextTileFrame>
          </Box>
       )) ||
       (cell.kind === "definition" && (
@@ -363,14 +376,6 @@ export function NotebookCell({
       (cell.type === "code" && (
          <Box>
             {header}
-            {caption && (
-               <Typography
-                  variant="body2"
-                  sx={{ color: "text.secondary", mb: 1 }}
-               >
-                  {caption}
-               </Typography>
-            )}
             {cell.newSources && cell.newSources.length > 0 && (
                <Stack
                   sx={{
@@ -453,16 +458,24 @@ export function NotebookCell({
                !cell.error &&
                !hasValidImport &&
                !(cell.newSources && cell.newSources.length > 0) && (
-                  <CleanMetricCard
-                     sx={{
-                        display: "flex",
-                        justifyContent: "center",
-                        alignItems: "center",
-                        minHeight: 200,
-                     }}
-                  >
-                     <CircularProgress size={32} />
-                  </CleanMetricCard>
+                  <TileCard>
+                     {(label || caption) && (
+                        <TileHeading
+                           title={label ?? ""}
+                           {...(caption ? { subtitle: caption } : {})}
+                        />
+                     )}
+                     <Box
+                        sx={{
+                           display: "flex",
+                           justifyContent: "center",
+                           alignItems: "center",
+                           minHeight: 200,
+                        }}
+                     >
+                        <CircularProgress size={32} />
+                     </Box>
+                  </TileCard>
                )}
 
             {!cell.result && cell.error && (
@@ -480,62 +493,40 @@ export function NotebookCell({
             )}
 
             {cell.result && (
-               <CleanMetricCard
-                  sx={{
-                     position: "relative",
-                  }}
-               >
-                  <Box
-                     sx={{
-                        paddingTop: "24px",
-                     }}
-                  >
-                     <ResultContainer
-                        result={cell.result}
-                        maxHeight={NOTEBOOK_CELL_MAX_HEIGHT}
-                        maxResultSize={maxResultSize}
-                        drill={drill}
-                     />
-                  </Box>
+               // The tile a grid draws: its title and caption, the cell's own
+               // actions on the heading's row, then the result.
+               <TileCard>
+                  <TileHeading
+                     title={label ?? ""}
+                     {...(caption ? { subtitle: caption } : {})}
+                     action={
+                        <Stack direction="row" sx={{ gap: 0.5, mt: "-4px" }}>
+                           <FloatingIconButton
+                              aria-label="Malloy code"
+                              onClick={(e) => {
+                                 e.stopPropagation();
+                                 setCodeDialogOpen(true);
+                              }}
+                           >
+                              <CodeIcon />
+                           </FloatingIconButton>
+                           <FloatingIconButton
+                              aria-label="Expand results"
+                              onClick={() => setResultsDialogOpen(true)}
+                           >
+                              <SearchIcon />
+                           </FloatingIconButton>
+                        </Stack>
+                     }
+                  />
+                  <ResultContainer
+                     result={cell.result}
+                     maxHeight={NOTEBOOK_CELL_MAX_HEIGHT}
+                     maxResultSize={maxResultSize}
+                     drill={drill}
+                  />
                   {drillMenu}
-
-                  {/* Top right corner controls.
-                      `top: -12px` lifts the buttons above the
-                      CleanMetricCard's inner ResultContainer so the
-                      dashboard panel (which now paints slate in dark
-                      mode) doesn't bisect them. The icons were already
-                      visually overlapping the panel's top edge in
-                      light mode too, but the white-on-white made it
-                      invisible; in dark mode the contrast made the
-                      clipping obvious. */}
-                  <Stack
-                     sx={{
-                        position: "absolute",
-                        top: "-12px",
-                        right: "8px",
-                        flexDirection: "row",
-                        gap: "8px",
-                        alignItems: "center",
-                        zIndex: 2,
-                     }}
-                  >
-                     <FloatingIconButton
-                        aria-label="Malloy code"
-                        onClick={(e) => {
-                           e.stopPropagation();
-                           setCodeDialogOpen(true);
-                        }}
-                     >
-                        <CodeIcon />
-                     </FloatingIconButton>
-                     <FloatingIconButton
-                        aria-label="Expand results"
-                        onClick={() => setResultsDialogOpen(true)}
-                     >
-                        <SearchIcon />
-                     </FloatingIconButton>
-                  </Stack>
-               </CleanMetricCard>
+               </TileCard>
             )}
          </Box>
       ))

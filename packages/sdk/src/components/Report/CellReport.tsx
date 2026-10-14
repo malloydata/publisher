@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import "@malloydata/malloy-explorer/styles.css";
-import { Stack, Typography } from "@mui/material";
+import { Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NotebookCell as RawCell, RawNotebook } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
@@ -22,7 +22,13 @@ import { planRun } from "../Notebook/runPlan";
 import type { EnhancedNotebookCell } from "../Notebook/types";
 import { useServer } from "../ServerProvider";
 import { failureCategory, useReportEvents } from "./telemetry";
-import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
+import { Prose } from "../Prose";
+import {
+   ReportHeader,
+   ReportPage,
+   StickyControls,
+   TextTileFrame,
+} from "./ReportPage";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
@@ -61,6 +67,9 @@ export type CellRunner = (
 export interface CellReportProps {
    /** `publisher://…/models/<path>`: the report, and the model its cells run against. */
    resourceUri: string;
+   /** The report's title and description, drawn in the header every report has. */
+   title?: string;
+   description?: string;
    maxResultSize?: number;
    /**
     * Parameter values from the host, typically its URL query parameters: the
@@ -117,6 +126,8 @@ export interface CellReportProps {
  */
 export function CellRunnerView({
    resourceUri,
+   title,
+   description,
    maxResultSize = 0,
    givens,
    onGivensChange,
@@ -472,68 +483,87 @@ export function CellRunnerView({
          : 0;
 
    return (
-      <CleanNotebookContainer>
-         <CleanNotebookSection>
-            <Stack spacing={3} component="section">
-               {/* Parameters panel: the controls for `given:` declarations */}
-               <GivensPanel {...controls.panel} />
+      // The page every report draws, whatever its format: the header, the
+      // pinned row of filter buttons, then the cells as prose and tiles.
+      <ReportPage
+         // Cells read top to bottom, so a report of cells is linear.
+         layout="linear"
+         header={
+            title || description ? (
+               <ReportHeader
+                  title={title ?? ""}
+                  description={
+                     description ? (
+                        <TextTileFrame>
+                           <Prose variant="document">{description}</Prose>
+                        </TextTileFrame>
+                     ) : undefined
+                  }
+               />
+            ) : null
+         }
+         controls={
+            controls.panel.givens.length > 0 ? (
+               <StickyControls>
+                  <GivensPanel {...controls.panel} layout="bar" />
+               </StickyControls>
+            ) : undefined
+         }
+      >
+         {!isSuccess && !isError && (
+            <Loading text={LOADING_COPY.opening("report")} />
+         )}
 
-               {!isSuccess && !isError && (
-                  <Loading text={LOADING_COPY.opening("report")} />
-               )}
+         {isSuccess &&
+            shownCells.map((cell, index) => (
+               <NotebookCell
+                  cell={cell as EnhancedNotebookCell}
+                  key={index}
+                  showCopyLink={index === copyLinkIndex}
+                  resourceUri={resourceUri}
+                  maxResultSize={maxResultSize}
+                  isExecuting={isExecuting}
+                  givens={cellStartingGivens}
+                  givenSpecs={declaredGivens}
+                  // Distinct from `isExecuting`: the cell's spinner is
+                  // gated on `!cell.result`, so feeding this through it
+                  // showed nothing on a re-run, which is the only case
+                  // the settle window has to signal.
+                  pendingRerun={runScheduled}
+                  onNavigate={onNavigate}
+                  onDrillNavigate={onDrillNavigate}
+                  onDrillSelf={
+                     declaredGivens.length > 0 ? onDrillSelf : undefined
+                  }
+                  canDrillSelf={canDrillSelf}
+               />
+            ))}
 
-               {isSuccess &&
-                  shownCells.map((cell, index) => (
-                     <NotebookCell
-                        cell={cell as EnhancedNotebookCell}
-                        key={index}
-                        showCopyLink={index === copyLinkIndex}
-                        resourceUri={resourceUri}
-                        maxResultSize={maxResultSize}
-                        isExecuting={isExecuting}
-                        givens={cellStartingGivens}
-                        givenSpecs={declaredGivens}
-                        // Distinct from `isExecuting`: the cell's spinner is
-                        // gated on `!cell.result`, so feeding this through it
-                        // showed nothing on a re-run, which is the only case
-                        // the settle window has to signal.
-                        pendingRerun={runScheduled}
-                        onNavigate={onNavigate}
-                        onDrillNavigate={onDrillNavigate}
-                        onDrillSelf={
-                           declaredGivens.length > 0 ? onDrillSelf : undefined
-                        }
-                        canDrillSelf={canDrillSelf}
-                     />
-                  ))}
+         {isError && error?.status === 404 && (
+            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+               <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
+               not found.
+            </Typography>
+         )}
 
-               {isError && error?.status === 404 && (
-                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                     <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
-                     not found.
-                  </Typography>
-               )}
+         {isError && error?.status !== 404 && (
+            <ApiErrorDisplay
+               error={error as ApiError}
+               context={`${environmentName} > ${packageName} > ${notebookPath}`}
+            />
+         )}
 
-               {isError && error?.status !== 404 && (
-                  <ApiErrorDisplay
-                     error={error as ApiError}
-                     context={`${environmentName} > ${packageName} > ${notebookPath}`}
-                  />
-               )}
-
-               {executionError && (
-                  <ApiErrorDisplay
-                     error={{
-                        message: executionError.message,
-                        status: 500,
-                        name: "ExecutionError",
-                     }}
-                     context="Notebook Execution"
-                  />
-               )}
-            </Stack>
-         </CleanNotebookSection>
-      </CleanNotebookContainer>
+         {executionError && (
+            <ApiErrorDisplay
+               error={{
+                  message: executionError.message,
+                  status: 500,
+                  name: "ExecutionError",
+               }}
+               context="Notebook Execution"
+            />
+         )}
+      </ReportPage>
    );
 }
 

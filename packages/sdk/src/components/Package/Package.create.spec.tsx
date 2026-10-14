@@ -141,7 +141,7 @@ function mount(
 }
 
 const settled = () => screen.findByText("old");
-const NEW = { name: "New report" } as const;
+const NEW = { name: "Add report" } as const;
 
 beforeEach(() => {
    clearCache();

@@ -9,6 +9,7 @@ import {
    type PackageEnv,
 } from "./helpers/packageEnv";
 import { saveChanges } from "./helpers/save";
+import { closeFilter } from "./helpers/filters";
 
 /**
  * Documents the builders open or create in shapes the happy path skips: a
@@ -130,14 +131,22 @@ test.describe("joined filter", () => {
          .getByRole("button", { name: "Add filter", exact: true })
          .click();
 
-      // The new control's picker asks the server for its values.
-      const control = page.getByRole("combobox", { name: /state/i }).first();
-      await expect(control).toBeVisible({ timeout: 30_000 });
+      // The new filter's button opens its picker, which asks the server for
+      // its values.
+      await page
+         .getByRole("button", { name: /state[^:]*: /i })
+         .first()
+         .click({ timeout: 30_000 });
+      const control = page
+         .getByRole("dialog", { name: / filter$/ })
+         .getByRole("combobox")
+         .first();
+      await expect(control).toBeVisible();
       await control.click();
       await expect(page.getByRole("option").first()).toBeVisible({
          timeout: 30_000,
       });
-      await page.keyboard.press("Escape");
+      await closeFilter(page);
 
       await saveChanges(page);
       expect(await pe.readSource("overview.malloy")).toContain(
@@ -154,7 +163,7 @@ test.describe("joined filter", () => {
       // The reader serves the saved file with the control in place.
       await page.goto(`/${pe.env}/${pe.pkg}/overview`);
       await expect(
-         page.getByRole("combobox", { name: /state/i }).first(),
+         page.getByRole("button", { name: /state[^:]*: /i }).first(),
       ).toBeVisible({
          timeout: 60_000,
       });

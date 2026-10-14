@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { NewTile } from "./AddTileDialog";
 import { isTextTile, tileKey, type DashboardTile } from "./document";
 import { addTileToDocument } from "./addTileToDocument";
+import type { LayoutRules } from "../Report/layoutRules";
 import type { ReportEditorHandle } from "./useReportEditor";
 
 /**
@@ -13,16 +14,15 @@ import type { ReportEditorHandle } from "./useReportEditor";
  */
 export function useTileEditing({
    editor,
-   notebook,
-   columns,
+   rules,
    modelPath,
    textHeld,
    selectTile,
    deselectTile,
 }: {
    editor: ReportEditorHandle;
-   notebook: boolean;
-   columns: number;
+   /** How the document arranges tiles: whether an added tile carries a width, and how wide a new text tile starts. */
+   rules: LayoutRules;
    /** The document's file within the package, which a tile's import is relative to. */
    modelPath: string | undefined;
    /** The document is held as text: it has no `import`, so a tile's source is the run model's and nothing is imported. */
@@ -51,7 +51,7 @@ export function useTileEditing({
          addTileToDocument(draft, tile, {
             modelPath,
             textHeld,
-            notebook,
+            widths: rules.widths,
             insertAt,
          }),
       );
@@ -71,7 +71,7 @@ export function useTileEditing({
             kind: "text",
             name: `text_${n}`,
             markdown: "",
-            ...(notebook ? {} : { colspan: columns }),
+            ...(rules.widths ? { colspan: rules.columns } : {}),
          });
       });
       selectTile(insertAt ?? editor.document.tiles.length);
