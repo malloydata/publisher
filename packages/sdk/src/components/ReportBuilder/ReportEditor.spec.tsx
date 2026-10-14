@@ -33,7 +33,7 @@ source: a is scoped_orders extend {
   # label="By category"
   view: by_cat is by_category
 }`;
-import { editInline } from "./testing/inline";
+import { editInline, findViewOption } from "./testing/inline";
 
 let served = PACKAGE_FILE;
 /** Set, and the dashboard's own file fails to fetch: a refetch the server could not answer. */
@@ -246,9 +246,7 @@ describe("ReportEditor", () => {
       fireEvent.click(
          await screen.findByRole("button", { name: "Add tile", hidden: true }),
       );
-      expect(
-         await screen.findByRole("button", { name: "View by_category" }),
-      ).toBeDefined();
+      expect(await findViewOption("by_category")).toBeDefined();
    });
 
    it("leaves the package's listed reports out of the catalog, wherever they live", async () => {

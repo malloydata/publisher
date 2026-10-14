@@ -37,8 +37,8 @@ Both, and the split is not stylistic.
 **`notebooks/eval_run.malloy`** holds the analytical tables: pass rate, cost, effort,
 where the failures are, retrieval, the backlog. Publisher renders it natively, so
 these are Malloy reading the model directly with no JavaScript in between and
-nothing to drift. It is written as `run:` cells, a form Publisher still reads and
-converts to the notebook tile layout if someone saves it in the Console.
+nothing to drift. It is a linear report of text and query tiles, so it opens in
+the Console's builder like any other report.
 
 **`public/index.html`** leads with the score and where every question landed,
 then the diagnosis backlog (failures grouped by shared cause), an effort strip

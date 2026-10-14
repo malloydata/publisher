@@ -94,8 +94,7 @@ describe("ReportBuilder: text tiles", () => {
          written = source;
       });
       fireEvent.click(button("Add tile"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       expect(
          within(tile("text_1")).getByText(TEXT_TILE_PLACEHOLDER),
       ).toBeDefined();
@@ -113,9 +112,22 @@ describe("ReportBuilder: text tiles", () => {
    it("names each new text tile for the first free number", async () => {
       await mount();
       for (const expected of ["text_1", "text_2"]) {
-         fireEvent.click(button("Add tile"));
-         fireEvent.click(screen.getByRole("button", { name: "Text" }));
-         fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+         // The page's own Add tile, which comes first: a window still closing
+         // from the last pass has an Add tile of its own.
+         fireEvent.click(
+            screen.getAllByRole("button", {
+               name: "Add tile",
+               hidden: true,
+            })[0]!,
+         );
+         fireEvent.click(
+            screen
+               .getAllByRole("button", {
+                  name: "Add text instead",
+                  hidden: true,
+               })
+               .at(-1)!,
+         );
          expect(tile(expected)).toBeDefined();
       }
    });
@@ -125,13 +137,9 @@ describe("ReportBuilder: text tiles", () => {
       await mount((source) => {
          written = source;
       });
-      fireEvent.click(screen.getByLabelText("Settings for intro"));
-      expect(screen.queryByLabelText("Tile title")).toBeNull();
-      expect(screen.queryByText("Drill")).toBeNull();
-      expect(screen.queryByRole("button", { name: /^Width/ })).toBeNull();
-      fireEvent.keyDown(screen.getByRole("button", { name: "Delete" }), {
-         key: "Escape",
-      });
+      // No menu at all: a text tile is edited in place and removed from its ×.
+      expect(screen.queryByLabelText("Settings for intro")).toBeNull();
+      expect(screen.getByLabelText("Remove intro")).toBeDefined();
       dragEdge("intro", 6);
 
       fireEvent.click(button("Save"));
@@ -139,13 +147,12 @@ describe("ReportBuilder: text tiles", () => {
       expect(written).toContain("intro { kind=text colspan=6 }");
    });
 
-   it("removes a text tile from its menu, block and entry together", async () => {
+   it("removes a text tile from its ×, block and entry together", async () => {
       let written: string | undefined;
       await mount((source) => {
          written = source;
       });
-      fireEvent.click(screen.getByLabelText("Settings for intro"));
-      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+      fireEvent.click(screen.getByLabelText("Remove intro"));
       expect(screen.queryByLabelText("Tile intro")).toBeNull();
 
       fireEvent.click(button("Save"));

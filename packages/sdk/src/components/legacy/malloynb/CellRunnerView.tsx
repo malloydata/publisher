@@ -1,28 +1,42 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * @deprecated `.malloynb` only. The cell runner behind the deprecated
+ * `Notebook`: it runs a `.malloynb` notebook's code cells through the
+ * deprecated `…/notebooks/*` routes and draws them on the shared report page.
+ * Nothing outside `legacy/malloynb/` imports it (eslint enforces this), and it
+ * is deleted with the `.malloynb` format. A `.malloy` report is always tiles,
+ * drawn by `DashboardView`.
+ */
+
 import "@malloydata/malloy-explorer/styles.css";
-import { Stack, Typography } from "@mui/material";
+import { Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { NotebookCell as RawCell, RawNotebook } from "../../client";
-import type { GivenValue } from "../../hooks/givenValue";
-import { useDocumentControls } from "../../hooks/useDocumentControls";
-import { useModelGivens } from "../../hooks/useModelGivens";
-import { GIVEN_SETTLE_MS } from "../../hooks/useSettled";
-import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay, type ApiError } from "../ApiErrorDisplay";
-import type { NavigationClick } from "../click_helper";
-import type { DrillNavigation } from "../drill";
-import { GivensPanel } from "../given";
-import { givensToParams, givensToRequest } from "../given/paramCodec";
-import { Loading, LOADING_COPY } from "../Loading";
-import { cellRuns } from "../Notebook/cellKind";
-import { NotebookCell } from "../Notebook/NotebookCell";
-import { planRun } from "../Notebook/runPlan";
-import type { EnhancedNotebookCell } from "../Notebook/types";
-import { useServer } from "../ServerProvider";
-import { failureCategory, useReportEvents } from "./telemetry";
-import { CleanNotebookContainer, CleanNotebookSection } from "../styles";
+import type { NotebookCell as RawCell, RawNotebook } from "../../../client";
+import type { GivenValue } from "../../../hooks/givenValue";
+import { useDocumentControls } from "../../../hooks/useDocumentControls";
+import { useModelGivens } from "../../../hooks/useModelGivens";
+import { GIVEN_SETTLE_MS } from "../../../hooks/useSettled";
+import { parseResourceUri } from "../../../utils/formatting";
+import { ApiErrorDisplay, type ApiError } from "../../ApiErrorDisplay";
+import type { NavigationClick } from "../../click_helper";
+import type { DrillNavigation } from "../../drill";
+import { GivensPanel } from "../../given";
+import { givensToParams, givensToRequest } from "../../given/paramCodec";
+import { Loading, LOADING_COPY } from "../../Loading";
+import { cellRuns } from "./cellKind";
+import { NotebookCell } from "./NotebookCell";
+import { planRun } from "./runPlan";
+import type { EnhancedNotebookCell } from "./types";
+import { failureCategory, useReportEvents } from "../../Report/telemetry";
+import { Prose } from "../../Prose";
+import {
+   ReportHeader,
+   ReportPage,
+   StickyControls,
+   TextTileFrame,
+} from "../../Report/ReportPage";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
@@ -61,6 +75,9 @@ export type CellRunner = (
 export interface CellReportProps {
    /** `publisher://…/models/<path>`: the report, and the model its cells run against. */
    resourceUri: string;
+   /** The report's title and description, drawn in the header every report has. */
+   title?: string;
+   description?: string;
    maxResultSize?: number;
    /**
     * Parameter values from the host, typically its URL query parameters: the
@@ -117,6 +134,8 @@ export interface CellReportProps {
  */
 export function CellRunnerView({
    resourceUri,
+   title,
+   description,
    maxResultSize = 0,
    givens,
    onGivensChange,
@@ -465,123 +484,90 @@ export function CellRunnerView({
 
    const shownCells =
       enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
-   // A served report can open with definition cells; a .malloynb keeps the icon on its first cell.
-   const copyLinkIndex =
-      notebook?.format === "malloy"
-         ? shownCells.findIndex((cell) => cell.type === "markdown")
-         : 0;
+   // A .malloynb keeps the copy-link icon on its first cell.
+   const copyLinkIndex = 0;
 
    return (
-      <CleanNotebookContainer>
-         <CleanNotebookSection>
-            <Stack spacing={3} component="section">
-               {/* Parameters panel: the controls for `given:` declarations */}
-               <GivensPanel {...controls.panel} />
+      // The page every report draws, whatever its format: the header, the
+      // pinned row of filter buttons, then the cells as prose and tiles.
+      <ReportPage
+         // Cells read top to bottom, so a report of cells is linear.
+         layout="linear"
+         header={
+            title || description ? (
+               <ReportHeader
+                  title={title ?? ""}
+                  description={
+                     description ? (
+                        <TextTileFrame>
+                           <Prose variant="document">{description}</Prose>
+                        </TextTileFrame>
+                     ) : undefined
+                  }
+               />
+            ) : null
+         }
+         controls={
+            controls.panel.givens.length > 0 ? (
+               <StickyControls>
+                  <GivensPanel {...controls.panel} layout="bar" />
+               </StickyControls>
+            ) : undefined
+         }
+      >
+         {!isSuccess && !isError && (
+            <Loading text={LOADING_COPY.opening("report")} />
+         )}
 
-               {!isSuccess && !isError && (
-                  <Loading text={LOADING_COPY.opening("report")} />
-               )}
+         {isSuccess &&
+            shownCells.map((cell, index) => (
+               <NotebookCell
+                  cell={cell as EnhancedNotebookCell}
+                  key={index}
+                  showCopyLink={index === copyLinkIndex}
+                  resourceUri={resourceUri}
+                  maxResultSize={maxResultSize}
+                  isExecuting={isExecuting}
+                  givens={cellStartingGivens}
+                  givenSpecs={declaredGivens}
+                  // Distinct from `isExecuting`: the cell's spinner is
+                  // gated on `!cell.result`, so feeding this through it
+                  // showed nothing on a re-run, which is the only case
+                  // the settle window has to signal.
+                  pendingRerun={runScheduled}
+                  onNavigate={onNavigate}
+                  onDrillNavigate={onDrillNavigate}
+                  onDrillSelf={
+                     declaredGivens.length > 0 ? onDrillSelf : undefined
+                  }
+                  canDrillSelf={canDrillSelf}
+               />
+            ))}
 
-               {isSuccess &&
-                  shownCells.map((cell, index) => (
-                     <NotebookCell
-                        cell={cell as EnhancedNotebookCell}
-                        key={index}
-                        showCopyLink={index === copyLinkIndex}
-                        resourceUri={resourceUri}
-                        maxResultSize={maxResultSize}
-                        isExecuting={isExecuting}
-                        givens={cellStartingGivens}
-                        givenSpecs={declaredGivens}
-                        // Distinct from `isExecuting`: the cell's spinner is
-                        // gated on `!cell.result`, so feeding this through it
-                        // showed nothing on a re-run, which is the only case
-                        // the settle window has to signal.
-                        pendingRerun={runScheduled}
-                        onNavigate={onNavigate}
-                        onDrillNavigate={onDrillNavigate}
-                        onDrillSelf={
-                           declaredGivens.length > 0 ? onDrillSelf : undefined
-                        }
-                        canDrillSelf={canDrillSelf}
-                     />
-                  ))}
+         {isError && error?.status === 404 && (
+            <Typography variant="body2" sx={{ color: "text.secondary" }}>
+               <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
+               not found.
+            </Typography>
+         )}
 
-               {isError && error?.status === 404 && (
-                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                     <code>{`${environmentName} > ${packageName} > ${notebookPath}`}</code>{" "}
-                     not found.
-                  </Typography>
-               )}
+         {isError && error?.status !== 404 && (
+            <ApiErrorDisplay
+               error={error as ApiError}
+               context={`${environmentName} > ${packageName} > ${notebookPath}`}
+            />
+         )}
 
-               {isError && error?.status !== 404 && (
-                  <ApiErrorDisplay
-                     error={error as ApiError}
-                     context={`${environmentName} > ${packageName} > ${notebookPath}`}
-                  />
-               )}
-
-               {executionError && (
-                  <ApiErrorDisplay
-                     error={{
-                        message: executionError.message,
-                        status: 500,
-                        name: "ExecutionError",
-                     }}
-                     context="Notebook Execution"
-                  />
-               )}
-            </Stack>
-         </CleanNotebookSection>
-      </CleanNotebookContainer>
-   );
-}
-
-/**
- * A `.malloy` report written as `run:` cells, whose cells the caller already
- * holds (`Report` reads them off `GET …/reports/{path}`). Each runs through
- * the governed query endpoint the grid tiles use
- * (`POST …/models/{path}/query`, the report's path as the model and the cell's
- * text as the query), which holds a cell to the same surface, `#(authorize)`
- * and row-level gates a tile is held to.
- */
-export function CellReport({
-   notebook: held,
-   ...props
-}: CellReportProps & { notebook: RawNotebook }) {
-   const { apiClients } = useServer();
-   const { environmentName, packageName, versionId, modelPath } =
-      parseResourceUri(props.resourceUri);
-   // Handed over from the first render after mount, not on it, so the
-   // controls see the document ARRIVE as they do when it is fetched: that
-   // arrival is what reports the file's starting values to the host's URL
-   // (`useGivensState` seeds its record from the first render).
-   const [mounted, setMounted] = useState(false);
-   useEffect(() => setMounted(true), []);
-   const runCell = useCallback<CellRunner>(
-      async ({ cell, givens, declaredTypes, signal }) => ({
-         result: (
-            await apiClients.models.executeQueryModel(
-               environmentName,
-               packageName,
-               modelPath,
-               {
-                  query: cell.text,
-                  givens: givensToRequest(givens, declaredTypes),
-                  versionId,
-               },
-               undefined,
-               { signal },
-            )
-         ).data.result,
-      }),
-      [apiClients.models, environmentName, packageName, modelPath, versionId],
-   );
-   return (
-      <CellRunnerView
-         {...props}
-         notebook={mounted ? held : undefined}
-         runCell={runCell}
-      />
+         {executionError && (
+            <ApiErrorDisplay
+               error={{
+                  message: executionError.message,
+                  status: 500,
+                  name: "ExecutionError",
+               }}
+               context="Notebook Execution"
+            />
+         )}
+      </ReportPage>
    );
 }

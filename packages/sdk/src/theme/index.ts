@@ -4,6 +4,7 @@
 export { accentFor, contrastRatio, type Accent } from "./accent";
 export { buildMalloyExplicitTheme } from "./buildMalloyExplicitTheme";
 export { buildTableCssVars } from "./buildTableCssVars";
+export { reportClasses } from "./classes";
 export { buildVegaThemeOverride } from "./buildVegaThemeOverride";
 export { DEFAULT_THEME } from "./defaults";
 export {
@@ -18,3 +19,10 @@ export { readChartAnnotations } from "./readChartAnnotations";
 export { resolveMode, resolveTheme } from "./resolveTheme";
 export { ThemeProvider, usePublisherTheme } from "./ThemeContext";
 export type { ResolvedTheme, Theme, ThemeMode } from "./types";
+export {
+   DEFAULT_UI,
+   mergeUi,
+   type ReportUi,
+   type ReportUiOverrides,
+   type UiTextStyle,
+} from "./ui";

@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { NotebookCell as ClientNotebookCell } from "../../client";
+import { NotebookCell as ClientNotebookCell } from "../../../client";
 
 /**
  * Enhanced notebook cell that extends the base API cell with execution results.

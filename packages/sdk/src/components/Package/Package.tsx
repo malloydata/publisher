@@ -18,6 +18,8 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Database, type AgentSummary } from "../../client";
 import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
+import { AddButton } from "../buttons";
+import { PackageProblems } from "./PackageProblems";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import { Loading } from "../Loading";
 import { chooseWorkspace } from "../ReportBuilder/documentSession";
@@ -362,6 +364,8 @@ export default function Package({
             )}
          </Box>
 
+         <PackageProblems warnings={pkgQuery.data?.data?.warnings} />
+
          {isLoading && <Loading text="Loading package..." />}
 
          {createTarget && (
@@ -438,14 +442,13 @@ export default function Package({
                      count={artifacts.length}
                      {...(canNew
                         ? {
+                             // The section heading's add button, as every
+                             // other section's: "+ Report".
                              action: (
-                                <Button
-                                   variant="outlined"
-                                   size="small"
+                                <AddButton
+                                   label="Report"
                                    onClick={() => setCreating(true)}
-                                >
-                                   New report
-                                </Button>
+                                />
                              ),
                           }
                         : {})}
@@ -456,7 +459,7 @@ export default function Package({
                            {...(canNew
                               ? {
                                    action: {
-                                      label: "New report",
+                                      label: "Add report",
                                       onClick: () => setCreating(true),
                                    },
                                 }

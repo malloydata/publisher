@@ -13,7 +13,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { ReportEvent } from "../Report/telemetry";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
-import { closeMenu, editInline } from "./testing/inline";
+import { closeMenu, editInline, viewOption } from "./testing/inline";
 import { dragEdge } from "./testing/resize";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
@@ -428,21 +428,22 @@ describe("ReportBuilder: fields, when the package is known", () => {
       fireEvent.change(screen.getByLabelText("Field to filter"), {
          target: { value: "sale_price" },
       });
-      const kind = () => screen.getByRole("combobox", { name: /Filter kind/ });
+      const kind = (name: string) =>
+         within(
+            screen.getByRole("radiogroup", { name: "Filter kind" }),
+         ).getByRole("radio", { name });
       const submit = () =>
          screen.getByRole("button", { name: "Add filter", hidden: false });
-      expect(kind().textContent).toBe("Number range");
+      expect(kind("Number range").getAttribute("aria-checked")).toBe("true");
       expect(submit()).toHaveProperty("disabled", false);
-      // But an EXPLICIT kind the field cannot take is a problem, said plainly.
-      fireEvent.mouseDown(kind());
-      fireEvent.click(screen.getByRole("option", { name: /Pick one/ }));
-      expect(
-         screen.getByText("sale_price is a number; this filter compares text."),
-      ).toBeDefined();
-      expect(submit()).toHaveProperty("disabled", true);
+      // A kind the field cannot take is not on offer: listed, off, and why.
+      const pickOne = kind("Pick one");
+      expect(pickOne.getAttribute("aria-disabled")).toBe("true");
+      fireEvent.click(pickOne);
+      expect(kind("Number range").getAttribute("aria-checked")).toBe("true");
    });
 
-   it("marks a control whose binding names a missing field, on its chip", async () => {
+   it("marks a control whose binding names a missing field, on its filter button", async () => {
       const source = SOURCE.replace(
          "where: cat ~ $CATEGORY",
          "where: catgory ~ $CATEGORY",
@@ -455,8 +456,10 @@ describe("ReportBuilder: fields, when the package is known", () => {
             catalog={catalog}
          />,
       );
-      const chip = screen.getByLabelText("Edit filter CATEGORY");
-      expect(chip.className).toContain("colorWarning");
+      const button = screen.getByLabelText("Edit filter CATEGORY");
+      expect(
+         button.closest("[data-filter]")?.getAttribute("data-problem"),
+      ).toBe("true");
    });
 });
 
@@ -521,7 +524,7 @@ describe("ReportBuilder: tiles added and removed", () => {
          written = source;
       });
       fireEvent.click(button("Add tile"));
-      fireEvent.click(screen.getByLabelText("View sales_by_state"));
+      fireEvent.click(viewOption("sales_by_state"));
       fireEvent.change(screen.getByLabelText("Tile title"), {
          target: { value: "Revenue by state" },
       });
@@ -540,13 +543,15 @@ describe("ReportBuilder: tiles added and removed", () => {
       );
    });
 
-   it("removes a tile from its menu, and saves it at once", async () => {
+   it("removes a tile from the × on its corner, and saves it at once", async () => {
       let written: string | undefined;
       await mountWithCatalog((source) => {
          written = source;
       });
+      // Not from its menu: the menu holds the chart and drill only.
       fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+      expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+      fireEvent.click(screen.getByLabelText("Remove By category"));
       expect(screen.queryByLabelText("Tile by_cat")).toBeNull();
 
       fireEvent.click(
@@ -565,15 +570,13 @@ describe("ReportBuilder: tiles added and removed", () => {
 describe("ReportBuilder: the last tile", () => {
    it("cannot be removed while the saved dashboard has tiles, and says why on screen", async () => {
       await mount();
-      fireEvent.click(screen.getByLabelText("Settings for By category"));
-      fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-      fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      const remove = screen.getByRole("button", { name: /^Delete/ });
+      fireEvent.click(screen.getByLabelText("Remove By category"));
+      // The last tile's × stays focusable, says why, and does nothing.
+      const remove = screen.getByLabelText("Remove by_brand");
       expect(remove.getAttribute("aria-disabled")).toBe("true");
-      const reason = screen.getByText(
+      expect(remove.getAttribute("aria-description")).toBe(
          "A saved report needs at least one tile.",
       );
-      expect(remove.getAttribute("aria-describedby")).toBe(reason.id);
       fireEvent.click(remove);
       expect(screen.getByLabelText("Tile by_brand")).toBeDefined();
    });
@@ -655,8 +658,8 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       fireEvent.change(description, {
          target: { value: "What sold, and where." },
       });
-      // Escape is Done: the text commits.
-      fireEvent.keyDown(description, { key: "Escape" });
+      // ⌘Enter finishes: the text commits.
+      fireEvent.keyDown(description, { key: "Enter", metaKey: true });
       expect(screen.getByText("What sold, and where.")).toBeDefined();
 
       editInline("Storefront", "Report title", "Storefront, weekly");
@@ -702,13 +705,17 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for x"));
-      fireEvent.click(button("Drill"));
-
-      fireEvent.mouseDown(
-         screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
-      );
       fireEvent.click(
-         screen.getByRole("option", { name: /This report/, hidden: true }),
+         screen.getByRole("menuitem", {
+            name: /^Clickable cells/,
+            hidden: true,
+         }),
+      );
+
+      // Switched on, a cell opens this report; another is one more pick.
+      fireEvent.click(screen.getByLabelText("cat is clickable"));
+      fireEvent.mouseDown(
+         screen.getByRole("combobox", { name: "Where cat goes", hidden: true }),
       );
       fireEvent.click(
          screen.getByRole("option", { name: /regions/, hidden: true }),
@@ -716,7 +723,7 @@ source: a is scoped_orders extend {
       fireEvent.keyDown(document.body, { key: "Escape" });
       fireEvent.mouseDown(
          screen.getByRole("combobox", {
-            name: /Sets the filter/,
+            name: "Control cat sets",
             hidden: true,
          }),
       );
@@ -740,7 +747,6 @@ source: a is scoped_orders extend {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for By category"));
       expect(screen.queryByRole("button", { name: "Drill" })).toBeNull();
-      expect(button("Delete")).toBeDefined();
    });
 });
 

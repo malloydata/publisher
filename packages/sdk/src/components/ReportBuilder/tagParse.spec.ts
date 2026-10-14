@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { conversionRefused, convertLegacyNotebook } from "./legacyNotebook";
 import { quoteFilterLiterals } from "./tagParse";
 import { readDashboardDocument, readFailed } from "./readDocument";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
@@ -23,15 +22,6 @@ const BLOCK = `##! experimental.givens
 }
 |##
 ${BODY}`;
-const LEGACY = (tag: string) => `##! experimental.givens
-${tag}
-import "../models/orders.malloy"
-
-##(markdown) Hello
-
-run: orders -> kpis
-`;
-
 describe("filter-literal givens in the artifact tag", () => {
    for (const [name, text] of [
       ["line", LINE],
@@ -56,36 +46,6 @@ describe("filter-literal givens in the artifact tag", () => {
          expect(out.source).toBe(text);
       });
    }
-
-   for (const [name, tag] of [
-      [
-         "line",
-         "## artifact { layout=linear autorun=false givens { REGION=f'US' } }",
-      ],
-      [
-         "block",
-         "##| artifact { layout=linear\n  autorun=false\n  givens { REGION=f'US' }\n}\n|##",
-      ],
-   ]) {
-      it(`converts a legacy notebook with the ${name} tag and keeps the literal as written`, async () => {
-         const result = await convertLegacyNotebook(LEGACY(tag));
-         if (conversionRefused(result)) throw new Error(result.refused);
-         expect(result.text).toContain("givens { REGION=f'US' }");
-         const read = await readDashboardDocument(result.text);
-         if (readFailed(read)) throw new Error(read.reason);
-         expect(read.document.startingGivens).toEqual({ REGION: "f'US'" });
-      });
-   }
-
-   it("reads a legacy notebook with a filter literal as a legacy notebook", async () => {
-      const read = await readDashboardDocument(
-         LEGACY(
-            "## artifact { layout=linear autorun=false givens { REGION=f'US' } }",
-         ),
-      );
-      if (!readFailed(read)) throw new Error("expected a refusal");
-      expect(read.legacyNotebook).toBe(true);
-   });
 
    it("surfaces the tag's own syntax error when it does not parse", async () => {
       const read = await readDashboardDocument(

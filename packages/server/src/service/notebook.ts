@@ -765,7 +765,7 @@ export function readNotebookCells(
       return refuse({
          line: 1,
          message:
-            "Line 1: this notebook has no ## artifact note, so its header cannot be told from its cells. Fix: add `## artifact { layout=linear }` after the ##! line.",
+            "Line 1: this notebook has no ## artifact note, so its header cannot be told from its cells. Fix: add `## artifact { layout=linear tiles=[…] }` after the ##! line.",
       });
    }
 

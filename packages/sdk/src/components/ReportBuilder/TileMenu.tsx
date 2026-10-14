@@ -1,28 +1,41 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import AdsClickIcon from "@mui/icons-material/AdsClick";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import { Button, Popover, Stack, Typography } from "@mui/material";
-import { useEffect, useId, useRef } from "react";
+import { reportClasses } from "../../theme/classes";
+import CheckIcon from "@mui/icons-material/Check";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import {
+   Box,
+   Divider,
+   ListItemIcon,
+   ListItemText,
+   Menu,
+   MenuItem,
+   Typography,
+} from "@mui/material";
+import { useEffect, useRef, useState } from "react";
 import { useDraft } from "./useDraft";
-import { dangerTextColor } from "../../theme/motion";
+import { edgeColor } from "../controlTokens";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
-import { ChartPicker } from "./ChartPicker";
+import { chartChoices } from "./ChartPicker";
+import type { ChartState } from "./chartLine";
 
 /**
- * A tile's own settings, on the tile: a popover off its menu button, so
- * editing it never means scrolling away from it. Its chart, clickable cells
- * and removal; its width is set by dragging its right edge; its title and subtitle are edited on the tile. Its row is set by dragging it — a drop
+ * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
+ * never means scrolling away from it. Its chart (a submenu, each pick drawn at
+ * once), its clickable cells, and a copy of it; its title and subtitle are
+ * edited on the tile, its width is set by dragging its right edge, and it is
+ * removed from the × on its corner. Its row is set by dragging it — a drop
  * into the empty end of a row is what "start a new row" means — and its card
  * is the reader's to decide, so neither is a toggle here. Which controls it
  * answers to is not here either: filters are configured in one place, the
  * strip under the header. A chart pick commits at once, so the tile redraws
  * under the open menu (`useDraft`'s `apply`).
  *
- * A text tile has only Remove: its words are written on the tile itself.
+ * A text tile has no menu: its words are written on the tile itself, and it is
+ * removed from the × on its corner, as every tile is.
  */
 export interface TileMenuProps {
    anchor: HTMLElement | null;
@@ -30,10 +43,6 @@ export interface TileMenuProps {
    onClose: () => void;
    /** Apply the edited tile. Called once, on close, only when something changed. */
    onCommit: (next: DashboardTile) => void;
-   /** Take the tile off the dashboard. Offered on every tile: order is this file's. */
-   onRemove: () => void;
-   /** Why removing is refused, shown beside a Remove that stays focusable; absent when it is allowed. */
-   removeBlocked?: string;
    /**
     * Open the clickable-cells window for this tile's source. Absent when the
     * source declares no dimension in this file, so there is nothing a drill
@@ -41,6 +50,10 @@ export interface TileMenuProps {
     * explains why its own Apply is off.
     */
    onDrills?: () => void;
+   /** Copy the tile, right after it. Absent, the menu offers no Duplicate. */
+   onDuplicate?: () => void;
+   /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
+   duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
    view?: Pick<CatalogView, "chart" | "aggregateOnly">;
 }
@@ -50,26 +63,30 @@ const customChart = (lines: string[] | undefined) =>
       ? `This tile's chart line (${lines[0]}) is not one the builder models, so its chart cannot be changed here.`
       : `This tile has ${lines?.length ?? "several"} chart lines${lines ? ` (${lines.join(" and ")})` : ""}, so its chart cannot be changed here.`;
 const INHERITED_CHART =
-   "This tile's view is declared on its source, so its chart is set in the model.";
+   "Declared on its source, so its chart is set in the model.";
 
 export function TileMenu({
    anchor,
    tile,
    onClose,
    onCommit,
-   onRemove,
-   removeBlocked,
    onDrills,
+   onDuplicate,
+   duplicateBlocked,
    view,
 }: TileMenuProps) {
-   const removeReasonId = useId();
    const { theme } = usePublisherTheme();
-   const { draft, apply, close, discard } = useDraft(
+   const ui = theme.ui;
+   const { draft, apply, close } = useDraft(
       tile,
       anchor !== null,
       onCommit,
       onClose,
    );
+   // Which submenu is open, anchored to its item.
+   const [sub, setSub] = useState<
+      { kind: "chart"; anchor: HTMLElement } | undefined
+   >(undefined);
 
    const query = draft !== undefined && isQueryTile(draft) ? draft : undefined;
    const editable =
@@ -90,138 +107,222 @@ export function TileMenu({
       if (opened)
          openedChart.current =
             tile && isQueryTile(tile) ? tile.chart : undefined;
+      else setSub(undefined);
       // Only on opening: the tile changes under every pick.
       // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [opened]);
 
-   return (
-      <Popover
-         open={anchor !== null && draft !== undefined}
-         anchorEl={anchor}
-         onClose={close}
-         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
-         transformOrigin={{ vertical: "top", horizontal: "right" }}
-         slotProps={{ paper: { sx: { width: 320, p: 2 } } }}
-      >
-         {draft && (
-            <Stack sx={{ gap: 1.5 }}>
-               <Typography
-                  variant="overline"
-                  sx={{ color: theme.tileTitle, lineHeight: 1.5 }}
-               >
-                  {query
-                     ? `${query.source} → ${query.name}`
-                     : `Text · ${draft.name}`}
-               </Typography>
+   const chartState: ChartState = query?.chart ?? "default";
+   const choices = chartChoices(view, chartState);
+   const chartBlocked = !query
+      ? undefined
+      : !editable
+        ? INHERITED_CHART
+        : query.chart === "custom"
+          ? customChart(query.chartLines)
+          : undefined;
+   const pickChart = (next: ChartState) =>
+      applyQuery((t) => {
+         const was = openedChart.current;
+         // Back to where it started is no edit, so the draft must not differ from the tile.
+         if (next === (was ?? "default")) {
+            if (was === undefined) delete t.chart;
+            else t.chart = was;
+            delete t.chartCarried;
+         } else {
+            t.chart = next;
+            if (view) t.chartCarried = view.chart ? [view.chart] : [];
+            else delete t.chartCarried;
+         }
+      });
 
-               {query && editable && (
-                  <>
-                     <ChartPicker
-                        state={query.chart ?? "default"}
-                        view={view}
-                        cellLabel={`${query.source} ${query.name}`}
-                        {...(query.chart === "custom"
-                           ? { disabledReason: customChart(query.chartLines) }
-                           : {})}
-                        onChange={(next) =>
-                           applyQuery((t) => {
-                              const was = openedChart.current;
-                              // Back to where it started is no edit, so the draft must not differ from the tile.
-                              if (next === (was ?? "default")) {
-                                 if (was === undefined) delete t.chart;
-                                 else t.chart = was;
-                                 delete t.chartCarried;
-                              } else {
-                                 t.chart = next;
-                                 if (view)
-                                    t.chartCarried = view.chart
-                                       ? [view.chart]
-                                       : [];
-                                 else delete t.chartCarried;
-                              }
-                           })
-                        }
-                     />
-                  </>
-               )}
-               {query && !editable && (
-                  <>
-                     <Typography
-                        variant="body2"
-                        sx={{ color: theme.tileTitle }}
-                     >
-                        Declared on its source, so its title and layout are set
-                        in the model. It can still be moved.
-                     </Typography>
-                     <ChartPicker
-                        state="default"
-                        view={view}
-                        cellLabel={`${query.source} ${query.name}`}
-                        disabledReason={INHERITED_CHART}
-                        onChange={() => {}}
-                     />
-                  </>
-               )}
-               {query?.declaration.kind === "opaque" && (
-                  <Typography variant="body2" sx={{ color: theme.tileTitle }}>
-                     Its body is {query.declaration.why}, so a filter has no
-                     single place to go. Everything else here is editable.
-                  </Typography>
-               )}
-               <Stack direction="row" sx={{ justifyContent: "space-between" }}>
-                  {editable && onDrills ? (
-                     <Button
-                        size="small"
-                        startIcon={<AdsClickIcon />}
-                        aria-haspopup="dialog"
-                        onClick={() => {
-                           close();
-                           onDrills();
-                        }}
-                     >
-                        Drill
-                     </Button>
-                  ) : (
-                     <span />
+   const drillBlocked = !editable
+      ? undefined
+      : onDrills
+        ? undefined
+        : "Its source declares no dimension a click could filter by.";
+
+   const subOpen = (kind: "chart") => (event: { currentTarget: HTMLElement }) =>
+      setSub({ kind, anchor: event.currentTarget });
+   const label = (text: string, value?: string, reason?: string) => (
+      <>
+         <ListItemText
+            primary={text}
+            {...(reason ? { secondary: reason } : {})}
+            // A reason wraps under its item rather than widening the menu.
+            secondaryTypographyProps={{
+               sx: { whiteSpace: "normal", maxWidth: 240 },
+            }}
+         />
+         {value && (
+            <Typography variant="body2" sx={{ color: "text.secondary", ml: 2 }}>
+               {value}
+            </Typography>
+         )}
+      </>
+   );
+
+   return (
+      <>
+         <Menu
+            className={reportClasses.menu}
+            open={anchor !== null && draft !== undefined}
+            anchorEl={anchor}
+            onClose={close}
+            anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+            MenuListProps={{
+               dense: true,
+               disabledItemsFocusable: true,
+               "aria-label": query ? `${query.source} ${query.name}` : "Tile",
+            }}
+            // Set like the builder's other menus: a rounded, bordered card.
+            slotProps={{
+               paper: {
+                  sx: {
+                     minWidth: 240,
+                     mt: 0.5,
+                     borderRadius: ui.radius.menu,
+                     border: `1px solid ${edgeColor(theme.cardBorder)}`,
+                     boxShadow: ui.shadow.menu,
+                  },
+               },
+            }}
+         >
+            {query && (
+               <MenuItem
+                  aria-haspopup="menu"
+                  aria-expanded={sub?.kind === "chart"}
+                  disabled={chartBlocked !== undefined}
+                  onClick={subOpen("chart")}
+                  onKeyDown={(event) => {
+                     // Not from a disabled Chart: the keyboard reached a
+                     // submenu the menu says cannot apply, and a pick there
+                     // wrote a chart the model owns over its own.
+                     if (
+                        event.key === "ArrowRight" &&
+                        chartBlocked === undefined
+                     )
+                        setSub({
+                           kind: "chart",
+                           anchor: event.currentTarget,
+                        });
+                  }}
+               >
+                  {label(
+                     "Chart",
+                     chartBlocked
+                        ? undefined
+                        : choices.find((c) => c.value === chartState)?.label,
+                     chartBlocked,
                   )}
-                  <Button
-                     color="error"
-                     size="small"
-                     startIcon={<DeleteOutlineIcon />}
-                     // aria-disabled, not disabled, so the reason stays reachable by keyboard.
-                     aria-disabled={removeBlocked !== undefined || undefined}
-                     aria-describedby={
-                        removeBlocked !== undefined ? removeReasonId : undefined
-                     }
-                     disableRipple={removeBlocked !== undefined}
-                     sx={(muiTheme) => ({
-                        // The host's destructive red (its error palette's
-                        // deeper shade), so a host themes it rather than this.
-                        color: dangerTextColor(muiTheme),
-                        ...(removeBlocked !== undefined
-                           ? { opacity: 0.5, cursor: "default" }
-                           : {}),
-                     })}
+                  <ChevronRightIcon
+                     fontSize="small"
+                     sx={{ ml: 1, color: "text.secondary" }}
+                  />
+               </MenuItem>
+            )}
+            {editable && (
+               <MenuItem
+                  aria-haspopup="dialog"
+                  disabled={drillBlocked !== undefined}
+                  onClick={() => {
+                     close();
+                     onDrills?.();
+                  }}
+               >
+                  {label("Clickable cells…", undefined, drillBlocked)}
+               </MenuItem>
+            )}
+            {query && onDuplicate && (
+               <MenuItem
+                  disabled={duplicateBlocked !== undefined}
+                  onClick={() => {
+                     close();
+                     onDuplicate();
+                  }}
+               >
+                  {label("Duplicate", undefined, duplicateBlocked)}
+               </MenuItem>
+            )}
+            {query?.declaration.kind === "opaque" && (
+               <Typography
+                  variant="body2"
+                  sx={{
+                     color: theme.tileTitle,
+                     px: 2,
+                     py: 0.75,
+                     maxWidth: 260,
+                  }}
+               >
+                  Its body is {query.declaration.why}, so a filter has no single
+                  place to go.
+               </Typography>
+            )}
+            {query && <Divider />}
+            {query && (
+               <Box
+                  aria-hidden
+                  sx={{
+                     px: 2,
+                     py: 0.5,
+                     ...ui.type.code,
+                     color: "text.secondary",
+                  }}
+               >
+                  {query.source} → {query.name}
+               </Box>
+            )}
+         </Menu>
+
+         <Menu
+            className={reportClasses.menu}
+            open={sub?.kind === "chart"}
+            anchorEl={sub?.anchor ?? null}
+            onClose={() => setSub(undefined)}
+            anchorOrigin={{ vertical: "top", horizontal: "left" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+            MenuListProps={{
+               dense: true,
+               disabledItemsFocusable: true,
+               "aria-label": "Chart",
+               // Back out of the submenu the way into it: the arrow.
+               onKeyDown: (event) => {
+                  if (event.key === "ArrowLeft") {
+                     event.preventDefault();
+                     setSub(undefined);
+                  }
+               },
+            }}
+         >
+            {choices
+               .filter((choice) => choice.value !== "custom")
+               .map((choice) => (
+                  <MenuItem
+                     key={choice.value}
+                     role="menuitemradio"
+                     aria-checked={choice.value === chartState}
+                     disabled={choice.disabled === true}
                      onClick={() => {
-                        if (removeBlocked !== undefined) return;
-                        discard();
-                        onRemove();
+                        pickChart(choice.value);
+                        setSub(undefined);
                      }}
                   >
-                     Delete
-                  </Button>
-               </Stack>
-               {removeBlocked !== undefined && (
-                  <Typography
-                     id={removeReasonId}
-                     variant="caption"
-                     sx={{ color: theme.tileTitle }}
-                  >
-                     {removeBlocked}
-                  </Typography>
-               )}
-            </Stack>
-         )}
-      </Popover>
+                     <ListItemText
+                        primary={choice.label}
+                        {...(choice.reason ? { secondary: choice.reason } : {})}
+                     />
+                     {choice.value === chartState && (
+                        <ListItemIcon sx={{ minWidth: 0, ml: 2 }}>
+                           <CheckIcon
+                              fontSize="small"
+                              sx={{ color: theme.accent }}
+                           />
+                        </ListItemIcon>
+                     )}
+                  </MenuItem>
+               ))}
+         </Menu>
+      </>
    );
 }

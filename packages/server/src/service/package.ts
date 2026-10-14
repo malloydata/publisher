@@ -67,6 +67,7 @@ import {
 } from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
+   recordPackageLoadPhaseDurations,
    recordPackageLoadPhases,
    type PackageLoadStatus,
 } from "../package_load_metrics";
@@ -126,6 +127,7 @@ import {
 } from "./materialization_config_validation";
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
+import { createEventLoopYielder } from "./event_loop_yield";
 import { CELLS_UNREADABLE } from "./notebook";
 import {
    deprecatedFormatWarnings,
@@ -188,9 +190,8 @@ interface ServedReport {
    name: string;
    layout: ReportLayout;
    /**
-    * A report written as tiles (either layout), or a grid report that failed
-    * to compile (carrying `error`). Absent on a linear `run:`-cell report and a
-    * `.malloynb`.
+    * A `.malloy` report's tiles (either layout), or, for one that failed to
+    * compile, its name and layout carrying `error`. Absent on a `.malloynb`.
     */
    manifest?: ServedReportManifest & { error?: string };
    /** A `.malloy` report's compiled text ("" when unreadable); absent on a `.malloynb`. */
@@ -1054,10 +1055,13 @@ export class Package {
    ): Promise<{
       models: Map<string, Model>;
       renderTagWarnings: ApiPackageWarning[];
+      /** Wall-clock ms in hydration and in render-tag validation, summed over models. */
+      timings: { hydrateMs: number; renderValidationMs: number };
    }> {
       const { packageName, packagePath, malloyConfig, buildManifest } = ctx;
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
+      const timings = { hydrateMs: 0, renderValidationMs: 0 };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -1071,7 +1075,11 @@ export class Package {
                ? ctx.replacement.source
                : undefined,
          );
+      // Hydration and validation run on the main thread, one model after
+      // another; let other requests in between models.
+      const yielder = createEventLoopYielder();
       for (const sm of outcome.models) {
+         await yielder.maybeYield();
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
             if (onCompileError === "throw") {
@@ -1095,6 +1103,7 @@ export class Package {
             continue;
          }
          let model: Model;
+         const hydrateStart = performance.now();
          try {
             model = Model.fromSerialized(
                packageName,
@@ -1135,8 +1144,11 @@ export class Package {
                ),
             );
             continue;
+         } finally {
+            timings.hydrateMs += performance.now() - hydrateStart;
          }
          let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
+         const validationStart = performance.now();
          try {
             warnings = await model.validateRenderTags();
          } catch (renderErr) {
@@ -1167,6 +1179,8 @@ export class Package {
             }
             models.set(sm.modelPath, placeholder(sm, err));
             continue;
+         } finally {
+            timings.renderValidationMs += performance.now() - validationStart;
          }
          for (const w of warnings) {
             renderTagWarnings.push({
@@ -1180,10 +1194,12 @@ export class Package {
                severity: w.severity,
             });
          }
+         const afterHydrateStart = performance.now();
          await afterHydrate?.(sm);
+         timings.hydrateMs += performance.now() - afterHydrateStart;
          models.set(sm.modelPath, model);
       }
-      return { models, renderTagWarnings };
+      return { models, renderTagWarnings, timings };
    }
 
    /**
@@ -1384,8 +1400,13 @@ export class Package {
       // placeholders instead.)
       let models: Map<string, Model>;
       let renderTagWarnings: ApiPackageWarning[];
+      let hydrationTimings: { hydrateMs: number; renderValidationMs: number };
       try {
-         ({ models, renderTagWarnings } = await Package.hydrateWorkerModels(
+         ({
+            models,
+            renderTagWarnings,
+            timings: hydrationTimings,
+         } = await Package.hydrateWorkerModels(
             outcome,
             { packageName, packagePath, malloyConfig },
             "throw",
@@ -1442,7 +1463,7 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
-      await pkg.discoverReports("load");
+      const reportTimings = await pkg.discoverReports("load");
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       pkg.recordDeprecatedUsage(outcome);
       pkg.retrievalSettings =
@@ -1475,8 +1496,9 @@ export class Package {
       // PERSIST_STORAGE_MODE, so this silently reverts EVERY colocated binding
       // for the package to live recompute (see bindColocatedServeManifest and
       // its recordColocatedBindDropped("build_plan_unavailable") counter).
+      let buildPlanMs: number | undefined;
+      const buildPlanPhaseStart = performance.now();
       try {
-         const buildPlanStart = Date.now();
          const workerPlan = outcome.buildPlan;
          // Before a failed plan throws: the main-thread derivation records
          // each refusal and skipped digest as it goes, so one that fails
@@ -1524,9 +1546,12 @@ export class Package {
                declaration: incrementalDeclarations[sourceID],
             }));
          recordBuildPlanComputeDuration(
-            workerPlan ? workerPlan.durationMs : Date.now() - buildPlanStart,
+            workerPlan
+               ? workerPlan.durationMs
+               : performance.now() - buildPlanPhaseStart,
             workerPlan ? "worker" : "main_thread",
          );
+         buildPlanMs = performance.now() - buildPlanPhaseStart;
       } catch (err) {
          recordBuildPlanComputeFailed();
          logger.warn(
@@ -1648,6 +1673,15 @@ export class Package {
       await pkg.pushPreaggregateServeModels();
       pkg.logEmptyDiscoveryWarnings();
 
+      recordPackageLoadPhaseDurations({
+         worker: workerDoneTime - dispatchTime,
+         hydrate: hydrationTimings.hydrateMs,
+         render_validation: hydrationTimings.renderValidationMs,
+         discovery: reportTimings.discoveryMs,
+         lint: reportTimings.lintMs,
+         build_plan: buildPlanMs,
+         total: performance.now() - startTime,
+      });
       return pkg;
    }
 
@@ -3394,12 +3428,15 @@ export class Package {
     */
    private async discoverReports(
       during: Exclude<ReportDiscoveryDuring, "reload">,
-   ): Promise<void> {
+   ): Promise<{ discoveryMs: number; lintMs: number }> {
       const started = performance.now();
       const discovery = await this.discoverReportsIn(this.models, during);
       this.installReports(discovery);
+      const linting = performance.now();
       await this.relintReports({ textLint: during !== "compile" });
-      this.reportDiscovered(during, discovery, performance.now() - started);
+      const finished = performance.now();
+      this.reportDiscovered(during, discovery, finished - started);
+      return { discoveryMs: linting - started, lintMs: finished - linting };
    }
 
    /**
@@ -3522,7 +3559,9 @@ export class Package {
             continue;
          const name = reportName(modelPath);
          if (tag.status !== "report") {
-            // A tag that makes no report: the lint says why.
+            // A tag that makes no report (it does not parse, sets the removed
+            // `kind=`, or is a linear report written as `run:` cells): the lint
+            // says why, and the file is an ordinary model.
             files.set(modelPath, { status: "invalid", name, facts });
             continue;
          }
@@ -3548,26 +3587,25 @@ export class Package {
                error: errMessage(err),
             });
             // The tag is readable (it was read off the same facts); it was the
-            // manifest CONSTRUCTION that failed. A linear report still opens
-            // as its cells; a grid one has nothing else to show.
-            if (tag.layout === "grid") {
-               files.set(modelPath, { status: "dropped", name });
-               continue;
-            }
+            // manifest CONSTRUCTION that failed, and a report has nothing else
+            // to show.
+            files.set(modelPath, { status: "dropped", name });
+            continue;
          }
-         if (tag.layout === "grid" && facts && !manifest) {
+         if (facts && !manifest) {
             // A grid tag that describes no tiles (or an empty list): not
-            // served until it has one, and explained by the lint.
+            // served until it has one, and explained by the lint. A linear
+            // tag always lists its tiles (`report.ts`), so it never lands here.
             files.set(modelPath, { status: "tileless", name, facts });
             continue;
          }
-         if (tag.layout === "grid" && !facts) {
+         if (!facts) {
             // The file failed to compile, so its tiles cannot be read. It is
             // listed anyway carrying the error, because a broken report
             // should be visibly broken rather than absent.
             manifest = {
                name,
-               layout: "grid",
+               layout: tag.layout,
                title: name,
                autorun: true,
                entryFile: modelPath,
@@ -3624,10 +3662,11 @@ export class Package {
    }
 
    /**
-    * Read every linear `.malloy` report's cells. A reader refusal is the
-    * report's error, returned as a finding: the model still compiles, so
-    * nothing else would say so. It is counted and logged with the other
-    * findings (see {@link reportDiscovered}).
+    * Read every linear `.malloy` report's definition cells (its imports and
+    * givens), which the deprecated notebook route serves ahead of its tiles. A
+    * reader refusal is the report's error, returned as a finding: the model
+    * still compiles, so nothing else would say so. It is counted and logged
+    * with the other findings (see {@link reportDiscovered}).
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3814,8 +3853,8 @@ export class Package {
          for (const [modelPath, file] of files) {
             if (file.status === "dropped") continue;
             const manifest = file.report?.manifest;
-            // A served report is checked against its manifest; a linear one
-            // written as `run:` cells has none, and only its text is linted.
+            // A served report is checked against its manifest; a `.malloynb`
+            // has none (and no facts).
             const facts =
                file.status !== "served" || manifest ? file.facts : undefined;
             const fileFindings: ApiPackageWarning[] = [];
@@ -4098,11 +4137,9 @@ export class Package {
          layout: report.layout,
          title: manifest?.title ?? listing.title ?? report.name,
          description: manifest?.description ?? listing.description,
-         // The builder opens a report written as tiles; a `.malloynb` or a
-         // `run:`-cell report it cannot.
-         editable:
-            report.path.endsWith(MODEL_FILE_SUFFIX) &&
-            (report.layout === "grid" || manifest !== undefined),
+         // The builder opens a `.malloy` report, which is written as tiles; a
+         // `.malloynb` it cannot.
+         editable: report.path.endsWith(MODEL_FILE_SUFFIX),
          ...(error !== undefined && { error }),
       };
    }
@@ -4116,8 +4153,8 @@ export class Package {
 
    /**
     * One report by its path (`sales/q3.malloy`, exactly as list-reports gives
-    * it), or undefined when there is none. A report written as tiles carries its
-    * manifest; a `run:`-cell report or a `.malloynb` carries its cells.
+    * it), or undefined when there is none. A `.malloy` report carries its
+    * manifest; a `.malloynb`, which has none, carries its cells.
     */
    public async getReport(
       reportPath: string,

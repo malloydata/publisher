@@ -73,9 +73,9 @@ is a Console convenience.
   **Data** and **Materializations**, in that order, plus the package's README rendered
   underneath (a report at the package root whose basename is `README`). Reports lists every report in
   the package, whatever directory it sits in, each row marked with its layout (linear or grid) and
-  opened by its path, and carries the **New report** button on its heading row. Apps is hidden
+  opened by its path, and carries the **+ Report** button on its heading row. Apps is hidden
   when the package has none. Reports is hidden when empty too, unless creating is offered: then it
-  shows a "No reports yet" row with a **New report** button.
+  shows a "No reports yet" row with an **Add report** button.
   The Materializations section lists the package's build runs and carries the three controls that
   change them: **Scope**, **Schedule** and **Add materialization**.
   A report is listed by its title, or by its file name without directory or extension when it has
@@ -83,33 +83,41 @@ is a Console convenience.
   `.malloynb` keeps its path. Without a `title=` in the artifact tag, a report's title comes from its
   `"` description or its opening markdown heading.
 - **Build a report by dragging** — every report page has an **Edit** button in the header, beside the
-  breadcrumbs, that opens it in the builder. On a grid report, drag a tile's card to move it, drag its
-  right edge to set its width (it snaps to whole columns), and set its chart and drill from its **⋯**
-  menu; on a linear report, drag tiles into a new order and use the **+** on a tile to insert one
-  between two. Add filters with **+ Filter** on the filter row under the description. Titles,
-  descriptions and text tiles are edited where they are shown: click one (a small pencil follows the
-  text) and type. In a one-line field Enter keeps the edit and Escape puts the old text back; in a
-  text tile, Escape, **Done** or Cmd/Ctrl+Enter keeps it, **Cancel** drops it, and Cmd/Ctrl+S saves
-  from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list) and is added
-  from the same dialog as a query tile. Each query tile has a **Viz type** picker listing all eight
-  choices (From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment map); a choice
-  the view cannot render stays in the list, greyed, with its reason beside it. A **layout switch**
-  turns a linear report into a grid or back, by rewriting `layout=` and nothing else. Adding a tile
+  breadcrumbs, that opens it in the builder. In the builder that spot holds the builder's bar: the save
+  status, undo and redo, the **Linear / Grid** switch, an **Add** menu (a tile, text or a filter), and
+  **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
+  report, drag a tile by its heading or its padding to move it, drag the grip on its right edge to set
+  its width (a label says the width it will snap to), and set its chart and clickable cells, or duplicate it,
+  from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to
+  insert one between two. **Add → Tile** lists every view in the package, grouped by source and
+  searchable, and runs the picked one as a preview beside its title and chart choices (**Add text
+  instead** puts a text tile there). Add filters from **Add** or with **+ Filter** on the filter row:
+  pick the field (its type is shown), the control from five pictured kinds (a kind the field cannot
+  take is greyed, with why), and, under **Choose tiles**, which tiles it applies to; a preview shows
+  its button. **Clickable cells** is a switch per dimension, with where a click opens and which filter
+  it sets. Titles,
+  descriptions and text tiles are edited where they are shown: under the pointer they take a faint
+  wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
+  back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
+  from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list). A query
+  tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and
+  Segment map; a choice the view cannot render stays in the list, greyed, with its reason under it.
+  The **layout switch** rewrites `layout=` and nothing else. Adding a tile
   offers every source the package publishes; when the file cannot already see the chosen source,
   the builder adds a named import for it. The classic dashboard-building feel, over a file you can
   still read and review ([reports.md](reports.md#editing-in-the-console)).
-  A report written as `run:` cells (the older linear form) opens already converted to tiles and
-  unsaved. Nothing is written until you save, and the first **Save** asks before it rewrites the
-  file: the builder cannot take that back, though the file's history in your repository can.
-  **Cancel** writes nothing. A legacy `.malloynb` is read-only.
-  **Save** (or Cmd/Ctrl+S) writes the report back into the package at once, with no review step, and
-  the builder stays open; the button reads **Saved**, greyed, until the next edit, and its tooltip
-  says where it writes (the package file, this browser, or where the host app keeps it). **View** in
-  the header leaves, and asks first when edits are unsaved. On a server that does not take writes
-  there is no Save. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
+  A file written as `run:` cells, the retired linear form, is not a report and does not open; the
+  package page names it and says how to rewrite it as tiles. A legacy `.malloynb` is read-only.
+  Edits are kept in this browser as they are made, and the status reads **Draft saved**: leaving the
+  builder any other way loses nothing and asks nothing, and opening the report for editing again puts
+  them back, with a note saying so. **Done** writes them into the package at once, with no review step,
+  and shows the report; a write that is refused keeps the builder open with the reason. Cmd/Ctrl+S
+  writes without leaving. **Discard edits**, from the status, puts the saved report back (Undo brings
+  the edits back). Only text still being typed into an open field asks before you leave. On a server
+  that does not take writes there is nothing to write to. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
   outside prose is refused with a 400, so the builder opens such a file but cannot save it from the
   Console; gates live in the model file.
-- **Create a report** — the package page's **New report** action takes a model, a source and its
+- **Create a report** — the package page's **+ Report** button takes a model, a source and its
   view (one select), a title and a layout (linear unless you pick grid), writes `<slug>.malloy` at the
   **package root** (or at another path you type; it never overwrites an existing file) and opens it in
   the builder. No directory is created for you. A host with its own record creates it there instead.
@@ -117,7 +125,7 @@ is a Console convenience.
   the record and can store; a workspace that keeps drafts in the browser beside a writable server
   still gets it, and writes to the package. It is not offered when neither route exists, on a record
   that cannot store, or on a pinned version of a package. Below 600px wide the Console hides **Edit**
-  and **New report**, and an editor opened by URL asks for **Edit anyway** first.
+  and **+ Report**, and an editor opened by URL asks for **Edit anyway** first.
 - **Explore, no code** — open a source in the [Explorer](explorer.md), the visual query builder;
   every action generates valid Malloy, and you can view the Malloy and SQL behind any result.
 - **Read a legacy notebook** — a `.malloynb` in a package renders as a linear report: its markdown,

@@ -146,7 +146,7 @@ describe("rendering by layout", () => {
       expect(container.querySelector('[data-chrome="none"]')).toBeNull();
    });
 
-   it("draws a linear report's tiles bare, top to bottom", async () => {
+   it("draws a linear report's query tiles in cards, as a grid does", async () => {
       manifest = { ...TILES, layout: "linear" };
       const { container } = render(
          <Report resourceUri={URI} path="sales/q3.malloy" />,
@@ -157,53 +157,32 @@ describe("rendering by layout", () => {
       await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
       expect(executeQueryModel.mock.calls[0][2]).toBe("sales/q3.malloy");
       await waitFor(() =>
-         expect(container.querySelector('[data-chrome="none"]')).not.toBeNull(),
+         expect(container.querySelector('[data-chrome="card"]')).not.toBeNull(),
       );
-      expect(container.querySelector('[data-chrome="card"]')).toBeNull();
    });
 
-   it("runs a .malloy run:-cell report's cells through the query endpoint, against the report itself", async () => {
+   it("runs no cells: a manifest carrying `run:` cells draws no cells", async () => {
       manifest = {
          path: "review.malloy",
          name: "review",
          layout: "linear",
+         title: "Review",
          editable: false,
          notebook: {
             format: "malloy",
             notebookCells: [
                { type: "markdown", kind: "markdown", text: "Cell prose" },
-               {
-                  type: "code",
-                  kind: "query",
-                  text: "run: orders -> by_month",
-               },
+               { type: "code", kind: "query", text: "run: orders -> by_month" },
             ],
          },
       } as ReportManifest;
-      render(
-         <Report resourceUri={`${URI}?versionId=v4`} path="review.malloy" />,
-         {
-            wrapper: serverWrapper,
-         },
-      );
+      render(<Report resourceUri={URI} path="review.malloy" />, {
+         wrapper: serverWrapper,
+      });
 
-      expect(await screen.findByText("Cell prose")).toBeTruthy();
-      await waitFor(() => expect(executeQueryModel).toHaveBeenCalled());
-      // The report's path is the model and the cell's text the query, the
-      // governed path every grid tile takes.
-      expect(
-         executeQueryModel.mock.calls.map((call) => call.slice(0, 4)),
-      ).toEqual([
-         [
-            "env",
-            "pkg",
-            "review.malloy",
-            { query: "run: orders -> by_month", givens: {}, versionId: "v4" },
-         ],
-      ]);
-      expect(executeNotebookCell).not.toHaveBeenCalled();
-      // The cells came with the manifest; nothing reads them again.
-      expect(getNotebook).not.toHaveBeenCalled();
+      expect(await screen.findByText("Review")).toBeTruthy();
+      expect(screen.queryByText("Cell prose")).toBeNull();
+      expect(executeQueryModel).not.toHaveBeenCalled();
    });
 
    // DEPRECATED FEATURE COVERAGE — delete together with

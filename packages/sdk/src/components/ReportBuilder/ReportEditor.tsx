@@ -1,10 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { clearReportDraft } from "./useReportDraft";
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
-import type { Given } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -16,6 +16,7 @@ import {
 } from "../Report/telemetry";
 import { now } from "../../utils/clock";
 import { useOptionalDocumentStorage } from "../DocumentStorage";
+import type { ReactNode } from "react";
 import { Loading } from "../Loading";
 import { documentSlug } from "../Package/documentLocation";
 import { useServer } from "../ServerProvider";
@@ -34,6 +35,7 @@ import { EditorSurface } from "./EditorSurface";
 import { useHostCopy } from "./useHostCopy";
 import { useOpenedDocument } from "./useOpenedDocument";
 import { useSaveChannel } from "./useSaveChannel";
+import type { BuilderControlsHandler } from "./builderControls";
 
 /**
  * The builder, opened on a package dashboard, with everything a host has to
@@ -93,6 +95,13 @@ export type ReportEditorProps = (
     */
    onEvent?: ReportEventHandler;
    /**
+    * What to draw while the report opens (its text read, the builder's data
+    * loaded); default a spinner. A host that just showed the report can pass
+    * the report itself, so switching to edit replaces the page in place
+    * rather than blanking it to a spinner first.
+    */
+   loading?: ReactNode;
+   /**
     * The report's layout as the host knows it before the text is read: from
     * the package's listing, or for a draft the layout its store recorded.
     * Default `grid`. It decides what is read when the editor opens (a linear
@@ -124,6 +133,20 @@ export type ReportEditorProps = (
     * header View) leaves it unset and guards with `onDirtyChange`.
     */
    onExit?: () => void;
+   /**
+    * Take over the builder's page-level controls (save status and Save, undo
+    * and redo, the layout switch, Add): handed over as `BuilderControls`
+    * whenever they change, with no toolbar drawn on the page. Draw them with
+    * `BuilderBar` in the host's header, or place each in its own chrome.
+    */
+   onControlsChange?: BuilderControlsHandler;
+   /**
+    * Keep unsaved edits in this browser, per report, and put them back when
+    * the report is next opened for editing here: leaving never loses work, so
+    * the host's way out can be the controls' `done` (write, then leave) with
+    * no "leave with unsaved changes?" on the way.
+    */
+   keepDraft?: boolean;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
    /**
@@ -158,8 +181,11 @@ export interface TextSourceOptions {
 export function ReportEditor(props: ReportEditorProps) {
    const {
       onEvent,
+      loading,
       onDirtyChange,
       onExit,
+      onControlsChange,
+      keepDraft,
       kind,
       path,
       textSource,
@@ -181,7 +207,7 @@ export function ReportEditor(props: ReportEditorProps) {
    const dashboardName = named ?? documentSlug(path) ?? "";
    const noun = "report";
 
-   const { apiClients, mutable, isLoadingStatus } = useServer();
+   const { apiClients, mutable, isLoadingStatus, server } = useServer();
    const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
@@ -328,14 +354,24 @@ export function ReportEditor(props: ReportEditorProps) {
       });
    }, [fetchFailed, modelQuery.error, modelPath, layout]);
    // Stable: the builder fires this from an effect that depends on it.
+   // The editor's own record is every unsaved edit: it decides whether a
+   // newer version of the file may replace what is open, and with a draft
+   // kept, reporting only what leaving would lose let the other author's
+   // version replace the author's edits. The host's leave guard gets what
+   // leaving would lose.
    const reportDirty = useCallback(
-      (value: boolean) => {
+      (value: boolean, wouldLose: boolean) => {
          setDirty(value);
-         onDirtyChangeRef.current?.(value);
+         onDirtyChangeRef.current?.(wouldLose);
       },
       [setDirty],
    );
 
+   // One per report, version and server: a draft is never restored onto a
+   // file it was not made on.
+   const draftKey = keepDraft
+      ? `${server}|${environmentName}/${packageName}@${versionId ?? ""}/${path ?? dashboardName}`
+      : undefined;
    const saveLabel =
       savesTo === "host" && workspace?.description
          ? workspace.description
@@ -353,8 +389,17 @@ export function ReportEditor(props: ReportEditorProps) {
               ...(readFailure !== undefined ? { readFailure } : {}),
               ...(versionId !== undefined ? { versionId } : {}),
            });
-   // The description is already the Save caption, so the note does not repeat it.
-   const note = caption === saveLabel ? "" : caption;
+   // Only what is out of the ordinary: Save off, a pinned version, a copy
+   // that could not be read. Where an ordinary save goes is the bar's status
+   // to say (its tooltip), and a line under every report repeating it was
+   // noise. The description is already the Save caption, so it is not
+   // repeated either.
+   const ordinary =
+      savesTo === "package" &&
+      takesWrites === true &&
+      !pinnedPackageSave &&
+      readFailure === undefined;
+   const note = ordinary || caption === saveLabel ? "" : caption;
 
    // After every hook, so the hook order does not depend on the URI. Same
    // reasoning as `Dashboard`'s own check.
@@ -380,7 +425,7 @@ export function ReportEditor(props: ReportEditorProps) {
          />
       );
    if (!opened && (!(textHeld || packageText) || !draftChecked))
-      return <Loading text={`Opening the ${noun}…`} />;
+      return loading ?? <Loading text={`Opening the ${noun}…`} />;
    // Where the host's copy IS the document, a copy that could not be read
    // leaves nothing safe to edit: the package file is a deploy of the record,
    // so opening it and arming Save would publish it over the record.
@@ -425,7 +470,16 @@ export function ReportEditor(props: ReportEditorProps) {
             <Alert
                severity="warning"
                action={
-                  <Button size="small" onClick={acceptHeld}>
+                  <Button
+                     size="small"
+                     onClick={() => {
+                        // Loading the other version is dropping these edits,
+                        // so the draft holding them goes too: kept, it would
+                        // be offered straight back over the version chosen.
+                        if (draftKey !== undefined) clearReportDraft(draftKey);
+                        acceptHeld();
+                     }}
+                  >
                      Load it
                   </Button>
                }
@@ -444,6 +498,9 @@ export function ReportEditor(props: ReportEditorProps) {
                {supersedeFailure}
             </Alert>
          )}
+         {/* The text is in hand but the document opens a pass later: the
+          loading view meanwhile, never an empty page. */}
+         {!opened && (loading ?? <Loading text={`Opening the ${noun}…`} />)}
          {opened && (
             <EditorSurface
                key={opened.generation}
@@ -452,10 +509,6 @@ export function ReportEditor(props: ReportEditorProps) {
                modelPath={modelPath}
                {...(textSource ? { textSource } : {})}
                slug={dashboardName}
-               modelGivens={
-                  (modelQuery.data?.data as { givens?: Given[] } | undefined)
-                     ?.givens
-               }
                {...(versionId !== undefined ? { versionId } : {})}
                opened={opened}
                {...(fromDraft &&
@@ -466,6 +519,8 @@ export function ReportEditor(props: ReportEditorProps) {
                onSave={save}
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
+               {...(onControlsChange ? { onControlsChange } : {})}
+               {...(draftKey !== undefined ? { draftKey } : {})}
                {...(allowLayoutChange !== undefined
                   ? { allowLayoutChange }
                   : {})}

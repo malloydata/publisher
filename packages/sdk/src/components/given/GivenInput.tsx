@@ -25,7 +25,7 @@ import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
-import { type ReactNode, useEffect, useState } from "react";
+import { type FocusEvent, type ReactNode, useEffect, useState } from "react";
 import { Given } from "../../client";
 import { paramToGiven, pickedDayToUtc } from "./paramCodec";
 import { GivenValue } from "../../hooks/givenValue";
@@ -329,7 +329,15 @@ export function GivenInput({
             // `freeSolo` Autocomplete without this discards it on blur, so a
             // value that is legal but absent from `suggest` could be typed and
             // then silently vanish.
-            autoSelect
+            //
+            // Single-pick only. On blur MUI's `autoSelect` also picks the
+            // HIGHLIGHTED option while the list is open, and a multi-pick
+            // keeps its list open after a pick with that option still
+            // highlighted, so clicking away picked it a second time, which in
+            // a multi-pick takes it back out: choose Aurora, click the page,
+            // and the filter was gone. A multi-pick keeps typed text itself,
+            // in the input's blur below.
+            autoSelect={!multiple}
             options={options ?? []}
             loading={optionsLoading}
             noOptionsText={
@@ -388,6 +396,16 @@ export function GivenInput({
                               {params.InputProps.endAdornment}
                            </>
                         ),
+                     },
+                     htmlInput: {
+                        ...params.inputProps,
+                        onBlur: (event: FocusEvent<HTMLInputElement>) => {
+                           params.inputProps.onBlur?.(event);
+                           if (!multiple) return;
+                           const typed = event.target.value.trim();
+                           if (typed !== "" && !selected.includes(typed))
+                              commit([...selected, typed]);
+                        },
                      },
                   }}
                />

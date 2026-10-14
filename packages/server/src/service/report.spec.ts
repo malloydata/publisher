@@ -27,14 +27,13 @@ describe("readReportTag: what model-level notes make a file", () => {
       expect(readReportTag(["## artifact { layout=grid }"])).toEqual({
          status: "report",
          layout: "grid",
-         decidedBy: "layout",
       });
       // Over a tiles list and a grid tag.
       expect(
          readReportTag([
             '## artifact { layout=linear tiles=["a -> v"] } dashboard { columns=6 }',
          ]),
-      ).toEqual({ status: "report", layout: "linear", decidedBy: "layout" });
+      ).toEqual({ status: "report", layout: "linear" });
    });
 
    it("is grid by a tiles list, empty or not, or a model-level grid tag", () => {
@@ -47,27 +46,54 @@ describe("readReportTag: what model-level notes make a file", () => {
          expect(readReportTag(notes)).toEqual({
             status: "report",
             layout: "grid",
-            decidedBy: "tiles",
          });
       }
    });
 
-   it("is linear by default", () => {
-      expect(readReportTag(["## artifact { }"])).toEqual({
-         status: "report",
-         layout: "linear",
-         decidedBy: "default",
-      });
+   it("makes no report of a linear tag with no `tiles`: the retired cell format", () => {
+      for (const notes of [
+         ["## artifact { layout=linear }"],
+         ['## artifact { layout=linear title="x" }'],
+         // Linear by default: neither a layout nor tiles.
+         ["## artifact { }"],
+         ['## artifact { title="x" }'],
+         // `layout=linear` wins over a grid tag, and still lists no tiles.
+         ["## artifact { layout=linear } dashboard { columns=6 }"],
+      ]) {
+         expect(readReportTag(notes)).toEqual({ status: "cells-removed" });
+      }
+   });
+
+   it("serves a linear tag with an empty tile list", () => {
+      expect(readReportTag(["## artifact { layout=linear tiles=[] }"])).toEqual(
+         { status: "report", layout: "linear" },
+      );
    });
 
    it("reads layout values exactly: case and unknown words name no layout", () => {
-      expect(readReportTag(["## artifact { layout=Grid }"])).toMatchObject({
-         layout: "linear",
-         decidedBy: "default",
+      // No tiles and an unknown layout: no report, and the lint names the layout.
+      expect(readReportTag(["## artifact { layout=Grid }"])).toEqual({
+         status: "cells-removed",
+         unknownLayout: "Grid",
+      });
+      expect(readReportTag(["## artifact { layout=linear }"])).toEqual({
+         status: "cells-removed",
       });
       expect(
          readReportTag(['## artifact { layout=wide tiles=["a -> v"] }']),
-      ).toMatchObject({ layout: "grid", decidedBy: "tiles" });
+      ).toMatchObject({ layout: "grid" });
+   });
+
+   it("reads a `tiles` that is not a list as a tag it cannot use", () => {
+      expect(
+         readReportTag(["## artifact { layout=linear tiles=foo }"]),
+      ).toEqual({ status: "unparsed" });
+      expect(
+         readReportTag(["## artifact { layout=grid tiles { a } }"]),
+      ).toEqual({ status: "unparsed" });
+      expect(readReportTag(["## artifact { layout=linear tiles=[] }"])).toEqual(
+         { status: "report", layout: "linear" },
+      );
    });
 
    it("makes no report of a tag that sets `kind=`, whatever else it says", () => {
@@ -97,7 +123,7 @@ describe("readReportTagOfText", () => {
    it("reads the model-level notes, a `##|` block included", () => {
       expect(
          readReportTagOfText("##| artifact { layout=grid }\n|##\n"),
-      ).toEqual({ status: "report", layout: "grid", decidedBy: "layout" });
+      ).toEqual({ status: "report", layout: "grid" });
       expect(
          readReportTagOfText(
             '## artifact { title="x" }\n## dashboard { columns=6 }\n',

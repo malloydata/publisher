@@ -149,12 +149,20 @@ describe("layout and title", () => {
       expect(screen.queryAllByText("Filters")).toHaveLength(0);
    });
 
-   it("renders the bar layout with its controls and no heading", () => {
+   it("renders the bar layout as filter buttons that open their controls, with no heading", () => {
       render(<GivensPanel {...props} layout="bar" />);
-      // The bar is meant to sit inline above a dashboard, so it carries the
-      // controls but drops the heading the panel layout shows.
+      // The bar sits inline above a report: a button per control, naming it
+      // and its value, and no heading. The control is in its popover.
+      expect(screen.queryByRole("combobox")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /^BRAND: / }));
       expect(screen.getByRole("combobox")).toBeDefined();
       expect(screen.queryAllByText("Filters")).toHaveLength(0);
+   });
+
+   it("offers no editing outside the builder", () => {
+      render(<GivensPanel {...props} layout="bar" />);
+      expect(screen.queryByLabelText(/^Remove filter/)).toBeNull();
+      expect(screen.queryByLabelText("Add filter")).toBeNull();
    });
 
    it("still offers Reset from the bar layout", () => {

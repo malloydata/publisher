@@ -29,12 +29,11 @@ export const builderReport = ({
    const { emit } = reportEmitter({ path, layout }, onEvent);
    return {
       size,
-      saved: ({ size, structural, durationMs, fromOpen }) =>
+      saved: ({ size, structural, durationMs }) =>
          emit({
             type: "report.saved",
             tiles: size,
             structural,
-            ...(fromOpen ? { converted: true } : {}),
             where: savesTo,
             durationMs,
          }),

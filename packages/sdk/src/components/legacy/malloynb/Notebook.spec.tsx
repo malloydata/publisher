@@ -19,8 +19,8 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
-} from "../../../test/serverProvider";
-import type { RawNotebook } from "../../client";
+} from "../../../../test/serverProvider";
+import type { RawNotebook } from "../../../client";
 
 const NOTEBOOK: RawNotebook = {
    notebookCells: [
@@ -91,7 +91,7 @@ const dataSourcesDialogProps = mock(
       data?: { givens?: { name?: string }[] };
    }) => {},
 );
-mock.module("../Model/ModelExplorerDialog", () => ({
+mock.module("../../Model/ModelExplorerDialog", () => ({
    ModelExplorerDialog: (props: {
       open: boolean;
       startingGivens?: Record<string, string>;
@@ -141,6 +141,8 @@ it("sends none when the notebook was opened without one", async () => {
 it("opens a cell's 'Data sources' dialog with the notebook's current values", async () => {
    render(<Notebook resourceUri={URI} />, { wrapper: serverWrapper });
 
+   // The control sits in its filter button's popover.
+   fireEvent.click(await screen.findByRole("button", { name: /^TENANT: / }));
    const input = (await screen.findByLabelText("TENANT")) as HTMLInputElement;
    fireEvent.change(input, { target: { value: "acme" } });
    // Wait for the control's own re-render before opening the dialog: without

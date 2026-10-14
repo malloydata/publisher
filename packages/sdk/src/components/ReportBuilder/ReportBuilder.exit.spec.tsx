@@ -98,10 +98,8 @@ describe("ReportBuilder: leaving", () => {
    });
 });
 
-const removeTile = () => {
-   fireEvent.click(screen.getByLabelText("Settings for By category"));
-   fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-};
+const removeTile = () =>
+   fireEvent.click(screen.getByLabelText("Remove By category"));
 
 describe("ReportBuilder: leaving with a structural edit", () => {
    it("Save writes a structural edit at once, once, and stays open", async () => {

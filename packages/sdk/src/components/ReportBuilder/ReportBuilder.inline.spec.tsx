@@ -174,7 +174,7 @@ describe("click-to-edit text", () => {
       fireEvent.click(screen.getByText("Add a description"));
       const field = screen.getByLabelText("Markdown");
       fireEvent.change(field, { target: { value: "What sold." } });
-      fireEvent.keyDown(field, { key: "Escape" });
+      fireEvent.keyDown(field, { key: "Enter", metaKey: true });
       expect(screen.getByText("What sold.")).toBeDefined();
       undo();
       expect(screen.getByText("Add a description")).toBeDefined();
@@ -187,7 +187,9 @@ describe("click-to-edit text", () => {
       fireEvent.click(screen.getByLabelText("Settings for By category"));
       expect(screen.queryByLabelText("Tile title")).toBeNull();
       expect(screen.queryByLabelText("Tile subtitle")).toBeNull();
-      fireEvent.keyDown(button("Delete"), { key: "Escape" });
+      fireEvent.keyDown(document.querySelector(".MuiPopover-paper")!, {
+         key: "Escape",
+      });
       // There is no page settings window at all: the title and description
       // are edited on the page.
       expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
@@ -196,13 +198,13 @@ describe("click-to-edit text", () => {
 });
 
 describe("click-to-edit markdown in a text tile", () => {
-   it("opens on a click and commits on Done, as one undo step", async () => {
+   it("opens on a click and commits on ⌘Enter, as one undo step", async () => {
       await mount();
       fireEvent.click(within(tile("intro")).getByText(/Read/));
       const field = screen.getByLabelText("Markdown") as HTMLTextAreaElement;
       expect(field.selectionStart).toBe(field.value.length);
       fireEvent.change(field, { target: { value: "# New heading" } });
-      fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      fireEvent.keyDown(field, { key: "Enter", metaKey: true });
       expect(
          within(tile("intro")).getByRole("heading", { name: "New heading" }),
       ).toBeDefined();
@@ -216,25 +218,22 @@ describe("click-to-edit markdown in a text tile", () => {
       const field = screen.getByLabelText("Markdown");
       fireEvent.change(field, { target: { value: "a\n|## b" } });
       expect(screen.getByText(/close the text early/)).toBeDefined();
-      expect(
-         screen.getByRole("button", { name: "Done" }).hasAttribute("disabled"),
-      ).toBe(true);
-      // Escape is Done, which holds.
-      fireEvent.keyDown(field, { key: "Escape" });
+      // Finishing holds while the draft would be refused.
+      fireEvent.keyDown(field, { key: "Enter", metaKey: true });
       expect(screen.getByLabelText("Markdown")).toBeDefined();
       fireEvent.change(field, { target: { value: "fine" } });
-      fireEvent.keyDown(field, { key: "Escape" });
+      fireEvent.keyDown(field, { key: "Enter", metaKey: true });
       expect(screen.queryByLabelText("Markdown")).toBeNull();
       expect(within(tile("intro")).getByText("fine")).toBeDefined();
    });
 
-   it("Cancel drops the draft", async () => {
+   it("Escape drops the draft", async () => {
       await mount();
       fireEvent.click(within(tile("intro")).getByText(/Read/));
       fireEvent.change(screen.getByLabelText("Markdown"), {
          target: { value: "dropped" },
       });
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      fireEvent.keyDown(screen.getByLabelText("Markdown"), { key: "Escape" });
       expect(within(tile("intro")).queryByText("dropped")).toBeNull();
       expect(button("Undo")).toHaveProperty("disabled", true);
    });
@@ -263,13 +262,12 @@ describe("click-to-edit markdown in a text tile", () => {
          },
       });
       fireEvent.click(button("Add tile"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       fireEvent.click(within(tile("text_1")).getByText(TEXT_TILE_PLACEHOLDER));
       const field = screen.getByLabelText("Markdown");
       expect(field.getAttribute("placeholder")).toBe(TEXT_TILE_PLACEHOLDER);
       fireEvent.change(field, { target: { value: "Typed in place" } });
-      fireEvent.keyDown(field, { key: "Escape" });
+      fireEvent.keyDown(field, { key: "Enter", metaKey: true });
 
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());

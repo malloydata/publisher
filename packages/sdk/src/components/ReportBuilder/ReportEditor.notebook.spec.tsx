@@ -9,8 +9,6 @@ import {
    waitFor,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import * as fs from "fs";
-import * as path from "path";
 import {
    clearCache,
    mockServerProvider,
@@ -31,27 +29,13 @@ import { editInline } from "./testing/inline";
 
 /**
  * The one editor opened as a notebook: how it reads the file, where it takes
- * the manifest from, and what it does with a notebook in the cell format.
+ * the manifest from.
  */
-const REPO = path.resolve(import.meta.dir, "../../../../..");
-const LEGACY = fs
-   .readFileSync(
-      path.join(REPO, "examples/storefront/category-review.malloy"),
-      "utf8",
-   )
-   .replace(/\r\n/g, "\n");
-
 const LAYOUT = `## artifact { layout=linear title="Tour" tiles=[intro { kind=text }] }
 
 ##|(markdown) intro
 Hello.
 |##
-`;
-
-const REFUSED = `## artifact { layout=linear }
-import { orders } from "../m.malloy"
-
-run: orders extend { dimension: z is 1 } -> { select: z }
 `;
 
 let served = LAYOUT;
@@ -73,22 +57,15 @@ const getModel = mock(
       },
    }),
 );
-// One read for either layout, by path: a report in tiles carries its manifest,
-// one in cells carries its cells instead.
+// One read for either layout, by path: the report's manifest.
 const getReport = mock(
    async (_env: string, _pkg: string, modelPath: string) => ({
-      data: served.includes("tiles=")
-         ? {
-              path: modelPath,
-              layout: "linear",
-              givens: [{ name: "FROM_MANIFEST", type: "string" }],
-              tiles: [],
-           }
-         : {
-              path: modelPath,
-              layout: "linear",
-              notebook: { notebookCells: [] },
-           },
+      data: {
+         path: modelPath,
+         layout: "linear",
+         givens: [{ name: "FROM_MANIFEST", type: "string" }],
+         tiles: [],
+      },
    }),
 );
 const getDashboard = mock(() => pending());
@@ -207,6 +184,24 @@ describe("ReportEditor as a notebook", () => {
       expect(getModel.mock.calls[0][2]).toBe("dashboards/tour.malloy");
    });
 
+   it("refuses a file written as `run:` cells, saying why, and reports a category, never the reason", async () => {
+      served =
+         '## artifact { layout=linear }\nimport { orders } from "../m.malloy"\n\nrun: orders -> by_month\n';
+      const onEvent = mock((_event: ReportEvent) => {});
+      mount({}, onEvent);
+      expect(
+         await screen.findByText(/written as `run:` cells is no longer read/),
+      ).toBeDefined();
+      expect(onEvent.mock.calls[0][0]).toMatchObject({
+         type: "report.load_failed",
+         surface: "edit",
+         category: "invalid",
+      });
+      // A category, never the message: the reason can carry the file's text.
+      expect(onEvent.mock.calls[0][0]).not.toHaveProperty("reason");
+      expect(writes).toEqual([]);
+   });
+
    // DEPRECATED FEATURE COVERAGE — delete together with
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
@@ -225,50 +220,6 @@ describe("ReportEditor as a notebook", () => {
             category: "unsupported",
          });
       });
-   });
-
-   it("offers a notebook in the cell format as a conversion, and Save writes it exactly", async () => {
-      served = LEGACY;
-      servedHash = await sha256Hex(LEGACY);
-      const onEvent = mock((_event: ReportEvent) => {});
-      mount({}, onEvent);
-      expect(
-         await screen.findByText(/This report is in the cell format/),
-      ).toBeDefined();
-      expect(screen.getByLabelText("Tile revenue_by_month")).toBeDefined();
-
-      fireEvent.click(button("Save"));
-      fireEvent.click(
-         await screen.findByRole("button", { name: "Convert and save" }),
-      );
-      await waitFor(() => expect(writes).toHaveLength(1));
-      expect(writes[0]).toContain("tiles=[\n    text_1 { kind=text }");
-      expect(writes[0]).toContain("view: revenue_by_month is sales_by_month");
-      await waitFor(() =>
-         expect(onEvent.mock.calls.map(([event]) => event.type)).toEqual([
-            "report.opened",
-            "report.saved",
-         ]),
-      );
-      expect(onEvent.mock.calls[1][0]).toMatchObject({ converted: true });
-   });
-
-   it("says why a notebook cannot be converted, naming the line", async () => {
-      served = REFUSED;
-      const onEvent = mock((_event: ReportEvent) => {});
-      mount({}, onEvent);
-      const alert = await screen.findByText(/cannot be opened in the builder/);
-      expect(alert.textContent).toMatch(/line 4/i);
-      expect(
-         screen.queryByText(/This report is in the cell format/),
-      ).toBeNull();
-      expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "report.load_failed",
-         surface: "edit",
-         category: "invalid",
-      });
-      // A category, never the message: the reason can carry the file's text.
-      expect(onEvent.mock.calls[0][0]).not.toHaveProperty("reason");
    });
 });
 

@@ -1307,7 +1307,19 @@ async function prepareForMainThread(
    // once, so the ones prepared before the deadline are kept, and the main
    // thread prepares only those after them.
    const renderTagResults: { label: string; result?: Malloy.Result }[] = [];
-   for (const target of renderTagTargets(model.queries, model.sources)) {
+   const targets = renderTagTargets(model.queries, model.sources);
+   // One QueryModel for every prepare below, as Model.ensureSharedQueryModel
+   // does on the main thread: Malloy reuses the compiled model's QueryModel
+   // for a query that does not modify the model, but only once it exists, so
+   // without this each prepare built one over every source and dropped it.
+   if (targets.length > 0 && !load.failed && !pastDeadline()) {
+      try {
+         void model.model.queryModel;
+      } catch {
+         // Left to the prepares below, which build their own as before.
+      }
+   }
+   for (const target of targets) {
       if (load.failed || pastDeadline()) break;
       try {
          const prepared = await materializer

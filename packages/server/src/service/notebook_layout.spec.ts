@@ -177,20 +177,24 @@ describe("notebooks written as tiles (worker path)", () => {
       });
    });
 
-   it("keeps a notebook written as cells free of a layout", async () => {
+   it("serves no report for a file written as `run:` cells, and says why", async () => {
       write(
          "notebooks/cells.malloy",
          `## artifact { layout=linear }\n${SOURCE}run: base -> by_label\n`,
       );
       await withPackage(async (pkg) => {
-         const raw = await pkg
-            .getModel("notebooks/cells.malloy")!
-            .getNotebook();
-         expect(raw.dashboard).toBeUndefined();
-         expect(raw.notebookCells?.map((cell) => cell.kind)).toEqual([
-            "definition",
-            "query",
-         ]);
+         expect(pkg.isServedReport("notebooks/cells.malloy")).toBe(false);
+         expect(await pkg.getReport("notebooks/cells.malloy")).toBeUndefined();
+         expect(pkg.getModel("notebooks/cells.malloy")!.isNotebook()).toBe(
+            false,
+         );
+         expect(pkg.getPackageMetadata().warnings).toContainEqual(
+            expect.objectContaining({
+               model: "notebooks/cells.malloy",
+               code: "report-cells-removed",
+               severity: "error",
+            }),
+         );
       });
    });
 

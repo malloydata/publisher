@@ -1,8 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+/**
+ * @deprecated `.malloynb` only; deleted with the format. One cell of a
+ * `.malloynb` notebook: prose, or code with its result in a report tile.
+ */
+
 import CodeIcon from "@mui/icons-material/Code";
 import LinkOutlinedIcon from "@mui/icons-material/LinkOutlined";
 import SearchIcon from "@mui/icons-material/Search";
@@ -14,25 +17,26 @@ import {
    Snackbar,
    Stack,
    Tooltip,
-   Typography,
 } from "@mui/material";
-import React, { useEffect, useId, useState } from "react";
-import type { Given } from "../../client";
-import { usePublisherTheme } from "../../theme/ThemeContext";
-import { parseResourceUri } from "../../utils/formatting";
-import { ErrorDetailAlert } from "../ApiErrorDisplay";
-import { AppDialog } from "../AppDialog";
-import { highlight } from "../highlighter";
-import { ModelExplorerDialog } from "../Model/ModelExplorerDialog";
-import { FloatingIconButton } from "../FloatingIconButton";
-import { Prose } from "../Prose";
-import type { NavigationClick } from "../click_helper";
-import { useDrill, type DrillNavigation } from "../drill";
-import ResultContainer from "../RenderedResult/ResultContainer";
-import { NOTEBOOK_CELL_MAX_HEIGHT } from "../RenderedResult/resultSizing";
-import ResultsDialog from "../ResultsDialog";
-import { CleanMetricCard, MONO_FONT_FAMILY } from "../styles";
-import { cellCaption, definitionSummary, stripProse } from "./cellKind";
+import React, { useEffect, useState } from "react";
+import type { Given } from "../../../client";
+import { usePublisherTheme } from "../../../theme/ThemeContext";
+import { parseResourceUri } from "../../../utils/formatting";
+import { ErrorDetailAlert } from "../../ApiErrorDisplay";
+import { AppDialog } from "../../AppDialog";
+import { highlight } from "../../highlighter";
+import { ModelExplorerDialog } from "../../Model/ModelExplorerDialog";
+import { FloatingIconButton } from "../../FloatingIconButton";
+import { Prose } from "../../Prose";
+import type { NavigationClick } from "../../click_helper";
+import { useDrill, type DrillNavigation } from "../../drill";
+import ResultContainer from "../../RenderedResult/ResultContainer";
+import { NOTEBOOK_CELL_MAX_HEIGHT } from "../../RenderedResult/resultSizing";
+import ResultsDialog from "../../ResultsDialog";
+import { CleanMetricCard, MONO_FONT_FAMILY } from "../../styles";
+import { stripProse } from "./cellKind";
+import { TileCard, TileHeading } from "../../Dashboard/TileCard";
+import { TextTileFrame } from "../../Report/ReportPage";
 import { EnhancedNotebookCell } from "./types";
 
 interface NotebookCellProps {
@@ -111,8 +115,6 @@ export function NotebookCell({
    const [sourcesDialogOpen, setSourcesDialogOpen] =
       React.useState<boolean>(false);
 
-   const [definitionOpen, setDefinitionOpen] = useState(false);
-   const definitionRegionId = useId();
    const [copyMessage, setCopyMessage] = useState("");
 
    const { environmentName, packageName, modelPath } =
@@ -228,13 +230,6 @@ export function NotebookCell({
          });
    }, [cell, mode]);
 
-   const caption = cell.kind === "query" ? cellCaption(cell) : undefined;
-   const header = cell.markdown ? (
-      <Prose variant="document" links={links}>
-         {cell.markdown}
-      </Prose>
-   ) : null;
-
    const copyToClipboard = () => {
       const url = window.location.href;
       navigator.clipboard
@@ -281,7 +276,7 @@ export function NotebookCell({
    return (
       (cell.type === "markdown" && (
          <Box>
-            <Box>
+            <TextTileFrame>
                {showCopyLink ? (
                   <Stack
                      direction="row"
@@ -312,65 +307,11 @@ export function NotebookCell({
                   onClose={() => setCopyMessage("")}
                   message={copyMessage}
                />
-            </Box>
-         </Box>
-      )) ||
-      (cell.kind === "definition" && (
-         <Box>
-            {header}
-            <Box
-               component="button"
-               type="button"
-               aria-expanded={definitionOpen}
-               aria-controls={definitionRegionId}
-               onClick={() => setDefinitionOpen((open) => !open)}
-               sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  p: 0,
-                  border: 0,
-                  background: "none",
-                  cursor: "pointer",
-                  fontFamily: MONO_FONT_FAMILY,
-                  fontSize: "13px",
-                  color: "text.secondary",
-               }}
-            >
-               {definitionOpen ? (
-                  <ExpandMoreIcon fontSize="small" />
-               ) : (
-                  <ChevronRightIcon fontSize="small" />
-               )}
-               {definitionSummary(cell)}
-            </Box>
-            {definitionOpen && (
-               <CleanMetricCard
-                  id={definitionRegionId}
-                  sx={{ mt: 1, padding: "12px 24px" }}
-               >
-                  <pre
-                     className="code-display"
-                     style={{ margin: 0, overflow: "auto" }}
-                     dangerouslySetInnerHTML={{
-                        __html: highlightedMalloyCode ?? "",
-                     }}
-                  />
-               </CleanMetricCard>
-            )}
+            </TextTileFrame>
          </Box>
       )) ||
       (cell.type === "code" && (
          <Box>
-            {header}
-            {caption && (
-               <Typography
-                  variant="body2"
-                  sx={{ color: "text.secondary", mb: 1 }}
-               >
-                  {caption}
-               </Typography>
-            )}
             {cell.newSources && cell.newSources.length > 0 && (
                <Stack
                   sx={{
@@ -453,16 +394,18 @@ export function NotebookCell({
                !cell.error &&
                !hasValidImport &&
                !(cell.newSources && cell.newSources.length > 0) && (
-                  <CleanMetricCard
-                     sx={{
-                        display: "flex",
-                        justifyContent: "center",
-                        alignItems: "center",
-                        minHeight: 200,
-                     }}
-                  >
-                     <CircularProgress size={32} />
-                  </CleanMetricCard>
+                  <TileCard>
+                     <Box
+                        sx={{
+                           display: "flex",
+                           justifyContent: "center",
+                           alignItems: "center",
+                           minHeight: 200,
+                        }}
+                     >
+                        <CircularProgress size={32} />
+                     </Box>
+                  </TileCard>
                )}
 
             {!cell.result && cell.error && (
@@ -480,62 +423,39 @@ export function NotebookCell({
             )}
 
             {cell.result && (
-               <CleanMetricCard
-                  sx={{
-                     position: "relative",
-                  }}
-               >
-                  <Box
-                     sx={{
-                        paddingTop: "24px",
-                     }}
-                  >
-                     <ResultContainer
-                        result={cell.result}
-                        maxHeight={NOTEBOOK_CELL_MAX_HEIGHT}
-                        maxResultSize={maxResultSize}
-                        drill={drill}
-                     />
-                  </Box>
+               // The tile a grid draws: the cell's own actions on the heading's
+               // row, then the result.
+               <TileCard>
+                  <TileHeading
+                     title=""
+                     action={
+                        <Stack direction="row" sx={{ gap: 0.5, mt: "-4px" }}>
+                           <FloatingIconButton
+                              aria-label="Malloy code"
+                              onClick={(e) => {
+                                 e.stopPropagation();
+                                 setCodeDialogOpen(true);
+                              }}
+                           >
+                              <CodeIcon />
+                           </FloatingIconButton>
+                           <FloatingIconButton
+                              aria-label="Expand results"
+                              onClick={() => setResultsDialogOpen(true)}
+                           >
+                              <SearchIcon />
+                           </FloatingIconButton>
+                        </Stack>
+                     }
+                  />
+                  <ResultContainer
+                     result={cell.result}
+                     maxHeight={NOTEBOOK_CELL_MAX_HEIGHT}
+                     maxResultSize={maxResultSize}
+                     drill={drill}
+                  />
                   {drillMenu}
-
-                  {/* Top right corner controls.
-                      `top: -12px` lifts the buttons above the
-                      CleanMetricCard's inner ResultContainer so the
-                      dashboard panel (which now paints slate in dark
-                      mode) doesn't bisect them. The icons were already
-                      visually overlapping the panel's top edge in
-                      light mode too, but the white-on-white made it
-                      invisible; in dark mode the contrast made the
-                      clipping obvious. */}
-                  <Stack
-                     sx={{
-                        position: "absolute",
-                        top: "-12px",
-                        right: "8px",
-                        flexDirection: "row",
-                        gap: "8px",
-                        alignItems: "center",
-                        zIndex: 2,
-                     }}
-                  >
-                     <FloatingIconButton
-                        aria-label="Malloy code"
-                        onClick={(e) => {
-                           e.stopPropagation();
-                           setCodeDialogOpen(true);
-                        }}
-                     >
-                        <CodeIcon />
-                     </FloatingIconButton>
-                     <FloatingIconButton
-                        aria-label="Expand results"
-                        onClick={() => setResultsDialogOpen(true)}
-                     >
-                        <SearchIcon />
-                     </FloatingIconButton>
-                  </Stack>
-               </CleanMetricCard>
+               </TileCard>
             )}
          </Box>
       ))

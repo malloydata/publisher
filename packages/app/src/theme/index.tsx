@@ -110,8 +110,11 @@ export const createPublisherTheme = (
             textTransform: "none",
          },
       },
+      // The control radius. Cards, menus and popovers take 8 and dialogs 12,
+      // set on each below: one shape per kind of thing, as the SDK's report
+      // surfaces draw them (`controlTokens.ts`).
       shape: {
-         borderRadius: 4,
+         borderRadius: 6,
       },
       components: {
          MuiButtonBase: {
@@ -184,18 +187,28 @@ export const createPublisherTheme = (
          },
          MuiButton: {
             styleOverrides: {
+               // One height for every button, small or not, and the control
+               // radius rather than a pill: the builder toolbar beside these
+               // draws at 32px and 6px, and two button shapes on one page read
+               // as two products. See the SDK's `controlTokens.ts`.
                root: {
-                  borderRadius: 20,
+                  borderRadius: 6,
                   textTransform: "none",
                   fontWeight: 500,
+                  fontSize: 13,
+                  minHeight: 32,
+                  paddingTop: 0,
+                  paddingBottom: 0,
                   boxShadow: "none",
                   "&:hover": {
-                     boxShadow: SUBTLE_SHADOW,
+                     boxShadow: "none",
                   },
                },
+               sizeSmall: { minHeight: 32, paddingLeft: 10, paddingRight: 10 },
+               sizeMedium: { minHeight: 32, paddingLeft: 12, paddingRight: 12 },
                contained: {
                   "&:hover": {
-                     boxShadow: "0 2px 4px rgba(0, 0, 0, 0.1)",
+                     boxShadow: "none",
                   },
                   // A disabled filled button defaults to a WHITE wash, which
                   // on a dark dialog is lighter than the surface it sits on —
@@ -227,10 +240,20 @@ export const createPublisherTheme = (
                },
             },
          },
+         MuiIconButton: {
+            styleOverrides: {
+               root: { borderRadius: 6 },
+            },
+         },
+         MuiPopover: {
+            styleOverrides: {
+               paper: { borderRadius: 8 },
+            },
+         },
          MuiCard: {
             styleOverrides: {
                root: {
-                  borderRadius: 4,
+                  borderRadius: 8,
                   boxShadow: SUBTLE_SHADOW,
                   border: "1px solid",
                   borderColor: divider,
@@ -241,7 +264,7 @@ export const createPublisherTheme = (
          MuiChip: {
             styleOverrides: {
                root: {
-                  borderRadius: 4,
+                  borderRadius: 6,
                   fontWeight: 500,
                },
             },
@@ -250,7 +273,7 @@ export const createPublisherTheme = (
             styleOverrides: {
                root: {
                   "& .MuiOutlinedInput-root": {
-                     borderRadius: 4,
+                     borderRadius: 6,
                   },
                   "& .MuiInputLabel-outlined": {
                      backgroundColor: surface,
@@ -281,7 +304,7 @@ export const createPublisherTheme = (
          MuiDialog: {
             styleOverrides: {
                paper: {
-                  borderRadius: 4,
+                  borderRadius: 12,
                   // Stated rather than inherited, so a dialog's surface cannot
                   // drift from the fields drawn on it.
                   backgroundColor: surface,
@@ -330,7 +353,7 @@ export const createPublisherTheme = (
                   // (#cbd5e1 / #475569), which is these same two points on the
                   // slate ramp.
                   border: `1px solid ${isDark ? greyScale[600] : greyScale[300]}`,
-                  borderRadius: 8,
+                  borderRadius: 6,
                   transition: `border-color ${MOTION_FAST} ease-in`,
                   ...reducedMotionSx,
                   backgroundColor: surface,
@@ -365,7 +388,7 @@ export const createPublisherTheme = (
          MuiMenu: {
             styleOverrides: {
                paper: {
-                  borderRadius: 4,
+                  borderRadius: 8,
                   boxShadow:
                      "0px 10px 15px -3px rgba(0, 0, 0, 0.1), 0px 4px 6px -2px rgba(0, 0, 0, 0.05)",
                   border: `1px solid ${divider}`,
@@ -399,7 +422,7 @@ export const createPublisherTheme = (
          MuiListItemButton: {
             styleOverrides: {
                root: {
-                  borderRadius: 28,
+                  borderRadius: 6,
                   margin: "2px 8px",
                   padding: "8px 16px",
                   "&:hover": {

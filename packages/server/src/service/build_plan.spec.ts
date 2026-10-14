@@ -32,6 +32,7 @@ import {
    duckdbTestConnections,
 } from "./incremental_test_harness";
 import { fakeSource } from "./materialization_test_fixtures";
+import { setEventLoopYieldBudgetMsForTesting } from "./event_loop_yield";
 import { Model } from "./model";
 
 describe("flattenDependsOn", () => {
@@ -694,6 +695,31 @@ describe("compilePackageBuildPlan", () => {
             getModelRuntime.restore();
          }
       });
+   });
+
+   it("stops on a cancel that lands while it yields, before compiling the next model", async () => {
+      const getModelRuntime = sinon.stub(Model, "getModelRuntime");
+      // Yield at every step, so the first model's yield is a real turn.
+      const budget = setEventLoopYieldBudgetMsForTesting(0);
+      try {
+         const pkg = {
+            getModelPaths: () => ["m.malloy"],
+            getPackagePath: () => "/test",
+            getMalloyConfig: () => ({}),
+            getMalloyConnection: async () => ({}),
+         } as unknown as Parameters<typeof compilePackageBuildPlan>[0];
+         const controller = new AbortController();
+         // Queued before the plan's own yield, so it runs during that yield.
+         setImmediate(() => controller.abort());
+
+         await expect(
+            compilePackageBuildPlan(pkg, controller.signal),
+         ).rejects.toThrow("Build cancelled");
+         expect(getModelRuntime.called).toBe(false);
+      } finally {
+         setEventLoopYieldBudgetMsForTesting(budget);
+         getModelRuntime.restore();
+      }
    });
 
    it("skips a model lacking ##! experimental.persistence instead of aborting the package", async () => {

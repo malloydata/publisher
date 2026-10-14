@@ -13,7 +13,7 @@ import {
 const PKG = "notebook-unbound-given";
 const NOTEBOOK = "notebooks/nb.malloy";
 
-/** The aggregate count out of a notebook cell's nested result encoding. */
+/** The aggregate count out of a query result's nested encoding. */
 function cellCount(body: { result?: string }): number {
    const parsed = JSON.parse(body.result ?? "{}") as {
       data?: {
@@ -25,7 +25,7 @@ function cellCount(body: { result?: string }): number {
    return parsed.data?.array_value?.[0]?.record_value?.[0]?.number_value ?? -1;
 }
 
-describe("a notebook cell reading a given with no default (HTTP E2E)", () => {
+describe("a linear report tile reading a given with no default (HTTP E2E)", () => {
    let env: PackageEnv;
    const pkgUrl = (sub: string) => env.api(sub);
 
@@ -37,35 +37,33 @@ describe("a notebook cell reading a given with no default (HTTP E2E)", () => {
 
    afterAll(() => env?.stop());
 
-   /** The report's one query cell, off `GET …/reports/{path}`. */
+   /** The report's one query tile, off `GET …/reports/{path}`, as the query a viewer runs. */
    async function queryCellText(): Promise<string> {
       const res = await fetch(pkgUrl(`/reports/${NOTEBOOK}`));
       expect(res.status).toBe(200);
       const body = (await res.json()) as {
-         notebook?: { notebookCells?: Array<{ kind?: string; text?: string }> };
+         tiles?: Array<{ kind?: string; query?: string }>;
       };
-      const cell = (body.notebook?.notebookCells ?? []).find(
-         (c) => c.kind === "query",
-      );
-      expect(cell?.text).toBeDefined();
-      return cell?.text ?? "";
+      const tile = (body.tiles ?? []).find((t) => t.kind === "query");
+      expect(tile?.query).toBeDefined();
+      return `run: ${tile?.query ?? ""}`;
    }
 
-   /** Run the cell the way a viewer does: its text through the query route. */
+   /** Run the tile the way a viewer does: through the query route. */
    const runCell = (text: string, givens?: Record<string, unknown>) =>
       env.query(NOTEBOOK, { query: text, givens });
 
-   it("serves the notebook and its cell", async () => {
+   it("serves the report and its tile", async () => {
       await queryCellText();
    });
 
-   it("runs the cell when the given is supplied", async () => {
+   it("runs the tile when the given is supplied", async () => {
       const res = await runCell(await queryCellText(), { ORG: 1 });
       expect(res.status).toBe(200);
       expect(cellCount((await res.json()) as { result?: string })).toBe(2);
    });
 
-   it("refuses the cell when the given is not supplied", async () => {
+   it("refuses the tile when the given is not supplied", async () => {
       const res = await runCell(await queryCellText());
       expect(res.status).toBe(400);
    });

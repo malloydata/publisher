@@ -17,6 +17,7 @@ import {
    prepareEmbeddingInput,
 } from "../../service/embedding_provider";
 import { HttpRequestError, publicMessage } from "../../service/http_retry";
+import { yieldToEventLoop } from "../../service/event_loop_yield";
 import { DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES } from "../../config";
 import type { PackageRepresentation } from "../../service/package_retrieval";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
@@ -615,10 +616,6 @@ function fingerprintOfRows(rows: string[]): string {
    rows.sort();
    return contentHash(rows.join("\n"));
 }
-
-/** Hand the event loop back, so a large package does not stall requests. */
-const yieldToEventLoop = () =>
-   new Promise<void>((resolve) => setImmediate(resolve));
 
 /**
  * {@link desiredFacets} over a large entity list, yielding to the event loop
