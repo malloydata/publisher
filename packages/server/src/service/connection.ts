@@ -634,7 +634,9 @@ function conninfoPairs(
 ): { key: string; value: string; start: number; end: number }[] {
    const pairs: { key: string; value: string; start: number; end: number }[] =
       [];
-   const isSpace = (c: string | undefined) => c !== undefined && /\s/.test(c);
+   // ASCII only, as libpq: a Unicode space inside a password is password data.
+   const isSpace = (c: string | undefined) =>
+      c !== undefined && /[ \t\n\v\f\r]/.test(c);
    let i = 0;
    while (i < conninfo.length) {
       while (isSpace(conninfo[i])) i++;
@@ -679,10 +681,95 @@ function decodeUriComponentOrRaw(value: string): string {
    }
 }
 
+/** libpq has no `no-verify`; "encrypt, don't verify" is `require`. The one spelling every site maps to. */
+const LIBPQ_NO_VERIFY_SSLMODE = "require";
+
+const isUriConnectionString = (connectionString: string) =>
+   /^postgres(ql)?:\/\//i.test(connectionString);
+
+/** Applies `fn` to a URI's query parameters; the `?` is dropped when none remain. */
+function mapUriQuery(uri: string, fn: (params: string[]) => string[]): string {
+   const queryStart = uri.indexOf("?");
+   const base = queryStart === -1 ? uri : uri.slice(0, queryStart);
+   const params = fn(
+      queryStart === -1 ? [] : uri.slice(queryStart + 1).split("&"),
+   );
+   return params.length ? `${base}?${params.join("&")}` : base;
+}
+
 /**
- * A raw connectionString with the connection's statement timeout added, in
- * whichever of libpq's two forms the string is written: a URI takes it as an
- * `options` query parameter, a keyword/value string as an `options` pair.
+ * Makes a raw connectionString's sslmode one libpq accepts: `no-verify` becomes
+ * `require`, and a string with no sslmode gets `require` when the deployment's
+ * PGSSLMODE is `no-verify`, because libpq reads that variable itself and rejects it.
+ * A string naming a libpq `service`, or a deployment `PGSERVICE`, is left alone: its
+ * file's sslmode outranks the variable, and an appended `require` would override a
+ * stricter one (a service file with no sslmode then fails closed under `no-verify`).
+ * In a URI, node-pg-only params libpq rejects are normalized too: `uselibpqcompat` is
+ * dropped, and `ssl` yields to an `sslmode` (node-pg's precedence) or is respelled.
+ */
+function libpqSslmodeInRawString(connectionString: string): string {
+   const envNoVerify =
+      process.env.PGSSLMODE?.toLowerCase() === "no-verify" &&
+      !process.env.PGSERVICE;
+   const rewritten = `sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`;
+   if (isUriConnectionString(connectionString)) {
+      return mapUriQuery(connectionString, (params) => {
+         const keys = params.map((param) =>
+            decodeUriComponentOrRaw(param.split("=")[0]),
+         );
+         const hasSslmode = keys.includes("sslmode");
+         // node-pg turns ssl=false into verified TLS when a cert param is present.
+         const hasCert = keys.some((key) =>
+            ["sslrootcert", "sslcert", "sslkey"].includes(key),
+         );
+         let seen = false;
+         const mapped = params.flatMap((param, i) => {
+            const [, ...rest] = param.split("=");
+            const value = decodeUriComponentOrRaw(rest.join("="));
+            if (keys[i] === "service") seen = true;
+            if (keys[i] === "uselibpqcompat") return [];
+            if (keys[i] === "ssl") {
+               if (hasSslmode) return [];
+               if (value === "no-verify") {
+                  seen = true;
+                  return [rewritten];
+               }
+               if (value === "1") return ["ssl=true"];
+               if (value === "0") {
+                  if (hasCert) return [];
+                  seen = true;
+                  return ["sslmode=disable"];
+               }
+               return [param];
+            }
+            if (keys[i] !== "sslmode") return [param];
+            seen = true;
+            return [value === "no-verify" ? rewritten : param];
+         });
+         return !seen && envNoVerify ? [...mapped, rewritten] : mapped;
+      });
+   }
+   const pairs = conninfoPairs(connectionString);
+   let result = connectionString;
+   for (const pair of [...pairs].reverse()) {
+      if (pair.key === "sslmode" && pair.value === "no-verify") {
+         result =
+            result.slice(0, pair.start) + rewritten + result.slice(pair.end);
+      }
+   }
+   return !pairs.some(
+      (pair) => pair.key === "sslmode" || pair.key === "service",
+   ) && envNoVerify
+      ? `${result} ${rewritten}`
+      : result;
+}
+
+/**
+ * A raw connectionString with `sslmode=no-verify` rewritten to `require` (node-pg
+ * spells "encrypt, don't verify" that way; libpq rejects it) and the connection's
+ * statement timeout added, in whichever of libpq's two forms the string is
+ * written: a URI takes the timeout as an `options` query parameter, a
+ * keyword/value string as an `options` pair.
  *
  * libpq honors only the last `options`, so the timeout is merged into that one
  * rather than added beside it, which would drop the string's other server
@@ -691,11 +778,12 @@ function decodeUriComponentOrRaw(value: string): string {
  * session SET runs after connecting. Unchanged when the connection sets no
  * statement timeout.
  */
-function withLibpqStatementTimeout(
+function libpqConnectionString(
    name: string,
-   connectionString: string,
+   rawConnectionString: string,
    pg: components["schemas"]["PostgresConnection"],
 ): string {
+   const connectionString = libpqSslmodeInRawString(rawConnectionString);
    const ms = postgresStatementTimeoutMs(name, pg);
    if (ms === undefined) return connectionString;
    const merged = (existing: string | undefined): string => {
@@ -710,23 +798,23 @@ function withLibpqStatementTimeout(
       return value;
    };
 
-   if (/^postgres(ql)?:\/\//i.test(connectionString)) {
-      const queryStart = connectionString.indexOf("?");
-      if (queryStart === -1) {
-         return `${connectionString}?options=${encodeURIComponent(merged(undefined))}`;
-      }
-      const params = connectionString.slice(queryStart + 1).split("&");
+   if (isUriConnectionString(connectionString)) {
       const isOptions = (param: string) =>
          decodeUriComponentOrRaw(param.split("=", 1)[0]) === "options";
-      const last = params.map(isOptions).lastIndexOf(true);
-      if (last === -1) {
-         params.push(`options=${encodeURIComponent(merged(undefined))}`);
-      } else {
+      return mapUriQuery(connectionString, (params) => {
+         const last = params.map(isOptions).lastIndexOf(true);
+         if (last === -1) {
+            return [
+               ...params,
+               `options=${encodeURIComponent(merged(undefined))}`,
+            ];
+         }
          const raw = params[last].slice(params[last].indexOf("=") + 1);
-         params[last] =
+         const out = [...params];
+         out[last] =
             `options=${encodeURIComponent(merged(decodeUriComponentOrRaw(raw)))}`;
-      }
-      return `${connectionString.slice(0, queryStart)}?${params.join("&")}`;
+         return out;
+      });
    }
 
    const existing = conninfoPairs(connectionString)
@@ -748,9 +836,11 @@ function withLibpqStatementTimeout(
  *
  * `applyConnectionOptions` decides whether the connection's own `sslmode` and
  * `statementTimeoutMilliseconds` reach the string. It is false for a DuckLake
- * catalog, whose string is built exactly as it was before those fields existed;
+ * catalog, whose string does not take those fields;
  * true for an attached database and a federated source. When false, or when
- * the field is unset, TLS comes from the deployment PGSSLMODE as before.
+ * the field is unset, TLS comes from the deployment PGSSLMODE as before. A raw
+ * connectionString keeps its own settings either way, but its `sslmode=no-verify`
+ * (or a PGSSLMODE=no-verify it leaves unset) is made `require`, which libpq accepts.
  *
  * Exported for tests.
  */
@@ -762,14 +852,16 @@ export function buildPgConnectionString(
    }: { name: string; applyConnectionOptions: boolean },
 ): string {
    if (pg.connectionString) {
-      if (!applyConnectionOptions) return pg.connectionString;
+      if (!applyConnectionOptions) {
+         return libpqSslmodeInRawString(pg.connectionString);
+      }
       if (pg.sslmode != null) {
          logger.warn(
             `Connection '${name}' sets both postgresConnection.sslmode and ` +
                `connectionString; sslmode is ignored and the connectionString's own sslmode applies.`,
          );
       }
-      return withLibpqStatementTimeout(name, pg.connectionString, pg);
+      return libpqConnectionString(name, pg.connectionString, pg);
    }
 
    const parts: string[] = [];
@@ -797,7 +889,7 @@ export function buildPgConnectionString(
 
    if (pgSSLMode) {
       const mapping: Record<string, string> = {
-         "no-verify": "disable",
+         "no-verify": LIBPQ_NO_VERIFY_SSLMODE,
          disable: "disable",
          allow: "allow",
          prefer: "prefer",
@@ -1657,7 +1749,7 @@ function libpqSslmodeParts(
       case "disable":
          return ["sslmode=disable"];
       case "no-verify":
-         return ["sslmode=require"];
+         return [`sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`];
       case "verify-ca": {
          if (!trust.caBundle) {
             throw new Error(
