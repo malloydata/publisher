@@ -45,6 +45,7 @@ import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import { useEditorCatalog } from "./useEditorCatalog";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
+import type { BuilderControlsHandler } from "./builderControls";
 
 /**
  * The builder under a real control row, with the controls driving the tiles,
@@ -71,6 +72,7 @@ export function EditorSurface({
    onSave,
    onDirtyChange,
    onExit,
+   onControlsChange,
    allowLayoutChange,
    onEvent,
    savesTo,
@@ -94,6 +96,7 @@ export function EditorSurface({
    onSave?: (source: string, layout: ReportLayout) => Promise<void>;
    onDirtyChange: (dirty: boolean) => void;
    onExit?: () => void;
+   onControlsChange?: BuilderControlsHandler;
    allowLayoutChange?: boolean;
    onEvent?: ReportEventHandler;
    savesTo: SavesTo;
@@ -440,6 +443,7 @@ export function EditorSurface({
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
+            {...(onControlsChange ? { onControlsChange } : {})}
             {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}

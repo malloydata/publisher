@@ -7,8 +7,12 @@ import {
    Report,
    type ReportLayout,
 } from "@malloy-publisher/sdk";
-import { Box } from "@mui/material";
-import React, { Suspense, useMemo } from "react";
+import type { BuilderControls } from "@malloy-publisher/sdk/builder";
+import { Box, Button } from "@mui/material";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import { withoutEdit } from "../../common/documentRoutes";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
 import { loadBuilder } from "./loadBuilder";
@@ -26,6 +30,22 @@ const ReportEditor = React.lazy(() =>
    })),
 );
 
+/** The builder's controls for the header, from the same chunk as the editor. */
+const BuilderBar = React.lazy(() =>
+   loadBuilder().then((module) => ({
+      default: module.BuilderBar,
+   })),
+);
+
+/** The header's slot for a page's own actions (`MainPage`), once it is in the document. */
+function useHeaderActionsSlot(): HTMLElement | null {
+   const [slot, setSlot] = useState<HTMLElement | null>(null);
+   useEffect(() => {
+      setSlot(document.getElementById("header-actions-portal"));
+   }, []);
+   return slot;
+}
+
 export interface DashboardEditPageProps {
    environmentName: string;
    packageName: string;
@@ -37,8 +57,9 @@ export interface DashboardEditPageProps {
 
 /**
  * The Console's host for the SDK `ReportEditor`: `/<env>/<pkg>/<path>?edit`,
- * either layout. View in the header returns to the report itself, the same
- * route without `?edit`.
+ * either layout. The builder's controls are drawn in the header, where the
+ * View / Edit switch is in the reader, and Done there returns to the report
+ * itself: the same route without `?edit`, through the leave guard.
  */
 export default function DashboardEditPage({
    environmentName,
@@ -47,6 +68,12 @@ export default function DashboardEditPage({
    layout = "grid",
 }: DashboardEditPageProps) {
    const guard = useLeaveGuard();
+   const navigate = useNavigate();
+   const { pathname, search } = useLocation();
+   const slot = useHeaderActionsSlot();
+   const [controls, setControls] = useState<BuilderControls | undefined>();
+   const done = () =>
+      navigate(`${pathname.replace(/\/$/, "")}${withoutEdit(search)}`);
    // Each event names the report by path and carries its layout as it stands.
    const onEvent = useMemo(
       () => logReportEvent({ environmentName, packageName }),
@@ -84,10 +111,30 @@ export default function DashboardEditPage({
                   onDirtyChange={guard.onDirtyChange}
                   onEvent={onEvent}
                   loading={reading}
+                  onControlsChange={setControls}
                />
             </Suspense>
          </NarrowEditGate>
          {guard.dialog}
+         {slot &&
+            createPortal(
+               // Done is there from the first frame, before the builder's
+               // code arrives, so there is always a way back to the report.
+               <Suspense
+                  fallback={
+                     <Button
+                        variant="contained"
+                        disableElevation
+                        onClick={done}
+                     >
+                        Done
+                     </Button>
+                  }
+               >
+                  <BuilderBar controls={controls} onDone={done} />
+               </Suspense>,
+               slot,
+            )}
       </Box>
    );
 }
