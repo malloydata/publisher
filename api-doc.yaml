@@ -2515,6 +2515,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: The skills in force for the package
@@ -2524,10 +2525,14 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/SkillSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -2568,6 +2573,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: The skill and its body
@@ -2575,10 +2581,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Skill"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -2610,6 +2620,7 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: The agents the package declares
@@ -2619,10 +2630,14 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/AgentSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -2680,6 +2695,7 @@ paths:
             type: string
             enum: [full, summary]
             default: full
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: The resolved agent
@@ -2693,6 +2709,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -2745,6 +2763,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: "#/components/parameters/versionId"
       responses:
         "200":
           description: The skill file
@@ -2752,10 +2771,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentSkillRead"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/Gone"
         "500":
           $ref: "#/components/responses/InternalServerError"
         "503":
@@ -5127,6 +5150,12 @@ components:
           type: string
         package:
           type: string
+        versionId:
+          $ref: "#/components/schemas/VersionIdPattern"
+          description: >-
+            The published version the definition was read from. Absent for a
+            package that has no published versions. Pass it as `?versionId=`
+            to fetch the same definition again after `latest` moves.
         sourceContentSha:
           type: string
           description: The package's `sourceContentSha` at the load this definition came from.

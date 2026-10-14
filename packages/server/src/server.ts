@@ -1882,6 +1882,7 @@ app.get(
             await skillController.listSkills(
                req.params.environmentName,
                req.params.packageName,
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1902,6 +1903,7 @@ app.get(
                req.params.packageName,
                // Express has already decoded the wildcard; decoding again throws on a bare %.
                (req.params as unknown as Record<string, string>)[0] ?? "",
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1920,6 +1922,7 @@ app.get(
             await skillController.listAgents(
                req.params.environmentName,
                req.params.packageName,
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1947,6 +1950,7 @@ app.get(
                req.params.packageName,
                req.params.agentName,
                skills,
+               req.query.versionId,
             ),
          );
       } catch (error) {
@@ -1968,6 +1972,7 @@ app.get(
                req.params.agentName,
                // Express has already decoded the wildcard; decoding again throws on a bare %.
                (req.params as unknown as Record<string, string>)[0] ?? "",
+               req.query.versionId,
             ),
          );
       } catch (error) {

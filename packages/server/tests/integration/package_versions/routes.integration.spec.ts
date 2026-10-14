@@ -34,7 +34,35 @@ function writePackage(
 ): string {
    fs.mkdirSync(path.join(dir, "dashboards"), { recursive: true });
    fs.mkdirSync(path.join(dir, "public"), { recursive: true });
-   fs.writeFileSync(path.join(dir, "publisher.json"), JSON.stringify(manifest));
+   fs.mkdirSync(path.join(dir, "skills", "house-rules"), { recursive: true });
+   fs.mkdirSync(path.join(dir, "agents", "analyst", "skills", "conventions"), {
+      recursive: true,
+   });
+   fs.writeFileSync(
+      path.join(dir, "publisher.json"),
+      JSON.stringify({
+         ...manifest,
+         agents: {
+            analyst: {
+               description: `Analyst v${answer}`,
+               instructions: "agents/analyst/instructions.md",
+               skills: ["agents/analyst/skills"],
+            },
+         },
+      }),
+   );
+   fs.writeFileSync(
+      path.join(dir, "skills", "house-rules", "SKILL.md"),
+      `---\nname: house-rules\ndescription: House rules v${answer}\n---\n\nrules v${answer}\n`,
+   );
+   fs.writeFileSync(
+      path.join(dir, "agents", "analyst", "instructions.md"),
+      `instructions v${answer}\n`,
+   );
+   fs.writeFileSync(
+      path.join(dir, "agents", "analyst", "skills", "conventions", "SKILL.md"),
+      `---\nname: conventions\ndescription: Conventions v${answer}\n---\n\nconventions v${answer}\n`,
+   );
    fs.writeFileSync(
       path.join(dir, "model.malloy"),
       `source: numbers is duckdb.sql("SELECT ${answer} AS answer") extend {\n` +
@@ -60,6 +88,15 @@ function writePackage(
 
 const api = (suffix: string) =>
    `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${suffix}`;
+
+/** The skill and agent routes, each reading the package a request names. */
+const SKILL_AND_AGENT_ROUTES = [
+   `${PKG}/skills`,
+   `${PKG}/skills/house-rules`,
+   `${PKG}/agents`,
+   `${PKG}/agents/analyst`,
+   `${PKG}/agents/analyst/skills/conventions/SKILL.md`,
+];
 
 async function json(res: Response): Promise<Record<string, unknown>> {
    return (await res.json()) as Record<string, unknown>;
@@ -287,6 +324,46 @@ describe("package-scoped routes of a versioned package", () => {
       ).toBe(404);
    });
 
+   it("skills and agents are the named version's, and an agent's pin names it", async () => {
+      const read = async (sub: string) =>
+         json(await fetch(api(`${PKG}${sub}`)));
+      const list = async (sub: string) =>
+         (await (await fetch(api(`${PKG}${sub}`))).json()) as {
+            name: string;
+            description?: string;
+         }[];
+
+      const skills = await list("/skills?versionId=1.0.0");
+      expect(skills.find((s) => s.name === "house-rules")?.description).toBe(
+         "House rules v1",
+      );
+      expect(
+         String((await read("/skills/house-rules?versionId=1.0.0")).content),
+      ).toContain("rules v1");
+      expect(String((await read("/skills/house-rules")).content)).toContain(
+         "rules v2",
+      );
+
+      expect(
+         (await list("/agents?versionId=1.0.0")).map((a) => a.description),
+      ).toEqual(["Analyst v1"]);
+      const v1 = await read("/agents/analyst?versionId=1.0.0");
+      expect(String(v1.instructions)).toContain("instructions v1");
+      expect(v1.source).toMatchObject({ versionId: "1.0.0" });
+      const latest = await read("/agents/analyst");
+      expect(String(latest.instructions)).toContain("instructions v2");
+      expect(latest.source).toMatchObject({ versionId: "2.0.0" });
+      const file = await read(
+         "/agents/analyst/skills/conventions/SKILL.md?versionId=1.0.0",
+      );
+      expect(String(file.file_contents)).toContain("conventions v1");
+      expect(file.source).toMatchObject({ versionId: "1.0.0" });
+
+      // A package with no versions has none in its pin.
+      const plain = await json(await fetch(api(`${PLAIN}/agents/analyst`)));
+      expect(plain.source).not.toHaveProperty("versionId");
+   });
+
    it("refuses an in-place model write to a versioned package", async () => {
       const res = await fetch(api(`${PKG}/models/dashboards/new.malloy`), {
          method: "PUT",
@@ -314,6 +391,7 @@ describe("package-scoped routes of a versioned package", () => {
          `${PKG}/notebooks/notes.malloynb`,
          `${PKG}/databases`,
          `${PKG}/data-apps`,
+         ...SKILL_AND_AGENT_ROUTES,
       ];
       for (const route of routes) {
          const sep = route.includes("?") ? "&" : "?";
@@ -398,6 +476,25 @@ describe("package-scoped routes of a versioned package", () => {
       const malformed = await fetch(api(`${PLAIN}?reload=true&versionId=v1`));
       expect(malformed.status).toBe(400);
       expect((await fetch(api(`${PLAIN}?reload=true`))).status).toBe(200);
+   });
+
+   it("answers an archived version 410 on the skill and agent routes", async () => {
+      const lifecycle = (archiveStatus: string) =>
+         fetch(api(`${PKG}/versions/1.0.0`), {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ archiveStatus }),
+         });
+      expect((await lifecycle("archive")).status).toBe(200);
+      try {
+         for (const route of SKILL_AND_AGENT_ROUTES) {
+            const res = await fetch(api(`${route}?versionId=1.0.0`));
+            expect([route, res.status]).toEqual([route, 410]);
+            expect((await json(res)).reason).toBe("VERSION_ARCHIVED");
+         }
+      } finally {
+         expect((await lifecycle("unarchive")).status).toBe(200);
+      }
    });
 });
 

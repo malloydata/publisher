@@ -111,7 +111,9 @@ function outcomeOf(error: Error): {
  * The version option for a package read: none when the caller names no
  * version, so an unversioned read asks for the package exactly as before.
  */
-const versionOptions = (versionId: unknown): [{ versionId: unknown }] | [] =>
+export const versionOptions = (
+   versionId: unknown,
+): [{ versionId: unknown }] | [] =>
    versionId === undefined ? [] : [{ versionId }];
 
 /** SHA-256 of a file's text, hex: what a caller hands back as `expectedHash`. */

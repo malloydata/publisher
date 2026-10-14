@@ -505,9 +505,13 @@ export class Package {
    }
 
    private agentSource(definitionSha: string): ApiAgentSource {
+      const versionId = this.getVersionId();
       return {
          environment: this.environmentName,
          package: this.packageName,
+         // A published version's agent can be fetched again by it after
+         // `latest` moves; absent for a package with no versions.
+         ...(versionId ? { versionId } : {}),
          sourceContentSha: this.sourceContentSha,
          definitionSha,
          servedRevision: this.servedRevision,
