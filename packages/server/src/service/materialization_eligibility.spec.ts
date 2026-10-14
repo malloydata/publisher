@@ -21,6 +21,7 @@ import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
 } from "./materialization_eligibility";
+import { fakeSource } from "./materialization_test_fixtures";
 import {
    classifyDynamicTerms,
    readTimeDynamicTerms,
@@ -1077,5 +1078,62 @@ source: join_arg_read is withjoin -> { group_by: n is j.nm }`);
             "preaggregate",
          ),
       ).toThrow(/Pre-aggregation rollup/i);
+   });
+});
+
+describe("read-only dialect (colocated persist)", () => {
+   // The SQL Server connector creates no tables, so a colocated build has
+   // nowhere in the source warehouse to write. Refused at load, naming the
+   // connection and the dialect, so the author reads it from the package's
+   // warnings rather than from a build's first DDL. A faked source, because
+   // the gate reads only the dialect name; no SQL Server is needed.
+   it("refuses a colocated #@ persist on a sqlserver source, naming connection and dialect", () => {
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "orders@x",
+         connectionName: "mssql",
+         dialectName: "sqlserver",
+      });
+      let caught: unknown;
+      try {
+         assertColocatedPersistNotAuthorizeGated(source);
+      } catch (err) {
+         caught = err;
+      }
+      expect(caught).toBeInstanceOf(MaterializationEligibilityError);
+      expect((caught as MaterializationEligibilityError).reason).toBe(
+         "read_only_dialect",
+      );
+      expect((caught as Error).message).toContain("'mssql'");
+      expect((caught as Error).message).toContain("'sqlserver'");
+      expect((caught as Error).message).toContain("read-only");
+   });
+
+   it("names the rollup when the origin is a pre-aggregation", () => {
+      const source = fakeSource({
+         name: "orders__preagg",
+         sourceEntityId: "orders__preagg@x",
+         dialectName: "sqlserver",
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            source,
+            source.name,
+            "preaggregate",
+         ),
+      ).toThrow(
+         /Pre-aggregation rollup 'orders__preagg' cannot be materialized/,
+      );
+   });
+
+   it("admits the same shape on a dialect that can write", () => {
+      const source = fakeSource({
+         name: "orders",
+         sourceEntityId: "orders@x",
+         dialectName: "postgres",
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(source),
+      ).not.toThrow();
    });
 });

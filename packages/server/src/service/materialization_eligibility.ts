@@ -318,6 +318,21 @@ function assertMergeKeyScopeResolvable(
    });
 }
 
+/**
+ * Dialects whose connection cannot create a table, so a colocated build —
+ * which CTASes into the source warehouse — has nowhere to write. Matches the
+ * `canPersist: false` the connection's static attributes report
+ * (`getStaticConnectionAttributes` in connection_config.ts); the two must
+ * agree, since that attribute is what a client reads to know whether to
+ * offer persistence. Refused at load so the author learns it from the
+ * package's warnings rather than from a build that fails on its first DDL.
+ *
+ * A `storage=` source is not gated here: it reads from the source and writes
+ * elsewhere, and the storage build's own passthrough check names the source
+ * types it can read.
+ */
+const READ_ONLY_DIALECTS = new Set(["sqlserver"]);
+
 export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
@@ -325,6 +340,25 @@ export function assertColocatedPersistNotAuthorizeGated(
    gateOutcome?: PersistSourceGateOutcome,
    annotationFields: Record<string, string> = {},
 ): void {
+   if (READ_ONLY_DIALECTS.has(persistSource.dialectName)) {
+      recordEligibilityRefused("read_only_dialect");
+      const what =
+         origin === "preaggregate"
+            ? `Pre-aggregation rollup '${sourceName}'`
+            : `Source '${sourceName}'`;
+      throw new MaterializationEligibilityError({
+         reason: "read_only_dialect",
+         message:
+            `${what} cannot be materialized (colocated '#@ persist'): its ` +
+            `connection '${persistSource.connectionName}' is on the ` +
+            `'${persistSource.dialectName}' dialect, whose connection is ` +
+            `read-only and creates no tables, so there is nowhere in the ` +
+            `source warehouse to write the result. The source serves live. ` +
+            `Remove the annotation, or persist a source on a connection that ` +
+            `can write.`,
+      });
+   }
+
    // `partition=` is meaningless without `storage=`, and this is the only gate
    // that sees a source declaring one — `assertMaterializationEligible` runs
    // only once a storage destination has resolved, so a colocated source

@@ -257,16 +257,61 @@ function isMysqlConfigFault(code: unknown): boolean {
 }
 
 /**
+ * tedious's codes for a SQL Server it could not reach: the TCP connect failed
+ * or was cut (`ESOCKET`), the connect timed out (`ETIMEOUT`), or the SQL
+ * Browser lookup for a named instance failed (`EINSTLOOKUP`). The `mssql`
+ * wrapper keeps the code when it rewraps. `ELOGIN` is deliberately absent: it
+ * carries every server-side login refusal, which is a config fault (see
+ * {@link isCredentialRejection}).
+ */
+const SQLSERVER_CONNECTION_CODES = new Set([
+   "ESOCKET",
+   "ETIMEOUT",
+   "EINSTLOOKUP",
+]);
+
+/**
+ * Node's TLS verification codes. tedious raises a certificate the client
+ * cannot verify as an `ESOCKET` whose `cause` is the TLS error, so without
+ * this a self-signed certificate on a server with `encrypt` on would read as
+ * a server that is down and answer as retryable. It is a fault in the
+ * connection's config (`trustServerCertificate`, `hostNameInCertificate`, or
+ * the CA bundle), which a retry will not fix.
+ */
+const TLS_VERIFICATION_CODES = new Set([
+   "CERT_HAS_EXPIRED",
+   "DEPTH_ZERO_SELF_SIGNED_CERT",
+   "ERR_TLS_CERT_ALTNAME_INVALID",
+   "SELF_SIGNED_CERT_IN_CHAIN",
+   "UNABLE_TO_GET_ISSUER_CERT",
+   "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+   "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+]);
+
+function causeChainHasTlsVerificationFailure(error: Error): boolean {
+   let current: unknown = error.cause;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      const { code } = current as Error & { code?: unknown };
+      if (typeof code === "string" && TLS_VERIFICATION_CODES.has(code)) {
+         return true;
+      }
+      current = current.cause;
+   }
+   return false;
+}
+
+/**
  * Whether `error` means the database could not be reached, as opposed to the
  * database running the statement and rejecting it.
  *
  * Read from the driver's structured fields on the error and its `cause` chain:
- * a Node socket code, a Postgres connection SQLSTATE, or mysql2's `fatal`
- * flag, which it sets when the connection is unusable, unless the same error
- * carries a code naming a config fault ({@link MYSQL_CONFIG_CODES}). Message text is the
- * last resort, for the few drivers that raise a connection failure with no
- * code, and is matched whole so a row value or a table name quoted inside a
- * longer message cannot match.
+ * a Node socket code, a Postgres connection SQLSTATE, a tedious socket or
+ * timeout code (unless it wraps a TLS verification failure, which is config),
+ * or mysql2's `fatal` flag, which it sets when the connection is unusable,
+ * unless the same error carries a code naming a config fault
+ * ({@link MYSQL_CONFIG_CODES}). Message text is the last resort, for the few
+ * drivers that raise a connection failure with no code, and is matched whole
+ * so a row value or a table name quoted inside a longer message cannot match.
  */
 export function isConnectionFailure(error: unknown): boolean {
    let current: unknown = error;
@@ -278,6 +323,9 @@ export function isConnectionFailure(error: unknown): boolean {
       if (typeof code === "string") {
          if (NODE_CONNECTION_CODES.has(code)) return true;
          if (POSTGRES_CONNECTION_SQLSTATE.test(code)) return true;
+         if (SQLSERVER_CONNECTION_CODES.has(code)) {
+            return !causeChainHasTlsVerificationFailure(current);
+         }
       }
       if (fatal === true && !isMysqlConfigFault(code)) return true;
       const message = current.message.trim();
@@ -296,6 +344,16 @@ const POSTGRES_AUTH_SQLSTATE = /^28[0-9A-Z]{3}$/;
 const MYSQL_AUTH_CODES = new Set(["ER_ACCESS_DENIED_ERROR"]);
 
 /**
+ * tedious's code for every login the server refused: a wrong user or password
+ * (its 18456), a database the login cannot open (4060), a login not permitted
+ * for this kind of connection (18452). The server's own message rides along,
+ * so the response says which. It is also what tedious raises when the login
+ * exchange ends without an acknowledgement, which is still not a server that
+ * is down.
+ */
+const SQLSERVER_AUTH_CODES = new Set(["ELOGIN"]);
+
+/**
  * Snowflake's login failures, as its server reports them in `code`: a wrong
  * user or password (390100), an invalid key-pair JWT (390144), an invalid ID
  * token (390195), an expired OAuth token (390318). Session-token codes are
@@ -307,9 +365,9 @@ const SNOWFLAKE_AUTH_CODES = new Set(["390100", "390144", "390195", "390318"]);
  * Whether `error` means the database rejected the connection's credentials.
  *
  * Read from the driver's fields on the error and its `cause` chain: a Postgres
- * SQLSTATE in class 28, mysql2's `ER_ACCESS_DENIED_ERROR`, a Snowflake login
- * code, or the `BigQueryAuthenticationError` Malloy's BigQuery driver raises
- * for a rejected key or token.
+ * SQLSTATE in class 28, mysql2's `ER_ACCESS_DENIED_ERROR`, tedious's `ELOGIN`,
+ * a Snowflake login code, or the `BigQueryAuthenticationError` Malloy's
+ * BigQuery driver raises for a rejected key or token.
  */
 export function isCredentialRejection(error: unknown): boolean {
    let current: unknown = error;
@@ -319,6 +377,7 @@ export function isCredentialRejection(error: unknown): boolean {
          const value = String(code);
          if (POSTGRES_AUTH_SQLSTATE.test(value)) return true;
          if (MYSQL_AUTH_CODES.has(value)) return true;
+         if (SQLSERVER_AUTH_CODES.has(value)) return true;
          if (SNOWFLAKE_AUTH_CODES.has(value)) return true;
       }
       if (current.name === "BigQueryAuthenticationError") return true;

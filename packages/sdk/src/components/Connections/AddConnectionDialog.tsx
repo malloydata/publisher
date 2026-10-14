@@ -25,6 +25,7 @@ import {
    attachedDatabaseConnectionFieldName,
    attributesFieldName,
    connectionFieldsByType,
+   typedConnectionConfig,
    gcsAttachedDatabaseFields,
    getAttachedDatabaseFields,
    s3AttachedDatabaseFields,
@@ -345,6 +346,21 @@ export default function AddConnectionDialog({
                   );
                }
             }
+         } else if (type === "sqlserver") {
+            const requiredFields = [
+               "server",
+               "port",
+               "database",
+               "user",
+               "password",
+            ];
+            for (const fieldName of requiredFields) {
+               if (!connectionConfig[fieldName]) {
+                  throw new Error(
+                     `${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`,
+                  );
+               }
+            }
          } else if (type === "motherduck") {
             if (!connectionConfig.accessToken) {
                throw new Error("Access Token is required");
@@ -369,7 +385,10 @@ export default function AddConnectionDialog({
          connectionPayload = {
             name,
             type,
-            [attributesFieldName[type]]: connectionConfig,
+            [attributesFieldName[type]]: typedConnectionConfig(
+               type,
+               connectionConfig,
+            ),
          } satisfies Connection;
       }
 
@@ -814,7 +833,19 @@ export default function AddConnectionDialog({
                            fullWidth
                            size="small"
                            required={field.required}
-                        />
+                           select={!!field.selectOptions}
+                           defaultValue={
+                              field.selectOptions
+                                 ? field.selectOptions[0]?.value
+                                 : undefined
+                           }
+                        >
+                           {field.selectOptions?.map((option) => (
+                              <MenuItem key={option.value} value={option.value}>
+                                 {option.label}
+                              </MenuItem>
+                           ))}
+                        </TextField>
                      ))
                   )}
                </Stack>

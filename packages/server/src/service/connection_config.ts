@@ -315,6 +315,17 @@ function getStaticConnectionAttributes(
             canPersist: true,
             canStream: false,
          };
+      case "sqlserver":
+         // The connector is read-only: it creates no tables and has no
+         // PersistSQLResults, so a colocated `#@ persist` on a SQL Server
+         // source is refused at load (READ_ONLY_DIALECTS in
+         // materialization_eligibility.ts) rather than failing mid-build.
+         return {
+            dialectName: "sqlserver",
+            isPool: true,
+            canPersist: false,
+            canStream: true,
+         };
       case "duckdb":
       case "motherduck":
       case "ducklake":
@@ -641,6 +652,22 @@ function validateConnectionShape(connection: ApiConnection): void {
       case "postgres":
       case "mysql":
          break;
+      case "sqlserver": {
+         const sqlserver = connection.sqlserverConnection;
+         if (!sqlserver) {
+            throw new Error("SQL Server connection configuration is missing.");
+         }
+         // Both routes to a server, and the driver takes the instance name over
+         // the port when given both. Saying so at load, rather than letting a
+         // port the operator set go quietly unused.
+         if (sqlserver.instanceName && sqlserver.port) {
+            logger.warn(
+               `Connection '${connection.name}' sets both sqlserverConnection.instanceName ` +
+                  `and port; the instance is located through SQL Browser and the port is not used.`,
+            );
+         }
+         break;
+      }
       case "bigquery": {
          const bigquery = connection.bigqueryConnection;
          if (bigquery?.impersonateServiceAccount) {
@@ -1283,6 +1310,26 @@ export function assembleEnvironmentConnections(
                user: connection.mysqlConnection?.user,
                password: connection.mysqlConnection?.password,
                database: connection.mysqlConnection?.database,
+            };
+            break;
+         }
+
+         case "sqlserver": {
+            // A pass-through: the API field names are the connector's own, so
+            // the authentication kinds and the connection-string form the
+            // connector also takes are additive here when the API grows them.
+            const sqlserver = connection.sqlserverConnection;
+            pojo.connections[connection.name] = {
+               is: "sqlserver",
+               server: sqlserver?.server,
+               port: sqlserver?.port,
+               database: sqlserver?.database,
+               user: sqlserver?.user,
+               password: sqlserver?.password,
+               encrypt: sqlserver?.encrypt,
+               trustServerCertificate: sqlserver?.trustServerCertificate,
+               hostNameInCertificate: sqlserver?.hostNameInCertificate,
+               instanceName: sqlserver?.instanceName,
             };
             break;
          }

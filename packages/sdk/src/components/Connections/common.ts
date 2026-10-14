@@ -14,6 +14,7 @@ import type {
    PostgresConnection,
    S3Connection,
    SnowflakeConnection,
+   SqlserverConnection,
    TrinoConnection,
 } from "../../client/api";
 
@@ -25,6 +26,7 @@ type ConnectionField = {
       TrinoConnection &
       DatabricksConnection &
       MysqlConnection &
+      SqlserverConnection &
       MotherDuckConnection &
       S3Connection &
       GCSConnection &
@@ -298,6 +300,70 @@ export const connectionFieldsByType: Record<
          required: true, // Always required
       },
    ],
+   sqlserver: [
+      {
+         label: "Server",
+         name: "server",
+         type: "text",
+         required: true, // Always required
+      },
+      {
+         label: "Port",
+         name: "port",
+         type: "number",
+         required: true, // Always required
+      },
+      {
+         label: "Database",
+         name: "database",
+         type: "text",
+         required: true, // Always required
+      },
+      {
+         label: "User",
+         name: "user",
+         type: "text",
+         required: true, // Always required
+      },
+      {
+         label: "Password",
+         name: "password",
+         type: "password",
+         required: true, // Always required
+      },
+      {
+         label: "Encrypt",
+         name: "encrypt",
+         type: "text",
+         required: false,
+         selectOptions: [
+            { label: "Yes", value: "true" },
+            { label: "No", value: "false" },
+         ],
+      },
+      {
+         label: "Trust server certificate",
+         name: "trustServerCertificate",
+         type: "text",
+         required: false,
+         selectOptions: [
+            { label: "No", value: "false" },
+            { label: "Yes", value: "true" },
+         ],
+      },
+      {
+         label: "Host name in certificate",
+         name: "hostNameInCertificate",
+         type: "text",
+         required: false,
+      },
+      {
+         label: "Instance name",
+         name: "instanceName",
+         type: "text",
+         required: false,
+      },
+   ],
    // DuckDB connections use attached databases configured via duckdbConnection.attachedDatabases
    duckdb: [],
    motherduck: [
@@ -328,11 +394,55 @@ export const attributesFieldName: Record<ConnectionTypeEnum, string> = {
    trino: "trinoConnection",
    databricks: "databricksConnection",
    mysql: "mysqlConnection",
+   sqlserver: "sqlserverConnection",
    duckdb: "duckdbConnection",
    motherduck: "motherduckConnection",
    ducklake: "ducklakeConnection",
    publisher: "publisherConnection",
 };
+
+/**
+ * Fields the form collects as text that the API declares as another type.
+ * `FormData` yields strings, and the server passes a connection's fields to
+ * its driver unchanged, so a port of "1433" or an encrypt of "true" would
+ * reach a driver that reads only a number or a boolean. Keyed by connection
+ * type; a type absent here sends what the form collected.
+ */
+const TYPED_FIELDS: Partial<
+   Record<ConnectionTypeEnum, Record<string, "integer" | "boolean">>
+> = {
+   sqlserver: {
+      port: "integer",
+      encrypt: "boolean",
+      trustServerCertificate: "boolean",
+   },
+};
+
+/**
+ * The connection config to send, with each field the API types as an integer
+ * or a boolean converted from the form's string. A value that does not parse
+ * is sent as collected, so the server's validation names it rather than a
+ * silent `NaN`.
+ */
+export function typedConnectionConfig(
+   type: ConnectionTypeEnum,
+   config: Record<string, string>,
+): Record<string, unknown> {
+   const typed = TYPED_FIELDS[type];
+   if (!typed) return config;
+   const out: Record<string, unknown> = { ...config };
+   for (const [name, kind] of Object.entries(typed)) {
+      const value = config[name];
+      if (value === undefined) continue;
+      if (kind === "integer") {
+         const n = Number(value);
+         if (Number.isInteger(n)) out[name] = n;
+      } else if (value === "true" || value === "false") {
+         out[name] = value === "true";
+      }
+   }
+   return out;
+}
 
 /**
  * Connection types the Add/Edit dialogs offer as creatable. `publisher` proxy

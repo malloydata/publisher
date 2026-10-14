@@ -9,9 +9,47 @@ SPDX-License-Identifier: MIT
 > environment-level connections, naming rules, and the SSH-bastion proxy. For the config file itself,
 > see [configuration.md](configuration.md).
 
-Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
+Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `sqlserver`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
 
 For full setup details per connection type, see [docs.malloydata.dev/documentation/user_guides/publishing/connections](https://docs.malloydata.dev/documentation/user_guides/publishing/connections).
+
+## SQL Server (`type: "sqlserver"`)
+
+A SQL Server login over TCP, through `@malloydata/db-sqlserver`. The fields are the connector's own:
+
+```json
+{
+  "name": "warehouse_mssql",
+  "type": "sqlserver",
+  "sqlserverConnection": {
+    "server": "mssql.example.com",
+    "port": 1433,
+    "database": "analytics",
+    "user": "publisher",
+    "password": "…",
+    "encrypt": true,
+    "trustServerCertificate": false
+  }
+}
+```
+
+- `encrypt` is on when omitted, as the driver defaults it; a server that requires encryption refuses
+  a connection with it off.
+- `trustServerCertificate` accepts a certificate the client cannot verify, such as a self-signed one
+  on a local container. Leave it off for a server you do not control: a certificate that does not
+  verify then fails the connection, as a config fault rather than an unreachable server.
+- `hostNameInCertificate` is the name the certificate is issued to when it is not `server` (a server
+  reached by IP address). `instanceName` locates a named instance through SQL Browser (UDP 1434);
+  `port` is then not used.
+
+A database holds schemas, `dbo` by default, and a table is addressed `schema.table`:
+`warehouse_mssql.table('dbo.orders')`. The schema browser lists the schemas that own a table.
+
+The dialect is **experimental** upstream. Publisher accepts it on the author's behalf, so a model
+needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a colocated
+`#@ persist` on a SQL Server source is refused at load with reason `read_only_dialect` and the
+source serves live. The connector's README lists what the dialect does not translate yet (`nest:`,
+a boolean used as a condition, `all()`/`exclude()`, regular expressions before SQL Server 2025).
 
 ## BigQuery service-account impersonation
 

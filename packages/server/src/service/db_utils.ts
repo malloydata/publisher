@@ -285,6 +285,49 @@ async function getSchemasForPostgres(
    }
 }
 
+/**
+ * A SQL Server database holds schemas (`dbo` by default), so the list is the
+ * schemas that own at least one table, the way a modeler addresses a table:
+ * `connection.table('schema.table')`. The catalog views are queried rather
+ * than `information_schema.schemata`, which also lists the fixed-role schemas
+ * (`db_owner`, `db_datareader`, ...) that never hold a table.
+ */
+async function getSchemasForSQLServer(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.sqlserverConnection) {
+      throw new Error("SQL Server connection is required");
+   }
+   try {
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         "SELECT DISTINCT s.name AS schema_name FROM sys.schemas s JOIN sys.tables t ON t.schema_id = s.schema_id ORDER BY s.name",
+      );
+      const rows = standardizeRunSQLResult(result);
+      return rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         const schemaName = String(
+            typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+         );
+         return {
+            name: schemaName,
+            isHidden: false,
+            isDefault: schemaName === "dbo",
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for SQL Server connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for SQL Server connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
+      );
+   }
+}
+
 async function getSchemasForMySQL(
    connection: ApiConnection,
 ): Promise<ApiSchema[]> {
@@ -1036,6 +1079,8 @@ export async function getSchemasForConnection(
          return getSchemasForPostgres(connection, malloyConnection);
       case "mysql":
          return getSchemasForMySQL(connection);
+      case "sqlserver":
+         return getSchemasForSQLServer(connection, malloyConnection);
       case "snowflake":
          return getSchemasForSnowflake(connection, malloyConnection);
       case "trino":
@@ -1333,6 +1378,13 @@ export async function listTablesForSchema(
             malloyConnection,
             tableNames,
          );
+      case "sqlserver":
+         return listTablesForSQLServer(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
       case "snowflake":
          return listTablesForSnowflake(
             connection,
@@ -1482,6 +1534,36 @@ async function listTablesForMySQL(
       );
       throw new Error(
          `Failed to get tables for MySQL schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
+      );
+   }
+}
+
+async function listTablesForSQLServer(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.sqlserverConnection) {
+      throw new Error("SQL Server connection is required");
+   }
+   try {
+      // The SQL Server connector returns rows as plain objects keyed by column
+      // name, so no row_to_json wrapping as for Postgres.
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for SQL Server schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for SQL Server schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
          { cause: error },
       );
    }
