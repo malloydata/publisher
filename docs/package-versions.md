@@ -20,6 +20,8 @@ Versioning is off unless `PUBLISHER_PACKAGE_VERSIONING=on` is set in the server'
 
 Any other value fails startup. The flag decides only what a publish does: versions published while it was on keep serving, by `versionId` and as `latest`, after it is turned off, and every route on this page answers in both settings. `GET /api/v0/status` reports it as `packageVersioning`.
 
+**Going back to unversioned.** Turning the flag off does not make a package that has versions unversioned again. Its publishes from a location with the flag off, and a `PATCH …/packages/{pkg}` naming a new location, answer 409 `PACKAGE_IS_VERSIONED`, because an install in place would replace what its versions serve. The way back is to delete the package, which removes every version, and publish it again with the flag off. Between the two the package answers 404, and deleting it does not drop the tables its versions built (see [Disk growth](#disk-growth)).
+
 A future release removes the flag and requires a `version` on every publish from a location ([#1381](https://github.com/malloydata/publisher/issues/1381)). Give your packages' `publisher.json` a semantic `version` now, and bump it for every release, to be ready.
 
 ## Publish a version
@@ -52,7 +54,7 @@ The first versioned publish of a package that had an unversioned tree (one insta
 
 ## Which version a request gets
 
-Every route that reaches into a package takes `versionId`: the package itself, models, queries, compile, dashboards, notebooks, databases, data apps, events, the package's own connections, static files and materializations. An omitted or empty `versionId` means `latest`; empty is what a proxy forwarding a page's query string may send.
+Every route that reaches into a package takes `versionId`: the package itself, models, queries, compile, reports, dashboards, notebooks, databases, data apps, events, the package's own connections, static files, materializations, and its skills and agents. An agent's `source` pin carries the `versionId` it was read from, so the same definition can be fetched again after `latest` moves. An omitted or empty `versionId` means `latest`; empty is what a proxy forwarding a page's query string may send.
 
 | Request                                                       | Answer                                                                                   |
 | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -91,6 +93,8 @@ A `versionId` on a static file pins only a version the package has; anything els
 - **`explicit`.** A publish never moves `latest`. A version is servable by name as soon as it is published, and a request that names none gets 404 until something sets `latest`. This is the mode for an orchestrator that decides when a version is ready.
 
 `PUT …/packages/{pkg}/latest` with `{"version": "1.1.0"}` sets it, in either mode. The version must exist (404) and must not be archived (410), and it is loaded before the pointer moves, so a version that cannot load never becomes `latest`. Pointing `latest` at an earlier version is a rollback; under `on-publish`, the next publish of a higher version moves it forward again.
+
+**`latest` belongs to each server.** The pointer, and so a rollback, is recorded in that server's `publisher.db`. A server that receives `1.0.0` and then `2.0.0` for the first time records both as new versions and, under `on-publish`, moves to `2.0.0`, whatever the other servers were rolled back to. Across several servers, let the orchestrator own `latest`: run them under `explicit`, or reissue `PUT …/latest` after placing versions on a new server.
 
 ## Bind a version to a build manifest
 
