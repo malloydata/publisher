@@ -156,3 +156,23 @@ export async function createDocument(
    expect(slug.startsWith(title.toLowerCase().replace(/ /g, "-"))).toBe(true);
    return slug;
 }
+
+/**
+ * Picks a view in the Add a tile window by its Malloy name, inside one
+ * source's group when `source` is given (several sources can offer a view of
+ * the same name).
+ */
+export async function pickView(
+   dialog: Locator,
+   view: string,
+   source?: string,
+): Promise<void> {
+   const scope = source
+      ? dialog.getByRole("group", { name: source, exact: true })
+      : dialog;
+   const escaped = view.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   await scope
+      .getByRole("option", { name: new RegExp(`\\(${escaped}\\)$`) })
+      .first()
+      .click();
+}

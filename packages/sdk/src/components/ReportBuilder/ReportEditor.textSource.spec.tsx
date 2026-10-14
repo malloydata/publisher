@@ -1,13 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { findViewOption } from "./testing/inline";
 import {
    cleanup,
    fireEvent,
    render,
    screen,
    waitFor,
-   within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import {
@@ -335,18 +335,15 @@ describe("ReportEditor in text-source mode", () => {
          fireEvent.click(
             await screen.findByRole("button", { name: "Add tile" }),
          );
-         fireEvent.mouseDown(
-            await screen.findByRole("combobox", { name: /Source/ }),
-         );
-         const options = within(screen.getByRole("listbox")).getAllByRole(
-            "option",
-         );
-         expect(options.map((o) => o.textContent).sort()).toEqual([
-            "orders",
-            "other",
-         ]);
-         fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
-         fireEvent.click(await screen.findByLabelText("View by_x"));
+         await findViewOption("by_x");
+         expect(
+            screen
+               .getAllByRole("group", { hidden: true })
+               .map((group) => group.getAttribute("aria-label"))
+               .filter((name) => name === "orders" || name === "other")
+               .sort(),
+         ).toEqual(["orders", "other"]);
+         fireEvent.click(await findViewOption("by_x"));
          fireEvent.click(
             screen.getByRole("button", { name: "Add tile", hidden: false }),
          );

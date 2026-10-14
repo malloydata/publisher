@@ -8,6 +8,7 @@ import {
    serverFixture,
    type PackageEnv,
 } from "./helpers/packageEnv";
+import { pickView } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 import { closeFilter } from "./helpers/filters";
 
@@ -80,7 +81,7 @@ import { orders } from '../orders.malloy'
 
       await page.locator("button", { hasText: /^Add tile$/ }).click();
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
-      await dialog.getByRole("button", { name: "View totals" }).click();
+      await pickView(dialog, "totals");
       await dialog
          .getByRole("button", { name: "Add tile", exact: true })
          .click();

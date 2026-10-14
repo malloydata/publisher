@@ -13,7 +13,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { ReportEvent } from "../Report/telemetry";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
-import { closeMenu, editInline } from "./testing/inline";
+import { closeMenu, editInline, viewOption } from "./testing/inline";
 import { dragEdge } from "./testing/resize";
 
 const SOURCE = `## artifact { title="Storefront" tiles=["a -> by_cat", "a -> by_brand"] } dashboard { columns=12 }
@@ -523,7 +523,7 @@ describe("ReportBuilder: tiles added and removed", () => {
          written = source;
       });
       fireEvent.click(button("Add tile"));
-      fireEvent.click(screen.getByLabelText("View sales_by_state"));
+      fireEvent.click(viewOption("sales_by_state"));
       fireEvent.change(screen.getByLabelText("Tile title"), {
          target: { value: "Revenue by state" },
       });

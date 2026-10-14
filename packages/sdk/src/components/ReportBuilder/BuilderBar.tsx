@@ -182,6 +182,11 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                               anchorEl={addAnchor}
                               open={addAnchor !== null}
                               onClose={() => setAddAnchor(null)}
+                           // A pick opens a window or an editor that takes
+                           // focus; the menu handing it back to Add as it
+                           // closed took it away again (the add-tile search
+                           // lost its caret).
+                           disableRestoreFocus
                               anchorOrigin={{
                                  vertical: "bottom",
                                  horizontal: "right",

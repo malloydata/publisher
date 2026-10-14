@@ -262,8 +262,7 @@ describe("click-to-edit markdown in a text tile", () => {
          },
       });
       fireEvent.click(button("Add tile"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       fireEvent.click(within(tile("text_1")).getByText(TEXT_TILE_PLACEHOLDER));
       const field = screen.getByLabelText("Markdown");
       expect(field.getAttribute("placeholder")).toBe(TEXT_TILE_PLACEHOLDER);

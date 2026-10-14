@@ -11,6 +11,7 @@ import type { SavesTo } from "./documentSession";
 import { reportEmitter, type ReportEventHandler } from "../Report/telemetry";
 import type { BuilderGiven } from "./controls";
 import { BuilderDialogs } from "./BuilderDialogs";
+import type { ViewPreview } from "./AddTileDialog";
 import { BuilderGrid } from "./BuilderGrid";
 import { BuilderHeader } from "./BuilderHeader";
 import { builderReport } from "./builderReport";
@@ -110,6 +111,8 @@ export interface ReportBuilderProps {
       /** Always `card`, in either layout; kept for hosts written against it. */
       chrome?: TileChrome,
    ) => ReactNode;
+   /** A view picked in Add a tile, run as the tile it would add; absent, the picker says what will run. */
+   renderViewPreview?: (view: ViewPreview) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -230,6 +233,7 @@ export function ReportBuilder({
    onExit,
    allowLayoutChange = true,
    renderTile,
+   renderViewPreview,
    controls,
    givens,
    catalog,
@@ -590,6 +594,7 @@ export function ReportBuilder({
                   drillSource={drillSource}
                   setDrillSource={setDrillSource}
                   exitDialog={session.exitGuard.dialog}
+                  {...(renderViewPreview ? { renderViewPreview } : {})}
                />
             </ReportPage>
          </Stack>

@@ -1,9 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
-import { AddTileDialog } from "./AddTileDialog";
+import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
 import { duplicateBlocked } from "./addTileToDocument";
 import { isQueryTile } from "./document";
@@ -29,6 +29,7 @@ export function BuilderDialogs({
    drillSource,
    setDrillSource,
    exitDialog,
+   renderViewPreview,
 }: {
    editor: ReportEditorHandle;
    catalog: PackageCatalog | undefined;
@@ -40,6 +41,7 @@ export function BuilderDialogs({
    drillSource: string | undefined;
    setDrillSource: (source: string | undefined) => void;
    exitDialog: ComponentProps<typeof UnsavedChangesDialog>;
+   renderViewPreview?: (view: ViewPreview) => ReactNode;
 }) {
    const { filterDialog, setFilterDialog } = bindings;
    const { menu, setMenu } = tiles;
@@ -130,6 +132,7 @@ export function BuilderDialogs({
             onClose={tiles.closeAdd}
             onAdd={tiles.addTile}
             onAddText={tiles.addText}
+            {...(renderViewPreview ? { renderPreview: renderViewPreview } : {})}
          />
       </>
    );

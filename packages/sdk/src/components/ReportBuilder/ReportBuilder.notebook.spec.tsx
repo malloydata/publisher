@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
 import type { ReportEvent } from "../Report/telemetry";
-import { editInline } from "./testing/inline";
+import { editInline, viewOption } from "./testing/inline";
 
 const NOTEBOOK = `## artifact { layout=linear title="Review" tiles=[intro { kind=text }, "a -> by_cat"] }
 import "../data_app.malloy"
@@ -124,7 +124,7 @@ describe("ReportBuilder: a notebook is one column", () => {
       });
       fireEvent.click(button("Add tile"));
       expect(screen.queryByLabelText("Tile width")).toBeNull();
-      fireEvent.click(screen.getByLabelText("View sales_by_state"));
+      fireEvent.click(viewOption("sales_by_state"));
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
@@ -137,14 +137,18 @@ describe("ReportBuilder: a notebook is one column", () => {
       await mountText(NOTEBOOK, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText("A tile shows one view of a source in this package."),
+         screen.getByText(
+            "Pick a view from this package. You can change its title and chart now or later.",
+         ),
       ).toBeDefined();
       cleanup();
 
       await mountText(DASHBOARD, { withCatalog: true });
       fireEvent.click(button("Add tile"));
       expect(
-         screen.getByText("A tile shows one view of a source in this package."),
+         screen.getByText(
+            "Pick a view from this package. You can change its title and chart now or later.",
+         ),
       ).toBeDefined();
    });
 
@@ -157,8 +161,7 @@ describe("ReportBuilder: a notebook is one column", () => {
          },
       });
       fireEvent.click(screen.getByLabelText("Insert tile after intro"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
@@ -177,8 +180,7 @@ describe("ReportBuilder: a notebook is one column", () => {
       fireEvent.click(screen.getByLabelText("Insert tile after intro"));
       fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
       fireEvent.click(screen.getByLabelText("Add tile at the end"));
-      fireEvent.click(screen.getByRole("button", { name: "Text" }));
-      fireEvent.click(screen.getByRole("button", { name: "Add text" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add text instead" }));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(

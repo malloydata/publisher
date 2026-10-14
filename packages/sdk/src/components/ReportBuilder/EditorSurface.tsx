@@ -43,6 +43,8 @@ import {
 import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
+import type { ViewPreview } from "./AddTileDialog";
+import { chartLineText } from "./chartLine";
 import { useEditorCatalog } from "./useEditorCatalog";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
 import type { BuilderControlsHandler } from "./builderControls";
@@ -409,6 +411,47 @@ export function EditorSurface({
       ],
    );
 
+   // A view picked in Add a tile, run as the tile it would add: against the
+   // model that exports its source, with the page's filters, so the preview is
+   // the tile as it will look here.
+   const renderViewPreview = useMemo(
+      () =>
+         function ViewPreviewTile(view: ViewPreview) {
+            return (
+               <DashboardTile
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  versionId={versionId}
+                  modelPath={view.modelPath}
+                  tile={`${view.base} -> ${view.view}`}
+                  {...(view.chart
+                     ? {
+                          annotation: chartLineText(
+                             view.chart,
+                             view.chartCarried,
+                          ),
+                       }
+                     : {})}
+                  label={view.label}
+                  borderless
+                  givens={applied}
+                  hostGivens={tileHostGivens}
+                  declaredTypes={declaredTypes}
+                  givenNames={view.givens}
+                  height={200}
+               />
+            );
+         },
+      [
+         environmentName,
+         packageName,
+         versionId,
+         applied,
+         tileHostGivens,
+         declaredTypes,
+      ],
+   );
+
    return (
       <Stack sx={{ gap: 1 }}>
          {textSource && compileErrors.length > 0 && (
@@ -433,6 +476,7 @@ export function EditorSurface({
             source={opened.source}
             document={opened.document}
             renderTile={renderTile}
+            renderViewPreview={renderViewPreview}
             givens={specs
                .filter((spec) => spec.name !== undefined)
                .map((spec) => ({
