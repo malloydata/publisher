@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { segmentedSx } from "./BuilderToolbar";
+import { reportClasses } from "../../theme/classes";
 import ArrowDropDownCircleOutlinedIcon from "@mui/icons-material/ArrowDropDownCircleOutlined";
 import ChecklistRtlIcon from "@mui/icons-material/ChecklistRtl";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -36,7 +38,7 @@ import {
 } from "react";
 import { titleCase, useFilterForm } from "./useFilterForm";
 import { dangerTextColor, MOTION_FAST } from "../../theme/motion";
-import { edgeColor, hoverEdgeColor, TYPE } from "../controlTokens";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogField } from "./catalog";
 import {
@@ -227,6 +229,7 @@ export function FilterDialog({
    onRemove,
 }: FilterDialogProps) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const {
       editing,
       shown,
@@ -314,13 +317,13 @@ export function FilterDialog({
                 })
               : "Any"
            : "All";
+   // The builder's own segmented control, as the bar's layout switch is.
    const segmentSx = {
+      ...segmentedSx(edge, ui),
       alignSelf: "flex-start",
       "& .MuiToggleButton-root": {
+         ...segmentedSx(edge, ui)["& .MuiToggleButton-root"],
          textTransform: "none",
-         px: 1.5,
-         py: 0.5,
-         ...TYPE.control,
       },
    };
 
@@ -348,6 +351,7 @@ export function FilterDialog({
 
    return (
       <AppDialog
+         className={`${reportClasses.dialog} ${reportClasses.filterDialog}`}
          open={open}
          onClose={onClose}
          {...(!editing ? { initialFocus: fieldRef } : {})}
@@ -355,10 +359,7 @@ export function FilterDialog({
          description={
             editing ? (
                <>
-                  <Box
-                     component="span"
-                     sx={{ fontFamily: "ui-monospace, monospace" }}
-                  >
+                  <Box component="span" sx={{ fontFamily: ui.font.mono }}>
                      ${shown.name}
                   </Box>
                   {fromModel
@@ -540,7 +541,7 @@ export function FilterDialog({
                                     gap: 0.5,
                                     px: 1,
                                     py: 1.25,
-                                    borderRadius: "8px",
+                                    borderRadius: ui.radius.tile,
                                     border: `1px solid ${checked ? theme.accent : edge}`,
                                     boxShadow: checked
                                        ? `0 0 0 1px ${theme.accent}`
@@ -564,7 +565,7 @@ export function FilterDialog({
                                  <Box
                                     component="span"
                                     sx={{
-                                       ...TYPE.caption,
+                                       ...ui.type.caption,
                                        fontWeight: checked ? 600 : 500,
                                        color: checked
                                           ? theme.accent
@@ -597,7 +598,7 @@ export function FilterDialog({
             <Box
                sx={{
                   border: `1px solid ${edge}`,
-                  borderRadius: "8px",
+                  borderRadius: ui.radius.tile,
                   overflow: "hidden",
                }}
             >
@@ -610,7 +611,10 @@ export function FilterDialog({
                      sx={{ fontSize: 18, color: "text.secondary" }}
                   />
                   <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }}>
-                     <Box component="span" sx={{ fontWeight: 600 }}>
+                     <Box
+                        component="span"
+                        sx={{ fontWeight: ui.type.label.fontWeight }}
+                     >
                         {included === bindableCount && bindableCount > 0
                            ? `Applies to all ${included} tile${included === 1 ? "" : "s"}`
                            : `Applies to ${included} of ${bindableCount} tile${bindableCount === 1 ? "" : "s"}`}
@@ -621,9 +625,7 @@ export function FilterDialog({
                            <Box
                               component="span"
                               sx={{
-                                 fontFamily:
-                                    "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                 fontSize: 12,
+                                 ...ui.type.code,
                               }}
                            >
                               {field.trim()}
@@ -794,7 +796,7 @@ export function FilterDialog({
                         alignItems: "center",
                         gap: 1,
                         p: 1.5,
-                        borderRadius: "8px",
+                        borderRadius: ui.radius.tile,
                         bgcolor: mui.palette.action.hover,
                      })}
                   >
@@ -806,16 +808,19 @@ export function FilterDialog({
                            gap: 0.75,
                            height: 30,
                            px: 1.25,
-                           borderRadius: "7px",
+                           borderRadius: ui.radius.control,
                            border: `1px solid ${edge}`,
                            bgcolor: mui.palette.background.paper,
-                           ...TYPE.control,
+                           ...ui.type.control,
                         })}
                      >
                         <Box component="span" sx={{ color: "text.secondary" }}>
                            {previewLabel}
                         </Box>
-                        <Box component="span" sx={{ fontWeight: 600 }}>
+                        <Box
+                           component="span"
+                           sx={{ fontWeight: ui.type.label.fontWeight }}
+                        >
                            {previewValue}
                         </Box>
                         <ExpandMoreIcon
@@ -832,12 +837,12 @@ export function FilterDialog({
 
 /** A small heading over a part of the window. */
 function SectionLabel({ children }: { children: ReactNode }) {
+   const ui = usePublisherTheme().theme.ui;
    return (
       <Typography
          component="div"
          sx={{
-            ...TYPE.caption,
-            fontWeight: 600,
+            ...ui.type.label,
             color: "text.secondary",
             mb: 0.75,
          }}
@@ -886,13 +891,16 @@ function TypeBadge({ type }: { type: string | undefined }) {
              : scalar === "boolean"
                ? "T/F"
                : undefined;
+   const ui = usePublisherTheme().theme.ui;
    if (!text) return null;
    return (
       <Box
          component="span"
          aria-hidden
          sx={(mui) => ({
-            font: "600 10px ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontFamily: ui.font.mono,
+            fontSize: 10,
+            fontWeight: ui.type.label.fontWeight,
             color: mui.palette.text.secondary,
             bgcolor: mui.palette.action.hover,
             borderRadius: "4px",

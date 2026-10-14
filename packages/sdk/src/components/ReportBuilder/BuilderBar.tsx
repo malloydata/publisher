@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -27,8 +28,9 @@ import {
 import type { Theme } from "@mui/material";
 import { useState, type ReactNode } from "react";
 import { MOTION_FAST } from "../../theme/motion";
+import type { ReportUi } from "../../theme/ui";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { edgeColor, hoverEdgeColor, TYPE } from "../controlTokens";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import type { BuilderControls } from "./builderControls";
 import {
    controlSx,
@@ -86,6 +88,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
       <Stack
          direction="row"
          role="toolbar"
+         className={reportClasses.builderBar}
          aria-label="Report builder"
          sx={{
             alignItems: "center",
@@ -107,7 +110,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                               aria-label="Undo"
                               disabled={!controls.canUndo}
                               onClick={controls.undo}
-                              sx={iconControlSx}
+                              sx={iconControlSx(theme.ui)}
                            >
                               <UndoIcon fontSize="small" />
                            </IconButton>
@@ -119,7 +122,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                               aria-label="Redo"
                               disabled={!controls.canRedo}
                               onClick={controls.redo}
-                              sx={iconControlSx}
+                              sx={iconControlSx(theme.ui)}
                            >
                               <RedoIcon fontSize="small" />
                            </IconButton>
@@ -142,7 +145,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                                  if (next && next !== controls.layout?.value)
                                     controls.layout?.set(next);
                               }}
-                              sx={segmentedSx(edge)}
+                              sx={segmentedSx(edge, theme.ui)}
                            >
                               <ToggleButton
                                  value="linear"
@@ -196,7 +199,9 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                                  vertical: -6,
                                  horizontal: "right",
                               }}
-                              slotProps={{ paper: { sx: menuPaperSx(edge) } }}
+                              slotProps={{
+                                 paper: { sx: menuPaperSx(edge, theme.ui) },
+                              }}
                               MenuListProps={{ sx: { p: 0.5 } }}
                            >
                               {add?.tile && (
@@ -258,7 +263,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                      // Wide enough for "Saving…", so the label changes in
                      // place: the bar is set against the header's right
                      // edge, and a wider button pushed every control left.
-                     sx={{ ...controlSx(edge, hoverEdge), width: 92 }}
+                     sx={{ ...controlSx(edge, hoverEdge, theme.ui), width: 92 }}
                   >
                      {controls?.done && controls.status === "saving"
                         ? "Saving…"
@@ -275,7 +280,10 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                      disableElevation
                      disabled={controls.status === "saving"}
                      onClick={controls.save}
-                     sx={{ ...controlSx(edge, hoverEdge), minWidth: 72 }}
+                     sx={{
+                        ...controlSx(edge, hoverEdge, theme.ui),
+                        minWidth: 72,
+                     }}
                   >
                      {controls.status === "saving" ? "Saving…" : "Save"}
                   </Button>
@@ -293,6 +301,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
  */
 function SaveStatus({ controls }: { controls: BuilderControls }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const [anchor, setAnchor] = useState<HTMLElement | null>(null);
    const { status, draftKeptAt, discard } = controls;
    const words =
@@ -323,9 +332,9 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
       minWidth: 132,
       height: 32,
       px: 1,
-      borderRadius: "6px",
+      borderRadius: ui.radius.control,
       font: "inherit",
-      ...TYPE.control,
+      ...ui.type.control,
       whiteSpace: "nowrap" as const,
       color:
          status === "saved"
@@ -396,6 +405,7 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
          <Tooltip title={hint} describeChild>
             {menu ? (
                <ButtonBase
+                  className={reportClasses.saveStatus}
                   aria-label={words}
                   aria-haspopup="menu"
                   aria-expanded={anchor !== null}
@@ -405,12 +415,17 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
                   {inner}
                </ButtonBase>
             ) : (
-               <Box component="span" sx={sx}>
+               <Box
+                  component="span"
+                  className={reportClasses.saveStatus}
+                  sx={sx}
+               >
                   {inner}
                </Box>
             )}
          </Tooltip>
          <Menu
+            className={reportClasses.menu}
             anchorEl={anchor}
             open={anchor !== null}
             onClose={() => setAnchor(null)}
@@ -420,9 +435,9 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
                paper: {
                   sx: {
                      minWidth: 240,
-                     borderRadius: "10px",
+                     borderRadius: ui.radius.menu,
                      border: `1px solid ${edgeColor(theme.cardBorder)}`,
-                     boxShadow: "0 8px 24px rgba(16, 24, 40, 0.12)",
+                     boxShadow: ui.shadow.menu,
                   },
                },
             }}
@@ -436,7 +451,7 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
                      px: 1.75,
                      pt: 0.75,
                      pb: 1,
-                     ...TYPE.caption,
+                     ...ui.type.caption,
                      color: "text.secondary",
                   }}
                >
@@ -454,7 +469,7 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
                }}
                sx={{
                   mx: 0.5,
-                  borderRadius: "6px",
+                  borderRadius: ui.radius.control,
                   gap: 1.25,
                   color: "error.main",
                   // The menu focuses its item on open; a full focus ring
@@ -487,12 +502,12 @@ const VISUALLY_HIDDEN = {
 } as const;
 
 /** The builder's menus: a card set like its windows, rounded and bordered. */
-const menuPaperSx = (edge: string) => ({
+const menuPaperSx = (edge: string, ui: ReportUi) => ({
    minWidth: 260,
    mt: 0.5,
-   borderRadius: "10px",
+   borderRadius: ui.radius.menu,
    border: `1px solid ${edge}`,
-   boxShadow: "0 8px 24px rgba(16, 24, 40, 0.12)",
+   boxShadow: ui.shadow.menu,
 });
 
 /**
@@ -513,6 +528,7 @@ function AddItem({
    onClick: () => void;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    return (
       <MenuItem
          onClick={onClick}
@@ -521,13 +537,13 @@ function AddItem({
             gap: 1.5,
             px: 1.25,
             py: 1,
-            borderRadius: "7px",
+            borderRadius: ui.radius.control,
             alignItems: "center",
             "& .add-icon": {
                width: 32,
                height: 32,
                flex: "none",
-               borderRadius: "8px",
+               borderRadius: ui.radius.tile,
                display: "flex",
                alignItems: "center",
                justifyContent: "center",
@@ -555,12 +571,18 @@ function AddItem({
             {icon}
          </Box>
          <Box className="add-text" sx={{ minWidth: 0 }}>
-            <Box sx={{ ...TYPE.control, fontWeight: 600, lineHeight: 1.3 }}>
+            <Box
+               sx={{
+                  ...ui.type.control,
+                  fontWeight: ui.type.label.fontWeight,
+                  lineHeight: 1.3,
+               }}
+            >
                {title}
             </Box>
             <Box
                sx={{
-                  ...TYPE.caption,
+                  ...ui.type.caption,
                   color: "text.secondary",
                   whiteSpace: "normal",
                   maxWidth: 220,

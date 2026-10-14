@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import {
    Box,
    Paper,
@@ -11,7 +12,6 @@ import {
 import type { ReactNode, Ref } from "react";
 import { DASHBOARD_CARD_PADDING_PX } from "../../theme/buildTableCssVars";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { TILE_RADIUS, TYPE } from "../controlTokens";
 
 /** `card` is a dashboard tile's panel; `none` is a notebook's bare flow. */
 export type TileChrome = "card" | "none";
@@ -35,7 +35,7 @@ export const TILE_MIN_HEIGHT = { query: 120, text: 72 } as const;
  * a different card. Both surfaces moved together when the edge was darkened;
  * either one left behind is a dashboard whose tiles are outlined two ways.
  *
- * Radius is the report surfaces' tile radius ({@link TILE_RADIUS}), which the
+ * Radius is the report surfaces' tile radius ({@link ui.radius.tile}), which the
  * renderer card is pointed at too, rather than the host's `shape.borderRadius`:
  * a host's control radius is not a card radius, and taking it made tiles as
  * round as buttons. The
@@ -73,10 +73,12 @@ export function TileCard({
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const bare = borderless || chrome === "none";
    return (
       <Paper
          ref={cardRef}
+         className={reportClasses.tile}
          elevation={0}
          data-chrome={chrome}
          // What it holds, for a host waiting on the query tiles to draw.
@@ -84,7 +86,7 @@ export function TileCard({
          sx={[
             {
                border: bare ? "none" : theme.cardBorder,
-               borderRadius: bare ? 0 : TILE_RADIUS,
+               borderRadius: bare ? 0 : ui.radius.tile,
                background: bare ? "none" : theme.tile,
                overflow: "hidden",
                // A column so a tile's result can take the room under its heading.
@@ -111,7 +113,7 @@ export function TileCard({
  * The class on a tile heading's root, so a surface that draws controls over
  * the heading (the builder's tile menu) can leave room for them.
  */
-export const TILE_HEADING_CLASS = "publisher-tile-heading";
+export const TILE_HEADING_CLASS = reportClasses.tileHeading;
 
 /** The heading's text as nodes, for a surface that makes it editable in place. */
 export interface TileHeadingSlots {
@@ -141,6 +143,7 @@ export function TileHeading({
    action?: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    return (
       <Box
          className={TILE_HEADING_CLASS}
@@ -157,7 +160,7 @@ export function TileHeading({
             <Typography
                component="div"
                sx={{
-                  ...TYPE.tileTitle,
+                  ...ui.type.tileTitle,
                   display: "block",
                   color: theme.tileTitle,
                   fontFamily: theme.font.family,
@@ -170,7 +173,7 @@ export function TileHeading({
                <Typography
                   component="div"
                   sx={{
-                     ...TYPE.caption,
+                     ...ui.type.caption,
                      display: "block",
                      mt: "2px",
                      color: theme.tileTitle,

@@ -5,10 +5,11 @@ import { Box, type SxProps, type Theme } from "@mui/material";
 import Markdown from "markdown-to-jsx";
 import type { ReactNode } from "react";
 import { usePublisherTheme } from "../theme/ThemeContext";
+import type { ReportUi } from "../theme/ui";
 import type { NavigationClick } from "./click_helper";
 import { MONO_FONT_FAMILY } from "./styles";
 
-import { PROSE_MAX_WIDTH, TYPE } from "./controlTokens";
+import { PROSE_MAX_WIDTH } from "./controlTokens";
 
 /**
  * Markdown authored inside a package — a dashboard's `##"` description, a
@@ -121,7 +122,8 @@ function ProseLink({
    );
 }
 
-const STYLES: Record<ProseVariant, SxProps<Theme>> = {
+/** Each variant's styles, set in the host's prose type (`ui.type.prose`). */
+const stylesFor = (ui: ReportUi): Record<ProseVariant, SxProps<Theme>> => ({
    document: {
       // Flush at both ends, as a caption is: the space around a block of
       // prose is the layout's (the gap between tiles), not its first and last
@@ -142,7 +144,7 @@ const STYLES: Record<ProseVariant, SxProps<Theme>> = {
       // characters across a wide tile, too long to read.
       "& p, & ul, & ol": {
          color: "text.primary",
-         ...TYPE.prose,
+         ...ui.type.prose,
          mb: 1,
          maxWidth: PROSE_MAX_WIDTH,
       },
@@ -167,7 +169,7 @@ const STYLES: Record<ProseVariant, SxProps<Theme>> = {
       "& ul, & ol": { m: "0.5em 0", pl: 3 },
       "& code": { fontFamily: MONO_FONT_FAMILY, fontSize: "0.9em" },
    },
-};
+});
 
 function ProseImageAlt({ alt }: { alt?: string }) {
    return <>{alt}</>;
@@ -185,7 +187,7 @@ export function Prose({
    return (
       <Box
          sx={[
-            STYLES[variant],
+            stylesFor(theme.ui)[variant],
             // After the variant: `caption`'s `typography: body2` sets a face too.
             { fontFamily: theme.font.family },
             ...(Array.isArray(sx) ? sx : [sx]),

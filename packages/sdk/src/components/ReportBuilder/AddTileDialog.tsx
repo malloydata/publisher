@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { segmentedSx } from "./BuilderToolbar";
+import { reportClasses } from "../../theme/classes";
 import BarChartIcon from "@mui/icons-material/BarChart";
 import MapIcon from "@mui/icons-material/Map";
 import NumbersIcon from "@mui/icons-material/Numbers";
@@ -28,7 +30,7 @@ import {
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { isBareName } from "../../utils/malloyText";
 import { AppDialog } from "../AppDialog";
-import { edgeColor, TYPE } from "../controlTokens";
+import { edgeColor } from "../controlTokens";
 import type { CatalogSource, CatalogView, PackageCatalog } from "./catalog";
 import { chartChoices } from "./ChartPicker";
 import type { ChartPick } from "./chartLine";
@@ -151,6 +153,7 @@ export function AddTileDialog({
    renderPreview,
 }: AddTileDialogProps) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const edge = edgeColor(theme.cardBorder);
    const listId = useId();
    const sources = useMemo(() => catalog?.sources ?? [], [catalog]);
@@ -301,6 +304,7 @@ export function AddTileDialog({
 
    return (
       <AppDialog
+         className={`${reportClasses.dialog} ${reportClasses.addTileDialog}`}
          open={open}
          onClose={onClose}
          maxWidth="md"
@@ -410,7 +414,7 @@ export function AddTileDialog({
                               px: 2,
                               pt: 1.25,
                               pb: 0.5,
-                              ...TYPE.caption,
+                              ...ui.type.caption,
                               color: "text.secondary",
                               whiteSpace: "nowrap",
                               overflow: "hidden",
@@ -420,10 +424,10 @@ export function AddTileDialog({
                            <Box
                               component="span"
                               sx={{
-                                 fontWeight: 600,
+                                 ...ui.type.label,
+                                 fontSize: "0.92em",
                                  letterSpacing: "0.04em",
                                  textTransform: "uppercase",
-                                 fontSize: 11,
                               }}
                            >
                               {source.name.replace(/_+/g, " ")}
@@ -466,7 +470,7 @@ export function AddTileDialog({
                                     mx: 0.75,
                                     px: 1.25,
                                     py: 0.75,
-                                    borderRadius: "7px",
+                                    borderRadius: ui.radius.control,
                                     cursor: "pointer",
                                     bgcolor: selected
                                        ? `color-mix(in srgb, ${theme.accent} 9%, ${mui.palette.background.paper})`
@@ -482,7 +486,7 @@ export function AddTileDialog({
                                        width: 26,
                                        height: 26,
                                        flex: "none",
-                                       borderRadius: "6px",
+                                       borderRadius: ui.radius.control,
                                        display: "flex",
                                        alignItems: "center",
                                        justifyContent: "center",
@@ -502,7 +506,7 @@ export function AddTileDialog({
                                  <Box sx={{ minWidth: 0 }}>
                                     <Box
                                        sx={{
-                                          ...TYPE.control,
+                                          ...ui.type.control,
                                           fontWeight: selected ? 600 : 400,
                                           whiteSpace: "nowrap",
                                           overflow: "hidden",
@@ -513,9 +517,7 @@ export function AddTileDialog({
                                     </Box>
                                     <Box
                                        sx={{
-                                          fontFamily:
-                                             "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                          fontSize: 11.5,
+                                          ...ui.type.code,
                                           color: "text.secondary",
                                        }}
                                     >
@@ -548,10 +550,8 @@ export function AddTileDialog({
                   gap: 2,
                   minHeight: 0,
                   overflowY: "auto",
-                  bgcolor:
-                     mui.palette.mode === "dark"
-                        ? mui.palette.background.default
-                        : "#fafbfc",
+                  // A shade off the paper, in the host's own colours.
+                  bgcolor: `color-mix(in srgb, ${mui.palette.text.primary} 3%, ${mui.palette.background.paper})`,
                })}
             >
                {picked ? (
@@ -569,7 +569,7 @@ export function AddTileDialog({
                            // card is drawn here, round the cut, and the tile
                            // inside it has none of its own.
                            overflow: "hidden",
-                           borderRadius: "8px",
+                           borderRadius: ui.radius.tile,
                            border: `1px solid ${edge}`,
                            bgcolor: mui.palette.background.paper,
                            "&::after": {
@@ -600,7 +600,7 @@ export function AddTileDialog({
                               sx={(mui) => ({
                                  flex: 1,
                                  border: `1px solid ${edge}`,
-                                 borderRadius: "8px",
+                                 borderRadius: ui.radius.tile,
                                  bgcolor: mui.palette.background.paper,
                                  display: "flex",
                                  flexDirection: "column",
@@ -630,8 +630,7 @@ export function AddTileDialog({
                         <Typography
                            component="div"
                            sx={{
-                              ...TYPE.caption,
-                              fontWeight: 600,
+                              ...ui.type.label,
                               color: "text.secondary",
                               mb: 0.75,
                            }}
@@ -649,13 +648,15 @@ export function AddTileDialog({
                                     next as ChartPick | "none" | "default",
                                  );
                            }}
+                           // The builder's own segmented control, as the bar's
+                           // layout switch is, so it takes the host's tokens.
                            sx={{
-                              flexWrap: "wrap",
+                              ...segmentedSx(edge, ui),
                               "& .MuiToggleButton-root": {
+                                 ...segmentedSx(edge, ui)[
+                                    "& .MuiToggleButton-root"
+                                 ],
                                  textTransform: "none",
-                                 px: 1.25,
-                                 py: 0.5,
-                                 ...TYPE.control,
                               },
                            }}
                         >

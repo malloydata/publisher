@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import CheckIcon from "@mui/icons-material/Check";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
@@ -75,6 +76,7 @@ export function TileMenu({
    view,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const { draft, apply, close } = useDraft(
       tile,
       anchor !== null,
@@ -163,6 +165,7 @@ export function TileMenu({
    return (
       <>
          <Menu
+            className={reportClasses.menu}
             open={anchor !== null && draft !== undefined}
             anchorEl={anchor}
             onClose={close}
@@ -179,9 +182,9 @@ export function TileMenu({
                   sx: {
                      minWidth: 240,
                      mt: 0.5,
-                     borderRadius: "10px",
+                     borderRadius: ui.radius.menu,
                      border: `1px solid ${edgeColor(theme.cardBorder)}`,
-                     boxShadow: "0 8px 24px rgba(16, 24, 40, 0.12)",
+                     boxShadow: ui.shadow.menu,
                   },
                },
             }}
@@ -263,10 +266,8 @@ export function TileMenu({
                   sx={{
                      px: 2,
                      py: 0.5,
-                     fontSize: 12,
+                     ...ui.type.code,
                      color: "text.secondary",
-                     fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, monospace",
                   }}
                >
                   {query.source} → {query.name}
@@ -275,6 +276,7 @@ export function TileMenu({
          </Menu>
 
          <Menu
+            className={reportClasses.menu}
             open={sub?.kind === "chart"}
             anchorEl={sub?.anchor ?? null}
             onClose={() => setSub(undefined)}

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
@@ -471,6 +472,7 @@ export function ReportBuilder({
          <Stack
             // Where Save writes, for a host or a test to read: the words are
             // the status's tooltip, not a line on the page.
+            className={reportClasses.builder}
             data-saves-to={savesTo}
             sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}
          >

@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import {
    Box,
    Stack,
@@ -11,7 +12,7 @@ import {
 import type { ReactNode } from "react";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
-import { edgeColor, TYPE } from "../controlTokens";
+import { edgeColor } from "../controlTokens";
 import { TileCard } from "../Dashboard/TileCard";
 import { STUCK_TOP_PX, useStuck } from "../Dashboard/useStuck";
 
@@ -59,6 +60,7 @@ export function ReportPage({
 }) {
    return (
       <Stack
+         className={reportClasses.report}
          data-layout={layout}
          sx={[{ gap: PAGE_GAP }, ...(Array.isArray(sx) ? sx : [sx])]}
       >
@@ -84,12 +86,14 @@ export function ReportHeader({
    description?: ReactNode;
    actions?: ReactNode;
 }) {
+   const ui = usePublisherTheme().theme.ui;
    return (
-      <Stack sx={{ gap: 1.5 }}>
+      <Stack className={reportClasses.header} sx={{ gap: 1.5 }}>
          <Stack direction="row" sx={{ alignItems: "center", gap: 2 }}>
             <Typography
                component="h1"
-               sx={{ ...TYPE.pageTitle, m: 0, flex: 1, minWidth: 0 }}
+               className={reportClasses.title}
+               sx={{ ...ui.type.pageTitle, m: 0, flex: 1, minWidth: 0 }}
             >
                {title}
             </Typography>
@@ -133,6 +137,7 @@ export function StickyControls({ children }: { children: ReactNode }) {
    return (
       <Box
          ref={stickyRef}
+         className={reportClasses.filterRow}
          data-stuck={stuck || undefined}
          sx={{
             position: "sticky",

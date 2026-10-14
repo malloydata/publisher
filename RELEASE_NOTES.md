@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A host can theme the report reader and builder to its own design system
+
+**`ServerProvider` (and `ThemeProvider`) take `ui`: the chrome's design tokens.** Radii (control, tile, menu, dialog), control and chip heights, the type scale (page title, tile title, prose, control, caption, label, code), the mono face and the menu shadow, any subset, the rest staying the SDK's. Every report and builder surface reads them from the theme (`theme.ui`) instead of the fixed values it drew with before, so an embedding app such as Credible matches its own system by passing its values. They are the host's, not the server's, so they are a prop rather than part of the `Theme` object. Defaults are unchanged: a host that passes nothing sees no difference.
+
+**Stable class names for what tokens do not reach**, exported as `reportClasses`: the report, its header and title, the filter row, each filter and its popover, each tile and its heading, a clickable cell, the builder, its bar and save status, a tile in the builder and its width handle, the builder's menus, and each builder window. These names are API and kept across releases; MUI's own class names are not.
+
+`CONTROL_RADIUS`, `TILE_RADIUS`, `DIALOG_RADIUS`, `CONTROL_HEIGHT_PX`, `CHIP_HEIGHT_PX` and `TYPE` remain, deprecated, as the defaults. `AppDialog` takes `className` and draws its corners in `ui.radius.dialog`. See [docs/theming.md](docs/theming.md#embedding-matching-a-hosts-design-system).
+
 ## [Unreleased] — The builder's windows: Add a tile, Add a filter and Clickable cells, redrawn
 
 **Add a tile** is every view in the package in one searchable list, grouped by source, each by its title and Malloy name with its chart's icon; the arrow keys move and Enter adds. The picked view runs beside it as the tile it would add, with the page's filters, over its Title and a row of only the charts it can take. The Query / Text toggle is gone: **Add text instead** is in the footer. **Add a filter** shows each field's type, offers the control as five pictured kinds (one the field cannot take is greyed with the reason, rather than chosen and then refused), sums up which tiles it applies to until **Choose tiles** opens the list, and previews the filter's button. **Clickable cells** (it was titled Drill) is a switch per dimension, with "Opens … sets …" beside each one switched on. The Add menu and the tile menu are drawn as the builder's other cards.

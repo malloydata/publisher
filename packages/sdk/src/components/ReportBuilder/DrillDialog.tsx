@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import {
    Box,
    Button,
@@ -15,7 +16,7 @@ import {
 import { useEffect, useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { AppDialog } from "../AppDialog";
-import { edgeColor, TYPE } from "../controlTokens";
+import { edgeColor } from "../controlTokens";
 import type {
    DashboardDocument,
    DashboardDrill,
@@ -73,6 +74,7 @@ export function DrillDialog({
    onApply,
 }: DrillDialogProps) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    const [rows, setRows] = useState<Row[]>([]);
 
    useEffect(() => {
@@ -137,13 +139,17 @@ export function DrillDialog({
 
    return (
       <AppDialog
+         className={`${reportClasses.dialog} ${reportClasses.clickableCellsDialog}`}
          open={open}
          onClose={onClose}
          title="Clickable cells"
          description={
             <>
                {tileLabel && (
-                  <Box component="span" sx={{ fontWeight: 600 }}>
+                  <Box
+                     component="span"
+                     sx={{ fontWeight: ui.type.label.fontWeight }}
+                  >
                      {tileLabel} ·{" "}
                   </Box>
                )}
@@ -216,8 +222,7 @@ export function DrillDialog({
                         <Box sx={{ minWidth: 0 }}>
                            <Box
                               sx={{
-                                 ...TYPE.control,
-                                 fontWeight: 500,
+                                 ...ui.type.control,
                                  whiteSpace: "nowrap",
                                  overflow: "hidden",
                                  textOverflow: "ellipsis",
@@ -228,9 +233,7 @@ export function DrillDialog({
                            <Box
                               title={row.expression}
                               sx={{
-                                 fontFamily:
-                                    "ui-monospace, SFMono-Regular, Menlo, monospace",
-                                 fontSize: 11.5,
+                                 ...ui.type.code,
                                  color: "text.secondary",
                                  whiteSpace: "nowrap",
                                  overflow: "hidden",
@@ -248,7 +251,7 @@ export function DrillDialog({
                                  alignItems: "center",
                                  gap: 1,
                                  justifyContent: "flex-end",
-                                 ...TYPE.control,
+                                 ...ui.type.control,
                               }}
                            >
                               <Box
