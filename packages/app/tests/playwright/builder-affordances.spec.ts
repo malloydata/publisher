@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { openAddTile } from "./helpers/builder";
 import { expect, test } from "@playwright/test";
 import {
    registerPackageEnv,
@@ -84,7 +85,7 @@ test.describe("builder affordances", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      await page.getByRole("button", { name: "Add tile", exact: true }).click();
+      await openAddTile(page);
 
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
       await expect(

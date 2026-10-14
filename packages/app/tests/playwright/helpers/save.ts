@@ -10,7 +10,9 @@ import { expect, type Page } from "@playwright/test";
  * which is what proves it.
  */
 export async function saveChanges(page: Page): Promise<void> {
-   const bar = page.getByRole("toolbar", { name: "Report builder" });
+   // By its attributes rather than its role: while a dialog is open the
+   // header is hidden from the accessibility tree, and a role query misses it.
+   const bar = page.locator('[role="toolbar"][aria-label="Report builder"]');
    if ((await bar.count()) > 0) {
       await bar.getByRole("button", { name: "Save", exact: true }).click();
       // The status says Saved once the write lands, and Save leaves the bar.
