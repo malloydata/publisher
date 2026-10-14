@@ -79,7 +79,7 @@ describe("duplicateTile", () => {
             source: "orders_tiles",
             declaration: { kind: "reference", from: "by_day" },
             label: "Daily",
-            chart: "bar",
+            chart: "bar_chart",
             colspan: 6,
             break: true,
             filters: [{ field: "region", given: "REGION" }],
@@ -91,14 +91,14 @@ describe("duplicateTile", () => {
          source: "orders_tiles",
          declaration: { kind: "reference", from: "by_day" },
          label: "Daily",
-         chart: "bar",
+         chart: "bar_chart",
          colspan: 6,
          filters: [{ field: "region", given: "REGION" }],
       });
    });
 
    it("copies a view the model declares onto the file's extension of its source", () => {
-      const draft = {
+      const draft: DashboardDocument = {
          ...document(),
          tiles: [
             {
