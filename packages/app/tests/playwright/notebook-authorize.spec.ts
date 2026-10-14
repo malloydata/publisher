@@ -62,7 +62,7 @@ source: gated_products is duckdb.table('data/products.parquet') extend {
 // which needs the flag set here even though `role` itself is declared in the
 // imported model.
 const CELL = "run: gated_products -> spotlight";
-// The tile reads `role` (an always-true condition), so the report shows a
+// The tile reads `role` (a condition true whenever role is set), so the report shows a
 // control for it: a report shows controls only for the givens its tiles read,
 // and a gate's own givens are otherwise the host's to supply.
 const NOTEBOOK_SOURCE = `##! experimental.givens
