@@ -419,8 +419,20 @@ const TYPED_FIELDS: Partial<
 };
 
 /**
+ * Optional text fields the edit form submits as "" when left empty, which
+ * the server must not store as a value: the SQL Server connector treats a
+ * defined `instanceName` as "locate through SQL Browser" and drops the port,
+ * and a defined `hostNameInCertificate` as the name to check the certificate
+ * against. An empty one is left out of the payload instead.
+ */
+const BLANK_MEANS_UNSET: Partial<Record<ConnectionTypeEnum, string[]>> = {
+   sqlserver: ["hostNameInCertificate", "instanceName"],
+};
+
+/**
  * The connection config to send, with each field the API types as an integer
- * or a boolean converted from the form's string. A value that does not parse
+ * or a boolean converted from the form's string, and each optional field in
+ * {@link BLANK_MEANS_UNSET} left out when blank. A value that does not parse
  * is sent as collected, so the server's validation names it rather than a
  * silent `NaN`.
  */
@@ -429,9 +441,13 @@ export function typedConnectionConfig(
    config: Record<string, string>,
 ): Record<string, unknown> {
    const typed = TYPED_FIELDS[type];
-   if (!typed) return config;
+   const blankMeansUnset = BLANK_MEANS_UNSET[type];
+   if (!typed && !blankMeansUnset) return config;
    const out: Record<string, unknown> = { ...config };
-   for (const [name, kind] of Object.entries(typed)) {
+   for (const name of blankMeansUnset ?? []) {
+      if (out[name] === "") delete out[name];
+   }
+   for (const [name, kind] of Object.entries(typed ?? {})) {
       const value = config[name];
       if (value === undefined) continue;
       if (kind === "integer") {

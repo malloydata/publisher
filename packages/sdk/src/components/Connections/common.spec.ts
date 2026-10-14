@@ -25,6 +25,19 @@ describe("typedConnectionConfig", () => {
       });
    });
 
+   it("leaves out a blank optional name rather than storing an empty one", () => {
+      // The edit form submits "" for an untouched optional field; stored, the
+      // connector would read a defined instanceName and drop the port.
+      expect(
+         typedConnectionConfig("sqlserver", {
+            server: "db.example",
+            port: "1434",
+            hostNameInCertificate: "",
+            instanceName: "",
+         }),
+      ).toEqual({ server: "db.example", port: 1434 });
+   });
+
    it("leaves a value that does not parse for the server to name", () => {
       expect(typedConnectionConfig("sqlserver", { port: "14x3" })).toEqual({
          port: "14x3",

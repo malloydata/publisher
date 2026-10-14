@@ -13,6 +13,76 @@ import {
 
 type ApiConnection = components["schemas"]["Connection"];
 
+describe("assembleEnvironmentConnections — sqlserver", () => {
+   it("passes the connector's own field names through and reports it read-only", () => {
+      const { pojo, apiConnections } = assembleEnvironmentConnections([
+         {
+            name: "ms",
+            type: "sqlserver",
+            sqlserverConnection: {
+               server: "db.example",
+               port: 1434,
+               database: "analytics",
+               user: "publisher",
+               password: "pw",
+               encrypt: true,
+               trustServerCertificate: false,
+               hostNameInCertificate: "db.internal",
+               instanceName: "SQLEXPRESS",
+            },
+         },
+      ]);
+      expect(pojo.connections["ms"]).toEqual({
+         is: "sqlserver",
+         server: "db.example",
+         port: 1434,
+         database: "analytics",
+         user: "publisher",
+         password: "pw",
+         encrypt: true,
+         trustServerCertificate: false,
+         hostNameInCertificate: "db.internal",
+         instanceName: "SQLEXPRESS",
+      });
+      expect(apiConnections[0].attributes).toEqual({
+         dialectName: "sqlserver",
+         isPool: true,
+         canPersist: false,
+         canStream: true,
+      });
+   });
+
+   it("reads a blank instance name and certificate name as unset", () => {
+      // The Console's edit form sends "" for an optional field left empty, and
+      // the connector drops the port whenever instanceName is defined at all.
+      // Left as "", an edit that never touched the instance field would move
+      // a connection on port 1434 to a SQL Browser lookup for an instance
+      // called nothing.
+      const { pojo } = assembleEnvironmentConnections([
+         {
+            name: "ms",
+            type: "sqlserver",
+            sqlserverConnection: {
+               server: "db.example",
+               port: 1434,
+               hostNameInCertificate: "",
+               instanceName: "",
+            },
+         },
+      ]);
+      expect(pojo.connections["ms"].port).toBe(1434);
+      expect("instanceName" in pojo.connections["ms"]).toBe(true);
+      expect(pojo.connections["ms"].instanceName).toBeUndefined();
+      expect(pojo.connections["ms"].hostNameInCertificate).toBeUndefined();
+   });
+
+   it("rejects a sqlserver connection without its config block", () => {
+      expect(() =>
+         assembleEnvironmentConnections([{ name: "ms", type: "sqlserver" }]),
+      ).toThrow(/SQL Server connection configuration is missing/);
+   });
+});
+
 describe("assembleEnvironmentConnections — databricks", () => {
    const validBase: ApiConnection = {
       name: "dbx",

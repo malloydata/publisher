@@ -1227,6 +1227,11 @@ function canonicalizeJsonValue(value: unknown): unknown {
    return sorted;
 }
 
+/** An optional string field, with the empty string a form sends for "not set" read as unset. */
+function blankAsUnset(value: string | undefined): string | undefined {
+   return value === "" ? undefined : value;
+}
+
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
@@ -1318,6 +1323,11 @@ export function assembleEnvironmentConnections(
             // A pass-through: the API field names are the connector's own, so
             // the authentication kinds and the connection-string form the
             // connector also takes are additive here when the API grows them.
+            // The two optional names are read as unset when blank: the
+            // connector drops the port whenever instanceName is DEFINED, so a
+            // "" from a form field left empty would send the driver to SQL
+            // Browser for an instance called nothing, and a "" certificate
+            // name would be checked against the certificate.
             const sqlserver = connection.sqlserverConnection;
             pojo.connections[connection.name] = {
                is: "sqlserver",
@@ -1328,8 +1338,10 @@ export function assembleEnvironmentConnections(
                password: sqlserver?.password,
                encrypt: sqlserver?.encrypt,
                trustServerCertificate: sqlserver?.trustServerCertificate,
-               hostNameInCertificate: sqlserver?.hostNameInCertificate,
-               instanceName: sqlserver?.instanceName,
+               hostNameInCertificate: blankAsUnset(
+                  sqlserver?.hostNameInCertificate,
+               ),
+               instanceName: blankAsUnset(sqlserver?.instanceName),
             };
             break;
          }
