@@ -29,12 +29,14 @@ export const tileOrder = (page: Page): Promise<string[]> =>
 export const queryTiles = (page: Page): Locator =>
    page.locator('[data-tile-key]:not([data-tile-key^="text."])');
 
-/** Opens a text tile's markdown field, replaces its text, and commits it with Done. */
+/** Opens a text tile's markdown field, replaces its text, and commits it with ⌘/Ctrl+Enter. */
 export async function editText(tile: Locator, text: string): Promise<void> {
    await tile.locator('[role="button"]').first().click();
    const page = tile.page();
    await page.getByLabel("Markdown", { exact: true }).fill(text);
-   await page.getByRole("button", { name: "Done", exact: true }).click();
+   await page
+      .getByLabel("Markdown", { exact: true })
+      .press("ControlOrMeta+Enter");
 }
 
 /** Adds an empty text tile from the toolbar's Add tile dialog. */

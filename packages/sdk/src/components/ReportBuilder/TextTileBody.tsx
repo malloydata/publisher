@@ -17,7 +17,9 @@ export function TextTileBody({
    onChange: (markdown: string) => void;
 }) {
    return (
-      <TextTileFrame>
+      // Overflow shown: the open editor's ring and hint stand a few pixels
+      // outside the prose, which a clipping frame cut off.
+      <TextTileFrame sx={{ overflow: "visible" }}>
          <InlineMarkdown
             markdown={tile.markdown}
             placeholder={TEXT_TILE_PLACEHOLDER}

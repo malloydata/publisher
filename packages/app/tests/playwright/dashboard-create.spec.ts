@@ -128,7 +128,10 @@ test.describe("dashboard-create", () => {
 
       // The reader's view is served from the package, so it shows the save.
       // The header's View button leaves the builder for it.
-      await page.getByRole("button", { name: "View", exact: true }).click();
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Done", exact: true })
+         .click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/created-here$`));
       await expect(
          page.getByRole("heading", { name: "Created and saved" }),
