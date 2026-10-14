@@ -61,8 +61,13 @@ by revenue, or for the best customers, an agent following the guide may leave
 out cancelled and returned lines and say so. The guide tells it to do exactly
 that when the question does not say ("Decide which one the question wants, and
 say which you used"), so `top-category` also accepts Outerwear at about
-$422,373, and `best-customers` accepts customer 395 first on that basis.
-"Total spend" does say, which is why `top-customer-spend` does not.
+$422,373. "Total spend" does say which, so `top-customer-spend` does not.
+
+`best-customers` is stricter. The model does not define "best", so the key
+wants the agent to say so: ask which definition the business wants, or show who
+leads under more than one measure. Picking one measure, even a stated one, is a
+near match. The key lists who leads under each measure, including customer 395
+on spend without cancelled and returned lines.
 
 ### One wrong doc, left wrong on purpose
 
@@ -75,7 +80,7 @@ fixed, if you decide to fix it.
 
 ### What is expected, and not a defect
 
-- `verify` prints `ok=11  skipped=1`, then 22 "rubric figures to review" and
+- `verify` prints `ok=11  skipped=1`, then 19 "rubric figures to review" and
   2 "other review items" on `best-customers`. Both lists are prompts to read a
   rubric against its rows, not failures; the figures are the tolerance band
   each rubric accepts and the wrong answers it names.
