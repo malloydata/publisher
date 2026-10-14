@@ -22,6 +22,7 @@ import {
    type BuildPlanPackage,
    type CompiledBuildPlan,
 } from "./build_plan";
+import { createEventLoopYielder } from "./event_loop_yield";
 import { Model } from "./model";
 
 export async function compilePackageBuildPlan(
@@ -29,6 +30,7 @@ export async function compilePackageBuildPlan(
    signal?: AbortSignal,
 ): Promise<CompiledBuildPlan> {
    const parts = emptyBuildPlanParts();
+   const yielder = createEventLoopYielder();
 
    for (const modelPath of pkg.getModelPaths()) {
       // Only `.malloy` models declare persist sources. Skip `.malloynb`
@@ -36,6 +38,10 @@ export async function compilePackageBuildPlan(
       // the notebook's `>>>` cell delimiter, which would abort the entire
       // package build plan and silently drop every persist source in it.
       if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
+      // Each compile below is a long synchronous stretch; give the event loop
+      // a turn between models so requests are not held for the whole plan.
+      // Checked after the yield, so a cancel that lands during it is seen.
+      await yielder.maybeYield();
       if (signal?.aborted) throw new Error("Build cancelled");
 
       const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(

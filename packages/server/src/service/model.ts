@@ -185,6 +185,7 @@ import {
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
 import { onlyParseFailures } from "./compile_restriction";
+import { createEventLoopYielder } from "./event_loop_yield";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -776,6 +777,18 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
+   /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
+   private reportModelFacts:
+      | { value: ReportModelFacts | undefined }
+      | undefined;
+   /** {@link carriesReportTag}, once read. */
+   private reportTagCarried: boolean | undefined;
+   /**
+    * Per materializer, settles once {@link ensureSharedQueryModel} has built
+    * its QueryModel. Weak, so a grafted materializer evicted from its cache
+    * takes its entry with it.
+    */
+   private sharedQueryModels = new WeakMap<ModelMaterializer, Promise<void>>();
    private compiledReportFacts:
       | Promise<ReportModelFacts | undefined>
       | undefined;
@@ -3341,6 +3354,7 @@ export class Model {
             grafts,
             graftScope!,
          );
+         await this.ensureSharedQueryModel(graftedMaterializer);
          const recompiled = options.recompile(graftedMaterializer, grafts);
          if (options.proveGraft) {
             // The own-scope binder proves the run target only.
@@ -4865,6 +4879,57 @@ export class Model {
    }
 
    /**
+    * Build a materializer's Malloy `QueryModel` once, on the base model it
+    * holds, so every query compiled against it reuses it: this Model's own
+    * materializer, a row-level grafted one, or the storage serve shape.
+    *
+    * Malloy hands a query compiled from a model the base model's existing
+    * `QueryModel` when the query does not modify the model
+    * (`existingQueryModel` in `Malloy.compile`), but only if the base model
+    * already has one. Neither a model hydrated from a `ModelDef` nor one Malloy
+    * compiled from source has one, so without this every prepare (each
+    * render-tag target at load, each query) built a `QueryModel` over every
+    * source in the file and dropped it. A `QueryModel` is a function of the
+    * `ModelDef`, and each materializer's `ModelDef` is fixed for its life, so
+    * building it once is the same answer.
+    *
+    * Call it just before compiling against the materializer, so a query the
+    * 404 and 403 gates reject builds nothing.
+    *
+    * A failure to build is logged and not retried. `getModel()` is memoized
+    * by Malloy, failures included, and building a `QueryModel` from a fixed
+    * `ModelDef` fails the same way every time, so a retry would only repeat
+    * it. The query that needs it builds its own and fails the way it always
+    * did.
+    */
+   private ensureSharedQueryModel(
+      materializer: ModelMaterializer | undefined,
+   ): Promise<void> {
+      if (!materializer) return Promise.resolve();
+      let built = this.sharedQueryModels.get(materializer);
+      if (!built) {
+         built = (async () => {
+            try {
+               const base = await materializer.getModel();
+               void base.queryModel;
+            } catch (error) {
+               logger.warn(
+                  "Could not build a shared QueryModel; each query builds its own",
+                  {
+                     packageName: this.packageName,
+                     modelPath: this.modelPath,
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  },
+               );
+            }
+         })();
+         this.sharedQueryModels.set(materializer, built);
+      }
+      return built;
+   }
+
+   /**
     * Build a Model representing a compilation failure (no modelDef,
     * no materializer). Matches the shape `Model.create` returns when
     * it catches a `MalloyError`, so the rest of the system handles
@@ -5147,6 +5212,14 @@ export class Model {
     * lint are built from. See `service/report_manifest.ts`.
     */
    public getReportModelFacts(): ReportModelFacts | undefined {
+      // Memoized: every input is fixed for this Model's life (a reload builds
+      // new Models), and `carriesReportTag` asks on every query.
+      return (this.reportModelFacts ??= {
+         value: this.deriveReportModelFacts(),
+      }).value;
+   }
+
+   private deriveReportModelFacts(): ReportModelFacts | undefined {
       if (!this.modelDef) return undefined;
       // `this.givens` is the model's surfaced given list — the same surface
       // `filterGivensToModelSurface` enforces at query time, so a control the
@@ -5836,6 +5909,11 @@ export class Model {
     * said; discovery's map is the answer after it.
     */
    public carriesReportTag(): boolean {
+      // Memoized, like the facts it reads: the query paths ask on every query.
+      return (this.reportTagCarried ??= this.deriveCarriesReportTag());
+   }
+
+   private deriveCarriesReportTag(): boolean {
       if (!isReportEligiblePath(this.modelPath)) return false;
       const facts = this.getReportModelFacts();
       return facts !== undefined && factsReportTag(facts).status !== "none";
@@ -6130,7 +6208,11 @@ export class Model {
       // without an await, so a call per result held the event loop for the
       // number of results times the model's size.
       const carriesReportTag = this.carriesReportTag();
+      // Nothing below does I/O, so without this the whole loop is one
+      // macrotask: a large model's validation held the event loop for ~1 s.
+      const yielder = createEventLoopYielder();
       for (const { label, result } of prepared) {
+         await yielder.maybeYield();
          // Keep both severities. The renderer reports a tag that is well-formed
          // but inert as `warn`, not `error` -- `# colspan` outside columns mode
          // ("Ignored # colspan ... colspan only applies in columns mode"), or a
@@ -6194,8 +6276,12 @@ export class Model {
       mm: ModelMaterializer,
       targets: RenderTagTarget[],
    ): Promise<{ label: string; result: Malloy.Result }[]> {
+      // One QueryModel for every prepare below, not one each.
+      await this.ensureSharedQueryModel(mm);
+      const yielder = createEventLoopYielder();
       const prepared: { label: string; result: Malloy.Result }[] = [];
       for (const target of targets) {
+         await yielder.maybeYield();
          try {
             const result = await mm
                .loadQuery(target.queryString)
@@ -6611,6 +6697,7 @@ export class Model {
          ...groups.flatMap((g) => g.members),
       ]);
 
+      await this.ensureSharedQueryModel(this.serveShapeCache.materializer);
       const runnable =
          this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
       // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
@@ -7521,6 +7608,8 @@ export class Model {
          // and the `run: source->view` string built from the caller-supplied
          // `sourceName`/`queryName` pair are untrusted, so both compile here;
          // only author-curated notebook cells use the unrestricted `loadQuery`.
+         // After the 404 and 403 gates above: a rejected query builds nothing.
+         await this.ensureSharedQueryModel(this.modelMaterializer);
          runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
          // Kept so a routed query can still be answered live if the store fails
          // underneath it at RUN time (see the freshnessFallback retry below).

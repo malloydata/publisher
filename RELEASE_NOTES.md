@@ -21,6 +21,16 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Server: package loads share the event loop with other requests, queries reuse each model's query model, and a load-phase metric
+
+Package loads and queries do less on the main thread. Nothing an API or MCP caller sees changes: the same plans, findings, warnings and answers.
+
+- Each loaded model builds its Malloy query model once and reuses it for every query, and for the render-tag checks the main thread prepares itself (those the load worker did not reach), where each used to build and drop its own. So does each variant of a model a query compiles against: a row-level `#(authorize)` graft and the storage serve shape. Memory rises by that one structure per loaded model: about 5 MB of heap for the medium generated test package (8 model files) and 14 MB for the large one (24). A cached variant holds one too, and those caches are bounded.
+- Render-tag validation, model hydration and the main-thread build-plan derivation yield to the event loop every 10 ms, so a request that arrives during a load waits for at most one step rather than for the whole load.
+- A model's report facts are derived once rather than on every query.
+
+**New metric:** `publisher_package_load_phase_duration_ms{phase}`, one sample per stage of a successful load: `worker`, `hydrate`, `render_validation`, `discovery`, `lint`, `build_plan` and `total`. Since 0.9.9 the load worker derives the build plan, so `build_plan` is the time to apply it, or to derive it on the main thread when the worker left it at its soft deadline. `malloy_package_load_duration` is unchanged and still stops before report discovery and the build plan; `total` is the whole load. Each stage is wall-clock time, so a main-thread stage includes the requests served while it yields. Package loads record it; reloads do not. See `docs/configuration.md`.
+
 ## [Unreleased] — Reports written as `run:` cells are no longer reports (BREAKING)
 
 **A `.malloy` file whose artifact tag reads as linear and lists no `tiles` is no longer a report.** That was the older linear form: `run:` statements with `(markdown)` notes between them. Publisher stops listing it, its route opens nothing, `GET …/reports/{path}` does not serve it, and the builder refuses to open it rather than converting it. The package names each such file with a new `error` finding, `report-cells-removed`, whose message gives the fix, and the compile check answers the same finding. The file still compiles as a model, so nothing that imports it breaks.
