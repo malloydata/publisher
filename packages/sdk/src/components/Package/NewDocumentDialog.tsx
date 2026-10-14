@@ -131,6 +131,23 @@ export function NewDocumentDialog({
    );
    // Every model's views in one list, grouped by source; a key names the
    // model too, so picking a view picks its model.
+   // What each picker key names, so a key is looked up, never split: a model
+   // path or a name could hold the separator.
+   const picks = useMemo(
+      () =>
+         new Map(
+            [...choices.entries()].flatMap(([model, pairs]) =>
+               pairs.map(
+                  (pair) =>
+                     [
+                        pickKey(model, pair.source, pair.view),
+                        { model, source: pair.source, view: pair.view },
+                     ] as const,
+               ),
+            ),
+         ),
+      [choices],
+   );
    const groups = useMemo<PickerGroup[]>(() => {
       const several = choices.size > 1;
       return [...choices.entries()].flatMap(([model, pairs]) => {
@@ -163,16 +180,19 @@ export function NewDocumentDialog({
          }));
       });
    }, [choices]);
-   const pickedKey =
-      tile === "" ? undefined : pickKey(modelPath, ...splitTile(tile));
    const pickView = (key: string) => {
-      const [model, source, view] = key.split("::");
-      if (model === undefined || source === undefined || view === undefined)
-         return;
-      setModelPath(model);
-      setTile(`${source}::${view}`);
+      const pick = picks.get(key);
+      if (!pick) return;
+      setModelPath(pick.model);
+      setTile(`${pick.source}::${pick.view}`);
    };
    const chosen = tiles.find((t) => `${t.source}::${t.view}` === tile);
+   const pickedKey = chosen
+      ? pickKey(modelPath, chosen.source, chosen.view)
+      : undefined;
+   // The preview follows the pick once it settles: arrowing through the list
+   // ran a query for every view passed on the way.
+   const previewed = useSettled(chosen, 250);
 
    useEffect(() => {
       if (open) setLayout(initialLayout);
@@ -502,7 +522,7 @@ export function NewDocumentDialog({
                            },
                         })}
                      >
-                        {chosen ? (
+                        {chosen && previewed ? (
                            <Box sx={{ flex: 1, minWidth: 0, px: 2, pt: 1.5 }}>
                               <DashboardTile
                                  environmentName={environmentName}
@@ -511,9 +531,9 @@ export function NewDocumentDialog({
                                     ? { versionId }
                                     : {})}
                                  modelPath={modelPath}
-                                 tile={`${chosen.source} -> ${chosen.view}`}
+                                 tile={`${previewed.source} -> ${previewed.view}`}
                                  label={
-                                    title.trim() || readableName(chosen.view)
+                                    title.trim() || readableName(previewed.view)
                                  }
                                  borderless
                                  givens={NO_GIVENS}
@@ -586,11 +606,15 @@ export function NewDocumentDialog({
    );
 }
 
-/** `source::view` back into its parts. */
-const splitTile = (tile: string): [string, string] => {
-   const [source = "", view = ""] = tile.split("::");
-   return [source, view];
-};
+/** `value` once it has held still for `ms`; undefined until then. */
+function useSettled<T>(value: T, ms: number): T | undefined {
+   const [settled, setSettled] = useState<T | undefined>(undefined);
+   useEffect(() => {
+      const timer = window.setTimeout(() => setSettled(value), ms);
+      return () => window.clearTimeout(timer);
+   }, [value, ms]);
+   return settled;
+}
 /** A picker key: the model, the source and the view, so the pick names all three. */
 const pickKey = (model: string, source: string, view: string) =>
    `${model}::${source}::${view}`;

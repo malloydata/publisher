@@ -3,8 +3,17 @@
 
 import { useState } from "react";
 import type { NewTile } from "./AddTileDialog";
-import { isTextTile, tileKey, type DashboardTile } from "./document";
-import { addTileToDocument, duplicateTile } from "./addTileToDocument";
+import {
+   isQueryTile,
+   isTextTile,
+   tileKey,
+   type DashboardTile,
+} from "./document";
+import {
+   addTileToDocument,
+   duplicateBlocked,
+   duplicateTile,
+} from "./addTileToDocument";
 import type { LayoutRules } from "../Report/layoutRules";
 import type { ReportEditorHandle } from "./useReportEditor";
 
@@ -98,11 +107,18 @@ export function useTileEditing({
    /** A copy of the tile at `index`, right after it, selected. */
    const duplicate = (index: number) => {
       setMenu(undefined);
-      let landed: number | undefined;
+      // Where the copy lands is known before the edit: `update` is a state
+      // updater, run on the next render rather than here, so reading a value
+      // it sets left the copy unselected.
+      const tile = editor.document.tiles[index];
+      const lands =
+         tile && isQueryTile(tile) && duplicateBlocked(tile) === undefined
+            ? index + 1
+            : undefined;
       editor.update((draft) => {
-         landed = duplicateTile(draft, index);
+         duplicateTile(draft, index);
       });
-      if (landed !== undefined) selectTile(landed);
+      if (lands !== undefined) selectTile(lands);
    };
 
    return {

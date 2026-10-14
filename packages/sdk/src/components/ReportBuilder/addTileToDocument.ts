@@ -51,8 +51,14 @@ export function addTileToDocument(
 }
 
 /** The file's extension of `base`, or a new one under a name of the file's own. */
-function extensionOf(draft: DashboardDocument, base: string): DashboardSource {
-   const found = draft.sources.find((s) => s.base === base);
+function extensionOf(
+   draft: DashboardDocument,
+   base: string,
+   { unscoped = false }: { unscoped?: boolean } = {},
+): DashboardSource {
+   const found = draft.sources.find(
+      (s) => s.base === base && (!unscoped || !s.scopedBy?.length),
+   );
    if (found) return found;
    // A name of the file's own: the base's, suffixed, since an extension cannot
    // share its base's name.
@@ -134,8 +140,13 @@ export function duplicateTile(
       // Inherited: a view of the source the tile names. When the file
       // declares that source, the copy goes on it; otherwise on the file's
       // extension of it, as an added tile would.
+      // On the file's extension of the source the tile names, but never one
+      // that narrows it with a `where:` of its own: the original reads the
+      // source unfiltered, and a copy on a narrowed extension would show
+      // other numbers under the same title.
       const own = draft.sources.find((s) => s.name === original.source);
-      const extension = own ?? extensionOf(draft, original.source);
+      const extension =
+         own ?? extensionOf(draft, original.source, { unscoped: true });
       copy = {
          name: freeViewName(draft, extension.name, original.name),
          source: extension.name,

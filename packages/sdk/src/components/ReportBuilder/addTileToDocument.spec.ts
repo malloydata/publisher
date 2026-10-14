@@ -132,3 +132,27 @@ describe("duplicateTile", () => {
       expect(draft.tiles).toHaveLength(1);
    });
 });
+
+describe("duplicateTile onto a narrowed extension", () => {
+   it("copies a model view onto an unnarrowed extension, never a scoped one", () => {
+      const draft: DashboardDocument = {
+         ...document(),
+         sources: [
+            { name: "orders_west", base: "orders", scopedBy: ["REGION"] },
+         ],
+         tiles: [
+            {
+               name: "by_brand",
+               source: "orders",
+               declaration: { kind: "inherited" },
+            },
+         ],
+      };
+      expect(duplicateTile(draft, 0)).toBe(1);
+      expect(draft.tiles[1]).toMatchObject({ source: "orders_tiles" });
+      expect(draft.sources.map((s) => s.name)).toEqual([
+         "orders_west",
+         "orders_tiles",
+      ]);
+   });
+});

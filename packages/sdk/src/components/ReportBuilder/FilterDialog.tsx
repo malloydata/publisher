@@ -281,11 +281,21 @@ export function FilterDialog({
    // tile, and a list of checkboxes on every open was most of the window. It
    // opens by itself on a control that does not apply to them all.
    const [tilesOpen, setTilesOpen] = useState(false);
+   // Decided once per opening, on the render after the form has read the
+   // control's mapping: in the opening render itself the rows are still the
+   // last window's, and the list opened (or not) for the wrong control.
+   const [deciding, setDeciding] = useState(false);
    useEffect(() => {
-      if (open) setTilesOpen(editing && included < bindableCount);
-      // Only on opening: ticking a tile must not fold the list away.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (open) setDeciding(true);
+      else setTilesOpen(false);
    }, [open]);
+   useEffect(() => {
+      if (!deciding) return;
+      setDeciding(false);
+      setTilesOpen(editing && included < bindableCount);
+      // Only when deciding: ticking a tile must not fold the list away.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, [deciding]);
    useEffect(() => {
       if (perTile) setTilesOpen(true);
    }, [perTile]);
@@ -633,13 +643,18 @@ export function FilterDialog({
                         </Box>
                      )}
                   </Typography>
-                  <Button
-                     size="small"
-                     aria-expanded={tilesOpen}
-                     onClick={() => setTilesOpen((was) => !was)}
-                  >
-                     {tilesOpen ? "Done choosing" : "Choose tiles"}
-                  </Button>
+                  {/* Not folded while each tile has a field of its own: a
+                      problem with one is the only thing holding Apply, and
+                      folded it would be out of sight. */}
+                  {!perTile && (
+                     <Button
+                        size="small"
+                        aria-expanded={tilesOpen}
+                        onClick={() => setTilesOpen((was) => !was)}
+                     >
+                        {tilesOpen ? "Done choosing" : "Choose tiles"}
+                     </Button>
+                  )}
                </Stack>
                <Collapse in={tilesOpen} unmountOnExit>
                   <Box sx={{ borderTop: `1px solid ${edge}`, px: 0.5, pb: 1 }}>

@@ -90,4 +90,34 @@ describe("AddTileDialog", () => {
       expect(onAddText).toHaveBeenCalledTimes(1);
       expect(onAdd).not.toHaveBeenCalled();
    });
+
+   it("Enter takes the top match when a search hides the pick", async () => {
+      const onAdd = mock((_tile: unknown) => {});
+      render(
+         <AddTileDialog
+            open
+            document={await openDocument(SOURCE)}
+            catalog={{
+               sources: [
+                  {
+                     name: "stocked",
+                     modelPath: "m.malloy",
+                     views: [{ name: "totals" }, { name: "by_brand" }],
+                     givens: [],
+                     fields: [],
+                  },
+               ],
+            }}
+            columns={12}
+            onClose={() => {}}
+            onAdd={onAdd}
+            onAddText={() => {}}
+         />,
+      );
+      // Opens on `totals`; the search hides it.
+      const search = screen.getByRole("combobox", { name: "Search views" });
+      fireEvent.change(search, { target: { value: "brand" } });
+      fireEvent.keyDown(search, { key: "Enter" });
+      expect(onAdd.mock.calls[0]?.[0]).toMatchObject({ view: "by_brand" });
+   });
 });

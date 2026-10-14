@@ -120,8 +120,23 @@ export function ViewPicker({
       [groups, needle],
    );
    const flat = shown.flatMap((group) => group.entries);
-   const optionId = (key: string) =>
-      `${listId}-${key.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+   // Ids by position among every entry, not by key: a key made safe for an id
+   // could collide with another ("a" + "b_c" and "a_b" + "c").
+   const ids = useMemo(
+      () =>
+         new Map(
+            groups
+               .flatMap((group) => group.entries)
+               .map((entry, i) => [entry.key, `${listId}-${i}`] as const),
+         ),
+      [groups, listId],
+   );
+   const optionId = (key: string) => ids.get(key) ?? `${listId}-none`;
+   // The pick as the list shows it: hidden by a search, it is not what Enter
+   // takes or what the list says is active.
+   const shownPick = flat.some((entry) => entry.key === picked)
+      ? picked
+      : undefined;
    const pick = (key: string) => {
       onPick(key);
       window.requestAnimationFrame(() =>
@@ -132,7 +147,7 @@ export function ViewPicker({
    };
    const step = (delta: 1 | -1) => {
       if (flat.length === 0) return;
-      const at = flat.findIndex((entry) => entry.key === picked);
+      const at = flat.findIndex((entry) => entry.key === shownPick);
       const next =
          at === -1
             ? delta === 1
@@ -167,9 +182,13 @@ export function ViewPicker({
                   } else if (event.key === "ArrowUp") {
                      event.preventDefault();
                      step(-1);
-                  } else if (event.key === "Enter" && picked !== undefined) {
+                  } else if (event.key === "Enter") {
+                     // The pick if the search still shows it, else the top
+                     // match: what the author is looking at.
+                     const take = shownPick ?? flat[0]?.key;
+                     if (take === undefined) return;
                      event.preventDefault();
-                     onTake(picked);
+                     onTake(take);
                   }
                }}
                inputProps={{
@@ -177,8 +196,8 @@ export function ViewPicker({
                   role: "combobox",
                   "aria-controls": listId,
                   "aria-expanded": true,
-                  ...(picked !== undefined
-                     ? { "aria-activedescendant": optionId(picked) }
+                  ...(shownPick !== undefined
+                     ? { "aria-activedescendant": optionId(shownPick) }
                      : {}),
                }}
                InputProps={{

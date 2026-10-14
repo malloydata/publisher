@@ -197,6 +197,28 @@ describe("Duplicate, from a tile's menu", () => {
          /# colspan=6\n\s*# label="By category"\n\s*view: by_category_tile is by_category/,
       );
    });
+
+   it("selects the copy", async () => {
+      render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={() => {}}
+         />,
+      );
+      screen.getByLabelText("Settings for By category").click();
+      await waitFor(() =>
+         screen.getByRole("menuitem", { name: "Duplicate", hidden: true }),
+      );
+      screen.getByRole("menuitem", { name: "Duplicate", hidden: true }).click();
+      await waitFor(() =>
+         expect(
+            document
+               .querySelector('[aria-label="Tile by_category_tile"]')
+               ?.getAttribute("aria-current"),
+         ).toBe("true"),
+      );
+   });
 });
 
 describe("a draft kept in this browser, and Done", () => {
