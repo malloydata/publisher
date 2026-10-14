@@ -58,16 +58,33 @@ import {
 } from "../report_metrics";
 import {
    recordBuildPlanComputeDuration,
+   recordConnectionDigestSkipped,
+   recordEligibilityRefused,
+   type EligibilityRefusalReason,
    recordBuildPlanComputeFailed,
    recordColocatedBindDropped,
    recordManifestBindDegraded,
 } from "../materialization_metrics";
 import {
    LOAD_DURATION_BUCKETS_MS,
+   recordPackageLoadPhaseDurations,
    recordPackageLoadPhases,
    type PackageLoadStatus,
 } from "../package_load_metrics";
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
+import { type SkillEntry } from "../mcp/skills/build_skills_bundle";
+import {
+   PACKAGE_SKILLS_DIR,
+   readPackageAgents,
+   readSkillsDir,
+   summarizeAgentSkillFile,
+   type PackageAgent,
+} from "../mcp/skills/package_skills";
+import {
+   canonicalJson,
+   computeSourceContentSha,
+   mintServedRevision,
+} from "./package_revision";
 import {
    BuildManifest,
    BuildPlan,
@@ -97,11 +114,8 @@ const PREAGG_WARN_ONLY: ReadonlySet<PreaggregateViolationCode> = new Set([
    "non_public_measure",
    "grain_dimension_not_public",
 ]);
-import {
-   ColocatedSourceEligibility,
-   computePackageBuildPlan,
-   SourceEligibility,
-} from "./build_plan";
+import { ColocatedSourceEligibility, SourceEligibility } from "./build_plan";
+import { computePackageBuildPlan } from "./build_plan_compile";
 import {
    incrementalPolicyAdvisories,
    incrementalPolicyRejections,
@@ -113,6 +127,7 @@ import {
 } from "./materialization_config_validation";
 import type { QueryMetadata } from "./query_metadata";
 import { CronEvaluator } from "./cron_evaluator";
+import { createEventLoopYielder } from "./event_loop_yield";
 import { CELLS_UNREADABLE } from "./notebook";
 import {
    deprecatedFormatWarnings,
@@ -175,9 +190,8 @@ interface ServedReport {
    name: string;
    layout: ReportLayout;
    /**
-    * A report written as tiles (either layout), or a grid report that failed
-    * to compile (carrying `error`). Absent on a linear `run:`-cell report and a
-    * `.malloynb`.
+    * A `.malloy` report's tiles (either layout), or, for one that failed to
+    * compile, its name and layout carrying `error`. Absent on a `.malloynb`.
     */
    manifest?: ServedReportManifest & { error?: string };
    /** A `.malloy` report's compiled text ("" when unreadable); absent on a `.malloynb`. */
@@ -223,6 +237,10 @@ interface ReportDiscovery {
 
 export type ApiPackage = components["schemas"]["Package"];
 type ApiPackageWarning = NonNullable<ApiPackage["warnings"]>[number];
+type ApiAgent = components["schemas"]["Agent"];
+type ApiAgentSummary = components["schemas"]["AgentSummary"];
+type ApiAgentSource = components["schemas"]["AgentSource"];
+type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
 
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
@@ -398,6 +416,31 @@ export class Package {
     */
    private manifestWarnings: string[] = [];
    /**
+    * What this package is currently serving, refreshed on load and on every
+    * reload. `servedRevision` identifies the load; `sourceContentSha` is a
+    * content hash over the served files, so it answers the question a caller
+    * actually has after an edit -- did the bytes the server read change --
+    * which `servedRevision` cannot, being minted fresh either way.
+    */
+   private servedRevision: string = mintServedRevision();
+   private sourceContentSha: string = "";
+   /**
+    * The agent skills this package ships, read from `skills/` on load and on
+    * every reload. Refreshed in the same call that recomputes the content sha,
+    * so a skill edit is covered by the reload receipt by construction rather
+    * than by remembering to add it.
+    */
+   private packageSkills: SkillEntry[] = [];
+   private packageSkillWarnings: string[] = [];
+   /**
+    * The manifest's `agents` value as the worker read it, unvalidated. Held
+    * apart from `packageMetadata` so a metadata PATCH cannot replace it; the
+    * validated agents below are derived from it in refreshServingIdentity.
+    */
+   private rawAgents: unknown;
+   private packageAgents = new Map<string, PackageAgent>();
+   private packageAgentWarnings: string[] = [];
+   /**
     * The manifest's `retrieval` block as read at load (prompt files included).
     * Replaced on reload, which is how an edit to it, or to a prompt file,
     * takes effect.
@@ -436,6 +479,122 @@ export class Package {
       this.applyDiscoveryPolicyToModels();
       this.applyQueryBoundaryToModels();
       this.applySiblingModelResolverToModels();
+   }
+
+   public getServedRevision(): string {
+      return this.servedRevision;
+   }
+
+   public getSourceContentSha(): string {
+      return this.sourceContentSha;
+   }
+
+   /** The agent skills this package ships, in on-disk order. */
+   public listSkills(): SkillEntry[] {
+      return this.packageSkills;
+   }
+
+   /** The agents the manifest declares that passed validation, without their text. */
+   public listAgents(): ApiAgentSummary[] {
+      return [...this.packageAgents.values()].map((a) => ({
+         name: a.name,
+         description: a.description,
+         model: a.model,
+         schedules: a.schedules.map(({ cron, task }) => ({ cron, task })),
+      }));
+   }
+
+   private agentSource(definitionSha: string): ApiAgentSource {
+      return {
+         environment: this.environmentName,
+         package: this.packageName,
+         sourceContentSha: this.sourceContentSha,
+         definitionSha,
+         servedRevision: this.servedRevision,
+      };
+   }
+
+   /**
+    * One agent resolved, pinned to the load and content it was read from.
+    * `summary` swaps each skill's text for its name, description and size; the
+    * pin is the same because both are views of one resolved definition.
+    */
+   public getAgent(
+      name: string,
+      skills: "full" | "summary" = "full",
+   ): ApiAgent | undefined {
+      const agent = this.packageAgents.get(name);
+      if (!agent) return undefined;
+      const { definitionSha, skillMeta, ...definition } = agent;
+      return {
+         ...definition,
+         skills:
+            skills === "full"
+               ? definition.skills
+               : definition.skills.map((f) =>
+                    summarizeAgentSkillFile(f, skillMeta),
+                 ),
+         source: this.agentSource(definitionSha),
+      };
+   }
+
+   /** One agent skill file, looked up in the resolved set and never joined onto the filesystem. */
+   public getAgentSkillFile(
+      name: string,
+      relativeFilepath: string,
+   ): ApiAgentSkillRead | undefined {
+      const agent = this.packageAgents.get(name);
+      const file = agent?.skills.find(
+         (f) => f.relative_filepath === relativeFilepath,
+      );
+      if (!agent || !file) return undefined;
+      return { ...file, source: this.agentSource(agent.definitionSha) };
+   }
+
+   /**
+    * Re-derive the serving identity, and re-read the package's own skills.
+    *
+    * The two are one operation on purpose. The sha is the reload receipt, and
+    * a receipt that ignored skill files would report "nothing changed" for a
+    * skill edit that did in fact reach the server -- the exact false negative
+    * the receipt exists to prevent. Reading the skills here is what supplies
+    * the paths, so the set that is served and the set that is hashed are the
+    * same set.
+    *
+    * Not run by the constructor: {@link lintWorkerOutcome} builds a throwaway
+    * Package per package-scope compile and has no use for it. {@link create}
+    * and {@link reloadAllModels} call it. Call after anything that changes which
+    * files are served or what they contain; a reload that leaves the bytes identical still mints a new
+    * revision, and correctly leaves the sha alone.
+    */
+   public refreshServingIdentity(): void {
+      this.servedRevision = mintServedRevision();
+      const skills = readSkillsDir(this.packagePath, PACKAGE_SKILLS_DIR);
+      this.packageSkills = skills.skills;
+      this.packageSkillWarnings = skills.warnings;
+      const agents = readPackageAgents(this.packagePath, this.rawAgents);
+      this.packageAgents = agents.agents;
+      this.packageAgentWarnings = agents.warnings;
+      let declaration: string | undefined;
+      try {
+         declaration =
+            this.rawAgents === undefined
+               ? undefined
+               : canonicalJson(this.rawAgents);
+      } catch {
+         // Reload must not stop between the model swap and the serve bindings.
+         declaration = "[unhashable]";
+      }
+      this.sourceContentSha = computeSourceContentSha(
+         this.packagePath,
+         [
+            ...this.models.keys(),
+            ...skills.files.map((f) => f.path),
+            ...agents.paths,
+         ],
+         // The declaration is hashed whole, so an edit to a dropped agent moves it too.
+         declaration,
+      );
    }
 
    /**
@@ -896,10 +1055,13 @@ export class Package {
    ): Promise<{
       models: Map<string, Model>;
       renderTagWarnings: ApiPackageWarning[];
+      /** Wall-clock ms in hydration and in render-tag validation, summed over models. */
+      timings: { hydrateMs: number; renderValidationMs: number };
    }> {
       const { packageName, packagePath, malloyConfig, buildManifest } = ctx;
       const models = new Map<string, Model>();
       const renderTagWarnings: ApiPackageWarning[] = [];
+      const timings = { hydrateMs: 0, renderValidationMs: 0 };
       const placeholder = (
          sm: LoadPackageOutcome["models"][number],
          err: Error,
@@ -913,7 +1075,11 @@ export class Package {
                ? ctx.replacement.source
                : undefined,
          );
+      // Hydration and validation run on the main thread, one model after
+      // another; let other requests in between models.
+      const yielder = createEventLoopYielder();
       for (const sm of outcome.models) {
+         await yielder.maybeYield();
          if (sm.compilationError) {
             const err = Model.deserializeCompilationError(sm.compilationError);
             if (onCompileError === "throw") {
@@ -937,6 +1103,7 @@ export class Package {
             continue;
          }
          let model: Model;
+         const hydrateStart = performance.now();
          try {
             model = Model.fromSerialized(
                packageName,
@@ -977,8 +1144,11 @@ export class Package {
                ),
             );
             continue;
+         } finally {
+            timings.hydrateMs += performance.now() - hydrateStart;
          }
          let warnings: Awaited<ReturnType<Model["validateRenderTags"]>>;
+         const validationStart = performance.now();
          try {
             warnings = await model.validateRenderTags();
          } catch (renderErr) {
@@ -1009,6 +1179,8 @@ export class Package {
             }
             models.set(sm.modelPath, placeholder(sm, err));
             continue;
+         } finally {
+            timings.renderValidationMs += performance.now() - validationStart;
          }
          for (const w of warnings) {
             renderTagWarnings.push({
@@ -1022,10 +1194,12 @@ export class Package {
                severity: w.severity,
             });
          }
+         const afterHydrateStart = performance.now();
          await afterHydrate?.(sm);
+         timings.hydrateMs += performance.now() - afterHydrateStart;
          models.set(sm.modelPath, model);
       }
-      return { models, renderTagWarnings };
+      return { models, renderTagWarnings, timings };
    }
 
    /**
@@ -1149,8 +1323,11 @@ export class Package {
          .loadPackage({
             packagePath,
             packageName,
+            environmentName,
             malloyConfig,
             defaultConnectionName: "duckdb",
+            computeBuildPlan: true,
+            withPreaggregateCompanions: true,
          })
          .catch((err: unknown) => {
             // Compile errors surface in-band via
@@ -1205,6 +1382,7 @@ export class Package {
          compileDurationMs: outcome.timings.compileDurationMs,
          schemaFetchDurationMs: outcome.timings.schemaFetchDurationMs,
          schemaFetchCount: outcome.timings.schemaFetchCount,
+         schemaCacheHits: outcome.timings.schemaCacheHits,
          modelCount: outcome.models.length,
          databaseCount: databases.length,
       });
@@ -1222,8 +1400,13 @@ export class Package {
       // placeholders instead.)
       let models: Map<string, Model>;
       let renderTagWarnings: ApiPackageWarning[];
+      let hydrationTimings: { hydrateMs: number; renderValidationMs: number };
       try {
-         ({ models, renderTagWarnings } = await Package.hydrateWorkerModels(
+         ({
+            models,
+            renderTagWarnings,
+            timings: hydrationTimings,
+         } = await Package.hydrateWorkerModels(
             outcome,
             { packageName, packagePath, malloyConfig },
             "throw",
@@ -1280,22 +1463,28 @@ export class Package {
          malloyConfig,
       );
       pkg.renderTagWarnings = renderTagWarnings;
-      await pkg.discoverReports("load");
+      const reportTimings = await pkg.discoverReports("load");
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       pkg.recordDeprecatedUsage(outcome);
       pkg.retrievalSettings =
          outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
+      pkg.rawAgents = outcome.packageMetadata.agents;
       // Install the per-query freshness resolver on the freshly-built models.
       // At create time no manifest is bound yet, so the resolver returns
       // undefined (serve live) until a subsequent bindManifest → reloadAllModels.
       pkg.wireFreshnessResolvers();
+      pkg.refreshServingIdentity();
 
-      // Compute the persist build plan off the live (unbound) models, before the
-      // caller binds any configured manifest, so the surfaced plan reflects the
-      // canonical build (not the manifest-rewritten SQL). Best-effort: a plan
+      // The persist build plan, derived off the live (unbound) models before
+      // the caller binds any configured manifest, so the surfaced plan reflects
+      // the canonical build (not the manifest-rewritten SQL). The load worker
+      // derives it from its own compile (see LoadPackageResult.buildPlan).
+      // Deriving it here compiles every model a second time on this thread,
+      // blocking the event loop for as long as the worker's compile took, so it
+      // happens only when the worker left the plan at its soft deadline, for a
+      // package whose load came close to the job timeout. Best-effort: a plan
       // failure is logged, not fatal — the package still serves; the plan is
-      // just absent. Recompiles the models (duplicate schema RPCs vs the worker
-      // compile); accepted for now.
+      // just absent.
       //
       // A failure also leaves `sourceEligibility` unknown, which refuses every
       // storage serve binding until a load succeeds (see
@@ -1307,15 +1496,39 @@ export class Package {
       // PERSIST_STORAGE_MODE, so this silently reverts EVERY colocated binding
       // for the package to live recompute (see bindColocatedServeManifest and
       // its recordColocatedBindDropped("build_plan_unavailable") counter).
+      let buildPlanMs: number | undefined;
+      const buildPlanPhaseStart = performance.now();
       try {
-         const buildPlanStart = Date.now();
+         const workerPlan = outcome.buildPlan;
+         // Before a failed plan throws: the main-thread derivation records
+         // each refusal and skipped digest as it goes, so one that fails
+         // part-way has already counted them.
+         for (const [reason, count] of Object.entries(
+            workerPlan?.eligibilityRefused ?? {},
+         )) {
+            for (let i = 0; i < (count ?? 0); i++) {
+               recordEligibilityRefused(reason as EligibilityRefusalReason);
+            }
+         }
+         for (const connectionName of workerPlan?.digestSkipped ?? []) {
+            recordConnectionDigestSkipped();
+            logger.warn(
+               "Skipping connection digest; connection did not resolve",
+               { connectionName },
+            );
+         }
+         if (workerPlan && !workerPlan.ok) {
+            throw new Error(workerPlan.error);
+         }
          const {
             plan,
             droppedPersistSources,
             sourceEligibility,
             colocatedSourceEligibility,
             incrementalDeclarations,
-         } = await computePackageBuildPlan(pkg);
+         } = workerPlan
+            ? workerPlan.outcome
+            : await computePackageBuildPlan(pkg);
          pkg.buildPlan = plan;
          pkg.droppedPersistSources = droppedPersistSources;
          pkg.sourceEligibility = sourceEligibility;
@@ -1332,7 +1545,13 @@ export class Package {
                sourceEntityId: source.sourceEntityId,
                declaration: incrementalDeclarations[sourceID],
             }));
-         recordBuildPlanComputeDuration(Date.now() - buildPlanStart);
+         recordBuildPlanComputeDuration(
+            workerPlan
+               ? workerPlan.durationMs
+               : performance.now() - buildPlanPhaseStart,
+            workerPlan ? "worker" : "main_thread",
+         );
+         buildPlanMs = performance.now() - buildPlanPhaseStart;
       } catch (err) {
          recordBuildPlanComputeFailed();
          logger.warn(
@@ -1454,6 +1673,15 @@ export class Package {
       await pkg.pushPreaggregateServeModels();
       pkg.logEmptyDiscoveryWarnings();
 
+      recordPackageLoadPhaseDurations({
+         worker: workerDoneTime - dispatchTime,
+         hydrate: hydrationTimings.hydrateMs,
+         render_validation: hydrationTimings.renderValidationMs,
+         discovery: reportTimings.discoveryMs,
+         lint: reportTimings.lintMs,
+         build_plan: buildPlanMs,
+         total: performance.now() - startTime,
+      });
       return pkg;
    }
 
@@ -1623,6 +1851,10 @@ export class Package {
          manifestEntryCount: this.manifestEntryCount,
          boundManifestUri: this.boundManifestUri,
          buildPlan: this.buildPlan,
+         servedRevision: this.servedRevision,
+         sourceContentSha: this.sourceContentSha,
+         // Overlaid so a metadata PATCH body can neither set nor wipe it.
+         agents: this.rawAgents === undefined ? undefined : this.listAgents(),
       };
       const warnings = this.exploreWarnings();
       if (warnings.length > 0) {
@@ -1635,6 +1867,18 @@ export class Package {
          ...this.renderTagWarnings,
          ...this.readerWarnings,
          ...this.reportWarnings,
+         // A package skill that could not be read or is missing a description.
+         // Advisory like the rest: a bad markdown file must not cost the
+         // package its models, and this is the only non-log signal that a
+         // skill the author wrote is not being served.
+         ...this.packageSkillWarnings.map((message) => ({
+            message,
+            severity: "warn" as const,
+         })),
+         ...this.packageAgentWarnings.map((message) => ({
+            message,
+            severity: "warn" as const,
+         })),
          ...this.storageWarnings(),
          ...this.droppedPersistWarnings(),
          // A `#@ persist` the compile-time gate refused. Without this the
@@ -2916,9 +3160,11 @@ export class Package {
          outcome = await pool.loadPackage({
             packagePath: this.packagePath,
             packageName: this.packageName,
+            environmentName: this.environmentName,
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
+            withPreaggregateCompanions: true,
          });
       } catch (err) {
          const realError =
@@ -2963,6 +3209,12 @@ export class Package {
       const discovery = await this.discoverReportsIn(nextModels, "reload");
       const discoveryMs = performance.now() - discoveryStarted;
       this.models = nextModels;
+      // Before refreshServingIdentity, which reads the agents it declares.
+      this.rawAgents = outcome.packageMetadata.agents;
+      // The identity describes the source bytes just compiled, and a caller
+      // polling it after an edit needs it to move as soon as the new models
+      // are installed.
+      this.refreshServingIdentity();
       // A reload re-reads publisher.json in the worker; pick up any change to
       // the explore set and query-boundary mode so listModels()/the gate
       // reflect edited explores without a full Package.create.
@@ -3176,12 +3428,15 @@ export class Package {
     */
    private async discoverReports(
       during: Exclude<ReportDiscoveryDuring, "reload">,
-   ): Promise<void> {
+   ): Promise<{ discoveryMs: number; lintMs: number }> {
       const started = performance.now();
       const discovery = await this.discoverReportsIn(this.models, during);
       this.installReports(discovery);
+      const linting = performance.now();
       await this.relintReports({ textLint: during !== "compile" });
-      this.reportDiscovered(during, discovery, performance.now() - started);
+      const finished = performance.now();
+      this.reportDiscovered(during, discovery, finished - started);
+      return { discoveryMs: linting - started, lintMs: finished - linting };
    }
 
    /**
@@ -3304,7 +3559,9 @@ export class Package {
             continue;
          const name = reportName(modelPath);
          if (tag.status !== "report") {
-            // A tag that makes no report: the lint says why.
+            // A tag that makes no report (it does not parse, sets the removed
+            // `kind=`, or is a linear report written as `run:` cells): the lint
+            // says why, and the file is an ordinary model.
             files.set(modelPath, { status: "invalid", name, facts });
             continue;
          }
@@ -3330,26 +3587,25 @@ export class Package {
                error: errMessage(err),
             });
             // The tag is readable (it was read off the same facts); it was the
-            // manifest CONSTRUCTION that failed. A linear report still opens
-            // as its cells; a grid one has nothing else to show.
-            if (tag.layout === "grid") {
-               files.set(modelPath, { status: "dropped", name });
-               continue;
-            }
+            // manifest CONSTRUCTION that failed, and a report has nothing else
+            // to show.
+            files.set(modelPath, { status: "dropped", name });
+            continue;
          }
-         if (tag.layout === "grid" && facts && !manifest) {
+         if (facts && !manifest) {
             // A grid tag that describes no tiles (or an empty list): not
-            // served until it has one, and explained by the lint.
+            // served until it has one, and explained by the lint. A linear
+            // tag always lists its tiles (`report.ts`), so it never lands here.
             files.set(modelPath, { status: "tileless", name, facts });
             continue;
          }
-         if (tag.layout === "grid" && !facts) {
+         if (!facts) {
             // The file failed to compile, so its tiles cannot be read. It is
             // listed anyway carrying the error, because a broken report
             // should be visibly broken rather than absent.
             manifest = {
                name,
-               layout: "grid",
+               layout: tag.layout,
                title: name,
                autorun: true,
                entryFile: modelPath,
@@ -3406,10 +3662,11 @@ export class Package {
    }
 
    /**
-    * Read every linear `.malloy` report's cells. A reader refusal is the
-    * report's error, returned as a finding: the model still compiles, so
-    * nothing else would say so. It is counted and logged with the other
-    * findings (see {@link reportDiscovered}).
+    * Read every linear `.malloy` report's definition cells (its imports and
+    * givens), which the deprecated notebook route serves ahead of its tiles. A
+    * reader refusal is the report's error, returned as a finding: the model
+    * still compiles, so nothing else would say so. It is counted and logged
+    * with the other findings (see {@link reportDiscovered}).
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3596,8 +3853,8 @@ export class Package {
          for (const [modelPath, file] of files) {
             if (file.status === "dropped") continue;
             const manifest = file.report?.manifest;
-            // A served report is checked against its manifest; a linear one
-            // written as `run:` cells has none, and only its text is linted.
+            // A served report is checked against its manifest; a `.malloynb`
+            // has none (and no facts).
             const facts =
                file.status !== "served" || manifest ? file.facts : undefined;
             const fileFindings: ApiPackageWarning[] = [];
@@ -3880,11 +4137,9 @@ export class Package {
          layout: report.layout,
          title: manifest?.title ?? listing.title ?? report.name,
          description: manifest?.description ?? listing.description,
-         // The builder opens a report written as tiles; a `.malloynb` or a
-         // `run:`-cell report it cannot.
-         editable:
-            report.path.endsWith(MODEL_FILE_SUFFIX) &&
-            (report.layout === "grid" || manifest !== undefined),
+         // The builder opens a `.malloy` report, which is written as tiles; a
+         // `.malloynb` it cannot.
+         editable: report.path.endsWith(MODEL_FILE_SUFFIX),
          ...(error !== undefined && { error }),
       };
    }
@@ -3898,8 +4153,8 @@ export class Package {
 
    /**
     * One report by its path (`sales/q3.malloy`, exactly as list-reports gives
-    * it), or undefined when there is none. A report written as tiles carries its
-    * manifest; a `run:`-cell report or a `.malloynb` carries its cells.
+    * it), or undefined when there is none. A `.malloy` report carries its
+    * manifest; a `.malloynb`, which has none, carries its cells.
     */
    public async getReport(
       reportPath: string,

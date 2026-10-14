@@ -382,7 +382,7 @@ query: x is sales -> by_n
       // so the dashboard lint reports nothing. A reload keeps it too.
       await writeDashboard(
          `## artifact { layout=linear title=Monthly sales! }\n` +
-            `## artifact { layout=linear }\n` +
+            `## artifact { layout=linear tiles=[] }\n` +
             `source: a is duckdb.sql("select 1 as x")\n`,
       );
       const result = await compilePackage();

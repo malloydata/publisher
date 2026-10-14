@@ -2509,6 +2509,42 @@ function makeWarningsFor(ctx: PipelineContext) {
    };
 }
 
+/** Most description characters `skillsFor` attaches to one response, across every skill. */
+const SKILLS_DESCRIPTION_BUDGET = 4000;
+
+/**
+ * Spread into a payload to attach `skills`: the guides this package ships about
+ * itself, name and description only. Returns {} when it ships none, so most
+ * payloads carry no key at all.
+ *
+ * Every description rather than a ranked subset: a one-line description is
+ * cheap, and ranking could hide the guide that says the question is being asked
+ * wrong. Bodies stay behind get_skill. Sits outside the response envelope,
+ * beside `warnings`, because the envelope tracks the hosted retrieval API's
+ * shape.
+ */
+function skillsFor(ctx: PipelineContext) {
+   // Descriptions are author-written and ride every response, so their total is bounded.
+   let budget = SKILLS_DESCRIPTION_BUDGET;
+   const skills = ctx.pkgIndex.pkg
+      .listSkills()
+      // Reference entries are on-demand detail addressed by the parent's
+      // pointer, not something to choose from a list.
+      .filter((skill) => !skill.name.includes("/"))
+      .map((skill) => {
+         const description = skill.description.slice(0, budget);
+         budget -= description.length;
+         return { name: skill.name, description };
+      });
+   return skills.length > 0
+      ? {
+           skills,
+           skills_note:
+              "This package ships its own guidance, listed above. Read the relevant one before relying on names or conventions from this package. If it is already loaded as a skill, use that; otherwise fetch it with get_skill(skill_name, scopes), and if that tool is not available to you, proceed and say which guidance you could not read. A guide whose name matches a built-in one replaces it here.",
+        }
+      : {};
+}
+
 /**
  * The warning for a capped result set, or undefined when nothing was
  * cut. It names the remedy that works here: raising the limit, or
@@ -2732,6 +2768,7 @@ function runListing(
       return jsonResource(uri, {
          sources,
          ...listingEnvelope,
+         ...skillsFor(ctx),
          ...warningsFor(
             "This package loaded but exposes no sources. That is a curation gap, not an empty database: check what the package's index.malloy exports (its export { ... }), and call get_status for load errors and stale packages.",
          ),
@@ -2740,6 +2777,7 @@ function runListing(
    return jsonResource(uri, {
       sources,
       ...listingEnvelope,
+      ...skillsFor(ctx),
       ...warningsFor(
          // A pure browse pages; every other listing shape is capped in
          // entities and says so.
@@ -3012,6 +3050,7 @@ async function runContextQuery(
          ...(ranked.totalEntities !== undefined
             ? { total_entities: ranked.totalEntities }
             : {}),
+         ...skillsFor(ctx),
          // Each cut in its own unit: `limit` drops whole sources, the
          // per-source cap drops entities inside the ones it kept.
          ...warningsFor(
@@ -3032,6 +3071,7 @@ async function runContextQuery(
       ranking: "relevance" as const,
       total_available: totalSources,
       returned: sources.length,
+      ...skillsFor(ctx),
       ...warningsFor(
          sourceCutWarning(pageReturned, totalSources),
          budgetWarning,

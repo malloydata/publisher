@@ -1,25 +1,24 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Button } from "@mui/material";
-import type { ComponentProps } from "react";
-import { AppDialog } from "../AppDialog";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
-import { AddTileDialog } from "./AddTileDialog";
+import { AddTileDialog, type ViewPreview } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
+import { duplicateBlocked } from "./addTileToDocument";
 import { isQueryTile } from "./document";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
-import type { ConversionConfirm } from "./useConversionConfirm";
+import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { useControlBindings } from "./useControlBindings";
 import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileEditing } from "./useTileEditing";
 
 /**
  * Every window the builder opens, each driven by state its hooks hold: the
- * filter window, a tile's menu, the clickable-cells window, the conversion
- * question, the unsaved-changes guard and the add-tile picker.
+ * filter window, a tile's menu, the clickable-cells window, the
+ * unsaved-changes guard and the add-tile picker.
  */
 export function BuilderDialogs({
    editor,
@@ -30,8 +29,8 @@ export function BuilderDialogs({
    tiles,
    drillSource,
    setDrillSource,
-   confirmConversion,
    exitDialog,
+   renderViewPreview,
 }: {
    editor: ReportEditorHandle;
    catalog: PackageCatalog | undefined;
@@ -42,11 +41,13 @@ export function BuilderDialogs({
    /** The source whose clickable cells are being edited, if any. */
    drillSource: string | undefined;
    setDrillSource: (source: string | undefined) => void;
-   confirmConversion: ConversionConfirm | undefined;
    exitDialog: ComponentProps<typeof UnsavedChangesDialog>;
+   renderViewPreview?: (view: ViewPreview) => ReactNode;
 }) {
    const { filterDialog, setFilterDialog } = bindings;
    const { menu, setMenu } = tiles;
+   // The tile Clickable cells was opened from, for its window to name.
+   const [drillTile, setDrillTile] = useState<string | undefined>();
    // The catalog's view behind the tile whose menu is open, for the charts the
    // picker may offer: a reference tile's base view, else a view of the tile's own name.
    const menuAt =
@@ -94,19 +95,25 @@ export function BuilderDialogs({
                   draft.tiles[at] = next;
                });
             }}
-            onRemove={() => {
-               if (menu !== undefined) tiles.removeTile(menu.index);
+            view={menuView}
+            onDuplicate={() => {
+               if (menu) tiles.duplicate(menu.index);
             }}
-            {...(editor.document.tiles.length === 1 &&
-            editor.saved.tiles.length > 0
+            {...(menuTile && duplicateBlocked(menuTile) !== undefined
+               ? { duplicateBlocked: duplicateBlocked(menuTile) }
+               : {})}
+            {...((editor.document.sources.find(
+               (s) => s.name === menuTile?.source,
+            )?.dimensions?.length ?? 0) > 0
                ? {
-                    removeBlocked: "A saved report needs at least one tile.",
+                    onDrills: () => {
+                       setDrillTile(
+                          menuTile ? tileDisplayTitle(menuTile) : undefined,
+                       );
+                       setDrillSource(menuTile?.source);
+                    },
                  }
                : {})}
-            view={menuView}
-            onDrills={() => {
-               setDrillSource(menuTile?.source);
-            }}
          />
          <DrillDialog
             open={drillSource !== undefined}
@@ -114,6 +121,7 @@ export function BuilderDialogs({
             source={editor.document.sources.find((s) => s.name === drillSource)}
             givenNames={bindings.controlList.map((c) => c.name)}
             dashboards={dashboards ?? []}
+            {...(drillTile ? { tileLabel: drillTile } : {})}
             onClose={() => setDrillSource(undefined)}
             onApply={(drills) =>
                editor.update((draft) => {
@@ -126,27 +134,6 @@ export function BuilderDialogs({
                })
             }
          />
-         <AppDialog
-            open={confirmConversion !== undefined}
-            onClose={() => confirmConversion?.stop()}
-            title="Convert this report?"
-            description="Saving rewrites this report in the tile layout. The builder cannot take that back; the file's history in your repository can."
-            actions={
-               <>
-                  <Button onClick={() => confirmConversion?.stop()}>
-                     Cancel
-                  </Button>
-                  <Button
-                     variant="contained"
-                     onClick={() => confirmConversion?.go()}
-                  >
-                     Convert and save
-                  </Button>
-               </>
-            }
-         >
-            {null}
-         </AppDialog>
          <UnsavedChangesDialog {...exitDialog} />
          <AddTileDialog
             open={tiles.addingTile}
@@ -156,6 +143,7 @@ export function BuilderDialogs({
             onClose={tiles.closeAdd}
             onAdd={tiles.addTile}
             onAddText={tiles.addText}
+            {...(renderViewPreview ? { renderPreview: renderViewPreview } : {})}
          />
       </>
    );

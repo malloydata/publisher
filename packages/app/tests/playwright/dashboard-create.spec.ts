@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
+import { chooseLayout, pickView, readerOpen } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 
 /**
@@ -70,7 +71,7 @@ test.describe("dashboard-create", () => {
    }) => {
       await page.goto(`/${env}/${PKG}`);
       await page
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .first()
          .click({
             timeout: 60_000,
@@ -82,14 +83,8 @@ test.describe("dashboard-create", () => {
       await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await dialog.getByRole("combobox", { name: "Layout" }).click();
-      await page.getByRole("option", { name: /^Grid/ }).click();
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "orders.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First query" }).click();
-      await page
-         .getByRole("option", { name: "orders → by_brand", exact: true })
-         .click();
+      await chooseLayout(dialog, "Grid");
+      await pickView(dialog, "by_brand", "orders in orders.malloy");
       await dialog.getByLabel("Report title").fill("Created here");
       // Written at the package root: no directory is created for a report.
       await expect(
@@ -104,17 +99,21 @@ test.describe("dashboard-create", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      // The title, edited where it is shown (the intro text tile repeats it as a heading).
+      // The title, shown in the header and nowhere else: a new report carries
+      // no intro text tile repeating it as a heading.
       await expect(
          page.getByRole("button", { name: "Created here", exact: true }),
       ).toBeVisible();
-      await expect(
-         page.getByText("Save writes the file into the package."),
-      ).toBeVisible();
+      await expect(page.locator('[data-saves-to="package"]')).toHaveCount(1);
 
       // An edit, saved into the package.
       // The title is edited where it is shown.
-      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
+      // The report title is the page's h1, edited where it stands.
+      await page
+         .getByRole("heading", { level: 1 })
+         .first()
+         .getByRole("button")
+         .click();
       const title = page.getByLabel("Report title");
       await title.fill("Created and saved");
       await title.press("Enter");
@@ -122,15 +121,21 @@ test.describe("dashboard-create", () => {
 
       // The reader's view is served from the package, so it shows the save.
       // The header's View button leaves the builder for it.
-      await page.getByRole("button", { name: "View", exact: true }).click();
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Done", exact: true })
+         .click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/created-here$`));
+      // The builder stays up until the reader is drawn: wait for the swap.
+      await readerOpen(page);
       await expect(
          page.getByRole("heading", { name: "Created and saved" }),
       ).toBeVisible({ timeout: 60_000 });
-      // The one tile the new dashboard was created with, headed by its
-      // humanized view name and carrying the run expression as its tooltip,
-      // the way every not a report heads a panel.
-      const tile = page.getByText("By brand tile", { exact: true });
+      // The one tile the new dashboard was created with, headed by the
+      // `# label` New report wrote for it (the view's title, not the
+      // extension's `by_brand_tile` humanized) and carrying the run
+      // expression as its tooltip, the way every report heads a panel.
+      const tile = page.getByText("By brand", { exact: true });
       await expect(tile).toBeVisible({ timeout: 30_000 });
       await expect(tile).toHaveAttribute(
          "title",

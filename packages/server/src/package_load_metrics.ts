@@ -65,7 +65,10 @@ export type PackageLoadStatus =
 
 /** Phase timings a single package load reports (subset of the total). */
 export interface PackageLoadPhaseTimings {
-   /** Ceiling on Malloy compile CPU (compile region minus schema-fetch wait). */
+   /**
+    * Ceiling on Malloy compile CPU (compile region minus schema-fetch wait),
+    * including the work the worker does for the main thread.
+    */
    compileDurationMs: number;
    /** Wall-clock awaiting proxied connection schema fetches. */
    schemaFetchDurationMs: number;
@@ -84,7 +87,7 @@ function ensureInstruments(): void {
       "malloy_package_load_compile_duration",
       {
          description:
-            "Per-load Malloy compile time (compile region minus proxied schema-fetch wait; a ceiling on compile CPU). Label: status.",
+            "Per-load Malloy compile time (compile region minus proxied schema-fetch wait; a ceiling on compile CPU), including the build plan, render-tag results and pre-aggregation companions the worker prepares for the main thread. Label: status.",
          unit: "ms",
          advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
       },
@@ -126,6 +129,63 @@ export function recordPackageLoadPhases(
 }
 
 /**
+ * The stages of a package load, as `publisher_package_load_phase_duration_ms`
+ * labels them. `malloy_package_load_duration` is recorded once the models are
+ * hydrated and validated, before report discovery and the persist build plan
+ * run, so it reads well under the time a caller waits; these cover the whole
+ * load, main-thread tail included, without changing what that metric means.
+ *
+ * - `worker`: the package-load worker's job (manifest, compile, extraction) as
+ *   the main thread waits for it, with the database scan it overlaps.
+ * - `hydrate`: building the main thread's Models from the worker's output,
+ *   and checking their persist names.
+ * - `render_validation`: render-tag validation of every model.
+ * - `discovery`: reading the package's reports.
+ * - `lint`: linting them.
+ * - `build_plan`: applying the persist build plan the worker derived, or
+ *   deriving it here when the worker left it at its soft deadline.
+ * - `total`: the load end to end, as `Package.create` runs it.
+ *
+ * Each is wall-clock time. The main-thread stages yield to the event loop as
+ * they go (see `event_loop_yield.ts`), so they include the requests served
+ * meanwhile. `Package.reloadAllModels` records none of them.
+ */
+export type PackageLoadPhase =
+   | "worker"
+   | "hydrate"
+   | "render_validation"
+   | "discovery"
+   | "lint"
+   | "build_plan"
+   | "total";
+
+let phaseDuration: Histogram | null = null;
+
+/**
+ * Record the stage durations of one load that succeeded. Labels: `phase` only,
+ * a fixed enumeration, so cardinality stays at seven series whatever the
+ * number of packages. A stage that did not run is left out rather than
+ * recorded as zero.
+ */
+export function recordPackageLoadPhaseDurations(
+   durations: Partial<Record<PackageLoadPhase, number>>,
+): void {
+   phaseDuration ??= publisherMeter().createHistogram(
+      "publisher_package_load_phase_duration_ms",
+      {
+         description:
+            "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, total).",
+         unit: "ms",
+         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
+      },
+   );
+   for (const [phase, ms] of Object.entries(durations)) {
+      if (ms === undefined) continue;
+      phaseDuration.record(ms, { phase });
+   }
+}
+
+/**
  * Visible for tests. Drops cached instruments so a fresh `MeterProvider`
  * (installed via `startMetricsHarness`) captures future emissions. Do NOT call
  * from production code.
@@ -134,4 +194,5 @@ export function resetPackageLoadMetricsForTesting(): void {
    compileDuration = null;
    schemaFetchDuration = null;
    schemaFetches = null;
+   phaseDuration = null;
 }

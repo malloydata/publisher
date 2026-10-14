@@ -24,7 +24,6 @@ const WITHHELD_REFUSAL =
 export interface OpenedDocument {
    source: string;
    document: DashboardDocument;
-   conversion?: { from: string; to: string };
    /** The package file when this opened, which a draft's save overwrites. */
    packageText?: string;
    generation: number;
@@ -220,7 +219,6 @@ export function useOpenedDocument({
             setOpened((previous) => ({
                source: opening,
                document: result.document,
-               ...(result.conversion ? { conversion: result.conversion } : {}),
                ...(packageAtOpen !== undefined
                   ? { packageText: packageAtOpen }
                   : {}),

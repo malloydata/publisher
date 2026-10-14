@@ -1,20 +1,24 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Box, IconButton, SvgIcon, Typography } from "@mui/material";
 import type { PointerEvent, ReactNode } from "react";
 import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
+import {
+   REMOVE_BADGE_CLASS,
+   RemoveBadge,
+   removeBadgeRevealSx,
+} from "../RemoveBadge";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { ResolvedTheme } from "../../theme/types";
+import { BARE_RING_OFFSET_PX, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import {
-   BARE_RING_OFFSET_PX,
-   GRID_GAP_PX,
-   NOTEBOOK_GAP_PX,
-} from "../Dashboard/DashboardGrid";
-import {
+   TILE_HEADING_CLASS,
    TileCard,
    TileHeading,
    type TileChrome,
@@ -22,6 +26,7 @@ import {
 } from "../Dashboard/TileCard";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import {
+   isTextTile,
    tileKey,
    tileLabel,
    type DashboardTile,
@@ -29,6 +34,7 @@ import {
 } from "./document";
 import { gapId } from "./layout";
 import { GapDroppable, NO_DRAG, TileSortable } from "./sortable";
+import { widthLabel } from "./widthLabel";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the menu
@@ -46,6 +52,8 @@ export function TileFrame({
    onInsertAfter,
    onSelect,
    onOpenMenu,
+   onRemove,
+   removeBlocked,
    resizing = false,
    width,
    onResizeStart,
@@ -70,6 +78,10 @@ export function TileFrame({
    onInsertAfter?: () => void;
    onSelect: () => void;
    onOpenMenu: (anchor: HTMLElement) => void;
+   /** Take the tile off the report, from the × on its corner. */
+   onRemove: () => void;
+   /** Why it cannot be removed (a saved report keeps one tile); the × says so instead. */
+   removeBlocked?: string;
    /** This tile's edge is being dragged. */
    resizing?: boolean;
    /** Dragging the right edge sets the width; absent, the tile has no edge handle (one column, or tags the file does not own). */
@@ -85,6 +97,7 @@ export function TileFrame({
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    return (
       <TileSortable id={tileKey(tile)} index={index}>
          {({ ref, handleRef }) => (
@@ -100,6 +113,7 @@ export function TileFrame({
                // A named group, so the name is announced: a label on a plain
                // element is not.
                role="group"
+               className={reportClasses.builderTile}
                aria-label={`Tile ${tile.name}`}
                aria-current={selected}
                // Keyboard focus anywhere in the tile selects it, as a press
@@ -148,6 +162,12 @@ export function TileFrame({
                   // in is the faded, dashed one — the pair every
                   // drag-and-drop grid draws. Doubled so they outrank
                   // the hover rule below on the tile in hand.
+                  // Room at the end of a card's heading for the menu
+                  // button, so a long title wraps before it rather than
+                  // running under it.
+                  ...(!bare && {
+                     [`& .${TILE_HEADING_CLASS}`]: { pr: "36px" },
+                  }),
                   "&&[data-dnd-dragging]": {
                      opacity: 1,
                      outline: "none",
@@ -160,6 +180,12 @@ export function TileFrame({
                   },
                   "&:hover .builder-affordance, &:focus-within .builder-affordance":
                      { opacity: 1 },
+                  // The remove ×, as a filter shows it: on hover and focus,
+                  // and while the tile is selected.
+                  ...removeBadgeRevealSx,
+                  ...(selected && {
+                     [`& .${REMOVE_BADGE_CLASS}`]: { opacity: 1 },
+                  }),
                   // No hover on a touch screen: the affordances stand.
                   "@media (hover: none)": {
                      "& .builder-affordance": { opacity: 1 },
@@ -185,44 +211,57 @@ export function TileFrame({
                   }}
                />
 
+               {/* Removing the tile: the × on its corner, the one removal
+                control in the builder (a filter's is the same). On the
+                selection ring's corner for bare prose, the card's otherwise. */}
+               <RemoveBadge
+                  label={`Remove ${tileLabel(tile)}`}
+                  onRemove={onRemove}
+                  {...(removeBlocked ? { disabledReason: removeBlocked } : {})}
+                  inset={bare ? BARE_RING_OFFSET_PX : 0}
+               />
+
                {/* The tile's menu: its chart and drill-through.
                 A press here is never the start of a drag: the
                 sensor refuses to activate from a button. */}
-               <IconButton
-                  className="builder-affordance"
-                  size="small"
-                  aria-label={`Settings for ${tileLabel(tile)}`}
-                  onClick={(event) => {
-                     event.stopPropagation();
-                     onOpenMenu(event.currentTarget);
-                  }}
-                  sx={{
-                     position: "absolute",
-                     // A tab on the tile's top edge, the same on a card and
-                     // on bare content: centred on the card's border, or on
-                     // a bare tile's ring, so it never covers the tile's title
-                     // or text.
-                     top: `${-((bare ? BARE_RING_OFFSET_PX + 1 : 0) + 12)}px`,
-                     right: bare ? 0 : "12px",
-                     border: theme.cardBorder,
-                     borderRadius: 1,
-                     // A 24px hit target at least, whatever the glyph.
-                     width: 28,
-                     height: 24,
-                     zIndex: 2,
-                     color: theme.tileTitle,
-                     bgcolor: theme.tile,
-                     opacity: selected || menuOpen ? 0.9 : 0,
-                     transition: `opacity ${MOTION_FAST}`,
-                     ...reducedMotionSx,
-                     "&:hover": {
-                        opacity: 1,
-                        bgcolor: theme.tile,
-                     },
-                  }}
-               >
-                  <SpreadDotsIcon />
-               </IconButton>
+               {/* A text tile has no menu: it is edited in place and removed
+                from its ×. */}
+               {!isTextTile(tile) && (
+                  <IconButton
+                     className="builder-affordance"
+                     size="small"
+                     aria-label={`Settings for ${tileLabel(tile)}`}
+                     onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenMenu(event.currentTarget);
+                     }}
+                     sx={{
+                        position: "absolute",
+                        // Inside the tile, top right: on a card, in its heading
+                        // row level with the title (the heading leaves room for
+                        // it: see `TILE_HEADING_CLASS` below); on prose, in its
+                        // top corner, which a readable line leaves empty. Not
+                        // astride the edge, half outside the tile it belongs to.
+                        top: bare ? 0 : `${MENU_INSET_PX}px`,
+                        right: bare ? 0 : `${MENU_INSET_PX}px`,
+                        borderRadius: ui.radius.control,
+                        width: 28,
+                        height: 28,
+                        zIndex: 2,
+                        color: "text.secondary",
+                        bgcolor: "action.hover",
+                        opacity: selected || menuOpen ? 1 : 0,
+                        transition: `opacity ${MOTION_FAST}`,
+                        ...reducedMotionSx,
+                        "&:hover": {
+                           opacity: 1,
+                           bgcolor: "action.selected",
+                        },
+                     }}
+                  >
+                     <SpreadDotsIcon />
+                  </IconButton>
+               )}
 
                {/* The right edge, which sets the width: dragged, or focused and
                 stepped with the arrow keys a column at a time (Home and End go
@@ -230,7 +269,7 @@ export function TileFrame({
                 never takes a press on it. */}
                {onResizeStart && (
                   <Box
-                     className="builder-affordance"
+                     className={`builder-affordance ${reportClasses.widthHandle}`}
                      {...{ [NO_DRAG]: "" }}
                      role="separator"
                      tabIndex={width ? 0 : -1}
@@ -267,14 +306,15 @@ export function TileFrame({
                      onPointerUp={onResizeEnd}
                      onPointerCancel={onResizeEnd}
                      onClick={(event) => event.stopPropagation()}
-                     sx={{
+                     sx={(mui) => ({
                         position: "absolute",
                         top: 0,
                         bottom: 0,
                         // Straddles the edge, so the target is a usable width
-                        // without eating into the tile's content.
-                        right: "-5px",
-                        width: "10px",
+                        // without eating into the tile's content; wide enough
+                        // for the knob at its middle.
+                        right: "-8px",
+                        width: "16px",
                         cursor: "col-resize",
                         touchAction: "none",
                         zIndex: 2,
@@ -290,19 +330,87 @@ export function TileFrame({
                            outlineOffset: 1,
                            borderRadius: "3px",
                         },
+                        // A grip tab at the middle of the edge: the shape a
+                        // splitter's handle has, so it reads as "drag sideways"
+                        // without a word. The whole edge strip still takes the
+                        // drag; the tab is where the eye goes.
+                        "&::before": {
+                           content: '""',
+                           position: "absolute",
+                           top: "50%",
+                           left: "50%",
+                           transform: "translate(-50%, -50%)",
+                           width: "12px",
+                           height: "40px",
+                           boxSizing: "border-box",
+                           borderRadius: ui.radius.control,
+                           border: `1px solid ${
+                              resizing
+                                 ? theme.accent
+                                 : edgeColor(theme.cardBorder)
+                           }`,
+                           bgcolor: mui.palette.background.paper,
+                           boxShadow:
+                              "0 1px 2px rgba(16, 24, 40, 0.10), 0 2px 6px rgba(16, 24, 40, 0.08)",
+                           transition: `border-color ${MOTION_FAST}`,
+                        },
+                        // Its two grip lines.
                         "&::after": {
                            content: '""',
                            position: "absolute",
                            top: "50%",
                            left: "50%",
                            transform: "translate(-50%, -50%)",
-                           width: "4px",
-                           height: "28px",
-                           borderRadius: "2px",
-                           bgcolor: theme.accent,
+                           width: "5px",
+                           height: "16px",
+                           borderLeft: `1.5px solid ${
+                              resizing
+                                 ? theme.accent
+                                 : mui.palette.text.secondary
+                           }`,
+                           borderRight: `1.5px solid ${
+                              resizing
+                                 ? theme.accent
+                                 : mui.palette.text.secondary
+                           }`,
+                           boxSizing: "border-box",
+                           opacity: resizing ? 1 : 0.7,
                         },
-                     }}
-                  />
+                        "&:hover::before": { borderColor: theme.accent },
+                        "&:hover::after": {
+                           borderColor: theme.accent,
+                           opacity: 1,
+                        },
+                     })}
+                  >
+                     {/* While dragging, the width it will snap to, in words. The
+                      separator's own value text says the same to a screen reader. */}
+                     {resizing && width && (
+                        <Box
+                           aria-hidden
+                           sx={(mui) => ({
+                              position: "absolute",
+                              top: "50%",
+                              // Set against the edge, inside the tile: centred
+                              // on it, half the label hung past the grid's right
+                              // edge for a tile that reaches it, where a
+                              // scrolling host cuts it off.
+                              right: "50%",
+                              transform: "translateY(calc(-100% - 28px))",
+                              px: 1,
+                              py: 0.5,
+                              borderRadius: ui.radius.control,
+                              bgcolor: mui.palette.text.primary,
+                              color: mui.palette.background.paper,
+                              ...ui.type.label,
+                              whiteSpace: "nowrap",
+                              pointerEvents: "none",
+                           })}
+                        >
+                           {widthLabel(width.span, width.columns)}
+                        </Box>
+                     )}
+                  </Box>
                )}
 
                {onInsertAfter && (
@@ -319,7 +427,7 @@ export function TileFrame({
                         // Centred in the gap below the tile, not on its edge: on
                         // a one-line notebook text tile, an edge-centred button
                         // covered the middle of the text it sits under.
-                        bottom: `-${(bare ? NOTEBOOK_GAP_PX : GRID_GAP_PX) / 2 + 12}px`,
+                        bottom: `-${GRID_GAP_PX / 2 + 12}px`,
                         left: "50%",
                         transform: "translateX(-50%)",
                         width: 24,
@@ -346,8 +454,11 @@ export function TileFrame({
    );
 }
 
-/** How far the selection ring stands outside what it selects: its 2px offset plus its 2px width. */
-export const SELECTION_RING_PX = 4;
+/** How far the tile menu button sits in from a card's top and right edges: level with the title. */
+const MENU_INSET_PX = 14;
+
+/** How far the selection stands outside what it selects: its halo. */
+export const SELECTION_RING_PX = 7;
 
 /**
  * The builder's selection look, for anything a person can select — a tile,
@@ -362,12 +473,24 @@ export const selectionSx = (
       selected,
       flash = false,
       bare = false,
-   }: { selected: boolean; flash?: boolean; bare?: boolean },
+      ringOffset = BARE_RING_OFFSET_PX,
+   }: {
+      selected: boolean;
+      flash?: boolean;
+      bare?: boolean;
+      /** How far a bare ring stands off its prose. Only content outside the grid may go wider than the grid's own. */
+      ringOffset?: number;
+   },
 ): SystemStyleObject<Theme> => {
+   const ui = theme.ui;
    const ring = selected || flash ? theme.accent : "transparent";
-   const hoverRing = selected
-      ? theme.accent
-      : theme.cardBorder.replace(/^1px solid /, "");
+   // A soft band outside the ring, so a selection reads as lifted to the
+   // front rather than outlined. Wider and stronger for the undo flash.
+   const halo = flash
+      ? `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`
+      : selected
+        ? `0 0 0 4px color-mix(in srgb, ${theme.accent} 14%, transparent)`
+        : undefined;
    const transition = `outline-color ${MOTION_FAST}, border-color ${MOTION_FAST}, opacity ${MOTION_FAST}, box-shadow ${MOTION_FAST}`;
    if (bare)
       // Bare content has no padding of its own, so the ring stands off it by
@@ -381,28 +504,42 @@ export const selectionSx = (
          "&::before": {
             content: '""',
             position: "absolute",
-            inset: `${-BARE_RING_OFFSET_PX}px`,
+            inset: `${-ringOffset}px`,
             borderRadius: 1,
             border: `2px solid ${ring}`,
+            ...(halo && { boxShadow: halo }),
             pointerEvents: "none",
             transition,
             ...reducedMotionSx,
          },
-         "&:hover::before": { borderColor: hoverRing },
+         // No hover ring: the prose's own wash says it can be edited, and a
+         // ring around the wash read as a box drawn round a box.
       };
-   // A card carries its own padding, so its ring hugs its edge.
+   // A card's ring IS its edge: the card's own border turns the accent and
+   // thickens, with the halo outside it. An outline standing off the card
+   // drew a second frame around the first, with a gap between them.
+   // Hover deepens the card's own edge and lifts it; the ring is selection's
+   // alone. A hover ring the shape of the selection ring made a pointed-at tile
+   // and a selected one look alike.
    return {
-      borderRadius: 1,
-      outline: `2px solid ${ring}`,
-      outlineOffset: 2,
-      ...(flash && {
-         boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`,
-      }),
+      borderRadius: ui.radius.tile,
+      "& > .MuiPaper-root": {
+         transition,
+         ...reducedMotionSx,
+         ...((selected || flash) && {
+            borderColor: theme.accent,
+            boxShadow: `0 0 0 1px ${theme.accent}${halo ? `, ${halo}` : ""}`,
+         }),
+      },
       transition,
       ...reducedMotionSx,
       "&:hover": {
-         outlineColor: hoverRing,
          boxShadow: theme.shadow.lift,
+         ...(!(selected || flash) && {
+            "& > .MuiPaper-root": {
+               borderColor: hoverEdgeColor(theme.cardBorder, theme.tileTitle),
+            },
+         }),
       },
    };
 };
@@ -490,7 +627,9 @@ export function GridGuides({ columns }: { columns: number }) {
             position: "absolute",
             inset: 0,
             pointerEvents: "none",
-            zIndex: 3,
+            // Behind the tiles: the bands show in the gaps and the free space a
+            // tile can grow into, not over its content.
+            zIndex: 0,
             display: "grid",
             gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
             gap: `${GRID_GAP_PX}px`,
@@ -500,12 +639,10 @@ export function GridGuides({ columns }: { columns: number }) {
             <Box
                key={column}
                sx={{
-                  borderLeft: `1px dashed ${theme.accent}`,
-                  borderRight:
-                     column === columns - 1
-                        ? `1px dashed ${theme.accent}`
-                        : "none",
-                  opacity: 0.35,
+                  // A faint band per column: the tracks a width snaps to.
+                  bgcolor: theme.accent,
+                  opacity: 0.06,
+                  borderRadius: "3px",
                }}
             />
          ))}

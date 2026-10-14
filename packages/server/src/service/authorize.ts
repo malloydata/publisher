@@ -784,7 +784,9 @@ export function assertNoAuthorizeNearMisses(found: readonly string[]): void {
  *    that source's own annotation note object onto the join field's own
  *    annotations BY REFERENCE whenever the join line adds none of its own —
  *    textually indistinguishable from a misplaced annotation, but not one;
- *    see `extractSourcesFromModelDef`'s note-identity check.
+ *    see `extractSourcesFromModelDef`'s note-identity check, which matches
+ *    the copy by object identity or, when the declaring file was compiled
+ *    more than once (a diamond import), by the position it was parsed from.
  *  - `"file"` — a `##(authorize)` annotation on the model itself rather than
  *    on a `source:`. File-level `##(authorize)` is deprecated: no code path
  *    reads a model's own notes for authorize purposes any more, so this is

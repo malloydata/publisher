@@ -68,6 +68,8 @@ import {
    planModelPreaggregation,
    type RollupPlan,
 } from "./preaggregation_synthesis";
+import { tryCompileSynthesizedPreaggregation } from "./preaggregation_compile";
+import { type RenderTagTarget, renderTagTargets } from "./render_tag_targets";
 import { modelInfoOf } from "./model_info";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { logger } from "../logger";
@@ -183,6 +185,7 @@ import {
 } from "./model_limits";
 import { bigIntReplacer } from "../json_utils";
 import { onlyParseFailures } from "./compile_restriction";
+import { createEventLoopYielder } from "./event_loop_yield";
 import {
    buildDerivationBaseMap,
    buildJoinBaseMap,
@@ -774,6 +777,18 @@ export class Model {
     * files on disk have moved on).
     */
    private compiledSourceText: string | undefined;
+   /** {@link getReportModelFacts}, once read; boxed so `undefined` is cached too. */
+   private reportModelFacts:
+      | { value: ReportModelFacts | undefined }
+      | undefined;
+   /** {@link carriesReportTag}, once read. */
+   private reportTagCarried: boolean | undefined;
+   /**
+    * Per materializer, settles once {@link ensureSharedQueryModel} has built
+    * its QueryModel. Weak, so a grafted materializer evicted from its cache
+    * takes its entry with it.
+    */
+   private sharedQueryModels = new WeakMap<ModelMaterializer, Promise<void>>();
    private compiledReportFacts:
       | Promise<ReportModelFacts | undefined>
       | undefined;
@@ -788,7 +803,7 @@ export class Model {
    private notebookReaderRefusal: NotebookReaderError | undefined;
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
-   /** The tile layout of a served notebook written as one; undefined for one written as cells. */
+   /** The tile layout of a served linear `.malloy` report; undefined for a `.malloynb`. */
    private notebookLayout: ServedReportManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
@@ -3339,6 +3354,7 @@ export class Model {
             grafts,
             graftScope!,
          );
+         await this.ensureSharedQueryModel(graftedMaterializer);
          const recompiled = options.recompile(graftedMaterializer, grafts);
          if (options.proveGraft) {
             // The own-scope binder proves the run target only.
@@ -4855,7 +4871,64 @@ export class Model {
       // Paired with `modelDef` above: the coordinates in that IR index this
       // text and no other revision of the file.
       model.compiledSourceText = data.modelSourceText;
+      model.preparedRenderTagResults = data.renderTagResults as
+         | { label: string; result?: Malloy.Result }[]
+         | undefined;
+      model.preparedPreaggregateCompanion = data.preaggregateCompanion as
+         | { modelDef?: ModelDef }
+         | undefined;
       return model;
+   }
+
+   /**
+    * Build a materializer's Malloy `QueryModel` once, on the base model it
+    * holds, so every query compiled against it reuses it: this Model's own
+    * materializer, a row-level grafted one, or the storage serve shape.
+    *
+    * Malloy hands a query compiled from a model the base model's existing
+    * `QueryModel` when the query does not modify the model
+    * (`existingQueryModel` in `Malloy.compile`), but only if the base model
+    * already has one. Neither a model hydrated from a `ModelDef` nor one Malloy
+    * compiled from source has one, so without this every prepare (each
+    * render-tag target at load, each query) built a `QueryModel` over every
+    * source in the file and dropped it. A `QueryModel` is a function of the
+    * `ModelDef`, and each materializer's `ModelDef` is fixed for its life, so
+    * building it once is the same answer.
+    *
+    * Call it just before compiling against the materializer, so a query the
+    * 404 and 403 gates reject builds nothing.
+    *
+    * A failure to build is logged and not retried. `getModel()` is memoized
+    * by Malloy, failures included, and building a `QueryModel` from a fixed
+    * `ModelDef` fails the same way every time, so a retry would only repeat
+    * it. The query that needs it builds its own and fails the way it always
+    * did.
+    */
+   private ensureSharedQueryModel(
+      materializer: ModelMaterializer | undefined,
+   ): Promise<void> {
+      if (!materializer) return Promise.resolve();
+      let built = this.sharedQueryModels.get(materializer);
+      if (!built) {
+         built = (async () => {
+            try {
+               const base = await materializer.getModel();
+               void base.queryModel;
+            } catch (error) {
+               logger.warn(
+                  "Could not build a shared QueryModel; each query builds its own",
+                  {
+                     packageName: this.packageName,
+                     modelPath: this.modelPath,
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  },
+               );
+            }
+         })();
+         this.sharedQueryModels.set(materializer, built);
+      }
+      return built;
    }
 
    /**
@@ -5141,6 +5214,14 @@ export class Model {
     * lint are built from. See `service/report_manifest.ts`.
     */
    public getReportModelFacts(): ReportModelFacts | undefined {
+      // Memoized: every input is fixed for this Model's life (a reload builds
+      // new Models), and `carriesReportTag` asks on every query.
+      return (this.reportModelFacts ??= {
+         value: this.deriveReportModelFacts(),
+      }).value;
+   }
+
+   private deriveReportModelFacts(): ReportModelFacts | undefined {
       if (!this.modelDef) return undefined;
       // `this.givens` is the model's surfaced given list — the same surface
       // `filterGivensToModelSurface` enforces at query time, so a control the
@@ -5830,6 +5911,11 @@ export class Model {
     * said; discovery's map is the answer after it.
     */
    public carriesReportTag(): boolean {
+      // Memoized, like the facts it reads: the query paths ask on every query.
+      return (this.reportTagCarried ??= this.deriveCarriesReportTag());
+   }
+
+   private deriveCarriesReportTag(): boolean {
       if (!isReportEligiblePath(this.modelPath)) return false;
       const facts = this.getReportModelFacts();
       return facts !== undefined && factsReportTag(facts).status !== "none";
@@ -6013,30 +6099,46 @@ export class Model {
       // that fails to compile still leaves the storage tier able to serve these
       // rollups: planning is pure, the compile is not.
       //
-      // Statically imported, unlike the compile helper below. That one needs a
-      // dynamic import to break a real cycle; this module is already in this
-      // file's static graph by way of `preaggregation_serve_bindings`, so a
-      // dynamic import here bought nothing and put an await between the reset
-      // above and the assignment below.
       this.preaggregateRollupPlans = planModelPreaggregation(
          this.modelDef.contents as Record<string, unknown>,
       );
       this.preaggregatePlansVersion += 1;
-      // Dynamic import to break a module cycle: the helper compiles through
-      // Model.getModelRuntime, so importing it at the top of this file would make
-      // the two modules import each other.
-      const { tryCompileSynthesizedPreaggregation } = await import(
-         "./preaggregation_compile"
-      );
+      // The worker compiles the companion alongside the model (see
+      // SerializedModel.preaggregateCompanion), so the first build after
+      // hydration loads it rather than compiling it here. A build manifest is
+      // read only when a query is prepared, never by the compile, so loading it
+      // into a runtime holding `buildManifest` serves exactly what compiling it
+      // here would. Taken once: a later rebuild compiles against whatever is
+      // bound then.
+      const prepared = this.preparedPreaggregateCompanion;
+      this.preparedPreaggregateCompanion = undefined;
+      if (prepared) {
+         this.preaggregateServeMaterializer = prepared.modelDef
+            ? makeHydrationRuntime(
+                 malloyConfig,
+                 buildManifest,
+              )._loadModelFromModelDef(prepared.modelDef)
+            : undefined;
+         return;
+      }
       const synthesized = await tryCompileSynthesizedPreaggregation({
          packagePath,
          modelPath: this.modelPath,
-         malloyConfig,
          contents: this.modelDef.contents as Record<string, unknown>,
-         buildManifest,
+         getRuntime: (overlay) =>
+            Model.getModelRuntime(packagePath, this.modelPath, malloyConfig, {
+               buildManifest,
+               overlay,
+            }),
       });
       this.preaggregateServeMaterializer = synthesized?.materializer;
    }
+
+   /**
+    * The pre-aggregation companion the package-load worker compiled for this
+    * model, held until {@link buildPreaggregateServeModel} reads it.
+    */
+   private preparedPreaggregateCompanion: { modelDef?: ModelDef } | undefined;
 
    /**
     * Compile-time renderer-tag validation, run on the main thread.
@@ -6083,56 +6185,36 @@ export class Model {
          "@malloydata/render-validator"
       );
 
-      // Renderable targets: top-level named queries and every view declared on a
-      // source. Source views are where render tags like `# big_value` usually
-      // live, and they are NOT in `this.queries`.
-      const targets: { label: string; queryString: string }[] = [];
-      for (const query of this.queries ?? []) {
-         // Only an annotated, named query can carry a render tag to validate;
-         // skip the rest rather than compiling every query in the package.
-         if (!query.name || !query.annotations?.length) {
-            continue;
-         }
-         // Quote the identifier (see quoteMalloyIdentifier) so a name needing
-         // Malloy quoting still lexes and cannot break out of the quotes.
-         targets.push({
-            label: query.name,
-            queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
-         });
-      }
-      for (const source of this.sources ?? []) {
-         for (const view of source.views ?? []) {
-            // Render tags live on the view's own or inherited annotations, not
-            // via source-to-view inheritance, so an unannotated view has
-            // nothing to validate and need not be compiled. (A model-level
-            // `##` tag is the one case this gate doesn't reach, but those are
-            // theme/config, not the child-only chart tags this guards against.)
-            if (!view.annotations?.length) {
-               continue;
-            }
-            // Quote both identifiers (see quoteMalloyIdentifier): an unquoted
-            // name like `gated-source` fails to lex, and the catch below would
-            // then silently skip the very view this is meant to validate.
-            targets.push({
-               label: `${source.name} -> ${view.name}`,
-               queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,
-            });
-         }
-      }
+      // The worker prepares the targets alongside the model's compile (see
+      // SerializedModel.renderTagResults), in target order, up to its soft
+      // deadline; the targets after the last one it reached are prepared here,
+      // all of them for a model that arrives without results. Taken once: the
+      // results are only read by this check.
+      const fromWorker = this.preparedRenderTagResults ?? [];
+      this.preparedRenderTagResults = undefined;
+      const remaining = renderTagTargets(this.queries, this.sources).slice(
+         fromWorker.length,
+      );
+      const prepared = [
+         ...fromWorker.filter(
+            (entry): entry is { label: string; result: Malloy.Result } =>
+               entry.result !== undefined,
+         ),
+         ...(remaining.length > 0
+            ? await this.prepareRenderTagTargets(mm, remaining)
+            : []),
+      ];
 
       const findings: RenderTagWarning[] = [];
-      for (const target of targets) {
-         let result: Malloy.Result;
-         try {
-            const prepared = await mm
-               .loadQuery(target.queryString)
-               .getPreparedResult();
-            result = prepared.toStableResult();
-         } catch {
-            // A view/query that fails to prepare is reported by the normal
-            // compile path; don't mask that with a render-tag error.
-            continue;
-         }
+      // Once per model: it reads the whole model, and the loop below runs
+      // without an await, so a call per result held the event loop for the
+      // number of results times the model's size.
+      const carriesReportTag = this.carriesReportTag();
+      // Nothing below does I/O, so without this the whole loop is one
+      // macrotask: a large model's validation held the event loop for ~1 s.
+      const yielder = createEventLoopYielder();
+      for (const { label, result } of prepared) {
+         await yielder.maybeYield();
          // Keep both severities. The renderer reports a tag that is well-formed
          // but inert as `warn`, not `error` -- `# colspan` outside columns mode
          // ("Ignored # colspan ... colspan only applies in columns mode"), or a
@@ -6157,19 +6239,19 @@ export class Model {
          // narrowing below surfaces anything unexpected as `warn` instead.
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            this.carriesReportTag(),
+            carriesReportTag,
          );
          if (logs.length > 0) {
             // An inert tag is not an invalid one, so don't call it "Invalid";
             // the per-finding messages already say which kind each is.
             logger.warn(
-               `Render tag findings on '${target.label}': ${logs
+               `Render tag findings on '${label}': ${logs
                   .map((e) => `[${e.severity}] ${e.message}`)
                   .join("; ")}`,
             );
             for (const e of logs) {
                findings.push({
-                  subject: target.label,
+                  subject: label,
                   message: e.message,
                   severity: e.severity === "error" ? "error" : "warn",
                });
@@ -6177,6 +6259,44 @@ export class Model {
          }
       }
       return findings;
+   }
+
+   /**
+    * Results the package-load worker prepared for the render-tag check, held
+    * until {@link validateRenderTags} reads them.
+    */
+   private preparedRenderTagResults:
+      | { label: string; result?: Malloy.Result }[]
+      | undefined;
+
+   /**
+    * Prepare render-tag targets compile-only: the ones the worker did not
+    * reach. A target that fails to prepare is reported by the normal compile
+    * path, so it is skipped rather than masked here.
+    */
+   private async prepareRenderTagTargets(
+      mm: ModelMaterializer,
+      targets: RenderTagTarget[],
+   ): Promise<{ label: string; result: Malloy.Result }[]> {
+      // One QueryModel for every prepare below, not one each.
+      await this.ensureSharedQueryModel(mm);
+      const yielder = createEventLoopYielder();
+      const prepared: { label: string; result: Malloy.Result }[] = [];
+      for (const target of targets) {
+         await yielder.maybeYield();
+         try {
+            const result = await mm
+               .loadQuery(target.queryString)
+               .getPreparedResult();
+            prepared.push({
+               label: target.label,
+               result: result.toStableResult(),
+            });
+         } catch {
+            continue;
+         }
+      }
+      return prepared;
    }
 
    public async getModel(): Promise<ApiCompiledModel> {
@@ -6302,54 +6422,26 @@ export class Model {
       if (isNotebookReaderError(parse)) return refuse(parse);
       const read = readNotebookCells(parse, modelDef, text);
       if (read.error) return refuse(read.error);
-      const anonymousQueries = this.modelInfo?.anonymous_queries ?? [];
       this.notebookAnnotations = read.annotations;
       const layout = this.readNotebookLayout();
       this.notebookLayout = layout;
-      // A layout's prose and queries are its tiles, in tile order; the file's own cells are only its definitions.
-      const fileCells = layout
-         ? read.cells.filter((cell) => cell.kind === "definition")
-         : read.cells;
-      const cells: RunnableNotebookCell[] = fileCells.map(
-         (cell): RunnableNotebookCell => {
-            if (cell.kind === "markdown") {
-               return { type: "markdown", kind: "markdown", text: cell.text };
-            }
-            if (cell.kind === "definition") {
-               return {
-                  type: "code",
-                  kind: "definition",
-                  text: cell.text,
-                  markdown: cell.markdown,
-                  proseLines: cell.proseLines,
-                  codeLine: cell.codeLine,
-                  caption: cell.caption,
-                  modelDef,
-               };
-            }
-            const k = cell.queryIndex ?? -1;
-            const anonymous = anonymousQueries[k];
-            const compiled = modelDef.queryList[k] as NamedQueryDef | undefined;
-            return {
+      // A linear report's prose and queries are its tiles, in tile order; the
+      // file's own cells are only its definitions. Its `run:` statements and
+      // floating prose are no cells: the cell format is retired (`report.ts`).
+      const cells: RunnableNotebookCell[] = read.cells
+         .filter((cell) => cell.kind === "definition")
+         .map(
+            (cell): RunnableNotebookCell => ({
                type: "code",
-               kind: "query",
+               kind: "definition",
                text: cell.text,
                markdown: cell.markdown,
                proseLines: cell.proseLines,
                codeLine: cell.codeLine,
                caption: cell.caption,
-               queryIndex: cell.queryIndex,
-               runnable: materializer.loadQuery(cell.text),
-               modelMaterializer: materializer,
-               // Whole-file given scope: 0.0.432 refuses a forward `$GIVEN`, so no cell reads a later one.
                modelDef,
-               queryInfo: anonymous && {
-                  ...anonymous,
-                  name: compiled?.as || compiled?.name || "",
-               },
-            };
-         },
-      );
+            }),
+         );
       if (layout) {
          for (const tile of layout.tiles ?? []) {
             if (tile.kind === "text") {
@@ -6379,7 +6471,7 @@ export class Model {
       return "ok";
    }
 
-   /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
+   /** The manifest of a served linear `.malloy` report, which lists its tiles. */
    private readNotebookLayout(): ServedReportManifest | undefined {
       // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
       const facts =
@@ -6437,7 +6529,7 @@ export class Model {
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy with a model-level ## artifact { layout=linear } tag.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy report with a model-level ## artifact { layout=linear tiles=[…] } tag.`,
          );
       }
    }
@@ -6607,6 +6699,7 @@ export class Model {
          ...groups.flatMap((g) => g.members),
       ]);
 
+      await this.ensureSharedQueryModel(this.serveShapeCache.materializer);
       const runnable =
          this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
       // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
@@ -7517,6 +7610,8 @@ export class Model {
          // and the `run: source->view` string built from the caller-supplied
          // `sourceName`/`queryName` pair are untrusted, so both compile here;
          // only author-curated notebook cells use the unrestricted `loadQuery`.
+         // After the 404 and 403 gates above: a rejected query builds nothing.
+         await this.ensureSharedQueryModel(this.modelMaterializer);
          runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
          // Kept so a routed query can still be answered live if the store fails
          // underneath it at RUN time (see the freshnessFallback retry below).

@@ -1,0 +1,102 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { createHash, randomUUID } from "crypto";
+import fs from "fs";
+import path from "path";
+
+/**
+ * Hashed in place of a file whose bytes could not be read.
+ *
+ * Without it an unreadable file and an empty one produce the same digest, so a
+ * package that started failing to read a model would look byte-identical to one
+ * whose model is legitimately empty. The marker is not valid file content (no
+ * path can contain a NUL), so it cannot collide with a file that happens to
+ * hold this text.
+ */
+const UNREADABLE = "\0<unreadable>\0";
+
+/**
+ * SHA-256 of the exact bytes a package is serving, keyed by package-relative
+ * path.
+ *
+ * Paths are sorted so the digest is independent of the caller's iteration
+ * order, and each path is hashed alongside its content so a rename moves the
+ * digest even when the bytes are unchanged.
+ *
+ * The caller decides what counts as served content by choosing what to pass,
+ * plus `extra` for served text that lives in no file. Anything omitted is invisible here: a change to a file outside the set moves
+ * nothing, which is the whole reason the set is a parameter rather than a walk
+ * of the package directory.
+ */
+export function computeSourceContentSha(
+   packagePath: string,
+   contentPaths: Iterable<string>,
+   extra?: string,
+): string {
+   const hash = createHash("sha256");
+   for (const relativePath of [...contentPaths].sort()) {
+      hash.update(relativePath);
+      hash.update("\0");
+      const absolute = path.join(packagePath, relativePath);
+      try {
+         hash.update(fs.readFileSync(absolute));
+      } catch {
+         hash.update(UNREADABLE);
+      }
+      hash.update("\0");
+   }
+   // Inline manifest content that is served but lives in no file of its own.
+   if (extra !== undefined) hash.update(`\0extra\0${extra}`);
+   return hash.digest("hex");
+}
+
+/** JSON with object keys sorted at every depth, so equal values serialize equally. */
+export function canonicalJson(value: unknown): string {
+   return JSON.stringify(value, (_key, v: unknown) =>
+      v !== null && typeof v === "object" && !Array.isArray(v)
+         ? Object.fromEntries(
+              Object.entries(v).sort(([a], [b]) =>
+                 a < b ? -1 : a > b ? 1 : 0,
+              ),
+           )
+         : v,
+   );
+}
+
+/** A real `agents` declaration is a few KB; past this it is not read. */
+export const MANIFEST_AGENTS_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The value, or a marker string when it is too deep or too large to hash and
+ * to post across the worker boundary, where a stack overflow is not an
+ * author-facing error. The marker is not an object, so the agents reader
+ * answers it with its usual "must be an object" warning.
+ */
+export function boundedManifestValue(value: unknown): unknown {
+   try {
+      const text = canonicalJson(value);
+      if (text === undefined || text.length <= MANIFEST_AGENTS_MAX_BYTES) {
+         return value;
+      }
+   } catch {
+      // Too deep to serialize.
+   }
+   return "[unreadable: too deep or too large]";
+}
+
+export function canonicalSha(value: unknown): string {
+   return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+/**
+ * A fresh identifier for one load of a package.
+ *
+ * Minted per load rather than derived from content, so two loads of identical
+ * bytes get different revisions. That makes it the wrong thing to compare when
+ * asking "did my edit reach the server" -- use the content sha for that -- and
+ * the right thing for identifying which load answered.
+ */
+export function mintServedRevision(): string {
+   return randomUUID();
+}

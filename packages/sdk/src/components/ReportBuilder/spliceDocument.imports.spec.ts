@@ -69,7 +69,7 @@ describe("spliceDashboardDocument: imports", () => {
             {
                modelPath: "dashboards/blank.malloy",
                textHeld: false,
-               notebook: false,
+               widths: true,
             },
          );
       });

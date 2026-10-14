@@ -82,12 +82,4 @@ describe("a .malloynb cell with no hydrated query", () => {
    it("shows its queryInfo when nothing is curated", async () => {
       expect((await lastCellOf(false))?.queryInfo).toContain("order_count");
    });
-
-   it("keeps a served notebook cell's own markdown under a surface, whose queryInfo it withholds", async () => {
-      const cell = await lastCellOf(true, "notebooks/local.malloy");
-      expect(cell?.queryInfo).toBeUndefined();
-      expect(cell?.markdown).toStartWith("Reads the hidden file");
-      expect(cell?.proseLines).toEqual([[0, 0]]);
-      expect(cell?.codeLine).toBe(1);
-   });
 });

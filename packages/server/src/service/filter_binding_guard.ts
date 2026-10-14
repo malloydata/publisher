@@ -64,6 +64,7 @@ import {
 } from "./gate_registry_walk";
 import { findSourceByOwnAnnotationIdentity } from "./gate_classification";
 import { parseAuthorizeAnnotation } from "./authorize";
+import { sameNotePosition } from "./annotations";
 
 /**
  * The next struct back in a derivation chain, trying the same three links
@@ -903,21 +904,6 @@ export interface DocumentLocationLike {
    };
 }
 
-/** Whether two ranges mark the exact same span — compared field by field,
- *  never via `JSON.stringify` (key order on the two objects is not
- *  guaranteed to match just because the values do). */
-function rangesEqual(
-   a: DocumentLocationLike["range"],
-   b: DocumentLocationLike["range"],
-): boolean {
-   return (
-      a.start.line === b.start.line &&
-      a.start.character === b.start.character &&
-      a.end.line === b.end.line &&
-      a.end.character === b.end.character
-   );
-}
-
 /** Whether `outer` fully contains `inner` — same file, `inner` starting no
  *  earlier and ending no later. */
 function locationContains(
@@ -1051,11 +1037,7 @@ function findSiblingAnnotationDeclaringSource(
    for (const value of Object.values(siblingModelDef.contents)) {
       if (!isSourceDef(value)) continue;
       for (const candidate of ownLevelNotes(value.annotations)) {
-         if (
-            candidate.at &&
-            candidate.at.url === note.at.url &&
-            rangesEqual(candidate.at.range, note.at.range)
-         ) {
+         if (candidate.at && sameNotePosition(candidate.at, note.at)) {
             return value;
          }
       }
@@ -1168,11 +1150,7 @@ function siblingCandidateOwnsCondition(
    return !!candidate.filterList?.some((c) => {
       if (c.code !== condition.code) return false;
       const candidateAt = firstFieldUsageLocation(c);
-      return (
-         !!candidateAt &&
-         candidateAt.url === at.url &&
-         rangesEqual(candidateAt.range, at.range)
-      );
+      return !!candidateAt && sameNotePosition(candidateAt, at);
    });
 }
 

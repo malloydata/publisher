@@ -24,12 +24,10 @@ export interface DocumentEditor<T> {
    source: string;
    canUndo: boolean;
    canRedo: boolean;
-   /** Whether saving would change the file: the document differs from what was saved, or it opened that way ({@link DocumentEditorOptions.opensDirty}). */
+   /** Whether saving would change the file: the document differs from what was saved, or an undone save left its draft text in no file. */
    dirty: boolean;
-   /** Whether the document differs from what was saved, or an undone save left its draft text in no file: work to lose, leaving out an `opensDirty` open that nothing has touched. */
+   /** The same as `dirty`: work to lose. */
    edited: boolean;
-   /** Whether the document opened unsaved and no save has written it since ({@link DocumentEditorOptions.opensDirty}). */
-   pendingOpen: boolean;
    /**
     * Why the last save did not happen. The document is untouched when this is
     * set: a refused write keeps the reader's work and reports a defect in the
@@ -115,8 +113,6 @@ export interface DocumentEditorOptions<T> {
    onSave?: SaveHandler<T>;
    /** Patch the document into the file, or say why that was refused. */
    splice: (source: string, document: T) => Promise<SpliceResult>;
-   /** The open is itself unsaved: the document is a conversion of the file, so Save is on before any edit and Undo save returns to it. */
-   opensDirty?: boolean;
    /** The file the first save overwrites when it is not `source` (a draft opened over the package's file): what Undo save writes back. */
    replaces?: string;
    /** Whether `document` differs structurally from `saved`; omit for never. */
@@ -133,7 +129,6 @@ export function useDocumentEditor<T>(
       onSave,
       structural: isStructural,
       clearsHistory: isClearing,
-      opensDirty = false,
    } = options;
    const [history, setHistory] = useState<History<T>>({
       stack: [options.document],
@@ -149,8 +144,6 @@ export function useDocumentEditor<T>(
    // it, and a ref write does not re-render, so a successful save left the
    // editor reporting unsaved changes it had just written.
    const [saved, setSaved] = useState(options.document);
-   // Cleared by a save, restored by the undo of that save.
-   const [pendingOpen, setPendingOpen] = useState(opensDirty);
    // Cleared by a save, restored by the undo of that save.
    const [replacing, setReplacing] = useState(options.replaces);
    // Undoing a save over a draft writes the package's file back, so the draft text the editor shows is in no file until saved.
@@ -174,7 +167,6 @@ export function useDocumentEditor<T>(
               source: string;
               saved: T;
               history: History<T>;
-              pendingOpen: boolean;
               replacing: string | undefined;
               unwritten: boolean;
            };
@@ -245,7 +237,6 @@ export function useDocumentEditor<T>(
          source,
          saved,
          history: historyRef.current,
-         pendingOpen,
          replacing,
          unwritten,
       };
@@ -271,7 +262,6 @@ export function useDocumentEditor<T>(
          // now on disk rather than re-deriving from the text this session opened.
          setSource(result.source);
          setSaved(document);
-         setPendingOpen(false);
          setReplacing(undefined);
          setUnwritten(false);
          const after = clearing
@@ -311,7 +301,6 @@ export function useDocumentEditor<T>(
       onSave,
       source,
       saved,
-      pendingOpen,
       replacing,
       unwritten,
       isClearing,
@@ -345,7 +334,6 @@ export function useDocumentEditor<T>(
       // One batch, so no render sees the restored file under the saved history.
       setSource(before.source);
       setSaved(before.saved);
-      setPendingOpen(before.pendingOpen);
       setReplacing(before.replacing);
       setUnwritten(before.unwritten || before.replacing !== undefined);
       // An edit typed during the undo's write is kept, as it is during a save's; it is unsaved against the restored file.
@@ -381,9 +369,8 @@ export function useDocumentEditor<T>(
       source,
       canUndo: history.index > 0,
       canRedo: history.index < history.stack.length - 1,
-      dirty: edited || pendingOpen,
+      dirty: edited,
       edited,
-      pendingOpen,
       ...(error === undefined ? {} : { error }),
       update,
       undo,

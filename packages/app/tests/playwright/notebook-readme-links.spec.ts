@@ -37,9 +37,9 @@ const PKG_DIR = path.resolve(
 
 // A report's route is its path without `.malloy`, so that is what the link
 // names; `linked_tour.malloy` would open the model view instead.
-const README_SOURCE = `## artifact { layout=linear }
+const README_SOURCE = `## artifact { layout=linear tiles=[toc { kind=text }] }
 
-##|(markdown)
+##|(markdown) toc
 # Storefront README
 
 Table of contents:
@@ -48,9 +48,9 @@ Table of contents:
 |##
 `;
 
-const TARGET_SOURCE = `## artifact { layout=linear }
+const TARGET_SOURCE = `## artifact { layout=linear tiles=[intro { kind=text }] }
 
-##|(markdown)
+##|(markdown) intro
 # Linked tour
 
 Fixture report for the README-link routing regression spec.
@@ -101,7 +101,8 @@ test.describe("notebook-readme-links", () => {
       // The target notebook renders its authored H1, proving it loaded rather
       // than the "does not exist" error the dropped-package route gave.
       await expect(
-         page.getByRole("heading", { name: "Linked tour", level: 1 }),
+         // The report's title and the prose's own heading both say it.
+         page.getByRole("heading", { name: "Linked tour", level: 1 }).first(),
       ).toBeVisible();
    });
 });

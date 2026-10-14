@@ -408,7 +408,7 @@ source: published is duckdb.sql("select 1 as id") extend {
 
    describe('scope "append" refuses render tags in text that is a document', () => {
       // The refusal is for document text, which other viewers run; a plain fragment is the caller's own compile.
-      const DOCUMENT = "## artifact { layout=linear }\n";
+      const DOCUMENT = "## artifact { layout=linear tiles=[] }\n";
       const docRefusalFor = (source: string, scope: "append") =>
          refusalFor(DOCUMENT + source, scope);
       const docErrorsFor = (source: string, scope: "append") =>

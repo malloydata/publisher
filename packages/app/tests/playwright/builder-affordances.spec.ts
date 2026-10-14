@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { openAddTile } from "./helpers/builder";
 import { expect, test } from "@playwright/test";
 import {
    registerPackageEnv,
@@ -57,12 +58,10 @@ test.describe("builder affordances", () => {
       const tile = page.getByLabel("Tile order_tile");
       await expect(tile).toBeVisible();
 
-      await page.getByRole("button", { name: /^Settings for / }).click();
-      const remove = page.getByRole("button", { name: "Delete" });
+      // The × on the tile's corner, shown while it is hovered.
+      await tile.hover();
+      const remove = page.getByRole("button", { name: /^Remove / });
       await expect(remove).toHaveAttribute("aria-disabled", "true");
-      await expect(
-         page.getByText("A saved report needs at least one tile."),
-      ).toBeVisible();
       await expect(remove).toHaveAccessibleDescription(
          "A saved report needs at least one tile.",
       );
@@ -86,11 +85,11 @@ test.describe("builder affordances", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      await page.getByRole("button", { name: "Add tile", exact: true }).click();
+      await openAddTile(page);
 
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
       await expect(
-         dialog.getByRole("combobox", { name: "Source" }),
+         dialog.getByRole("combobox", { name: "Search views" }),
       ).toBeVisible({ timeout: 30_000 });
       const box = await dialog.boundingBox();
       expect(box).not.toBeNull();
@@ -119,12 +118,12 @@ test.describe("builder affordances", () => {
          timeout: 60_000,
       });
       // The empty row's action and the heading's are the same New report.
-      await page.getByRole("button", { name: "New report" }).last().click();
+      await page.getByRole("button", { name: "Add report" }).last().click();
       const dialog = page.getByRole("dialog", { name: "New report" });
       await expect(dialog).toBeVisible();
-      await expect(dialog.getByRole("combobox", { name: "Layout" })).toHaveText(
-         /Linear/,
-      );
+      await expect(
+         dialog.getByRole("radio", { name: "Linear", exact: true }),
+      ).toHaveAttribute("aria-checked", "true");
    });
 
    test("the Reports heading row carries New report, whichever layout the package already has", async ({
@@ -142,7 +141,7 @@ test.describe("builder affordances", () => {
       const section = page.getByRole("region", { name: "Reports" });
       await expect(section).toBeVisible({ timeout: 60_000 });
       await section
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .click();
       await expect(
          page.getByRole("dialog", { name: "New report" }),

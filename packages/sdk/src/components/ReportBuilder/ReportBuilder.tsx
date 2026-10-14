@@ -1,20 +1,26 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { DEFAULT_COLUMNS, nudgedSpan } from "../Dashboard/DashboardGrid";
+import { nudgedSpan } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
 import { reportEmitter, type ReportEventHandler } from "../Report/telemetry";
 import type { BuilderGiven } from "./controls";
 import { BuilderDialogs } from "./BuilderDialogs";
+import type { ViewPreview } from "./AddTileDialog";
 import { BuilderGrid } from "./BuilderGrid";
 import { BuilderHeader } from "./BuilderHeader";
 import { builderReport } from "./builderReport";
-import { BuilderToolbar } from "./BuilderToolbar";
+import { BuilderToolbar, SAVE_TARGET } from "./BuilderToolbar";
+import {
+   useReportControls,
+   type BuilderControlsHandler,
+} from "./builderControls";
 import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
 import {
@@ -27,13 +33,15 @@ import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
 import { useControlBindings } from "./useControlBindings";
-import { useConversionConfirm } from "./useConversionConfirm";
+import { useReportDraft } from "./useReportDraft";
 import { useReportEditor } from "./useReportEditor";
 import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
+import { layoutRules } from "../Report/layoutRules";
+import { ReportPage } from "../Report/ReportPage";
 
 export type { BuilderGiven } from "./controls";
 
@@ -101,9 +109,11 @@ export interface ReportBuilderProps {
    renderTile?: (
       tile: QueryTile,
       heading?: TileHeadingSlots,
-      /** The document's tile chrome — bare on a notebook — so the live tile reads as the reader's. */
+      /** Always `card`, in either layout; kept for hosts written against it. */
       chrome?: TileChrome,
    ) => ReactNode;
+   /** A view picked in Add a tile, run as the tile it would add; absent, the picker says what will run. */
+   renderViewPreview?: (view: ViewPreview) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -151,12 +161,6 @@ export interface ReportBuilderProps {
     */
    onEvent?: ReportEventHandler;
    /**
-    * The document is a conversion of a cell-format notebook: `from` is the text
-    * on disk, `to` the layout text it converts to. Save writes `to` with the
-    * edits spliced in, and Undo save puts `from` back.
-    */
-   conversion?: { from: string; to: string };
-   /**
     * Whether the document differs from what was last saved, on every change
     * and on mount.
     *
@@ -165,8 +169,13 @@ export interface ReportBuilderProps {
     * cannot answer that: the saved baseline lives in this hook, so a parent
     * comparing the document it is handed against the one it passed in reads
     * dirty immediately after a successful save.
+    *
+    * The second argument is whether leaving now would LOSE edits: the same,
+    * unless a draft is kept (`draftKey`), when it is only text still being
+    * typed into an open field. A leave guard reads that one; anything
+    * deciding whether to replace the document reads the first.
     */
-   onDirtyChange?: (dirty: boolean) => void;
+   onDirtyChange?: (dirty: boolean, wouldLose: boolean) => void;
    /**
     * Where `onSave` puts the file, for the event it reports. The builder
     * cannot tell — it is handed a function — and a save into the package, into
@@ -196,6 +205,24 @@ export interface ReportBuilderProps {
    /** Leave the builder, opted into: draws Close, which asks first when edits are unsaved. */
    onExit?: () => void;
    /**
+    * Take over the page-level controls (save status and Save, undo and redo,
+    * the layout switch, and adding a tile, text or filter): the builder hands
+    * them over as `BuilderControls` whenever they change, and draws no
+    * toolbar of its own. Draw them with `BuilderBar`, or place each in
+    * the host's own chrome. `undefined` is handed over when the builder goes.
+    */
+   onControlsChange?: BuilderControlsHandler;
+   /**
+    * Keep unsaved edits in this browser under this key, and put them back
+    * when the builder next opens on the same key: so leaving never loses work,
+    * and a host can offer one way out, `done` (write, then leave), with no
+    * "leave with unsaved changes?" on the way. `onDirtyChange`'s second
+    * argument then reports only what a draft cannot hold, text still being
+    * typed into an open field.
+    * One key per report and place it is saved to. Absent, nothing is kept.
+    */
+   draftKey?: string;
+   /**
     * Whether the toolbar offers the Linear / Grid layout switch. Default
     * true. A host that files a report by its layout passes false, so an
     * author cannot change a layout the host files by. A document held as text
@@ -213,28 +240,30 @@ export function ReportBuilder({
    onExit,
    allowLayoutChange = true,
    renderTile,
+   renderViewPreview,
    controls,
    givens,
    catalog,
    toolbar,
    dashboards,
    onEvent,
-   conversion,
    savesTo = "package",
    saveLabel,
    replaces,
    modelPath,
    visibleSources,
    addFilterDisabledReason,
+   onControlsChange,
+   draftKey,
 }: ReportBuilderProps) {
    const editor = useReportEditor({
       source,
       document,
       ...(onSave ? { onSave } : {}),
-      ...(conversion ? { conversion } : {}),
       ...(replaces !== undefined ? { replaces } : {}),
       ...(visibleSources ? { visibleSources } : {}),
    });
+   const draft = useReportDraft(draftKey, editor, source);
    const gridBox = useRef<HTMLDivElement>(null);
    const {
       selected,
@@ -246,13 +275,9 @@ export function ReportBuilder({
       flash,
       stepEditor,
    } = useBuilderSelection({ editor, gridBox });
-   // A linear report is one column whatever the file says, and the builder never writes its width.
-   const notebook = editor.document.layout === "linear";
-   const columns = notebook ? 1 : (editor.document.columns ?? DEFAULT_COLUMNS);
-   // The reader's tile chrome for this document: cards on a dashboard, bare
-   // flow on a notebook. Every tile, text block and the description take it,
-   // so editing a document draws it the way reading it does.
-   const chrome: TileChrome = notebook ? "none" : "card";
+   // What the layout decides: how tiles are arranged, never how they look.
+   const rules = layoutRules(editor.document.layout, editor.document.columns);
+   const { columns } = rules;
    // The name a reader's view titles an untitled document with.
    const documentSlug = modelPath
       ?.split("/")
@@ -281,8 +306,7 @@ export function ReportBuilder({
    });
    const tiles = useTileEditing({
       editor,
-      notebook,
-      columns,
+      rules,
       modelPath,
       textHeld: visibleSources !== undefined,
       selectTile,
@@ -303,10 +327,6 @@ export function ReportBuilder({
    const { draftDirty, openDraft, prepare } = useOpenDraftCommit({
       editorDirty: editor.dirty,
    });
-   const { confirmConversion, prepareSave } = useConversionConfirm({
-      pendingOpen: editor.pendingOpen,
-      prepare,
-   });
 
    const shortcuts = useMemo(
       () => ({
@@ -318,14 +338,13 @@ export function ReportBuilder({
                !menu &&
                !filterDialog &&
                !addingTile &&
-               drillSource === undefined &&
-               confirmConversion === undefined
+               drillSource === undefined
             )
                clearSelection();
          },
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
-            if (dragging || selected === undefined || notebook) return;
+            if (dragging || selected === undefined || !rules.widths) return;
             const tile = editor.document.tiles[selected];
             if (
                !tile ||
@@ -345,18 +364,20 @@ export function ReportBuilder({
          filterDialog,
          addingTile,
          drillSource,
-         confirmConversion,
          clearSelection,
          selected,
          columns,
-         notebook,
+         rules,
          dragging,
       ],
    );
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
       extraDirty: draftDirty,
-      prepare: prepareSave,
+      // Only while the browser is actually holding them: a refused write
+      // means leaving would lose the edits, and the host's guard must ask.
+      keepsEdits: draftKey !== undefined && draft.keeping,
+      prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
       onDirtyChange,
@@ -373,32 +394,73 @@ export function ReportBuilder({
    });
 
    const empty = editor.document.tiles.length === 0;
+   // A text-held document's layout is the host's record, so only a file gets
+   // the switch, and only when the host allows it.
+   const layoutSwitch =
+      visibleSources === undefined && allowLayoutChange
+         ? {
+              layout: editor.document.layout,
+              onLayoutChange: (next: ReportLayout) => {
+                 const from = editor.document.layout;
+                 if (next === from) return;
+                 editor.update((draft) => {
+                    draft.layout = next;
+                 });
+                 reportEmitter(
+                    { path: modelPath ?? "", layout: next },
+                    onEvent,
+                 ).emit({ type: "report.layout_changed", from, to: next });
+              },
+           }
+         : undefined;
+   const { toolbarProps } = session;
+   useReportControls(onControlsChange, {
+      status: session.saving
+         ? "saving"
+         : toolbarProps.dirty
+           ? "unsaved"
+           : "saved",
+      saveTarget: saveLabel ?? SAVE_TARGET[savesTo],
+      ...(toolbarProps.onSave ? { save: toolbarProps.onSave } : {}),
+      canUndo: toolbarProps.canUndo,
+      undo: toolbarProps.onUndo,
+      canRedo: toolbarProps.canRedo,
+      redo: toolbarProps.onRedo,
+      ...(layoutSwitch
+         ? {
+              layout: {
+                 value: layoutSwitch.layout,
+                 set: layoutSwitch.onLayoutChange,
+              },
+           }
+         : {}),
+      add: {
+         ...(catalog ? { tile: () => tiles.openAdd() } : {}),
+         text: tiles.appendText,
+         // A filter is declared for the tiles to read, so there has to be one.
+         ...(addFilterDisabledReason !== undefined
+            ? { filterUnavailable: addFilterDisabledReason }
+            : empty
+              ? { filterUnavailable: "Add a tile before a filter." }
+              : { filter: () => setFilterDialog({}) }),
+      },
+      ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
+      ...(session.done ? { done: session.done } : {}),
+      ...(draft.keptAt !== undefined ? { draftKeptAt: draft.keptAt } : {}),
+      ...(toolbarProps.dirty && draftKey !== undefined
+         ? { discard: draft.discard }
+         : {}),
+   });
    // The builder's actions: on the title's line, at the right, above the
    // description.
-   const actions = (
+   const actions = onControlsChange ? undefined : (
       <BuilderToolbar
          {...session.toolbarProps}
          {...(toolbar ? { actions: toolbar } : {})}
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
-         {...(visibleSources === undefined && allowLayoutChange
-            ? {
-                 // A text-held document's layout is the host's record, so only a file gets the switch, and only when the host allows it.
-                 layout: editor.document.layout,
-                 onLayoutChange: (next: ReportLayout) => {
-                    const from = editor.document.layout;
-                    if (next === from) return;
-                    editor.update((draft) => {
-                       draft.layout = next;
-                    });
-                    reportEmitter(
-                       { path: modelPath ?? "", layout: next },
-                       onEvent,
-                    ).emit({ type: "report.layout_changed", from, to: next });
-                 },
-              }
-            : {})}
+         {...(layoutSwitch ?? {})}
       />
    );
    return (
@@ -415,75 +477,112 @@ export function ReportBuilder({
          {/* Pulled out by the ring's inset, so the content inside it lands on
           the same edges as the reader's view: editing and reading are the same
           page, and the margins must not move between them. */}
-         <Stack sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}>
-            {/* The ring's inset, minus the top: nothing at the top of this stack
-             can be selected (the prose and the control row are not tiles). */}
-            <Stack
+         <Stack
+            // Where Save writes, for a host or a test to read: the words are
+            // the status's tooltip, not a line on the page.
+            className={reportClasses.builder}
+            data-saves-to={savesTo}
+            sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}
+         >
+            {/* The reader's page, with the ring's inset (minus the top:
+             nothing at the top of the page can be selected). */}
+            <ReportPage
+               layout={rules.layout}
                sx={{
-                  gap: 2,
                   px: `${SELECTION_RING_PX}px`,
                   pb: `${SELECTION_RING_PX}px`,
                }}
-            >
-               {editor.pendingOpen && (
-                  <Alert severity="info">
-                     This report is in the cell format. Saving rewrites it as a
-                     layout notebook, and a named query run once becomes that
-                     tile&apos;s view.
-                  </Alert>
-               )}
-               <BuilderHeader
-                  editor={editor}
-                  notebook={notebook}
-                  documentSlug={documentSlug}
-                  chrome={chrome}
-                  actions={actions}
-                  descriptionSelected={descriptionSelected}
-                  selectDescription={selectDescription}
-               />
-
-               {empty ? (
-                  <>
-                     <Stack
-                        sx={{
-                           alignItems: "flex-start",
-                           gap: 1,
-                           py: 3,
-                           px: 2,
-                           border: 1,
-                           borderStyle: "dashed",
-                           borderColor: "divider",
-                           borderRadius: 1,
-                        }}
+               header={
+                  <BuilderHeader
+                     editor={editor}
+                     documentSlug={documentSlug}
+                     actions={actions}
+                     descriptionSelected={descriptionSelected}
+                     selectDescription={selectDescription}
+                  />
+               }
+               controls={
+                  empty ? undefined : (
+                     <FilterStrip
+                        controls={bindings.controlList}
+                        unknownFieldsOf={bindings.unknownFieldsOf}
+                        onEdit={(control) => setFilterDialog({ control })}
+                        onAdd={() => setFilterDialog({})}
+                        {...(addFilterDisabledReason
+                           ? { addDisabledReason: addFilterDisabledReason }
+                           : {})}
+                        onRemove={bindings.dropControl}
                      >
-                        <Typography variant="body2">
-                           This report is not served until it has a tile.
-                        </Typography>
-                        {catalog && (
-                           <Button
-                              size="small"
-                              startIcon={<AddIcon />}
-                              onClick={() => openAdd()}
-                           >
-                              Add tile
-                           </Button>
-                        )}
-                     </Stack>
-                  </>
-               ) : (
-                  <FilterStrip
-                     controls={bindings.controlList}
-                     tileCount={editor.document.tiles.length}
-                     unknownFieldsOf={bindings.unknownFieldsOf}
-                     onEdit={(control) => setFilterDialog({ control })}
-                     onAdd={() => setFilterDialog({})}
-                     {...(addFilterDisabledReason
-                        ? { addDisabledReason: addFilterDisabledReason }
-                        : {})}
-                     onRemove={bindings.dropControl}
+                        {controls}
+                     </FilterStrip>
+                  )
+               }
+            >
+               {empty && (
+                  <Stack
+                     sx={{
+                        alignItems: "flex-start",
+                        gap: 1,
+                        py: 3,
+                        px: 2,
+                        border: 1,
+                        borderStyle: "dashed",
+                        borderColor: "divider",
+                        borderRadius: 1,
+                     }}
                   >
-                     {controls}
-                  </FilterStrip>
+                     <Typography variant="body2">
+                        This report is not served until it has a tile.
+                     </Typography>
+                     {catalog && (
+                        <Button
+                           size="small"
+                           startIcon={<AddIcon />}
+                           onClick={() => openAdd()}
+                        >
+                           Add tile
+                        </Button>
+                     )}
+                  </Stack>
+               )}
+
+               {draft.restored && (
+                  <Alert
+                     severity={draft.restored.pending ? "warning" : "info"}
+                     onClose={draft.dismissRestored}
+                     action={
+                        draft.restored.pending ? (
+                           <>
+                              <Button
+                                 color="inherit"
+                                 size="small"
+                                 onClick={draft.restoreOffered}
+                              >
+                                 Restore them
+                              </Button>
+                              <Button
+                                 color="inherit"
+                                 size="small"
+                                 onClick={draft.discard}
+                              >
+                                 Discard
+                              </Button>
+                           </>
+                        ) : (
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={draft.discard}
+                           >
+                              Discard edits
+                           </Button>
+                        )
+                     }
+                  >
+                     {draft.restored.pending
+                        ? `You have unsaved edits from ${clockTime(draft.restored.savedAt)}, made before this report changed. Restoring them replaces the current version.`
+                        : `Restored your unsaved edits from ${clockTime(draft.restored.savedAt)}.`}
+                  </Alert>
                )}
 
                {editor.error && (
@@ -497,9 +596,7 @@ export function ReportBuilder({
                   reorder={reorder}
                   resizing={resizing}
                   gridBox={gridBox}
-                  columns={columns}
-                  notebook={notebook}
-                  chrome={chrome}
+                  rules={rules}
                   canAdd={!!catalog}
                   selected={selected}
                   flash={flash}
@@ -509,6 +606,14 @@ export function ReportBuilder({
                      selectTile(index);
                      tiles.setMenu({ anchor, index });
                   }}
+                  onRemove={tiles.removeTile}
+                  {...(editor.document.tiles.length === 1 &&
+                  editor.saved.tiles.length > 0
+                     ? {
+                          removeBlocked:
+                             "A saved report needs at least one tile.",
+                       }
+                     : {})}
                   openAdd={openAdd}
                   editTile={tiles.editTile}
                   {...(renderTile ? { renderTile } : {})}
@@ -522,11 +627,25 @@ export function ReportBuilder({
                   tiles={tiles}
                   drillSource={drillSource}
                   setDrillSource={setDrillSource}
-                  confirmConversion={confirmConversion}
                   exitDialog={session.exitGuard.dialog}
+                  {...(renderViewPreview ? { renderViewPreview } : {})}
                />
-            </Stack>
+            </ReportPage>
          </Stack>
       </OpenDraftContext.Provider>
    );
+}
+
+/** A time of day, or a date and time when not today: when a draft was kept. */
+function clockTime(at: number): string {
+   const when = new Date(at);
+   const today = new Date().toDateString() === when.toDateString();
+   return today
+      ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : when.toLocaleString([], {
+           month: "short",
+           day: "numeric",
+           hour: "numeric",
+           minute: "2-digit",
+        });
 }

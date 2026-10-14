@@ -1,15 +1,22 @@
 ##! experimental.givens
-## artifact { layout=linear title="Orders in a window" autorun=false }
+##| artifact { layout=linear title="Orders in a window" autorun=false
+  tiles=[
+    heading { kind=text },
+    "orders_tiles -> in_window"
+  ]
+}
+|##
 
 // `autorun=false` asks for an Apply button, which matters more on a linear
-// report than on a grid: one change re-runs every cell.
+// report than on a grid: one change re-runs every tile.
 import { orders } from "orders.malloy"
 import { SINCE } from "givens.malloy"
 
-##|(markdown)
+##|(markdown) heading
 # Orders since
 |##
 
-##(markdown) Orders in the window
-
-run: orders -> since_totals
+source: orders_tiles is orders extend {
+   # label="Orders in the window"
+   view: in_window is since_totals
+}

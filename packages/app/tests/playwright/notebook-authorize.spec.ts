@@ -7,6 +7,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { DEFAULT_ENV, PACKAGES } from "./helpers/fixtures";
 import { gotoHome, openEnvironment, openPackage } from "./helpers/navigation";
+import { filterButton, openFilter } from "./helpers/filters";
 
 /**
  * End-to-end coverage for `#(authorize)` source gates in a notebook. The
@@ -56,15 +57,21 @@ source: gated_products is duckdb.table('data/products.parquet') extend {
 }
 `;
 
-// One query cell. The report enables `experimental.givens`: authorize
-// validation compiles a `$role` probe against the report's model, which needs
-// the flag set here even though `role` itself is declared in the imported model.
+// One query tile, run as this query. The report enables `experimental.givens`:
+// authorize validation compiles a `$role` probe against the report's model,
+// which needs the flag set here even though `role` itself is declared in the
+// imported model.
 const CELL = "run: gated_products -> spotlight";
+// The tile reads `role` (a condition true whenever role is set), so the report shows a
+// control for it: a report shows controls only for the givens its tiles read,
+// and a gate's own givens are otherwise the host's to supply.
 const NOTEBOOK_SOURCE = `##! experimental.givens
-## artifact { layout=linear }
+## artifact { layout=linear tiles=["gated_tiles -> spotlight_for_role"] }
 import "authz_gate.malloy"
 
-${CELL}
+source: gated_tiles is gated_products extend {
+  view: spotlight_for_role is spotlight + { where: $role = $role }
+}
 `;
 
 async function reloadPackage(baseURL: string): Promise<void> {
@@ -159,7 +166,13 @@ test.describe("notebook-authorize", () => {
       // An untitled report is listed by its basename.
       await page.getByText("authz_gate_notebook", { exact: true }).click();
       await expect(page).toHaveURL(/\/authz_gate_notebook$/);
-      await expect(page.getByLabel("role")).toBeVisible();
+      await expect(filterButton(page, "role")).toBeVisible();
+   }
+
+   /** Type a role into its filter's popover. */
+   async function supplyRole(page: import("@playwright/test").Page) {
+      const filter = await openFilter(page, "role");
+      await filter.getByLabel("role", { exact: true }).fill("analyst");
    }
 
    test("UI: result is gated until the given is supplied", async ({ page }) => {
@@ -182,7 +195,7 @@ test.describe("notebook-authorize", () => {
 
       // With the notebook idle, supplying the satisfying given re-executes and
       // the result appears.
-      await page.getByLabel("role").fill("analyst");
+      await supplyRole(page);
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
@@ -209,7 +222,7 @@ test.describe("notebook-authorize", () => {
       );
       await openNotebook(page);
       await firstCellRequest;
-      await page.getByLabel("role").fill("analyst");
+      await supplyRole(page);
 
       // Once the held run finishes, the mid-flight given must be picked up and
       // re-executed — the result appears without any further interaction.

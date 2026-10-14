@@ -233,7 +233,8 @@ describe("versionId", () => {
       expect(
          getModel.mock.calls.find((call) => call[2] === "data_app.malloy"),
       ).toEqual(["env", "pkg", "data_app.malloy", "v7"]);
-      expect(getReport.mock.calls[0]).toEqual([
+      // The reader's request, which also carries its abort signal.
+      expect(getReport.mock.calls[0].slice(0, 4)).toEqual([
          "env",
          "pkg",
          "dashboards/overview.malloy",
@@ -247,7 +248,7 @@ describe("versionId", () => {
       // one dashboard apart, and nothing about that failure is visible on
       // screen.
       expect(cacheKeys("dashboard-editor-model")[0]).toContain('"v7"');
-      expect(cacheKeys("dashboard-editor-manifest")[0]).toContain('"v7"');
+      expect(cacheKeys("report")[0]).toContain('"v7"');
       expect(cacheKeys("reports")[0]).toContain('"v7"');
       await waitFor(() =>
          expect(cacheKeys("report-editor-models")[0]).toContain('"v7"'),

@@ -4,14 +4,14 @@
 /// <reference types="bun-types" />
 
 /**
- * Governance parity between running a `.malloy` report's `run:` cell through
- * the deprecated cell route (`GET …/notebooks/{path}/cells/{i}`) and through
- * the governed query endpoint the grid tiles already use
- * (`POST …/models/{path}/query`, the report's path as the model and the cell's
- * text as `query`), which is how the SDK runs a `.malloy` report's cells.
+ * Governance parity between running a linear `.malloy` report's tile through
+ * the deprecated cell route (`GET …/notebooks/{path}/cells/{i}`, which reads
+ * the report as its definitions, then its tiles) and through the governed
+ * query endpoint every tile uses (`POST …/models/{path}/query`, the report's
+ * path as the model and `run: <tile>` as `query`).
  *
- * For every query cell of every fixture report written as cells, under
- * several sets of givens, the two must refuse alike or answer with the same
+ * For every query cell of every fixture linear report, under several sets of
+ * givens, the two must refuse alike or answer with the same
  * result: the package surface (a hidden file, a source derived from one, a
  * raw `connection.sql`), `#(authorize)` on a source and on one derived from
  * it, a row-level `#(access_filter)` graft, givens a cell reads, and givens it
@@ -58,10 +58,6 @@ const CASES: Record<string, { location: string; givens: object[] }> = {
    },
    "reports-anywhere": {
       location: fixture("reports-anywhere"),
-      givens: [],
-   },
-   "notebooks-lint": {
-      location: fixture("notebooks-lint"),
       givens: [],
    },
    storefront: {
@@ -129,10 +125,11 @@ describe("A .malloy report's cell: cell route vs query route (E2E)", () => {
          ).json()) as { path: string }[];
          for (const { path: reportPath } of reports) {
             if (!reportPath.endsWith(".malloy")) continue;
-            const report = (await (
-               await fetch(pkgUrl(pkg, `/reports/${reportPath}`))
-            ).json()) as { notebook?: { notebookCells?: Cell[] } };
-            const cells = report.notebook?.notebookCells ?? [];
+            // The deprecated route serves a linear report's cells; a grid one has none.
+            const read = await fetch(pkgUrl(pkg, `/notebooks/${reportPath}`));
+            if (read.status !== 200) continue;
+            const notebook = (await read.json()) as { notebookCells?: Cell[] };
+            const cells = notebook.notebookCells ?? [];
             for (let i = 0; i < cells.length; i++) {
                if (cells[i].kind !== "query") continue;
                for (const given of [{}, ...givens]) {

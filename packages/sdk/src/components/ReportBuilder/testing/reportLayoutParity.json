@@ -7,14 +7,14 @@
          "expected": "grid"
       },
       {
-         "name": "`layout=linear` with no tiles is linear",
+         "name": "`layout=linear` with no tiles is the retired cell format: no report",
          "source": "## artifact { layout=linear }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
-         "expected": "linear"
+         "expected": null
       },
       {
-         "name": "a tag naming no layout and listing no tiles is linear by default",
+         "name": "a tag naming no layout and listing no tiles is the retired cell format: no report",
          "source": "## artifact { }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
-         "expected": "linear"
+         "expected": null
       },
       {
          "name": "a tiles list with no layout is grid",
@@ -62,9 +62,9 @@
          "expected": "linear"
       },
       {
-         "name": "an unknown `layout=` with no tiles falls through to linear",
+         "name": "an unknown `layout=` with no tiles falls through to linear, and with no tiles is no report",
          "source": "## artifact { layout=wide }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\nrun: s -> v\n",
-         "expected": "linear"
+         "expected": null
       },
       {
          "name": "a `##|` block tag is read like a one-line tag",
@@ -112,13 +112,18 @@
          "expected": null
       },
       {
-         "name": "a model-level tag naming no layout beside a query-level `# artifact` is linear",
+         "name": "a model-level tag naming no layout beside a query-level `# artifact` lists no tiles: no report",
          "source": "## artifact { }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n# artifact\nquery: q is s -> v\n",
-         "expected": "linear"
+         "expected": null
       },
       {
          "name": "a file with no artifact tag is no report",
          "source": "source: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
+         "expected": null
+      },
+      {
+         "name": "a `tiles` that is not a list is a tag the reader cannot use: no report",
+         "source": "## artifact { layout=linear tiles=foo }\nsource: s is duckdb.sql(\"select 1 as x\") extend { view: v is { group_by: x } }\n",
          "expected": null
       }
    ]

@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
+import { CELLS_REMOVED_REASON } from "./reportTag";
 import { openDocument } from "./testing/fixtures";
 import * as fs from "fs";
 import * as path from "path";
 import { blockAbove, readDashboardDocument, readFailed } from "./readDocument";
-import { readForEditor } from "./readForEditor";
 import { readReportTagOfText } from "./reportTag";
 import { parseMalloy, parseRefused } from "./malloyTree";
 import { queryTile } from "./testing/fixtures";
@@ -862,15 +862,6 @@ describe("a tag whose artifact property is not the first", () => {
       expect(result.reason).toContain("`artifact { … }` first");
    });
 
-   it("is refused, not converted, for a cell-format notebook", async () => {
-      const open = await readForEditor(
-         `##! experimental.givens\n## dashboard { columns=2 } artifact { layout=linear title="T" }\nrun: a -> by_cat`,
-      );
-      expect(open.ok === false && open.reason).toContain(
-         "`artifact { … }` first",
-      );
-   });
-
    it("still opens when artifact leads and another property follows", async () => {
       const doc = await read(
          `## artifact { title="Probe" tiles=["a -> by_cat"] } dashboard { columns=2 }\n${rest}`,
@@ -948,7 +939,6 @@ describe("the compiler stays lazy", () => {
          fs.readFileSync(path.join(import.meta.dir, file), "utf8");
       const staticImport = /^\s*import\s[^(]*@malloydata\/malloy"/m;
       expect(read("malloyTree.ts")).not.toMatch(staticImport);
-      expect(read("legacyNotebook.ts")).not.toMatch(staticImport);
       expect(read("malloyTree.ts")).toContain("await loadMalloy()");
       expect(read("loadMalloy.ts")).toContain(
          'await import("@malloydata/malloy")',
@@ -957,20 +947,22 @@ describe("the compiler stays lazy", () => {
          expect(read("loadMalloy.ts")).toContain(
             `await import("@malloydata/${pkg}")`,
          );
-      for (const file of ["readDocument.ts", "legacyNotebook.ts"])
-         expect(read(file)).not.toContain('import("@malloydata/malloy-tag")');
+      expect(read("readDocument.ts")).not.toContain(
+         'import("@malloydata/malloy-tag")',
+      );
    });
 });
 
 describe("the layout of a report", () => {
    it("reads the same layout wherever the file lives: the folder no longer matters", async () => {
+      // `null`: no report, whatever the folder.
       const cases = [
-         ["## artifact { }\nrun: q -> { aggregate: c }\n", true],
-         [`## artifact { tiles=["a -> v"] }\n`, false],
-         [`## artifact { layout=linear tiles=["a -> v"] }\n`, true],
-         ["## artifact { layout=grid tiles=[] }\n", false],
+         ["## artifact { }\nrun: q -> { aggregate: c }\n", null],
+         [`## artifact { tiles=["a -> v"] }\n`, "grid"],
+         [`## artifact { layout=linear tiles=["a -> v"] }\n`, "linear"],
+         ["## artifact { layout=grid tiles=[] }\n", "grid"],
       ] as const;
-      for (const [source, linear] of cases)
+      for (const [source, layout] of cases)
          for (const where of [
             undefined,
             "x.malloy",
@@ -979,10 +971,12 @@ describe("the layout of a report", () => {
             "sales/q3/x.malloy",
          ]) {
             const result = await readDashboardDocument(source, where);
-            const isLinear = readFailed(result)
-               ? result.legacyNotebook === true
-               : result.document.layout === "linear";
-            expect([where, isLinear]).toEqual([where, linear]);
+            const read = readFailed(result)
+               ? result.reason === CELLS_REMOVED_REASON
+                  ? null
+                  : result.reason
+               : result.document.layout;
+            expect([where, read]).toEqual([where, layout]);
          }
    });
 });

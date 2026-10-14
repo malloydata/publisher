@@ -194,6 +194,7 @@ describe("a view's definition on the card", () => {
    const askFor = async (compiledSourceText: string | undefined) => {
       const pkg = {
          getPackagePath: () => dir,
+         listSkills: () => [],
          listModels: async () => [{ path: "m.malloy" }],
          getModel: (p: string) =>
             p === "m.malloy"

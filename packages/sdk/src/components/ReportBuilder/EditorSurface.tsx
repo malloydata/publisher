@@ -3,7 +3,7 @@
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
-import type { DashboardManifest, Given } from "../../client";
+import type { DashboardManifest } from "../../client";
 import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
@@ -20,17 +20,34 @@ import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useReportListing } from "../Package/useDocumentLocation";
+import {
+   BUILDER_HANDOFF_STALE_MS,
+   reportQueryOptions,
+} from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
-import type { DashboardDocument, QueryTile } from "./document";
+import {
+   tileKey,
+   type DashboardDocument,
+   type DashboardTile as DocumentTile,
+   type QueryTile,
+} from "./document";
 import type { SavesTo } from "./documentSession";
-import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import {
+   previewGivens,
+   previewTileQuery,
+   tileExpressionKey,
+   type PreviewTileQuery,
+} from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
+import type { ViewPreview } from "./AddTileDialog";
+import { chartLineText } from "./chartLine";
 import { useEditorCatalog } from "./useEditorCatalog";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
+import type { BuilderControlsHandler } from "./builderControls";
 
 /**
  * The builder under a real control row, with the controls driving the tiles,
@@ -48,7 +65,6 @@ const NO_MANIFEST: DashboardManifest = {};
 
 export function EditorSurface({
    textSource,
-   modelGivens,
    environmentName,
    packageName,
    modelPath,
@@ -58,6 +74,8 @@ export function EditorSurface({
    onSave,
    onDirtyChange,
    onExit,
+   onControlsChange,
+   draftKey,
    allowLayoutChange,
    onEvent,
    savesTo,
@@ -65,8 +83,6 @@ export function EditorSurface({
    note,
 }: {
    textSource?: TextSourceOptions;
-   /** The model's own givens, for a cell-format notebook whose manifest the server cannot build until it is saved. */
-   modelGivens?: Given[];
    environmentName: string;
    packageName: string;
    modelPath: string;
@@ -76,14 +92,16 @@ export function EditorSurface({
    opened: {
       source: string;
       document: DashboardDocument;
-      conversion?: { from: string; to: string };
       generation: number;
    };
    replaces?: string;
    /** Save the text, with the layout the document has as it is saved. */
    onSave?: (source: string, layout: ReportLayout) => Promise<void>;
-   onDirtyChange: (dirty: boolean) => void;
+   onDirtyChange: (dirty: boolean, wouldLose: boolean) => void;
    onExit?: () => void;
+   onControlsChange?: BuilderControlsHandler;
+   /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
+   draftKey?: string;
    allowLayoutChange?: boolean;
    onEvent?: ReportEventHandler;
    savesTo: SavesTo;
@@ -105,34 +123,18 @@ export function EditorSurface({
       isSuccess: manifestLoaded,
       isError: manifestFailed,
    } = useQueryWithApiError({
-      queryKey: [
-         "dashboard-editor-manifest",
-         environmentName,
-         packageName,
-         modelPath,
-         versionId,
-      ],
-      // One read for either layout, by path. A report in the cell format has only the tag's starting values until it is saved.
-      queryFn: async (): Promise<DashboardManifest> => {
-         const read = (
-            await apiClients.reports.getReport(
-               environmentName,
-               packageName,
-               modelPath,
-               versionId,
-            )
-         ).data;
-         if (read.notebook)
-            return {
-               ...(read.notebook.startingGivens
-                  ? { startingGivens: read.notebook.startingGivens }
-                  : {}),
-               ...(read.notebook.autorun === undefined
-                  ? {}
-                  : { autorun: read.notebook.autorun }),
-            };
-         return read;
-      },
+      // The reader's read of the same report, so opening the builder from the
+      // reader does not read it again.
+      ...reportQueryOptions(
+         apiClients,
+         {
+            environmentName,
+            packageName,
+            path: modelPath,
+            versionId,
+         },
+         BUILDER_HANDOFF_STALE_MS,
+      ),
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
    });
@@ -251,15 +253,13 @@ export function EditorSurface({
    );
    const modelSpecs = useMemo(
       () =>
-         (
-            manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : [])
-         ).filter(
+         (manifest?.givens ?? []).filter(
             // Only a document held as text hides a `#(secure)` given's control; a saved file's givens show as before.
             (spec) =>
                !(textSource && spec.secure === true) &&
                !(spec.name !== undefined && hidden.has(spec.name)),
          ),
-      [manifest, opened.conversion, modelGivens, hidden, textSource],
+      [manifest, hidden, textSource],
    );
    const runnable = useMemo(
       () =>
@@ -315,6 +315,15 @@ export function EditorSurface({
          ),
       [manifest],
    );
+   // The tiles as the file was opened, by key: a tile still equal to its
+   // opened self runs exactly as the reader runs it (below).
+   const openedTiles = useMemo(
+      () =>
+         new Map(
+            opened.document.tiles.map((tile) => [tileKey(tile), tile] as const),
+         ),
+      [opened.document],
+   );
    const renderTile = useMemo(
       () =>
          function LiveTile(
@@ -334,15 +343,25 @@ export function EditorSurface({
                      <Loading text="Running…" />
                   </TileCard>
                );
-            const query = previewTileQuery(
-               doc,
-               tile,
-               runnable,
-               applied,
-               servedReads.get(
-                  tileExpressionKey(`${tile.source} -> ${tile.name}`),
-               ),
+            const servedReadsOf = servedReads.get(
+               tileExpressionKey(`${tile.source} -> ${tile.name}`),
             );
+            // A tile not yet edited runs the served view with the served
+            // tile's givens: the request the reader sends, so it shares the
+            // reader's cached result and opening the builder re-runs nothing.
+            // The preview rebuilds the query from the document so an edit
+            // shows before it is saved, which an untouched tile does not need.
+            const untouched =
+               preamble === undefined &&
+               servedReadsOf !== undefined &&
+               sameTile(openedTiles.get(tileKey(tile)), tile);
+            const query: PreviewTileQuery = untouched
+               ? {
+                    expression: `${tile.source} -> ${tile.name}`,
+                    givenNames: [...servedReadsOf],
+                    reads: [...servedReadsOf],
+                 }
+               : previewTileQuery(doc, tile, runnable, applied, servedReadsOf);
             return (
                <DashboardTile
                   environmentName={environmentName}
@@ -375,6 +394,7 @@ export function EditorSurface({
          },
       [
          doc,
+         openedTiles,
          manifestSettled,
          runnable,
          servedReads,
@@ -388,6 +408,47 @@ export function EditorSurface({
          tileHostGivens,
          declaredTypes,
          specs,
+      ],
+   );
+
+   // A view picked in Add a tile, run as the tile it would add: against the
+   // model that exports its source, with the page's filters, so the preview is
+   // the tile as it will look here.
+   const renderViewPreview = useMemo(
+      () =>
+         function ViewPreviewTile(view: ViewPreview) {
+            return (
+               <DashboardTile
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  versionId={versionId}
+                  modelPath={view.modelPath}
+                  tile={`${view.base} -> ${view.view}`}
+                  {...(view.chart
+                     ? {
+                          annotation: chartLineText(
+                             view.chart,
+                             view.chartCarried,
+                          ),
+                       }
+                     : {})}
+                  label={view.label}
+                  borderless
+                  givens={applied}
+                  hostGivens={tileHostGivens}
+                  declaredTypes={declaredTypes}
+                  givenNames={view.givens}
+                  height={200}
+               />
+            );
+         },
+      [
+         environmentName,
+         packageName,
+         versionId,
+         applied,
+         tileHostGivens,
+         declaredTypes,
       ],
    );
 
@@ -415,6 +476,7 @@ export function EditorSurface({
             source={opened.source}
             document={opened.document}
             renderTile={renderTile}
+            renderViewPreview={renderViewPreview}
             givens={specs
                .filter((spec) => spec.name !== undefined)
                .map((spec) => ({
@@ -428,18 +490,16 @@ export function EditorSurface({
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
+            {...(onControlsChange ? { onControlsChange } : {})}
+            {...(draftKey !== undefined ? { draftKey } : {})}
             {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
-            {...(opened.conversion ? { conversion: opened.conversion } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}
             controls={
                isSuccess ? (
-                  // The reader's control layout for the document as it stands: a linear report's panel, a grid's bar.
-                  <GivensPanel
-                     {...panel}
-                     layout={doc.layout === "linear" ? "panel" : "bar"}
-                  />
+                  // The reader's control row: filter buttons, in either layout.
+                  <GivensPanel {...panel} layout="bar" />
                ) : undefined
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
@@ -456,4 +516,39 @@ export function EditorSurface({
          </Box>
       </Stack>
    );
+}
+
+/** Whether a tile runs as its opened self did: same view, bindings and chart ({@link whatRuns}). */
+function sameTile(
+   opened: DocumentTile | undefined,
+   now: DocumentTile,
+): boolean {
+   return (
+      opened !== undefined &&
+      JSON.stringify(whatRuns(opened)) === JSON.stringify(whatRuns(now))
+   );
+}
+
+/**
+ * A tile less what only frames its result: its title, subtitle, width, row
+ * and card are drawn by the tile around the result, not sent with the query.
+ * Retitling a tile re-ran it before, and its chart blinked as the same rows
+ * were drawn again.
+ */
+function whatRuns(tile: DocumentTile): DocumentTile {
+   const {
+      label: _label,
+      subtitle: _subtitle,
+      colspan: _colspan,
+      break: _break,
+      borderless: _borderless,
+      ...runs
+   } = tile as DocumentTile & {
+      label?: unknown;
+      subtitle?: unknown;
+      colspan?: unknown;
+      break?: unknown;
+      borderless?: unknown;
+   };
+   return runs as DocumentTile;
 }

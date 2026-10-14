@@ -137,7 +137,7 @@ A flat layout at the package root is the simplest default, for models and report
 
 Publishable contents:
 - `.malloy` files - Semantic model definitions (base sources + joined sources)
-- Reports: `.malloy` files with an `## artifact { layout=linear … }` or `## artifact { layout=grid … }` tag, anywhere in the package (outside `public/`), written as tiles or, for a linear report, as older `run:` cells (see `skill:malloy-reports`). The tag alone makes a file a report and sets its layout; the folder means nothing. An existing `.malloynb` is still served as a linear report; never write a new one.
+- Reports: `.malloy` files with an `## artifact { layout=linear … }` or `## artifact { layout=grid … }` tag, anywhere in the package (outside `public/`), written as tiles (see `skill:malloy-reports`). A linear tag with no tiles, the retired `run:`-cell form, is no report. The tag alone makes a file a report and sets its layout; the folder means nothing. An existing `.malloynb` is still served as a linear report; never write a new one.
 - Data files (CSV/Parquet/XLSX) - Embedded data published with package
 
 ## Version Management

@@ -959,9 +959,9 @@ export function factsReportTag(facts: ReportModelFacts): ReportTag {
 }
 
 /**
- * Build the manifest of a report written as tiles, or undefined when the file
- * is no report (`report.ts`), or one with no tiles to lay out: a linear report
- * written as `run:` cells, or a grid tag whose tile list is missing or empty.
+ * Build the manifest of a report, or undefined when the file is no report
+ * (`report.ts`) or a grid tag whose tile list is missing or empty. A linear
+ * report always lists its tiles, so it always has one.
  */
 export function buildReportManifest(
    facts: ReportModelFacts,

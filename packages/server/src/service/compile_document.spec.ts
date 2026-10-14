@@ -32,6 +32,10 @@ const manifestOf = (result: { document?: CompiledDocument }) => {
 };
 const tilesOf = (result: { document?: CompiledDocument }) =>
    (manifestOf(result).tiles ?? []) as ReportQueryTileSpec[];
+const restrictedTiles = (result: { document?: CompiledDocument }) =>
+   tilesOf(result).map((tile) => tile.restricted);
+const restrictedCells = (result: { document?: CompiledDocument }) =>
+   result.document?.cells.map((cell) => cell.restricted);
 
 // Compile of a source that carries a model-level `## artifact` tag answers with
 // the document it describes. Driven through a real installed package.
@@ -106,20 +110,50 @@ describe("compile of a document (compileSource)", () => {
       });
 
       it("reads only the submitted text: the base's run: and ## notes never join the document", async () => {
-         const { problems, document } = await compile(
-            `## artifact { layout=linear }
-##(markdown) Hello
-run: open_src -> { aggregate: c }
+         const result = await compile(
+            `## artifact { layout=linear tiles=[hello { kind=text }, "open_src -> { aggregate: c }"] }
+##|(markdown) hello
+Hello
+|##
 `,
          );
-         expect(problems.filter((p) => p.severity === "error")).toEqual([]);
-         expect(document?.layout).toBe("linear");
-         // The base declares a dashboard tag of its own; none of it reaches the document.
-         expect(document?.manifest).toBeUndefined();
-         expect(document?.cells.map((c) => [c.kind, c.restricted])).toEqual([
-            ["markdown", undefined],
-            ["query", undefined],
+         expect(result.problems.filter((p) => p.severity === "error")).toEqual(
+            [],
+         );
+         expect(result.document?.layout).toBe("linear");
+         // The base declares a dashboard tag and a title of its own; none of it reaches the document.
+         expect(manifestOf(result).title).toBe("model");
+         expect(manifestOf(result).tiles?.map((tile) => tile.kind)).toEqual([
+            "text",
+            "query",
          ]);
+         expect(result.document?.cells).toEqual([]);
+      });
+
+      it("answers a linear tag with no tiles, the retired cell format, with its finding and no document", async () => {
+         for (const tag of [
+            "## artifact { layout=linear }",
+            "## artifact { }",
+         ]) {
+            const result = await compile(
+               `${tag}\n##(markdown) Hello\nrun: open_src -> { aggregate: c }\n`,
+            );
+            expect(result.document).toBeUndefined();
+            expect(
+               result.problems.map(({ code, severity, message }) => ({
+                  code,
+                  severity,
+                  message,
+               })),
+            ).toEqual([
+               {
+                  code: "report-cells-removed",
+                  severity: "error",
+                  message:
+                     "Line 1: a linear report written as `run:` cells is no longer read, so this file is not a report. Fix: list its tiles in `tiles=[…]` (a text tile per prose block, a query tile per view), or remove the `## artifact` tag.",
+               },
+            ]);
+         }
       });
 
       it("reads the layout from the tag, by the one report rule", async () => {
@@ -132,11 +166,12 @@ run: open_src -> { aggregate: c }
          expect(
             await kindOf(`## artifact { } dashboard { columns=12 }\n`),
          ).toBe("grid");
+         // A linear tag with no tiles is no document at all.
          expect(
             await kindOf(
                `## artifact { }\nrun: open_src -> { aggregate: c }\n`,
             ),
-         ).toBe("linear");
+         ).toBeUndefined();
          expect(
             await kindOf(
                `## artifact { layout=linear tiles=["open_src -> v"] }\n`,
@@ -211,40 +246,30 @@ run: open_src -> { aggregate: c }
          expect(problems).toEqual([]);
       });
 
-      it("a non-member's gated cell is restricted and its diagnostics do not exist", async () => {
-         const text = `## artifact { layout=linear }
-run: open_src -> { aggregate: c }
-run: gated -> { select: no_such_column_in_gated }
+      it("a non-member's gated tile is restricted and its diagnostics do not exist", async () => {
+         const text = `## artifact { layout=linear tiles=["open_src -> { aggregate: c }", "gated -> { select: no_such_column_in_gated }"] }
 `;
          const nonMember = await compile(text, { ROLE: "nobody" });
          expect(nonMember.problems).toEqual([]);
-         expect(nonMember.document?.cells.map((c) => c.restricted)).toEqual([
-            undefined,
-            true,
-         ]);
+         expect(restrictedTiles(nonMember)).toEqual([undefined, true]);
          const member = await compile(text, { ROLE: "analyst" });
          expect(member.problems.some((p) => p.severity === "error")).toBe(true);
       });
 
       it("restriction follows a derived name: a source defined from a gated one taints its readers", async () => {
-         const text = `## artifact { layout=linear }
+         const text = `## artifact { layout=linear tiles=["derived -> { aggregate: n }", "open_src -> { aggregate: c }"] }
 source: derived is gated extend { measure: n is count() }
-run: derived -> { aggregate: n }
-run: open_src -> { aggregate: c }
 `;
-         const { document, problems } = await compile(text, { ROLE: "nobody" });
-         expect(problems).toEqual([]);
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            true,
-            undefined,
-         ]);
+         const result = await compile(text, { ROLE: "nobody" });
+         expect(result.problems).toEqual([]);
+         expect(restrictedCells(result)).toEqual([true]);
+         expect(restrictedTiles(result)).toEqual([true, undefined]);
       });
 
       it("text that does not parse is refused by the construct gate once every cell has been judged", async () => {
          await expect(
             compile(
-               `## artifact { layout=linear }\nrun: open_src -> { aggregate: c }\nthis is not malloy\n`,
+               `## artifact { layout=linear tiles=[] }\nrun: open_src -> { aggregate: c }\nthis is not malloy\n`,
             ),
          ).rejects.toBeInstanceOf(CompileRefusedError);
       });
@@ -297,10 +322,10 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
             ).rejects.toBeInstanceOf(CompileRefusedError);
          });
 
-         it(`the whole-text gate refuses a cell over ${root}`, async () => {
+         it(`the whole-text gate refuses a run: over ${root}`, async () => {
             await expect(
                compile(
-                  `## artifact { layout=linear }\nrun: ${root} -> { select: region }\n`,
+                  `## artifact { layout=linear tiles=[] }\nrun: ${root} -> { select: region }\n`,
                   { ROLE: "analyst" },
                ),
             ).rejects.toBeInstanceOf(CompileRefusedError);
@@ -335,10 +360,10 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
 
       it("keeps a document whose cell carries the documented bare filter literal in a starting-value tag", async () => {
          const result = await compile(
-            `## artifact { layout=linear }\n# artifact { autorun=false givens { REGION=f'US' } }\nrun: open_src -> { aggregate: c }\n`,
+            `## artifact { layout=linear tiles=[] }\n# artifact { autorun=false givens { REGION=f'US' } }\nrun: open_src -> { aggregate: c }\n`,
             { ROLE: "analyst" },
          );
-         expect(result.document?.cells.map((c) => c.kind)).toEqual(["query"]);
+         expect(result.document?.layout).toBe("linear");
       });
 
       it("leaves an ordinary tile's givens exactly as they were", async () => {
@@ -472,53 +497,42 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       });
 
       it("blanks a restricted cell written with CRLF line endings", async () => {
-         const { document, problems } = await compile(
-            `## artifact { layout=linear }\r\nrun: gated -> {\r\n  select: no_such_column_in_gated\r\n}\r\nrun: open_src -> { aggregate: c }\r\n`,
+         const result = await compile(
+            `## artifact { layout=linear tiles=["open_src -> { aggregate: c }"] }\r\nsource: d is gated extend {\r\n  dimension: bad is no_such_column_in_gated\r\n}\r\n`,
             { ROLE: "nobody" },
          );
-         expect(problems).toEqual([]);
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            undefined,
-         ]);
+         expect(result.problems).toEqual([]);
+         expect(restrictedCells(result)).toEqual([true]);
+         expect(restrictedTiles(result)).toEqual([undefined]);
       });
 
       it("blanks a restricted cell together with its annotations", async () => {
-         const { document, problems } = await compile(
-            `## artifact { layout=linear }\n#(markdown) About the gated total\n# label="Gated"\nrun: gated -> { select: no_such_column_in_gated }\nrun: open_src -> { aggregate: c }\n`,
+         const result = await compile(
+            `## artifact { layout=linear tiles=["open_src -> { aggregate: c }"] }\n#(markdown) About the gated total\n# label="Gated"\nsource: d is gated extend { dimension: bad is no_such_column_in_gated }\n`,
             { ROLE: "nobody" },
          );
-         expect(problems).toEqual([]);
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            undefined,
-         ]);
+         expect(result.problems).toEqual([]);
+         expect(restrictedCells(result)).toEqual([true]);
+         expect(restrictedTiles(result)).toEqual([undefined]);
       });
 
       it("taints every name of a multi-item declaration", async () => {
-         const { document } = await compile(
-            `## artifact { layout=linear }\nsource: a is gated extend { }\nsource: b is gated extend { }, c is open_src extend { }\nrun: b -> { aggregate: c }\nrun: c -> { aggregate: c }\n`,
+         const result = await compile(
+            `## artifact { layout=linear tiles=["b -> { aggregate: c }", "c -> { aggregate: c }"] }\nsource: a is gated extend { }\nsource: b is gated extend { }, c is open_src extend { }\n`,
             { ROLE: "nobody" },
          );
          // `c` reads an open source, but its statement is blanked with `b`, so `c` no longer exists to read.
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            true,
-            true,
-            true,
-         ]);
+         expect(restrictedCells(result)).toEqual([true, true]);
+         expect(restrictedTiles(result)).toEqual([true, true]);
       });
 
       it("taints a parameterized declaration's name", async () => {
-         const { document } = await compile(
-            `## artifact { layout=linear }\nsource: p(n::number is 1) is gated extend { }\nrun: p(n is 2) -> { aggregate: c }\nrun: open_src -> { aggregate: c }\n`,
+         const result = await compile(
+            `## artifact { layout=linear tiles=["p(n is 2) -> { aggregate: c }", "open_src -> { aggregate: c }"] }\nsource: p(n::number is 1) is gated extend { }\n`,
             { ROLE: "nobody" },
          );
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            true,
-            undefined,
-         ]);
+         expect(restrictedCells(result)).toEqual([true]);
+         expect(restrictedTiles(result)).toEqual([true, undefined]);
       });
 
       it("fails closed when a restricted cell has no recorded span", () => {
@@ -528,40 +542,33 @@ source: secured is duckdb.sql("SELECT 'acme' AS tenant, 1 AS x") extend {
       });
 
       it("blanks only the restricted statement, so an open one on its line still compiles", async () => {
-         const { document, problems } = await compile(
-            `## artifact { layout=linear }\nsource: d is gated extend { } run: open_src -> {\n  aggregate: c\n}\n`,
+         const result = await compile(
+            `## artifact { layout=linear tiles=[] }\nsource: d is gated extend { } run: open_src -> {\n  aggregate: c\n}\n`,
             { ROLE: "nobody" },
          );
-         expect(problems.filter((p) => p.code === "syntax-error")).toEqual([]);
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            undefined,
-         ]);
+         expect(
+            result.problems.filter((p) => p.code === "syntax-error"),
+         ).toEqual([]);
+         expect(restrictedCells(result)).toEqual([true]);
       });
 
       it("taints the statement's own name and not the fields declared inside it", async () => {
-         const { document } = await compile(
-            `## artifact { layout=linear }\nsource: d is gated extend { measure: n is count() }\nrun: open_src -> { aggregate: n is count() }\nrun: d -> { aggregate: n }\n`,
+         const result = await compile(
+            `## artifact { layout=linear tiles=["open_src -> { aggregate: n is count() }", "d -> { aggregate: n }"] }\nsource: d is gated extend { measure: n is count() }\n`,
             { ROLE: "nobody" },
          );
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            undefined,
-            true,
-         ]);
+         expect(restrictedCells(result)).toEqual([true]);
+         expect(restrictedTiles(result)).toEqual([undefined, true]);
       });
 
       it("taints a backtick-quoted name", async () => {
-         const { document, problems } = await compile(
-            `## artifact { layout=linear }\nsource: \`d x\` is gated extend { }\nrun: \`d x\` -> { select: x }\nrun: open_src -> { aggregate: c }\n`,
+         const result = await compile(
+            '## artifact { layout=linear tiles=["`d x` -> { select: x }", "open_src -> { aggregate: c }"] }\nsource: `d x` is gated extend { }\n',
             { ROLE: "nobody" },
          );
-         expect(problems).toEqual([]);
-         expect(document?.cells.map((c) => c.restricted)).toEqual([
-            true,
-            true,
-            undefined,
-         ]);
+         expect(result.problems).toEqual([]);
+         expect(restrictedCells(result)).toEqual([true]);
+         expect(restrictedTiles(result)).toEqual([true, undefined]);
       });
    });
 
@@ -658,7 +665,7 @@ export { customers }
                await env.compileSource(
                   "pkg",
                   "index.malloy",
-                  `## artifact { layout=linear }\nrun: ${name} -> { select: y is f!number(id) }\n`,
+                  `## artifact { layout=linear tiles=[] }\nrun: ${name} -> { select: y is f!number(id) }\n`,
                   false,
                   givens,
                );
@@ -778,7 +785,7 @@ export { customers }
          const cell = await env.compileSource(
             "pkg",
             "index.malloy",
-            `## artifact { layout=linear }\nsource: h2 is helper extend { }\nrun: h2 -> { aggregate: c }\n`,
+            `## artifact { layout=linear tiles=[] }\nsource: h2 is helper extend { }\nrun: h2 -> { aggregate: c }\n`,
          );
          expect(cell.document).toBeUndefined();
          expect(cell.problems.map((p) => p.code)).toEqual([
@@ -800,7 +807,7 @@ export { customers }
          const cell = await env.compileSource(
             "pkg",
             "index.malloy",
-            `## artifact { layout=linear }\n${definition}run: j -> { group_by: st.id }\n`,
+            `## artifact { layout=linear tiles=[] }\n${definition}run: j -> { group_by: st.id }\n`,
          );
          expect(cell.document).toBeUndefined();
          expect(cell.problems.map((p) => p.code)).toEqual([

@@ -85,7 +85,10 @@ test.describe("report routes", () => {
       await page.getByRole("button", { name: "Edit", exact: true }).click();
       await expect(page).toHaveURL(new RegExp(`/${pe.pkg}/sales/edit\\?edit$`));
       await editing(page);
-      await page.getByRole("button", { name: "View", exact: true }).click();
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Done", exact: true })
+         .click();
       await expect(page).toHaveURL(new RegExp(`/${pe.pkg}/sales/edit$`));
       await reading(page, "Edit named report");
    });

@@ -39,9 +39,11 @@ const FILES: Record<string, string> = {
       `   view: v is { group_by: x }\n` +
       `}\n`,
    "grid.malloy": `## artifact { layout=grid tiles=["s -> v"] }\nimport "base.malloy"\n`,
-   "story.malloy": `## artifact { layout=linear }\nimport "base.malloy"\nrun: s -> v\n`,
+   "story.malloy": `## artifact { layout=linear tiles=["s -> v"] }\nimport "base.malloy"\n`,
    // `kind=` is no longer read: a tag that makes no report.
    "old.malloy": `## artifact { kind=dashboard tiles=["s -> v"] }\nimport "base.malloy"\n`,
+   // A linear tag with no tiles is the retired cell format: no report either.
+   "cells.malloy": `## artifact { layout=linear }\nimport "base.malloy"\nrun: s -> v\n`,
    "legacy.malloynb": `>>>markdown\n# A legacy notebook\n`,
 };
 
@@ -115,7 +117,7 @@ describe("report discovery telemetry", () => {
          packageName: PACKAGE,
          during: "load",
          reports: { grid: 1, linear: 2 },
-         files: { served: 3, tileless: 0, invalid: 1, dropped: 0 },
+         files: { served: 3, tileless: 0, invalid: 2, dropped: 0 },
       });
       expect(typeof summary.durationMs).toBe("number");
       const findings = summary.findings as Record<
@@ -123,6 +125,7 @@ describe("report discovery telemetry", () => {
          Record<string, number>
       >;
       expect(findings["report-kind-removed"]).toEqual({ error: 1 });
+      expect(findings["report-cells-removed"]).toEqual({ error: 1 });
 
       // One debug line per finding the package carries, with the shared
       // field vocabulary, and the summary's counts add up to them.
@@ -136,6 +139,14 @@ describe("report discovery telemetry", () => {
             packageName: PACKAGE,
             model: "old.malloy",
             code: "report-kind-removed",
+            severity: "error",
+         }),
+      );
+      expect(lines).toContainEqual(
+         expect.objectContaining({
+            packageName: PACKAGE,
+            model: "cells.malloy",
+            code: "report-cells-removed",
             severity: "error",
          }),
       );
@@ -175,10 +186,16 @@ describe("report discovery telemetry", () => {
       ).toBe(2);
       expect(
          await count("publisher_report_files_total", { status: "invalid" }),
-      ).toBe(1);
+      ).toBe(2);
       expect(
          await count("publisher_report_lint_findings_total", {
             code: "report-kind-removed",
+            severity: "error",
+         }),
+      ).toBe(1);
+      expect(
+         await count("publisher_report_lint_findings_total", {
+            code: "report-cells-removed",
             severity: "error",
          }),
       ).toBe(1);

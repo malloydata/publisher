@@ -19,6 +19,86 @@ import type { ReactNode, Ref } from "react";
 import type { SavesTo } from "./documentSession";
 import { SecondaryButton } from "../buttons";
 import { MOD } from "./useBuilderShortcuts";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
+import { DEFAULT_UI, type ReportUi } from "../../theme/ui";
+import { usePublisherTheme } from "../../theme/ThemeContext";
+
+/**
+ * The toolbar's controls at the report surfaces' one size, set here rather
+ * than left to the host theme: the row was five shapes (a 29px square toggle,
+ * a text link, round 37px icons, a 37px pill), because each control took a
+ * different library default.
+ */
+export const controlSx = (
+   edge: string,
+   hoverEdge: string,
+   ui: ReportUi = DEFAULT_UI,
+) =>
+   ({
+      height: ui.size.control,
+      minHeight: ui.size.control,
+      px: 1.5,
+      borderRadius: ui.radius.control,
+      boxShadow: "none",
+      ...ui.type.control,
+      "&:hover": { boxShadow: "none" },
+      "& .MuiButton-startIcon": { mr: 0.5, "& svg": { fontSize: 18 } },
+      // Outlined in the report's one edge, as the segmented control, the
+      // filter buttons and the tiles are, rather than the host's button grey.
+      "&.MuiButton-outlined": {
+         borderColor: edge,
+         "&:hover": { borderColor: hoverEdge },
+      },
+   }) as const;
+
+export const iconControlSx = (ui: ReportUi = DEFAULT_UI) =>
+   ({
+      width: ui.size.control,
+      height: ui.size.control,
+      borderRadius: ui.radius.control,
+      "& svg": { fontSize: 18 },
+   }) as const;
+
+/** Short rules between groups: the height of a label, not of the row. */
+export const dividerSx = {
+   height: 20,
+   alignSelf: "center",
+   mx: 0.5,
+   my: 0,
+} as const;
+
+/**
+ * A segmented control, built as an outlined button group: the same edge,
+ * height, radius and padding as "+ Tile" beside it, each segment the full
+ * height of the control with a rule between them, and the chosen one tinted
+ * edge to edge. An inset chip inside the outline read as a control within a
+ * control, a size smaller than the button next to it.
+ */
+export const segmentedSx = (edge: string, ui: ReportUi = DEFAULT_UI) =>
+   ({
+      height: ui.size.control,
+      boxSizing: "border-box",
+      borderRadius: ui.radius.control,
+      border: `1px solid ${edge}`,
+      overflow: "hidden",
+      bgcolor: "background.paper",
+      "& .MuiToggleButton-root": {
+         border: "none",
+         borderRadius: "0 !important",
+         m: "0 !important",
+         px: 1.5,
+         py: 0,
+         height: "100%",
+         ...ui.type.control,
+         color: "text.secondary",
+         "& + .MuiToggleButton-root": { borderLeft: `1px solid ${edge}` },
+         "&:hover": { bgcolor: "action.hover" },
+         "&.Mui-selected, &.Mui-selected:hover": {
+            bgcolor: "action.selected",
+            color: "text.primary",
+         },
+      },
+   }) as const;
 
 /** Where Save puts the document, in the words under the button. */
 export const SAVE_TARGET: Record<SavesTo, string> = {
@@ -83,6 +163,9 @@ export function BuilderToolbar({
    layout,
    onLayoutChange,
 }: BuilderToolbarProps) {
+   const { theme } = usePublisherTheme();
+   const edge = edgeColor(theme.cardBorder);
+   const hoverEdge = hoverEdgeColor(theme.cardBorder, theme.tileTitle);
    return (
       <Stack
          direction="row"
@@ -108,7 +191,7 @@ export function BuilderToolbar({
                      onChange={(_event, next: "grid" | "linear" | null) => {
                         if (next && next !== layout) onLayoutChange(next);
                      }}
-                     sx={{ "& .MuiToggleButton-root": { py: 0.25, px: 1 } }}
+                     sx={segmentedSx(edge, theme.ui)}
                   >
                      <ToggleButton value="linear" aria-label="Linear layout">
                         Linear
@@ -118,24 +201,24 @@ export function BuilderToolbar({
                      </ToggleButton>
                   </ToggleButtonGroup>
                </Tooltip>
-               <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+               <Divider orientation="vertical" sx={dividerSx} />
             </>
          )}
          {/* What the page is made of. */}
          {onAddTile && (
             <Button
+               variant="outlined"
                startIcon={<AddIcon />}
                onClick={onAddTile}
                aria-label="Add tile"
+               sx={controlSx(edge, hoverEdge, theme.ui)}
             >
                Tile
             </Button>
          )}
 
          {/* What happens to a change: take it back, or put it down. */}
-         {onAddTile && (
-            <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
-         )}
+         {onAddTile && <Divider orientation="vertical" sx={dividerSx} />}
          <Tooltip title={`Undo (${MOD}Z)`}>
             {/* A span, because a disabled button dispatches no events and a
                 tooltip on one would never show. */}
@@ -144,7 +227,7 @@ export function BuilderToolbar({
                   aria-label="Undo"
                   disabled={!canUndo}
                   onClick={onUndo}
-                  sx={{ width: 37, height: 37 }}
+                  sx={iconControlSx(theme.ui)}
                >
                   <UndoIcon fontSize="small" />
                </IconButton>
@@ -156,7 +239,7 @@ export function BuilderToolbar({
                   aria-label="Redo"
                   disabled={!canRedo}
                   onClick={onRedo}
-                  sx={{ width: 37, height: 37 }}
+                  sx={iconControlSx(theme.ui)}
                >
                   <RedoIcon fontSize="small" />
                </IconButton>
@@ -165,7 +248,7 @@ export function BuilderToolbar({
          {/* The host's own actions, then Save, which keeps the builder open,
           then Close only when the host opted into it with `onExit`. */}
          {(actions || onSave || onExit) && (
-            <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+            <Divider orientation="vertical" sx={dividerSx} />
          )}
          {actions}
          {onSave ? (
@@ -184,7 +267,10 @@ export function BuilderToolbar({
                      onClick={onSave}
                      // Wide enough for the longest of the three labels, so
                      // the row does not reflow as the state cycles.
-                     sx={{ minWidth: 124 }}
+                     sx={{
+                        ...controlSx(edge, hoverEdge, theme.ui),
+                        minWidth: 88,
+                     }}
                   >
                      {saving ? "Saving…" : dirty ? "Save" : "Saved"}
                   </Button>

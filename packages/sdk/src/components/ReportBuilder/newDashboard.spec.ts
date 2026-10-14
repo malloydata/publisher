@@ -17,7 +17,7 @@ describe("a new dashboard", () => {
       expect(slugFor("***")).toBe("");
    });
 
-   it("is a grid report the builder opens: an intro text tile, then the picked view", async () => {
+   it("is a grid report the builder opens: the picked view as its one tile", async () => {
       const text = newDashboardSource({
          title: 'Sales "West"',
          modelPath: "models/storefront.malloy",
@@ -39,10 +39,9 @@ describe("a new dashboard", () => {
       expect(document.layout).toBe("grid");
       expect(document.columns).toBe(12);
       expect(document.tiles.map((tile) => tile.name)).toEqual([
-         "intro",
          "by_category_tile",
       ]);
-      expect(queryTile(document, 1).declaration).toEqual({
+      expect(queryTile(document, 0).declaration).toEqual({
          kind: "reference",
          from: "by_category",
       });

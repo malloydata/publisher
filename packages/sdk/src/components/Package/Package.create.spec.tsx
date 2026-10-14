@@ -141,7 +141,7 @@ function mount(
 }
 
 const settled = () => screen.findByText("old");
-const NEW = { name: "New report" } as const;
+const NEW = { name: "Add report" } as const;
 
 beforeEach(() => {
    clearCache();
@@ -254,12 +254,11 @@ const openNew = async (layout: "linear" | "grid" = "linear") => {
    await waitFor(() =>
       expect(screen.getByLabelText("Report title")).toHaveProperty(
          "value",
-         "by category",
+         "By category",
       ),
    );
    if (layout === "grid") {
-      fireEvent.mouseDown(screen.getByRole("combobox", { name: /Layout/ }));
-      fireEvent.click(screen.getByRole("option", { name: /^Grid/ }));
+      fireEvent.click(screen.getByRole("radio", { name: "Grid" }));
    }
 };
 
@@ -284,8 +283,10 @@ describe("creating", () => {
          expect(screen.getByLabelText("Report title")).toBeDefined(),
       );
       expect(
-         screen.getByRole("combobox", { name: /Layout/ }).textContent,
-      ).toMatch(/^Linear/);
+         screen
+            .getByRole("radio", { name: "Linear" })
+            .getAttribute("aria-checked"),
+      ).toBe("true");
    });
 
    it("writes a linear report at the package root, refreshes the listings, and opens its editor", async () => {

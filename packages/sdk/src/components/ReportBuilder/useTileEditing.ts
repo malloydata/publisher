@@ -3,8 +3,18 @@
 
 import { useState } from "react";
 import type { NewTile } from "./AddTileDialog";
-import { isTextTile, tileKey, type DashboardTile } from "./document";
-import { addTileToDocument } from "./addTileToDocument";
+import {
+   isQueryTile,
+   isTextTile,
+   tileKey,
+   type DashboardTile,
+} from "./document";
+import {
+   addTileToDocument,
+   duplicateBlocked,
+   duplicateTile,
+} from "./addTileToDocument";
+import type { LayoutRules } from "../Report/layoutRules";
 import type { ReportEditorHandle } from "./useReportEditor";
 
 /**
@@ -13,16 +23,15 @@ import type { ReportEditorHandle } from "./useReportEditor";
  */
 export function useTileEditing({
    editor,
-   notebook,
-   columns,
+   rules,
    modelPath,
    textHeld,
    selectTile,
    deselectTile,
 }: {
    editor: ReportEditorHandle;
-   notebook: boolean;
-   columns: number;
+   /** How the document arranges tiles: whether an added tile carries a width, and how wide a new text tile starts. */
+   rules: LayoutRules;
    /** The document's file within the package, which a tile's import is relative to. */
    modelPath: string | undefined;
    /** The document is held as text: it has no `import`, so a tile's source is the run model's and nothing is imported. */
@@ -51,15 +60,18 @@ export function useTileEditing({
          addTileToDocument(draft, tile, {
             modelPath,
             textHeld,
-            notebook,
+            widths: rules.widths,
             insertAt,
          }),
       );
       selectTile(insertAt ?? editor.document.tiles.length);
    };
 
-   /** An empty text tile at the end, named for the first free `text_N`. */
-   const addText = () => {
+   /** An empty text tile where the picker was opened (the end, from the toolbar), named for the first free `text_N`. */
+   const addText = () => insertText(insertAt);
+   /** An empty text tile at the end, wherever the picker was last opened. */
+   const appendText = () => insertText(undefined);
+   const insertText = (at: number | undefined) => {
       setAddingTile(false);
       editor.update((draft) => {
          const taken = new Set(
@@ -67,14 +79,14 @@ export function useTileEditing({
          );
          let n = 1;
          while (taken.has(`text_${n}`)) n++;
-         draft.tiles.splice(insertAt ?? draft.tiles.length, 0, {
+         draft.tiles.splice(at ?? draft.tiles.length, 0, {
             kind: "text",
             name: `text_${n}`,
             markdown: "",
-            ...(notebook ? {} : { colspan: columns }),
+            ...(rules.widths ? { colspan: rules.columns } : {}),
          });
       });
-      selectTile(insertAt ?? editor.document.tiles.length);
+      selectTile(at ?? editor.document.tiles.length);
    };
 
    /** Change one tile where it stands, found by key so a preview order cannot misdirect it. */
@@ -92,6 +104,23 @@ export function useTileEditing({
       });
    };
 
+   /** A copy of the tile at `index`, right after it, selected. */
+   const duplicate = (index: number) => {
+      setMenu(undefined);
+      // Where the copy lands is known before the edit: `update` is a state
+      // updater, run on the next render rather than here, so reading a value
+      // it sets left the copy unselected.
+      const tile = editor.document.tiles[index];
+      const lands =
+         tile && isQueryTile(tile) && duplicateBlocked(tile) === undefined
+            ? index + 1
+            : undefined;
+      editor.update((draft) => {
+         duplicateTile(draft, index);
+      });
+      if (lands !== undefined) selectTile(lands);
+   };
+
    return {
       menu,
       setMenu,
@@ -100,7 +129,9 @@ export function useTileEditing({
       closeAdd,
       addTile,
       addText,
+      appendText,
       editTile,
       removeTile,
+      duplicate,
    };
 }

@@ -66,7 +66,7 @@ const rows = async () => {
    const section = screen.getByRole("region", { name: "Reports" });
    return Array.from(section.querySelectorAll('[role="button"]'))
       .map((row) => row.textContent ?? "")
-      .filter((text) => text !== "New report");
+      .filter((text) => text !== "Report");
 };
 
 beforeEach(() => {
