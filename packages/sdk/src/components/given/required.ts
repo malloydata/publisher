@@ -3,6 +3,7 @@
 
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
+import { isEmptyStringMeaningful } from "./paramCodec";
 
 /**
  * Whether a given must be set before anything that reads it can run: the
@@ -16,8 +17,16 @@ import type { GivenValue } from "../../hooks/givenValue";
 export const isRequiredGiven = (given: Given): boolean =>
    given.required === true;
 
-const unset = (value: GivenValue | undefined): boolean =>
-   value === undefined || value === null || value === "";
+/**
+ * No value yet. An empty string is a value only where the codec says it means
+ * something: for a `filter<…>` or a string it is "All", which a reader can
+ * pick on a required filter and must then see run; for a number or a date it
+ * is nothing.
+ */
+const unset = (value: GivenValue | undefined, type: string | undefined) =>
+   value === undefined ||
+   value === null ||
+   (value === "" && !isEmptyStringMeaningful(type));
 
 /**
  * The page's required controls that have no value yet, in row order. A tile
@@ -33,7 +42,7 @@ export function missingRequiredGivens(
       (spec) =>
          spec.name !== undefined &&
          isRequiredGiven(spec) &&
-         unset(values.get(spec.name)) &&
+         unset(values.get(spec.name), spec.type) &&
          (hostGivens?.[spec.name] === undefined ||
             hostGivens[spec.name] === null),
    );
