@@ -253,7 +253,6 @@ describe("useDocumentEditor: undoing a save", () => {
       expect(view.result.current.dirty).toBe(true);
       // Work to lose, so a leave guard warns.
       expect(view.result.current.edited).toBe(true);
-      expect(view.result.current.pendingOpen).toBe(false);
       await saveIt(view);
       expect(view.result.current.dirty).toBe(false);
       expect(view.result.current.lastSave?.before).toBe("P");
@@ -504,62 +503,5 @@ describe("useDocumentEditor: undoing a save", () => {
       act(() => view.result.current.update((d) => void d.items.push("b")));
       await saveIt(view);
       expect(view.result.current.canUndoSave).toBe(false);
-   });
-});
-
-describe("useDocumentEditor: opening unsaved", () => {
-   const conversion = () => {
-      const writes: Array<[string, string]> = [];
-      const view = renderHook(() =>
-         useDocumentEditor<Doc>({
-            source: "legacy",
-            document: { items: ["a"] },
-            splice: async (_source, doc) => ({
-               ok: true,
-               source: doc.items.join(","),
-            }),
-            opensDirty: true,
-            onSave: (source, context) =>
-               void writes.push([source, context.purpose]),
-         }),
-      );
-      return { view, writes };
-   };
-
-   it("is dirty before any edit, yet reports no edits", () => {
-      const { view } = conversion();
-      expect(view.result.current.dirty).toBe(true);
-      expect(view.result.current.edited).toBe(false);
-      expect(view.result.current.pendingOpen).toBe(true);
-      act(() => view.result.current.update((d) => void d.items.push("b")));
-      expect(view.result.current.edited).toBe(true);
-   });
-
-   it("saves the untouched document, and is clean once written", async () => {
-      const { view, writes } = conversion();
-      await act(async () => {
-         expect(await view.result.current.save()).toEqual({ ok: true });
-      });
-      expect(writes).toEqual([["a", "save"]]);
-      expect(view.result.current.dirty).toBe(false);
-      expect(view.result.current.pendingOpen).toBe(false);
-   });
-
-   it("returns to unsaved when the save is undone, and writes the file back", async () => {
-      const { view, writes } = conversion();
-      await act(async () => {
-         await view.result.current.save();
-      });
-      await act(async () => {
-         await view.result.current.undoSave();
-      });
-      expect(writes).toEqual([
-         ["a", "save"],
-         ["legacy", "undo"],
-      ]);
-      expect(view.result.current.source).toBe("legacy");
-      expect(view.result.current.pendingOpen).toBe(true);
-      expect(view.result.current.dirty).toBe(true);
-      expect(view.result.current.edited).toBe(false);
    });
 });

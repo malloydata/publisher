@@ -26,7 +26,7 @@ const FILES: Record<string, string> = {
    "base.malloy": `source: s is duckdb.sql("select 1 as x") extend {\n   view: v is { group_by: x }\n}\n`,
    "index.malloy": `import "base.malloy"\nexport { s }\n`,
    // A linear report: an entry point although the surface does not list it.
-   "flip.malloy": `## artifact { layout=linear }\nimport "base.malloy"\nrun: s -> v\n`,
+   "flip.malloy": `## artifact { layout=linear tiles=["s -> v"] }\nimport "base.malloy"\n`,
 };
 
 /** What the reload turns `flip.malloy` into: a model the surface does not list. */

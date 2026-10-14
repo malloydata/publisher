@@ -192,6 +192,51 @@ describe("DashboardView layout marker", () => {
    });
 });
 
+describe("DashboardView prose links", () => {
+   const linked = {
+      ...base,
+      tiles: [
+         { kind: "text", name: "intro", markdown: "See [the tour](tour)" },
+      ],
+   } as DashboardManifest;
+
+   it("leaves a relative link as written when the host has no router", async () => {
+      render(
+         <DashboardView
+            manifest={linked}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      const link = await screen.findByRole("link", { name: "the tour" });
+      // Its host's routes are unknown here (a version segment, another prefix), so nothing is rewritten.
+      expect(link.getAttribute("href")).toBe("tour");
+   });
+
+   it("resolves a relative link against the report and hands it to the host's router", async () => {
+      const onLinkNavigate = mock((_to: string) => undefined);
+      render(
+         <DashboardView
+            manifest={linked}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+            onLinkNavigate={onLinkNavigate}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      const link = await screen.findByRole("link", { name: "the tour" });
+      expect(link.getAttribute("href")).toBe("/env/pkg/dashboards/tour");
+      link.click();
+      expect(onLinkNavigate).toHaveBeenCalledTimes(1);
+      expect(onLinkNavigate.mock.calls[0][0]).toBe("/env/pkg/dashboards/tour");
+   });
+});
+
 describe("DashboardView control row", () => {
    it("draws no sticky row when the document declares no controls", async () => {
       const { container } = render(

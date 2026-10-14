@@ -11,7 +11,7 @@ When you've been doing analysis, writing queries, building views, creating repor
 
 ## Step 1: IDENTIFY, what belongs in a model?
 
-Scan your analysis `.malloy` files and reports (any `.malloy` with an `## artifact` tag, wherever it sits, or an existing `.malloynb`). A report (a `tiles=[…]` layout or `run:` cells, of either layout) is not a model file to restructure: lift its reusable definitions into a model and leave the report to import them. For each dimension, measure, join, or calculation, ask: **is this a reusable building block?**
+Scan your analysis `.malloy` files and reports (any `.malloy` with an `## artifact` tag, wherever it sits, or an existing `.malloynb`). A report (a `tiles=[…]` layout, of either layout) is not a model file to restructure: lift its reusable definitions into a model and leave the report to import them. For each dimension, measure, join, or calculation, ask: **is this a reusable building block?**
 
 A measure or dimension belongs in a model if it meets ANY of these criteria:
 

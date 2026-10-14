@@ -2,16 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 import { useCallback } from "react";
-import type { RawNotebook } from "../../client";
-import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
-import { parseResourceUri } from "../../utils/formatting";
-import { givensToRequest } from "../given/paramCodec";
+import type { RawNotebook } from "../../../client";
+import { useQueryWithApiError } from "../../../hooks/useQueryWithApiError";
+import { parseResourceUri } from "../../../utils/formatting";
+import { givensToRequest } from "../../given/paramCodec";
 import {
    CellRunnerView,
    type CellReportProps,
    type CellRunner,
-} from "../Report/CellReport";
-import { useServer } from "../ServerProvider";
+} from "./CellRunnerView";
+import { useServer } from "../../ServerProvider";
 
 /** The deprecated notebook read, one cache entry per URI however many components ask. */
 export function useNotebookQuery(resourceUri: string) {

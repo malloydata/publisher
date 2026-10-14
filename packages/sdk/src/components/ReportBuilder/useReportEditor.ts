@@ -38,33 +38,24 @@ export function useReportEditor(options: {
    document: DashboardDocument;
    /** Persist the patched file. Rejecting leaves the editor dirty. */
    onSave?: SaveHandler<DashboardDocument>;
-   /**
-    * A cell-format notebook the document is the conversion of: while `source`
-    * is `from` the edits are spliced into `to`, the layout text it converts to,
-    * and the open is unsaved ({@link DocumentEditorOptions.opensDirty}).
-    */
-   conversion?: { from: string; to: string };
    /** The file a save overwrites when `source` is a draft of it ({@link DocumentEditorOptions.replaces}). */
    replaces?: string;
    /** The sources a document held as text sees without an `import`. */
    visibleSources?: readonly string[];
 }): ReportEditorHandle {
-   const { conversion, visibleSources, ...rest } = options;
-   const from = conversion?.from;
-   const to = conversion?.to;
+   const { visibleSources, ...rest } = options;
    const splice = useCallback(
       (text: string, document: DashboardDocument) =>
          spliceDashboardDocument(
-            from !== undefined && text === from ? (to as string) : text,
+            text,
             document,
             visibleSources ? { visibleSources } : {},
          ),
-      [from, to, visibleSources],
+      [visibleSources],
    );
    return useDocumentEditor({
       ...rest,
       splice,
       structural: tilesChanged,
-      opensDirty: conversion !== undefined,
    });
 }

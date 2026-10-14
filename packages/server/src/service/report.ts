@@ -8,8 +8,8 @@
  * read it from here, so none of them can disagree about a file.
  *
  * A report is a `.malloy` file in the package, outside `public/`, whose
- * model-level `## artifact` tag parses and does not set `kind=`, and which is
- * not the package's root `index.malloy`. A legacy `.malloynb` is also a report
+ * model-level `## artifact` tag parses, does not set `kind=`, and lists its
+ * tiles when it is linear, and which is not the package's root `index.malloy`. A legacy `.malloynb` is also a report
  * (linear, read-only). WHERE a file lives carries no meaning: `dashboards/` and
  * `notebooks/` are ordinary directory names.
  */
@@ -96,9 +96,6 @@ function parseLayoutValue(value: string | undefined): ReportLayout | undefined {
    return value === "grid" || value === "linear" ? value : undefined;
 }
 
-/** Which rule decided a layout, for the lint's fix-its. */
-type LayoutDecidedBy = "layout" | "tiles" | "default";
-
 /**
  * What a file's model-level notes make it (`docs/reports-design.md` §1, §2).
  *
@@ -107,13 +104,19 @@ type LayoutDecidedBy = "layout" | "tiles" | "default";
  *   lint says why.
  * - `kind-removed`: the tag sets `kind=`, which is no longer read, so not a
  *   report; the lint says to write `layout=`.
+ * - `cells-removed`: the tag reads as linear and lists no `tiles`, the retired
+ *   form of a linear report written as `run:` cells, so not a report; the lint
+ *   says to list the tiles. `unknownLayout` is set when the tag names a layout
+ *   Publisher does not know (`layout=Grid`), which is what made it read as
+ *   linear, so the lint names that instead.
  * - `report`: a report, with its layout.
  */
 export type ReportTag =
    | { status: "none" }
    | { status: "unparsed" }
    | { status: "kind-removed"; kind: string }
-   | { status: "report"; layout: ReportLayout; decidedBy: LayoutDecidedBy };
+   | { status: "cells-removed"; unknownLayout?: string }
+   | { status: "report"; layout: ReportLayout };
 
 /**
  * The one reader of a report's tag, over a file's model-level notes: its own
@@ -123,7 +126,9 @@ export type ReportTag =
  *
  * The layout, first match wins: `layout=grid|linear`; else grid when the tag
  * lists `tiles` (an empty list counts) or a model-level `dashboard { … }` grid
- * tag is present; else linear.
+ * tag is present; else linear. A linear tag with no `tiles` key (an empty list
+ * counts as one) is the retired cell format, so no report. A `tiles` that is
+ * not a list (`tiles=foo`) is a tag the reader cannot use: unparsed.
  */
 export function readReportTag(modelNotes: readonly string[]): ReportTag {
    const tags = motlyTag(modelNotes);
@@ -134,11 +139,18 @@ export function readReportTag(modelNotes: readonly string[]): ReportTag {
          : { status: "none" };
    const kind = tagText(artifact, "kind");
    if (kind !== undefined) return { status: "kind-removed", kind };
-   const layout = parseLayoutValue(tagText(artifact, "layout"));
-   if (layout) return { status: "report", layout, decidedBy: "layout" };
-   if (artifact.has("tiles") || tags?.tag("dashboard") !== undefined)
-      return { status: "report", layout: "grid", decidedBy: "tiles" };
-   return { status: "report", layout: "linear", decidedBy: "default" };
+   const hasTiles = artifact.has("tiles");
+   if (hasTiles && artifact.array("tiles") === undefined)
+      return { status: "unparsed" };
+   const declared = tagText(artifact, "layout");
+   const layout =
+      parseLayoutValue(declared) ??
+      (hasTiles || tags?.tag("dashboard") !== undefined ? "grid" : "linear");
+   if (layout === "linear" && !hasTiles)
+      return declared !== undefined && parseLayoutValue(declared) === undefined
+         ? { status: "cells-removed", unknownLayout: declared }
+         : { status: "cells-removed" };
+   return { status: "report", layout };
 }
 
 /** {@link readReportTag} over text that is not compiled: a file that failed to, or text handed to the write path or the compile check. */

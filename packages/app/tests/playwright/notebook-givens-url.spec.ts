@@ -33,16 +33,8 @@ const PKG_DIR = path.resolve(
 // The examples ship no report over these givens, so this suite writes the
 // linear report it drives and removes it afterwards.
 const NOTEBOOK_SOURCE = `##! experimental.givens
-## artifact { layout=linear }
+## artifact { layout=linear title="Governed analytics — interactive controls" tiles=["sales -> overview", "sales -> by_region"] }
 import "orders.malloy"
-
-##|(markdown)
-# Governed analytics — interactive controls
-|##
-
-run: sales -> overview
-
-run: sales -> by_region
 `;
 
 async function reloadPackage(baseURL: string): Promise<void> {

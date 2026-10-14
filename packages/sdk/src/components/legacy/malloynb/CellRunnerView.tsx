@@ -1,34 +1,42 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+/**
+ * @deprecated `.malloynb` only. The cell runner behind the deprecated
+ * `Notebook`: it runs a `.malloynb` notebook's code cells through the
+ * deprecated `…/notebooks/*` routes and draws them on the shared report page.
+ * Nothing outside `legacy/malloynb/` imports it (eslint enforces this), and it
+ * is deleted with the `.malloynb` format. A `.malloy` report is always tiles,
+ * drawn by `DashboardView`.
+ */
+
 import "@malloydata/malloy-explorer/styles.css";
 import { Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { NotebookCell as RawCell, RawNotebook } from "../../client";
-import type { GivenValue } from "../../hooks/givenValue";
-import { useDocumentControls } from "../../hooks/useDocumentControls";
-import { useModelGivens } from "../../hooks/useModelGivens";
-import { GIVEN_SETTLE_MS } from "../../hooks/useSettled";
-import { parseResourceUri } from "../../utils/formatting";
-import { ApiErrorDisplay, type ApiError } from "../ApiErrorDisplay";
-import type { NavigationClick } from "../click_helper";
-import type { DrillNavigation } from "../drill";
-import { GivensPanel } from "../given";
-import { givensToParams, givensToRequest } from "../given/paramCodec";
-import { Loading, LOADING_COPY } from "../Loading";
-import { cellRuns } from "../Notebook/cellKind";
-import { NotebookCell } from "../Notebook/NotebookCell";
-import { planRun } from "../Notebook/runPlan";
-import type { EnhancedNotebookCell } from "../Notebook/types";
-import { useServer } from "../ServerProvider";
-import { failureCategory, useReportEvents } from "./telemetry";
-import { Prose } from "../Prose";
+import type { NotebookCell as RawCell, RawNotebook } from "../../../client";
+import type { GivenValue } from "../../../hooks/givenValue";
+import { useDocumentControls } from "../../../hooks/useDocumentControls";
+import { useModelGivens } from "../../../hooks/useModelGivens";
+import { GIVEN_SETTLE_MS } from "../../../hooks/useSettled";
+import { parseResourceUri } from "../../../utils/formatting";
+import { ApiErrorDisplay, type ApiError } from "../../ApiErrorDisplay";
+import type { NavigationClick } from "../../click_helper";
+import type { DrillNavigation } from "../../drill";
+import { GivensPanel } from "../../given";
+import { givensToParams, givensToRequest } from "../../given/paramCodec";
+import { Loading, LOADING_COPY } from "../../Loading";
+import { cellRuns } from "./cellKind";
+import { NotebookCell } from "./NotebookCell";
+import { planRun } from "./runPlan";
+import type { EnhancedNotebookCell } from "./types";
+import { failureCategory, useReportEvents } from "../../Report/telemetry";
+import { Prose } from "../../Prose";
 import {
    ReportHeader,
    ReportPage,
    StickyControls,
    TextTileFrame,
-} from "./ReportPage";
+} from "../../Report/ReportPage";
 
 // Maximum number of concurrent cell executions to avoid overwhelming the server
 const MAX_CONCURRENT = 4;
@@ -476,11 +484,8 @@ export function CellRunnerView({
 
    const shownCells =
       enhancedCells.length > 0 ? enhancedCells : notebook?.notebookCells || [];
-   // A served report can open with definition cells; a .malloynb keeps the icon on its first cell.
-   const copyLinkIndex =
-      notebook?.format === "malloy"
-         ? shownCells.findIndex((cell) => cell.type === "markdown")
-         : 0;
+   // A .malloynb keeps the copy-link icon on its first cell.
+   const copyLinkIndex = 0;
 
    return (
       // The page every report draws, whatever its format: the header, the
@@ -564,54 +569,5 @@ export function CellRunnerView({
             />
          )}
       </ReportPage>
-   );
-}
-
-/**
- * A `.malloy` report written as `run:` cells, whose cells the caller already
- * holds (`Report` reads them off `GET …/reports/{path}`). Each runs through
- * the governed query endpoint the grid tiles use
- * (`POST …/models/{path}/query`, the report's path as the model and the cell's
- * text as the query), which holds a cell to the same surface, `#(authorize)`
- * and row-level gates a tile is held to.
- */
-export function CellReport({
-   notebook: held,
-   ...props
-}: CellReportProps & { notebook: RawNotebook }) {
-   const { apiClients } = useServer();
-   const { environmentName, packageName, versionId, modelPath } =
-      parseResourceUri(props.resourceUri);
-   // Handed over from the first render after mount, not on it, so the
-   // controls see the document ARRIVE as they do when it is fetched: that
-   // arrival is what reports the file's starting values to the host's URL
-   // (`useGivensState` seeds its record from the first render).
-   const [mounted, setMounted] = useState(false);
-   useEffect(() => setMounted(true), []);
-   const runCell = useCallback<CellRunner>(
-      async ({ cell, givens, declaredTypes, signal }) => ({
-         result: (
-            await apiClients.models.executeQueryModel(
-               environmentName,
-               packageName,
-               modelPath,
-               {
-                  query: cell.text,
-                  givens: givensToRequest(givens, declaredTypes),
-                  versionId,
-               },
-               undefined,
-               { signal },
-            )
-         ).data.result,
-      }),
-      [apiClients.models, environmentName, packageName, modelPath, versionId],
-   );
-   return (
-      <CellRunnerView
-         {...props}
-         notebook={mounted ? held : undefined}
-         runCell={runCell}
-      />
    );
 }

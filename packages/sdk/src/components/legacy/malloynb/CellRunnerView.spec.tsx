@@ -1,57 +1,39 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// DEPRECATED FEATURE COVERAGE — delete together with
+// `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+
 /**
- * What a report written as `run:` cells shows when something fails: a cell
- * the server refuses says why in that cell and leaves the others running, and
- * cells that could not be read at all say so in place of the cells. Rendering
- * the happy path is `Report.spec`'s.
+ * What a `.malloynb` shows when something fails: a cell the server refuses
+ * says why in that cell and leaves the others running, and cells that could
+ * not be read at all say so in place of the cells.
  */
-import {
-   afterEach,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   mock,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { render, screen, waitFor } from "@testing-library/react";
 import {
    clearCache,
    mockServerProvider,
    serverWrapper,
-} from "../../../test/serverProvider";
-import type { RawNotebook } from "../../client";
+} from "../../../../test/serverProvider";
+import type { RawNotebook } from "../../../client";
+import type { CellRunner } from "./CellRunnerView";
 
-let answer: (query: string) => Promise<unknown> = () =>
-   Promise.resolve({ data: { result: undefined } });
-const executeQueryModel = mock(
-   (
-      _environmentName: string,
-      _packageName: string,
-      _modelPath: string,
-      request: { query?: string },
-   ) => answer(request.query ?? ""),
-);
-
-mockServerProvider({
-   models: { executeQueryModel, getModel: () => new Promise(() => {}) },
-});
+// Cells run through the runner each test hands in, never the server.
+mockServerProvider({ models: { getModel: () => new Promise(() => {}) } });
 
 // Imported after the stub is registered: a static import would hoist above it.
-const { CellReport, CellRunnerView } = await import("./CellReport");
+const { CellRunnerView } = await import("./CellRunnerView");
 
-const URI = "publisher://environments/env/packages/pkg/models/review.malloy";
+const URI = "publisher://environments/env/packages/pkg/models/review.malloynb";
 
-const cells = (...queries: string[]): RawNotebook =>
-   ({
-      format: "malloy",
-      notebookCells: [
-         { type: "markdown", kind: "markdown", text: "Intro prose" },
-         ...queries.map((text) => ({ type: "code", kind: "query", text })),
-      ],
-   }) as RawNotebook;
+const cells = (...queries: string[]): RawNotebook => ({
+   format: "malloynb",
+   notebookCells: [
+      { type: "markdown", text: "Intro prose" },
+      ...queries.map((text) => ({ type: "code" as const, text })),
+   ],
+});
 
 /** A rejection shaped like axios's, carrying the server's `{message}`. */
 const refused = (message: string) =>
@@ -59,11 +41,20 @@ const refused = (message: string) =>
       response: { data: { message } },
    });
 
+/** A runner that answers each cell's code with `answer`, and records the order it was asked in. */
+function runner(answer: (code: string) => Promise<unknown>) {
+   const asked: number[] = [];
+   const runCell: CellRunner = ({ cell, index }) => {
+      asked.push(index);
+      return answer(cell.text ?? "") as ReturnType<CellRunner>;
+   };
+   return { asked, runCell };
+}
+
 // A failed cell is logged as well as shown; the log is not under test.
 let quiet: { mockRestore(): void } | undefined;
 beforeEach(() => {
    clearCache();
-   executeQueryModel.mockClear();
    quiet = spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => quiet?.mockRestore());
@@ -86,10 +77,15 @@ describe("a cell that fails", () => {
          "The server did not say why.",
       ],
    ])("says why with %s, in that cell", async (_name, error, shown) => {
-      answer = () => Promise.reject(error);
-      render(<CellReport resourceUri={URI} notebook={cells("run: a -> v")} />, {
-         wrapper: serverWrapper,
-      });
+      const { runCell } = runner(() => Promise.reject(error));
+      render(
+         <CellRunnerView
+            resourceUri={URI}
+            notebook={cells("run: a -> v")}
+            runCell={runCell}
+         />,
+         { wrapper: serverWrapper },
+      );
 
       expect(
          await screen.findByText("This cell could not be run."),
@@ -99,23 +95,23 @@ describe("a cell that fails", () => {
    });
 
    it("still runs and shows the other cells", async () => {
-      answer = (query) =>
-         query === "run: bad -> v"
+      const { asked, runCell } = runner((code) =>
+         code === "run: bad -> v"
             ? Promise.reject(refused("no such source"))
-            : Promise.resolve({ data: { result: undefined } });
+            : Promise.resolve({}),
+      );
       render(
-         <CellReport
+         <CellRunnerView
             resourceUri={URI}
             notebook={cells("run: bad -> v", "run: good -> v")}
+            runCell={runCell}
          />,
          { wrapper: serverWrapper },
       );
 
       expect(await screen.findByText("no such source")).toBeTruthy();
-      expect(executeQueryModel.mock.calls.map((call) => call[3])).toEqual([
-         expect.objectContaining({ query: "run: bad -> v" }),
-         expect.objectContaining({ query: "run: good -> v" }),
-      ]);
+      // The markdown cell is index 0 and never runs.
+      expect(asked).toEqual([1, 2]);
       expect(screen.getAllByText("This cell could not be run.")).toHaveLength(
          1,
       );
@@ -138,16 +134,16 @@ describe("cells that could not be read", () => {
          { wrapper: serverWrapper },
       );
 
-   it("names the report that does not exist", () => {
+   it("names the notebook that does not exist", () => {
       view({ status: 404, message: "Not found" });
-      expect(screen.getByText("env > pkg > review.malloy")).toBeTruthy();
+      expect(screen.getByText("env > pkg > review.malloynb")).toBeTruthy();
       expect(screen.getByText(/not found\./)).toBeTruthy();
    });
 
-   it("shows any other failure with the report it was reading", async () => {
+   it("shows any other failure with the notebook it was reading", async () => {
       view({ status: 500, message: "The package did not load" });
       await waitFor(() =>
-         expect(screen.getByText("env > pkg > review.malloy")).toBeTruthy(),
+         expect(screen.getByText("env > pkg > review.malloynb")).toBeTruthy(),
       );
       expect(screen.getByText("The package did not load")).toBeTruthy();
       expect(screen.queryByText(/not found\./)).toBeNull();

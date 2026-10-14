@@ -178,18 +178,12 @@ export function BuilderGrid({
                                     })
                                  }
                               />
-                           ) : renderTile && !editor.pendingOpen ? (
-                              // Until the conversion is saved the package has none of its views to run.
+                           ) : renderTile ? (
                               renderTile(each, heading(each), "card")
                            ) : (
                               <TilePlaceholder
                                  tile={each}
                                  heading={heading(each)}
-                                 {...(editor.pendingOpen
-                                    ? {
-                                         note: "Preview appears after you Save",
-                                      }
-                                    : {})}
                               />
                            )}
                         </TileFrame>

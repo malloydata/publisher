@@ -153,18 +153,21 @@ In order, first match wins:
 1. `layout=grid` or `layout=linear` in the tag.
 2. A tag that lists `tiles` (an empty list counts), or a model-level `dashboard { … }` grid tag on any `##`
    line of the file, is grid.
-3. Anything else is linear: a report of `run:` cells, a tag with no tiles, or a `.malloynb`.
+3. Anything else is linear.
+
+A `.malloy` file whose tag comes out linear, by step 1 or step 3, is a report only when the tag has a
+`tiles` key (an empty list counts). With none it is the retired cell format and makes no report (see
+[Files written as `run:` cells](#files-written-as-run-cells)); a `.malloynb` is linear with no tag at all.
+A `tiles` that is not a list (`tiles=foo`) makes the tag unreadable, so no report either.
 
 So **a linear report that lists tiles must say `layout=linear`**, or step 2 reads it as grid. Write
 `layout=` on every report, which is what the builder and the create dialog always do, and a file never
 depends on steps 2 and 3. The rule reads the file's model-level notes, the same way whether the file is
-compiled, failed to compile, or is text handed to the compile check or the save. A model-level tag with no `layout=` and no tiles is read as linear and reported
-(`report-layout-implicit`) so you can say which you meant.
+compiled, failed to compile, or is text handed to the compile check or the save.
 
 What layout changes is how tiles are placed, and nothing else. Linear renders them one column wide, top
 to bottom, and ignores `colspan` and `break` (with a `notebook-tile-layout-ignored` warning); grid places
-them by `columns`, `colspan` and `break`. A report of `run:` cells is linear only, because cells are
-sequential.
+them by `columns`, `colspan` and `break`.
 
 ## Tiles
 
@@ -273,8 +276,9 @@ query tile is `{ kind: "query", query, … }`. Anything that runs a report's til
 Write a report in one order: the header (`##!` flags, `//` comments, the `"` description, the artifact
 tag), then imports and givens, then the prose blocks in tile order, then the extension that defines the
 tile views. Tiles read in `tiles=[…]` order wherever their blocks sit; grouping the blocks before the
-extension is what the builder writes, and it inserts a new block after the last one. A statement or a
-`#` tag above `## artifact` is an error, and the report is served with that error instead of opening.
+extension is what the builder writes, and it inserts a new block after the last one. Keep statements and
+`#` tags below `## artifact`: nothing refuses one above it, but the header is where readers and the builder
+look for the tag and the description.
 
 <a id="grid-layout"></a>
 
@@ -440,77 +444,26 @@ source: category_tiles is order_items extend {
   imports in scope, so one report can import several models and a tile's source can join sources from
   different files.
 
-### Reports written as `run:` cells
+### Files written as `run:` cells
 
-An older linear form is a file of `run:` statements with `(markdown)` notes between them. Publisher still
-reads and serves it, and a person saving it in the Console converts it to tiles. Write new linear reports
-as tiles; maintain a cell report in its own form until someone converts it.
+An older linear form was a file of `run:` statements with `(markdown)` notes between them, under an
+artifact tag with no `tiles`, either `## artifact { layout=linear }` or one naming no layout at all.
+Publisher no longer reads it. Such a file is not a
+report: it is not listed, its route opens nothing, and the builder refuses it. The package page names it
+with `report-cells-removed` and the fix, and the compile check answers the same finding. A tag whose
+`layout=` is misspelled (`layout=Grid`) and that lists no tiles is named `report-layout-unknown` instead.
+The file still compiles as a model, and `PUT …/models/{path}` with the `expectedHash` of its current text
+replaces it in place, so it can be rewritten as tiles where it is.
 
-```malloy
-##! experimental.givens
-##" One category at a time.
-## artifact { layout=linear title="Category review" }
-import { order_items, products } from "storefront.malloy"
+To bring one back, rewrite it as tiles, the form above:
 
-##|(markdown)
-## Category review
+1. Make each floating `(markdown)` note a named `##|(markdown) name` block, listed as `name { kind=text }`.
+2. Make each `run: <source> -> <query>` a `view:` on an extension of that source the report declares, and
+   list it as `"<extension> -> <view>"`. The render tags and `#"` caption that sat above the `run:` go on
+   the view, the caption as `# label="…"`. A `run:` of a named `query:` can be listed by the query's name.
+3. List the entries in `tiles=[…]` in reading order, keep `layout=linear`, and delete the `run:` lines.
 
-Pick a **Category** in the controls above.
-|##
-
-# label="Category" control=select suggest { source=products dimension=category }
-given: CATEGORY :: filter<string> is f''
-
-##(markdown) How is revenue trending for the selected category?
-
-#(markdown) ### Revenue by month
-#" Revenue by month for the selected category
-# line_chart
-run: order_items -> sales_by_month + { where: category ~ $CATEGORY }
-```
-
-The rules that make such a file read as cells:
-
-1. **The header is `##!` flags, `//` comments and unnamed `"` notes, then `## artifact`.** Nothing else
-   goes above the tag.
-2. **Prose is a `(markdown)` annotation, and the number of `#` says what it belongs to.** Floating
-   markdown is a cell of its own: `##(markdown) text` (contiguous lines merge into one cell) or a
-   `##|(markdown)` block. Attached markdown, `#(markdown) text` or a `#|(markdown)` … `|#` block, belongs
-   to the statement below it and renders with that cell. A `##|(markdown)` block in a cell report takes
-   no name: a name means something only where a `tiles=[name { kind=text }]` entry lists it.
-3. **Render tags sit directly above `run:`, with nothing between.** A `#"` directly above the `run:` is
-   its caption.
-4. **A `given:` is read by the cells below it**, so declare it before the first cell that uses it.
-5. **Trailing prose is `##(markdown)`**, never `#(markdown)` or `#"`, which both need a statement below
-   them. An `import` or an `export` takes no annotation either, so prose above one is `##|(markdown)`.
-
-| In the file                                                                  | Cell                                                   |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------ |
-| `##!` lines, `## artifact`, and every `"` note above the tag                 | the header: no cell                                    |
-| `##(markdown)` lines (contiguous) or a `##\|(markdown)` block, after the tag | one markdown cell                                      |
-| `#(markdown)` or a `#\|(markdown)` block above a statement                   | no cell of its own: renders with that statement's cell |
-| `run:` with its contiguous `#` tag block, including `run: <named query>`     | one query cell                                         |
-| `import`, `source:`, `query:`, `given:`, `export { … }`, `type:`             | one definition cell per statement, rendered folded     |
-| a non-`"` `##` note after the tag (`## title=…`)                             | not a cell                                             |
-
-A query cell runs as a _restricted query_ against the already-compiled file, so an `import` inside a
-`run:` is rejected (`file imports are not permitted in a restricted query`); imports are file-wide and
-go at the top. To run one cell, send its `text` (from the manifest's cells) as the `query` to
-`POST …/models/{path}/query`, the report's path as the model, with `givens` in the body: the same governed
-endpoint a grid report's tiles use. A legacy `.malloynb`'s cells run at the deprecated
-`…/notebooks/{path}/cells/{i}`.
-
-**What the Console converts.** Saving a cell report in the builder turns each `run:` into a `view:` on a
-`<source>_tiles` extension appended to the file (a `query:` used by exactly one run is folded into its
-view), each prose note into a `##|(markdown) text_N` block, and leaves definitions, imports, givens and
-comments where they were. The first Save asks before it rewrites the file ("Convert this notebook?");
-Cancel writes nothing, and the builder cannot undo a saved conversion, so the file's history in its
-repository is the way back. A cell report converts when every `run:` is
-`<source> -> <view or query body>` with a named source: an inline `extend` before the arrow, a source that
-is not a name, a refinement of a multi-stage query, or a run that resolves through more than ten named
-queries is refused. The builder opens a cell report **read-only**, saying why, when it cannot place cells
-one by one: two statements or notes on one line, text after a block closer, a comment straddling two
-cells, a lone carriage return, a statement above the tag, or a tag value Malloy cannot read.
+`examples/storefront/category-review.malloy` is a report that was rewritten this way.
 
 ### Legacy `.malloynb` files
 
@@ -838,12 +791,14 @@ that are otherwise silent: a control that never appears, a click that goes nowhe
   the artifact tag that Publisher does not read.
 - **Text tiles.** An entry with no block, a block written twice, a non-integer `colspan`, an unknown
   property on the entry, and a named block no entry lists.
-- **The tag and the header.** An artifact tag that does not parse (`notebook-artifact-unparsed`), a
-  statement or tag above it, prose the reader cannot place, and a cell report that will not open, each as an
-  `error` naming the line and the fix.
+- **The tag and the prose.** An artifact tag that does not parse (`notebook-artifact-unparsed`, error);
+  a `#(markdown)` note with no statement to take it (`notebook-markdown-attached-nowhere`, error); a
+  floating or unnamed `(markdown)` note that no text tile shows (`notebook-markdown-block-unnamed`); each
+  naming the line and the fix.
 - **The layout.** A `layout=` other than `grid` or `linear` (`report-layout-unknown`, error); a tag that
   sets `kind=`, which is no longer read and makes no report (`report-kind-removed`, error, with the
-  `layout=` to write); a tileless tag with no `layout=` (`report-layout-implicit`).
+  `layout=` to write); a linear tag with no `tiles`, the retired cell format, which makes no report
+  (`report-cells-removed`, error, with the fix).
 - **The surface.** A tagged root `index.malloy` (`index-is-not-a-report`, error); a report on the surface,
   one that `index.malloy` imports, directly or through other files, or that `explores` lists
   (`report-on-surface`); and a tile or `suggest` that
@@ -883,12 +838,11 @@ message, and the entry clears on the next reload that compiles.
 | `/<env>/<pkg>/<path>?CATEGORY=Outerwear`                | The same page, filtered: control state is URL state                                                                                    |
 | `/<env>/<pkg>/<path>?edit`                              | The same report in the builder. `<path>/edit` is a legacy alias, redirected here unless a report is at `<path>/edit.malloy`            |
 | `GET /api/v0/environments/<env>/packages/<pkg>/reports` | Every report: `path`, `name` (label), `layout`, `title`, `description`, `editable`, and the load `error` for one that does not compile |
-| `GET …/reports/{path}`                                  | One report's manifest: title, `layout`, autorun, columns, controls, tiles; for a `run:`-cell or `.malloynb` report, its cells          |
+| `GET …/reports/{path}`                                  | One report's manifest: title, `layout`, autorun, columns, controls, tiles; for a `.malloynb`, its cells                                |
 | `PUT …/models/{path}`                                   | Write a report into the package and reload; the builder's save ([The write path](#the-write-path))                                     |
 
 `{path}` is the `path` the listing returns. A report's tiles run through the ordinary query endpoint,
-`POST …/models/{path}/query`, against the report's own path, with `givens` in the request body, and so do
-the cells of a `.malloy` report written as `run:` cells (each cell's `text` as the `query`). There is no
+`POST …/models/{path}/query`, against the report's own path, with `givens` in the request body. There is no
 report-specific execution path, so authorization, row limits and query caps behave exactly as they do
 everywhere else. A tile's `query` is an expression, so send it as `{"query": "run: <it>"}`. Skip `kind`
 `text` tiles, which have nothing to run.
@@ -916,8 +870,9 @@ report into the package and reloads it. One rule for both layouts:
 - **Create** (omit `expectedHash`) at any `.malloy` path in the package that does not exist yet, outside
   `public/` and never at the root `index.malloy`. Missing directories are created inside the package. The
   text must carry an artifact tag. A file already at that path answers `409`.
-- **Replace** (with `expectedHash`) only a file the package currently serves as an editable report. The
-  endpoint cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`, wherever they live.
+- **Replace** (with `expectedHash`) only a file with an artifact tag: a report the package serves, or a
+  tagged file it refuses as one (a retired cell-format file, a `kind=` tag), so that file can be rewritten
+  as tiles in place. The endpoint cannot overwrite a model, an untagged file, a `.malloynb` or `index.malloy`, wherever they live.
   A file that changed since you read it answers `409`, and nothing is merged.
 - The text is compiled first (at `scope: "file"`) and refused with its problems when it does not compile.
   The write is atomic under the package lock, the package reloads in place, and the previous text is
@@ -932,7 +887,7 @@ Two reports may share a basename in different directories; there is no name-coll
 ## Editing in the Console
 
 Every report page has an **Edit** button in the header, beside the breadcrumbs, and the package page has a
-**New report** action: pick a model, a source and its view, a title and a layout (linear by default), and
+**+ Report** button: pick a model, a source and its view, a title and a layout (linear by default), and
 the file is written as `<slug>.malloy` at the **package root**, or at another location you type, and opened
 in the builder. No directory is ever created for you.
 
@@ -962,7 +917,7 @@ that tile with the reason shown; so is a tile inherited from a declaration on th
 A grid report with `tiles=[]` (only possible by hand-editing) opens in the builder but is not served until it
 has a tile, and the builder will not remove the last tile of a report saved with tiles. A filter on a
 dimension reached through a join keeps its full dotted path (`products.category`), written quoted. On a
-screen narrower than 600px the Console hides **Edit** and **New report**, and an editor opened by URL asks
+screen narrower than 600px the Console hides **Edit** and **+ Report**, and an editor opened by URL asks
 for **Edit anyway** first.
 
 What makes it different from a classic BI tool is what the editing produces. There is no proprietary layout

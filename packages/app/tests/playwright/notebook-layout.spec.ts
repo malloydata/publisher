@@ -6,7 +6,6 @@ import {
    addTextTile,
    createDocument,
    editText,
-   editorOpen,
    queryTiles,
    tileByKey,
 } from "./helpers/builder";
@@ -19,10 +18,9 @@ import { saveChanges } from "./helpers/save";
 
 /**
  * A notebook is a one-column dashboard: authored in the dashboard builder,
- * saved in place, and read with no card around its tiles. A notebook still in
- * the cell format is converted when it is saved, once the writer confirms it.
+ * saved in place, and read with the same cards a grid draws.
  *
- * Both cases write into a throwaway copy of the storefront package.
+ * It writes into a throwaway copy of the storefront package.
  */
 
 let pe: PackageEnv;
@@ -118,53 +116,6 @@ test.describe("layout notebooks", () => {
          els.map((el) => getComputedStyle(el).borderTopStyle),
       );
       expect(borders.every((style) => style === "none")).toBe(true);
-      await reader.close();
-   });
-
-   test("a notebook in the cell format opens as a conversion, asks before converting, and saves as a layout", async ({
-      page,
-      context,
-   }) => {
-      const file = "category-review.malloy";
-      const original = await pe.readSource(file);
-
-      await page.goto(`/${pe.env}/${pe.pkg}/category-review?edit`);
-      await editorOpen(page);
-      await expect(
-         page.getByText(
-            /This report is in the cell format\. Saving rewrites it/,
-         ),
-      ).toBeVisible();
-      // Nothing was edited, and Save is already on: the conversion is the change.
-      const save = page.getByRole("button", { name: "Save", exact: true });
-      await expect(save).toBeEnabled();
-      await expect(queryTiles(page)).toHaveCount(3, { timeout: 60_000 });
-
-      // The first save asks, because the builder cannot take a conversion back.
-      await save.click();
-      const confirm = page.getByRole("dialog", {
-         name: "Convert this report?",
-      });
-      await expect(confirm).toBeVisible();
-      await confirm
-         .getByRole("button", { name: "Convert and save", exact: true })
-         .click();
-      await expect(
-         page.getByRole("button", { name: "Saved", exact: true }),
-      ).toBeVisible({ timeout: 30_000 });
-      const converted = await pe.readSource(file);
-      expect(converted).not.toBe(original);
-      expect(converted).toContain("tiles=[");
-      expect(converted).not.toMatch(/^run:/m);
-
-      // The converted notebook reads: its three queries still draw.
-      const reader = await context.newPage();
-      await reader.goto(`/${pe.env}/${pe.pkg}/category-review`);
-      await expect(reader.locator("[data-malloy-render-as]")).toHaveCount(3, {
-         timeout: 60_000,
-      });
-      await expect(reader.locator('[data-layout="linear"]')).toHaveCount(1);
-      await expect(reader.locator('[data-chrome="card"]')).toHaveCount(3);
       await reader.close();
    });
 });

@@ -9,7 +9,7 @@
  * and its line below.
  */
 export { Dashboard, type DashboardProps } from "./Dashboard";
-export { default as Notebook } from "./Notebook";
+export { default as Notebook } from "./malloynb/Notebook";
 export { type DocumentKind } from "./kindAdapter";
 export {
    documentRoute,
