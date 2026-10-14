@@ -33,6 +33,7 @@ import {
 } from "./document";
 import { gapId } from "./layout";
 import { GapDroppable, NO_DRAG, TileSortable } from "./sortable";
+import { widthLabel } from "./widthLabel";
 
 /**
  * Everything the builder draws AROUND a tile: the selection outline, the menu
@@ -302,14 +303,15 @@ export function TileFrame({
                      onPointerUp={onResizeEnd}
                      onPointerCancel={onResizeEnd}
                      onClick={(event) => event.stopPropagation()}
-                     sx={{
+                     sx={(mui) => ({
                         position: "absolute",
                         top: 0,
                         bottom: 0,
                         // Straddles the edge, so the target is a usable width
-                        // without eating into the tile's content.
-                        right: "-5px",
-                        width: "10px",
+                        // without eating into the tile's content; wide enough
+                        // for the knob at its middle.
+                        right: "-8px",
+                        width: "16px",
                         cursor: "col-resize",
                         touchAction: "none",
                         zIndex: 2,
@@ -325,19 +327,61 @@ export function TileFrame({
                            outlineOffset: 1,
                            borderRadius: "3px",
                         },
+                        // A rail down the edge, so the whole edge reads as the
+                        // thing to drag, and a knob at its middle to aim for.
+                        "&::before": {
+                           content: '""',
+                           position: "absolute",
+                           top: "10px",
+                           bottom: "10px",
+                           left: "50%",
+                           transform: "translateX(-50%)",
+                           width: "3px",
+                           borderRadius: "2px",
+                           bgcolor: theme.accent,
+                        },
                         "&::after": {
                            content: '""',
                            position: "absolute",
                            top: "50%",
                            left: "50%",
                            transform: "translate(-50%, -50%)",
-                           width: "4px",
-                           height: "28px",
-                           borderRadius: "2px",
-                           bgcolor: theme.accent,
+                           width: "16px",
+                           height: "16px",
+                           boxSizing: "border-box",
+                           borderRadius: "50%",
+                           border: `2px solid ${theme.accent}`,
+                           bgcolor: mui.palette.background.paper,
+                           boxShadow: "0 1px 3px rgba(16, 24, 40, 0.18)",
                         },
-                     }}
-                  />
+                     })}
+                  >
+                     {/* While dragging, the width it will snap to, in words. The
+                      separator's own value text says the same to a screen reader. */}
+                     {resizing && width && (
+                        <Box
+                           aria-hidden
+                           sx={(mui) => ({
+                              position: "absolute",
+                              top: "50%",
+                              left: "50%",
+                              transform: "translate(-50%, calc(-100% - 16px))",
+                              px: 1,
+                              py: 0.5,
+                              borderRadius: "6px",
+                              bgcolor: mui.palette.text.primary,
+                              color: mui.palette.background.paper,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              lineHeight: 1.4,
+                              whiteSpace: "nowrap",
+                              pointerEvents: "none",
+                           })}
+                        >
+                           {widthLabel(width.span, width.columns)}
+                        </Box>
+                     )}
+                  </Box>
                )}
 
                {onInsertAfter && (
@@ -533,7 +577,9 @@ export function GridGuides({ columns }: { columns: number }) {
             position: "absolute",
             inset: 0,
             pointerEvents: "none",
-            zIndex: 3,
+            // Behind the tiles: the bands show in the gaps and the free space a
+            // tile can grow into, not over its content.
+            zIndex: 0,
             display: "grid",
             gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
             gap: `${GRID_GAP_PX}px`,
@@ -543,12 +589,10 @@ export function GridGuides({ columns }: { columns: number }) {
             <Box
                key={column}
                sx={{
-                  borderLeft: `1px dashed ${theme.accent}`,
-                  borderRight:
-                     column === columns - 1
-                        ? `1px dashed ${theme.accent}`
-                        : "none",
-                  opacity: 0.35,
+                  // A faint band per column: the tracks a width snaps to.
+                  bgcolor: theme.accent,
+                  opacity: 0.06,
+                  borderRadius: "3px",
                }}
             />
          ))}
