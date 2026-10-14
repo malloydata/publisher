@@ -89,7 +89,7 @@ test.describe("builder affordances", () => {
 
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
       await expect(
-         dialog.getByRole("combobox", { name: "Source" }),
+         dialog.getByRole("combobox", { name: "Search views" }),
       ).toBeVisible({ timeout: 30_000 });
       const box = await dialog.boundingBox();
       expect(box).not.toBeNull();
@@ -121,9 +121,9 @@ test.describe("builder affordances", () => {
       await page.getByRole("button", { name: "Add report" }).last().click();
       const dialog = page.getByRole("dialog", { name: "New report" });
       await expect(dialog).toBeVisible();
-      await expect(dialog.getByRole("combobox", { name: "Layout" })).toHaveText(
-         /Linear/,
-      );
+      await expect(
+         dialog.getByRole("radio", { name: "Linear", exact: true }),
+      ).toHaveAttribute("aria-checked", "true");
    });
 
    test("the Reports heading row carries New report, whichever layout the package already has", async ({

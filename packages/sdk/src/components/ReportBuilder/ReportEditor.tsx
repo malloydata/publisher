@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { clearReportDraft } from "./useReportDraft";
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
@@ -139,6 +140,13 @@ export type ReportEditorProps = (
     * `BuilderBar` in the host's header, or place each in its own chrome.
     */
    onControlsChange?: BuilderControlsHandler;
+   /**
+    * Keep unsaved edits in this browser, per report, and put them back when
+    * the report is next opened for editing here: leaving never loses work, so
+    * the host's way out can be the controls' `done` (write, then leave) with
+    * no "leave with unsaved changes?" on the way.
+    */
+   keepDraft?: boolean;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
    /**
@@ -177,6 +185,7 @@ export function ReportEditor(props: ReportEditorProps) {
       onDirtyChange,
       onExit,
       onControlsChange,
+      keepDraft,
       kind,
       path,
       textSource,
@@ -198,7 +207,7 @@ export function ReportEditor(props: ReportEditorProps) {
    const dashboardName = named ?? documentSlug(path) ?? "";
    const noun = "report";
 
-   const { apiClients, mutable, isLoadingStatus } = useServer();
+   const { apiClients, mutable, isLoadingStatus, server } = useServer();
    const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
@@ -345,14 +354,24 @@ export function ReportEditor(props: ReportEditorProps) {
       });
    }, [fetchFailed, modelQuery.error, modelPath, layout]);
    // Stable: the builder fires this from an effect that depends on it.
+   // The editor's own record is every unsaved edit: it decides whether a
+   // newer version of the file may replace what is open, and with a draft
+   // kept, reporting only what leaving would lose let the other author's
+   // version replace the author's edits. The host's leave guard gets what
+   // leaving would lose.
    const reportDirty = useCallback(
-      (value: boolean) => {
+      (value: boolean, wouldLose: boolean) => {
          setDirty(value);
-         onDirtyChangeRef.current?.(value);
+         onDirtyChangeRef.current?.(wouldLose);
       },
       [setDirty],
    );
 
+   // One per report, version and server: a draft is never restored onto a
+   // file it was not made on.
+   const draftKey = keepDraft
+      ? `${server}|${environmentName}/${packageName}@${versionId ?? ""}/${path ?? dashboardName}`
+      : undefined;
    const saveLabel =
       savesTo === "host" && workspace?.description
          ? workspace.description
@@ -370,8 +389,17 @@ export function ReportEditor(props: ReportEditorProps) {
               ...(readFailure !== undefined ? { readFailure } : {}),
               ...(versionId !== undefined ? { versionId } : {}),
            });
-   // The description is already the Save caption, so the note does not repeat it.
-   const note = caption === saveLabel ? "" : caption;
+   // Only what is out of the ordinary: Save off, a pinned version, a copy
+   // that could not be read. Where an ordinary save goes is the bar's status
+   // to say (its tooltip), and a line under every report repeating it was
+   // noise. The description is already the Save caption, so it is not
+   // repeated either.
+   const ordinary =
+      savesTo === "package" &&
+      takesWrites === true &&
+      !pinnedPackageSave &&
+      readFailure === undefined;
+   const note = ordinary || caption === saveLabel ? "" : caption;
 
    // After every hook, so the hook order does not depend on the URI. Same
    // reasoning as `Dashboard`'s own check.
@@ -442,7 +470,16 @@ export function ReportEditor(props: ReportEditorProps) {
             <Alert
                severity="warning"
                action={
-                  <Button size="small" onClick={acceptHeld}>
+                  <Button
+                     size="small"
+                     onClick={() => {
+                        // Loading the other version is dropping these edits,
+                        // so the draft holding them goes too: kept, it would
+                        // be offered straight back over the version chosen.
+                        if (draftKey !== undefined) clearReportDraft(draftKey);
+                        acceptHeld();
+                     }}
+                  >
                      Load it
                   </Button>
                }
@@ -483,6 +520,7 @@ export function ReportEditor(props: ReportEditorProps) {
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
                {...(onControlsChange ? { onControlsChange } : {})}
+               {...(draftKey !== undefined ? { draftKey } : {})}
                {...(allowLayoutChange !== undefined
                   ? { allowLayoutChange }
                   : {})}

@@ -1,18 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Box, IconButton, SvgIcon, Typography } from "@mui/material";
 import type { PointerEvent, ReactNode } from "react";
 import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
-import {
-   CONTROL_RADIUS,
-   edgeColor,
-   hoverEdgeColor,
-   TILE_RADIUS,
-} from "../controlTokens";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import {
    REMOVE_BADGE_CLASS,
    RemoveBadge,
@@ -101,6 +97,7 @@ export function TileFrame({
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
+   const ui = theme.ui;
    return (
       <TileSortable id={tileKey(tile)} index={index}>
          {({ ref, handleRef }) => (
@@ -116,6 +113,7 @@ export function TileFrame({
                // A named group, so the name is announced: a label on a plain
                // element is not.
                role="group"
+               className={reportClasses.builderTile}
                aria-label={`Tile ${tile.name}`}
                aria-current={selected}
                // Keyboard focus anywhere in the tile selects it, as a press
@@ -246,7 +244,7 @@ export function TileFrame({
                         // astride the edge, half outside the tile it belongs to.
                         top: bare ? 0 : `${MENU_INSET_PX}px`,
                         right: bare ? 0 : `${MENU_INSET_PX}px`,
-                        borderRadius: CONTROL_RADIUS,
+                        borderRadius: ui.radius.control,
                         width: 28,
                         height: 28,
                         zIndex: 2,
@@ -271,7 +269,7 @@ export function TileFrame({
                 never takes a press on it. */}
                {onResizeStart && (
                   <Box
-                     className="builder-affordance"
+                     className={`builder-affordance ${reportClasses.widthHandle}`}
                      {...{ [NO_DRAG]: "" }}
                      role="separator"
                      tabIndex={width ? 0 : -1}
@@ -345,7 +343,7 @@ export function TileFrame({
                            width: "12px",
                            height: "40px",
                            boxSizing: "border-box",
-                           borderRadius: "6px",
+                           borderRadius: ui.radius.control,
                            border: `1px solid ${
                               resizing
                                  ? theme.accent
@@ -401,12 +399,10 @@ export function TileFrame({
                               transform: "translateY(calc(-100% - 28px))",
                               px: 1,
                               py: 0.5,
-                              borderRadius: "6px",
+                              borderRadius: ui.radius.control,
                               bgcolor: mui.palette.text.primary,
                               color: mui.palette.background.paper,
-                              fontSize: 12,
-                              fontWeight: 600,
-                              lineHeight: 1.4,
+                              ...ui.type.label,
                               whiteSpace: "nowrap",
                               pointerEvents: "none",
                            })}
@@ -477,8 +473,16 @@ export const selectionSx = (
       selected,
       flash = false,
       bare = false,
-   }: { selected: boolean; flash?: boolean; bare?: boolean },
+      ringOffset = BARE_RING_OFFSET_PX,
+   }: {
+      selected: boolean;
+      flash?: boolean;
+      bare?: boolean;
+      /** How far a bare ring stands off its prose. Only content outside the grid may go wider than the grid's own. */
+      ringOffset?: number;
+   },
 ): SystemStyleObject<Theme> => {
+   const ui = theme.ui;
    const ring = selected || flash ? theme.accent : "transparent";
    // A soft band outside the ring, so a selection reads as lifted to the
    // front rather than outlined. Wider and stronger for the undo flash.
@@ -500,7 +504,7 @@ export const selectionSx = (
          "&::before": {
             content: '""',
             position: "absolute",
-            inset: `${-BARE_RING_OFFSET_PX}px`,
+            inset: `${-ringOffset}px`,
             borderRadius: 1,
             border: `2px solid ${ring}`,
             ...(halo && { boxShadow: halo }),
@@ -518,7 +522,7 @@ export const selectionSx = (
    // alone. A hover ring the shape of the selection ring made a pointed-at tile
    // and a selected one look alike.
    return {
-      borderRadius: TILE_RADIUS,
+      borderRadius: ui.radius.tile,
       "& > .MuiPaper-root": {
          transition,
          ...reducedMotionSx,

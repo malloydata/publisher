@@ -43,6 +43,8 @@ import {
 import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
+import type { ViewPreview } from "./AddTileDialog";
+import { chartLineText } from "./chartLine";
 import { useEditorCatalog } from "./useEditorCatalog";
 import type { SaveContext, SaveHandler } from "./useDocumentEditor";
 import type { BuilderControlsHandler } from "./builderControls";
@@ -73,6 +75,7 @@ export function EditorSurface({
    onDirtyChange,
    onExit,
    onControlsChange,
+   draftKey,
    allowLayoutChange,
    onEvent,
    savesTo,
@@ -94,9 +97,11 @@ export function EditorSurface({
    replaces?: string;
    /** Save the text, with the layout the document has as it is saved. */
    onSave?: (source: string, layout: ReportLayout) => Promise<void>;
-   onDirtyChange: (dirty: boolean) => void;
+   onDirtyChange: (dirty: boolean, wouldLose: boolean) => void;
    onExit?: () => void;
    onControlsChange?: BuilderControlsHandler;
+   /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
+   draftKey?: string;
    allowLayoutChange?: boolean;
    onEvent?: ReportEventHandler;
    savesTo: SavesTo;
@@ -406,6 +411,47 @@ export function EditorSurface({
       ],
    );
 
+   // A view picked in Add a tile, run as the tile it would add: against the
+   // model that exports its source, with the page's filters, so the preview is
+   // the tile as it will look here.
+   const renderViewPreview = useMemo(
+      () =>
+         function ViewPreviewTile(view: ViewPreview) {
+            return (
+               <DashboardTile
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  versionId={versionId}
+                  modelPath={view.modelPath}
+                  tile={`${view.base} -> ${view.view}`}
+                  {...(view.chart
+                     ? {
+                          annotation: chartLineText(
+                             view.chart,
+                             view.chartCarried,
+                          ),
+                       }
+                     : {})}
+                  label={view.label}
+                  borderless
+                  givens={applied}
+                  hostGivens={tileHostGivens}
+                  declaredTypes={declaredTypes}
+                  givenNames={view.givens}
+                  height={200}
+               />
+            );
+         },
+      [
+         environmentName,
+         packageName,
+         versionId,
+         applied,
+         tileHostGivens,
+         declaredTypes,
+      ],
+   );
+
    return (
       <Stack sx={{ gap: 1 }}>
          {textSource && compileErrors.length > 0 && (
@@ -430,6 +476,7 @@ export function EditorSurface({
             source={opened.source}
             document={opened.document}
             renderTile={renderTile}
+            renderViewPreview={renderViewPreview}
             givens={specs
                .filter((spec) => spec.name !== undefined)
                .map((spec) => ({
@@ -444,6 +491,7 @@ export function EditorSurface({
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
             {...(onControlsChange ? { onControlsChange } : {})}
+            {...(draftKey !== undefined ? { draftKey } : {})}
             {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
@@ -470,12 +518,37 @@ export function EditorSurface({
    );
 }
 
-/** Whether a tile is unchanged from its opened self: same view, bindings, chart and heading. */
+/** Whether a tile runs as its opened self did: same view, bindings and chart ({@link whatRuns}). */
 function sameTile(
    opened: DocumentTile | undefined,
    now: DocumentTile,
 ): boolean {
    return (
-      opened !== undefined && JSON.stringify(opened) === JSON.stringify(now)
+      opened !== undefined &&
+      JSON.stringify(whatRuns(opened)) === JSON.stringify(whatRuns(now))
    );
+}
+
+/**
+ * A tile less what only frames its result: its title, subtitle, width, row
+ * and card are drawn by the tile around the result, not sent with the query.
+ * Retitling a tile re-ran it before, and its chart blinked as the same rows
+ * were drawn again.
+ */
+function whatRuns(tile: DocumentTile): DocumentTile {
+   const {
+      label: _label,
+      subtitle: _subtitle,
+      colspan: _colspan,
+      break: _break,
+      borderless: _borderless,
+      ...runs
+   } = tile as DocumentTile & {
+      label?: unknown;
+      subtitle?: unknown;
+      colspan?: unknown;
+      break?: unknown;
+      borderless?: unknown;
+   };
+   return runs as DocumentTile;
 }

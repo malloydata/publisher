@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
+import { chooseLayout, pickView, readerOpen } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 
 /**
@@ -82,14 +83,8 @@ test.describe("dashboard-create", () => {
       await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await dialog.getByRole("combobox", { name: "Layout" }).click();
-      await page.getByRole("option", { name: /^Grid/ }).click();
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "orders.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First query" }).click();
-      await page
-         .getByRole("option", { name: "orders → by_brand", exact: true })
-         .click();
+      await chooseLayout(dialog, "Grid");
+      await pickView(dialog, "by_brand", "orders in orders.malloy");
       await dialog.getByLabel("Report title").fill("Created here");
       // Written at the package root: no directory is created for a report.
       await expect(
@@ -109,9 +104,7 @@ test.describe("dashboard-create", () => {
       await expect(
          page.getByRole("button", { name: "Created here", exact: true }),
       ).toBeVisible();
-      await expect(
-         page.getByText("Save writes the file into the package."),
-      ).toBeVisible();
+      await expect(page.locator('[data-saves-to="package"]')).toHaveCount(1);
 
       // An edit, saved into the package.
       // The title is edited where it is shown.
@@ -133,6 +126,8 @@ test.describe("dashboard-create", () => {
          .getByRole("button", { name: "Done", exact: true })
          .click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/created-here$`));
+      // The builder stays up until the reader is drawn: wait for the swap.
+      await readerOpen(page);
       await expect(
          page.getByRole("heading", { name: "Created and saved" }),
       ).toBeVisible({ timeout: 60_000 });

@@ -23,3 +23,23 @@ export function closeMenu() {
    if (!menu) throw new Error("no tile menu is open");
    fireEvent.keyDown(menu, { key: "Escape" });
 }
+
+/** A view in the add-tile picker, by its Malloy name; within one source's group when `source` is given. */
+export const viewOption = (view: string, source?: string): HTMLElement => {
+   const scope = source
+      ? within(screen.getByRole("group", { name: source, hidden: true }))
+      : screen;
+   return scope.getAllByRole("option", {
+      name: (name) => name.endsWith(`(${view})`),
+      hidden: true,
+   })[0]!;
+};
+
+/** {@link viewOption}, once the picker has listed it. */
+export const findViewOption = async (view: string): Promise<HTMLElement> =>
+   (
+      await screen.findAllByRole("option", {
+         name: (name) => name.endsWith(`(${view})`),
+         hidden: true,
+      })
+   )[0]!;

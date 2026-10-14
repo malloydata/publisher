@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Page } from "@playwright/test";
-import { editorOpen, tileByKey } from "./helpers/builder";
+import { editorOpen, readerOpen, tileByKey } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 import {
    registerPackageEnv,
@@ -11,9 +11,12 @@ import {
 } from "./helpers/packageEnv";
 
 /**
- * Leaving the notebook editor: the app's unsaved-changes prompt by Back and
- * by the header's View button, the ways out that must not prompt, and a text
- * tile's Cancel and keyboard commit. The builder draws no way out of itself.
+ * Leaving the notebook editor. Edits are kept in this browser as they are
+ * made, so leaving by Back loses nothing and asks nothing, and opening the
+ * editor again puts them back; Done saves them and shows the report. The
+ * unsaved-changes prompt is left for text still being typed into an open
+ * field, which is not an edit yet. Also a text tile's Escape and keyboard
+ * commit.
  */
 
 const PKG = "notebooks-malloyyo";
@@ -117,66 +120,93 @@ test.describe("notebook exit guard", () => {
          .getByRole("button", { name: "Discard changes" })
          .click();
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
       expect(await pe.readSource(TOUR)).not.toContain("Half-typed thought");
    });
 
-   test("View with unsaved edits asks, and Discard changes leaves with no second prompt", async ({
+   /** The bar's status line: Saved, Draft saved, Saving…. */
+   const status = (page: Page) =>
+      page.getByRole("toolbar", { name: "Report builder" }).getByRole("status");
+
+   test("an edit then Back leaves without asking, and editing again puts it back", async ({
+      page,
+   }) => {
+      await openEditor(page);
+      await dirtyFirstNote(page);
+      await expect(status(page)).toHaveText("Draft saved");
+
+      await goBack(page);
+      await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
+      await expect(prompt(page)).toHaveCount(0);
+      expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
+
+      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await editorOpen(page);
+      await expect(
+         page.getByText(/Restored your unsaved edits from/),
+      ).toBeVisible();
+      await expect(page.getByText("Edited first.")).toBeVisible();
+      await expect(status(page)).toHaveText("Draft saved");
+   });
+
+   test("Done saves the edits and shows the report, and no draft comes back", async ({
       page,
    }) => {
       await openEditor(page);
       await dirtyFirstNote(page);
 
       await view(page).click();
-      await expect(prompt(page)).toBeVisible();
-      await prompt(page)
-         .getByRole("button", { name: "Discard changes" })
-         .click();
-
-      await expect(page).toHaveURL(readerUrl());
+      await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
-      await expect(page.getByText("First note.")).toBeVisible({
+      await expect(page.getByText("Edited first.")).toBeVisible({
          timeout: 60_000,
       });
-      expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
+      expect(await pe.readSource(TOUR)).toContain("Edited first.");
+
+      await page.getByRole("button", { name: "Edit", exact: true }).click();
+      await editorOpen(page);
+      await expect(status(page)).toHaveText("Saved");
+      await expect(page.getByText(/Restored your unsaved edits/)).toHaveCount(
+         0,
+      );
    });
 
-   test("Done with a text draft open keeps the text, asks, and Keep editing keeps it", async ({
+   test("Done with a text field open keeps its text, saves, and shows the report", async ({
       page,
    }) => {
       await openEditor(page);
       await openFirstNote(page);
       await markdownField(page).fill("Draft then Done");
 
-      // Leaving the field keeps its text; the edit is then unsaved, so leaving asks.
       await view(page).click();
-      await expect(prompt(page)).toBeVisible();
-      await prompt(page).getByRole("button", { name: "Keep editing" }).click();
-
+      await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
-      await expect(page).toHaveURL(/\?edit$/);
-      await expect(page.getByText("Draft then Done")).toBeVisible();
+      expect(await pe.readSource(TOUR)).toContain("Draft then Done");
    });
 
-   test("View with unsaved edits, Keep editing, then Save and View leaves with no prompt", async ({
+   test("Discard edits from the status puts the saved report back", async ({
       page,
    }) => {
       await openEditor(page);
       await dirtyFirstNote(page);
 
-      await view(page).click();
-      await prompt(page).getByRole("button", { name: "Keep editing" }).click();
-      await expect(page).toHaveURL(/\?edit$/);
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Draft saved" })
+         .click();
+      await page.getByRole("menuitem", { name: /Discard edits/ }).click();
+      await expect(page.getByText("First note.")).toBeVisible();
+      await expect(page.getByText("Edited first.")).toHaveCount(0);
+      await expect(status(page)).toHaveText("Saved");
 
-      await saveChanges(page);
-      await view(page).click();
-
-      await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
+      await goBack(page);
+      await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
-      await expect(page.getByText("Edited first.")).toBeVisible({
-         timeout: 60_000,
-      });
-      expect(await pe.readSource(TOUR)).toContain("Edited first.");
    });
 
    test("Save then Back leaves without a prompt", async ({ page }) => {
@@ -186,6 +216,7 @@ test.describe("notebook exit guard", () => {
 
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
    });
 
@@ -196,6 +227,7 @@ test.describe("notebook exit guard", () => {
 
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
    });
 
@@ -212,6 +244,7 @@ test.describe("notebook exit guard", () => {
       // Nothing was left unsaved, so leaving does not ask.
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
    });
 
@@ -223,8 +256,6 @@ test.describe("notebook exit guard", () => {
 
       await expect(markdownField(page)).toHaveCount(0);
       await expect(page.getByText("Committed by keyboard")).toBeVisible();
-      await expect(
-         page.getByRole("button", { name: "Save", exact: true }),
-      ).toBeVisible();
+      await expect(status(page)).toHaveText("Draft saved");
    });
 });

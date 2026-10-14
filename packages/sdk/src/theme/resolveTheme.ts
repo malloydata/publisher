@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { DEFAULT_UI } from "./ui";
 import { accentFor, legibleOn } from "./accent";
 import { DEFAULT_THEME } from "./defaults";
 import { PER_MODE_COLOR_KEYS, type PerModeColorKey } from "./keys";
@@ -94,6 +95,8 @@ export function resolveTheme(
          : pick("mapColor");
    return {
       mode,
+      // The host's chrome tokens are laid over this by `ThemeProvider`.
+      ui: DEFAULT_UI,
       // One series list for both modes, picked against a light page: in dark,
       // an operator's colour too dark to see on the canvas is lifted until it
       // reads. The defaults are drawn as they always were.

@@ -29,6 +29,7 @@ import {
 import { Configuration } from "../client/configuration";
 import { resolveMode } from "../theme/resolveTheme";
 import { ThemeProvider } from "../theme/ThemeContext";
+import type { ReportUiOverrides } from "../theme/ui";
 import type { Theme, ThemeMode } from "../theme/types";
 import { globalQueryClient } from "../utils/queryClient";
 
@@ -116,6 +117,14 @@ export interface ServerProviderProps {
     * single-mode.
     */
    theme?: Theme;
+   /**
+    * The host's design tokens for the report reader's and builder's chrome:
+    * radii, control sizes, the type scale, the mono face, the menu shadow. Any
+    * subset; the rest stay the SDK's. Colour is the host's MUI palette and the
+    * theme above, not this. See `ReportUi`, and `reportClasses` for styling
+    * what tokens do not reach.
+    */
+   ui?: ReportUiOverrides;
 }
 
 const getApiClients = (
@@ -180,6 +189,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
    baseURL,
    mutable: mutableProp,
    theme: themeProp,
+   ui,
 }) => {
    const apiClients = useMemo(
       () => getApiClients(baseURL, getAccessToken),
@@ -288,6 +298,7 @@ const ServerProviderInner: React.FC<ServerProviderProps> = ({
             userChoice={effectiveUserChoice}
             setMode={setMode}
             allowUserToggle={allowUserToggle}
+            {...(ui ? { ui } : {})}
          >
             {children}
          </ThemeProvider>

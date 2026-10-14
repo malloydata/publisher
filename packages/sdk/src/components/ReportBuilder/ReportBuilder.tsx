@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
@@ -11,6 +12,7 @@ import type { SavesTo } from "./documentSession";
 import { reportEmitter, type ReportEventHandler } from "../Report/telemetry";
 import type { BuilderGiven } from "./controls";
 import { BuilderDialogs } from "./BuilderDialogs";
+import type { ViewPreview } from "./AddTileDialog";
 import { BuilderGrid } from "./BuilderGrid";
 import { BuilderHeader } from "./BuilderHeader";
 import { builderReport } from "./builderReport";
@@ -31,6 +33,7 @@ import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
 import { useControlBindings } from "./useControlBindings";
+import { useReportDraft } from "./useReportDraft";
 import { useReportEditor } from "./useReportEditor";
 import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
@@ -109,6 +112,8 @@ export interface ReportBuilderProps {
       /** Always `card`, in either layout; kept for hosts written against it. */
       chrome?: TileChrome,
    ) => ReactNode;
+   /** A view picked in Add a tile, run as the tile it would add; absent, the picker says what will run. */
+   renderViewPreview?: (view: ViewPreview) => ReactNode;
    /**
     * The control row, in the slot the reader puts it — this is where a real
     * `GivensPanel` goes.
@@ -164,8 +169,13 @@ export interface ReportBuilderProps {
     * cannot answer that: the saved baseline lives in this hook, so a parent
     * comparing the document it is handed against the one it passed in reads
     * dirty immediately after a successful save.
+    *
+    * The second argument is whether leaving now would LOSE edits: the same,
+    * unless a draft is kept (`draftKey`), when it is only text still being
+    * typed into an open field. A leave guard reads that one; anything
+    * deciding whether to replace the document reads the first.
     */
-   onDirtyChange?: (dirty: boolean) => void;
+   onDirtyChange?: (dirty: boolean, wouldLose: boolean) => void;
    /**
     * Where `onSave` puts the file, for the event it reports. The builder
     * cannot tell — it is handed a function — and a save into the package, into
@@ -203,6 +213,16 @@ export interface ReportBuilderProps {
     */
    onControlsChange?: BuilderControlsHandler;
    /**
+    * Keep unsaved edits in this browser under this key, and put them back
+    * when the builder next opens on the same key: so leaving never loses work,
+    * and a host can offer one way out, `done` (write, then leave), with no
+    * "leave with unsaved changes?" on the way. `onDirtyChange`'s second
+    * argument then reports only what a draft cannot hold, text still being
+    * typed into an open field.
+    * One key per report and place it is saved to. Absent, nothing is kept.
+    */
+   draftKey?: string;
+   /**
     * Whether the toolbar offers the Linear / Grid layout switch. Default
     * true. A host that files a report by its layout passes false, so an
     * author cannot change a layout the host files by. A document held as text
@@ -220,6 +240,7 @@ export function ReportBuilder({
    onExit,
    allowLayoutChange = true,
    renderTile,
+   renderViewPreview,
    controls,
    givens,
    catalog,
@@ -233,6 +254,7 @@ export function ReportBuilder({
    visibleSources,
    addFilterDisabledReason,
    onControlsChange,
+   draftKey,
 }: ReportBuilderProps) {
    const editor = useReportEditor({
       source,
@@ -241,6 +263,7 @@ export function ReportBuilder({
       ...(replaces !== undefined ? { replaces } : {}),
       ...(visibleSources ? { visibleSources } : {}),
    });
+   const draft = useReportDraft(draftKey, editor, source);
    const gridBox = useRef<HTMLDivElement>(null);
    const {
       selected,
@@ -351,6 +374,9 @@ export function ReportBuilder({
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
       extraDirty: draftDirty,
+      // Only while the browser is actually holding them: a refused write
+      // means leaving would lose the edits, and the host's guard must ask.
+      keepsEdits: draftKey !== undefined && draft.keeping,
       prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
@@ -419,6 +445,11 @@ export function ReportBuilder({
               : { filter: () => setFilterDialog({}) }),
       },
       ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
+      ...(session.done ? { done: session.done } : {}),
+      ...(draft.keptAt !== undefined ? { draftKeptAt: draft.keptAt } : {}),
+      ...(toolbarProps.dirty && draftKey !== undefined
+         ? { discard: draft.discard }
+         : {}),
    });
    // The builder's actions: on the title's line, at the right, above the
    // description.
@@ -446,7 +477,13 @@ export function ReportBuilder({
          {/* Pulled out by the ring's inset, so the content inside it lands on
           the same edges as the reader's view: editing and reading are the same
           page, and the margins must not move between them. */}
-         <Stack sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}>
+         <Stack
+            // Where Save writes, for a host or a test to read: the words are
+            // the status's tooltip, not a line on the page.
+            className={reportClasses.builder}
+            data-saves-to={savesTo}
+            sx={{ gap: 0, mx: `-${SELECTION_RING_PX}px` }}
+         >
             {/* The reader's page, with the ring's inset (minus the top:
              nothing at the top of the page can be selected). */}
             <ReportPage
@@ -509,6 +546,45 @@ export function ReportBuilder({
                   </Stack>
                )}
 
+               {draft.restored && (
+                  <Alert
+                     severity={draft.restored.pending ? "warning" : "info"}
+                     onClose={draft.dismissRestored}
+                     action={
+                        draft.restored.pending ? (
+                           <>
+                              <Button
+                                 color="inherit"
+                                 size="small"
+                                 onClick={draft.restoreOffered}
+                              >
+                                 Restore them
+                              </Button>
+                              <Button
+                                 color="inherit"
+                                 size="small"
+                                 onClick={draft.discard}
+                              >
+                                 Discard
+                              </Button>
+                           </>
+                        ) : (
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={draft.discard}
+                           >
+                              Discard edits
+                           </Button>
+                        )
+                     }
+                  >
+                     {draft.restored.pending
+                        ? `You have unsaved edits from ${clockTime(draft.restored.savedAt)}, made before this report changed. Restoring them replaces the current version.`
+                        : `Restored your unsaved edits from ${clockTime(draft.restored.savedAt)}.`}
+                  </Alert>
+               )}
+
                {editor.error && (
                   // The edit is still here; the message says what stopped it reaching
                   // the file, which is a different thing from losing the work.
@@ -552,9 +628,24 @@ export function ReportBuilder({
                   drillSource={drillSource}
                   setDrillSource={setDrillSource}
                   exitDialog={session.exitGuard.dialog}
+                  {...(renderViewPreview ? { renderViewPreview } : {})}
                />
             </ReportPage>
          </Stack>
       </OpenDraftContext.Provider>
    );
+}
+
+/** A time of day, or a date and time when not today: when a draft was kept. */
+function clockTime(at: number): string {
+   const when = new Date(at);
+   const today = new Date().toDateString() === when.toDateString();
+   return today
+      ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : when.toLocaleString([], {
+           month: "short",
+           day: "numeric",
+           hour: "numeric",
+           minute: "2-digit",
+        });
 }

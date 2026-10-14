@@ -43,6 +43,16 @@ export interface BuilderControls {
    };
    /** Leave the builder: asks first when edits are unsaved. Absent unless the host passed `onExit`. */
    exit?: () => void;
+   /**
+    * Write the edits, then leave — once the write has landed; a refused write
+    * keeps the builder open with its reason. The one way out a host needs when
+    * the builder keeps a draft. Absent unless the host passed `onExit`.
+    */
+   done?: () => void;
+   /** When unsaved edits were last kept in this browser (`draftKey`); absent when there are none to keep. */
+   draftKeptAt?: number;
+   /** Put the report back to the file's, as one undoable edit, and drop the draft. Absent with nothing to discard. */
+   discard?: () => void;
 }
 
 /** What a host passes to take over the builder's page-level controls. */
@@ -77,6 +87,8 @@ export function useReportControls(
          addText: () => latest.current.add.text?.(),
          addFilter: () => latest.current.add.filter?.(),
          exit: () => latest.current.exit?.(),
+         done: () => latest.current.done?.(),
+         discard: () => latest.current.discard?.(),
       }),
       [],
    );
@@ -94,6 +106,9 @@ export function useReportControls(
    const hasText = controls.add.text !== undefined;
    const hasFilter = controls.add.filter !== undefined;
    const hasExit = controls.exit !== undefined;
+   const hasDone = controls.done !== undefined;
+   const hasDiscard = controls.discard !== undefined;
+   const { draftKeptAt } = controls;
 
    const shown = useMemo<BuilderControls>(
       () => ({
@@ -114,6 +129,9 @@ export function useReportControls(
             ...(filterUnavailable !== undefined ? { filterUnavailable } : {}),
          },
          ...(hasExit ? { exit: actions.exit } : {}),
+         ...(hasDone ? { done: actions.done } : {}),
+         ...(draftKeptAt !== undefined ? { draftKeptAt } : {}),
+         ...(hasDiscard ? { discard: actions.discard } : {}),
       }),
       [
          actions,
@@ -128,6 +146,9 @@ export function useReportControls(
          hasFilter,
          filterUnavailable,
          hasExit,
+         hasDone,
+         draftKeptAt,
+         hasDiscard,
       ],
    );
 

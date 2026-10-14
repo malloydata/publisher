@@ -11,6 +11,26 @@ export async function editorOpen(page: Page): Promise<void> {
    });
 }
 
+/**
+ * The reader is back and the builder gone. Leaving the builder is a handoff:
+ * the reader draws out of sight under it first, so for a moment the page holds
+ * both, and a text locator would find each line twice.
+ */
+export async function readerOpen(page: Page): Promise<void> {
+   // One condition, read at once: checked one after the other, the first
+   // could pass before the switch began and the second once it was under way.
+   await page.waitForFunction(
+      () =>
+         document.querySelector("[data-switching]") === null &&
+         document.querySelector('[aria-label="Undo"]') === null &&
+         [...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Edit",
+         ),
+      null,
+      { timeout: 30_000 },
+   );
+}
+
 /** A tile by the key the builder tags it with: `text.<name>` or `<source>.<view>`. */
 export const tileByKey = (page: Page, key: string): Locator =>
    page.locator(`[data-tile-key="${key}"]`);
@@ -108,21 +128,13 @@ export async function createDocument(
    await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
       timeout: 30_000,
    });
-   await dialog.getByRole("combobox", { name: "Layout" }).click();
-   await page
-      .getByRole("option", {
-         name: kind === "Dashboard" ? /^Grid/ : /^Linear/,
-      })
-      .click();
-   await dialog.getByRole("combobox", { name: "Model" }).click();
-   await page.getByRole("option", { name: "storefront.malloy" }).click();
-   await dialog.getByRole("combobox", { name: "First query" }).click();
-   await page
-      .getByRole("option", {
-         name: "order_items → sales_by_month",
-         exact: true,
-      })
-      .click();
+   await chooseLayout(dialog, kind === "Dashboard" ? "Grid" : "Linear");
+   await pickView(dialog, "sales_by_month", "order_items in storefront.malloy");
+   // The pick fills the title in; wait for it, so typing replaces it rather
+   // than racing it.
+   await expect(dialog.getByLabel("Report title")).toHaveValue(
+      "Sales by month",
+   );
    await dialog.getByLabel("Report title").fill(title);
    await dialog.getByRole("button", { name: "Create report" }).click();
    // At the package root: no directory is created for a new report.
@@ -135,4 +147,32 @@ export async function createDocument(
    // Deduplication changes the slug on a repeat run, never its prefix.
    expect(slug.startsWith(title.toLowerCase().replace(/ /g, "-"))).toBe(true);
    return slug;
+}
+
+/**
+ * Picks a view in the Add a tile window by its Malloy name, inside one
+ * source's group when `source` is given (several sources can offer a view of
+ * the same name).
+ */
+export async function pickView(
+   dialog: Locator,
+   view: string,
+   source?: string,
+): Promise<void> {
+   const scope = source
+      ? dialog.getByRole("group", { name: source, exact: true })
+      : dialog;
+   const escaped = view.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+   await scope
+      .getByRole("option", { name: new RegExp(`\\(${escaped}\\)$`) })
+      .first()
+      .click();
+}
+
+/** Chooses the layout in the New report window. */
+export async function chooseLayout(
+   dialog: Locator,
+   layout: "Linear" | "Grid",
+): Promise<void> {
+   await dialog.getByRole("radio", { name: layout, exact: true }).click();
 }

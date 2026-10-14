@@ -19,13 +19,8 @@ import type { ReactNode, Ref } from "react";
 import type { SavesTo } from "./documentSession";
 import { SecondaryButton } from "../buttons";
 import { MOD } from "./useBuilderShortcuts";
-import {
-   CONTROL_HEIGHT_PX,
-   CONTROL_RADIUS,
-   edgeColor,
-   hoverEdgeColor,
-   TYPE,
-} from "../controlTokens";
+import { edgeColor, hoverEdgeColor } from "../controlTokens";
+import { DEFAULT_UI, type ReportUi } from "../../theme/ui";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 
 /**
@@ -34,14 +29,18 @@ import { usePublisherTheme } from "../../theme/ThemeContext";
  * a text link, round 37px icons, a 37px pill), because each control took a
  * different library default.
  */
-export const controlSx = (edge: string, hoverEdge: string) =>
+export const controlSx = (
+   edge: string,
+   hoverEdge: string,
+   ui: ReportUi = DEFAULT_UI,
+) =>
    ({
-      height: CONTROL_HEIGHT_PX,
-      minHeight: CONTROL_HEIGHT_PX,
+      height: ui.size.control,
+      minHeight: ui.size.control,
       px: 1.5,
-      borderRadius: CONTROL_RADIUS,
+      borderRadius: ui.radius.control,
       boxShadow: "none",
-      ...TYPE.control,
+      ...ui.type.control,
       "&:hover": { boxShadow: "none" },
       "& .MuiButton-startIcon": { mr: 0.5, "& svg": { fontSize: 18 } },
       // Outlined in the report's one edge, as the segmented control, the
@@ -52,12 +51,13 @@ export const controlSx = (edge: string, hoverEdge: string) =>
       },
    }) as const;
 
-export const iconControlSx = {
-   width: CONTROL_HEIGHT_PX,
-   height: CONTROL_HEIGHT_PX,
-   borderRadius: CONTROL_RADIUS,
-   "& svg": { fontSize: 18 },
-} as const;
+export const iconControlSx = (ui: ReportUi = DEFAULT_UI) =>
+   ({
+      width: ui.size.control,
+      height: ui.size.control,
+      borderRadius: ui.radius.control,
+      "& svg": { fontSize: 18 },
+   }) as const;
 
 /** Short rules between groups: the height of a label, not of the row. */
 export const dividerSx = {
@@ -74,11 +74,11 @@ export const dividerSx = {
  * edge to edge. An inset chip inside the outline read as a control within a
  * control, a size smaller than the button next to it.
  */
-export const segmentedSx = (edge: string) =>
+export const segmentedSx = (edge: string, ui: ReportUi = DEFAULT_UI) =>
    ({
-      height: CONTROL_HEIGHT_PX,
+      height: ui.size.control,
       boxSizing: "border-box",
-      borderRadius: CONTROL_RADIUS,
+      borderRadius: ui.radius.control,
       border: `1px solid ${edge}`,
       overflow: "hidden",
       bgcolor: "background.paper",
@@ -89,7 +89,7 @@ export const segmentedSx = (edge: string) =>
          px: 1.5,
          py: 0,
          height: "100%",
-         ...TYPE.control,
+         ...ui.type.control,
          color: "text.secondary",
          "& + .MuiToggleButton-root": { borderLeft: `1px solid ${edge}` },
          "&:hover": { bgcolor: "action.hover" },
@@ -191,7 +191,7 @@ export function BuilderToolbar({
                      onChange={(_event, next: "grid" | "linear" | null) => {
                         if (next && next !== layout) onLayoutChange(next);
                      }}
-                     sx={segmentedSx(edge)}
+                     sx={segmentedSx(edge, theme.ui)}
                   >
                      <ToggleButton value="linear" aria-label="Linear layout">
                         Linear
@@ -211,7 +211,7 @@ export function BuilderToolbar({
                startIcon={<AddIcon />}
                onClick={onAddTile}
                aria-label="Add tile"
-               sx={controlSx(edge, hoverEdge)}
+               sx={controlSx(edge, hoverEdge, theme.ui)}
             >
                Tile
             </Button>
@@ -227,7 +227,7 @@ export function BuilderToolbar({
                   aria-label="Undo"
                   disabled={!canUndo}
                   onClick={onUndo}
-                  sx={iconControlSx}
+                  sx={iconControlSx(theme.ui)}
                >
                   <UndoIcon fontSize="small" />
                </IconButton>
@@ -239,7 +239,7 @@ export function BuilderToolbar({
                   aria-label="Redo"
                   disabled={!canRedo}
                   onClick={onRedo}
-                  sx={iconControlSx}
+                  sx={iconControlSx(theme.ui)}
                >
                   <RedoIcon fontSize="small" />
                </IconButton>
@@ -267,7 +267,10 @@ export function BuilderToolbar({
                      onClick={onSave}
                      // Wide enough for the longest of the three labels, so
                      // the row does not reflow as the state cycles.
-                     sx={{ ...controlSx(edge, hoverEdge), minWidth: 88 }}
+                     sx={{
+                        ...controlSx(edge, hoverEdge, theme.ui),
+                        minWidth: 88,
+                     }}
                   >
                      {saving ? "Saving…" : dirty ? "Save" : "Saved"}
                   </Button>
