@@ -76,6 +76,23 @@ describe("assembleEnvironmentConnections — sqlserver", () => {
       expect(pojo.connections["ms"].hostNameInCertificate).toBeUndefined();
    });
 
+   it("rejects a port that is not an integer port number, naming it", () => {
+      for (const port of ["14x33", "1433", 0, 70000, 14.5]) {
+         expect(() =>
+            assembleEnvironmentConnections([
+               {
+                  name: "ms",
+                  type: "sqlserver",
+                  sqlserverConnection: {
+                     server: "h",
+                     port: port as unknown as number,
+                  },
+               },
+            ]),
+         ).toThrow(`invalid sqlserverConnection.port ${JSON.stringify(port)}`);
+      }
+   });
+
    it("rejects a sqlserver connection without its config block", () => {
       expect(() =>
          assembleEnvironmentConnections([{ name: "ms", type: "sqlserver" }]),

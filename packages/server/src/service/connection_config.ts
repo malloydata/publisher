@@ -269,7 +269,7 @@ function cloneApiConnection(connection: ApiConnection): ApiConnection {
    return { ...connection };
 }
 
-function getStaticConnectionAttributes(
+export function getStaticConnectionAttributes(
    type: ApiConnection["type"],
 ): components["schemas"]["ConnectionAttributes"] | undefined {
    switch (type) {
@@ -656,6 +656,23 @@ function validateConnectionShape(connection: ApiConnection): void {
          const sqlserver = connection.sqlserverConnection;
          if (!sqlserver) {
             throw new Error("SQL Server connection configuration is missing.");
+         }
+         // The connector reads a port that is not a number as no port and
+         // dials 1433, so a typo would surface as a connection failure naming
+         // a port the operator never configured. Name the value instead.
+         const port: unknown = sqlserver.port;
+         if (
+            port !== undefined &&
+            port !== null &&
+            (typeof port !== "number" ||
+               !Number.isInteger(port) ||
+               port < 1 ||
+               port > 65535)
+         ) {
+            throw new Error(
+               `Connection '${connection.name}' has an invalid sqlserverConnection.port ` +
+                  `${JSON.stringify(port)} (expected an integer from 1 to 65535).`,
+            );
          }
          // Both routes to a server, and the driver takes the instance name over
          // the port when given both. Saying so at load, rather than letting a

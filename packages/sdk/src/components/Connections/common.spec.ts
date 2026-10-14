@@ -38,6 +38,17 @@ describe("typedConnectionConfig", () => {
       ).toEqual({ server: "db.example", port: 1434 });
    });
 
+   it("leaves out a blank port rather than sending 0", () => {
+      // A named instance needs no port; Number("") would send 0.
+      expect(
+         typedConnectionConfig("sqlserver", {
+            server: "db.example",
+            port: "",
+            instanceName: "SQLEXPRESS",
+         }),
+      ).toEqual({ server: "db.example", instanceName: "SQLEXPRESS" });
+   });
+
    it("leaves a value that does not parse for the server to name", () => {
       expect(typedConnectionConfig("sqlserver", { port: "14x3" })).toEqual({
          port: "14x3",

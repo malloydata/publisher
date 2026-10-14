@@ -1149,26 +1149,43 @@ describe("read-only dialect (colocated persist)", () => {
       ).not.toThrow();
    });
 
-   it("reports canPersist: false for every read-only dialect's connection type", async () => {
-      // READ_ONLY_DIALECTS and the static attribute a client reads agree by
-      // convention; this is what makes the convention enforced. Each entry
-      // names a dialect whose connection type is the same word.
-      const { assembleEnvironmentConnections } = await import(
+   it("agrees with canPersist in both directions, over every connection type", async () => {
+      // READ_ONLY_DIALECTS (what the gate refuses) and the static canPersist
+      // (what a client reads to decide whether to offer persistence) are two
+      // statements of one fact. Checked over the whole Connection.type enum,
+      // read from api-doc.yaml as the shared contract, so a dialect added to
+      // either side alone fails here.
+      const { getStaticConnectionAttributes } = await import(
          "./connection_config"
       );
-      for (const dialect of READ_ONLY_DIALECTS) {
-         const { apiConnections } = assembleEnvironmentConnections(
-            [
-               {
-                  name: "c",
-                  type: dialect as "sqlserver",
-                  sqlserverConnection: { server: "h" },
-               },
-            ],
-            "/tmp",
+      const { readFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const apiDoc = readFileSync(
+         resolve(import.meta.dir, "../../../../api-doc.yaml"),
+         "utf8",
+      ).replace(/\r\n/g, "\n");
+      const start = apiDoc.indexOf("\n    Connection:\n");
+      const enumAt = apiDoc.indexOf("enum:", start);
+      const types = [
+         ...apiDoc
+            .slice(enumAt, apiDoc.indexOf("]", enumAt))
+            .matchAll(/^\s+(\w+),$/gm),
+      ].map((m) => m[1]);
+      // Guard the extraction: a regex matching nothing would pass vacuously.
+      expect(types).toContain("sqlserver");
+      expect(types).toContain("postgres");
+      for (const type of types) {
+         const attributes = getStaticConnectionAttributes(
+            type as Parameters<typeof getStaticConnectionAttributes>[0],
          );
-         expect(apiConnections[0]?.attributes?.dialectName).toBe(dialect);
-         expect(apiConnections[0]?.attributes?.canPersist).toBe(false);
+         if (!attributes) continue;
+         expect({
+            type,
+            canPersist: attributes.canPersist,
+         }).toEqual({
+            type,
+            canPersist: !READ_ONLY_DIALECTS.has(attributes.dialectName ?? ""),
+         });
       }
    });
 

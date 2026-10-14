@@ -423,7 +423,7 @@ describe("listTablesForSchema", () => {
          const tables = await listTablesForSchema(conn, "dbo", m.conn);
 
          expect(m.lastSQL).toContain("information_schema.columns");
-         expect(m.lastSQL).toContain("table_schema = 'dbo'");
+         expect(m.lastSQL).toContain("table_schema = N'dbo'");
          // Plain rows, not the row_to_json wrapping Postgres needs.
          expect(m.lastSQL).not.toContain("row_to_json");
          expect(tables).toHaveLength(2);
@@ -434,7 +434,17 @@ describe("listTablesForSchema", () => {
       it("includes IN filter when tableNames provided, quote-doubled", async () => {
          const m = mockConnection(columnRows.slice(0, 2));
          await listTablesForSchema(conn, "dbo", m.conn, ["orders", "o'b"]);
-         expect(m.lastSQL).toContain("AND table_name IN ('orders', 'o''b')");
+         expect(m.lastSQL).toContain("AND table_name IN (N'orders', N'o''b')");
+      });
+
+      it("writes a non-ASCII schema and table name as Unicode literals", async () => {
+         // Without the N prefix, SQL Server converts the literal to the
+         // database's code page first; under a Latin1 collation `Продажи`
+         // becomes question marks and the listing comes back empty.
+         const m = mockConnection([]);
+         await listTablesForSchema(conn, "Продажи", m.conn, ["Заказы"]);
+         expect(m.lastSQL).toContain("table_schema = N'Продажи'");
+         expect(m.lastSQL).toContain("AND table_name IN (N'Заказы')");
       });
    });
 

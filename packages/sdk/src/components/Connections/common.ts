@@ -450,6 +450,12 @@ export function typedConnectionConfig(
    for (const [name, kind] of Object.entries(typed ?? {})) {
       const value = config[name];
       if (value === undefined) continue;
+      // The edit form submits "" for a field left empty, and Number("") is
+      // 0, which the server would read as a port.
+      if (value === "") {
+         delete out[name];
+         continue;
+      }
       if (kind === "integer") {
          const n = Number(value);
          if (Number.isInteger(n)) out[name] = n;

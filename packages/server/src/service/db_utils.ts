@@ -1541,6 +1541,20 @@ async function listTablesForMySQL(
    }
 }
 
+/**
+ * A SQL Server Unicode string literal, `N'…'`. Here rather than in
+ * {@link sqlLiteral}, which serves dialects with no `N'…'` syntax.
+ */
+function sqlserverNLiteral(value: string): string {
+   return `N'${sqlLiteral(value, "sqlserver")}'`;
+}
+
+/** {@link sqlInFilter} for SQL Server, with each value a Unicode literal. */
+function sqlserverInFilter(columnName: string, values?: string[]): string {
+   if (!values || values.length === 0) return "";
+   return `AND ${columnName} IN (${values.map(sqlserverNLiteral).join(", ")})`;
+}
+
 async function listTablesForSQLServer(
    connection: ApiConnection,
    schemaName: string,
@@ -1552,10 +1566,14 @@ async function listTablesForSQLServer(
    }
    try {
       // The SQL Server connector returns rows as plain objects keyed by column
-      // name, so no row_to_json wrapping as for Postgres.
+      // name, so no row_to_json wrapping as for Postgres. Every literal is
+      // N'…': a plain '…' is converted to the database's code page before it
+      // is compared, so under a Latin1 collation a schema named `Продажи`
+      // becomes question marks and matches nothing. The information_schema
+      // columns are nvarchar, so the Unicode literal compares as written.
       const result = await runIntrospectionSQL(
          malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = ${sqlserverNLiteral(schemaName)} ${sqlserverInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
       );
       const rows = standardizeRunSQLResult(result);
       return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);

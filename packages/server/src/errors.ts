@@ -229,6 +229,13 @@ const CODELESS_CONNECTION_MESSAGES = [
          ...NODE_CONNECTION_CODES,
       ].join("|")})\\b`,
    ),
+   // tedious's wording for a SQL Server it could not reach, kept by the
+   // SQL Server connector's table lookup, which returns a failure as text with
+   // the code dropped: a connect that timed out (`… in 15000ms`) or failed
+   // (`… - <reason>`), optionally after an Azure redirect. A reason naming a
+   // certificate is excluded: that is a TLS verification failure, a fault in
+   // the connection's config rather than a server that is down.
+   /^Failed to connect to \S+( \(redirected from \S+\))?( in \d+ms| - (?!.*certificate).+)$/i,
 ];
 
 /**
@@ -299,14 +306,26 @@ const TLS_VERIFICATION_CODES = new Set([
    "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
 ]);
 
+/**
+ * The error `error` wraps: its `cause`, or, for the `mssql` driver, its
+ * `originalError`. mssql rewraps tedious's error in its own class and keeps
+ * the original there rather than on `cause`, so a walk that read only `cause`
+ * would stop at mssql's error and never see what tedious attached beneath it
+ * (the TLS failure under an `ESOCKET`, for one).
+ */
+function wrappedError(error: Error): unknown {
+   if (error.cause instanceof Error) return error.cause;
+   return (error as Error & { originalError?: unknown }).originalError;
+}
+
 function causeChainHasTlsVerificationFailure(error: Error): boolean {
-   let current: unknown = error.cause;
+   let current: unknown = wrappedError(error);
    for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
       const { code } = current as Error & { code?: unknown };
       if (typeof code === "string" && TLS_VERIFICATION_CODES.has(code)) {
          return true;
       }
-      current = current.cause;
+      current = wrappedError(current);
    }
    return false;
 }
@@ -347,7 +366,7 @@ export function isConnectionFailure(error: unknown): boolean {
       if (CODELESS_CONNECTION_MESSAGES.some((re) => re.test(message))) {
          return true;
       }
-      current = current.cause;
+      current = wrappedError(current);
    }
    return false;
 }
@@ -396,7 +415,7 @@ export function isCredentialRejection(error: unknown): boolean {
          if (SNOWFLAKE_AUTH_CODES.has(value)) return true;
       }
       if (current.name === "BigQueryAuthenticationError") return true;
-      current = current.cause;
+      current = wrappedError(current);
    }
    return false;
 }
