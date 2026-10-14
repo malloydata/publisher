@@ -1157,6 +1157,30 @@ describe("PackageController.addPackage with package versioning off or on", () =>
       }
    });
 
+   it("off: warns once per package, not on every republish", async () => {
+      delete process.env.PUBLISHER_PACKAGE_VERSIONING;
+      const controller = controllerWith(
+         versionsPublishing(installedPackage),
+         sinon.stub().resolves(installedPackage),
+      );
+      const warn = spyOnWarn();
+      try {
+         for (const name of ["pkg", "pkg", "other", "pkg"]) {
+            await controller.addPackage("env", {
+               name,
+               location: `gs://bucket/${name}.zip`,
+            });
+         }
+         expect(
+            offWarnings(warn).map(
+               ([, meta]) => (meta as { packageName: string }).packageName,
+            ),
+         ).toEqual(["pkg", "other"]);
+      } finally {
+         warn.mockRestore();
+      }
+   });
+
    it("off: refuses to replace a package that has published versions, naming the flag", async () => {
       process.env.PUBLISHER_PACKAGE_VERSIONING = "off";
       const versions = {

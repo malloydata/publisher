@@ -76,7 +76,8 @@ function formatPublishRejections(
 /**
  * Say, on a publish from a location with package versioning off, that the
  * package is installed in place as before versions, and that versions will be
- * required.
+ * required. PackageController says it once per package (see
+ * warnedVersioningOff), so a package republished routinely does not repeat it.
  */
 export function warnVersioningOff(packageName: string): void {
    logger.warn(
@@ -87,6 +88,8 @@ export function warnVersioningOff(packageName: string): void {
 
 export class PackageController {
    private environmentStore: EnvironmentStore;
+   /** Packages (`env/pkg`) already warned that versioning is off, this run. */
+   private warnedVersioningOff = new Set<string>();
 
    constructor(environmentStore: EnvironmentStore) {
       this.environmentStore = environmentStore;
@@ -326,7 +329,11 @@ export class PackageController {
                   `Package ${packageName} has published versions, which are immutable, and package versioning is off, so this publish would replace them. Set PUBLISHER_PACKAGE_VERSIONING=on to publish a new version.`,
                );
             }
-            warnVersioningOff(packageName);
+            const warnKey = `${environmentName}/${packageName}`;
+            if (!this.warnedVersioningOff.has(warnKey)) {
+               this.warnedVersioningOff.add(warnKey);
+               warnVersioningOff(packageName);
+            }
             result = await environment.installPackage(
                packageName,
                download,
