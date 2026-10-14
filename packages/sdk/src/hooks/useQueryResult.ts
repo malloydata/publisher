@@ -4,6 +4,7 @@
 import type { QueryKey } from "@tanstack/react-query";
 import { useServer } from "../components/ServerProvider";
 import { CHART_RESULT_QUERY_OPTIONS } from "../utils/queryClient";
+import { keepPreviousData } from "@tanstack/react-query";
 import { useQueryWithApiError } from "./useQueryWithApiError";
 
 /**
@@ -96,6 +97,11 @@ export function useQueryResult(
             { signal },
          ),
       enabled,
+      // A change of givens is a new key, and without this the surface drops to
+      // "Running…" and back: every tile on a page blanked and redrew on each
+      // filter pick. The last result stays up until the new one lands, and
+      // `isPlaceholderData` says it is the previous answer.
+      placeholderData: keepPreviousData,
       ...CHART_RESULT_QUERY_OPTIONS,
    });
 }

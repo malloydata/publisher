@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — Results stay on screen while they re-run, and switching to edit no longer blanks the report
+
+**A result that re-runs keeps its previous answer up until the new one lands.** Changing a filter used to drop every tile on the page to "Running…" and draw it again from nothing; now each keeps its rows, eased back after a moment, with a thin progress bar along its top, and the new rows replace them in place. This is in `useQueryResult` (react-query's `keepPreviousData`), so it holds for every surface that runs a query through `ResultPanel`: report tiles, `QueryResult`, model cells. A host test that waited for "Running…" after a change of givens waits for the new rows instead; the panel is `aria-busy` meanwhile.
+
+**In the Console, Edit and Done swap the page once, drawn.** The page being switched to renders out of sight until its tiles in view show their results, then replaces the one on screen in the same frame, so the report is never blank in between (it was, two or three times, on the way into the builder). The builder's bar comes into the header with it. While both are mounted the page carries `data-switching`.
+
+**In the builder:** retitling, resizing or moving a tile no longer re-runs its query, and a press anywhere off the selected tile or description clears the selection.
+
 ## [Unreleased] — The report builder's controls move to the header; a host can place them itself
 
 **The builder's page-level controls are one bar in the header.** In the Console, where **Edit** sits on a report, the builder draws its save status, undo and redo, the Linear / Grid switch, an **Add** menu (a tile, text or a filter) and **Done**. There is no Save button: edits are kept in this browser as they are made (**Draft saved**), and **Done** writes them and shows the report. Leaving any other way loses nothing and no longer asks; opening the report for editing again puts the edits back, with a note and **Discard edits**. Cmd/Ctrl+S still writes without leaving. A test or automation that clicked Save presses Cmd/Ctrl+S, or clicks Done. The page under it is the report as it reads: no toolbar on the title's line, no pencils after every title. Done returns to the report and asks first when edits are unsaved, as **View** did; View is gone from the builder.
