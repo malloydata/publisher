@@ -579,15 +579,66 @@ describe("statementRejection", () => {
       });
    });
 
-   it("covers the class, not one code: syntax, a missing function, a denied table", () => {
+   it("covers the codes a SELECT the caller wrote can produce, not one code", () => {
       for (const [code, message] of [
          ["42601", 'syntax error at or near "FORM"'],
          ["42883", "function nope(integer) does not exist"],
-         ["42501", "permission denied for table x"],
+         ["42702", 'column reference "id" is ambiguous'],
+         ["42804", "argument of WHERE must be type boolean, not type integer"],
+         ["42846", "cannot cast type bytea to integer"],
+         ["42803", 'column "s.kind" must appear in the GROUP BY clause'],
+         ["42704", 'type "intger" does not exist'],
+         ["42701", 'column "a" specified more than once'],
       ]) {
          expect(
             statementRejection(Object.assign(new Error(message), { code })),
          ).toBeInstanceOf(InvalidArgumentError);
+      }
+   });
+
+   it("leaves 42501 insufficient_privilege where it was: the grants are the connection's, not the statement's", () => {
+      // A role without CONNECT fails session startup with 42501 before any
+      // caller SQL runs, and a table the connection's user may not read is
+      // fixed by a GRANT the caller cannot issue. Both answered 502 before
+      // and still do, so a connection that stopped working keeps paging.
+      for (const error of [
+         Object.assign(new Error('permission denied for database "pw"'), {
+            code: "42501",
+            severity: "FATAL",
+         }),
+         Object.assign(new Error("permission denied for table spaces"), {
+            code: "42501",
+            severity: "ERROR",
+         }),
+      ]) {
+         expect(statementRejection(error)).toBeUndefined();
+      }
+   });
+
+   it("skips anything Postgres marks FATAL, whatever the code", () => {
+      // FATAL ends the session; it is raised at startup or by the server,
+      // never by the caller's SELECT, so the code on it is not the
+      // statement's.
+      expect(
+         statementRejection(
+            Object.assign(new Error("terminating connection"), {
+               code: "42601",
+               severity: "FATAL",
+            }),
+         ),
+      ).toBeUndefined();
+   });
+
+   it("leaves the class-42 codes a SELECT cannot produce alone", () => {
+      // DDL rejections (a duplicate table, an invalid definition) and the
+      // generic 42000: an admin's setupSQL could raise these on the same
+      // client before the caller's statement, so they stay a fault.
+      for (const code of ["42000", "42P07", "42710", "42P16"]) {
+         expect(
+            statementRejection(
+               Object.assign(new Error("some DDL rejection"), { code }),
+            ),
+         ).toBeUndefined();
       }
    });
 
@@ -602,10 +653,30 @@ describe("statementRejection", () => {
       expect(internalErrorToHttpError(classified!).status).toBe(404);
    });
 
-   it("follows the cause chain a wrapper puts it behind", () => {
+   it("answers a 42P01 whose relation exists -- a missing FROM-clause alias -- as a 400, not a missing table", () => {
+      // Postgres raises undefined_table for `SELECT x.id FROM spaces AS s`
+      // too. A 404 with TABLE_NOT_FOUND would tell the router a physical
+      // table is absent; only the "relation ... does not exist" wording
+      // means that.
+      const alias = Object.assign(
+         new Error('missing FROM-clause entry for table "x"'),
+         { code: "42P01" },
+      );
+      const classified = statementRejection(alias);
+      expect(classified).toBeInstanceOf(InvalidArgumentError);
+      expect(classified).not.toBeInstanceOf(TableNotFoundError);
+      expect(internalErrorToHttpError(classified!).status).toBe(400);
+   });
+
+   it("follows the cause chain a wrapper puts it behind, and keeps Postgres's sentence", () => {
+      // The 400 carries the message of the error that carried the SQLSTATE,
+      // not the wrapper's: "Failed to run SQL" tells the caller nothing, and
+      // the wrapper's text was never vetted to name nothing internal.
       const wrapped = new Error("Failed to run SQL", { cause: column });
       expect(statementRejection(wrapped)).toBeInstanceOf(InvalidArgumentError);
-      expect(statementRejection(wrapped)!.message).toBe("Failed to run SQL");
+      expect(statementRejection(wrapped)!.message).toBe(
+         'column "sundance_name" does not exist',
+      );
    });
 
    it("leaves the connection's failures, and anything without a SQLSTATE, alone", () => {
