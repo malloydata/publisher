@@ -127,6 +127,12 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
    //
    // Keyed on the package's NAME, like `materializations`, and deleted with the
    // package by hand (DuckDBRepository), since nothing here cascades.
+   //
+   // No foreign key to `environments`, unlike the tables above: a release
+   // that predates versions does not know this table, so its `--init` never
+   // drops it, and DuckDB refuses to drop a table another table references,
+   // even an empty one. With a key here, downgrading and resetting the store
+   // would fail on `environments`.
    await db.run(`
     CREATE TABLE IF NOT EXISTS versions (
       version_id VARCHAR NOT NULL,
@@ -145,7 +151,6 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
       git_ref VARCHAR,
       created_at TIMESTAMP NOT NULL,
       updated_at TIMESTAMP NOT NULL,
-      FOREIGN KEY (environment_id) REFERENCES environments(id),
       PRIMARY KEY (environment_id, package_name, version_id)
     )
   `);
