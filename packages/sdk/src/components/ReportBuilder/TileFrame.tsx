@@ -393,8 +393,12 @@ export function TileFrame({
                            sx={(mui) => ({
                               position: "absolute",
                               top: "50%",
-                              left: "50%",
-                              transform: "translate(-50%, calc(-100% - 28px))",
+                              // Set against the edge, inside the tile: centred
+                              // on it, half the label hung past the grid's right
+                              // edge for a tile that reaches it, where a
+                              // scrolling host cuts it off.
+                              right: "50%",
+                              transform: "translateY(calc(-100% - 28px))",
                               px: 1,
                               py: 0.5,
                               borderRadius: "6px",
@@ -458,7 +462,7 @@ export function TileFrame({
 const MENU_INSET_PX = 14;
 
 /** How far the selection stands outside what it selects: its halo. */
-export const SELECTION_RING_PX = 4;
+export const SELECTION_RING_PX = 7;
 
 /**
  * The builder's selection look, for anything a person can select — a tile,

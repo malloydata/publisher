@@ -10,7 +10,8 @@ import {
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { loadBuilder } from "../pages/DashboardEditPage/loadBuilder";
-import { isEditSearch, withEdit } from "./documentRoutes";
+import { isEditSearch, withEdit, withoutEdit } from "./documentRoutes";
+import { useEditPageMounted } from "../pages/DashboardEditPage/editPageMounted";
 
 /**
  * A route ending in a model suffix is a FILE route, not a report: ModelPage
@@ -35,6 +36,7 @@ export function DocumentModeButton() {
    const params = useParams();
    const navigate = useNavigate();
    const narrow = useNarrowScreen();
+   const editPageMounted = useEditPageMounted();
    const environmentName = params.environmentName ?? "";
    const packageName = params.packageName ?? "";
    const splat = params["*"] ?? "";
@@ -54,7 +56,15 @@ export function DocumentModeButton() {
    const edit = isEditSearch(search);
    const page = pathname.replace(/\/$/, "");
    // In the builder the edit page draws the builder's bar here, Done included.
-   if (edit) return null;
+   // On an edit route that never got that far (the listing still loading, or
+   // failed), View stays: it is the way back.
+   if (edit)
+      return editPageMounted ? null : (
+         <SecondaryButton
+            label="View"
+            onClick={() => navigate(`${page}${withoutEdit(search)}`)}
+         />
+      );
    const report = settled ? locateReport(`${path}.malloy`, reports) : undefined;
    if (!report?.editable) return null;
    return (

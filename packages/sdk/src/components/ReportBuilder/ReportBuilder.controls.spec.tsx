@@ -82,6 +82,49 @@ describe("ReportBuilder: a host that takes the controls", () => {
    });
 });
 
+describe("a host that takes the controls later", () => {
+   it("is handed them at once, not on the next change", async () => {
+      const handed = mock((_controls: BuilderControls | undefined) => {});
+      const document = await openDocument(GRID);
+      const view = render(
+         <ReportBuilder source={GRID} document={document} onSave={() => {}} />,
+      );
+      view.rerender(
+         <ReportBuilder
+            source={GRID}
+            document={document}
+            onSave={() => {}}
+            onControlsChange={handed}
+         />,
+      );
+      await waitFor(() => expect(handed).toHaveBeenCalled());
+      expect(handed.mock.calls.at(-1)?.[0]?.status).toBe("saved");
+   });
+});
+
+describe("BuilderBar's Done without a host Done", () => {
+   it("leaves through the builder's own exit", () => {
+      const exit = mock(() => {});
+      render(
+         <BuilderBar
+            controls={{
+               status: "saved",
+               saveTarget: "",
+               save: () => {},
+               canUndo: false,
+               undo: () => {},
+               canRedo: false,
+               redo: () => {},
+               add: {},
+               exit,
+            }}
+         />,
+      );
+      screen.getByRole("button", { name: "Done" }).click();
+      expect(exit).toHaveBeenCalledTimes(1);
+   });
+});
+
 describe("BuilderBar", () => {
    const base: BuilderControls = {
       status: "saved",

@@ -37,7 +37,10 @@ export const editableSx = (
       "&:hover": { bgcolor: "action.hover" },
       "&:focus-visible": {
          outline: `2px solid ${theme.accent}`,
-         outlineOffset: 2,
+         // Inside the element: the wash already reaches past the text by
+         // negative margins, and a ring outside that was cut off by a card
+         // or frame that clips (a borderless tile's title, the description).
+         outlineOffset: -2,
       },
    };
 };

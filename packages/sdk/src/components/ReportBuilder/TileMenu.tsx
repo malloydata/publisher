@@ -175,7 +175,13 @@ export function TileMenu({
                   disabled={chartBlocked !== undefined}
                   onClick={subOpen("chart")}
                   onKeyDown={(event) => {
-                     if (event.key === "ArrowRight")
+                     // Not from a disabled Chart: the keyboard reached a
+                     // submenu the menu says cannot apply, and a pick there
+                     // wrote a chart the model owns over its own.
+                     if (
+                        event.key === "ArrowRight" &&
+                        chartBlocked === undefined
+                     )
                         setSub({
                            kind: "chart",
                            anchor: event.currentTarget,
@@ -249,6 +255,13 @@ export function TileMenu({
                dense: true,
                disabledItemsFocusable: true,
                "aria-label": "Chart",
+               // Back out of the submenu the way into it: the arrow.
+               onKeyDown: (event) => {
+                  if (event.key === "ArrowLeft") {
+                     event.preventDefault();
+                     setSub(undefined);
+                  }
+               },
             }}
          >
             {choices

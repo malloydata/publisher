@@ -15,6 +15,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { withoutEdit } from "../../common/documentRoutes";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useLeaveGuard } from "../useLeaveGuard";
+import { useMarkEditPageMounted } from "./editPageMounted";
 import { loadBuilder } from "./loadBuilder";
 import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
 
@@ -68,6 +69,8 @@ export default function DashboardEditPage({
    layout = "grid",
 }: DashboardEditPageProps) {
    const guard = useLeaveGuard();
+   // The header's View steps aside while this page draws the bar there.
+   useMarkEditPageMounted();
    const navigate = useNavigate();
    const { pathname, search } = useLocation();
    const slot = useHeaderActionsSlot();

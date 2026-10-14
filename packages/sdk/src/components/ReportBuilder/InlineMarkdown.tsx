@@ -5,7 +5,14 @@ import { Box, InputBase, Typography } from "@mui/material";
 import { editableSx } from "./inlineEdit";
 import { PROSE_MAX_WIDTH, TYPE } from "../controlTokens";
 import { MOD } from "./useBuilderShortcuts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+   useCallback,
+   useEffect,
+   useId,
+   useMemo,
+   useRef,
+   useState,
+} from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { Prose, type ProseVariant } from "../Prose";
 import { useReportOpenDraft } from "./openDraft";
@@ -16,10 +23,10 @@ import { useDraft } from "./useDraft";
  * Markdown that is edited where it is read: it draws as prose, a click on it
  * opens a textarea, and what was typed commits once, when the field closes.
  *
- * Escape and Cmd or Ctrl+Enter are Done, which holds on a draft the writer
- * would refuse and says why; leaving the field commits, so the closed prose
- * keeps saying what Save will refuse. Links stay inert: a click on one is not
- * a way out of the builder, and not an edit either.
+ * Cmd or Ctrl+Enter finishes, holding on a draft the writer would refuse and
+ * saying why; Escape drops the edit; leaving the field commits, so the closed
+ * prose keeps saying what Save will refuse. Links stay inert: a click on one
+ * is not a way out of the builder, and not an edit either.
  */
 export function InlineMarkdown({
    markdown,
@@ -35,6 +42,8 @@ export function InlineMarkdown({
    variant?: ProseVariant;
 }) {
    const { theme } = usePublisherTheme();
+   // The keys the field takes, read out with it.
+   const hintId = useId();
    const [editing, setEditing] = useState(false);
    // One object per value, or the draft would reset on every render while open.
    const value = useMemo(
@@ -145,6 +154,7 @@ export function InlineMarkdown({
             inputRef={placeCaret}
             inputProps={{
                "aria-label": "Markdown",
+               "aria-describedby": hintId,
                ...(problem !== undefined ? { "aria-invalid": true } : {}),
             }}
             onChange={(event) =>
@@ -180,8 +190,8 @@ export function InlineMarkdown({
             </Typography>
          )}
          <Typography
+            id={hintId}
             variant="caption"
-            aria-hidden
             sx={{
                display: "block",
                textAlign: "right",

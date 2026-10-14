@@ -131,9 +131,13 @@ export function useReportControls(
       ],
    );
 
+   // Also when a handler arrives after the builder has mounted: it takes the
+   // inline toolbar away at once, so it has to be handed the controls at once
+   // too, not on the next change.
+   const hasHandler = onControls !== undefined;
    useEffect(() => {
       handlerRef.current?.(shown);
-   }, [shown]);
+   }, [shown, hasHandler]);
    // Gone with the builder, so a host does not draw controls for nothing.
    useEffect(() => () => handlerRef.current?.(undefined), []);
 }

@@ -18,6 +18,7 @@ import {
    ToggleButton,
    ToggleButtonGroup,
    Tooltip,
+   useMediaQuery,
 } from "@mui/material";
 import { useState } from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
@@ -47,7 +48,13 @@ export interface BuilderBarProps {
  * Done leaves; a host whose leave guard asks about unsaved edits (as the
  * Console's does) is asked there, so Done never discards on its own.
  */
-export function BuilderBar({ controls, onDone }: BuilderBarProps) {
+export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
+   // A host that passed the builder `onExit` and draws the bar without its own
+   // Done still gets a way out.
+   const onDone = onDoneProp ?? controls?.exit;
+   // A phone's header has room for the way out and little else: the bar there
+   // is the status, Done and Save, and the rest is on the page.
+   const compact = useMediaQuery("(max-width: 599.95px)");
    const { theme } = usePublisherTheme();
    const edge = edgeColor(theme.cardBorder);
    const hoverEdge = hoverEdgeColor(theme.cardBorder, theme.tileTitle);
@@ -121,120 +128,135 @@ export function BuilderBar({ controls, onDone }: BuilderBarProps) {
                      </Box>
                   </Tooltip>
                )}
-               <Tooltip title={`Undo (${MOD}Z)`}>
-                  {/* A span, because a disabled button dispatches no events and a
-                   tooltip on one would never show. */}
-                  <span>
-                     <IconButton
-                        aria-label="Undo"
-                        disabled={!controls.canUndo}
-                        onClick={controls.undo}
-                        sx={iconControlSx}
-                     >
-                        <UndoIcon fontSize="small" />
-                     </IconButton>
-                  </span>
-               </Tooltip>
-               <Tooltip title={`Redo (${MOD}⇧Z)`}>
-                  <span>
-                     <IconButton
-                        aria-label="Redo"
-                        disabled={!controls.canRedo}
-                        onClick={controls.redo}
-                        sx={iconControlSx}
-                     >
-                        <RedoIcon fontSize="small" />
-                     </IconButton>
-                  </span>
-               </Tooltip>
-               {(controls.layout || canAdd) && (
-                  <Divider orientation="vertical" sx={dividerSx} />
-               )}
-               {controls.layout && (
-                  <Tooltip title="Layout: tiles side by side, or one after another">
-                     <ToggleButtonGroup
-                        size="small"
-                        exclusive
-                        value={controls.layout.value}
-                        aria-label="Layout"
-                        onChange={(_event, next: "grid" | "linear" | null) => {
-                           if (next && next !== controls.layout?.value)
-                              controls.layout?.set(next);
-                        }}
-                        sx={segmentedSx(edge)}
-                     >
-                        <ToggleButton value="linear" aria-label="Linear layout">
-                           Linear
-                        </ToggleButton>
-                        <ToggleButton value="grid" aria-label="Grid layout">
-                           Grid
-                        </ToggleButton>
-                     </ToggleButtonGroup>
-                  </Tooltip>
-               )}
-               {canAdd && (
+               {!compact && (
                   <>
-                     <Button
-                        variant="outlined"
-                        startIcon={<AddIcon />}
-                        endIcon={<ExpandMoreIcon />}
-                        aria-haspopup="menu"
-                        aria-expanded={addAnchor !== null}
-                        onClick={(event) => setAddAnchor(event.currentTarget)}
-                        sx={{
-                           ...controlSx(edge, hoverEdge),
-                           "& .MuiButton-endIcon": {
-                              ml: 0.25,
-                              "& svg": { fontSize: 16 },
-                           },
-                        }}
-                     >
-                        Add
-                     </Button>
-                     <Menu
-                        anchorEl={addAnchor}
-                        open={addAnchor !== null}
-                        onClose={() => setAddAnchor(null)}
-                        anchorOrigin={{
-                           vertical: "bottom",
-                           horizontal: "right",
-                        }}
-                        transformOrigin={{
-                           vertical: "top",
-                           horizontal: "right",
-                        }}
-                     >
-                        {add?.tile && (
-                           <MenuItem onClick={pick(add.tile)}>
-                              <ListItemText
-                                 primary="Tile"
-                                 secondary="A view from the model"
-                              />
-                           </MenuItem>
-                        )}
-                        {add?.text && (
-                           <MenuItem onClick={pick(add.text)}>
-                              <ListItemText
-                                 primary="Text"
-                                 secondary="Prose between the tiles"
-                              />
-                           </MenuItem>
-                        )}
-                        {(add?.filter || add?.filterUnavailable) && (
-                           <MenuItem
-                              onClick={pick(add.filter)}
-                              disabled={add.filter === undefined}
+                     <Tooltip title={`Undo (${MOD}Z)`}>
+                        {/* A span, because a disabled button dispatches no events and a
+                   tooltip on one would never show. */}
+                        <span>
+                           <IconButton
+                              aria-label="Undo"
+                              disabled={!controls.canUndo}
+                              onClick={controls.undo}
+                              sx={iconControlSx}
                            >
-                              <ListItemText
-                                 primary="Filter"
-                                 secondary={
-                                    add.filterUnavailable ??
-                                    "A control the tiles read"
-                                 }
-                              />
-                           </MenuItem>
-                        )}
-                     </Menu>
+                              <UndoIcon fontSize="small" />
+                           </IconButton>
+                        </span>
+                     </Tooltip>
+                     <Tooltip title={`Redo (${MOD}⇧Z)`}>
+                        <span>
+                           <IconButton
+                              aria-label="Redo"
+                              disabled={!controls.canRedo}
+                              onClick={controls.redo}
+                              sx={iconControlSx}
+                           >
+                              <RedoIcon fontSize="small" />
+                           </IconButton>
+                        </span>
+                     </Tooltip>
+                     {(controls.layout || canAdd) && (
+                        <Divider orientation="vertical" sx={dividerSx} />
+                     )}
+                     {controls.layout && (
+                        <Tooltip title="Layout: tiles side by side, or one after another">
+                           <ToggleButtonGroup
+                              size="small"
+                              exclusive
+                              value={controls.layout.value}
+                              aria-label="Layout"
+                              onChange={(
+                                 _event,
+                                 next: "grid" | "linear" | null,
+                              ) => {
+                                 if (next && next !== controls.layout?.value)
+                                    controls.layout?.set(next);
+                              }}
+                              sx={segmentedSx(edge)}
+                           >
+                              <ToggleButton
+                                 value="linear"
+                                 aria-label="Linear layout"
+                              >
+                                 Linear
+                              </ToggleButton>
+                              <ToggleButton
+                                 value="grid"
+                                 aria-label="Grid layout"
+                              >
+                                 Grid
+                              </ToggleButton>
+                           </ToggleButtonGroup>
+                        </Tooltip>
+                     )}
+                     {canAdd && (
+                        <>
+                           <Button
+                              variant="outlined"
+                              startIcon={<AddIcon />}
+                              endIcon={<ExpandMoreIcon />}
+                              aria-haspopup="menu"
+                              aria-expanded={addAnchor !== null}
+                              onClick={(event) =>
+                                 setAddAnchor(event.currentTarget)
+                              }
+                              sx={{
+                                 ...controlSx(edge, hoverEdge),
+                                 "& .MuiButton-endIcon": {
+                                    ml: 0.25,
+                                    "& svg": { fontSize: 16 },
+                                 },
+                              }}
+                           >
+                              Add
+                           </Button>
+                           <Menu
+                              anchorEl={addAnchor}
+                              open={addAnchor !== null}
+                              onClose={() => setAddAnchor(null)}
+                              anchorOrigin={{
+                                 vertical: "bottom",
+                                 horizontal: "right",
+                              }}
+                              transformOrigin={{
+                                 vertical: "top",
+                                 horizontal: "right",
+                              }}
+                           >
+                              {add?.tile && (
+                                 <MenuItem onClick={pick(add.tile)}>
+                                    <ListItemText
+                                       primary="Tile"
+                                       secondary="A view from the model"
+                                    />
+                                 </MenuItem>
+                              )}
+                              {add?.text && (
+                                 <MenuItem onClick={pick(add.text)}>
+                                    <ListItemText
+                                       primary="Text"
+                                       secondary="Prose between the tiles"
+                                    />
+                                 </MenuItem>
+                              )}
+                              {(add?.filter || add?.filterUnavailable) && (
+                                 <MenuItem
+                                    onClick={pick(add.filter)}
+                                    disabled={add.filter === undefined}
+                                 >
+                                    <ListItemText
+                                       primary="Filter"
+                                       secondary={
+                                          add.filterUnavailable ??
+                                          "A control the tiles read"
+                                       }
+                                    />
+                                 </MenuItem>
+                              )}
+                           </Menu>
+                        </>
+                     )}
                   </>
                )}
             </>
