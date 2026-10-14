@@ -11,6 +11,18 @@ export async function editorOpen(page: Page): Promise<void> {
    });
 }
 
+/**
+ * The reader is back and the builder gone. Leaving the builder is a handoff:
+ * the reader draws out of sight under it first, so for a moment the page holds
+ * both, and a text locator would find each line twice.
+ */
+export async function readerOpen(page: Page): Promise<void> {
+   await expect(page.locator("[data-switching]")).toHaveCount(0, {
+      timeout: 30_000,
+   });
+   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+}
+
 /** A tile by the key the builder tags it with: `text.<name>` or `<source>.<view>`. */
 export const tileByKey = (page: Page, key: string): Locator =>
    page.locator(`[data-tile-key="${key}"]`);

@@ -10,10 +10,11 @@ import {
    useRouterClickHandler,
 } from "@malloy-publisher/sdk";
 import { Box } from "@mui/material";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { logReportEvent } from "../../../utils/consoleTelemetry";
 import { useDrillNavigate } from "../../common/useDrillNavigate";
 import { TITLED_PAGE_FRAME_SX } from "../pageFrame";
+import { useDrawn } from "../useDrawn";
 
 interface ReportPageProps {
    environmentName: string;
@@ -22,6 +23,8 @@ interface ReportPageProps {
    path: string;
    /** Whether the builder opens it, so its chunk is worth warming. Default true for a `.malloy`. */
    editable?: boolean;
+   /** Told once the report is drawn (see `useDrawn`), for a host swapping it in for the builder. */
+   onReady?: () => void;
 }
 
 /**
@@ -38,7 +41,10 @@ export default function ReportPage({
    packageName,
    path,
    editable = path.endsWith(".malloy"),
+   onReady,
 }: ReportPageProps) {
+   const page = useRef<HTMLDivElement>(null);
+   useDrawn(page, true, onReady);
    // Control values ride in the query string, so a link reproduces the view;
    // a drill pushes a route.
    const { params: givens, onGivensChange } = useGivenUrlParams();
@@ -68,7 +74,7 @@ export default function ReportPage({
    }, [editable, narrow]);
 
    return (
-      <Box sx={TITLED_PAGE_FRAME_SX}>
+      <Box ref={page} sx={TITLED_PAGE_FRAME_SX}>
          {/* A legacy `.malloynb` runs only through the deprecated notebook routes, which `Notebook` reads. */}
          {path.endsWith(".malloynb") ? (
             <Notebook

@@ -5,10 +5,11 @@ import {
    Loading,
    LOADING_COPY,
    locateReport,
+   type ReportLayout,
    useDraftLayout,
    useReportListing,
 } from "@malloy-publisher/sdk";
-import { Alert, Box, Button } from "@mui/material";
+import { Alert, Box, Button, type SxProps, type Theme } from "@mui/material";
 import { useEffect, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { legacyEditBase, withEdit } from "../../common/documentRoutes";
@@ -125,25 +126,17 @@ export default function RoutedDocument({
       );
    if (!decided) return <Loading text={LOADING_COPY.opening()} />;
 
-   if (report) {
-      if (edit)
-         return (
-            <DashboardEditPage
-               environmentName={environmentName}
-               packageName={packageName}
-               path={report.path}
-               layout={report.layout}
-            />
-         );
+   if (report)
       return (
-         <ReportPage
+         <ReadAndEdit
             environmentName={environmentName}
             packageName={packageName}
             path={report.path}
             editable={report.editable}
+            layout={report.layout}
+            edit={edit}
          />
       );
-   }
 
    // The legacy edit route, `<path>/edit`: no report has this path (checked
    // above), so it is a link to edit `<path>`.
@@ -177,5 +170,96 @@ export default function RoutedDocument({
       ) : (
          notFound
       ),
+   );
+}
+
+/**
+ * A listed report, read or edited, as one page rather than two routes, so
+ * switching between them never blanks it.
+ *
+ * A switch is a handoff. The page being switched to renders out of sight over
+ * the one on screen until it is drawn (open, with the tiles in view showing
+ * their results), then the outgoing page goes, in the same frame. Two routes
+ * did the opposite: each switch replaced the page outright, and every result
+ * on it was drawn again from nothing, blank in between, two or three times
+ * over on the way into the builder. Only during a switch are both mounted.
+ */
+function ReadAndEdit({
+   environmentName,
+   packageName,
+   path,
+   editable,
+   layout,
+   edit,
+}: {
+   environmentName: string;
+   packageName: string;
+   path: string;
+   editable: boolean | undefined;
+   layout: ReportLayout | undefined;
+   edit: boolean;
+}) {
+   // The page on screen; the route says which one is wanted.
+   const [shown, setShown] = useState<"reader" | "editor">(
+      edit ? "editor" : "reader",
+   );
+   const wanted = edit ? "editor" : "reader";
+   const reader = wanted === "reader" || shown === "reader";
+   const editor = wanted === "editor" || shown === "editor";
+   // Out of sight: drawn underneath, not yet the page on screen.
+   const offstage: SxProps<Theme> = {
+      position: "absolute",
+      inset: 0,
+      visibility: "hidden",
+      pointerEvents: "none",
+      overflow: "hidden",
+   };
+   return (
+      // Marked while both pages are mounted, for anything that has to wait
+      // for the switch to finish (a test reading the page, say).
+      <Box
+         sx={{ position: "relative" }}
+         data-switching={(reader && editor) || undefined}
+      >
+         {reader && (
+            <Box
+               key="reader"
+               sx={shown === "reader" ? undefined : offstage}
+               aria-hidden={shown !== "reader" || undefined}
+            >
+               <ReportPage
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  path={path}
+                  {...(editable !== undefined ? { editable } : {})}
+                  onReady={() => {
+                     if (!edit) setShown("reader");
+                  }}
+               />
+            </Box>
+         )}
+         {editor && (
+            <Box
+               key="editor"
+               sx={shown === "editor" ? undefined : offstage}
+               aria-hidden={shown !== "editor" || undefined}
+            >
+               <DashboardEditPage
+                  environmentName={environmentName}
+                  packageName={packageName}
+                  path={path}
+                  {...(layout ? { layout } : {})}
+                  // On a direct ?edit link there is no reader under it, so it
+                  // draws the report while it loads, as it always has.
+                  quietLoading={reader}
+                  // Its controls go into the header with it, not before.
+                  offstage={wanted !== "editor" || shown !== "editor"}
+                  onReady={() => {
+                     if (edit) setShown("editor");
+                  }}
+               />
+            </Box>
+         )}
+      </Box>
    );
 }

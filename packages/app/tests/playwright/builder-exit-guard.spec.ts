@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { expect, test, type Page } from "@playwright/test";
-import { editorOpen, tileByKey } from "./helpers/builder";
+import { editorOpen, readerOpen, tileByKey } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 import {
    registerPackageEnv,
@@ -120,6 +120,7 @@ test.describe("notebook exit guard", () => {
          .getByRole("button", { name: "Discard changes" })
          .click();
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
       expect(await pe.readSource(TOUR)).not.toContain("Half-typed thought");
    });
@@ -137,6 +138,7 @@ test.describe("notebook exit guard", () => {
 
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
       expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
 
@@ -157,6 +159,7 @@ test.describe("notebook exit guard", () => {
 
       await view(page).click();
       await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
       await expect(page.getByText("Edited first.")).toBeVisible({
          timeout: 60_000,
@@ -180,6 +183,7 @@ test.describe("notebook exit guard", () => {
 
       await view(page).click();
       await expect(page).toHaveURL(readerUrl(), { timeout: 30_000 });
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
       expect(await pe.readSource(TOUR)).toContain("Draft then Done");
    });
@@ -190,7 +194,10 @@ test.describe("notebook exit guard", () => {
       await openEditor(page);
       await dirtyFirstNote(page);
 
-      await status(page).click();
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Draft saved" })
+         .click();
       await page.getByRole("menuitem", { name: /Discard edits/ }).click();
       await expect(page.getByText("First note.")).toBeVisible();
       await expect(page.getByText("Edited first.")).toHaveCount(0);
@@ -198,6 +205,7 @@ test.describe("notebook exit guard", () => {
 
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
    });
 
@@ -208,6 +216,7 @@ test.describe("notebook exit guard", () => {
 
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
    });
 
@@ -218,6 +227,7 @@ test.describe("notebook exit guard", () => {
 
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
    });
 
@@ -234,6 +244,7 @@ test.describe("notebook exit guard", () => {
       // Nothing was left unsaved, so leaving does not ask.
       await goBack(page);
       await expect(page).toHaveURL(readerUrl());
+      await readerOpen(page);
       await expect(prompt(page)).toHaveCount(0);
    });
 
