@@ -3,8 +3,12 @@
 
 import { useEffect, useRef, type RefObject } from "react";
 
-/** A query tile's card, in the reader and the builder alike (`TileCard`). */
-const TILE_CARD = "[data-chrome]";
+/**
+ * A query tile's card, in the reader and the builder alike (`TileCard`). Not
+ * every card: the description and text tiles are cards too, hold no result,
+ * and counting them waited out the whole timeout on every switch.
+ */
+const TILE_CARD = '[data-tile-kind="query"]';
 /** A query tile's result, or what it shows in place of one. */
 const DRAWN = ".malloy-render, .malloy-table, [role='alert'], .MuiAlert-root";
 /** The longest a swap waits on the incoming page before it is shown anyway. */
@@ -47,17 +51,23 @@ export function useDrawn(
             return !drawn || drawn.getBoundingClientRect().height < 8;
          });
          // Two frames after the last one arrives, so it has painted.
-         if (waiting.length === 0)
+         if (waiting.length === 0 && frame === 0)
             frame = requestAnimationFrame(() => {
                frame = requestAnimationFrame(fire);
             });
       };
+      // A result finishes drawing inside the renderer's own tree, which a
+      // mutation observer here never sees: its height simply grows. So the
+      // check also runs on a short beat; watching mutations alone waited out
+      // the whole timeout on every switch.
       const observer = new MutationObserver(check);
       if (root.current)
          observer.observe(root.current, { childList: true, subtree: true });
+      const beat = setInterval(check, 50);
       check();
       return () => {
          clearTimeout(timer);
+         clearInterval(beat);
          cancelAnimationFrame(frame);
          observer.disconnect();
       };

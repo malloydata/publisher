@@ -79,6 +79,8 @@ export function TileCard({
          ref={cardRef}
          elevation={0}
          data-chrome={chrome}
+         // What it holds, for a host waiting on the query tiles to draw.
+         data-tile-kind={kind}
          sx={[
             {
                border: bare ? "none" : theme.cardBorder,
