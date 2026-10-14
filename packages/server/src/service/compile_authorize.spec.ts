@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type GivenValue } from "@malloydata/malloy";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -35,6 +35,7 @@ const MODEL = `##! experimental.givens
 given:
   ROLE :: string
   GROUPS :: number[]
+  TAGS :: string[]
 
 #(authorize) 'analyst' = $ROLE
 source: gated is duckdb.sql("SELECT 1 as x") extend {
@@ -42,6 +43,12 @@ source: gated is duckdb.sql("SELECT 1 as x") extend {
 }
 
 source: open_src is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+
+#(authorize) true
+source: open_true is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
+
+#(authorize) 'x' in $TAGS
+source: tagged is duckdb.sql("SELECT 1 as x") extend { measure: c is count() }
 
 #(access_filter) org_id in $GROUPS
 source: row_gated is duckdb.sql("SELECT 1 as x, 1 as org_id") extend {
@@ -144,6 +151,122 @@ describe("compile-path authorize gate (compileSource)", () => {
          ROLE: "analyst",
       });
       expect(problems).toEqual([]);
+   });
+
+   describe("a source the caller's text extends from a gated one (append scope)", () => {
+      const run = (name: string) => `run: ${name} -> { aggregate: c }`;
+      const extend = (base: string) =>
+         `source: mine is ${base} extend {}\n${run("mine")}`;
+      const twoHop = (base: string) =>
+         `source: mine is ${base} extend {}\nsource: again is mine extend {}\n${run("again")}`;
+      const compileSql = (
+         source: string,
+         givens?: Record<string, GivenValue>,
+      ) => env.compileSource("pkg", "model.malloy", source, true, givens);
+
+      for (const includeSql of [false, true]) {
+         const go = includeSql ? compileSql : compile;
+         const sql = includeSql ? " with includeSql" : "";
+
+         it(`ADMITS an extend of a lock the caller satisfies${sql}`, async () => {
+            const { problems } = await go(extend("gated"), { ROLE: "analyst" });
+            expect(problems).toEqual([]);
+         });
+
+         it(`ADMITS a two-hop extend${sql}`, async () => {
+            const { problems } = await go(twoHop("gated"), { ROLE: "analyst" });
+            expect(problems).toEqual([]);
+         });
+
+         it(`ADMITS an extend of a literal \`#(authorize) true\` source${sql}`, async () => {
+            const { problems } = await go(extend("open_true"));
+            expect(problems).toEqual([]);
+         });
+
+         it(`ADMITS an extend of a membership lock${sql}`, async () => {
+            const { problems } = await go(extend("tagged"), { TAGS: ["x"] });
+            expect(problems).toEqual([]);
+         });
+
+         it(`ADMITS an extend of a row-gated source once its given is supplied${sql}`, async () => {
+            const { problems } = await go(extend("row_gated"), {
+               GROUPS: [1],
+            });
+            expect(problems).toEqual([]);
+         });
+      }
+
+      for (const go of [compile, compileSql]) {
+         it("REFUSES an extend of a lock the caller does not satisfy", async () => {
+            await expect(
+               go(extend("gated"), { ROLE: "nobody" }),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+            await expect(
+               go(twoHop("gated"), { ROLE: "nobody" }),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         });
+
+         it("REFUSES an extend of a row-gated source whose given went unsupplied", async () => {
+            await expect(go(extend("row_gated"))).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+         });
+      }
+
+      describe("at the compiled-runnable backstop alone", () => {
+         // The early text gate would refuse these first; neutralize it so only
+         // `assertAuthorizedForRunnable` is under test.
+         const backstopOnly = async () => {
+            const pkg = await env.getPackage("pkg");
+            const { model } = pkg.getCompileAuthorizationModel("model.malloy");
+            spyOn(model!, "assertAuthorizedForText").mockResolvedValue(
+               undefined,
+            );
+         };
+
+         it("REFUSES a wrong-role extend", async () => {
+            await backstopOnly();
+            await expect(
+               compileSql(extend("gated"), { ROLE: "nobody" }),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+            await expect(
+               compileSql(twoHop("gated"), { ROLE: "nobody" }),
+            ).rejects.toBeInstanceOf(AccessDeniedError);
+         });
+
+         it("still ADMITS a right-role extend", async () => {
+            await backstopOnly();
+            const { problems } = await compileSql(extend("gated"), {
+               ROLE: "analyst",
+            });
+            expect(problems).toEqual([]);
+         });
+
+         it("keeps a walk entry that has no on-disk twin (fails closed)", async () => {
+            const pkg = await env.getPackage("pkg");
+            const { model } = pkg.getCompileAuthorizationModel("model.malloy");
+            const internals = model as unknown as {
+               entryPointGatesBySource: Map<
+                  string,
+                  { label: string; route: string; exprs: string[] }[]
+               >;
+               foldRequestDeclaredTwins(
+                  own: string,
+                  text: string,
+                  walked: unknown[],
+               ): unknown[];
+            };
+            const [twin] = internals.entryPointGatesBySource.get("gated")!;
+            const ephemeral = { ...twin, label: "mine" };
+            const sentinel = { ...twin, label: "mine", exprs: ["false"] };
+            const folded = internals.foldRequestDeclaredTwins(
+               "mine",
+               "source: mine is gated extend {}",
+               [ephemeral, sentinel],
+            );
+            expect(folded).toEqual([twin, sentinel]);
+         });
+      });
    });
 
    it("ADMITS a row-field #(access_filter) at APPEND scope on PRESENCE, not value", async () => {

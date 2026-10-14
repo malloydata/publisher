@@ -1891,6 +1891,7 @@ export class Model {
          {
             bypassAuthorize,
             checkOnly: options?.checkOnly,
+            compileCallerText: options?.callerRegion?.text,
             callerJoins: options?.callerRegion
                ? {
                     runnable: runnable as QueryMaterializer,
@@ -1943,18 +1944,23 @@ export class Model {
        *  scope the caller (`authorizeAndBindRunnable`) uses for everything
        *  else it collects here. */
       graftScope: GraftScope | undefined,
-      /** Skip the gate keyed on the run target's own SOURCE NAME, keeping
-       *  only the gates readable from the compiled ModelDef. Set by
-       *  {@link assertAuthorizedFromCompiledRunnable} for a `/compile` of a
-       *  path with no cached Model, where the source name would resolve
-       *  against an unrelated file. */
-      skipOwnSourceGate = false,
+      options: {
+         /** Skip the gate keyed on the run target's own SOURCE NAME, keeping
+          *  only the gates readable from the compiled ModelDef. Set by
+          *  {@link assertAuthorizedFromCompiledRunnable} for a `/compile` of a
+          *  path with no cached Model, where the source name would resolve
+          *  against an unrelated file. */
+         skipOwnSourceGate?: boolean;
+         /** The caller's text at `/compile` append scope; see the fold below. */
+         callerText?: string;
+      } = {},
    ): Promise<{
       entryPointGates: GateEntry[];
       modelDef: ModelDef | undefined;
       /** The run target's own compiled struct — see `resolveRunTargetStruct`. */
       struct: SourceDef | undefined;
    }> {
+      const { skipOwnSourceGate = false, callerText } = options;
       const ownSourceName =
          await this.resolveAuthorizeSourceFromRunnable(runnable);
       // Skipped by `assertAuthorizedFromCompiledRunnable`, whose whole point
@@ -2085,7 +2091,45 @@ export class Model {
             entryPointGates = Array.from(byKey.values());
          }
       }
+      if (callerText && !skipOwnSourceGate && ownSourceName) {
+         entryPointGates = this.foldRequestDeclaredTwins(
+            ownSourceName,
+            callerText,
+            entryPointGates,
+         );
+      }
       return { entryPointGates, modelDef, struct };
+   }
+
+   /**
+    * A run target the caller's own text declared (`source: mine is gated
+    * extend {}`) has no `modelDef.contents` key to graft onto, so its walk
+    * entries classify `rejected` even when the inherited gate admits the
+    * caller. Swap each for its on-disk twin on a base the text provably
+    * derives from; every other entry stays, so an unexplained gate still denies.
+    */
+   private foldRequestDeclaredTwins(
+      ownSourceName: string,
+      callerText: string,
+      walked: GateEntry[],
+   ): GateEntry[] {
+      if (this.entryPointGatesBySource.has(ownSourceName)) return walked;
+      const proof = this.requestChainGates(ownSourceName, callerText);
+      if (!proof.proven) return walked;
+      const twins = proof.gatesByBase.flatMap(([, gates]) => gates);
+      const used = new Set<GateEntry>();
+      return walked.map((entry) => {
+         const twin = twins.find(
+            (t) =>
+               !used.has(t) &&
+               t.route === entry.route &&
+               t.exprs.length === entry.exprs.length &&
+               t.exprs.every((expr, i) => expr === entry.exprs[i]),
+         );
+         if (!twin) return entry;
+         used.add(twin);
+         return twin;
+      });
    }
 
    /**
@@ -2198,14 +2242,14 @@ export class Model {
       runnable: QueryMaterializer,
       givens: Record<string, GivenValue>,
       graftScope: GraftScope | undefined,
-      skipOwnSourceGate = false,
+      options: { skipOwnSourceGate?: boolean; callerText?: string } = {},
    ): Promise<RowLevelGraftEntry[]> {
       const { entryPointGates, modelDef } =
          await this.collectAuthorizeEntryPointGates(
             runnable,
             givens,
             graftScope,
-            skipOwnSourceGate,
+            options,
          );
 
       // Evaluate each collected gate independently — do NOT dedup by expression
@@ -2489,10 +2533,7 @@ export class Model {
       // Ephemeral: an entry point THIS REQUEST declared. Denied unless the scan
       // POSITIVELY establishes a complete chain to model-declared ungated
       // sources — see this method's doc for why the default is deny.
-      const proof = this.requestChainProvesUngated(
-         entryPoint,
-         buildDerivationBaseMap(query),
-      );
+      const proof = this.requestChainGates(entryPoint, query);
       if (proof.proven) {
          // Every gated base the chain reached must be a lock this caller
          // satisfies. A lock is decided, not attached, so once it admits there
@@ -2501,8 +2542,8 @@ export class Model {
          // here has no graft target (the entry point is ephemeral, so
          // `resolveGraftTarget` has no `modelDef.contents` key for it), so it
          // is refused rather than silently dropped.
-         for (const base of proof.gatedBases) {
-            for (const entry of this.entryPointGatesBySource.get(base) ?? []) {
+         for (const [base, gates] of proof.gatesByBase) {
+            for (const entry of gates) {
                const resolution = this.modelDef
                   ? await this.resolveGateShape(
                        entry,
@@ -2526,6 +2567,30 @@ export class Model {
          return;
       }
       this.denyLaunderedEntryPoint(entryPoint, proof.reason, proof.at);
+   }
+
+   /** {@link requestChainProvesUngated} over `text`, plus the on-disk gates of each gated base it reached. */
+   private requestChainGates(
+      entryPoint: string,
+      text: string,
+   ):
+      | {
+           proven: true;
+           gatesByBase: ReadonlyArray<readonly [string, GateEntry[]]>;
+        }
+      | { proven: false; reason: "chain_not_established"; at: string } {
+      const proof = this.requestChainProvesUngated(
+         entryPoint,
+         buildDerivationBaseMap(text),
+      );
+      if (!proof.proven) return proof;
+      return {
+         proven: true,
+         gatesByBase: proof.gatedBases.map(
+            (base) =>
+               [base, this.entryPointGatesBySource.get(base) ?? []] as const,
+         ),
+      };
    }
 
    /**
@@ -3196,6 +3261,8 @@ export class Model {
          graftScope?: GraftScope;
          /** See {@link assertAuthorizedFromCompiledRunnable}. */
          skipOwnSourceGate?: boolean;
+         /** The caller's appended text at `/compile` append scope; see {@link foldRequestDeclaredTwins}. */
+         compileCallerText?: string;
          /**
           * The request's own submitted query text, when it has any — read by
           * {@link assertRequestDeclaredEntryPointIsNotLaundered} for the
@@ -3245,7 +3312,10 @@ export class Model {
          runnable,
          givens,
          graftScope,
-         options?.skipOwnSourceGate ?? false,
+         {
+            skipOwnSourceGate: options?.skipOwnSourceGate,
+            callerText: options?.compileCallerText,
+         },
       );
 
       // Keyed on the RUN TARGET's own gates, never on the caller-join grafts
