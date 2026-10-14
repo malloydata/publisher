@@ -95,7 +95,7 @@ async function addTile(
          view: "by_category",
          colspan: 6,
       },
-      { modelPath: DOCUMENT, textHeld, notebook: false },
+      { modelPath: DOCUMENT, textHeld, widths: true },
    );
    const result = await spliceDashboardDocument(text, document);
    if (spliceFailed(result)) throw new Error(result.reason);

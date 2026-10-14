@@ -144,7 +144,7 @@ test.describe("embedded host", () => {
       const writes = watchPackageWrites(page);
       await page.goto(`/${storefront.env}/${storefront.pkg}`);
       await page
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .first()
          .click({
             timeout: 60_000,
@@ -198,7 +198,7 @@ test.describe("embedded host", () => {
       const writes = watchPackageWrites(page);
       await page.goto(`/${storefront.env}/${storefront.pkg}`);
       await page
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .first()
          .click({
             timeout: 60_000,
@@ -262,7 +262,12 @@ test.describe("embedded host", () => {
       });
       await expect(page.getByText("Record overview")).toBeVisible();
       // The title is edited where it is shown.
-      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
+      // The report title is the page's h1, edited where it stands.
+      await page
+         .getByRole("heading", { level: 1 })
+         .first()
+         .getByRole("button")
+         .click();
       const title = page.getByLabel("Report title");
       await title.fill("Record overview, edited");
       await title.press("Enter");
@@ -312,7 +317,7 @@ test.describe("embedded host", () => {
          page.getByRole("heading", { name: "Reports", level: 6 }),
       ).toBeVisible({ timeout: 60_000 });
       await expect(
-         page.getByRole("button", { name: "New report", exact: true }),
+         page.getByRole("button", { name: "Add report", exact: true }),
       ).toHaveCount(0);
    });
 });

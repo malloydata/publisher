@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, useTheme } from "@mui/material";
+import { Box } from "@mui/material";
 import React, {
    Suspense,
    useCallback,
@@ -30,6 +30,7 @@ import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { loadMalloyRenderer } from "./loadRenderer";
 import type { ResolvedTheme } from "../../theme/types";
+import { TILE_RADIUS } from "../controlTokens";
 import {
    DRILL_CELL_CLASS,
    moveDrillStop,
@@ -443,18 +444,14 @@ function RenderedResultInner({
    // bails, so overlapping renders can't leave two charts or leak a viz.
    const renderGenRef = useRef(0);
    const { theme: baseTheme, layers, mode } = usePublisherTheme();
-   // The host app's card radius, so a dashboard card reads as a card of the app
-   // it is embedded in rather than as the renderer's 8px on a 4px page. Both
-   // cards take it from here; see DashboardTile, which is the other one.
-   const cardRadius = useTheme().shape.borderRadius;
-   // Memoized because it is a dependency of the render effect below, and a fresh
-   // object each render would re-render the chart on every render.
+   // The report surfaces' tile radius, the one TileCard draws the composite
+   // tile with, so the renderer's own cards and ours are the same shape.
    const cardGeometry = useMemo<DashboardCardGeometry>(
       () => ({
-         radius: `${cardRadius}px`,
+         radius: TILE_RADIUS,
          padding: `${DASHBOARD_CARD_PADDING_PX}px`,
       }),
-      [cardRadius],
+      [],
    );
 
    // Dispose the last live viz on unmount only. Deliberately NOT done in the

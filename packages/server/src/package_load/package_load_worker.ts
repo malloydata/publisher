@@ -1271,13 +1271,15 @@ async function compileMalloyModel(
  * Do one compiled model's share of what this worker does for the main thread:
  * prepare its render-tag results, compile its pre-aggregation companion, and
  * collect its build-plan parts. The load's soft deadline is checked before each
- * render-tag target and before the companion and plan parts. Past it, the rest
- * of the model's render-tag targets and its companion are left to the main
- * thread, and so is the whole plan, which the main thread then derives from the
- * package. Either way the main thread does that work as it would without the
- * worker, so a slow package loads rather than failing on the job limit (see the
- * pool's jobLimitMs). Never throws: a failure here fails at most the plan, not
- * the model.
+ * render-tag target and before the companion, which the plan parts are read
+ * from. Past it, the rest of the model's render-tag targets and its companion
+ * are left to the main thread, and so is the whole plan, which the main thread
+ * then derives from the package. A model whose companion compile started
+ * before the deadline still collects its plan parts after it, since they need
+ * no recompile of the model. Either way the main thread does that work as it
+ * would without the worker, so a slow package loads rather than failing on the
+ * job limit (see the pool's jobLimitMs). Never throws: a failure here fails at
+ * most the plan, not the model.
  */
 async function prepareForMainThread(
    job: LoadPackageRequest,
@@ -1371,10 +1373,12 @@ async function prepareForMainThread(
            })) ?? null)
          : undefined;
 
-   // Checked again: another model may have left the plan to the main thread,
-   // or the deadline passed, while this one's companion compiled.
-   if (wantsPlan && (load.planLeftToMainThread || pastDeadline())) {
-      load.planLeftToMainThread = true;
+   // Checked again: another model may have left the plan to the main thread
+   // while this one's companion compiled. The deadline is not: with its
+   // companion compiled, this model's plan parts need no recompile of the
+   // model, and leaving the plan here would have the main thread compile every
+   // model for it.
+   if (wantsPlan && load.planLeftToMainThread) {
       wantsPlan = false;
    }
    if (wantsPlan && companion !== undefined && !load.failed) {

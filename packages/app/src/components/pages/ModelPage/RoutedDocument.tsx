@@ -15,6 +15,7 @@ import { legacyEditBase, withEdit } from "../../common/documentRoutes";
 import DashboardEditPage from "../DashboardEditPage/DashboardEditPage";
 import ReportPage from "../ReportPage/ReportPage";
 import LegacyAliasRoute from "./LegacyAliasRoute";
+import { PAGE_FRAME_SX } from "../pageFrame";
 
 /**
  * A route with no model extension, opened as the report at that path: the
@@ -104,7 +105,7 @@ export default function RoutedDocument({
    // here": say so, and offer to ask again.
    if (!decided && isError && !isFetching)
       return (
-         <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+         <Box sx={PAGE_FRAME_SX}>
             <Alert
                severity="warning"
                action={

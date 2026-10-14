@@ -4,14 +4,20 @@
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { Given } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
+import { useFilterEditing } from "./filterEditing";
+import {
+   AddFilterButton,
+   FilterButton,
+   FilterSettingsButton,
+} from "./FilterButton";
 import { GivenInput } from "./GivenInput";
-import { usePublisherTheme } from "../../theme/ThemeContext";
 
 /**
  * How the control row is laid out.
  *
  * - `panel`: the vertical "Filters" block a notebook shows above its cells.
- * - `bar`: a horizontal filter bar above a dashboard grid.
+ * - `bar`: a report's row of filter buttons, one per control, each opening
+ *   its control in a popover (`FilterButton`). Both report layouts use it.
  *
  * Two presentations of one control implementation, rather than two
  * implementations: a control gains a behavior (a suggest dropdown, an Apply
@@ -65,11 +71,10 @@ export function GivensPanel({
    apply,
    title,
 }: GivensPanelProps) {
-   // Above the early return below, not down at its use site: the bar layout is
-   // the only branch that paints a border, but a hook called conditionally is
-   // a hook called on some renders and not others.
-   const { theme } = usePublisherTheme();
-   if (givens.length === 0) return null;
+   // In the builder the bar is also where filters are added, so it draws with
+   // none: an empty row is the "+ Filter" button alone.
+   const editing = useFilterEditing();
+   if (givens.length === 0 && !(editing && layout === "bar")) return null;
    // Some value actually SET, not merely some entry present. `paramsToGivens`
    // records `?X=` as a null entry, so counting entries offered Reset for a
    // control that is unset, and pressing it changed nothing and left the empty
@@ -77,14 +82,7 @@ export function GivensPanel({
    const hasValues = Array.from(values.values()).some((v) => v !== null);
 
    const inputs = givens.map((given) => (
-      <Box
-         key={given.name}
-         sx={
-            layout === "bar"
-               ? { minWidth: 200, flex: "1 1 200px", maxWidth: 320 }
-               : undefined
-         }
-      >
+      <Box key={given.name}>
          <GivenInput
             given={given}
             value={given.name ? values.get(given.name) : undefined}
@@ -120,37 +118,40 @@ export function GivensPanel({
    );
 
    if (layout === "bar") {
+      // A row of filter buttons with no box of its own: the controls are the
+      // edges, and a card around them was the one box on the page drawn around
+      // other boxes.
       return (
-         <Paper
-            elevation={0}
-            sx={{
-               p: 2,
-               // The card edge, not MUI's `divider`: this row IS one of the
-               // page's cards as far as a reader is concerned, and on
-               // `divider` it stayed at the old hairline weight while the
-               // cards under it darkened — the one box on the page outlined
-               // differently from everything it sits above.
-               border: theme.cardBorder,
-               borderRadius: 1,
-               // Border only, no raised fill — the same construction the
-               // dashboard's cards use, so the control row reads as part of
-               // the page rather than as a panel floating above it.
-               backgroundColor: "transparent",
-            }}
+         <Stack
+            direction="row"
+            role="group"
+            aria-label={title ?? "Filters"}
+            useFlexGap
+            sx={{ flexWrap: "wrap", alignItems: "center", gap: 1 }}
          >
-            <Stack
-               direction="row"
-               alignItems="flex-start"
-               spacing={2}
-               useFlexGap
-               sx={{ flexWrap: "wrap" }}
-            >
-               {inputs}
-               <Box sx={{ flex: "0 0 auto", ml: "auto", pt: 0.5 }}>
-                  {actions}
-               </Box>
-            </Stack>
-         </Paper>
+            {givens.map((given) => (
+               <FilterButton
+                  key={given.name}
+                  given={given}
+                  value={given.name ? values.get(given.name) : undefined}
+                  onChange={(next) => given.name && onChange(given.name, next)}
+                  options={given.name ? options?.get(given.name) : undefined}
+                  optionsLoading={optionsLoading}
+                  optionsFailed={
+                     given.name ? optionsFailed?.has(given.name) : undefined
+                  }
+               />
+            ))}
+            {editing?.unrendered.map((filter) => (
+               <FilterSettingsButton
+                  key={filter.name}
+                  name={filter.name}
+                  label={filter.label}
+               />
+            ))}
+            <AddFilterButton />
+            <Box sx={{ ml: "auto" }}>{actions}</Box>
+         </Stack>
       );
    }
 

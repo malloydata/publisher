@@ -96,7 +96,12 @@ test.describe("report authoring", () => {
       // The server takes no writes, so Save keeps the edit in the browser.
       await page.goto(`/${pe.env}/${pe.pkg}/reports/draft?edit`);
       await editing(page);
-      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
+      // The report title is the page's h1, edited where it stands.
+      await page
+         .getByRole("heading", { level: 1 })
+         .first()
+         .getByRole("button")
+         .click();
       const title = page.getByLabel("Report title");
       await title.fill("Draft idea");
       await title.press("Enter");

@@ -545,4 +545,35 @@ describe("versions schema upgrade", () => {
          (await repo.getPackageByName("env-1", "sales"))!.latestVersion,
       ).toBe("1.0.0");
    });
+
+   it("lets a release that predates versions reset the store with --init", async () => {
+      // A downgraded server's --init drops only the tables it knows, in its
+      // own order, and leaves `versions` behind. Nothing may stop it dropping
+      // `environments`: DuckDB refuses to drop a table another references.
+      const { db, repo } = await freshRepo();
+      await repo.commitPublish(newVersion("1.0.0"), always);
+      const knownBeforeVersions = [
+         "build_manifests",
+         "incremental_ledger",
+         "materializations",
+         "packages",
+         "connections",
+         "storage_destinations",
+         "environments",
+         "themes",
+         "entity_embeddings",
+         "entity_keyphrases",
+         "source_summaries",
+      ];
+      for (const table of knownBeforeVersions) {
+         await db.run(`DROP TABLE IF EXISTS ${table}`);
+      }
+
+      const left = (
+         await db.all<{ table_name: string }>(
+            "SELECT table_name FROM duckdb_tables() WHERE table_name IN ('environments', 'versions')",
+         )
+      ).map((row) => row.table_name);
+      expect(left).toEqual(["versions"]);
+   });
 });

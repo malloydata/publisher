@@ -126,26 +126,27 @@ describe("DashboardView tiles", () => {
 });
 
 describe("DashboardView chrome", () => {
-   it("draws cards by default", async () => {
-      const { container } = render(view(), { wrapper: serverWrapper });
-      await screen.findByText("reader");
-      expect(
-         container.querySelectorAll('[data-chrome="card"]').length,
-      ).toBeGreaterThan(0);
-      expect(container.querySelector('[data-chrome="none"]')).toBeNull();
-   });
-
-   it("draws no cards and no title block with chrome none", async () => {
-      const { container } = render(view("none"), { wrapper: serverWrapper });
-      await screen.findByText("reader");
-      expect(container.querySelector('[data-chrome="card"]')).toBeNull();
-      expect(container.querySelectorAll('[data-chrome="none"]').length).toBe(3);
-      expect(screen.queryByText("ops")).toBeNull();
-   });
+   // A linear report and a grid draw the same page: query tiles in cards, text
+   // tiles as bare prose, and the title block. `chrome` is accepted and ignored.
+   for (const chrome of [undefined, "card", "none"] as const) {
+      it(`draws query tiles as cards and text as prose, with chrome ${chrome ?? "unset"}`, async () => {
+         const { container } = render(view(chrome), {
+            wrapper: serverWrapper,
+         });
+         const strong = await screen.findByText("reader");
+         expect(
+            strong.closest("[data-chrome]")?.getAttribute("data-chrome"),
+         ).toBe("none");
+         expect(
+            container.querySelectorAll('[data-chrome="card"]'),
+         ).toHaveLength(2);
+         expect(screen.getByRole("heading", { name: "ops" })).toBeDefined();
+      });
+   }
 });
 
 describe("DashboardView header", () => {
-   it("boxes a dashboard's description as it boxes a text tile", async () => {
+   it("draws a dashboard's description as bare page prose, not a card", async () => {
       render(
          <DashboardView
             manifest={{ ...base, description: "About **this**" }}
@@ -157,8 +158,37 @@ describe("DashboardView header", () => {
       );
       const strong = await screen.findByText("this");
       expect(strong.closest("[data-chrome]")?.getAttribute("data-chrome")).toBe(
-         "card",
+         "none",
       );
+   });
+});
+
+describe("DashboardView layout marker", () => {
+   it("marks the page with its layout, and a report that failed to load too", () => {
+      const { container, unmount } = render(
+         <DashboardView
+            manifest={{ ...base, layout: "linear" }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(container.querySelector('[data-layout="linear"]')).not.toBeNull();
+      unmount();
+
+      const failed = render(
+         <DashboardView
+            manifest={{ ...base, layout: "grid", error: "did not compile" }}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+         />,
+         { wrapper: serverWrapper },
+      );
+      expect(
+         failed.container.querySelector('[data-layout="grid"]'),
+      ).not.toBeNull();
    });
 });
 

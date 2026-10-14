@@ -32,6 +32,7 @@ import * as Malloy from "@malloydata/malloy-interfaces";
 import {
    annotationTexts,
    modelAnnotations,
+   notePositionKey,
    ownLevelNotes,
    ownLevelNoteTexts,
    type AnnotationNote,
@@ -427,10 +428,11 @@ export function extractSourcesFromModelDef(
    // on …` with no annotation of its own, therefore surfaces on the join
    // field's `annotations` looking BYTE-IDENTICAL to a misplaced one —
    // `docs/authorize.md`'s own worked join example is exactly this shape.
-   // `gatedSourceOwnAuthorizeNotes` below is the identity set that tells the
-   // two apart: a copied note is (by reference) also some source's OWN note
-   // somewhere in this model; an author's stray annotation is a freshly
-   // parsed note object that appears nowhere else.
+   // `gatedSourceOwnAuthorizeNotes` below, with its position-keyed twin, is
+   // the set that tells the two apart: a copied note is also some source's
+   // OWN note somewhere in this model, by reference or by the position it
+   // was parsed from; an author's stray annotation is a freshly parsed note
+   // at the join line's own position, which appears nowhere else.
    const misplacedAuthorize: MisplacedAuthorizeAnnotation[] = [];
 
    // Every `#(authorize)`-tagged note object that is some source's OWN
@@ -440,6 +442,22 @@ export function extractSourcesFromModelDef(
    // source the field happens to live on — a join field's copied note names
    // the JOINED source, not the joiner.
    const gatedSourceOwnAuthorizeNotes = new Set<AnnotationNote>();
+   // The same notes by the position they were parsed from, for a file the
+   // model compiled more than once (a diamond import): each compile yields
+   // its own note objects, so a join from one path carries a note the
+   // namespace holds another copy of, and identity alone misreads the copy
+   // as typed on the join line. Position identifies a note only while one
+   // compile never parses two texts under one URL, which holds because the
+   // intercepting reader matches file URLs as strings (`/compile`'s append
+   // scope included) and a synthetic compile gets its own
+   // `internal://<method>/<uuid>` URL. The text is folded in as redundancy:
+   // `at` spans the annotation itself, so one span holds one text today.
+   const gatedSourceOwnAuthorizeNoteKeys = new Set<string>();
+   const noteKey = (note: AnnotationNote): string =>
+      `${notePositionKey(note.at)}#${note.text}`;
+   const isGatedSourceOwnNote = (note: AnnotationNote): boolean =>
+      gatedSourceOwnAuthorizeNotes.has(note) ||
+      gatedSourceOwnAuthorizeNoteKeys.has(noteKey(note));
    // Every `#(authorize)`-tagged note object seen above, resolved to the ONE
    // top-level struct whose OWN `source:` line actually wrote it — see
    // `considerNoteOwner`'s doc. Feeds `authorizeOwnNotes` below so a
@@ -464,6 +482,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes(struct.annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            gatedSourceOwnAuthorizeNoteKeys.add(noteKey(note));
             considerNoteOwner(authorizeNoteDeclaredBy, note, struct);
          }
       }
@@ -498,6 +517,7 @@ export function extractSourcesFromModelDef(
       for (const note of ownLevelNotes((entry as StructDef).annotations)) {
          if (containsAuthorizeAnnotationTag([note.text])) {
             gatedSourceOwnAuthorizeNotes.add(note);
+            gatedSourceOwnAuthorizeNoteKeys.add(noteKey(note));
             considerNoteOwner(
                authorizeNoteDeclaredBy,
                note,
@@ -763,13 +783,10 @@ export function extractSourcesFromModelDef(
             // not an annotation anyone wrote here. See the function header and
             // `gatedSourceOwnAuthorizeNotes`'s doc above. If the author instead
             // typed `#(authorize)` directly on the join line themselves, the
-            // note is a freshly parsed object that matches nothing else, so
-            // this still falls through and reports it.
-            if (
-               fieldAuthorizeNotes.every((note) =>
-                  gatedSourceOwnAuthorizeNotes.has(note),
-               )
-            ) {
+            // note is a freshly parsed object at the join line's own position,
+            // which matches nothing else by identity or by position, so this
+            // still falls through and reports it.
+            if (fieldAuthorizeNotes.every(isGatedSourceOwnNote)) {
                continue;
             }
             const fieldName = field.as || field.name;
@@ -784,8 +801,9 @@ export function extractSourcesFromModelDef(
             // this model is let through (`joinFieldNamesUnresolvableDeclaration`
             // below); a resolvable one falls through to the same fatal
             // `misplacedAuthorize` every other misplaced annotation gets,
-            // because there the identity check is authoritative and a
-            // mismatch means the annotation really is author-written here.
+            // because there the identity-or-position check is authoritative
+            // and a mismatch means the annotation really is author-written
+            // here.
             //
             // `isJoined` alone is not enough: it is `'join' in def`, which is
             // also true of an array- or record-typed dimension (Malloy's IR
@@ -811,7 +829,7 @@ export function extractSourcesFromModelDef(
                   // of just the joiner, or a source two-plus hops away).
                   // Presumed Malloy's copy of a gate declared out of sight,
                   // not authored here — see the helper's doc. Ignored
-                  // SILENTLY, not warned: the identity set cannot speak for a
+                  // SILENTLY, not warned: the own-note set cannot speak for a
                   // declaration it never saw, and every legitimate cross-file
                   // join of a gated source lands here, so a warning would fire
                   // on correct packages as a matter of course. The residual

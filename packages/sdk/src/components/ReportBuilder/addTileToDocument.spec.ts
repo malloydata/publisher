@@ -25,7 +25,7 @@ const tile: NewTile = {
 const context: AddTileContext = {
    modelPath: "dashboards/x.malloy",
    textHeld: false,
-   notebook: false,
+   widths: true,
 };
 
 describe("addTileToDocument", () => {
@@ -51,7 +51,7 @@ describe("addTileToDocument", () => {
 
    it("puts the tile on a new extension of its base, and leaves a notebook tile without a width", () => {
       const draft = document();
-      addTileToDocument(draft, tile, { ...context, notebook: true });
+      addTileToDocument(draft, tile, { ...context, widths: false });
       expect(draft.sources).toEqual([{ name: "orders_tiles", base: "orders" }]);
       expect(draft.tiles).toHaveLength(1);
       expect(draft.tiles[0]).not.toHaveProperty("colspan");

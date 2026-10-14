@@ -41,7 +41,7 @@ test.describe("layout notebooks", () => {
       await pe?.dispose();
    });
 
-   test("a new notebook takes a text tile and a query tile, an inline title, and reads with no card chrome", async ({
+   test("a new notebook takes a text tile and a query tile, an inline title, and reads in one column", async ({
       page,
       context,
    }) => {
@@ -67,7 +67,12 @@ test.describe("layout notebooks", () => {
       await expect(queryTiles(page)).toHaveCount(2);
 
       // The title is edited where it is shown.
-      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
+      // The report title is the page's h1, edited where it stands.
+      await page
+         .getByRole("heading", { level: 1 })
+         .first()
+         .getByRole("button")
+         .click();
       const title = page.getByLabel("Report title");
       await title.fill("Layout notebook, edited");
       await title.press("Enter");
@@ -90,7 +95,7 @@ test.describe("layout notebooks", () => {
       expect(saved).toContain("layout=linear");
       expect(saved).not.toContain("kind=notebook");
 
-      // The reader draws every tile with no card around it.
+      // The reader draws it in one column, query tiles in cards.
       const reader = await context.newPage();
       await reader.goto(`/${pe.env}/${pe.pkg}/${slug}`);
       await expect(reader.getByText("A note added in place.")).toBeVisible({
@@ -103,9 +108,12 @@ test.describe("layout notebooks", () => {
          reader.getByRole("heading", { name: "Layout notebook, edited" }),
       ).toBeVisible();
       await expect(reader.getByText("A one-line description")).toBeVisible();
-      await expect(reader.locator('[data-chrome="card"]')).toHaveCount(0);
+      // One column, query tiles in cards as a grid's are, text and description bare.
+      await expect(reader.locator('[data-layout="linear"]')).toHaveCount(1);
+      await expect(reader.locator('[data-chrome="card"]')).toHaveCount(2);
       const bare = reader.locator('[data-chrome="none"]');
-      expect(await bare.count()).toBeGreaterThanOrEqual(3);
+      // The text tile and the description.
+      expect(await bare.count()).toBeGreaterThanOrEqual(2);
       const borders = await bare.evaluateAll((els) =>
          els.map((el) => getComputedStyle(el).borderTopStyle),
       );
@@ -155,7 +163,8 @@ test.describe("layout notebooks", () => {
       await expect(reader.locator("[data-malloy-render-as]")).toHaveCount(3, {
          timeout: 60_000,
       });
-      await expect(reader.locator('[data-chrome="card"]')).toHaveCount(0);
+      await expect(reader.locator('[data-layout="linear"]')).toHaveCount(1);
+      await expect(reader.locator('[data-chrome="card"]')).toHaveCount(3);
       await reader.close();
    });
 });
