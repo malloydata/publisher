@@ -3,7 +3,7 @@
 
 import { parseResourceUri } from "../../utils/formatting";
 import type { CellReportProps } from "../Report/CellReport";
-import { LinearReport } from "../Report/LinearReport";
+import { DashboardView } from "../Dashboard/DashboardView";
 import { MalloynbCells, useNotebookQuery } from "./MalloynbCells";
 
 type NotebookProps = CellReportProps;
@@ -22,20 +22,21 @@ type NotebookProps = CellReportProps;
 // Requires PackageProvider
 export default function Notebook(props: NotebookProps) {
    const { data: notebook } = useNotebookQuery(props.resourceUri);
-   // A notebook written as a tile layout renders as a one-column grid.
+   // A notebook written as a tile layout is a linear report: the report view,
+   // in one column.
    if (notebook?.dashboard) {
       const { environmentName, packageName, versionId, modelPath } =
          parseResourceUri(props.resourceUri);
       return (
-         <LinearReport
-            manifest={notebook.dashboard}
+         <DashboardView
+            manifest={{ ...notebook.dashboard, layout: "linear" }}
             environmentName={environmentName}
             packageName={packageName}
             versionId={versionId}
             documentName={modelPath}
             givens={props.givens}
             onGivensChange={props.onGivensChange}
-            onDrillNavigate={props.onDrillNavigate}
+            onNavigate={props.onDrillNavigate}
             maxResultSize={props.maxResultSize}
          />
       );

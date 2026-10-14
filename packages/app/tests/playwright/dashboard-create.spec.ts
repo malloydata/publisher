@@ -70,7 +70,7 @@ test.describe("dashboard-create", () => {
    }) => {
       await page.goto(`/${env}/${PKG}`);
       await page
-         .getByRole("button", { name: "New report", exact: true })
+         .getByRole("button", { name: "Add report", exact: true })
          .first()
          .click({
             timeout: 60_000,
@@ -115,7 +115,12 @@ test.describe("dashboard-create", () => {
 
       // An edit, saved into the package.
       // The title is edited where it is shown.
-      await page.getByRole("heading", { level: 5 }).getByRole("button").click();
+      // The report title is the page's h1, edited where it stands.
+      await page
+         .getByRole("heading", { level: 1 })
+         .first()
+         .getByRole("button")
+         .click();
       const title = page.getByLabel("Report title");
       await title.fill("Created and saved");
       await title.press("Enter");

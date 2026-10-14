@@ -9,6 +9,7 @@ import {
    type PackageEnv,
 } from "./helpers/packageEnv";
 import { saveChanges } from "./helpers/save";
+import { filterButton } from "./helpers/filters";
 
 /**
  * The x on a filter chip removes the filter from the file: its declaration and
@@ -44,8 +45,8 @@ test.describe("filter chip", () => {
       await expect(queryTiles(page)).toHaveCount(5, { timeout: 60_000 });
 
       await page.getByLabel("Remove filter CATEGORY").click();
-      await expect(page.getByLabel("Edit filter CATEGORY")).toHaveCount(0);
-      await expect(page.getByLabel("Edit filter BRAND")).toBeVisible();
+      await expect(filterButton(page, "Category")).toHaveCount(0);
+      await expect(filterButton(page, "Brand")).toBeVisible();
       await saveChanges(page);
 
       const saved = await pe.readSource(file);
@@ -57,12 +58,10 @@ test.describe("filter chip", () => {
 
       const reader = await page.context().newPage();
       await reader.goto(`/${pe.env}/${pe.pkg}/overview`);
-      await expect(reader.getByRole("combobox", { name: "Brand" })).toBeVisible(
-         { timeout: 60_000 },
-      );
-      await expect(
-         reader.getByRole("combobox", { name: "Category" }),
-      ).toHaveCount(0);
+      await expect(filterButton(reader, "Brand")).toBeVisible({
+         timeout: 60_000,
+      });
+      await expect(filterButton(reader, "Category")).toHaveCount(0);
       await reader.close();
    });
 });

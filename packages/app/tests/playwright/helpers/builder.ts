@@ -72,7 +72,7 @@ export async function createDocument(
 ): Promise<string> {
    await page.goto(`/${pe.env}/${pe.pkg}`);
    await page
-      .getByRole("button", { name: "New report", exact: true })
+      .getByRole("button", { name: "Add report", exact: true })
       .first()
       .click({
          timeout: 60_000,

@@ -206,6 +206,8 @@ describe("the version reaches what the manifest drives", () => {
       });
       await waitFor(() => expect(cacheKeys("queryResult").length).toBe(1));
 
+      // The control sits in its filter button's popover.
+      fireEvent.click(await screen.findByRole("button", { name: /^REGION: / }));
       fireEvent.change(await screen.findByLabelText("REGION"), {
          target: { value: "CA" },
       });
@@ -234,7 +236,7 @@ describe("the version reaches what the manifest drives", () => {
 
       render(dashboardAt(), { wrapper: serverWrapper });
 
-      await screen.findByLabelText("REGION");
+      await screen.findByRole("button", { name: /^REGION: / });
       expect(screen.queryByRole("button", { name: /^Explore / })).toBeNull();
    });
 });

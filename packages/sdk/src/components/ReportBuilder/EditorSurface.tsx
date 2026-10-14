@@ -20,12 +20,26 @@ import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { useReportListing } from "../Package/useDocumentLocation";
+import {
+   BUILDER_HANDOFF_STALE_MS,
+   reportQueryOptions,
+} from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
-import type { DashboardDocument, QueryTile } from "./document";
+import {
+   tileKey,
+   type DashboardDocument,
+   type DashboardTile as DocumentTile,
+   type QueryTile,
+} from "./document";
 import type { SavesTo } from "./documentSession";
-import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import {
+   previewGivens,
+   previewTileQuery,
+   tileExpressionKey,
+   type PreviewTileQuery,
+} from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
 import type { ReportEventHandler } from "../Report/telemetry";
 import { tileDisplayTitle } from "./tileDisplayTitle";
@@ -101,41 +115,40 @@ export function EditorSurface({
    );
 
    const {
-      data,
+      data: read,
       isSuccess: manifestLoaded,
       isError: manifestFailed,
    } = useQueryWithApiError({
-      queryKey: [
-         "dashboard-editor-manifest",
-         environmentName,
-         packageName,
-         modelPath,
-         versionId,
-      ],
-      // One read for either layout, by path. A report in the cell format has only the tag's starting values until it is saved.
-      queryFn: async (): Promise<DashboardManifest> => {
-         const read = (
-            await apiClients.reports.getReport(
-               environmentName,
-               packageName,
-               modelPath,
-               versionId,
-            )
-         ).data;
-         if (read.notebook)
-            return {
-               ...(read.notebook.startingGivens
-                  ? { startingGivens: read.notebook.startingGivens }
-                  : {}),
-               ...(read.notebook.autorun === undefined
-                  ? {}
-                  : { autorun: read.notebook.autorun }),
-            };
-         return read;
-      },
+      // The reader's read of the same report, so opening the builder from the
+      // reader does not read it again. A report in the cell format has only the
+      // tag's starting values until it is saved.
+      ...reportQueryOptions(
+         apiClients,
+         {
+            environmentName,
+            packageName,
+            path: modelPath,
+            versionId,
+         },
+         BUILDER_HANDOFF_STALE_MS,
+      ),
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
    });
+   const data = useMemo(
+      (): DashboardManifest | undefined =>
+         read?.notebook
+            ? {
+                 ...(read.notebook.startingGivens
+                    ? { startingGivens: read.notebook.startingGivens }
+                    : {}),
+                 ...(read.notebook.autorun === undefined
+                    ? {}
+                    : { autorun: read.notebook.autorun }),
+              }
+            : read,
+      [read],
+   );
    // A text source takes its manifest from compiling the text as the viewer.
    const runModelPath = textSource?.modelPath ?? modelPath;
    const compiled = useCompiledDocument(
@@ -315,6 +328,15 @@ export function EditorSurface({
          ),
       [manifest],
    );
+   // The tiles as the file was opened, by key: a tile still equal to its
+   // opened self runs exactly as the reader runs it (below).
+   const openedTiles = useMemo(
+      () =>
+         new Map(
+            opened.document.tiles.map((tile) => [tileKey(tile), tile] as const),
+         ),
+      [opened.document],
+   );
    const renderTile = useMemo(
       () =>
          function LiveTile(
@@ -334,15 +356,25 @@ export function EditorSurface({
                      <Loading text="Running…" />
                   </TileCard>
                );
-            const query = previewTileQuery(
-               doc,
-               tile,
-               runnable,
-               applied,
-               servedReads.get(
-                  tileExpressionKey(`${tile.source} -> ${tile.name}`),
-               ),
+            const servedReadsOf = servedReads.get(
+               tileExpressionKey(`${tile.source} -> ${tile.name}`),
             );
+            // A tile not yet edited runs the served view with the served
+            // tile's givens: the request the reader sends, so it shares the
+            // reader's cached result and opening the builder re-runs nothing.
+            // The preview rebuilds the query from the document so an edit
+            // shows before it is saved, which an untouched tile does not need.
+            const untouched =
+               preamble === undefined &&
+               servedReadsOf !== undefined &&
+               sameTile(openedTiles.get(tileKey(tile)), tile);
+            const query: PreviewTileQuery = untouched
+               ? {
+                    expression: `${tile.source} -> ${tile.name}`,
+                    givenNames: [...servedReadsOf],
+                    reads: [...servedReadsOf],
+                 }
+               : previewTileQuery(doc, tile, runnable, applied, servedReadsOf);
             return (
                <DashboardTile
                   environmentName={environmentName}
@@ -375,6 +407,7 @@ export function EditorSurface({
          },
       [
          doc,
+         openedTiles,
          manifestSettled,
          runnable,
          servedReads,
@@ -435,11 +468,8 @@ export function EditorSurface({
             {...(onEvent ? { onEvent } : {})}
             controls={
                isSuccess ? (
-                  // The reader's control layout for the document as it stands: a linear report's panel, a grid's bar.
-                  <GivensPanel
-                     {...panel}
-                     layout={doc.layout === "linear" ? "panel" : "bar"}
-                  />
+                  // The reader's control row: filter buttons, in either layout.
+                  <GivensPanel {...panel} layout="bar" />
                ) : undefined
             }
             {...(saveThenServe ? { onSave: saveThenServe } : {})}
@@ -455,5 +485,15 @@ export function EditorSurface({
             </Typography>
          </Box>
       </Stack>
+   );
+}
+
+/** Whether a tile is unchanged from its opened self: same view, bindings, chart and heading. */
+function sameTile(
+   opened: DocumentTile | undefined,
+   now: DocumentTile,
+): boolean {
+   return (
+      opened !== undefined && JSON.stringify(opened) === JSON.stringify(now)
    );
 }

@@ -13,8 +13,8 @@ import type { TileChrome } from "../Dashboard/TileCard";
 import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
+import { reportQueryOptions } from "./reportQuery";
 import { CellReport } from "./CellReport";
-import { LinearReport } from "./LinearReport";
 import {
    failureCategory,
    ReportEventsContext,
@@ -74,8 +74,15 @@ export interface ReportProps {
     * shown, a drill — for the host to log or count; see `ReportEvent`.
     */
    onEvent?: ReportEventHandler;
-   /** A grid report's tile chrome: `card` (default) or `none`. */
+   /** Ignored: kept so existing callers compile. Both layouts draw the same cards. */
    chrome?: TileChrome;
+   /**
+    * How long a read of the report is reused without asking the server again,
+    * in ms. Default 0: every mount asks, so a change made elsewhere shows. A
+    * host that draws the same report twice in a row can set a few seconds, as
+    * the Console does while the builder loads over it.
+    */
+   manifestStaleTime?: number;
 }
 
 /**
@@ -97,6 +104,7 @@ export function Report({
    maxResultSize,
    onEvent,
    chrome,
+   manifestStaleTime = 0,
 }: ReportProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -111,19 +119,16 @@ export function Report({
       isError,
       error,
    } = useQueryWithApiError({
-      // Every value the request is built from, so two versions of one report
-      // never share a cache entry.
-      queryKey: ["report", environmentName, packageName, versionId, path],
-      queryFn: async ({ signal }) =>
-         (
-            await apiClients.reports.getReport(
-               environmentName,
-               packageName,
-               path,
-               versionId,
-               { signal },
-            )
-         ).data,
+      ...reportQueryOptions(
+         apiClients,
+         {
+            environmentName,
+            packageName,
+            path,
+            versionId,
+         },
+         manifestStaleTime,
+      ),
       enabled: uriNamesBoth && path !== "",
    });
 
@@ -222,6 +227,10 @@ export function Report({
    if (manifest.notebook) {
       body = (
          <CellReport
+            {...(manifest.title ? { title: manifest.title } : {})}
+            {...(manifest.description
+               ? { description: manifest.description }
+               : {})}
             resourceUri={encodeResourceUri({
                environmentName,
                packageName,
@@ -236,21 +245,8 @@ export function Report({
             onDrillNavigate={drillNavigate}
          />
       );
-   } else if (manifest.layout === "linear") {
-      body = (
-         <LinearReport
-            manifest={manifest}
-            environmentName={environmentName}
-            packageName={packageName}
-            versionId={versionId}
-            documentName={path}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onDrillNavigate={drillNavigate}
-            maxResultSize={maxResultSize}
-         />
-      );
    } else {
+      // Either layout: the same view, arranged as the manifest's layout says.
       body = (
          <DashboardView
             manifest={manifest}

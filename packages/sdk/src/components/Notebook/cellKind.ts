@@ -28,6 +28,25 @@ function codeLines({ text, proseLines }: CellLines): string[] {
 }
 
 /**
+ * A query cell's title: the `label="…"` on a `#` tag line in the block above
+ * its `run:`, as a grid tile's title is its view's `# label`. Undefined when
+ * the cell names none.
+ */
+export function cellLabel(
+   cell: Pick<NotebookCell, "text" | "proseLines">,
+): string | undefined {
+   for (const raw of codeLines(cell)) {
+      const line = raw.trim();
+      if (line === "" || line.startsWith("//")) continue;
+      if (!line.startsWith("#")) break;
+      if (line.startsWith('#"') || line.startsWith("##")) continue;
+      const match = line.match(/\blabel\s*=\s*"((?:[^"\\]|\\.)*)"/);
+      if (match) return match[1].replace(/\\(.)/g, "$1");
+   }
+   return undefined;
+}
+
+/**
  * A query cell's caption. A served cell's is the server's alone, absent meaning none; on an
  * unserved cell (a `.malloynb`, an older server) it is the `#"` lines in the tag block above its `run:`.
  */

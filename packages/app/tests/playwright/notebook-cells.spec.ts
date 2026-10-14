@@ -164,10 +164,9 @@ test.describe("notebook tiles", () => {
       await open(page);
       await settled(page, 2);
 
-      await tileByKey(page, "text.second")
-         .getByLabel("Settings for second")
-         .click();
-      await page.getByRole("button", { name: "Delete" }).click();
+      const second = tileByKey(page, "text.second");
+      await second.hover();
+      await second.getByLabel("Remove second").click();
       await saveChanges(page);
       let file = await pe.readSource(TOUR);
       expect(file).not.toContain("Second note");

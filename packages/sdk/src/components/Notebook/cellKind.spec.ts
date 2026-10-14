@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import {
    cellCaption,
+   cellLabel,
    cellRuns,
    definitionSummary,
    stripProse,
@@ -23,6 +24,29 @@ describe("cellRuns", () => {
       expect(cellRuns({ type: "code", kind: "query" })).toBe(true);
       expect(cellRuns({ type: "code", kind: "definition" })).toBe(false);
       expect(cellRuns({ type: "markdown", kind: "markdown" })).toBe(false);
+   });
+});
+
+describe("cellLabel", () => {
+   it("reads the label off a tag line above the run", () => {
+      expect(
+         cellLabel({
+            text: '#" Revenue by month\n# line_chart\n# label="Revenue by month"\nrun: a -> b',
+         }),
+      ).toBe("Revenue by month");
+   });
+
+   it("unescapes a quoted label", () => {
+      expect(
+         cellLabel({ text: '# label="The \\"best\\" sellers"\nrun: a -> b' }),
+      ).toBe('The "best" sellers');
+   });
+
+   it("is undefined when the cell names none, or names it below its run", () => {
+      expect(cellLabel({ text: "# bar_chart\nrun: a -> b" })).toBeUndefined();
+      expect(
+         cellLabel({ text: 'run: a -> b\n# label="Too late"' }),
+      ).toBeUndefined();
    });
 });
 

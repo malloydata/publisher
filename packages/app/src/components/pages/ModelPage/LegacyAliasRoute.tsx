@@ -12,6 +12,7 @@ import { Box, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 import { Link as RouterLink, Navigate, useLocation } from "react-router-dom";
 import { withEdit } from "../../common/documentRoutes";
+import { PAGE_FRAME_SX } from "../pageFrame";
 
 /**
  * An old by-name link, `dashboards/<x>` or `notebooks/<x>`, from before
@@ -54,7 +55,7 @@ export default function LegacyAliasRoute({
       );
    if ("ambiguous" in lookup)
       return (
-         <Box sx={{ p: 3, maxWidth: 1200, mx: "auto" }}>
+         <Box sx={PAGE_FRAME_SX}>
             <Typography variant="h6" sx={{ fontWeight: "fontWeightMedium" }}>
                More than one report is named {alias.name}
             </Typography>

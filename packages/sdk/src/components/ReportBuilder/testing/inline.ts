@@ -18,8 +18,8 @@ export function editInline(
 }
 
 /** Close an open tile menu: Escape inside it, now that no field in it holds focus. */
-export const closeMenu = () =>
-   fireEvent.keyDown(
-      screen.getByRole("button", { name: "Delete", hidden: true }),
-      { key: "Escape" },
-   );
+export function closeMenu() {
+   const menu = document.querySelector(".MuiPopover-paper");
+   if (!menu) throw new Error("no tile menu is open");
+   fireEvent.keyDown(menu, { key: "Escape" });
+}

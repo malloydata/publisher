@@ -16,6 +16,7 @@ import {
 } from "../Report/telemetry";
 import { now } from "../../utils/clock";
 import { useOptionalDocumentStorage } from "../DocumentStorage";
+import type { ReactNode } from "react";
 import { Loading } from "../Loading";
 import { documentSlug } from "../Package/documentLocation";
 import { useServer } from "../ServerProvider";
@@ -93,6 +94,13 @@ export type ReportEditorProps = (
     */
    onEvent?: ReportEventHandler;
    /**
+    * What to draw while the report opens (its text read, the builder's data
+    * loaded); default a spinner. A host that just showed the report can pass
+    * the report itself, so switching to edit replaces the page in place
+    * rather than blanking it to a spinner first.
+    */
+   loading?: ReactNode;
+   /**
     * The report's layout as the host knows it before the text is read: from
     * the package's listing, or for a draft the layout its store recorded.
     * Default `grid`. It decides what is read when the editor opens (a linear
@@ -158,6 +166,7 @@ export interface TextSourceOptions {
 export function ReportEditor(props: ReportEditorProps) {
    const {
       onEvent,
+      loading,
       onDirtyChange,
       onExit,
       kind,
@@ -380,7 +389,7 @@ export function ReportEditor(props: ReportEditorProps) {
          />
       );
    if (!opened && (!(textHeld || packageText) || !draftChecked))
-      return <Loading text={`Opening the ${noun}…`} />;
+      return loading ?? <Loading text={`Opening the ${noun}…`} />;
    // Where the host's copy IS the document, a copy that could not be read
    // leaves nothing safe to edit: the package file is a deploy of the record,
    // so opening it and arming Save would publish it over the record.
@@ -444,6 +453,9 @@ export function ReportEditor(props: ReportEditorProps) {
                {supersedeFailure}
             </Alert>
          )}
+         {/* The text is in hand but the document opens a pass later: the
+          loading view meanwhile, never an empty page. */}
+         {!opened && (loading ?? <Loading text={`Opening the ${noun}…`} />)}
          {opened && (
             <EditorSurface
                key={opened.generation}

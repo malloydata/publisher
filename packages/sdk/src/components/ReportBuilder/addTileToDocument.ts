@@ -11,7 +11,8 @@ export interface AddTileContext {
    modelPath: string | undefined;
    /** The document is held as text: it has no `import`, so a tile's source is the run model's and nothing is imported. */
    textHeld: boolean;
-   notebook: boolean;
+   /** Whether tiles carry a width (`LayoutRules.widths`): off, an added tile takes none. */
+   widths: boolean;
    /** Where the tile lands; undefined appends. */
    insertAt?: number;
 }
@@ -20,7 +21,7 @@ export interface AddTileContext {
 export function addTileToDocument(
    draft: DashboardDocument,
    tile: NewTile,
-   { modelPath, textHeld, notebook, insertAt }: AddTileContext,
+   { modelPath, textHeld, widths, insertAt }: AddTileContext,
 ): void {
    // A source the file cannot see yet comes in by name, with the tile.
    if (tile.modelPath && !textHeld)
@@ -56,7 +57,7 @@ export function addTileToDocument(
       name,
       source: extension.name,
       declaration: { kind: "reference", from: tile.view },
-      ...(notebook ? {} : { colspan: tile.colspan }),
+      ...(widths ? { colspan: tile.colspan } : {}),
       ...(tile.label ? { label: tile.label } : {}),
       ...(tile.chart ? { chart: tile.chart } : {}),
       ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),
