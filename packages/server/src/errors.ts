@@ -273,7 +273,9 @@ const SQLSERVER_CONNECTION_CODES = new Set(["ESOCKET", "EINSTLOOKUP"]);
  * is a query that ran longer than `requestTimeoutMs`. Only the first is a
  * server that could not be reached; the second answered as unreachable would
  * tell a caller to retry the slow query. `mssql` rewraps both and names its
- * own classes, so the class name is what tells them apart.
+ * own classes, so the class name is what tells them apart. The name is
+ * mssql's, not tedious's (whose error classes set none), so this depends on
+ * the connector reaching tedious through mssql, as it does today.
  */
 function isSqlserverConnectTimeout(error: Error, code: string): boolean {
    return code === "ETIMEOUT" && error.name === "ConnectionError";
