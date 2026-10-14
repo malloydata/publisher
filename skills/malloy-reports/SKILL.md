@@ -143,7 +143,7 @@ A given stays in the model, declared once there, when a model source, view or me
 
 **A model that already scopes a source by an optional filter given** (`where: Manufacturer ~ $manufacturer_filter` in the model) needs a decision:
 
-- **It is a reader's filter and you may change the model: move it.** Delete the given and its `where:` clause from the model, declare it in the report with its control tags, and bind it on each tile that should answer to it. A reader's filter is anything a person picks on the page; a given stays in the model only for the reasons `skill:malloy-model` lists (a gate, a value every query must supply, a parameter a field is defined with, scoping meant for every consumer).
+- **It is a reader's filter and you may change the model: move it.** Delete the given and its `where:` clause from the model, declare it in the report with its control tags, and bind it on each tile that should answer to it. A reader's filter is anything a person picks on the page; a given stays in the model only for the reasons `malloy-model` lists (a gate, a value every query must supply, a parameter a field is defined with, scoping meant for every consumer).
 - **The model can't change, or the given is semantic or governance: import it** as above. Say so plainly: the filter shows in the reader and in the builder, and can be set in both, but the builder cannot remove or reconfigure it. It is the model's.
 
 Before, in the model:
