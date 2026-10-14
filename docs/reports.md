@@ -930,10 +930,11 @@ document: the builder reads and writes the report file described above, splicing
 than regenerating it, so comments and anything it does not model survive the round trip. The result is a
 source file you can review in a pull request, and one an agent can write by hand just as well.
 
-**Save** (or Cmd/Ctrl+S) shows beside **Done** while there are unsaved edits and writes at once through
-`PUT …/models/{path}`, with no review step; the builder stays open and the status reads **Saved**, with a
-tooltip saying where Save writes. **Done** returns to the read-only page and asks first when edits are
-unsaved. On a server that does not take writes (`frozenConfig`), Save keeps the edit in this
+Edits are kept as a draft in this browser while they are made (the status reads **Draft saved**), so
+leaving the builder loses nothing; opening the report for editing again restores them. **Done** writes
+them at once through `PUT …/models/{path}`, with no review step, and returns to the read-only page; a
+refused write keeps the builder open with its reason. Cmd/Ctrl+S writes without leaving, and **Discard
+edits** on the status goes back to the saved report. On a server that does not take writes (`frozenConfig`), Save keeps the edit in this
 browser instead, keyed by the report's path, and the package page lists those drafts.
 
 <a id="rendering-one-in-your-own-react-app"></a>

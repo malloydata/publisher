@@ -23,7 +23,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 ## [Unreleased] — The report builder's controls move to the header; a host can place them itself
 
-**The builder's page-level controls are one bar in the header.** In the Console, where **Edit** sits on a report, the builder draws its save status, undo and redo, the Linear / Grid switch, an **Add** menu (a tile, text or a filter) and **Done**, with **Save** beside Done while there are unsaved edits. The page under it is the report as it reads: no toolbar on the title's line, no pencils after every title. Done returns to the report and asks first when edits are unsaved, as **View** did; View is gone from the builder.
+**The builder's page-level controls are one bar in the header.** In the Console, where **Edit** sits on a report, the builder draws its save status, undo and redo, the Linear / Grid switch, an **Add** menu (a tile, text or a filter) and **Done**. There is no Save button: edits are kept in this browser as they are made (**Draft saved**), and **Done** writes them and shows the report. Leaving any other way loses nothing and no longer asks; opening the report for editing again puts the edits back, with a note and **Discard edits**. Cmd/Ctrl+S still writes without leaving. A test or automation that clicked Save presses Cmd/Ctrl+S, or clicks Done. The page under it is the report as it reads: no toolbar on the title's line, no pencils after every title. Done returns to the report and asks first when edits are unsaved, as **View** did; View is gone from the builder.
 
 On the page itself:
 
@@ -35,6 +35,7 @@ On the page itself:
 What an SDK host sees:
 
 - **`ReportEditor` and `ReportBuilder` take `onControlsChange`.** Passed, the editor draws no toolbar and hands its page-level controls over as `BuilderControls` whenever they change (the save status and `save`, `undo`/`redo`, `layout`, the `add` actions, and `exit` when `onExit` is set), with stable actions, and `undefined` when it goes away. **`BuilderBar`** draws them as the Console's bar. Both are exported from `@malloy-publisher/sdk/builder`. A host that passes nothing keeps the toolbar on the title's line, unchanged.
+- **Drafts and Done, for a host.** `ReportEditor` takes `keepDraft` (and `ReportBuilder` a `draftKey`): unsaved edits are kept in `localStorage` per report and restored when it is next opened for editing, as one undoable edit. With a draft kept, `onDirtyChange` reports only text still being typed into an open field. `BuilderControls` gains `done` (write, then leave once the write lands; present with `onExit`), `draftKeptAt` and `discard`, and `BuilderBar` draws Done in place of Save when `done` is there. `draftStorageAvailable()` says whether the browser keeps drafts at all, for a host deciding whether it still needs its own leave guard.
 - **Escape in an open text tile drops the draft**, and its Done and Cancel buttons are gone. A test or automation that clicked Done presses Cmd/Ctrl+Enter, or moves focus out of the field; one that clicked Cancel presses Escape.
 - **The tile menu's Viz type field is gone**: its choices are the **Chart** submenu's `menuitemradio` items, and Drill is **Clickable cells…**.
 

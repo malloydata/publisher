@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {
+   draftStorageAvailable,
    encodeResourceUri,
    NarrowEditGate,
    Report,
@@ -59,8 +60,14 @@ export interface DashboardEditPageProps {
 /**
  * The Console's host for the SDK `ReportEditor`: `/<env>/<pkg>/<path>?edit`,
  * either layout. The builder's controls are drawn in the header, where the
- * View / Edit switch is in the reader, and Done there returns to the report
- * itself: the same route without `?edit`, through the leave guard.
+ * View / Edit switch is in the reader, and Done there saves the edits and
+ * returns to the report itself: the same route without `?edit`.
+ *
+ * Unsaved edits are kept in this browser as they are made, so leaving any
+ * other way loses nothing and asks nothing: opening the report for editing
+ * again puts them back. The leave guard still asks for text being typed into
+ * an open field, which is not an edit yet, and for everything where the
+ * browser keeps nothing (a private window, storage refused).
  */
 export default function DashboardEditPage({
    environmentName,
@@ -71,6 +78,7 @@ export default function DashboardEditPage({
    const guard = useLeaveGuard();
    // The header's View steps aside while this page draws the bar there.
    useMarkEditPageMounted();
+   const [keepDraft] = useState(draftStorageAvailable);
    const navigate = useNavigate();
    const { pathname, search } = useLocation();
    const slot = useHeaderActionsSlot();
@@ -111,7 +119,11 @@ export default function DashboardEditPage({
                   })}
                   path={path}
                   layout={layout}
+                  keepDraft={keepDraft}
+                  // With a draft kept, dirty means only text still being typed
+                  // into an open field, which no draft holds yet.
                   onDirtyChange={guard.onDirtyChange}
+                  onExit={done}
                   onEvent={onEvent}
                   loading={reading}
                   onControlsChange={setControls}

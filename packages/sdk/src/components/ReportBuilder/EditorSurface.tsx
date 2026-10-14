@@ -73,6 +73,7 @@ export function EditorSurface({
    onDirtyChange,
    onExit,
    onControlsChange,
+   draftKey,
    allowLayoutChange,
    onEvent,
    savesTo,
@@ -97,6 +98,8 @@ export function EditorSurface({
    onDirtyChange: (dirty: boolean) => void;
    onExit?: () => void;
    onControlsChange?: BuilderControlsHandler;
+   /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
+   draftKey?: string;
    allowLayoutChange?: boolean;
    onEvent?: ReportEventHandler;
    savesTo: SavesTo;
@@ -444,6 +447,7 @@ export function EditorSurface({
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
             {...(onControlsChange ? { onControlsChange } : {})}
+            {...(draftKey !== undefined ? { draftKey } : {})}
             {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}

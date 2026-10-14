@@ -31,6 +31,7 @@ import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
 import { useControlBindings } from "./useControlBindings";
+import { useReportDraft } from "./useReportDraft";
 import { useReportEditor } from "./useReportEditor";
 import type { SaveHandler } from "./useDocumentEditor";
 import { useOpenDraftCommit } from "./useOpenDraftCommit";
@@ -203,6 +204,15 @@ export interface ReportBuilderProps {
     */
    onControlsChange?: BuilderControlsHandler;
    /**
+    * Keep unsaved edits in this browser under this key, and put them back
+    * when the builder next opens on the same key: so leaving never loses work,
+    * and a host can offer one way out, `done` (write, then leave), with no
+    * "leave with unsaved changes?" on the way. `onDirtyChange` then reports
+    * only what a draft cannot hold, text still being typed into an open field.
+    * One key per report and place it is saved to. Absent, nothing is kept.
+    */
+   draftKey?: string;
+   /**
     * Whether the toolbar offers the Linear / Grid layout switch. Default
     * true. A host that files a report by its layout passes false, so an
     * author cannot change a layout the host files by. A document held as text
@@ -233,6 +243,7 @@ export function ReportBuilder({
    visibleSources,
    addFilterDisabledReason,
    onControlsChange,
+   draftKey,
 }: ReportBuilderProps) {
    const editor = useReportEditor({
       source,
@@ -241,6 +252,7 @@ export function ReportBuilder({
       ...(replaces !== undefined ? { replaces } : {}),
       ...(visibleSources ? { visibleSources } : {}),
    });
+   const draft = useReportDraft(draftKey, editor, source);
    const gridBox = useRef<HTMLDivElement>(null);
    const {
       selected,
@@ -351,6 +363,7 @@ export function ReportBuilder({
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
       extraDirty: draftDirty,
+      keepsEdits: draftKey !== undefined,
       prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
@@ -419,6 +432,11 @@ export function ReportBuilder({
               : { filter: () => setFilterDialog({}) }),
       },
       ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
+      ...(session.done ? { done: session.done } : {}),
+      ...(draft.keptAt !== undefined ? { draftKeptAt: draft.keptAt } : {}),
+      ...(toolbarProps.dirty && draftKey !== undefined
+         ? { discard: draft.discard }
+         : {}),
    });
    // The builder's actions: on the title's line, at the right, above the
    // description.
@@ -509,6 +527,26 @@ export function ReportBuilder({
                   </Stack>
                )}
 
+               {draft.restored && (
+                  <Alert
+                     severity="info"
+                     onClose={draft.dismissRestored}
+                     action={
+                        <Button
+                           color="inherit"
+                           size="small"
+                           onClick={draft.discard}
+                        >
+                           Discard edits
+                        </Button>
+                     }
+                  >
+                     {draft.restored.stale
+                        ? `Restored your unsaved edits from ${clockTime(draft.restored.savedAt)}. The report has changed since, so they are applied to the current version.`
+                        : `Restored your unsaved edits from ${clockTime(draft.restored.savedAt)}.`}
+                  </Alert>
+               )}
+
                {editor.error && (
                   // The edit is still here; the message says what stopped it reaching
                   // the file, which is a different thing from losing the work.
@@ -557,4 +595,18 @@ export function ReportBuilder({
          </Stack>
       </OpenDraftContext.Provider>
    );
+}
+
+/** A time of day, or a date and time when not today: when a draft was kept. */
+function clockTime(at: number): string {
+   const when = new Date(at);
+   const today = new Date().toDateString() === when.toDateString();
+   return today
+      ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : when.toLocaleString([], {
+           month: "short",
+           day: "numeric",
+           hour: "numeric",
+           minute: "2-digit",
+        });
 }

@@ -102,11 +102,13 @@ is a Console convenience.
   still read and review ([reports.md](reports.md#editing-in-the-console)).
   A file written as `run:` cells, the retired linear form, is not a report and does not open; the
   package page names it and says how to rewrite it as tiles. A legacy `.malloynb` is read-only.
-  **Save** (or Cmd/Ctrl+S) appears beside **Done** while there are unsaved edits, and writes the
-  report back into the package at once, with no review step; the builder stays open and the status
-  reads **Saved**, with a tooltip saying where it writes (the package file, this browser, or where the
-  host app keeps it). **Done** leaves, and asks first when edits are unsaved. On a server that does not take writes
-  there is no Save. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
+  Edits are kept in this browser as they are made, and the status reads **Draft saved**: leaving the
+  builder any other way loses nothing and asks nothing, and opening the report for editing again puts
+  them back, with a note saying so. **Done** writes them into the package at once, with no review step,
+  and shows the report; a write that is refused keeps the builder open with the reason. Cmd/Ctrl+S
+  writes without leaving. **Discard edits**, from the status, puts the saved report back (Undo brings
+  the edits back). Only text still being typed into an open field asks before you leave. On a server
+  that does not take writes there is nothing to write to. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
   outside prose is refused with a 400, so the builder opens such a file but cannot save it from the
   Console; gates live in the model file.
 - **Create a report** — the package page's **+ Report** button takes a model, a source and its

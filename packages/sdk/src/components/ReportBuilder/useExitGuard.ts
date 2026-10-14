@@ -65,8 +65,24 @@ export function useExitGuard({
       else onExitRef.current();
    }, [phase, dirty]);
 
+   /**
+    * Done: write the edits, then leave — only once the write has landed, so a
+    * refused save keeps the author here with its reason. With nothing to write
+    * it leaves at once; with nowhere to write, it asks, as Close does.
+    */
+   const saveAndExit = useCallback(() => {
+      if (phase !== "idle") return;
+      if (!dirty) onExitRef.current();
+      else if (!canSave) setPhase("asking");
+      else if (saving) setPhase("waiting");
+      else void issue();
+   }, [phase, dirty, canSave, saving, issue]);
+
    return {
       requestExit,
+      saveAndExit,
+      /** Done is writing, or waiting on a write already under way. */
+      finishing: phase === "saving" || phase === "waiting",
       dialog: {
          open: phase === "asking",
          canSave,

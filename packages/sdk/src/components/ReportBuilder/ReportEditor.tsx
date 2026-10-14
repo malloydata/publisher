@@ -139,6 +139,13 @@ export type ReportEditorProps = (
     * `BuilderBar` in the host's header, or place each in its own chrome.
     */
    onControlsChange?: BuilderControlsHandler;
+   /**
+    * Keep unsaved edits in this browser, per report, and put them back when
+    * the report is next opened for editing here: leaving never loses work, so
+    * the host's way out can be the controls' `done` (write, then leave) with
+    * no "leave with unsaved changes?" on the way.
+    */
+   keepDraft?: boolean;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
    /**
@@ -177,6 +184,7 @@ export function ReportEditor(props: ReportEditorProps) {
       onDirtyChange,
       onExit,
       onControlsChange,
+      keepDraft,
       kind,
       path,
       textSource,
@@ -483,6 +491,11 @@ export function ReportEditor(props: ReportEditorProps) {
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
                {...(onControlsChange ? { onControlsChange } : {})}
+               {...(keepDraft
+                  ? {
+                       draftKey: `${environmentName}/${packageName}/${path ?? dashboardName}`,
+                    }
+                  : {})}
                {...(allowLayoutChange !== undefined
                   ? { allowLayoutChange }
                   : {})}

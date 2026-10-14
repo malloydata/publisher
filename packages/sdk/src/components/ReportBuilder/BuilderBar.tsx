@@ -4,6 +4,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
 import {
@@ -60,6 +61,10 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
    const hoverEdge = hoverEdgeColor(theme.cardBorder, theme.tileTitle);
    const [addAnchor, setAddAnchor] = useState<HTMLElement | null>(null);
    const unsaved = controls?.save !== undefined && controls.status !== "saved";
+   // Done writes the edits itself when the builder offers it, so Save is then
+   // only the keyboard's (⌘S), for a checkpoint without leaving.
+   const finish = controls?.done ?? onDone;
+   const separateSave = unsaved && controls?.done === undefined;
    const add = controls?.add;
    const canAdd =
       add !== undefined &&
@@ -86,48 +91,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
       >
          {controls && (
             <>
-               {controls.save && (
-                  <Tooltip title={controls.saveTarget}>
-                     <Box
-                        component="span"
-                        role="status"
-                        aria-live="polite"
-                        sx={(mui) => ({
-                           display: "inline-flex",
-                           alignItems: "center",
-                           gap: 0.75,
-                           pr: 0.75,
-                           ...TYPE.control,
-                           color:
-                              controls.status === "saved"
-                                 ? mui.palette.text.secondary
-                                 : mui.palette.text.primary,
-                        })}
-                     >
-                        {controls.status === "saved" ? (
-                           <CheckIcon aria-hidden sx={{ fontSize: 16 }} />
-                        ) : (
-                           <Box
-                              aria-hidden
-                              sx={(mui) => ({
-                                 width: 7,
-                                 height: 7,
-                                 borderRadius: "50%",
-                                 bgcolor:
-                                    controls.status === "saving"
-                                       ? mui.palette.text.disabled
-                                       : mui.palette.warning.main,
-                              })}
-                           />
-                        )}
-                        {controls.status === "saved"
-                           ? "Saved"
-                           : controls.status === "saving"
-                             ? "Saving…"
-                             : "Unsaved changes"}
-                     </Box>
-                  </Tooltip>
-               )}
+               {controls.save && <SaveStatus controls={controls} />}
                {!compact && (
                   <>
                      <Tooltip title={`Undo (${MOD}Z)`}>
@@ -261,20 +225,33 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                )}
             </>
          )}
-         {(onDone || unsaved) && controls && (
+         {(finish || separateSave) && controls && (
             <Divider orientation="vertical" sx={dividerSx} />
          )}
-         {onDone && (
-            <Button
-               variant={unsaved ? "outlined" : "contained"}
-               disableElevation
-               onClick={onDone}
-               sx={controlSx(edge, hoverEdge)}
+         {finish && (
+            <Tooltip
+               title={
+                  controls?.done && unsaved
+                     ? `Saves your edits, then shows the report · ${controls.saveTarget}`
+                     : ""
+               }
             >
-               Done
-            </Button>
+               <span>
+                  <Button
+                     variant={separateSave ? "outlined" : "contained"}
+                     disableElevation
+                     disabled={controls?.status === "saving"}
+                     onClick={finish}
+                     sx={{ ...controlSx(edge, hoverEdge), minWidth: 72 }}
+                  >
+                     {controls?.done && controls.status === "saving"
+                        ? "Saving…"
+                        : "Done"}
+                  </Button>
+               </span>
+            </Tooltip>
          )}
-         {controls?.save && unsaved && (
+         {controls?.save && separateSave && (
             <Tooltip title={`Save (${MOD}S) · ${controls.saveTarget}`}>
                <span>
                   <Button
@@ -290,5 +267,154 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
             </Tooltip>
          )}
       </Stack>
+   );
+}
+
+/**
+ * Where the edits stand: saved, saving, kept in this browser, or (with no
+ * draft) unsaved. While there are edits to drop, it opens a menu offering
+ * Discard edits, which is one undoable edit back to the saved report.
+ */
+function SaveStatus({ controls }: { controls: BuilderControls }) {
+   const { theme } = usePublisherTheme();
+   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+   const { status, draftKeptAt, discard } = controls;
+   const words =
+      status === "saved"
+         ? "Saved"
+         : status === "saving"
+           ? "Saving…"
+           : draftKeptAt !== undefined
+             ? "Draft saved"
+             : "Unsaved changes";
+   const hint =
+      status === "unsaved" && draftKeptAt !== undefined
+         ? "Your edits are kept in this browser. Done saves them to the report."
+         : controls.saveTarget;
+   const body = (
+      <Box
+         component="span"
+         role="status"
+         aria-live="polite"
+         sx={(mui) => ({
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 0.75,
+            ...TYPE.control,
+            color:
+               status === "saved"
+                  ? mui.palette.text.secondary
+                  : mui.palette.text.primary,
+         })}
+      >
+         {status === "saved" ? (
+            <CheckIcon aria-hidden sx={{ fontSize: 16 }} />
+         ) : (
+            <Box
+               aria-hidden
+               sx={(mui) => ({
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  bgcolor:
+                     status === "saving" || draftKeptAt !== undefined
+                        ? mui.palette.text.disabled
+                        : mui.palette.warning.main,
+               })}
+            />
+         )}
+         {words}
+      </Box>
+   );
+   if (!discard || status !== "unsaved")
+      return (
+         <Tooltip title={hint} describeChild>
+            <Box component="span" sx={{ pr: 0.75 }}>
+               {body}
+            </Box>
+         </Tooltip>
+      );
+   return (
+      <>
+         <Tooltip title={hint} describeChild>
+            <Button
+               aria-haspopup="menu"
+               aria-expanded={anchor !== null}
+               endIcon={<ExpandMoreIcon />}
+               onClick={(event) => setAnchor(event.currentTarget)}
+               sx={{
+                  textTransform: "none",
+                  color: "inherit",
+                  px: 1,
+                  minWidth: 0,
+                  "& .MuiButton-endIcon": {
+                     ml: 0.25,
+                     "& svg": { fontSize: 16 },
+                  },
+               }}
+            >
+               {body}
+            </Button>
+         </Tooltip>
+         <Menu
+            anchorEl={anchor}
+            open={anchor !== null}
+            onClose={() => setAnchor(null)}
+            anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+            transformOrigin={{ vertical: -4, horizontal: "left" }}
+            slotProps={{
+               paper: {
+                  sx: {
+                     minWidth: 240,
+                     borderRadius: "10px",
+                     border: `1px solid ${edgeColor(theme.cardBorder)}`,
+                     boxShadow: "0 8px 24px rgba(16, 24, 40, 0.12)",
+                  },
+               },
+            }}
+            MenuListProps={{ dense: true, sx: { py: 0.5 } }}
+         >
+            {draftKeptAt !== undefined && (
+               <Box
+                  component="li"
+                  role="presentation"
+                  sx={{
+                     px: 1.75,
+                     pt: 0.75,
+                     pb: 1,
+                     ...TYPE.caption,
+                     color: "text.secondary",
+                  }}
+               >
+                  Kept in this browser at{" "}
+                  {new Date(draftKeptAt).toLocaleTimeString([], {
+                     hour: "numeric",
+                     minute: "2-digit",
+                  })}
+               </Box>
+            )}
+            <MenuItem
+               onClick={() => {
+                  setAnchor(null);
+                  discard();
+               }}
+               sx={{
+                  mx: 0.5,
+                  borderRadius: "6px",
+                  gap: 1.25,
+                  color: "error.main",
+                  // The menu focuses its item on open; a full focus ring
+                  // there read as two stray rules across the menu.
+                  "&.Mui-focusVisible": {
+                     outline: "none",
+                     bgcolor: "action.hover",
+                  },
+               }}
+            >
+               <RestartAltIcon fontSize="small" />
+               Discard edits
+            </MenuItem>
+         </Menu>
+      </>
    );
 }

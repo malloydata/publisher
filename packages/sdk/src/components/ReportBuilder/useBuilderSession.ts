@@ -63,6 +63,12 @@ export interface BuilderSessionOptions<D, L extends LastSave = LastSave> {
    onChange?: (document: D) => void;
    /** Unsaved state the editor does not hold, such as an open text draft. */
    extraDirty?: boolean;
+   /**
+    * The document's edits are kept elsewhere as they are made (a draft in this
+    * browser), so leaving loses only what the editor does not hold yet: the host
+    * is told dirty for `extraDirty` alone. Close and Done still see every edit.
+    */
+   keepsEdits?: boolean;
    report: SessionReport;
    /** What the notice counts and calls them: "tile" or "cell". */
    unit: { name: string; count: (document: D) => number };
@@ -87,6 +93,7 @@ export function useBuilderSession<
    onExit,
    onChange,
    extraDirty = false,
+   keepsEdits = false,
    report,
    unit,
    prepare,
@@ -100,6 +107,8 @@ export function useBuilderSession<
    const dirty = editor.dirty || extraDirty;
    // Work to lose.
    const hasEdits = (editor.edited ?? editor.dirty) || extraDirty;
+   // What leaving would lose, for the host's leave guard.
+   const wouldLose = keepsEdits ? extraDirty : hasEdits;
 
    useEffect(() => {
       onChange?.(editor.document);
@@ -107,8 +116,8 @@ export function useBuilderSession<
    // Also on mount, so a host that remounted the builder on new text is told the slate is clean rather than carrying the previous mount's answer.
    // A layout effect, so a host's leave guard sees the flag in the same task as the edit.
    useLayoutEffect(() => {
-      onDirtyChange?.(hasEdits);
-   }, [hasEdits, onDirtyChange]);
+      onDirtyChange?.(wouldLose);
+   }, [wouldLose, onDirtyChange]);
    // A host guarding navigation on this must not be left holding a stale "dirty" once the builder is gone.
    const onDirtyChangeRef = useRef(onDirtyChange);
    onDirtyChangeRef.current = onDirtyChange;
@@ -239,6 +248,8 @@ export function useBuilderSession<
       saving,
       save,
       exitGuard,
+      /** Write the edits, then leave; absent unless the host can be left (`onExit`). */
+      ...(onExit ? { done: exitGuard.saveAndExit } : {}),
       /** Write the file back as it was before the last save, and put the edits back unsaved. */
       undoSave,
       canUndoSave,

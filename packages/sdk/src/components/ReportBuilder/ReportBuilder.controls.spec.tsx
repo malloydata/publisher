@@ -191,3 +191,134 @@ describe("Duplicate, from a tile's menu", () => {
       );
    });
 });
+
+describe("a draft kept in this browser, and Done", () => {
+   const KEY = "examples/storefront/spec-draft";
+   const stored = () =>
+      window.localStorage.getItem(`malloy-publisher.report-draft:${KEY}`);
+   const mountWithDraft = async (
+      onExit: () => void = () => {},
+      onSave: (source: string) => Promise<void> | void = () => {},
+   ) => {
+      const handed = mock((_controls: BuilderControls | undefined) => {});
+      const view = render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={onSave}
+            onExit={onExit}
+            draftKey={KEY}
+            onControlsChange={handed}
+         />,
+      );
+      return { view, last: () => handed.mock.calls.at(-1)?.[0] };
+   };
+
+   it("keeps an edit, puts it back on the next open, and says so", async () => {
+      window.localStorage.removeItem(`malloy-publisher.report-draft:${KEY}`);
+      const first = await mountWithDraft();
+      act(() => first.last()?.layout?.set("linear"));
+      await waitFor(() => expect(stored()).toContain('"layout":"linear"'));
+      expect(first.last()?.draftKeptAt).toBeNumber();
+      first.view.unmount();
+
+      const second = await mountWithDraft();
+      await waitFor(() => expect(second.last()?.layout?.value).toBe("linear"));
+      expect(second.last()?.status).toBe("unsaved");
+      expect(
+         screen.getByText(/Restored your unsaved edits from/),
+      ).toBeDefined();
+      // Undo takes the restore back.
+      act(() => second.last()?.undo());
+      await waitFor(() => expect(second.last()?.layout?.value).toBe("grid"));
+      await waitFor(() => expect(stored()).toBeNull());
+   });
+
+   it("Discard puts the saved report back and drops the draft", async () => {
+      window.localStorage.removeItem(`malloy-publisher.report-draft:${KEY}`);
+      const { last } = await mountWithDraft();
+      act(() => last()?.layout?.set("linear"));
+      await waitFor(() => expect(last()?.discard).toBeDefined());
+      act(() => last()?.discard?.());
+      await waitFor(() => expect(last()?.layout?.value).toBe("grid"));
+      await waitFor(() => expect(stored()).toBeNull());
+   });
+
+   it("Done writes the edits, then leaves, and the draft goes", async () => {
+      window.localStorage.removeItem(`malloy-publisher.report-draft:${KEY}`);
+      const exited = mock(() => {});
+      const saved = mock((_source: string) => {});
+      const { last } = await mountWithDraft(exited, saved);
+      act(() => last()?.layout?.set("linear"));
+      await waitFor(() => expect(last()?.status).toBe("unsaved"));
+      await act(async () => {
+         last()?.done?.();
+      });
+      await waitFor(() => expect(exited).toHaveBeenCalledTimes(1));
+      expect(saved.mock.calls[0]?.[0]).toContain("layout=linear");
+      await waitFor(() => expect(stored()).toBeNull());
+   });
+
+   it("Done stays when the write is refused", async () => {
+      window.localStorage.removeItem(`malloy-publisher.report-draft:${KEY}`);
+      const exited = mock(() => {});
+      const { last } = await mountWithDraft(exited, () =>
+         Promise.reject(new Error("The file changed underneath")),
+      );
+      act(() => last()?.layout?.set("linear"));
+      await waitFor(() => expect(last()?.status).toBe("unsaved"));
+      await act(async () => {
+         last()?.done?.();
+      });
+      await waitFor(() => expect(last()?.status).toBe("unsaved"));
+      expect(exited).not.toHaveBeenCalled();
+      expect(stored()).toContain('"layout":"linear"');
+   });
+});
+
+describe("BuilderBar with Done that saves", () => {
+   const base: BuilderControls = {
+      status: "unsaved",
+      saveTarget: "Saves to the package file",
+      save: () => {},
+      canUndo: true,
+      undo: () => {},
+      canRedo: false,
+      redo: () => {},
+      add: {},
+   };
+
+   it("offers Done alone, says the draft is kept, and Done calls done", () => {
+      const done = mock(() => {});
+      render(
+         <BuilderBar
+            controls={{ ...base, done, draftKeptAt: Date.now() }}
+            onDone={() => {}}
+         />,
+      );
+      expect(screen.getByRole("status").textContent).toBe("Draft saved");
+      expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+      screen.getByRole("button", { name: "Done" }).click();
+      expect(done).toHaveBeenCalledTimes(1);
+   });
+
+   it("offers Discard edits from the status", async () => {
+      const discard = mock(() => {});
+      render(
+         <BuilderBar
+            controls={{
+               ...base,
+               done: () => {},
+               draftKeptAt: Date.now(),
+               discard,
+            }}
+         />,
+      );
+      screen.getByRole("button", { name: /Draft saved/ }).click();
+      await waitFor(() =>
+         screen.getByRole("menuitem", { name: /Discard edits/ }),
+      );
+      screen.getByRole("menuitem", { name: /Discard edits/ }).click();
+      expect(discard).toHaveBeenCalledTimes(1);
+   });
+});
