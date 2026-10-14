@@ -377,6 +377,28 @@ describe("isConnectionFailure", () => {
          expect(isConnectionFailure(error)).toBe(true);
          expect(isCredentialRejection(error)).toBe(false);
       }
+      // A connection cut while a query ran reaches the caller as mssql's
+      // RequestError, still carrying ESOCKET.
+      expect(
+         isConnectionFailure(
+            Object.assign(new Error("Connection lost - read ECONNRESET"), {
+               code: "ESOCKET",
+               name: "RequestError",
+            }),
+         ),
+      ).toBe(true);
+   });
+
+   it("does not read a SQL Server request timeout as a server that is down", () => {
+      // tedious's ETIMEOUT on a RequestError is a query that outran
+      // requestTimeoutMs; the server was reached and ran it. Answering it as
+      // unreachable would tell the caller to retry the slow query.
+      const error = Object.assign(
+         new Error("Timeout: Request failed to complete in 600000ms"),
+         { code: "ETIMEOUT", name: "RequestError" },
+      );
+      expect(isConnectionFailure(error)).toBe(false);
+      expect(databaseAccessFailure(error)).toBeUndefined();
    });
 
    it("does not read a SQL Server certificate the client cannot verify as a server that is down", () => {

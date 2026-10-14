@@ -619,7 +619,7 @@ describe("getSchemasForConnection", () => {
    });
 
    describe("sqlserver", () => {
-      it("lists the schemas that own a table, dbo as the default", async () => {
+      it("lists the schemas that own a table or view, dbo as the default", async () => {
          const conn: ApiConnection = {
             name: "test",
             type: "sqlserver",
@@ -637,8 +637,7 @@ describe("getSchemasForConnection", () => {
          ]);
          const schemas = await getSchemasForConnection(conn, m.conn);
 
-         expect(m.lastSQL).toContain("sys.schemas");
-         expect(m.lastSQL).toContain("sys.tables");
+         expect(m.lastSQL).toContain("information_schema.tables");
          expect(schemas).toEqual([
             { name: "dbo", isHidden: false, isDefault: true },
             { name: "malloytest", isHidden: false, isDefault: false },

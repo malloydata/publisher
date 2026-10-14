@@ -329,9 +329,11 @@ function assertMergeKeyScopeResolvable(
  *
  * A `storage=` source is not gated here: it reads from the source and writes
  * elsewhere, and the storage build's own passthrough check names the source
- * types it can read.
+ * types it can read. A rollup passes through this gate before the storage
+ * one whether or not it declares a destination, so the check reads the
+ * annotation rather than trusting the tier the caller is on.
  */
-const READ_ONLY_DIALECTS = new Set(["sqlserver"]);
+export const READ_ONLY_DIALECTS: ReadonlySet<string> = new Set(["sqlserver"]);
 
 export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
@@ -340,7 +342,10 @@ export function assertColocatedPersistNotAuthorizeGated(
    gateOutcome?: PersistSourceGateOutcome,
    annotationFields: Record<string, string> = {},
 ): void {
-   if (READ_ONLY_DIALECTS.has(persistSource.dialectName)) {
+   if (
+      !annotationFields.storage &&
+      READ_ONLY_DIALECTS.has(persistSource.dialectName)
+   ) {
       recordEligibilityRefused("read_only_dialect");
       const what =
          origin === "preaggregate"

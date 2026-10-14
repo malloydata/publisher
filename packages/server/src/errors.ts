@@ -258,17 +258,26 @@ function isMysqlConfigFault(code: unknown): boolean {
 
 /**
  * tedious's codes for a SQL Server it could not reach: the TCP connect failed
- * or was cut (`ESOCKET`), the connect timed out (`ETIMEOUT`), or the SQL
- * Browser lookup for a named instance failed (`EINSTLOOKUP`). The `mssql`
- * wrapper keeps the code when it rewraps. `ELOGIN` is deliberately absent: it
- * carries every server-side login refusal, which is a config fault (see
- * {@link isCredentialRejection}).
+ * or was cut (`ESOCKET`), or the SQL Browser lookup for a named instance
+ * failed (`EINSTLOOKUP`). The `mssql` wrapper keeps the code when it rewraps,
+ * and a connection cut mid-query reaches the caller as its `RequestError`
+ * carrying `ESOCKET`, so these are read off the code alone. `ELOGIN` is
+ * deliberately absent: it carries every server-side login refusal, which is a
+ * config fault (see {@link isCredentialRejection}).
  */
-const SQLSERVER_CONNECTION_CODES = new Set([
-   "ESOCKET",
-   "ETIMEOUT",
-   "EINSTLOOKUP",
-]);
+const SQLSERVER_CONNECTION_CODES = new Set(["ESOCKET", "EINSTLOOKUP"]);
+
+/**
+ * tedious's `ETIMEOUT` names two different timeouts: the connect timeout, on
+ * its `ConnectionError`, and the request timeout, on its `RequestError`, which
+ * is a query that ran longer than `requestTimeoutMs`. Only the first is a
+ * server that could not be reached; the second answered as unreachable would
+ * tell a caller to retry the slow query. `mssql` rewraps both and names its
+ * own classes, so the class name is what tells them apart.
+ */
+function isSqlserverConnectTimeout(error: Error, code: string): boolean {
+   return code === "ETIMEOUT" && error.name === "ConnectionError";
+}
 
 /**
  * Node's TLS verification codes. tedious raises a certificate the client
@@ -306,7 +315,8 @@ function causeChainHasTlsVerificationFailure(error: Error): boolean {
  *
  * Read from the driver's structured fields on the error and its `cause` chain:
  * a Node socket code, a Postgres connection SQLSTATE, a tedious socket or
- * timeout code (unless it wraps a TLS verification failure, which is config),
+ * connect-timeout code (unless it wraps a TLS verification failure, which is
+ * config),
  * or mysql2's `fatal` flag, which it sets when the connection is unusable,
  * unless the same error carries a code naming a config fault
  * ({@link MYSQL_CONFIG_CODES}). Message text is the last resort, for the few
@@ -323,7 +333,10 @@ export function isConnectionFailure(error: unknown): boolean {
       if (typeof code === "string") {
          if (NODE_CONNECTION_CODES.has(code)) return true;
          if (POSTGRES_CONNECTION_SQLSTATE.test(code)) return true;
-         if (SQLSERVER_CONNECTION_CODES.has(code)) {
+         if (
+            SQLSERVER_CONNECTION_CODES.has(code) ||
+            isSqlserverConnectTimeout(current, code)
+         ) {
             return !causeChainHasTlsVerificationFailure(current);
          }
       }

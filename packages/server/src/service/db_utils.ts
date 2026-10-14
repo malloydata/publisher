@@ -287,10 +287,12 @@ async function getSchemasForPostgres(
 
 /**
  * A SQL Server database holds schemas (`dbo` by default), so the list is the
- * schemas that own at least one table, the way a modeler addresses a table:
- * `connection.table('schema.table')`. The catalog views are queried rather
- * than `information_schema.schemata`, which also lists the fixed-role schemas
- * (`db_owner`, `db_datareader`, ...) that never hold a table.
+ * schemas that own at least one table or view, the way a modeler addresses
+ * one: `connection.table('schema.table')`. Read from `information_schema.tables`
+ * rather than `information_schema.schemata`, which also lists the fixed-role
+ * schemas (`db_owner`, `db_datareader`, ...) that never hold a table; and from
+ * that view rather than `sys.tables`, so a schema holding only views is listed,
+ * as the column listing below (`information_schema.columns`) includes them.
  */
 async function getSchemasForSQLServer(
    connection: ApiConnection,
@@ -302,7 +304,7 @@ async function getSchemasForSQLServer(
    try {
       const result = await runIntrospectionSQL(
          malloyConnection,
-         "SELECT DISTINCT s.name AS schema_name FROM sys.schemas s JOIN sys.tables t ON t.schema_id = s.schema_id ORDER BY s.name",
+         "SELECT DISTINCT table_schema AS schema_name FROM information_schema.tables ORDER BY table_schema",
       );
       const rows = standardizeRunSQLResult(result);
       return rows.map((row: unknown) => {

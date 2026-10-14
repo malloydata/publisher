@@ -431,7 +431,14 @@ export default function EditConnectionDialog({
                }
             }
          } else if (type === "sqlserver") {
-            const requiredFields = ["server", "port", "database", "user"];
+            const requiredFields = ["server", "database", "user"];
+            // A named instance is located through SQL Browser and the port is
+            // then not used; otherwise the driver needs one.
+            if (!connectionConfig.instanceName && !connectionConfig.port) {
+               throw new Error(
+                  "Port is required unless an instance name is given",
+               );
+            }
             for (const fieldName of requiredFields) {
                if (!connectionConfig[fieldName]) {
                   throw new Error(

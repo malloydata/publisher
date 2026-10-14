@@ -311,7 +311,7 @@ export const connectionFieldsByType: Record<
          label: "Port",
          name: "port",
          type: "number",
-         required: true, // Always required
+         required: false, // Required unless an instance name locates the server
       },
       {
          label: "Database",

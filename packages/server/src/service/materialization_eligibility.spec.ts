@@ -20,6 +20,7 @@ import { deriveAnnotationFields } from "./build_plan";
 import {
    assertColocatedPersistNotAuthorizeGated,
    assertMaterializationEligible,
+   READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
 import { fakeSource } from "./materialization_test_fixtures";
 import {
@@ -1124,6 +1125,51 @@ describe("read-only dialect (colocated persist)", () => {
       ).toThrow(
          /Pre-aggregation rollup 'orders__preagg' cannot be materialized/,
       );
+   });
+
+   it("leaves a rollup that declares a storage destination to the storage gate", () => {
+      // The rollup branch runs this gate before the storage one for every
+      // rollup, so a `storage=` rollup over a SQL Server base must not be
+      // refused here as colocated: the storage build names the source types
+      // it can read, and this gate's doc says storage is not its question.
+      const source = fakeSource({
+         name: "orders__preagg",
+         sourceEntityId: "orders__preagg@x",
+         dialectName: "sqlserver",
+         annotationFields: { storage: "lake" },
+      });
+      expect(() =>
+         assertColocatedPersistNotAuthorizeGated(
+            source,
+            source.name,
+            "preaggregate",
+            undefined,
+            { storage: "lake" },
+         ),
+      ).not.toThrow();
+   });
+
+   it("reports canPersist: false for every read-only dialect's connection type", async () => {
+      // READ_ONLY_DIALECTS and the static attribute a client reads agree by
+      // convention; this is what makes the convention enforced. Each entry
+      // names a dialect whose connection type is the same word.
+      const { assembleEnvironmentConnections } = await import(
+         "./connection_config"
+      );
+      for (const dialect of READ_ONLY_DIALECTS) {
+         const { apiConnections } = assembleEnvironmentConnections(
+            [
+               {
+                  name: "c",
+                  type: dialect as "sqlserver",
+                  sqlserverConnection: { server: "h" },
+               },
+            ],
+            "/tmp",
+         );
+         expect(apiConnections[0]?.attributes?.dialectName).toBe(dialect);
+         expect(apiConnections[0]?.attributes?.canPersist).toBe(false);
+      }
    });
 
    it("admits the same shape on a dialect that can write", () => {
