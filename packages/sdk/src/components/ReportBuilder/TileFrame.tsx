@@ -447,9 +447,6 @@ export const selectionSx = (
    }: { selected: boolean; flash?: boolean; bare?: boolean },
 ): SystemStyleObject<Theme> => {
    const ring = selected || flash ? theme.accent : "transparent";
-   const hoverRing = selected
-      ? theme.accent
-      : theme.cardBorder.replace(/^1px solid /, "");
    const transition = `outline-color ${MOTION_FAST}, border-color ${MOTION_FAST}, opacity ${MOTION_FAST}, box-shadow ${MOTION_FAST}`;
    if (bare)
       // Bare content has no padding of its own, so the ring stands off it by
@@ -470,7 +467,8 @@ export const selectionSx = (
             transition,
             ...reducedMotionSx,
          },
-         "&:hover::before": { borderColor: hoverRing },
+         // No hover ring: the prose's own wash says it can be edited, and a
+         // ring around the wash read as a box drawn round a box.
       };
    // A card carries its own padding, so its ring hugs its edge.
    // Hover deepens the card's own edge and lifts it; the ring is selection's
