@@ -230,6 +230,10 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
          )}
          {finish && (
             <Tooltip
+               // Only for a pointer that rests: the click that starts a save
+               // leaves the pointer here, and the tip popped up over Saving….
+               enterDelay={800}
+               enterNextDelay={800}
                title={
                   controls?.done && unsaved
                      ? `Saves your edits, then shows the report · ${controls.saveTarget}`
@@ -291,11 +295,12 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
       status === "unsaved" && draftKeptAt !== undefined
          ? "Your edits are kept in this browser. Done saves them to the report."
          : controls.saveTarget;
+   // Drawn without a role, so a button around it is named by its words; the
+   // live region that announces them sits beside it (`announce`).
    const body = (
       <Box
          component="span"
-         role="status"
-         aria-live="polite"
+         aria-hidden
          sx={(mui) => ({
             display: "inline-flex",
             alignItems: "center",
@@ -326,18 +331,31 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
          {words}
       </Box>
    );
+   const announce = (
+      <Box
+         component="span"
+         role="status"
+         aria-live="polite"
+         sx={VISUALLY_HIDDEN}
+      >
+         {words}
+      </Box>
+   );
    if (!discard || status !== "unsaved")
       return (
          <Tooltip title={hint} describeChild>
             <Box component="span" sx={{ pr: 0.75 }}>
                {body}
+               {announce}
             </Box>
          </Tooltip>
       );
    return (
       <>
+         {announce}
          <Tooltip title={hint} describeChild>
             <Button
+               aria-label={words}
                aria-haspopup="menu"
                aria-expanded={anchor !== null}
                endIcon={<ExpandMoreIcon />}
@@ -418,3 +436,16 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
       </>
    );
 }
+
+/** In the accessibility tree, not on screen: the status line's announcement. */
+const VISUALLY_HIDDEN = {
+   position: "absolute",
+   width: 1,
+   height: 1,
+   margin: -1,
+   padding: 0,
+   overflow: "hidden",
+   clip: "rect(0 0 0 0)",
+   whiteSpace: "nowrap",
+   border: 0,
+} as const;
