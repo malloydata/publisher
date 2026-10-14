@@ -1,12 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+   within,
+} from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import { BuilderBar } from "./BuilderBar";
 import type { BuilderControls } from "./builderControls";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
+import { closeMenu } from "./testing/inline";
 
 /**
  * A host that takes the builder's page-level controls: no toolbar on the page,
@@ -118,5 +126,47 @@ describe("BuilderBar", () => {
       render(<BuilderBar controls={undefined} onDone={() => {}} />);
       expect(screen.getByRole("button", { name: "Done" })).toBeDefined();
       expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+   });
+});
+
+describe("the tile menu's width", () => {
+   it("sets a tile's width on a grid from the menu, and writes it", async () => {
+      const saved = mock((_source: string) => {});
+      render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={saved}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for By category"));
+      fireEvent.click(
+         screen.getByRole("menuitem", { name: /^Width/, hidden: true }),
+      );
+      const menu = screen.getByRole("menu", { name: "Width", hidden: true });
+      const items = within(menu).getAllByRole("menuitemradio", {
+         hidden: true,
+      });
+      expect(items.map((item) => item.textContent)).toEqual([
+         "3 of 12 · A quarter",
+         "4 of 12 · A third",
+         "6 of 12 · Half",
+         "8 of 12 · Two-thirds",
+         "9 of 12 · Three-quarters",
+         "12 of 12 · Full width",
+      ]);
+      expect(
+         items.find((item) => item.getAttribute("aria-checked") === "true")
+            ?.textContent,
+      ).toBe("6 of 12 · Half");
+      fireEvent.click(
+         items.find((item) => item.textContent === "8 of 12 · Two-thirds")!,
+      );
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
+      expect(saved.mock.calls[0]?.[0]).toContain("# colspan=8");
    });
 });

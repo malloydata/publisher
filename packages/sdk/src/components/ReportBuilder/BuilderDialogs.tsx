@@ -90,6 +90,7 @@ export function BuilderDialogs({
                });
             }}
             view={menuView}
+            {...(columns > 1 ? { columns } : {})}
             {...((editor.document.sources.find(
                (s) => s.name === menuTile?.source,
             )?.dimensions?.length ?? 0) > 0

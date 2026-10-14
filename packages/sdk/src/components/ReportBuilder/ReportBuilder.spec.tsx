@@ -704,7 +704,12 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for x"));
-      fireEvent.click(button("Drill"));
+      fireEvent.click(
+         screen.getByRole("menuitem", {
+            name: /^Clickable cells/,
+            hidden: true,
+         }),
+      );
 
       fireEvent.mouseDown(
          screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),
