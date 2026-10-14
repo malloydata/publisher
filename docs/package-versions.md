@@ -94,7 +94,7 @@ A `versionId` on a static file pins only a version the package has; anything els
 
 ## Bind a version to a build manifest
 
-`PUT …/versions/{version}/manifest` with `{"manifestLocation": "gs://…/manifest.json"}` binds that one version's persist references to an externally computed build manifest, and `null` clears the binding so the version serves live. Only `gs://` and `s3://` URIs are accepted. The binding is recorded with the version and survives an unload or a restart. An archived version is refused before anything is written. The response is the version's package resource, which reports the outcome in `manifestBindingStatus` and `boundManifestUri`.
+`PUT …/versions/{version}/manifest` with `{"manifestLocation": "gs://…/manifest.json"}` binds that one version's persist references to an externally computed build manifest, and `null` clears the binding so the version serves live. The location is what the manifest loader reads: a `gs://` or `s3://` URI, a `file://` URL, or an absolute path on a mounted volume. A relative path answers 400, since it would resolve against the server's working directory. The binding is recorded with the version and survives an unload or a restart. An archived version is refused before anything is written. The response is the version's package resource, which reports the outcome in `manifestBindingStatus` and `boundManifestUri`.
 
 ### The deprecated PATCH, on a versioned package
 
@@ -112,7 +112,7 @@ Clients send whole objects, so a body that echoes the package back is accepted: 
 An archive is refused with 409 when:
 
 - the version is the package's `latest` (`VERSION_IS_LATEST`). Move `latest` first;
-- it is the package's last version in service (`VERSION_IS_LAST_ACTIVE`). To take the whole package out of service, delete it;
+- it is the package's last version in service (`VERSION_IS_LAST_ACTIVE`). To take the whole package out of service, delete it. Deleting does not drop the tables its versions built, so first drop the last version's tables with `DELETE …/materializations/{id}?dropTables=true` (see [Disk growth](#disk-growth));
 - a materialization of that version is running (`VERSION_BUILDING`), since the archive would reclaim the tables it is writing. A run starts under the version's lock, so either the run is refused (410) or the archive is.
 
 **The version's files stay on disk.** See [Disk growth](#disk-growth).
@@ -164,7 +164,7 @@ Size the volume under `publisher_data/` for the retention you need, and keep lar
 
 ## Limits worth knowing
 
-- **Loaded versions.** A version stays loaded from its first read until it is archived or its package is deleted, whether or not it is `latest`. Nothing evicts a version that is rarely read. The memory governor's 503 (see [configuration.md](configuration.md)) is what bounds the number loaded at once.
+- **Loaded versions.** A version is loaded when it is published, or on its first read after a restart, and stays loaded until it is archived or its package is deleted, whether or not it is `latest` and whether or not anyone reads it. Nothing evicts one that is rarely read ([#1396](https://github.com/malloydata/publisher/issues/1396)). The only limit is the memory governor (see [configuration.md](configuration.md)), and it is not a per-version one: when it trips, it answers 503 to queries against every version, `latest` included, until memory is reclaimed.
 - **Symlinks in a published tree.** The content hash records a symlink's target text, not what it points at. A tree copied from a local directory has its relative symlinks rewritten as absolute ones pointing back into that directory, so content behind a link can change after publish without changing the hash. Do not publish trees that rely on symlinks.
 - **Legacy `/projects` routes** do not take versions: a `versionId` on them answers 501. Use the `/environments` routes.
 - **One process per store.** The checks that keep two runs from writing one table, and a run from overlapping an archive, are held in the server's memory. Run one publisher per `publisher.db`.
