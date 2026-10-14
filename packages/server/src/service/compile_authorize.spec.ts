@@ -526,6 +526,21 @@ run: joined_author -> { aggregate: ag.c }`,
       });
    }
 
+   for (const scope of ["file", "package"] as const) {
+      it(`denies an unrun extend of a gated model named query at ${scope.toUpperCase()} scope`, async () => {
+         await expect(
+            env.compileSource(
+               "pkg",
+               "model.malloy",
+               `${withoutGates(MODEL)}\nsource: mine is q_gated extend {}`,
+               scope === "file",
+               { ROLE: "nobody" },
+               scope,
+            ),
+         ).rejects.toBeInstanceOf(AccessDeniedError);
+      });
+   }
+
    it("rejects an authorize annotation in the submitted source", async () => {
       // /compile appends the text to the model, so a caller-declared gate would
       // land alongside the author's — and includeSql makes this the door worth
