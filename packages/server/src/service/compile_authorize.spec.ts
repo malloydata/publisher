@@ -378,6 +378,23 @@ describe("compile-path authorize gate (compileSource)", () => {
          });
       });
 
+      describe("a derivation that drops or rebinds the gate field", () => {
+         // `/compile` runs no binding check and executes nothing, so it admits what `/query` refuses.
+         const text = pick(
+            "source: mine is row_gated extend { except: org_id }",
+         );
+
+         it("is refused by /query's binding guard", async () => {
+            await expect(queryOf(text, { GROUPS: [1] })).rejects.toBeInstanceOf(
+               AccessDeniedError,
+            );
+         });
+
+         it("is admitted by /compile today, the known gap", async () => {
+            expect((await compile(text, { GROUPS: [1] })).problems).toEqual([]);
+         });
+      });
+
       describe("fails closed", () => {
          const modelInternals = async () => {
             const { model } = (
