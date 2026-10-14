@@ -125,6 +125,57 @@ describe("DashboardView tiles", () => {
    });
 });
 
+describe("filters a host writes into the query (literalReads)", () => {
+   it("count as read for the tile, and are never sent as givens", async () => {
+      const manifest = {
+         ...base,
+         givens: [
+            { name: "REGION", type: "string", label: "Region" },
+            // The document's own filter: resolved to a literal by the host.
+            { name: "BRAND", type: "string", label: "Brand" },
+         ],
+         tiles: [
+            {
+               kind: "query",
+               query: "orders -> by_brand",
+               givenNames: ["REGION"],
+            },
+            {
+               kind: "query",
+               query: "orders -> by_region",
+               givenNames: ["REGION"],
+            },
+         ],
+      } as DashboardManifest;
+      render(
+         <DashboardView
+            manifest={manifest}
+            environmentName="env"
+            packageName="pkg"
+            documentName="ops"
+            givens={{ REGION: "West", BRAND: "Acme" }}
+            literalReads={{ "orders -> by_brand": ["BRAND"] }}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      await waitFor(() =>
+         expect(executeQueryModel.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      // Only the tile that does not read Brand says so.
+      const tags = await screen.findAllByTestId("tile-filter-tag");
+      expect(tags.map((tag) => tag.textContent)).toEqual([
+         "Doesn't respond to Brand",
+      ]);
+      expect(tags[0].closest("[data-chrome]")?.textContent).toContain(
+         "By region",
+      );
+      // Brand's value reaches no request: the server does not know it.
+      for (const call of executeQueryModel.mock.calls)
+         expect(JSON.stringify(call[3])).not.toContain("BRAND");
+   });
+});
+
 describe("DashboardView chrome", () => {
    // A linear report and a grid draw the same page: query tiles in cards, text
    // tiles as bare prose, and the title block. `chrome` is accepted and ignored.

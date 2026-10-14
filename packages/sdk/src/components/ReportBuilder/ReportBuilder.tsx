@@ -205,6 +205,12 @@ export interface ReportBuilderProps {
     */
    modelFilters?: ReadonlyMap<string, string>;
    /**
+    * Names a filter the builder adds must not take, beyond the givens on the
+    * page: a host that resolves held text itself passes every given the model
+    * declares, so a new filter never takes a model given's name.
+    */
+   takenGivenNames?: readonly string[];
+   /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save.
     */
@@ -261,6 +267,7 @@ export function ReportBuilder({
    visibleSources,
    addFilterDisabledReason,
    modelFilters,
+   takenGivenNames,
    onControlsChange,
    draftKey,
 }: ReportBuilderProps) {
@@ -638,6 +645,7 @@ export function ReportBuilder({
                   setDrillSource={setDrillSource}
                   exitDialog={session.exitGuard.dialog}
                   {...(renderViewPreview ? { renderViewPreview } : {})}
+                  {...(takenGivenNames ? { takenGivenNames } : {})}
                />
             </ReportPage>
          </Stack>

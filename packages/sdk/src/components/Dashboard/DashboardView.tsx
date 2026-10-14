@@ -81,6 +81,14 @@ export interface DashboardViewProps {
    /** Givens the host sets itself: no control is shown for them. */
    hiddenGivens?: readonly string[];
    /**
+    * Filters each tile reads through values the host writes into its query
+    * text rather than sending them as givens: a report held as text whose
+    * own `given:` the host resolves to literals before compiling. Keyed by
+    * the manifest's `tile.query`. Counted as read, so the tile is not marked
+    * as ignoring that filter, and never sent: the server does not know them.
+    */
+   literalReads?: Readonly<Record<string, readonly string[]>>;
+   /**
     * An ordinary link in the report's prose (its description and text tiles),
     * for a host with its own router. Omitted, links are plain anchors.
     */
@@ -108,6 +116,7 @@ export function DashboardView({
    preamble,
    runModelPath,
    hiddenGivens,
+   literalReads,
    onLinkNavigate,
 }: DashboardViewProps) {
    // Where a relative link in the report's prose resolves from, and how the
@@ -319,7 +328,13 @@ export function DashboardView({
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
                         ignoredFilters={tileIgnoredFilterLabels(
-                           tile.givenNames,
+                           tile.givenNames &&
+                              (tile.query && literalReads?.[tile.query]
+                                 ? [
+                                      ...tile.givenNames,
+                                      ...literalReads[tile.query]!,
+                                   ]
+                                 : tile.givenNames),
                            specs,
                         )}
                         {...(preamble !== undefined

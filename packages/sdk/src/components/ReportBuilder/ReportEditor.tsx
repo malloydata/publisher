@@ -190,6 +190,13 @@ export interface TextSourceOptions {
     * because the server refuses a `given:` in held text.
     */
    compileSource?: (text: string) => string | Promise<string>;
+   /**
+    * Names a filter added here must not take: with `compileSource`, every
+    * given the model declares, including one only a gate reads, which the
+    * page never shows. A document given of the same name would collide with
+    * the model's once the report is published.
+    */
+   takenGivenNames?: readonly string[];
 }
 
 export function ReportEditor(props: ReportEditorProps) {

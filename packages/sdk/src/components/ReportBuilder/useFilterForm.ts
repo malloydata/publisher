@@ -40,6 +40,7 @@ export function useFilterForm({
    document,
    control,
    available,
+   takenNames = [],
    fieldsFor,
    onApply,
 }: {
@@ -47,6 +48,8 @@ export function useFilterForm({
    document: DashboardDocument;
    control: BuilderControl | undefined;
    available: readonly BuilderControl[];
+   /** Names a new filter must not take: the model's givens the page does not show, say. */
+   takenNames?: readonly string[];
    fieldsFor?: (tile: QueryTile) => readonly CatalogField[] | undefined;
    onApply: (given: string, rows: MappingRow[], declare?: LocalGiven) => void;
 }) {
@@ -120,8 +123,9 @@ export function useFilterForm({
       () => [
          ...(document.localGivens ?? []).map((g) => g.name),
          ...available.map((g) => g.name),
+         ...takenNames,
       ],
-      [document, available],
+      [document, available, takenNames],
    );
    const newName = useMemo(
       () => (field.trim() ? givenNameFor(field.trim(), taken) : ""),

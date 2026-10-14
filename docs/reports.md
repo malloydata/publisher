@@ -1107,7 +1107,9 @@ the document's own: the host removes the document's `given:` declarations and `#
 `$NAME` as a literal value (`malloyLiteral` and `localGivenSpec` are exported for this). With it, "Add filter" is
 on, the editor still saves the document's own text, and the builder runs each tile with the document's filter
 values written in as literals, never sent to the server as givens. The saved text stays a report the package can
-serve as it is. `hiddenGivens` names givens the host sets itself, which get no control, and `givens` carries their
+serve as it is. Pass `textSource.takenGivenNames` (every given the model declares) so a filter the builder adds
+never takes a model given's name, and give the reader `<DashboardView literalReads />`, the document filters each
+tile reads by its `tile.query`, so a tile filtered that way is not marked as ignoring them. `hiddenGivens` names givens the host sets itself, which get no control, and `givens` carries their
 values. A gate whose given the request did not send denies, so a host that never sends them sees every tile on a
 gated source as restricted.
 

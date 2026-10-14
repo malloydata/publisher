@@ -514,6 +514,9 @@ export function EditorSurface({
             source={opened.source}
             document={opened.document}
             modelFilters={modelFilters}
+            {...(textSource?.takenGivenNames
+               ? { takenGivenNames: textSource.takenGivenNames }
+               : {})}
             renderTile={renderTile}
             renderViewPreview={renderViewPreview}
             givens={specs
