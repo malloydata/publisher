@@ -120,7 +120,9 @@ export function InlineMarkdown({
    };
    return (
       // The text in place, in the page's own prose type: no box inside the
-      // tile, no buttons under it, so the tile keeps its size as it opens.
+      // tile, no buttons under it, so the tile keeps its size as it opens. No
+      // ring of its own either: it opens only on something already selected,
+      // and a second ring inside the selection's read as a box in a box.
       // Leaving it or ⌘/Ctrl+Enter keeps the edit; Escape drops it, as a
       // title's Escape does.
       <Box
@@ -130,8 +132,6 @@ export function InlineMarkdown({
             px: "10px",
             my: "-6px",
             py: "6px",
-            borderRadius: "6px",
-            boxShadow: `0 0 0 1px ${theme.accent}, 0 0 0 4px color-mix(in srgb, ${theme.accent} 15%, transparent)`,
          }}
       >
          <InputBase

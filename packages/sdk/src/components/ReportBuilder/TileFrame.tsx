@@ -7,7 +7,12 @@ import type { PointerEvent, ReactNode } from "react";
 import type { Theme } from "@mui/material";
 import type { SystemStyleObject } from "@mui/system";
 import { MOTION_FAST, reducedMotionSx } from "../../theme/motion";
-import { CONTROL_RADIUS, hoverEdgeColor, TILE_RADIUS } from "../controlTokens";
+import {
+   CONTROL_RADIUS,
+   edgeColor,
+   hoverEdgeColor,
+   TILE_RADIUS,
+} from "../controlTokens";
 import {
    REMOVE_BADGE_CLASS,
    RemoveBadge,
@@ -327,32 +332,56 @@ export function TileFrame({
                            outlineOffset: 1,
                            borderRadius: "3px",
                         },
-                        // A rail down the edge, so the whole edge reads as the
-                        // thing to drag, and a knob at its middle to aim for.
+                        // A grip tab at the middle of the edge: the shape a
+                        // splitter's handle has, so it reads as "drag sideways"
+                        // without a word. The whole edge strip still takes the
+                        // drag; the tab is where the eye goes.
                         "&::before": {
                            content: '""',
                            position: "absolute",
-                           top: "10px",
-                           bottom: "10px",
+                           top: "50%",
                            left: "50%",
-                           transform: "translateX(-50%)",
-                           width: "3px",
-                           borderRadius: "2px",
-                           bgcolor: theme.accent,
+                           transform: "translate(-50%, -50%)",
+                           width: "12px",
+                           height: "40px",
+                           boxSizing: "border-box",
+                           borderRadius: "6px",
+                           border: `1px solid ${
+                              resizing
+                                 ? theme.accent
+                                 : edgeColor(theme.cardBorder)
+                           }`,
+                           bgcolor: mui.palette.background.paper,
+                           boxShadow:
+                              "0 1px 2px rgba(16, 24, 40, 0.10), 0 2px 6px rgba(16, 24, 40, 0.08)",
+                           transition: `border-color ${MOTION_FAST}`,
                         },
+                        // Its two grip lines.
                         "&::after": {
                            content: '""',
                            position: "absolute",
                            top: "50%",
                            left: "50%",
                            transform: "translate(-50%, -50%)",
-                           width: "16px",
+                           width: "5px",
                            height: "16px",
+                           borderLeft: `1.5px solid ${
+                              resizing
+                                 ? theme.accent
+                                 : mui.palette.text.secondary
+                           }`,
+                           borderRight: `1.5px solid ${
+                              resizing
+                                 ? theme.accent
+                                 : mui.palette.text.secondary
+                           }`,
                            boxSizing: "border-box",
-                           borderRadius: "50%",
-                           border: `2px solid ${theme.accent}`,
-                           bgcolor: mui.palette.background.paper,
-                           boxShadow: "0 1px 3px rgba(16, 24, 40, 0.18)",
+                           opacity: resizing ? 1 : 0.7,
+                        },
+                        "&:hover::before": { borderColor: theme.accent },
+                        "&:hover::after": {
+                           borderColor: theme.accent,
+                           opacity: 1,
                         },
                      })}
                   >
@@ -365,7 +394,7 @@ export function TileFrame({
                               position: "absolute",
                               top: "50%",
                               left: "50%",
-                              transform: "translate(-50%, calc(-100% - 16px))",
+                              transform: "translate(-50%, calc(-100% - 28px))",
                               px: 1,
                               py: 0.5,
                               borderRadius: "6px",
@@ -428,7 +457,7 @@ export function TileFrame({
 /** How far the tile menu button sits in from a card's top and right edges: level with the title. */
 const MENU_INSET_PX = 14;
 
-/** How far the selection ring stands outside what it selects: its 2px offset plus its 2px width. */
+/** How far the selection stands outside what it selects: its halo. */
 export const SELECTION_RING_PX = 4;
 
 /**
@@ -447,6 +476,13 @@ export const selectionSx = (
    }: { selected: boolean; flash?: boolean; bare?: boolean },
 ): SystemStyleObject<Theme> => {
    const ring = selected || flash ? theme.accent : "transparent";
+   // A soft band outside the ring, so a selection reads as lifted to the
+   // front rather than outlined. Wider and stronger for the undo flash.
+   const halo = flash
+      ? `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`
+      : selected
+        ? `0 0 0 4px color-mix(in srgb, ${theme.accent} 14%, transparent)`
+        : undefined;
    const transition = `outline-color ${MOTION_FAST}, border-color ${MOTION_FAST}, opacity ${MOTION_FAST}, box-shadow ${MOTION_FAST}`;
    if (bare)
       // Bare content has no padding of its own, so the ring stands off it by
@@ -463,6 +499,7 @@ export const selectionSx = (
             inset: `${-BARE_RING_OFFSET_PX}px`,
             borderRadius: 1,
             border: `2px solid ${ring}`,
+            ...(halo && { boxShadow: halo }),
             pointerEvents: "none",
             transition,
             ...reducedMotionSx,
@@ -470,24 +507,31 @@ export const selectionSx = (
          // No hover ring: the prose's own wash says it can be edited, and a
          // ring around the wash read as a box drawn round a box.
       };
-   // A card carries its own padding, so its ring hugs its edge.
+   // A card's ring IS its edge: the card's own border turns the accent and
+   // thickens, with the halo outside it. An outline standing off the card
+   // drew a second frame around the first, with a gap between them.
    // Hover deepens the card's own edge and lifts it; the ring is selection's
    // alone. A hover ring the shape of the selection ring made a pointed-at tile
    // and a selected one look alike.
    return {
       borderRadius: TILE_RADIUS,
-      outline: `2px solid ${ring}`,
-      outlineOffset: 2,
-      ...(flash && {
-         boxShadow: `0 0 0 6px color-mix(in srgb, ${theme.accent} 25%, transparent)`,
-      }),
+      "& > .MuiPaper-root": {
+         transition,
+         ...reducedMotionSx,
+         ...((selected || flash) && {
+            borderColor: theme.accent,
+            boxShadow: `0 0 0 1px ${theme.accent}${halo ? `, ${halo}` : ""}`,
+         }),
+      },
       transition,
       ...reducedMotionSx,
       "&:hover": {
          boxShadow: theme.shadow.lift,
-         "& > .MuiPaper-root": {
-            borderColor: hoverEdgeColor(theme.cardBorder, theme.tileTitle),
-         },
+         ...(!(selected || flash) && {
+            "& > .MuiPaper-root": {
+               borderColor: hoverEdgeColor(theme.cardBorder, theme.tileTitle),
+            },
+         }),
       },
    };
 };

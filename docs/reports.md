@@ -894,7 +894,7 @@ in the builder. No directory is ever created for you.
 From there it is the classic loop. The builder's controls sit in the header, where Edit was: the save
 status, undo and redo, the layout switch, an **Add** menu (a tile, text or a filter) and **Done**. The page
 under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to move it,
-drag the rail on its right edge to set its width, pick its chart, width and clickable cells from its ⋯
+drag the grip on its right edge to set its width, pick its chart and clickable cells from its ⋯
 menu, and add filters from Add or with + Filter on the filter row.** A press inside a tile's result (its
 table or chart) is the result's, never a move. The width snaps to whole columns, with the columns drawn
 behind the tiles and a label saying the width during the drag; the edge is also a keyboard control (Tab to
