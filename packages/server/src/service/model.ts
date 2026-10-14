@@ -783,8 +783,12 @@ export class Model {
       | undefined;
    /** {@link carriesReportTag}, once read. */
    private reportTagCarried: boolean | undefined;
-   /** Settles once {@link ensureSharedQueryModel} has built the QueryModel. */
-   private sharedQueryModel: Promise<void> | undefined;
+   /**
+    * Per materializer, settles once {@link ensureSharedQueryModel} has built
+    * its QueryModel. Weak, so a grafted materializer evicted from its cache
+    * takes its entry with it.
+    */
+   private sharedQueryModels = new WeakMap<ModelMaterializer, Promise<void>>();
    private compiledReportFacts:
       | Promise<ReportModelFacts | undefined>
       | undefined;
@@ -3350,6 +3354,7 @@ export class Model {
             grafts,
             graftScope!,
          );
+         await this.ensureSharedQueryModel(graftedMaterializer);
          const recompiled = options.recompile(graftedMaterializer, grafts);
          if (options.proveGraft) {
             // The own-scope binder proves the run target only.
@@ -4874,34 +4879,54 @@ export class Model {
    }
 
    /**
-    * Build this model's Malloy `QueryModel` once, on the base model its
-    * materializer holds, so every query compiled against it reuses it.
+    * Build a materializer's Malloy `QueryModel` once, on the base model it
+    * holds, so every query compiled against it reuses it: this Model's own
+    * materializer, a row-level grafted one, or the storage serve shape.
     *
     * Malloy hands a query compiled from a model the base model's existing
     * `QueryModel` when the query does not modify the model
     * (`existingQueryModel` in `Malloy.compile`), but only if the base model
-    * already has one. A model hydrated from the worker's `ModelDef` never
-    * builds one, so before this every prepare (each render-tag target at load,
-    * each query) built a `QueryModel` over every source in the file and
-    * dropped it. A `QueryModel` is a function of the `ModelDef`, and the
-    * materializer and `ModelDef` are fixed for this Model's life (a reload
-    * builds new Models), so building it once is the same answer.
+    * already has one. Neither a model hydrated from a `ModelDef` nor one Malloy
+    * compiled from source has one, so without this every prepare (each
+    * render-tag target at load, each query) built a `QueryModel` over every
+    * source in the file and dropped it. A `QueryModel` is a function of the
+    * `ModelDef`, and each materializer's `ModelDef` is fixed for its life, so
+    * building it once is the same answer.
     *
-    * A failure to build is swallowed: the query that needs it builds it again
-    * and fails the way it always did.
+    * Call it just before compiling against the materializer, so a query the
+    * 404 and 403 gates reject builds nothing.
+    *
+    * A failure to build is logged and not retried. `getModel()` is memoized
+    * by Malloy, failures included, and building a `QueryModel` from a fixed
+    * `ModelDef` fails the same way every time, so a retry would only repeat
+    * it. The query that needs it builds its own and fails the way it always
+    * did.
     */
-   private ensureSharedQueryModel(): Promise<void> {
-      const materializer = this.modelMaterializer;
+   private ensureSharedQueryModel(
+      materializer: ModelMaterializer | undefined,
+   ): Promise<void> {
       if (!materializer) return Promise.resolve();
-      this.sharedQueryModel ??= (async () => {
-         try {
-            const base = await materializer.getModel();
-            void base.queryModel;
-         } catch {
-            // Left to the compile that needs it; see the doc.
-         }
-      })();
-      return this.sharedQueryModel;
+      let built = this.sharedQueryModels.get(materializer);
+      if (!built) {
+         built = (async () => {
+            try {
+               const base = await materializer.getModel();
+               void base.queryModel;
+            } catch (error) {
+               logger.warn(
+                  "Could not build a shared QueryModel; each query builds its own",
+                  {
+                     packageName: this.packageName,
+                     modelPath: this.modelPath,
+                     error:
+                        error instanceof Error ? error.message : String(error),
+                  },
+               );
+            }
+         })();
+         this.sharedQueryModels.set(materializer, built);
+      }
+      return built;
    }
 
    /**
@@ -6252,7 +6277,7 @@ export class Model {
       targets: RenderTagTarget[],
    ): Promise<{ label: string; result: Malloy.Result }[]> {
       // One QueryModel for every prepare below, not one each.
-      await this.ensureSharedQueryModel();
+      await this.ensureSharedQueryModel(mm);
       const yielder = createEventLoopYielder();
       const prepared: { label: string; result: Malloy.Result }[] = [];
       for (const target of targets) {
@@ -6672,6 +6697,7 @@ export class Model {
          ...groups.flatMap((g) => g.members),
       ]);
 
+      await this.ensureSharedQueryModel(this.serveShapeCache.materializer);
       const runnable =
          this.serveShapeCache.materializer.loadRestrictedQuery(queryString);
       // Compile eagerly so ineligibility (a refinement the serve shape lacks, an
@@ -7356,8 +7382,6 @@ export class Model {
       let preaggRouted = false;
       if (!this.modelMaterializer || !this.modelDef || !this.modelInfo)
          throw new BadRequestError("Model has no queryable entities.");
-      // Every compile against this model below reuses one QueryModel.
-      await this.ensureSharedQueryModel();
 
       // Per-query freshness gate (persistence.md §9.3): resolve the
       // freshness-filtered manifest once and thread it into both the prepare
@@ -7584,6 +7608,8 @@ export class Model {
          // and the `run: source->view` string built from the caller-supplied
          // `sourceName`/`queryName` pair are untrusted, so both compile here;
          // only author-curated notebook cells use the unrestricted `loadQuery`.
+         // After the 404 and 403 gates above: a rejected query builds nothing.
+         await this.ensureSharedQueryModel(this.modelMaterializer);
          runnable = this.modelMaterializer.loadRestrictedQuery(queryString);
          // Kept so a routed query can still be answered live if the store fails
          // underneath it at RUN time (see the freshnessFallback retry below).

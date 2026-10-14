@@ -25,7 +25,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 Package loads and queries do less on the main thread. Nothing an API or MCP caller sees changes: the same plans, findings, warnings and answers.
 
-- Each loaded model builds its Malloy query model once and reuses it for every query, and for the render-tag checks the main thread prepares itself (those the load worker did not reach), where each used to build and drop its own. Memory rises by that one structure per loaded model: about 5 MB of heap for the medium generated test package (8 model files) and 14 MB for the large one (24).
+- Each loaded model builds its Malloy query model once and reuses it for every query, and for the render-tag checks the main thread prepares itself (those the load worker did not reach), where each used to build and drop its own. So does each variant of a model a query compiles against: a row-level `#(authorize)` graft and the storage serve shape. Memory rises by that one structure per loaded model: about 5 MB of heap for the medium generated test package (8 model files) and 14 MB for the large one (24). A cached variant holds one too, and those caches are bounded.
 - Render-tag validation, model hydration and the main-thread build-plan derivation yield to the event loop every 10 ms, so a request that arrives during a load waits for at most one step rather than for the whole load.
 - A model's report facts are derived once rather than on every query.
 
