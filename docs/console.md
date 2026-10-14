@@ -83,27 +83,29 @@ is a Console convenience.
   `.malloynb` keeps its path. Without a `title=` in the artifact tag, a report's title comes from its
   `"` description or its opening markdown heading.
 - **Build a report by dragging** — every report page has an **Edit** button in the header, beside the
-  breadcrumbs, that opens it in the builder. On a grid report, drag a tile's card to move it, drag its
-  right edge to set its width (it snaps to whole columns), and set its chart and drill from its **⋯**
-  menu; on a linear report, drag tiles into a new order and use the **+** on a tile to insert one
-  between two. Add filters with **+ Filter** on the filter row under the description. Titles,
-  descriptions and text tiles are edited where they are shown: click one (a small pencil follows the
-  text) and type. In a one-line field Enter keeps the edit and Escape puts the old text back; in a
-  text tile, Escape, **Done** or Cmd/Ctrl+Enter keeps it, **Cancel** drops it, and Cmd/Ctrl+S saves
-  from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list) and is added
-  from the same dialog as a query tile. Each query tile has a **Viz type** picker listing all eight
-  choices (From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment map); a choice
-  the view cannot render stays in the list, greyed, with its reason beside it. A **layout switch**
-  turns a linear report into a grid or back, by rewriting `layout=` and nothing else. Adding a tile
+  breadcrumbs, that opens it in the builder. In the builder that spot holds the builder's bar: the save
+  status, undo and redo, the **Linear / Grid** switch, an **Add** menu (a tile, text or a filter), and
+  **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
+  report, drag a tile by its heading or its padding to move it, drag the rail on its right edge to set
+  its width (a label says the width it will snap to), and set its chart, width and clickable cells
+  from its **⋯** menu; on a linear report, drag tiles into a new order and use the **+** on a tile to
+  insert one between two. Add filters from **Add** or with **+ Filter** on the filter row. Titles,
+  descriptions and text tiles are edited where they are shown: under the pointer they take a faint
+  wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
+  back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
+  from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list). A query
+  tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and
+  Segment map; a choice the view cannot render stays in the list, greyed, with its reason under it.
+  The **layout switch** rewrites `layout=` and nothing else. Adding a tile
   offers every source the package publishes; when the file cannot already see the chosen source,
   the builder adds a named import for it. The classic dashboard-building feel, over a file you can
   still read and review ([reports.md](reports.md#editing-in-the-console)).
   A file written as `run:` cells, the retired linear form, is not a report and does not open; the
   package page names it and says how to rewrite it as tiles. A legacy `.malloynb` is read-only.
-  **Save** (or Cmd/Ctrl+S) writes the report back into the package at once, with no review step, and
-  the builder stays open; the button reads **Saved**, greyed, until the next edit, and its tooltip
-  says where it writes (the package file, this browser, or where the host app keeps it). **View** in
-  the header leaves, and asks first when edits are unsaved. On a server that does not take writes
+  **Save** (or Cmd/Ctrl+S) appears beside **Done** while there are unsaved edits, and writes the
+  report back into the package at once, with no review step; the builder stays open and the status
+  reads **Saved**, with a tooltip saying where it writes (the package file, this browser, or where the
+  host app keeps it). **Done** leaves, and asks first when edits are unsaved. On a server that does not take writes
   there is no Save. A save whose text declares a real `#(authorize)` or `#(access_filter)` gate
   outside prose is refused with a 400, so the builder opens such a file but cannot save it from the
   Console; gates live in the model file.

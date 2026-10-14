@@ -891,16 +891,21 @@ Every report page has an **Edit** button in the header, beside the breadcrumbs, 
 the file is written as `<slug>.malloy` at the **package root**, or at another location you type, and opened
 in the builder. No directory is ever created for you.
 
-From there it is the classic loop. On a grid, **drag a tile's card to move it, drag its right edge to set
-its width, pick its chart and drill from its ⋯ menu, and add filters with + Filter on the row under the
-description.** The width snaps to whole columns, with column guides during the drag; the edge is also a
-keyboard control (Tab to it, Left and Right step one column, Home and End go to one column and full width).
+From there it is the classic loop. The builder's controls sit in the header, where Edit was: the save
+status, undo and redo, the layout switch, an **Add** menu (a tile, text or a filter) and **Done**. The page
+under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to move it,
+drag the rail on its right edge to set its width, pick its chart, width and clickable cells from its ⋯
+menu, and add filters from Add or with + Filter on the filter row.** A press inside a tile's result (its
+table or chart) is the result's, never a move. The width snaps to whole columns, with the columns drawn
+behind the tiles and a label saying the width during the drag; the edge is also a keyboard control (Tab to
+it, Left and Right step one column, Home and End go to one column and full width).
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Viz type**, **Drill** and **Delete**. Titles, subtitles, descriptions and text tiles are
-click-to-edit where they stand, each with a small pencil after the text: in a one-line field Enter keeps the
-edit and Escape puts the old text back; in a text tile, Escape, **Done** or Cmd/Ctrl+Enter keeps it,
-**Cancel** drops it, and Cmd/Ctrl+S saves from inside the field.
+The ⋯ menu holds **Chart** and, on a grid, **Width**, each a submenu, and **Clickable cells…**; a tile is
+removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
+they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
+the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
+keeps it, Escape drops it, and Cmd/Ctrl+S saves from inside the field.
 
 **The layout switch** rewrites `layout=` and nothing else, so turning a linear report into a grid (or back)
 is one edit. A file's own `dashboard { columns=N }` and `autorun=false` are kept and still apply, but the
@@ -908,11 +913,11 @@ builder does not set them. Adding a tile offers every source the package publish
 cannot already see the chosen source the builder adds a named import for it, at the right relative path for
 the report's location.
 
-The **Viz type** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment
-map. A choice the view cannot render stays in the list, greyed, with its reason beside it: Big value needs a
+The **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment
+map. A choice the view cannot render stays in the list, greyed, with its reason under it: Big value needs a
 view with only totals, and a map needs a view that already carries a map chart. A chart line the builder
-does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and the picker is disabled for
-that tile with the reason shown; so is a tile inherited from a declaration on the source.
+does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and Chart is disabled for that
+tile with the reason shown; so is a tile inherited from a declaration on the source.
 
 A grid report with `tiles=[]` (only possible by hand-editing) opens in the builder but is not served until it
 has a tile, and the builder will not remove the last tile of a report saved with tiles. A filter on a
@@ -925,10 +930,10 @@ document: the builder reads and writes the report file described above, splicing
 than regenerating it, so comments and anything it does not model survive the round trip. The result is a
 source file you can review in a pull request, and one an agent can write by hand just as well.
 
-**Save** (or Cmd/Ctrl+S) writes at once through `PUT …/models/{path}`, with no review step, and the builder
-stays open; the button reads a greyed **Saved** until the next edit, and its tooltip says where Save writes.
-While editing, the header button reads **View**: it returns to the read-only page and asks first
-when edits are unsaved. On a server that does not take writes (`frozenConfig`), Save keeps the edit in this
+**Save** (or Cmd/Ctrl+S) shows beside **Done** while there are unsaved edits and writes at once through
+`PUT …/models/{path}`, with no review step; the builder stays open and the status reads **Saved**, with a
+tooltip saying where Save writes. **Done** returns to the read-only page and asks first when edits are
+unsaved. On a server that does not take writes (`frozenConfig`), Save keeps the edit in this
 browser instead, keyed by the report's path, and the package page lists those drafts.
 
 <a id="rendering-one-in-your-own-react-app"></a>
@@ -1019,6 +1024,15 @@ The editor saves in place and, by default, draws no way out of itself: leaving i
 exit and guard it by tracking `onDirtyChange`, which reports whether anything is unsaved (an open text edit
 counts), and blocking navigation while it is `true`. A host that would rather the editor drew its own way out
 passes `onExit`: the toolbar then shows **Close** after Save, and Close on unsaved work asks first.
+
+The editor's page-level controls can live in the host's own chrome instead of on the page. Pass
+`onControlsChange`, and the editor draws no toolbar: it hands over a `BuilderControls` whenever they change
+(the save status and `save`, `undo` and `redo`, the `layout` and its switch, the `add` actions for a tile,
+text or a filter, and `exit` when `onExit` is set), with actions whose identity never changes, and
+`undefined` when it goes away. Draw them with `BuilderBar` (`controls`, and `onDone` for a Done button), as
+the Console does in its header, or place each one where your chrome has room: Save in your header, Add and
+Layout in your own ⋯ menu. A host that switches between reading and editing from its own menu needs no Close:
+switching to reading is the exit, through the same `onDirtyChange` guard.
 `versionId` on the URI pins every read the editor makes; it never reaches the write, and Save turns itself
 off against a pinned version rather than opening onto a compare-and-swap it can never win.
 
