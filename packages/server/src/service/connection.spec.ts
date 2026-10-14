@@ -3961,6 +3961,12 @@ describe("buildPgConnectionString", () => {
          );
       });
 
+      it("does not treat a Unicode space as a pair separator, as libpq does not", () => {
+         const raw =
+            "host=db password=a\u2003sslmode=no-verify sslmode=disable";
+         expect(build(raw)).toBe(raw);
+      });
+
       it("rewrites no-verify alongside adding the statement timeout", () => {
          expect(
             buildPgConnectionString(
@@ -4031,6 +4037,15 @@ describe("buildPgConnectionString", () => {
                   "host=db dbname=lake sslmode=require",
                );
             }
+         });
+
+         it("leaves a string that names a libpq service alone", () => {
+            expect(build("postgresql://db/lake?service=prod")).toBe(
+               "postgresql://db/lake?service=prod",
+            );
+            expect(build("service=prod dbname=lake")).toBe(
+               "service=prod dbname=lake",
+            );
          });
 
          it("leaves a string that sets its own sslmode to that sslmode", () => {

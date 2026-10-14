@@ -634,7 +634,9 @@ function conninfoPairs(
 ): { key: string; value: string; start: number; end: number }[] {
    const pairs: { key: string; value: string; start: number; end: number }[] =
       [];
-   const isSpace = (c: string | undefined) => c !== undefined && /\s/.test(c);
+   // ASCII only, as libpq: a Unicode space inside a password is password data.
+   const isSpace = (c: string | undefined) =>
+      c !== undefined && /[ \t\n\v\f\r]/.test(c);
    let i = 0;
    while (i < conninfo.length) {
       while (isSpace(conninfo[i])) i++;
@@ -699,6 +701,8 @@ function mapUriQuery(uri: string, fn: (params: string[]) => string[]): string {
  * Makes a raw connectionString's sslmode one libpq accepts: `no-verify` becomes
  * `require`, and a string with no sslmode gets `require` when the deployment's
  * PGSSLMODE is `no-verify`, because libpq reads that variable itself and rejects it.
+ * A string naming a libpq `service` is left alone: its file's sslmode outranks the
+ * variable, and an appended `require` would override a stricter one.
  */
 function libpqSslmodeInRawString(connectionString: string): string {
    const envNoVerify = process.env.PGSSLMODE?.toLowerCase() === "no-verify";
@@ -708,6 +712,7 @@ function libpqSslmodeInRawString(connectionString: string): string {
          let seen = false;
          const mapped = params.map((param) => {
             const [key, ...rest] = param.split("=");
+            if (decodeUriComponentOrRaw(key) === "service") seen = true;
             if (decodeUriComponentOrRaw(key) !== "sslmode") return param;
             seen = true;
             return decodeUriComponentOrRaw(rest.join("=")) === "no-verify"
@@ -725,7 +730,9 @@ function libpqSslmodeInRawString(connectionString: string): string {
             result.slice(0, pair.start) + rewritten + result.slice(pair.end);
       }
    }
-   return !pairs.some((pair) => pair.key === "sslmode") && envNoVerify
+   return !pairs.some(
+      (pair) => pair.key === "sslmode" || pair.key === "service",
+   ) && envNoVerify
       ? `${result} ${rewritten}`
       : result;
 }
