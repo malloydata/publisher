@@ -27,6 +27,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **`Report` no longer overrides a host's staleness for the `report` key.** Without `manifestStaleTime`, it used to pass `staleTime: 0` explicitly, which beat a host's `queryClient.setQueryDefaults(["report"], …)`, so a host that reads the manifest itself and then mounts `Report` over the same entry read it twice. Now the query client's default decides. With no default that is still 0, so a reader that sets nothing sees no difference. A host whose `QueryClient` sets a global `staleTime` should know that `Report` now inherits it; pass `manifestStaleTime` to fix a value for the reader.
 
+**`BuilderBar` no longer widens a host's header.** Its save status's screen-reader announcer was meant to be a hidden 1px box, but was sized in `sx` units that read as 100% wide, so in a host whose header does not clip it, the page scrolled sideways. It is 1px now.
+
 **`clearReportDraft` and `reportDraftKey` are exported from `@malloy-publisher/sdk`**, for a host that deletes, renames or replaces a report itself and wants the builder's kept edits gone with it. `clearReportDraft({ environmentName, packageName, path })` drops every draft of that report in this browser, on any server and version, and `server` or `versionId` narrow it. `reportDraftKey(…)` is the key the builder keeps a draft under, and `clearReportDraft(key)` drops that one.
 
 ## [Unreleased] — A host can theme the report reader and builder to its own design system
