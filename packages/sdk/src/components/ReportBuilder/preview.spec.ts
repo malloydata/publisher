@@ -5,7 +5,12 @@ import { describe, expect, it } from "bun:test";
 import type { GivenValue } from "../../hooks/givenValue";
 import type { DashboardDocument, QueryTile } from "./document";
 import { queryTile } from "./testing/fixtures";
-import { previewGivens, previewTileQuery, tileExpressionKey } from "./preview";
+import {
+   givensReadThroughModel,
+   previewGivens,
+   previewTileQuery,
+   tileExpressionKey,
+} from "./preview";
 
 const tile = (
    name: string,
@@ -102,6 +107,114 @@ describe("previewGivens", () => {
          },
       };
       expect(previewGivens(withModel, [spec])).toEqual([spec]);
+   });
+});
+
+describe("givens read through the model", () => {
+   // The auto_recalls shape: the report binds nothing; the model's source
+   // filters itself by four givens in its own `where:`.
+   const recalls: DashboardDocument = {
+      layout: "grid",
+      title: "Recalls",
+      imports: [{ kind: "all", from: "auto_recalls.malloy" }],
+      sources: [{ name: "recalls_tiles", base: "recalls" }],
+      tiles: [
+         { ...tile("by_year", "by_year"), source: "recalls_tiles" },
+         { ...tile("by_maker", "by_maker"), source: "recalls_tiles" },
+      ],
+   };
+   const MODEL = [
+      { name: "manufacturer_filter", type: "filter<string>" },
+      { name: "subject_filter", type: "filter<string>" },
+      { name: "major_recall_filter", type: "boolean" },
+      { name: "recall_date_filter", type: "filter<date>" },
+   ];
+   const served = new Map([
+      [
+         "recalls_tiles -> by_year",
+         ["manufacturer_filter", "recall_date_filter", "major_recall_filter"],
+      ],
+      ["recalls_tiles -> by_maker", ["manufacturer_filter", "subject_filter"]],
+   ]);
+
+   it("shows a given only the model reads, in the manifest's order", () => {
+      const reads = givensReadThroughModel(recalls, recalls, served);
+      expect(
+         previewGivens(recalls, MODEL, reads).map((spec) => spec.name),
+      ).toEqual(MODEL.map((spec) => spec.name));
+      // Without the reads, the row the builder drew before: empty.
+      expect(previewGivens(recalls, MODEL)).toEqual([]);
+   });
+
+   it("leaves out what this file bound, so a removed binding takes its control", () => {
+      const bound: DashboardDocument = {
+         ...recalls,
+         tiles: [
+            {
+               ...tile("by_year", "by_year", [
+                  { field: "category", given: "CATEGORY" },
+               ]),
+               source: "recalls_tiles",
+            },
+         ],
+      };
+      const reads = givensReadThroughModel(
+         bound,
+         bound,
+         new Map([
+            ["recalls_tiles -> by_year", ["CATEGORY", "manufacturer_filter"]],
+         ]),
+      );
+      expect([...reads]).toEqual(["manufacturer_filter"]);
+   });
+
+   it("puts this file's bound declarations first, then the model's", () => {
+      const mixed: DashboardDocument = {
+         ...recalls,
+         localGivens: [{ name: "SINCE", type: "date", default: "@2020-01-01" }],
+         tiles: [
+            {
+               ...tile("by_year", "by_year", [
+                  { field: "recall_date", given: "SINCE", op: ">=" },
+               ]),
+               source: "recalls_tiles",
+            },
+         ],
+      };
+      const reads = givensReadThroughModel(mixed, mixed, served);
+      expect(
+         previewGivens(mixed, MODEL, reads).map((spec) => spec.name),
+      ).toEqual([
+         "SINCE",
+         "manufacturer_filter",
+         "major_recall_filter",
+         "recall_date_filter",
+      ]);
+   });
+
+   it("reads a new tile by a served tile of the same expression, and nothing otherwise", () => {
+      const added: DashboardDocument = {
+         ...recalls,
+         tiles: [
+            ...recalls.tiles,
+            { ...tile("by_maker", "by_maker"), source: "recalls_tiles" },
+            { ...tile("fresh", "fresh"), source: "recalls_tiles" },
+         ],
+      };
+      expect(
+         [
+            ...givensReadThroughModel(added, { ...recalls, tiles: [] }, served),
+         ].sort(),
+      ).toEqual(
+         [
+            "major_recall_filter",
+            "manufacturer_filter",
+            "recall_date_filter",
+            "subject_filter",
+         ].sort(),
+      );
+      const onlyNew = { ...recalls, tiles: [added.tiles[3]!] };
+      expect(givensReadThroughModel(onlyNew, recalls, served).size).toBe(0);
    });
 });
 

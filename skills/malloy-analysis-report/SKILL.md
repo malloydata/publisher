@@ -20,9 +20,11 @@ An ad-hoc report is a Publisher **report** with `layout=linear`: a `.malloy` fil
 
 Do NOT build the report in the same turn as `execute_query`. Explain first, then build.
 
-## Filters are inherited from the model, don't declare them in the report
+## Filters belong to the report, never to the source
 
-Do not declare filters in an ad-hoc report. If the source declares `given:` parameters (or legacy `#(filter)` annotations), Publisher renders the controls, parses caller parameters, and applies them server-side automatically: the report inherits and displays them with no extra work. If the analysis needs a knob the source doesn't expose, the right move is to add a `given:` to the source itself, not to wedge a filter widget into the report. `#(filter)` is deprecated in favour of native Malloy `given:` parameters. Never add a `#(filter)` annotation: every use, including `required`, `implicit`, and date/number ranges, has a `given:` form. The `malloy-model` skill covers this under § Legacy: Parameterizable Filters. For a curated report with its own filter controls on top of the model, see `skill:malloy-reports` instead.
+An ad-hoc report usually needs no filters: it records an analysis already run. If the user wants one a reader can change (a manufacturer, a date range), declare the given in the report and bind it on its tiles, as `skill:malloy-reports` describes. Do not add a `given:` to the source for it: a model-level `where:` filters every read of the source, chat and every other report included, and the report builder can show such a filter but not change or remove it. A given the source already reads (a gate, a value every query must supply) shows in the report with no work, and stays in the model.
+
+Never add a `#(filter)` annotation: it is deprecated, and every use has a `given:` form (`skill:malloy-model`, § Legacy: reading an existing `#(filter)` model).
 
 ## What goes in the report
 

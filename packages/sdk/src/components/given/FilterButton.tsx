@@ -54,9 +54,18 @@ export function FilterButton(props: GivenInputProps) {
    const set = value !== null && value !== undefined;
    const summary = summarizeGivenValue(given, value);
    const open = anchor !== null;
-   const problem = editing?.stateOf(name)?.problem;
+   const state = editing?.stateOf(name);
+   const problem = state?.problem;
+   // Read through the model: set here as in the reader, changed only there.
+   const fixed = state?.fixed;
    const button = (
-      <FilterShell name={name} set={set} open={open} problem={problem}>
+      <FilterShell
+         name={name}
+         set={set}
+         open={open}
+         problem={problem}
+         fixed={fixed !== undefined}
+      >
          <ButtonBase
             aria-haspopup="dialog"
             aria-expanded={open}
@@ -151,7 +160,20 @@ export function FilterButton(props: GivenInputProps) {
             }}
          >
             <GivenInput {...props} />
-            {editing && (
+            {editing && fixed !== undefined && (
+               <Typography
+                  sx={(mui) => ({
+                     mt: 1.5,
+                     pt: 1,
+                     borderTop: `1px solid ${mui.palette.divider}`,
+                     ...ui.type.caption,
+                     color: mui.palette.text.secondary,
+                  })}
+               >
+                  {fixed}
+               </Typography>
+            )}
+            {editing && fixed === undefined && (
                <Box
                   sx={(mui) => ({
                      mt: 1.5,
@@ -200,6 +222,7 @@ function FilterShell({
    open = false,
    unused = false,
    problem,
+   fixed = false,
    children,
 }: {
    name: string;
@@ -207,6 +230,8 @@ function FilterShell({
    open?: boolean;
    unused?: boolean;
    problem?: string;
+   /** The model's filter: no remove badge, since the builder cannot take it off. */
+   fixed?: boolean;
    children: ReactNode;
 }) {
    const { theme } = usePublisherTheme();
@@ -251,7 +276,7 @@ function FilterShell({
          })}
       >
          {children}
-         {editing && (
+         {editing && !fixed && (
             <RemoveBadge
                label={`Remove filter ${name}`}
                onRemove={() => editing.onRemove(name)}

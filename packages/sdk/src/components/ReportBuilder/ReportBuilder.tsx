@@ -198,6 +198,13 @@ export interface ReportBuilderProps {
     */
    addFilterDisabledReason?: string;
    /**
+    * Filters in the row that a tile reads through the model (a source's own
+    * `where:`) rather than a binding in this file, each with why it cannot
+    * be changed here. They can be set, as in the reader, but not removed or
+    * configured: the builder never edits the model.
+    */
+   modelFilters?: ReadonlyMap<string, string>;
+   /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save.
     */
@@ -253,6 +260,7 @@ export function ReportBuilder({
    modelPath,
    visibleSources,
    addFilterDisabledReason,
+   modelFilters,
    onControlsChange,
    draftKey,
 }: ReportBuilderProps) {
@@ -512,6 +520,7 @@ export function ReportBuilder({
                            ? { addDisabledReason: addFilterDisabledReason }
                            : {})}
                         onRemove={bindings.dropControl}
+                        {...(modelFilters ? { modelFilters } : {})}
                      >
                         {controls}
                      </FilterStrip>

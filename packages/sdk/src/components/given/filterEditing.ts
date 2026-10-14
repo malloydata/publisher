@@ -35,6 +35,11 @@ export interface FilterEditState {
    problem?: string;
    /** Where the filter is declared: this file, or the model it imports. */
    origin: "dashboard" | "model";
+   /**
+    * Set when a tile reads the filter through the model rather than a binding
+    * in this file: why it can be set but not removed or configured here.
+    */
+   fixed?: string;
 }
 
 export const FilterEditingContext = createContext<FilterEditing | undefined>(
