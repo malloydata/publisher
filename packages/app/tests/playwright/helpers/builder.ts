@@ -17,10 +17,18 @@ export async function editorOpen(page: Page): Promise<void> {
  * both, and a text locator would find each line twice.
  */
 export async function readerOpen(page: Page): Promise<void> {
-   await expect(page.locator("[data-switching]")).toHaveCount(0, {
-      timeout: 30_000,
-   });
-   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
+   // One condition, read at once: checked one after the other, the first
+   // could pass before the switch began and the second once it was under way.
+   await page.waitForFunction(
+      () =>
+         document.querySelector("[data-switching]") === null &&
+         document.querySelector('[aria-label="Undo"]') === null &&
+         [...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Edit",
+         ),
+      null,
+      { timeout: 30_000 },
+   );
 }
 
 /** A tile by the key the builder tags it with: `text.<name>` or `<source>.<view>`. */
