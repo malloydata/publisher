@@ -14,7 +14,11 @@ import { BuilderDialogs } from "./BuilderDialogs";
 import { BuilderGrid } from "./BuilderGrid";
 import { BuilderHeader } from "./BuilderHeader";
 import { builderReport } from "./builderReport";
-import { BuilderToolbar } from "./BuilderToolbar";
+import { BuilderToolbar, SAVE_TARGET } from "./BuilderToolbar";
+import {
+   useReportControls,
+   type BuilderControlsHandler,
+} from "./builderControls";
 import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
 import {
@@ -191,6 +195,14 @@ export interface ReportBuilderProps {
    /** Leave the builder, opted into: draws Close, which asks first when edits are unsaved. */
    onExit?: () => void;
    /**
+    * Take over the page-level controls (save status and Save, undo and redo,
+    * the layout switch, and adding a tile, text or filter): the builder hands
+    * them over as `BuilderControls` whenever they change, and draws no
+    * toolbar of its own. Draw them with `BuilderBar`, or place each in
+    * the host's own chrome. `undefined` is handed over when the builder goes.
+    */
+   onControlsChange?: BuilderControlsHandler;
+   /**
     * Whether the toolbar offers the Linear / Grid layout switch. Default
     * true. A host that files a report by its layout passes false, so an
     * author cannot change a layout the host files by. A document held as text
@@ -220,6 +232,7 @@ export function ReportBuilder({
    modelPath,
    visibleSources,
    addFilterDisabledReason,
+   onControlsChange,
 }: ReportBuilderProps) {
    const editor = useReportEditor({
       source,
@@ -355,32 +368,68 @@ export function ReportBuilder({
    });
 
    const empty = editor.document.tiles.length === 0;
+   // A text-held document's layout is the host's record, so only a file gets
+   // the switch, and only when the host allows it.
+   const layoutSwitch =
+      visibleSources === undefined && allowLayoutChange
+         ? {
+              layout: editor.document.layout,
+              onLayoutChange: (next: ReportLayout) => {
+                 const from = editor.document.layout;
+                 if (next === from) return;
+                 editor.update((draft) => {
+                    draft.layout = next;
+                 });
+                 reportEmitter(
+                    { path: modelPath ?? "", layout: next },
+                    onEvent,
+                 ).emit({ type: "report.layout_changed", from, to: next });
+              },
+           }
+         : undefined;
+   const { toolbarProps } = session;
+   useReportControls(onControlsChange, {
+      status: session.saving
+         ? "saving"
+         : toolbarProps.dirty
+           ? "unsaved"
+           : "saved",
+      saveTarget: saveLabel ?? SAVE_TARGET[savesTo],
+      ...(toolbarProps.onSave ? { save: toolbarProps.onSave } : {}),
+      canUndo: toolbarProps.canUndo,
+      undo: toolbarProps.onUndo,
+      canRedo: toolbarProps.canRedo,
+      redo: toolbarProps.onRedo,
+      ...(layoutSwitch
+         ? {
+              layout: {
+                 value: layoutSwitch.layout,
+                 set: layoutSwitch.onLayoutChange,
+              },
+           }
+         : {}),
+      add: {
+         ...(catalog ? { tile: () => tiles.openAdd() } : {}),
+         text: tiles.appendText,
+         // A filter is declared for the tiles to read, so there has to be one.
+         ...(addFilterDisabledReason !== undefined
+            ? { filterUnavailable: addFilterDisabledReason }
+            : empty
+              ? { filterUnavailable: "Add a tile before a filter." }
+              : { filter: () => setFilterDialog({}) }),
+      },
+      ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
+   });
    // The builder's actions: on the title's line, at the right, above the
    // description.
-   const actions = (
+   const actions = onControlsChange ? undefined : (
       <BuilderToolbar
          {...session.toolbarProps}
          {...(toolbar ? { actions: toolbar } : {})}
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
-         {...(visibleSources === undefined && allowLayoutChange
-            ? {
-                 // A text-held document's layout is the host's record, so only a file gets the switch, and only when the host allows it.
-                 layout: editor.document.layout,
-                 onLayoutChange: (next: ReportLayout) => {
-                    const from = editor.document.layout;
-                    if (next === from) return;
-                    editor.update((draft) => {
-                       draft.layout = next;
-                    });
-                    reportEmitter(
-                       { path: modelPath ?? "", layout: next },
-                       onEvent,
-                    ).emit({ type: "report.layout_changed", from, to: next });
-                 },
-              }
-            : {})}
+         {...(layoutSwitch ?? {})}
       />
    );
    return (

@@ -1,9 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, Button, Stack, TextField, Typography } from "@mui/material";
+import { Box, InputBase, Typography } from "@mui/material";
 import { editableSx } from "./inlineEdit";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PROSE_MAX_WIDTH, TYPE } from "../controlTokens";
+import { MOD } from "./useBuilderShortcuts";
+import {
+   useCallback,
+   useEffect,
+   useId,
+   useMemo,
+   useRef,
+   useState,
+} from "react";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { Prose, type ProseVariant } from "../Prose";
 import { useReportOpenDraft } from "./openDraft";
@@ -14,10 +23,10 @@ import { useDraft } from "./useDraft";
  * Markdown that is edited where it is read: it draws as prose, a click on it
  * opens a textarea, and what was typed commits once, when the field closes.
  *
- * Escape and Cmd or Ctrl+Enter are Done, which holds on a draft the writer
- * would refuse and says why; leaving the field commits, so the closed prose
- * keeps saying what Save will refuse. Links stay inert: a click on one is not
- * a way out of the builder, and not an edit either.
+ * Cmd or Ctrl+Enter finishes, holding on a draft the writer would refuse and
+ * saying why; Escape drops the edit; leaving the field commits, so the closed
+ * prose keeps saying what Save will refuse. Links stay inert: a click on one
+ * is not a way out of the builder, and not an edit either.
  */
 export function InlineMarkdown({
    markdown,
@@ -33,6 +42,8 @@ export function InlineMarkdown({
    variant?: ProseVariant;
 }) {
    const { theme } = usePublisherTheme();
+   // The keys the field takes, read out with it.
+   const hintId = useId();
    const [editing, setEditing] = useState(false);
    // One object per value, or the draft would reset on every render while open.
    const value = useMemo(
@@ -55,7 +66,6 @@ export function InlineMarkdown({
       close();
       return true;
    });
-   const actions = useRef<HTMLDivElement>(null);
    const caretPlaced = useRef(false);
    useEffect(() => {
       if (!editing) caretPlaced.current = false;
@@ -118,27 +128,46 @@ export function InlineMarkdown({
       if (problem === undefined) close();
    };
    return (
-      <Stack spacing={1}>
-         <TextField
+      // The text in place, in the page's own prose type: no box inside the
+      // tile, no buttons under it, so the tile keeps its size as it opens. No
+      // ring of its own either: it opens only on something already selected,
+      // and a second ring inside the selection's read as a box in a box.
+      // Leaving it or ⌘/Ctrl+Enter keeps the edit; Escape drops it, as a
+      // title's Escape does.
+      <Box
+         sx={{
+            position: "relative",
+            mx: "-10px",
+            px: "10px",
+            my: "-6px",
+            py: "6px",
+         }}
+      >
+         <InputBase
             multiline
             autoFocus
-            minRows={3}
-            maxRows={14}
+            minRows={2}
             fullWidth
             value={draft.text}
             placeholder={placeholder}
             error={problem !== undefined}
-            helperText={problem}
             inputRef={placeCaret}
-            inputProps={{ "aria-label": "Markdown" }}
+            inputProps={{
+               "aria-label": "Markdown",
+               "aria-describedby": hintId,
+               ...(problem !== undefined ? { "aria-invalid": true } : {}),
+            }}
             onChange={(event) =>
                patch((next) => {
                   next.text = event.target.value;
                })
             }
             onKeyDown={(event) => {
-               if (event.key === "Escape") finish();
-               else if (
+               if (event.key === "Escape") {
+                  event.preventDefault();
+                  discard();
+                  setEditing(false);
+               } else if (
                   event.key === "Enter" &&
                   (event.metaKey || event.ctrlKey)
                ) {
@@ -146,37 +175,33 @@ export function InlineMarkdown({
                   finish();
                }
             }}
-            // Moving to Done or Cancel is not leaving the edit.
-            onBlur={(event) => {
-               if (
-                  event.relatedTarget instanceof Node &&
-                  actions.current?.contains(event.relatedTarget)
-               )
-                  return;
-               close();
+            onBlur={() => close()}
+            sx={{
+               p: 0,
+               ...TYPE.prose,
+               color: "inherit",
+               maxWidth: PROSE_MAX_WIDTH,
+               "& textarea": { p: 0 },
             }}
          />
-         <Stack ref={actions} direction="row" spacing={1}>
-            <Button
-               size="small"
-               variant="outlined"
-               disabled={problem !== undefined}
-               onClick={finish}
-            >
-               Done
-            </Button>
-            <Button
-               size="small"
-               // Keeps focus in the field, whose blur would otherwise commit the draft Cancel is dropping.
-               onMouseDown={(event) => event.preventDefault()}
-               onClick={() => {
-                  discard();
-                  setEditing(false);
-               }}
-            >
-               Cancel
-            </Button>
-         </Stack>
-      </Stack>
+         {problem !== undefined && (
+            <Typography variant="caption" color="error" role="alert">
+               {problem}
+            </Typography>
+         )}
+         <Typography
+            id={hintId}
+            variant="caption"
+            sx={{
+               display: "block",
+               textAlign: "right",
+               mt: 0.5,
+               color: "text.secondary",
+               pointerEvents: "none",
+            }}
+         >
+            Markdown · {MOD}↩ done · Esc cancels
+         </Typography>
+      </Box>
    );
 }

@@ -8,10 +8,10 @@ import {
    useReportListing,
 } from "@malloy-publisher/sdk";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
-import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { loadBuilder } from "../pages/DashboardEditPage/loadBuilder";
 import { isEditSearch, withEdit, withoutEdit } from "./documentRoutes";
+import { useEditPageMounted } from "../pages/DashboardEditPage/editPageMounted";
 
 /**
  * A route ending in a model suffix is a FILE route, not a report: ModelPage
@@ -27,15 +27,16 @@ const FILE_ROUTE = /\.malloy(nb)?$/;
  * the builder with unsaved edits is the edit page's leave guard to ask about.
  *
  * Shown for the route of a report the package lists as editable, resolved by
- * its path; in the builder, View is always offered, since a draft the package
- * does not list yet still needs a way back. Absent on every other route, and
- * below 600px, where the builder steps aside.
+ * its path. In the builder the edit page draws the builder's bar in this slot
+ * instead, with Done as the way back. Absent on every other route, and below
+ * 600px, where the builder steps aside.
  */
 export function DocumentModeButton() {
    const { pathname, search } = useLocation();
    const params = useParams();
    const navigate = useNavigate();
    const narrow = useNarrowScreen();
+   const editPageMounted = useEditPageMounted();
    const environmentName = params.environmentName ?? "";
    const packageName = params.packageName ?? "";
    const splat = params["*"] ?? "";
@@ -54,11 +55,13 @@ export function DocumentModeButton() {
    const path = splat.replace(/\/$/, "");
    const edit = isEditSearch(search);
    const page = pathname.replace(/\/$/, "");
+   // In the builder the edit page draws the builder's bar here, Done included.
+   // On an edit route that never got that far (the listing still loading, or
+   // failed), View stays: it is the way back.
    if (edit)
-      return (
+      return editPageMounted ? null : (
          <SecondaryButton
             label="View"
-            icon={<VisibilityOutlinedIcon />}
             onClick={() => navigate(`${page}${withoutEdit(search)}`)}
          />
       );

@@ -68,19 +68,21 @@ test.describe("notebook exit guard", () => {
    const markdownField = (page: Page) =>
       page.getByLabel("Markdown", { exact: true });
 
-   /** The header's View button, which returns to the read-only page. */
+   /** The header bar's Done, which returns to the read-only page. */
    const view = (page: Page) =>
-      page.getByRole("button", { name: "View", exact: true });
+      page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Done", exact: true });
 
    /** Opens the first note's field. */
    const openFirstNote = (page: Page) =>
       tileByKey(page, "text.first").locator('[role="button"]').first().click();
 
-   /** Rewrites the first note and commits it with Done, leaving the notebook dirty. */
+   /** Rewrites the first note and commits it with ⌘/Ctrl+Enter, leaving the notebook dirty. */
    const dirtyFirstNote = async (page: Page, text = "Edited first.") => {
       await openFirstNote(page);
       await markdownField(page).fill(text);
-      await page.getByRole("button", { name: "Done", exact: true }).click();
+      await markdownField(page).press("ControlOrMeta+Enter");
       await expect(page.getByText(text)).toBeVisible();
    };
 
@@ -139,24 +141,21 @@ test.describe("notebook exit guard", () => {
       expect(await pe.readSource(TOUR)).not.toContain("Edited first.");
    });
 
-   test("Tab to a text tile's Done, then View, still asks, and Keep editing keeps the draft", async ({
+   test("Done with a text draft open keeps the text, asks, and Keep editing keeps it", async ({
       page,
    }) => {
       await openEditor(page);
       await openFirstNote(page);
-      await markdownField(page).fill("Tabbed draft");
-      await markdownField(page).press("Tab");
-      await expect(
-         page.getByRole("button", { name: "Done", exact: true }),
-      ).toBeFocused();
+      await markdownField(page).fill("Draft then Done");
 
+      // Leaving the field keeps its text; the edit is then unsaved, so leaving asks.
       await view(page).click();
       await expect(prompt(page)).toBeVisible();
       await prompt(page).getByRole("button", { name: "Keep editing" }).click();
 
       await expect(prompt(page)).toHaveCount(0);
       await expect(page).toHaveURL(/\?edit$/);
-      await expect(markdownField(page)).toHaveValue("Tabbed draft");
+      await expect(page.getByText("Draft then Done")).toBeVisible();
    });
 
    test("View with unsaved edits, Keep editing, then Save and View leaves with no prompt", async ({
@@ -200,11 +199,11 @@ test.describe("notebook exit guard", () => {
       await expect(prompt(page)).toHaveCount(0);
    });
 
-   test("a text tile's Cancel drops the draft", async ({ page }) => {
+   test("Escape in a text tile drops the draft", async ({ page }) => {
       await openEditor(page);
       await openFirstNote(page);
       await markdownField(page).fill("Dropped draft");
-      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await markdownField(page).press("Escape");
 
       await expect(markdownField(page)).toHaveCount(0);
       await expect(page.getByText("Dropped draft")).toHaveCount(0);
@@ -226,6 +225,6 @@ test.describe("notebook exit guard", () => {
       await expect(page.getByText("Committed by keyboard")).toBeVisible();
       await expect(
          page.getByRole("button", { name: "Save", exact: true }),
-      ).toBeEnabled();
+      ).toBeVisible();
    });
 });

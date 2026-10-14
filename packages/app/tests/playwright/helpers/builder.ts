@@ -29,32 +29,59 @@ export const tileOrder = (page: Page): Promise<string[]> =>
 export const queryTiles = (page: Page): Locator =>
    page.locator('[data-tile-key]:not([data-tile-key^="text."])');
 
-/** Opens a text tile's markdown field, replaces its text, and commits it with Done. */
+/** Opens a text tile's markdown field, replaces its text, and commits it with ⌘/Ctrl+Enter. */
 export async function editText(tile: Locator, text: string): Promise<void> {
    await tile.locator('[role="button"]').first().click();
    const page = tile.page();
    await page.getByLabel("Markdown", { exact: true }).fill(text);
-   await page.getByRole("button", { name: "Done", exact: true }).click();
+   await page
+      .getByLabel("Markdown", { exact: true })
+      .press("ControlOrMeta+Enter");
 }
 
-/** Adds an empty text tile from the toolbar's Add tile dialog. */
+/** The builder's bar in the header, where its page-level controls are. */
+export const builderBar = (page: Page): Locator =>
+   page.getByRole("toolbar", { name: "Report builder" });
+
+/** Picks one item of the bar's Add menu: a tile (opens the picker), text, or a filter. */
+export async function addFromBar(
+   page: Page,
+   what: "Tile" | "Text" | "Filter",
+): Promise<void> {
+   await builderBar(page)
+      .getByRole("button", { name: "Add", exact: true })
+      .click();
+   await page
+      .getByRole("menuitem")
+      .filter({ hasText: new RegExp(`^${what}`) })
+      .click();
+}
+
+/** Opens the Add a tile picker from the bar's Add menu. */
+export async function openAddTile(page: Page): Promise<void> {
+   await addFromBar(page, "Tile");
+   await expect(page.getByRole("dialog", { name: "Add a tile" })).toBeVisible();
+}
+
+/** Adds an empty text tile from the bar's Add menu. */
 export async function addTextTile(page: Page): Promise<void> {
-   await page.getByRole("button", { name: "Add tile", exact: true }).click();
-   const dialog = page.getByRole("dialog", { name: "Add a tile" });
-   await dialog.getByRole("button", { name: "Text", exact: true }).click();
-   await dialog.getByRole("button", { name: "Add text", exact: true }).click();
-   await expect(dialog).toHaveCount(0);
+   await addFromBar(page, "Text");
 }
 
-/** Sets a tile's chart from its settings menu, then closes the menu so the choice commits. */
+/** Sets a tile's chart from its ⋯ menu's Chart submenu, then closes the menu so the choice commits. */
 export async function pickChart(
    page: Page,
    tile: Locator,
    option: "Bar" | "From the view" | "Table",
 ): Promise<void> {
    await tile.getByLabel(/^Settings for /).click();
-   await page.getByRole("combobox", { name: /^Viz type, / }).click();
-   await page.getByRole("option", { name: option, exact: true }).click();
+   await page.getByRole("menuitem", { name: /^Chart/ }).click();
+   await page
+      .getByRole("menu", { name: "Chart" })
+      .getByRole("menuitemradio")
+      .filter({ hasText: new RegExp(`^${option}$`) })
+      .click();
+   // The submenu closes on the pick; Escape closes the tile menu, which commits.
    await page.keyboard.press("Escape");
 }
 

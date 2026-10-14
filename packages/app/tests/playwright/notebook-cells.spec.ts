@@ -263,7 +263,10 @@ test.describe("notebook tiles", () => {
       await editorOpen(page);
       await editText(tileByKey(page, "text.first"), "Edited first.");
       await saveChanges(page);
-      await page.getByRole("button", { name: "View", exact: true }).click();
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Done", exact: true })
+         .click();
       await expect(page).toHaveURL(/\/notebooks\/browser_tour$/);
       await expect(page.getByText("Edited first.")).toBeVisible({
          timeout: 60_000,

@@ -657,8 +657,8 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       fireEvent.change(description, {
          target: { value: "What sold, and where." },
       });
-      // Escape is Done: the text commits.
-      fireEvent.keyDown(description, { key: "Escape" });
+      // ⌘Enter finishes: the text commits.
+      fireEvent.keyDown(description, { key: "Enter", metaKey: true });
       expect(screen.getByText("What sold, and where.")).toBeDefined();
 
       editInline("Storefront", "Report title", "Storefront, weekly");
@@ -704,7 +704,12 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for x"));
-      fireEvent.click(button("Drill"));
+      fireEvent.click(
+         screen.getByRole("menuitem", {
+            name: /^Clickable cells/,
+            hidden: true,
+         }),
+      );
 
       fireEvent.mouseDown(
          screen.getByRole("combobox", { name: /Clicks go to/, hidden: true }),

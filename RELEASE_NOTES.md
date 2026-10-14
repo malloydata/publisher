@@ -49,6 +49,33 @@ A package loaded from `publisher.config.json`, registered from a directory with 
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
+## [Unreleased] — The report builder's controls move to the header; a host can place them itself
+
+**The builder's page-level controls are one bar in the header.** In the Console, where **Edit** sits on a report, the builder draws its save status, undo and redo, the Linear / Grid switch, an **Add** menu (a tile, text or a filter) and **Done**, with **Save** beside Done while there are unsaved edits. The page under it is the report as it reads: no toolbar on the title's line, no pencils after every title. Done returns to the report and asks first when edits are unsaved, as **View** did; View is gone from the builder.
+
+On the page itself:
+
+- **Text is edited where it stands.** A title, subtitle, description or text tile takes a faint wash under the pointer, in place of a pencil. A text tile opens in place in the report's own type, with a ring round it, rather than as an outlined box with Done and Cancel under it: leaving it or Cmd/Ctrl+Enter keeps the edit, and **Escape now drops it** (it used to keep it), as a title's Escape already did.
+- **The tile menu is a menu**: **Chart**, a submenu, and **Clickable cells…**. A tile's width stays a drag of its right edge, or the arrow keys on that edge. A choice that cannot apply stays listed, greyed, with its reason under it. The source and view are a caption at its foot.
+- **The width handle** is a grip tab at the middle of the selected tile's right edge. While it is dragged, a label says the width it will snap to (`8 of 12 · Two-thirds`), and the columns are drawn as faint bands behind the tiles.
+- **A tile moves from its heading and padding**, never from a press inside its table or chart, which scrolls, selects and shows tooltips as it does in the reader.
+
+What an SDK host sees:
+
+- **`ReportEditor` and `ReportBuilder` take `onControlsChange`.** Passed, the editor draws no toolbar and hands its page-level controls over as `BuilderControls` whenever they change (the save status and `save`, `undo`/`redo`, `layout`, the `add` actions, and `exit` when `onExit` is set), with stable actions, and `undefined` when it goes away. **`BuilderBar`** draws them as the Console's bar. Both are exported from `@malloy-publisher/sdk/builder`. A host that passes nothing keeps the toolbar on the title's line, unchanged.
+- **Escape in an open text tile drops the draft**, and its Done and Cancel buttons are gone. A test or automation that clicked Done presses Cmd/Ctrl+Enter, or moves focus out of the field; one that clicked Cancel presses Escape.
+- **The tile menu's Viz type field is gone**: its choices are the **Chart** submenu's `menuitemradio` items, and Drill is **Clickable cells…**.
+
+## [Unreleased] — Server: package loads share the event loop with other requests, queries reuse each model's query model, and a load-phase metric
+
+Package loads and queries do less on the main thread. Nothing an API or MCP caller sees changes: the same plans, findings, warnings and answers.
+
+- Each loaded model builds its Malloy query model once and reuses it for every query, and for the render-tag checks the main thread prepares itself (those the load worker did not reach), where each used to build and drop its own. So does each variant of a model a query compiles against: a row-level `#(authorize)` graft and the storage serve shape. Memory rises by that one structure per loaded model: about 5 MB of heap for the medium generated test package (8 model files) and 14 MB for the large one (24). A cached variant holds one too, and those caches are bounded.
+- Render-tag validation, model hydration and the main-thread build-plan derivation yield to the event loop every 10 ms, so a request that arrives during a load waits for at most one step rather than for the whole load.
+- A model's report facts are derived once rather than on every query.
+
+**New metric:** `publisher_package_load_phase_duration_ms{phase}`, one sample per stage of a successful load: `worker`, `hydrate`, `render_validation`, `discovery`, `lint`, `build_plan` and `total`. Since 0.9.9 the load worker derives the build plan, so `build_plan` is the time to apply it, or to derive it on the main thread when the worker left it at its soft deadline. `malloy_package_load_duration` is unchanged and still stops before report discovery and the build plan; `total` is the whole load. Each stage is wall-clock time, so a main-thread stage includes the requests served while it yields. Package loads record it; reloads do not. See `docs/configuration.md`.
+
 ## [Unreleased] — Reports written as `run:` cells are no longer reports (BREAKING)
 
 **A `.malloy` file whose artifact tag reads as linear and lists no `tiles` is no longer a report.** That was the older linear form: `run:` statements with `(markdown)` notes between them. Publisher stops listing it, its route opens nothing, `GET …/reports/{path}` does not serve it, and the builder refuses to open it rather than converting it. The package names each such file with a new `error` finding, `report-cells-removed`, whose message gives the fix, and the compile check answers the same finding. The file still compiles as a model, so nothing that imports it breaks.
