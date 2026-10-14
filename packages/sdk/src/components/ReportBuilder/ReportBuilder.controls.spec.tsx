@@ -1,7 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+   act,
+   fireEvent,
+   render,
+   screen,
+   waitFor,
+} from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import { BuilderBar } from "./BuilderBar";
 import type { BuilderControls } from "./builderControls";
@@ -320,5 +326,44 @@ describe("BuilderBar with Done that saves", () => {
       );
       screen.getByRole("menuitem", { name: /Discard edits/ }).click();
       expect(discard).toHaveBeenCalledTimes(1);
+   });
+});
+
+describe("selection", () => {
+   it("clears when the reader presses anywhere off the selected tile", async () => {
+      render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={() => {}}
+         />,
+      );
+      const tile = document.querySelector<HTMLElement>(
+         '[data-tile-key="a.by_cat"]',
+      )!;
+      fireEvent.pointerDown(tile);
+      fireEvent.click(tile);
+      await waitFor(() =>
+         expect(
+            document
+               .querySelector('[aria-label="Tile by_cat"]')
+               ?.getAttribute("aria-current"),
+         ).toBe("true"),
+      );
+      // A press inside the tile keeps it.
+      fireEvent.pointerDown(tile);
+      expect(
+         document
+            .querySelector('[aria-label="Tile by_cat"]')
+            ?.getAttribute("aria-current"),
+      ).toBe("true");
+      fireEvent.pointerDown(document.body);
+      await waitFor(() =>
+         expect(
+            document
+               .querySelector('[aria-label="Tile by_cat"]')
+               ?.getAttribute("aria-current"),
+         ).toBe("false"),
+      );
    });
 });

@@ -66,6 +66,24 @@ export function useBuilderSelection({
    const selectDescription = useCallback(() => setSelection("description"), []);
    const clearSelection = useCallback(() => setSelection(undefined), []);
 
+   // A press anywhere else clears it: the page, its margins, the header, the
+   // sidebar. Not a press on something selectable (it selects itself), nor in
+   // a menu, window or popover the selection opened, nor on the builder's own
+   // bar, whose Undo and Add act on the page as it stands.
+   const anySelected = selection !== undefined;
+   useEffect(() => {
+      if (!anySelected) return;
+      const onPress = (event: PointerEvent) => {
+         const target = event.target;
+         if (!(target instanceof Element)) return;
+         // The page's scrollbar reports the root as the target.
+         if (target === document.documentElement) return;
+         if (target.closest(KEEPS_SELECTION) === null) clearSelection();
+      };
+      document.addEventListener("pointerdown", onPress, true);
+      return () => document.removeEventListener("pointerdown", onPress, true);
+   }, [anySelected, clearSelection]);
+
    // Undo and redo point at the tile they changed: lit briefly, and scrolled to.
    const [flash, setFlash] = useState<string | undefined>(undefined);
    const stepping = useRef(false);
@@ -119,3 +137,18 @@ export function useBuilderSelection({
       stepEditor,
    };
 }
+
+/** Where a press leaves the selection alone. */
+const KEEPS_SELECTION = [
+   "[data-tile-key]",
+   '[role="group"][aria-label="Description"]',
+   '[role="toolbar"][aria-label="Report builder"]',
+   ".MuiPopover-root",
+   ".MuiPopper-root",
+   ".MuiDialog-root",
+   ".MuiModal-root",
+   '[role="menu"]',
+   '[role="dialog"]',
+   '[role="listbox"]',
+   '[role="tooltip"]',
+].join(", ");
