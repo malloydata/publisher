@@ -48,7 +48,22 @@ interface GeminiReply {
    usageMetadata?: {
       promptTokenCount?: unknown;
       candidatesTokenCount?: unknown;
+      thoughtsTokenCount?: unknown;
    };
+}
+
+/**
+ * Output tokens as billed: the reply plus any thinking. Gemini reports
+ * thinking apart from the reply (`thoughtsTokenCount`) and bills it as
+ * output, as Anthropic's `output_tokens` already counts it.
+ */
+function geminiOutputTokens(
+   usage: GeminiReply["usageMetadata"],
+): number | undefined {
+   const reply = count(usage?.candidatesTokenCount);
+   const thoughts = count(usage?.thoughtsTokenCount);
+   if (reply === undefined && thoughts === undefined) return undefined;
+   return (reply ?? 0) + (thoughts ?? 0);
 }
 
 /** Text and usage out of a `generateContent` reply. */
@@ -69,7 +84,7 @@ export function parseGeminiReply(reply: unknown, url: string): ChatResult {
       text,
       usage: {
          inputTokens: count(r.usageMetadata?.promptTokenCount),
-         outputTokens: count(r.usageMetadata?.candidatesTokenCount),
+         outputTokens: geminiOutputTokens(r.usageMetadata),
       },
    };
 }
