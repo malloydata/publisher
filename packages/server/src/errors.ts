@@ -359,6 +359,54 @@ export function databaseAccessFailure(
 }
 
 /**
+ * Postgres SQLSTATEs for a statement the database refused to run: class 42,
+ * "syntax error or access rule violation". A syntax error (42601), a column
+ * (42703), table (42P01) or function (42883) that does not exist, an ambiguous
+ * name, a type the dialect cannot cast. The connection was fine -- it logged
+ * in and parsed the text -- so the statement, which only the caller can change,
+ * is what is wrong.
+ */
+const POSTGRES_STATEMENT_SQLSTATE = /^42[0-9A-Z]{3}$/;
+const POSTGRES_UNDEFINED_TABLE = "42P01";
+
+/**
+ * The error to answer with when Postgres rejected the caller's statement
+ * rather than the connection: a 404 with `reason: TABLE_NOT_FOUND` when the
+ * statement names a table that is not there, so the router does not retry it
+ * on another worker, and otherwise a 400 carrying the driver's message, which
+ * names the caller's own identifier (`column "x" does not exist`) and nothing
+ * internal. Undefined for anything else, which keeps the status its route gave
+ * it.
+ *
+ * Postgres only, on purpose. It is the one driver whose error carries a
+ * SQLSTATE the caller's statement is classified by; every other dialect would
+ * need its own message patterns, each a guess, and the 2026-10-13 page this
+ * exists for -- a dropped column recompiled once a minute, 2,268 router 502s
+ * in a day -- was Postgres.
+ *
+ * 42501 insufficient_privilege is in the class and stays in: the connection
+ * logged in and the statement named a table its user may not read, which is
+ * the statement's problem (isCredentialRejection leaves it alone for the same
+ * reason) and not a server that is down.
+ */
+export function statementRejection(
+   error: unknown,
+): InvalidArgumentError | TableNotFoundError | undefined {
+   let current: unknown = error;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      const { code } = current as Error & { code?: unknown };
+      if (typeof code === "string" && POSTGRES_STATEMENT_SQLSTATE.test(code)) {
+         const message = error instanceof Error ? error.message : String(error);
+         return code === POSTGRES_UNDEFINED_TABLE
+            ? new TableNotFoundError(message)
+            : new InvalidArgumentError(message);
+      }
+      current = current.cause;
+   }
+   return undefined;
+}
+
+/**
  * One line naming a refused filesystem access, in Node's own shape
  * (`EACCES: permission denied, mkdir '/x'`), built from the errno's fields.
  */
@@ -503,11 +551,14 @@ export function internalErrorToHttpError(
       // rejected statement and any driver failure no recognizer knows, and the
       // same text that names the caller's own typo names an internal hostname
       // when the failure is ours. (An unreachable database and rejected
-      // credentials are recognized, and answered above.) Splitting the class -- a rejected statement as 4xx with its
-      // message, transport failure as a generic 502 -- is the right end state
-      // and wants its own change; a table path that names nothing already took
-      // that route (see TableNotFoundError, 404). Until then a caller who needs
-      // the driver's text gets it from the logs, by traceparent.
+      // credentials are recognized, and answered above.) Splitting the class
+      // -- a rejected statement as 4xx with its message, transport failure as
+      // a generic 502 -- is the right end state and wants its own change; a
+      // table path that names nothing already took that route (see
+      // TableNotFoundError, 404), and so has a statement Postgres rejected by
+      // SQLSTATE (see statementRejection, 400). Every other dialect's rejected
+      // statement still lands here, and a caller who needs the driver's text
+      // gets it from the logs, by traceparent.
       if (error.callerSafe) {
          return httpError(502, error.message);
       }

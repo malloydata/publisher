@@ -17,6 +17,7 @@ import {
    databaseAccessFailure,
    isConnectionFailure,
    isCredentialRejection,
+   statementRejection,
    UnconfiguredConnectionError,
    TableNotFoundError,
    internalErrorToHttpError,
@@ -556,5 +557,75 @@ describe("isCredentialRejection", () => {
       });
       expect(isCredentialRejection(denied)).toBe(false);
       expect(databaseAccessFailure(denied)).toBeUndefined();
+   });
+});
+
+describe("statementRejection", () => {
+   // The shape node-pg raises: a DatabaseError whose `code` is the SQLSTATE.
+   // Message verbatim from prod 2026-10-13, when a customer dropped a column
+   // their model's sql source still selected and the recompile loop answered
+   // 502 once a minute until the router paged.
+   const column = Object.assign(
+      new Error('column "sundance_name" does not exist'),
+      { code: "42703" },
+   );
+
+   it("answers a statement Postgres rejected as a 400 carrying the driver's message", () => {
+      const classified = statementRejection(column);
+      expect(classified).toBeInstanceOf(InvalidArgumentError);
+      expect(internalErrorToHttpError(classified!)).toEqual({
+         status: 400,
+         json: { code: 400, message: 'column "sundance_name" does not exist' },
+      });
+   });
+
+   it("covers the class, not one code: syntax, a missing function, a denied table", () => {
+      for (const [code, message] of [
+         ["42601", 'syntax error at or near "FORM"'],
+         ["42883", "function nope(integer) does not exist"],
+         ["42501", "permission denied for table x"],
+      ]) {
+         expect(
+            statementRejection(Object.assign(new Error(message), { code })),
+         ).toBeInstanceOf(InvalidArgumentError);
+      }
+   });
+
+   it("answers a table the statement names but the database lacks as TABLE_NOT_FOUND", () => {
+      // The router retries a plain 404 on another worker; the reason stops it.
+      const missing = Object.assign(
+         new Error('relation "public.spaces" does not exist'),
+         { code: "42P01" },
+      );
+      const classified = statementRejection(missing);
+      expect(classified).toBeInstanceOf(TableNotFoundError);
+      expect(internalErrorToHttpError(classified!).status).toBe(404);
+   });
+
+   it("follows the cause chain a wrapper puts it behind", () => {
+      const wrapped = new Error("Failed to run SQL", { cause: column });
+      expect(statementRejection(wrapped)).toBeInstanceOf(InvalidArgumentError);
+      expect(statementRejection(wrapped)!.message).toBe("Failed to run SQL");
+   });
+
+   it("leaves the connection's failures, and anything without a SQLSTATE, alone", () => {
+      // Login (class 28) and transport (class 08) are the connection's, and
+      // are answered by databaseAccessFailure. A codeless error and a code that
+      // is not a SQLSTATE at all say nothing about the statement.
+      for (const error of [
+         Object.assign(new Error("password authentication failed"), {
+            code: "28P01",
+         }),
+         Object.assign(new Error("terminating connection"), {
+            code: "08006",
+         }),
+         Object.assign(new Error("connect ECONNREFUSED"), {
+            code: "ECONNREFUSED",
+         }),
+         new Error('column "x" does not exist'),
+         "a thrown string",
+      ]) {
+         expect(statementRejection(error)).toBeUndefined();
+      }
    });
 });
