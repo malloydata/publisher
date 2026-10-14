@@ -29,6 +29,14 @@ A caller who sends `source: mine is orders extend {}` and `run: mine` got a 403 
 
 A derivation whose chain cannot be proven stays refused: a named query reached through an import, a chain past 64 names, a composite member with a row filter. See [docs/authorize.md](docs/authorize.md).
 
+## [Unreleased] — `sslmode=no-verify` in a Postgres connection string no longer breaks DuckDB attaches
+
+A raw Postgres `connectionString` with `sslmode=no-verify` (the spelling node-pg takes for "encrypt, don't verify") failed to attach through DuckDB with libpq's `invalid sslmode value`. The string is now handed to libpq with `sslmode=require` in its place, for an attached database, a federated source and a DuckLake catalog alike. Queries through the Postgres driver still read the string as written, so `no-verify` keeps its meaning there.
+
+The other node-pg-only URI spellings libpq rejects are normalized the same way: `uselibpqcompat` is dropped, `ssl=no-verify`/`ssl=1`/`ssl=0` become their libpq equivalents, and `ssl` yields to an `sslmode` in the same string. A deployment `PGSERVICE` is treated like `service=`: the service file's sslmode is left alone.
+
+**Deployment `PGSSLMODE=no-verify`** now means `require` on an attach (it previously mapped to `disable`, i.e. plaintext), and is applied to a raw connection string that sets no `sslmode` of its own. A deployment that relied on that to attach a server without TLS now fails the attach; set `PGSSLMODE=disable` or the connection's own `sslmode` for such a server.
+
 ## [Unreleased] — A host can theme the report reader and builder to its own design system
 
 **`ServerProvider` (and `ThemeProvider`) take `ui`: the chrome's design tokens.** Radii (control, tile, menu, dialog), control and chip heights, the type scale (page title, tile title, prose, control, caption, label, code), the mono face and the menu shadow, any subset, the rest staying the SDK's. Every report and builder surface reads them from the theme (`theme.ui`) instead of the fixed values it drew with before, so an embedding app such as Credible matches its own system by passing its values. They are the host's, not the server's, so they are a prop rather than part of the `Theme` object. Defaults are unchanged: a host that passes nothing sees no difference.
