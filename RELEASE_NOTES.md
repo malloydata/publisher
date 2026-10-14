@@ -21,6 +21,10 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A multi-pick filter keeps the value you just picked when you click away
+
+In a filter that takes several values (`control=multiselect` on a `filter<string>` given), picking a value and then clicking anywhere else on the page removed the value again: the filter read "All" and the query ran unfiltered. The list stays open after a pick so you can pick another value, and leaving it re-picked the option still highlighted, which in a multi-pick takes it back out. A picked value now stays. Text you typed without picking from the list is still kept when you click away, as before. Single-value pickers were never affected.
+
 ## [Unreleased] — Reports: one look for every layout and format, a row of filter buttons, and package problems on the package page
 
 **Every report draws the same page.** A grid report, a linear report written as tiles and a linear report written as `run:` cells now draw the same header, the same filter row, query results in the same cards and prose as bare text, in the reader and in the builder alike. The layout decides only how tiles are arranged: a linear report is one full-width column with tiles inserted between others, a grid has columns and widths. Before, a linear report drew no cards, wider gaps and its own title block, and a cell-format report drew a panel of filter fields and its own result frames.
