@@ -24,23 +24,45 @@ export function useDrawn(
    root: RefObject<HTMLElement | null>,
    open: boolean,
    onReady: (() => void) | undefined,
+   /**
+    * An element that has to be there first: the page's own, drawn once its
+    * content has loaded. Without it, a page still loading has no tile cards,
+    * so nothing is waited on and it reads as drawn.
+    */
+   loaded?: string,
 ) {
    const onReadyRef = useRef(onReady);
    onReadyRef.current = onReady;
    const fired = useRef(false);
    useEffect(() => {
       if (!onReadyRef.current || fired.current) return;
+      let frame = 0;
+      // Started below, once the page is open; held here so `stop` reaches them.
+      const live: {
+         beat?: ReturnType<typeof setInterval>;
+         observer?: MutationObserver;
+      } = {};
+      // Everything stops at the first answer: the check reads layout, and
+      // running it for the life of the page was a forced layout 20 times a
+      // second on every report being read.
+      const stop = () => {
+         clearTimeout(timer);
+         if (live.beat !== undefined) clearInterval(live.beat);
+         cancelAnimationFrame(frame);
+         live.observer?.disconnect();
+      };
       const fire = () => {
          if (fired.current) return;
          fired.current = true;
+         stop();
          onReadyRef.current?.();
       };
       const timer = setTimeout(fire, READY_TIMEOUT_MS);
       if (!open) return () => clearTimeout(timer);
-      let frame = 0;
       const check = () => {
          const el = root.current;
          if (!el) return;
+         if (loaded && el.querySelector(loaded) === null) return;
          const fold = window.innerHeight;
          const waiting = [
             ...el.querySelectorAll<HTMLElement>(TILE_CARD),
@@ -60,16 +82,14 @@ export function useDrawn(
       // mutation observer here never sees: its height simply grows. So the
       // check also runs on a short beat; watching mutations alone waited out
       // the whole timeout on every switch.
-      const observer = new MutationObserver(check);
+      live.observer = new MutationObserver(check);
       if (root.current)
-         observer.observe(root.current, { childList: true, subtree: true });
-      const beat = setInterval(check, 50);
+         live.observer.observe(root.current, {
+            childList: true,
+            subtree: true,
+         });
+      live.beat = setInterval(check, 50);
       check();
-      return () => {
-         clearTimeout(timer);
-         clearInterval(beat);
-         cancelAnimationFrame(frame);
-         observer.disconnect();
-      };
-   }, [open, root]);
+      return stop;
+   }, [open, root, loaded]);
 }

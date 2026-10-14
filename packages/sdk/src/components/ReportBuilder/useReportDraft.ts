@@ -23,6 +23,11 @@ import type { ReportEditorHandle } from "./useReportEditor";
 
 const PREFIX = "malloy-publisher.report-draft:";
 
+/** Where drafts are kept: `localStorage`, behind one seam a test can replace. */
+export const draftStore: { storage: () => Storage } = {
+   storage: () => window.localStorage,
+};
+
 interface StoredDraft {
    v: 1;
    document: DashboardDocument;
@@ -31,19 +36,31 @@ interface StoredDraft {
    savedAt: number;
 }
 
-/** What the builder restored on opening, for the notice that says so. */
+/** What the builder found on opening, for the notice that says so. */
 export interface RestoredDraft {
    savedAt: number;
-   /** The file changed since the draft was kept; the edits went onto the current file. */
+   /**
+    * The file changed since the draft was kept. The draft is then OFFERED, not
+    * applied: it is a whole document, and putting it back would undo whatever
+    * changed the file (another author's save, an agent's write). Restoring it
+    * is the author's call, and says it replaces the current version.
+    */
    stale: boolean;
+   /** Still to choose: a stale draft not yet restored or discarded. */
+   pending: boolean;
+}
+
+/** Drop the draft kept under `key`: for a host whose author chose another version. */
+export function clearReportDraft(key: string): void {
+   remove(key);
 }
 
 /** Whether this browser keeps drafts at all. */
 export function draftStorageAvailable(): boolean {
    try {
       const probe = `${PREFIX}probe`;
-      window.localStorage.setItem(probe, "1");
-      window.localStorage.removeItem(probe);
+      draftStore.storage().setItem(probe, "1");
+      draftStore.storage().removeItem(probe);
       return true;
    } catch {
       return false;
@@ -60,7 +77,7 @@ export function textFingerprint(text: string): string {
 
 function read(key: string): StoredDraft | undefined {
    try {
-      const raw = window.localStorage.getItem(PREFIX + key);
+      const raw = draftStore.storage().getItem(PREFIX + key);
       if (!raw) return undefined;
       const parsed = JSON.parse(raw) as StoredDraft;
       return parsed?.v === 1 && parsed.document ? parsed : undefined;
@@ -71,7 +88,7 @@ function read(key: string): StoredDraft | undefined {
 
 function write(key: string, draft: StoredDraft): boolean {
    try {
-      window.localStorage.setItem(PREFIX + key, JSON.stringify(draft));
+      draftStore.storage().setItem(PREFIX + key, JSON.stringify(draft));
       return true;
    } catch {
       return false;
@@ -80,7 +97,7 @@ function write(key: string, draft: StoredDraft): boolean {
 
 function remove(key: string): void {
    try {
-      window.localStorage.removeItem(PREFIX + key);
+      draftStore.storage().removeItem(PREFIX + key);
    } catch {
       // Nothing kept, nothing to remove.
    }
@@ -106,9 +123,19 @@ export function useReportDraft(
    dismissRestored: () => void;
    /** Put the document back to the file's, as one undoable edit; the draft goes with the edits. */
    discard: () => void;
+   /** Whether the browser is holding the edits: false once a write was refused. */
+   keeping: boolean;
+   /** Apply an offered (stale) draft, replacing the current version. */
+   restoreOffered: () => void;
 } {
    const [restored, setRestored] = useState<RestoredDraft | undefined>();
    const [keptAt, setKeptAt] = useState<number | undefined>();
+   // The last write was refused (a full quota, a large document): nothing is
+   // kept, so the host must not be told leaving is safe.
+   const [writeFailed, setWriteFailed] = useState(false);
+   // A stale draft waiting on the author: kept as it is, not overwritten or
+   // removed by the clean document the builder opened on.
+   const offered = useRef<StoredDraft | undefined>(undefined);
    const base = textFingerprint(opened);
    const editorRef = useRef(editor);
    editorRef.current = editor;
@@ -125,8 +152,13 @@ export function useReportDraft(
          remove(key);
          return;
       }
+      if (draft.base !== base) {
+         offered.current = draft;
+         setRestored({ savedAt: draft.savedAt, stale: true, pending: true });
+         return;
+      }
       current.update((document) => replaceContents(document, draft.document));
-      setRestored({ savedAt: draft.savedAt, stale: draft.base !== base });
+      setRestored({ savedAt: draft.savedAt, stale: false, pending: false });
       // Only on opening: the key and the file it opened on are fixed for a mount.
       // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [key]);
@@ -135,21 +167,57 @@ export function useReportDraft(
    const { document, dirty } = editor;
    useEffect(() => {
       if (key === undefined || !restoredOnce.current) return;
+      // The offered draft stands until the author chooses; an edit before
+      // they do is a choice too, and replaces it.
+      if (offered.current && !dirty) return;
+      offered.current = undefined;
       if (!dirty) {
          remove(key);
          setKeptAt(undefined);
+         setWriteFailed(false);
          return;
       }
       const savedAt = Date.now();
-      if (write(key, { v: 1, document, base, savedAt })) setKeptAt(savedAt);
+      if (write(key, { v: 1, document, base, savedAt })) {
+         setKeptAt(savedAt);
+         setWriteFailed(false);
+      } else {
+         setKeptAt(undefined);
+         setWriteFailed(true);
+      }
    }, [key, document, dirty, base]);
+
+   // Put an offered (stale) draft back, replacing the current version.
+   const restoreOffered = useCallback(() => {
+      const draft = offered.current;
+      if (!draft) return;
+      offered.current = undefined;
+      editorRef.current.update((document) =>
+         replaceContents(document, draft.document),
+      );
+      setRestored((was) => was && { ...was, pending: false });
+   }, []);
 
    const dismissRestored = useCallback(() => setRestored(undefined), []);
    const discard = useCallback(() => {
+      if (offered.current && key !== undefined) {
+         // An offered draft was never applied: dropping it is all there is.
+         offered.current = undefined;
+         remove(key);
+         setRestored(undefined);
+         return;
+      }
       const current = editorRef.current;
       current.update((document) => replaceContents(document, current.saved));
       setRestored(undefined);
-   }, []);
+   }, [key]);
 
-   return { keptAt, restored, dismissRestored, discard };
+   return {
+      keptAt,
+      keeping: !writeFailed,
+      restored,
+      dismissRestored,
+      discard,
+      restoreOffered,
+   };
 }

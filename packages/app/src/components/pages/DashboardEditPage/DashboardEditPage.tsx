@@ -6,6 +6,7 @@ import {
    encodeResourceUri,
    NarrowEditGate,
    Report,
+   useNarrowScreen,
    type ReportLayout,
 } from "@malloy-publisher/sdk";
 import type { BuilderControls } from "@malloy-publisher/sdk/builder";
@@ -108,7 +109,10 @@ export default function DashboardEditPage({
    const surface = useRef<HTMLDivElement>(null);
    // The builder hands its controls over once it is open, which is the first
    // half of being drawn; the tiles' results are the second.
-   useDrawn(surface, controls !== undefined, onReady);
+   // Narrow, the builder steps aside for a note and never opens: the note is
+   // the page, drawn at once.
+   const narrow = useNarrowScreen();
+   useDrawn(surface, controls !== undefined || narrow, onReady);
    const done = () =>
       navigate(`${pathname.replace(/\/$/, "")}${withoutEdit(search)}`);
    // Each event names the report by path and carries its layout as it stands.

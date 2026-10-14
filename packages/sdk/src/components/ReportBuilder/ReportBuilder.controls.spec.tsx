@@ -12,6 +12,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { BuilderBar } from "./BuilderBar";
 import type { BuilderControls } from "./builderControls";
 import { ReportBuilder } from "./ReportBuilder";
+import { draftStore } from "./useReportDraft";
 import { openDocument } from "./testing/fixtures";
 
 /**
@@ -279,6 +280,96 @@ describe("a draft kept in this browser, and Done", () => {
       await waitFor(() => expect(last()?.status).toBe("unsaved"));
       expect(exited).not.toHaveBeenCalled();
       expect(stored()).toContain('"layout":"linear"');
+   });
+});
+
+describe("a draft made before the report changed", () => {
+   const KEY = "examples/storefront/spec-stale";
+   const slot = `malloy-publisher.report-draft:${KEY}`;
+   const keepStale = async () => {
+      const opened = await openDocument(GRID);
+      window.localStorage.setItem(
+         slot,
+         JSON.stringify({
+            v: 1,
+            // Made over another file: the fingerprint does not match.
+            base: "0:other",
+            savedAt: Date.now(),
+            document: { ...opened, layout: "linear" },
+         }),
+      );
+   };
+   const mountIt = async () => {
+      const handed = mock((_controls: BuilderControls | undefined) => {});
+      render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={() => {}}
+            onExit={() => {}}
+            draftKey={KEY}
+            onControlsChange={handed}
+         />,
+      );
+      return () => handed.mock.calls.at(-1)?.[0];
+   };
+
+   it("is offered, not applied, and stays until the author chooses", async () => {
+      await keepStale();
+      const last = await mountIt();
+      expect(
+         await screen.findByText(/made before this report changed/),
+      ).toBeDefined();
+      expect(last()?.layout?.value).toBe("grid");
+      expect(last()?.status).toBe("saved");
+      expect(window.localStorage.getItem(slot)).not.toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Restore them" }));
+      await waitFor(() => expect(last()?.layout?.value).toBe("linear"));
+   });
+
+   it("Discard drops it without touching the report", async () => {
+      await keepStale();
+      const last = await mountIt();
+      await screen.findByText(/made before this report changed/);
+      fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+      expect(window.localStorage.getItem(slot)).toBeNull();
+      expect(last()?.layout?.value).toBe("grid");
+   });
+});
+
+describe("a draft the browser will not keep", () => {
+   it("does not say Draft saved", async () => {
+      const KEY = "examples/storefront/spec-full";
+      const real = draftStore.storage;
+      const full = window.localStorage;
+      draftStore.storage = () =>
+         ({
+            getItem: (k: string) => full.getItem(k),
+            removeItem: (k: string) => full.removeItem(k),
+            setItem: () => {
+               throw new Error("QuotaExceededError");
+            },
+         }) as unknown as Storage;
+      try {
+         const handed = mock((_controls: BuilderControls | undefined) => {});
+         render(
+            <ReportBuilder
+               source={GRID}
+               document={await openDocument(GRID)}
+               onSave={() => {}}
+               onExit={() => {}}
+               draftKey={KEY}
+               onControlsChange={handed}
+            />,
+         );
+         act(() => handed.mock.calls.at(-1)?.[0]?.layout?.set("linear"));
+         await waitFor(() =>
+            expect(handed.mock.calls.at(-1)?.[0]?.status).toBe("unsaved"),
+         );
+         expect(handed.mock.calls.at(-1)?.[0]?.draftKeptAt).toBeUndefined();
+      } finally {
+         draftStore.storage = real;
+      }
    });
 });
 

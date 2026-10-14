@@ -4,6 +4,7 @@
 import {
    encodeResourceUri,
    Notebook,
+   reportClasses,
    Report,
    useGivenUrlParams,
    useNarrowScreen,
@@ -44,7 +45,9 @@ export default function ReportPage({
    onReady,
 }: ReportPageProps) {
    const page = useRef<HTMLDivElement>(null);
-   useDrawn(page, true, onReady);
+   // Drawn once the report itself is on the page: before its manifest
+   // lands there are no tiles to wait on, which read as drawn.
+   useDrawn(page, true, onReady, `.${reportClasses.report}`);
    // Control values ride in the query string, so a link reproduces the view;
    // a drill pushes a route.
    const { params: givens, onGivensChange } = useGivenUrlParams();

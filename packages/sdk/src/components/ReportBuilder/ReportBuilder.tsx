@@ -368,7 +368,9 @@ export function ReportBuilder({
    const session = useBuilderSession<DashboardDocument>({
       editor: stepEditor,
       extraDirty: draftDirty,
-      keepsEdits: draftKey !== undefined,
+      // Only while the browser is actually holding them: a refused write
+      // means leaving would lose the edits, and the host's guard must ask.
+      keepsEdits: draftKey !== undefined && draft.keeping,
       prepare,
       unit: { name: "tile", count: (document) => document.tiles.length },
       onSave,
@@ -540,20 +542,39 @@ export function ReportBuilder({
 
                {draft.restored && (
                   <Alert
-                     severity="info"
+                     severity={draft.restored.pending ? "warning" : "info"}
                      onClose={draft.dismissRestored}
                      action={
-                        <Button
-                           color="inherit"
-                           size="small"
-                           onClick={draft.discard}
-                        >
-                           Discard edits
-                        </Button>
+                        draft.restored.pending ? (
+                           <>
+                              <Button
+                                 color="inherit"
+                                 size="small"
+                                 onClick={draft.restoreOffered}
+                              >
+                                 Restore them
+                              </Button>
+                              <Button
+                                 color="inherit"
+                                 size="small"
+                                 onClick={draft.discard}
+                              >
+                                 Discard
+                              </Button>
+                           </>
+                        ) : (
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={draft.discard}
+                           >
+                              Discard edits
+                           </Button>
+                        )
                      }
                   >
-                     {draft.restored.stale
-                        ? `Restored your unsaved edits from ${clockTime(draft.restored.savedAt)}. The report has changed since, so they are applied to the current version.`
+                     {draft.restored.pending
+                        ? `You have unsaved edits from ${clockTime(draft.restored.savedAt)}, made before this report changed. Restoring them replaces the current version.`
                         : `Restored your unsaved edits from ${clockTime(draft.restored.savedAt)}.`}
                   </Alert>
                )}

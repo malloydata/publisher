@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { clearReportDraft } from "./useReportDraft";
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
@@ -206,7 +207,7 @@ export function ReportEditor(props: ReportEditorProps) {
    const dashboardName = named ?? documentSlug(path) ?? "";
    const noun = "report";
 
-   const { apiClients, mutable, isLoadingStatus } = useServer();
+   const { apiClients, mutable, isLoadingStatus, server } = useServer();
    const queryClient = useQueryClient();
    // When the editor was asked for — or the reader chose what to open — so
    // "opened" can say how long it took. Read through refs by the open effect,
@@ -361,6 +362,11 @@ export function ReportEditor(props: ReportEditorProps) {
       [setDirty],
    );
 
+   // One per report, version and server: a draft is never restored onto a
+   // file it was not made on.
+   const draftKey = keepDraft
+      ? `${server}|${environmentName}/${packageName}@${versionId ?? ""}/${path ?? dashboardName}`
+      : undefined;
    const saveLabel =
       savesTo === "host" && workspace?.description
          ? workspace.description
@@ -459,7 +465,16 @@ export function ReportEditor(props: ReportEditorProps) {
             <Alert
                severity="warning"
                action={
-                  <Button size="small" onClick={acceptHeld}>
+                  <Button
+                     size="small"
+                     onClick={() => {
+                        // Loading the other version is dropping these edits,
+                        // so the draft holding them goes too: kept, it would
+                        // be offered straight back over the version chosen.
+                        if (draftKey !== undefined) clearReportDraft(draftKey);
+                        acceptHeld();
+                     }}
+                  >
                      Load it
                   </Button>
                }
@@ -500,11 +515,7 @@ export function ReportEditor(props: ReportEditorProps) {
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
                {...(onControlsChange ? { onControlsChange } : {})}
-               {...(keepDraft
-                  ? {
-                       draftKey: `${environmentName}/${packageName}/${path ?? dashboardName}`,
-                    }
-                  : {})}
+               {...(draftKey !== undefined ? { draftKey } : {})}
                {...(allowLayoutChange !== undefined
                   ? { allowLayoutChange }
                   : {})}
