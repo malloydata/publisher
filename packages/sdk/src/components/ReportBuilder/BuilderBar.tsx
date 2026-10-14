@@ -4,6 +4,9 @@
 import AddIcon from "@mui/icons-material/Add";
 import CheckIcon from "@mui/icons-material/Check";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import FilterListIcon from "@mui/icons-material/FilterList";
+import InsertChartOutlinedIcon from "@mui/icons-material/InsertChartOutlined";
+import NotesIcon from "@mui/icons-material/Notes";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import RedoIcon from "@mui/icons-material/Redo";
 import UndoIcon from "@mui/icons-material/Undo";
@@ -13,7 +16,6 @@ import {
    ButtonBase,
    Divider,
    IconButton,
-   ListItemText,
    Menu,
    MenuItem,
    Stack,
@@ -23,7 +25,7 @@ import {
    useMediaQuery,
 } from "@mui/material";
 import type { Theme } from "@mui/material";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { MOTION_FAST } from "../../theme/motion";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { edgeColor, hoverEdgeColor, TYPE } from "../controlTokens";
@@ -182,49 +184,48 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                               anchorEl={addAnchor}
                               open={addAnchor !== null}
                               onClose={() => setAddAnchor(null)}
-                           // A pick opens a window or an editor that takes
-                           // focus; the menu handing it back to Add as it
-                           // closed took it away again (the add-tile search
-                           // lost its caret).
-                           disableRestoreFocus
+                              // A pick opens a window or an editor that takes focus;
+                              // the menu handing it back to Add as it closed took it
+                              // away again (the add-tile search lost its caret).
+                              disableRestoreFocus
                               anchorOrigin={{
                                  vertical: "bottom",
                                  horizontal: "right",
                               }}
                               transformOrigin={{
-                                 vertical: "top",
+                                 vertical: -6,
                                  horizontal: "right",
                               }}
+                              slotProps={{ paper: { sx: menuPaperSx(edge) } }}
+                              MenuListProps={{ sx: { p: 0.5 } }}
                            >
                               {add?.tile && (
-                                 <MenuItem onClick={pick(add.tile)}>
-                                    <ListItemText
-                                       primary="Tile"
-                                       secondary="A view from the model"
-                                    />
-                                 </MenuItem>
+                                 <AddItem
+                                    icon={<InsertChartOutlinedIcon />}
+                                    title="Tile"
+                                    detail="A view from the model"
+                                    onClick={pick(add.tile)}
+                                 />
                               )}
                               {add?.text && (
-                                 <MenuItem onClick={pick(add.text)}>
-                                    <ListItemText
-                                       primary="Text"
-                                       secondary="Prose between the tiles"
-                                    />
-                                 </MenuItem>
+                                 <AddItem
+                                    icon={<NotesIcon />}
+                                    title="Text"
+                                    detail="Prose between the tiles"
+                                    onClick={pick(add.text)}
+                                 />
                               )}
                               {(add?.filter || add?.filterUnavailable) && (
-                                 <MenuItem
-                                    onClick={pick(add.filter)}
+                                 <AddItem
+                                    icon={<FilterListIcon />}
+                                    title="Filter"
+                                    detail={
+                                       add.filterUnavailable ??
+                                       "A control the tiles read"
+                                    }
                                     disabled={add.filter === undefined}
-                                 >
-                                    <ListItemText
-                                       primary="Filter"
-                                       secondary={
-                                          add.filterUnavailable ??
-                                          "A control the tiles read"
-                                       }
-                                    />
-                                 </MenuItem>
+                                    onClick={pick(add.filter)}
+                                 />
                               )}
                            </Menu>
                         </>
@@ -484,3 +485,90 @@ const VISUALLY_HIDDEN = {
    whiteSpace: "nowrap",
    border: 0,
 } as const;
+
+/** The builder's menus: a card set like its windows, rounded and bordered. */
+const menuPaperSx = (edge: string) => ({
+   minWidth: 260,
+   mt: 0.5,
+   borderRadius: "10px",
+   border: `1px solid ${edge}`,
+   boxShadow: "0 8px 24px rgba(16, 24, 40, 0.12)",
+});
+
+/**
+ * One thing the Add menu adds: its picture in a tile, its name, and a line
+ * saying what it is (or, when it cannot be added, why not).
+ */
+function AddItem({
+   icon,
+   title,
+   detail,
+   disabled = false,
+   onClick,
+}: {
+   icon: ReactNode;
+   title: string;
+   detail: string;
+   disabled?: boolean;
+   onClick: () => void;
+}) {
+   const { theme } = usePublisherTheme();
+   return (
+      <MenuItem
+         onClick={onClick}
+         disabled={disabled}
+         sx={(mui) => ({
+            gap: 1.5,
+            px: 1.25,
+            py: 1,
+            borderRadius: "7px",
+            alignItems: "center",
+            "& .add-icon": {
+               width: 32,
+               height: 32,
+               flex: "none",
+               borderRadius: "8px",
+               display: "flex",
+               alignItems: "center",
+               justifyContent: "center",
+               color: mui.palette.text.secondary,
+               bgcolor: mui.palette.action.hover,
+               transition: `color ${MOTION_FAST}, background-color ${MOTION_FAST}`,
+               "& svg": { fontSize: 18 },
+            },
+            "&:hover .add-icon, &.Mui-focusVisible .add-icon": {
+               color: theme.accent,
+               bgcolor: `color-mix(in srgb, ${theme.accent} 10%, ${mui.palette.background.paper})`,
+            },
+            // The menu focuses its first item on open; a full ring there read
+            // as a box drawn round a box.
+            "&.Mui-focusVisible": {
+               outline: "none",
+               bgcolor: mui.palette.action.hover,
+            },
+            "&.Mui-disabled": { opacity: 1 },
+            "&.Mui-disabled .add-text": { opacity: 0.5 },
+            "&.Mui-disabled .add-icon": { opacity: 0.5 },
+         })}
+      >
+         <Box className="add-icon" aria-hidden>
+            {icon}
+         </Box>
+         <Box className="add-text" sx={{ minWidth: 0 }}>
+            <Box sx={{ ...TYPE.control, fontWeight: 600, lineHeight: 1.3 }}>
+               {title}
+            </Box>
+            <Box
+               sx={{
+                  ...TYPE.caption,
+                  color: "text.secondary",
+                  whiteSpace: "normal",
+                  maxWidth: 220,
+               }}
+            >
+               {detail}
+            </Box>
+         </Box>
+      </MenuItem>
+   );
+}

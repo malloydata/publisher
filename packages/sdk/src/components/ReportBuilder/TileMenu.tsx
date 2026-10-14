@@ -14,6 +14,7 @@ import {
 } from "@mui/material";
 import { useEffect, useRef, useState } from "react";
 import { useDraft } from "./useDraft";
+import { edgeColor } from "../controlTokens";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
 import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
@@ -172,7 +173,18 @@ export function TileMenu({
                disabledItemsFocusable: true,
                "aria-label": query ? `${query.source} ${query.name}` : "Tile",
             }}
-            slotProps={{ paper: { sx: { minWidth: 240 } } }}
+            // Set like the builder's other menus: a rounded, bordered card.
+            slotProps={{
+               paper: {
+                  sx: {
+                     minWidth: 240,
+                     mt: 0.5,
+                     borderRadius: "10px",
+                     border: `1px solid ${edgeColor(theme.cardBorder)}`,
+                     boxShadow: "0 8px 24px rgba(16, 24, 40, 0.12)",
+                  },
+               },
+            }}
          >
             {query && (
                <MenuItem
