@@ -38,10 +38,11 @@ export async function compilePackageBuildPlan(
       // the notebook's `>>>` cell delimiter, which would abort the entire
       // package build plan and silently drop every persist source in it.
       if (!modelPath.endsWith(MODEL_FILE_SUFFIX)) continue;
-      if (signal?.aborted) throw new Error("Build cancelled");
       // Each compile below is a long synchronous stretch; give the event loop
       // a turn between models so requests are not held for the whole plan.
+      // Checked after the yield, so a cancel that lands during it is seen.
       await yielder.maybeYield();
+      if (signal?.aborted) throw new Error("Build cancelled");
 
       const { runtime, modelURL, importBaseURL } = await Model.getModelRuntime(
          pkg.getPackagePath(),
