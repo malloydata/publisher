@@ -701,23 +701,50 @@ function mapUriQuery(uri: string, fn: (params: string[]) => string[]): string {
  * Makes a raw connectionString's sslmode one libpq accepts: `no-verify` becomes
  * `require`, and a string with no sslmode gets `require` when the deployment's
  * PGSSLMODE is `no-verify`, because libpq reads that variable itself and rejects it.
- * A string naming a libpq `service` is left alone: its file's sslmode outranks the
- * variable, and an appended `require` would override a stricter one.
+ * A string naming a libpq `service`, or a deployment `PGSERVICE`, is left alone: its
+ * file's sslmode outranks the variable, and an appended `require` would override a
+ * stricter one (a service file with no sslmode then fails closed under `no-verify`).
+ * In a URI, node-pg-only params libpq rejects are normalized too: `uselibpqcompat` is
+ * dropped, and `ssl` yields to an `sslmode` (node-pg's precedence) or is respelled.
  */
 function libpqSslmodeInRawString(connectionString: string): string {
-   const envNoVerify = process.env.PGSSLMODE?.toLowerCase() === "no-verify";
+   const envNoVerify =
+      process.env.PGSSLMODE?.toLowerCase() === "no-verify" &&
+      !process.env.PGSERVICE;
    const rewritten = `sslmode=${LIBPQ_NO_VERIFY_SSLMODE}`;
    if (isUriConnectionString(connectionString)) {
       return mapUriQuery(connectionString, (params) => {
+         const keys = params.map((param) =>
+            decodeUriComponentOrRaw(param.split("=")[0]),
+         );
+         const hasSslmode = keys.includes("sslmode");
+         // node-pg turns ssl=false into verified TLS when a cert param is present.
+         const hasCert = keys.some((key) =>
+            ["sslrootcert", "sslcert", "sslkey"].includes(key),
+         );
          let seen = false;
-         const mapped = params.map((param) => {
-            const [key, ...rest] = param.split("=");
-            if (decodeUriComponentOrRaw(key) === "service") seen = true;
-            if (decodeUriComponentOrRaw(key) !== "sslmode") return param;
+         const mapped = params.flatMap((param, i) => {
+            const [, ...rest] = param.split("=");
+            const value = decodeUriComponentOrRaw(rest.join("="));
+            if (keys[i] === "service") seen = true;
+            if (keys[i] === "uselibpqcompat") return [];
+            if (keys[i] === "ssl") {
+               if (hasSslmode) return [];
+               if (value === "no-verify") {
+                  seen = true;
+                  return [rewritten];
+               }
+               if (value === "1") return ["ssl=true"];
+               if (value === "0") {
+                  if (hasCert) return [];
+                  seen = true;
+                  return ["sslmode=disable"];
+               }
+               return [param];
+            }
+            if (keys[i] !== "sslmode") return [param];
             seen = true;
-            return decodeUriComponentOrRaw(rest.join("=")) === "no-verify"
-               ? rewritten
-               : param;
+            return [value === "no-verify" ? rewritten : param];
          });
          return !seen && envNoVerify ? [...mapped, rewritten] : mapped;
       });

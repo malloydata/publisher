@@ -359,6 +359,9 @@ applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described
   is accepted on both, since Publisher hands libpq `require` in its place. `require` itself
   means encrypt-only on an attach but full verification on queries, so prefer `no-verify` for
   a server with a private or provider CA.
+  The query driver reads only a URI, so a key=value `connectionString` works for
+  `attachedDatabases` and a DuckLake catalog but not a direct Postgres connection. On an attach,
+  `ssl=true` and `ssl=1` mean encrypt-only, and the node-pg-only `uselibpqcompat` is dropped.
 - `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. An
   integer from 1 to 2147483647, Postgres's own limit. When unset, the database's own
   `statement_timeout` applies. The query driver sets it on each session with

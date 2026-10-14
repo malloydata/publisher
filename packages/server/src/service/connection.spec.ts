@@ -4015,6 +4015,44 @@ describe("buildPgConnectionString", () => {
          ).toBe("host=db sslmode=require");
       });
 
+      describe("node-pg-only URI params libpq rejects", () => {
+         const u = "postgresql://u:p@db/lake";
+
+         it("drops uselibpqcompat", () => {
+            expect(build(`${u}?uselibpqcompat=true&sslmode=require`)).toBe(
+               `${u}?sslmode=require`,
+            );
+         });
+
+         it("drops ssl beside an sslmode, in either order, so it cannot downgrade verify-full", () => {
+            for (const ssl of ["ssl=1", "ssl=true"]) {
+               expect(build(`${u}?sslmode=verify-full&${ssl}`)).toBe(
+                  `${u}?sslmode=verify-full`,
+               );
+               expect(build(`${u}?${ssl}&sslmode=verify-full`)).toBe(
+                  `${u}?sslmode=verify-full`,
+               );
+            }
+         });
+
+         it("respells ssl when there is no sslmode", () => {
+            expect(build(`${u}?ssl=no-verify`)).toBe(`${u}?sslmode=require`);
+            expect(build(`${u}?ssl=1`)).toBe(`${u}?ssl=true`);
+            expect(build(`${u}?ssl=true`)).toBe(`${u}?ssl=true`);
+            expect(build(`${u}?ssl=0`)).toBe(`${u}?sslmode=disable`);
+         });
+
+         it("drops ssl=0 rather than disabling TLS when a cert param is present", () => {
+            expect(build(`${u}?ssl=0&sslrootcert=x`)).toBe(
+               `${u}?sslrootcert=x`,
+            );
+         });
+
+         it("leaves a keyword/value string's ssl alone", () => {
+            expect(build("host=db ssl=1")).toBe("host=db ssl=1");
+         });
+      });
+
       describe("with PGSSLMODE=no-verify in the deployment", () => {
          beforeEach(() => {
             process.env.PGSSLMODE = "no-verify";
@@ -4046,6 +4084,25 @@ describe("buildPgConnectionString", () => {
             expect(build("service=prod dbname=lake")).toBe(
                "service=prod dbname=lake",
             );
+         });
+
+         it("adds exactly one sslmode when ssl=0 is respelled", () => {
+            expect(build("postgresql://u:p@db/lake?ssl=0")).toBe(
+               "postgresql://u:p@db/lake?sslmode=disable",
+            );
+         });
+
+         it("leaves a string alone when the deployment sets PGSERVICE", () => {
+            const previous = process.env.PGSERVICE;
+            process.env.PGSERVICE = "prod";
+            try {
+               expect(build("postgresql://u:p@db/lake")).toBe(
+                  "postgresql://u:p@db/lake",
+               );
+            } finally {
+               if (previous === undefined) delete process.env.PGSERVICE;
+               else process.env.PGSERVICE = previous;
+            }
          });
 
          it("leaves a string that sets its own sslmode to that sslmode", () => {
