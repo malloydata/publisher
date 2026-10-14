@@ -49,6 +49,14 @@ A package loaded from `publisher.config.json`, registered from a directory with 
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
+## [Unreleased] — `sslmode=no-verify` in a Postgres connection string no longer breaks DuckDB attaches
+
+A raw Postgres `connectionString` with `sslmode=no-verify` (the spelling node-pg takes for "encrypt, don't verify") failed to attach through DuckDB with libpq's `invalid sslmode value`. The string is now handed to libpq with `sslmode=require` in its place, for an attached database, a federated source and a DuckLake catalog alike. Queries through the Postgres driver still read the string as written, so `no-verify` keeps its meaning there.
+
+The other node-pg-only URI spellings libpq rejects are normalized the same way: `uselibpqcompat` is dropped, `ssl=no-verify`/`ssl=1`/`ssl=0` become their libpq equivalents, and `ssl` yields to an `sslmode` in the same string. A deployment `PGSERVICE` is treated like `service=`: the service file's sslmode is left alone.
+
+**Deployment `PGSSLMODE=no-verify`** now means `require` on an attach (it previously mapped to `disable`, i.e. plaintext), and is applied to a raw connection string that sets no `sslmode` of its own. A deployment that relied on that to attach a server without TLS now fails the attach; set `PGSSLMODE=disable` or the connection's own `sslmode` for such a server.
+
 ## [Unreleased] — A host can theme the report reader and builder to its own design system
 
 **`ServerProvider` (and `ThemeProvider`) take `ui`: the chrome's design tokens.** Radii (control, tile, menu, dialog), control and chip heights, the type scale (page title, tile title, prose, control, caption, label, code), the mono face and the menu shadow, any subset, the rest staying the SDK's. Every report and builder surface reads them from the theme (`theme.ui`) instead of the fixed values it drew with before, so an embedding app such as Credible matches its own system by passing its values. They are the host's, not the server's, so they are a prop rather than part of the `Theme` object. Defaults are unchanged: a host that passes nothing sees no difference.
@@ -300,6 +308,12 @@ A tile naming a view that does not exist, a `# drill` pointing at no dashboard, 
 - **A what-if dashboard that does not compile is still a dashboard.** It is judged by the replacement text you sent, so a `# drill` to it is no longer reported as pointing at nothing.
 - **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets an `error` of its own, since the reload would fail on it, and every other file keeps its findings.
 - **No repeated `#(authorize)` log lines.** A package-scope compile no longer logs each model's `#(authorize)` warnings again on every call; the package logged them when it loaded.
+
+## [Unreleased] — A `where:` on a composite source is served again
+
+Since 0.8.1, a query on a composite source carrying a `where:` could answer 403 `Access denied for source "<member>"` with no gate in the package: a `where:` on a field the members declare, one written inside a member, and, since 0.8.3, one through a join declared on the composite. These are served again, including for a composite reached through a join. Rebinding a field such a filter reads is still refused, and so are two shapes this does not cover: a member whose own join is a composite, queried through that join, and a member dimension that reads a private member field. Upgrading is enough. See #1277.
+
+Two composite shapes still fail, in Malloy rather than in this check: members that take parameters (Malloy drops a member's arguments when it resolves the composite), and a `join_many` to a composite that carries its own `where:` (Malloy generates invalid SQL for it).
 
 ## [0.9.6] - Server: per-connection sslmode and statement timeout for Postgres
 
