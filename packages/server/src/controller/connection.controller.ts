@@ -167,8 +167,10 @@ function validateAdminAuthoredConnection(
  * other failure, and Snowflake's DESCRIBE TABLE answers "does not exist or not
  * authorized", conflating absence with denial by design. Guessing on either
  * would be worse than leaving them 502. (A statement Postgres rejects on the
- * sqlSource and sqlQuery paths is a different case: that error carries a
- * SQLSTATE, which statementRejection reads instead of the text.)
+ * sqlSource, sqlQuery and sqlTemporaryTable paths is a different case: that
+ * error carries a SQLSTATE, which statementRejection reads instead of the
+ * text. Not getTable: there the Postgres driver catches and returns the text
+ * above, and the code is gone with it.)
  */
 const BIGQUERY_NOT_FOUND = /^Not found: (Table|Dataset)\b/;
 

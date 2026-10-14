@@ -910,6 +910,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryData"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -968,6 +970,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TemporaryTable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1306,6 +1310,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryData"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1370,6 +1376,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TemporaryTable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":

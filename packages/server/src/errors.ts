@@ -269,8 +269,7 @@ function isMysqlConfigFault(code: unknown): boolean {
  * longer message cannot match.
  */
 export function isConnectionFailure(error: unknown): boolean {
-   let current: unknown = error;
-   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+   for (const current of causeChain(error)) {
       const { code, fatal } = current as Error & {
          code?: unknown;
          fatal?: unknown;
@@ -284,9 +283,23 @@ export function isConnectionFailure(error: unknown): boolean {
       if (CODELESS_CONNECTION_MESSAGES.some((re) => re.test(message))) {
          return true;
       }
-      current = current.cause;
    }
    return false;
+}
+
+/**
+ * `error` and the Errors behind its `cause` links, outermost first, at most
+ * eight deep. The one walk the driver-error recognizers share: a driver's
+ * structured fields (`code`, `fatal`, `severity`) sit on whichever error in
+ * the chain the driver raised, and a wrapper such as db_utils's "Failed to
+ * get schemas ..." puts that one behind a `cause`.
+ */
+function* causeChain(error: unknown): Iterable<Error> {
+   let current: unknown = error;
+   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+      yield current;
+      current = current.cause;
+   }
 }
 
 /** Postgres SQLSTATEs for a rejected login: class 28. */
@@ -312,8 +325,7 @@ const SNOWFLAKE_AUTH_CODES = new Set(["390100", "390144", "390195", "390318"]);
  * for a rejected key or token.
  */
 export function isCredentialRejection(error: unknown): boolean {
-   let current: unknown = error;
-   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
+   for (const current of causeChain(error)) {
       const { code } = current as Error & { code?: unknown };
       if (typeof code === "string" || typeof code === "number") {
          const value = String(code);
@@ -322,7 +334,6 @@ export function isCredentialRejection(error: unknown): boolean {
          if (SNOWFLAKE_AUTH_CODES.has(value)) return true;
       }
       if (current.name === "BigQueryAuthenticationError") return true;
-      current = current.cause;
    }
    return false;
 }
@@ -359,15 +370,57 @@ export function databaseAccessFailure(
 }
 
 /**
- * Postgres SQLSTATEs for a statement the database refused to run: class 42,
- * "syntax error or access rule violation". A syntax error (42601), a column
- * (42703), table (42P01) or function (42883) that does not exist, an ambiguous
- * name, a type the dialect cannot cast. The connection was fine -- it logged
- * in and parsed the text -- so the statement, which only the caller can change,
+ * Postgres SQLSTATEs a SELECT the caller wrote can produce, from class 42
+ * ("syntax error or access rule violation"): a syntax error, a column, table,
+ * function, type or parameter that does not exist, an ambiguous name, a type
+ * mismatch or a cast the dialect refuses, a GROUP BY or window the planner
+ * rejects, a duplicate output column. The connection was fine -- it logged in
+ * and parsed the text -- so the statement, which only the caller can change,
  * is what is wrong.
+ *
+ * An allowlist, not the class. Three things in class 42 are not the caller's
+ * statement: 42501 insufficient_privilege, which a role without CONNECT raises
+ * at session startup before any caller SQL runs, and which on a table is
+ * fixed by a GRANT the caller cannot issue; the generic 42000; and the DDL
+ * rejections (a duplicate table, an invalid definition), which the caller's
+ * SELECT cannot raise but a connection's admin-authored setupSQL, run on the
+ * same client just before it, can. Each stays what it was, a 502 that pages,
+ * rather than reading as a caller's typo nobody looks at.
  */
-const POSTGRES_STATEMENT_SQLSTATE = /^42[0-9A-Z]{3}$/;
+const POSTGRES_STATEMENT_SQLSTATES = new Set([
+   "42601", // syntax_error
+   "42703", // undefined_column
+   "42P01", // undefined_table
+   "42883", // undefined_function
+   "42704", // undefined_object: a type in a cast
+   "42P02", // undefined_parameter
+   "42702", // ambiguous_column
+   "42725", // ambiguous_function
+   "42P09", // ambiguous_alias
+   "42P10", // invalid_column_reference
+   "42804", // datatype_mismatch
+   "42846", // cannot_coerce
+   "42803", // grouping_error
+   "42P20", // windowing_error
+   "42P18", // indeterminate_datatype
+   "42P19", // invalid_recursion
+   "42712", // duplicate_alias
+   "42701", // duplicate_column: CREATE TEMPORARY TABLE AS with two `a`s
+   "42602", // invalid_name
+   "42622", // name_too_long
+   "42809", // wrong_object_type
+   "42P21", // collation_mismatch
+   "42P22", // indeterminate_collation
+]);
 const POSTGRES_UNDEFINED_TABLE = "42P01";
+
+/**
+ * The one wording of 42P01 that means a table is physically absent. Postgres
+ * raises the same code for `missing FROM-clause entry for table "x"` -- an
+ * alias the statement never declared, with every real table present -- and
+ * answering that 404 TABLE_NOT_FOUND would tell the router a table is gone.
+ */
+const POSTGRES_RELATION_MISSING = /^relation ".*" does not exist$/;
 
 /**
  * The error to answer with when Postgres rejected the caller's statement
@@ -378,30 +431,38 @@ const POSTGRES_UNDEFINED_TABLE = "42P01";
  * internal. Undefined for anything else, which keeps the status its route gave
  * it.
  *
- * Postgres only, on purpose. It is the one driver whose error carries a
- * SQLSTATE the caller's statement is classified by; every other dialect would
- * need its own message patterns, each a guess, and the 2026-10-13 page this
- * exists for -- a dropped column recompiled once a minute, 2,268 router 502s
- * in a day -- was Postgres.
+ * The code is read from whichever error in the `cause` chain carries it, and
+ * so is the message: a wrapper's "Failed to run SQL" tells the caller
+ * nothing, and its text was never vetted to name nothing internal. Anything
+ * Postgres marks FATAL is skipped whatever its code: FATAL ends the session,
+ * raised at startup or by the server, never by the caller's SELECT.
  *
- * 42501 insufficient_privilege is in the class and stays in: the connection
- * logged in and the statement named a table its user may not read, which is
- * the statement's problem (isCredentialRejection leaves it alone for the same
- * reason) and not a server that is down.
+ * Postgres only, on purpose. It is the driver whose SQLSTATE arrives as
+ * `code` on the error node-pg raises and the Malloy driver lets through
+ * unwrapped. Snowflake's arrives as `sqlState` on snowflake-sdk's error and
+ * would be one more field to read, not patterns to write; its 42S02 conflates
+ * a missing table with one not authorized, so it would want 400 throughout.
+ * MySQL's is lost at the driver (`throw new Error(e)`). The 2026-10-13 page
+ * this exists for -- a dropped column recompiled once a minute, 2,268 router
+ * 502s in a day -- was Postgres.
  */
 export function statementRejection(
    error: unknown,
 ): InvalidArgumentError | TableNotFoundError | undefined {
-   let current: unknown = error;
-   for (let depth = 0; depth < 8 && current instanceof Error; depth++) {
-      const { code } = current as Error & { code?: unknown };
-      if (typeof code === "string" && POSTGRES_STATEMENT_SQLSTATE.test(code)) {
-         const message = error instanceof Error ? error.message : String(error);
-         return code === POSTGRES_UNDEFINED_TABLE
-            ? new TableNotFoundError(message)
-            : new InvalidArgumentError(message);
+   for (const current of causeChain(error)) {
+      const { code, severity } = current as Error & {
+         code?: unknown;
+         severity?: unknown;
+      };
+      if (severity === "FATAL" || severity === "PANIC") return undefined;
+      if (typeof code !== "string" || !POSTGRES_STATEMENT_SQLSTATES.has(code)) {
+         continue;
       }
-      current = current.cause;
+      const message = current.message;
+      return code === POSTGRES_UNDEFINED_TABLE &&
+         POSTGRES_RELATION_MISSING.test(message)
+         ? new TableNotFoundError(message)
+         : new InvalidArgumentError(message);
    }
    return undefined;
 }
@@ -543,7 +604,8 @@ export function internalErrorToHttpError(
       // logged and generalized, because it can name an internal host/port, echo
       // the caller's SQL, or distinguish refused from timed-out from auth-failed.
       //
-      // This intentionally covers a statement the warehouse itself rejected, on
+      // For every dialect but Postgres (see statementRejection) this
+      // intentionally covers a statement the warehouse itself rejected, on
       // the sqlSource and sqlQuery paths, and that is the uncomfortable half of
       // the trade: "object DB.SCHEMA.FOO does not exist" is the most useful
       // sentence the product produces, and only the caller can act on it. It is
@@ -556,9 +618,10 @@ export function internalErrorToHttpError(
       // a generic 502 -- is the right end state and wants its own change; a
       // table path that names nothing already took that route (see
       // TableNotFoundError, 404), and so has a statement Postgres rejected by
-      // SQLSTATE (see statementRejection, 400). Every other dialect's rejected
-      // statement still lands here, and a caller who needs the driver's text
-      // gets it from the logs, by traceparent.
+      // SQLSTATE (statementRejection: 400, or 404 for a relation it lacks).
+      // Every other dialect's rejected statement still lands here, and a
+      // caller who needs the driver's text gets it from the logs, by
+      // traceparent.
       if (error.callerSafe) {
          return httpError(502, error.message);
       }
