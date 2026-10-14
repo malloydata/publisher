@@ -245,6 +245,28 @@ describe("google (Gemini API) adapter", () => {
       );
    });
 
+   it("counts thinking as output, as it is billed", async () => {
+      const { fetchFn } = stubFetch([
+         () =>
+            jsonResponse({
+               candidates: [{ content: { parts: [{ text: "hi" }] } }],
+               usageMetadata: {
+                  promptTokenCount: 9,
+                  candidatesTokenCount: 4,
+                  thoughtsTokenCount: 30,
+               },
+            }),
+      ]);
+      const chat = createChatModel(llm({ provider: "google" }), {
+         fetchFn,
+         retry: instantRetry(),
+      });
+      expect((await chat.complete({ prompt: "p" })).usage).toEqual({
+         inputTokens: 9,
+         outputTokens: 34,
+      });
+   });
+
    it("does not retry a 403", async () => {
       const { fetchFn, requests } = stubFetch([
          () => jsonResponse({}, { status: 403 }),
