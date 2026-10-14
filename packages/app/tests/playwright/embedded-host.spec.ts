@@ -123,8 +123,10 @@ test.describe("embedded host", () => {
       await expect(page.getByRole("button", { name: "Undo" })).toBeVisible({
          timeout: 60_000,
       });
-      // Where Save writes is the Save button's tooltip, labelling it.
-      await expect(page.getByLabel("Kept in the host's record")).toBeVisible();
+      // Where Save writes is the save status's tooltip, describing it.
+      await expect(
+         page.locator(".publisher-save-status"),
+      ).toHaveAccessibleDescription("Kept in the host's record");
       await expect(page.getByText("read-only here")).toHaveCount(0);
 
       await editText(firstTextTile(page), "Edited in the host.");
@@ -157,6 +159,10 @@ test.describe("embedded host", () => {
          dialog,
          "sales_by_month",
          "order_items in storefront.malloy",
+      );
+      // The pick fills the title in; wait for it, so typing replaces it.
+      await expect(dialog.getByLabel("Report title")).toHaveValue(
+         "Sales by month",
       );
       await dialog.getByLabel("Report title").fill("Hosted notebook");
       await dialog.getByRole("button", { name: "Create report" }).click();
@@ -208,6 +214,10 @@ test.describe("embedded host", () => {
          dialog,
          "sales_by_month",
          "order_items in storefront.malloy",
+      );
+      // The pick fills the title in; wait for it, so typing replaces it.
+      await expect(dialog.getByLabel("Report title")).toHaveValue(
+         "Sales by month",
       );
       await dialog.getByLabel("Report title").fill("Hosted dashboard");
       await dialog.getByRole("button", { name: "Create report" }).click();
