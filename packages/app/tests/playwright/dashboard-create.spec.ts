@@ -7,7 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
-import { chooseLayout, pickView } from "./helpers/builder";
+import { chooseLayout, pickView, readerOpen } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 
 /**
@@ -126,6 +126,8 @@ test.describe("dashboard-create", () => {
          .getByRole("button", { name: "Done", exact: true })
          .click();
       await expect(page).toHaveURL(new RegExp(`/${env}/${PKG}/created-here$`));
+      // The builder stays up until the reader is drawn: wait for the swap.
+      await readerOpen(page);
       await expect(
          page.getByRole("heading", { name: "Created and saved" }),
       ).toBeVisible({ timeout: 60_000 });

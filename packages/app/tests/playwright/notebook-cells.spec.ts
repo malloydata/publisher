@@ -7,6 +7,7 @@ import {
    addTextTile,
    editText,
    editorOpen,
+   readerOpen,
    tileByKey,
    tileOrder,
 } from "./helpers/builder";
@@ -269,6 +270,8 @@ test.describe("notebook tiles", () => {
          .getByRole("button", { name: "Done", exact: true })
          .click();
       await expect(page).toHaveURL(/\/notebooks\/browser_tour$/);
+      // The builder stays up until the reader is drawn: wait for the swap.
+      await readerOpen(page);
       await expect(page.getByText("Edited first.")).toBeVisible({
          timeout: 60_000,
       });
