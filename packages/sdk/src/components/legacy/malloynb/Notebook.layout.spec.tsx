@@ -8,8 +8,8 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
-} from "../../../test/serverProvider";
-import type { RawNotebook } from "../../client";
+} from "../../../../test/serverProvider";
+import type { RawNotebook } from "../../../client";
 
 const LAYOUT = {
    format: "malloy",

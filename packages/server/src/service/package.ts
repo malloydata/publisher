@@ -188,9 +188,8 @@ interface ServedReport {
    name: string;
    layout: ReportLayout;
    /**
-    * A report written as tiles (either layout), or a grid report that failed
-    * to compile (carrying `error`). Absent on a linear `run:`-cell report and a
-    * `.malloynb`.
+    * A `.malloy` report's tiles (either layout), or, for one that failed to
+    * compile, its name and layout carrying `error`. Absent on a `.malloynb`.
     */
    manifest?: ServedReportManifest & { error?: string };
    /** A `.malloy` report's compiled text ("" when unreadable); absent on a `.malloynb`. */
@@ -3567,7 +3566,9 @@ export class Package {
             continue;
          const name = reportName(modelPath);
          if (tag.status !== "report") {
-            // A tag that makes no report: the lint says why.
+            // A tag that makes no report (it does not parse, sets the removed
+            // `kind=`, or is a linear report written as `run:` cells): the lint
+            // says why, and the file is an ordinary model.
             files.set(modelPath, { status: "invalid", name, facts });
             continue;
          }
@@ -3593,26 +3594,25 @@ export class Package {
                error: errMessage(err),
             });
             // The tag is readable (it was read off the same facts); it was the
-            // manifest CONSTRUCTION that failed. A linear report still opens
-            // as its cells; a grid one has nothing else to show.
-            if (tag.layout === "grid") {
-               files.set(modelPath, { status: "dropped", name });
-               continue;
-            }
+            // manifest CONSTRUCTION that failed, and a report has nothing else
+            // to show.
+            files.set(modelPath, { status: "dropped", name });
+            continue;
          }
-         if (tag.layout === "grid" && facts && !manifest) {
+         if (facts && !manifest) {
             // A grid tag that describes no tiles (or an empty list): not
-            // served until it has one, and explained by the lint.
+            // served until it has one, and explained by the lint. A linear
+            // tag always lists its tiles (`report.ts`), so it never lands here.
             files.set(modelPath, { status: "tileless", name, facts });
             continue;
          }
-         if (tag.layout === "grid" && !facts) {
+         if (!facts) {
             // The file failed to compile, so its tiles cannot be read. It is
             // listed anyway carrying the error, because a broken report
             // should be visibly broken rather than absent.
             manifest = {
                name,
-               layout: "grid",
+               layout: tag.layout,
                title: name,
                autorun: true,
                entryFile: modelPath,
@@ -3669,10 +3669,11 @@ export class Package {
    }
 
    /**
-    * Read every linear `.malloy` report's cells. A reader refusal is the
-    * report's error, returned as a finding: the model still compiles, so
-    * nothing else would say so. It is counted and logged with the other
-    * findings (see {@link reportDiscovered}).
+    * Read every linear `.malloy` report's definition cells (its imports and
+    * givens), which the deprecated notebook route serves ahead of its tiles. A
+    * reader refusal is the report's error, returned as a finding: the model
+    * still compiles, so nothing else would say so. It is counted and logged
+    * with the other findings (see {@link reportDiscovered}).
     */
    private attachNotebookCells(
       models: ReadonlyMap<string, Model>,
@@ -3859,8 +3860,8 @@ export class Package {
          for (const [modelPath, file] of files) {
             if (file.status === "dropped") continue;
             const manifest = file.report?.manifest;
-            // A served report is checked against its manifest; a linear one
-            // written as `run:` cells has none, and only its text is linted.
+            // A served report is checked against its manifest; a `.malloynb`
+            // has none (and no facts).
             const facts =
                file.status !== "served" || manifest ? file.facts : undefined;
             const fileFindings: ApiPackageWarning[] = [];
@@ -4143,11 +4144,9 @@ export class Package {
          layout: report.layout,
          title: manifest?.title ?? listing.title ?? report.name,
          description: manifest?.description ?? listing.description,
-         // The builder opens a report written as tiles; a `.malloynb` or a
-         // `run:`-cell report it cannot.
-         editable:
-            report.path.endsWith(MODEL_FILE_SUFFIX) &&
-            (report.layout === "grid" || manifest !== undefined),
+         // The builder opens a `.malloy` report, which is written as tiles; a
+         // `.malloynb` it cannot.
+         editable: report.path.endsWith(MODEL_FILE_SUFFIX),
          ...(error !== undefined && { error }),
       };
    }
@@ -4161,8 +4160,8 @@ export class Package {
 
    /**
     * One report by its path (`sales/q3.malloy`, exactly as list-reports gives
-    * it), or undefined when there is none. A report written as tiles carries its
-    * manifest; a `run:`-cell report or a `.malloynb` carries its cells.
+    * it), or undefined when there is none. A `.malloy` report carries its
+    * manifest; a `.malloynb`, which has none, carries its cells.
     */
    public async getReport(
       reportPath: string,

@@ -107,8 +107,6 @@ export type ReportEvent =
                 tiles: number;
                 /** Whether a tile was added or removed, which moves declarations. */
                 structural: boolean;
-                /** The save rewrote a report in the cell format as tiles. */
-                converted?: boolean;
                 where: SavesTo;
                 /** The host workspace that took the write; never set for a package save. */
                 workspace?: string;

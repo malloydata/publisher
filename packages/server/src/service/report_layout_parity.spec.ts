@@ -73,10 +73,9 @@ async function compiledLayout(source: string): Promise<Layout> {
 
 /**
  * The layout the lint lints a file as, observed from outside: two probe lines
- * whose findings differ by layout. A cell-format (linear, no tiles) report
- * suggests the `##(markdown) …` spelling; any other names its page, a
- * dashboard or a notebook. A file the lint does not read as a report has no
- * findings for them at all.
+ * whose findings differ by layout: each names its page, a dashboard or a
+ * notebook. A file the lint does not read as a report (a linear tag with no
+ * tiles among them) has no findings for them at all.
  */
 function lintLayout(source: string): Layout {
    const findings = lintNotebookText(
@@ -89,7 +88,6 @@ function lintLayout(source: string): Layout {
          f.message.includes("probe"),
    );
    if (!spacing) return null;
-   if (spacing.message.includes("Did you mean")) return "linear";
    const unnamed = findings.find(
       (f) =>
          f.code === "notebook-markdown-block-unnamed" &&

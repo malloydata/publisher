@@ -4,12 +4,12 @@
 /// <reference types="bun-types" />
 
 /**
- * A linear report written as `run:` cells gets the same parameter contract as
- * a grid report, over real HTTP against `tests/fixtures/reports-linear`: the
- * control contract on its sources' givens, `autorun`, a starting given that
- * survives being sent back, a date given in the bare form the shared codec
- * sends, and the title chain in the listing. Its cells run through
- * `POST …/models/{path}/query`, the cell's `text` as the query.
+ * A linear report gets the same parameter contract as a grid report, over real
+ * HTTP against `tests/fixtures/reports-linear`: the control contract on the
+ * givens its tiles read, `autorun`, a starting given that survives being sent
+ * back, a date given in the bare form the shared codec sends, and the title
+ * chain in the listing. Its tiles run through `POST …/models/{path}/query`,
+ * `run: <tile>` as the query.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -31,42 +31,33 @@ interface GivenSpec {
    suggest?: { query?: string; source?: string; dimension?: string };
 }
 
-interface Cell {
-   type?: string;
-   kind?: string;
-   text?: string;
-}
-
 interface LinearReport {
    path: string;
    layout?: string;
    title?: string;
    description?: string;
-   notebook?: {
-      autorun?: boolean;
-      startingGivens?: Record<string, string>;
-      sources?: { givens?: GivenSpec[] }[];
-      notebookCells?: Cell[];
-   };
+   autorun?: boolean;
+   startingGivens?: Record<string, string>;
+   givens?: GivenSpec[];
+   tiles?: { kind?: string; query?: string }[];
+   notebook?: unknown;
 }
 
-describe("Linear reports written as run: cells (E2E)", () => {
+describe("Linear reports (E2E)", () => {
    let env: PackageEnv;
    const report = (reportPath: string) =>
       env.getJson<LinearReport>(env.api(`/reports/${reportPath}`));
-   /** The text of a report's one query cell, the way a viewer would run it. */
-   const queryCellText = async (reportPath: string): Promise<string> => {
-      const cells = (await report(reportPath)).notebook?.notebookCells ?? [];
-      const queries = cells.filter((c) => c.kind === "query");
-      expect(queries).toHaveLength(1);
-      return queries[0].text ?? "";
-   };
-   const runCell = async (reportPath: string, since: string) =>
-      env.query(reportPath, {
-         query: await queryCellText(reportPath),
+   /** Run the report's `in_window` tile, the way a viewer would. */
+   const runWindow = async (reportPath: string, since: string) => {
+      const tiles = (await report(reportPath)).tiles ?? [];
+      const tile = tiles.find((t) => t.query?.endsWith("-> in_window"));
+      expect(tile).toBeDefined();
+      return env.query(reportPath, {
+         query: `run: ${tile?.query}`,
          givens: { SINCE: since },
          compactJson: true,
       });
+   };
 
    beforeAll(async () => {
       env = await startPackageEnv("reports-linear-env", {
@@ -76,13 +67,22 @@ describe("Linear reports written as run: cells (E2E)", () => {
 
    afterAll(() => env?.stop());
 
-   it("carries each given's control contract on the report's sources", async () => {
+   it("serves a linear report as tiles, never as cells", async () => {
       const body = await report("orders-since.malloy");
       expect(body.layout).toBe("linear");
+      expect(body.notebook).toBeUndefined();
+      expect(body.tiles?.map((t) => t.kind)).toEqual([
+         "text",
+         "query",
+         "query",
+         "query",
+      ]);
+   });
+
+   it("carries each given's control contract on the report's control row", async () => {
+      const body = await report("orders-since.malloy");
       const givens = new Map(
-         (body.notebook?.sources ?? [])
-            .flatMap((source) => source.givens ?? [])
-            .map((given) => [given.name, given]),
+         (body.givens ?? []).map((given) => [given.name, given]),
       );
       // The same presentation a grid report's manifest reports, because it is
       // read off the declaration rather than off either layout.
@@ -102,10 +102,8 @@ describe("Linear reports written as run: cells (E2E)", () => {
    });
 
    it("reports autorun=false from the artifact tag, and true by default", async () => {
-      expect((await report("orders-since.malloy")).notebook?.autorun).toBe(
-         false,
-      );
-      expect((await report("brands.malloy")).notebook?.autorun).toBe(true);
+      expect((await report("orders-since.malloy")).autorun).toBe(false);
+      expect((await report("brands.malloy")).autorun).toBe(true);
    });
 
    // Both layouts encode a Date through the SDK's `givensToRequest`, and
@@ -114,7 +112,7 @@ describe("Linear reports written as run: cells (E2E)", () => {
    // spellings and each rejects the other two.
    it("reads a date given in the bare form the shared codec sends", async () => {
       const countSince = async (since: string) => {
-         const res = await runCell("orders-since.malloy", since);
+         const res = await runWindow("orders-since.malloy", since);
          expect(res.status).toBe(200);
          const rows = JSON.parse(
             ((await res.json()) as { result: string }).result,
@@ -128,10 +126,10 @@ describe("Linear reports written as run: cells (E2E)", () => {
 
    it("publishes a date starting given the query endpoint will accept", async () => {
       const body = await report("orders-start.malloy");
-      expect(body.notebook?.startingGivens?.SINCE).toBe("2024-03-01");
-      const run = await runCell(
+      expect(body.startingGivens?.SINCE).toBe("2024-03-01");
+      const run = await runWindow(
          "orders-start.malloy",
-         body.notebook?.startingGivens?.SINCE ?? "",
+         body.startingGivens?.SINCE ?? "",
       );
       expect(run.status).toBe(200);
    });
@@ -139,7 +137,7 @@ describe("Linear reports written as run: cells (E2E)", () => {
    it("rejects a full ISO timestamp for a date given", async () => {
       // The reason `givensToRequest` needs the declared type at all: a blanket
       // toISOString() lands here, not on a result.
-      const res = await runCell(
+      const res = await runWindow(
          "orders-since.malloy",
          "2024-03-01T00:00:00.000Z",
       );
@@ -164,14 +162,13 @@ describe("Linear reports written as run: cells (E2E)", () => {
          });
       });
 
-      it("falls back to the first markdown heading, so an untitled report still has one", async () => {
+      it("falls back to the file name, so an untitled report still has one", async () => {
          const brands = await listed("brands.malloy");
-         expect(brands?.title).toBe("Brands");
-         // Nothing to describe it: the heading is a title, not a doc comment.
+         expect(brands?.title).toBe("brands");
          expect(brands?.description).toBeUndefined();
       });
 
-      it("takes the doc comment's first line ahead of the heading, and the rest as the description", async () => {
+      it("takes the doc comment's first line as the title, and the rest as the description", async () => {
          // A title is one line and a description is not, and the description
          // must not repeat the line the title already took.
          const carriers = await listed("carriers.malloy");
@@ -181,5 +178,9 @@ describe("Linear reports written as run: cells (E2E)", () => {
          });
          expect(carriers?.title ?? "").not.toContain("\n");
       });
+   });
+
+   it("loads the package with no report findings", async () => {
+      expect(await env.warnings()).toEqual([]);
    });
 });

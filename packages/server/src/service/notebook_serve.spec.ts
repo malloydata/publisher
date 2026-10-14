@@ -79,7 +79,10 @@ describe("notebook predicates", () => {
          "linear",
       );
       expect(layoutOfText(tag('tiles=["a -> b"]'))).toBe("grid");
-      expect(layoutOfText(tag(""))).toBe("linear");
+      // Linear with no tiles is the retired cell format, so no report.
+      expect(layoutOfText(tag(""))).toBeNull();
+      expect(layoutOfText(tag("layout=linear"))).toBeNull();
+      expect(layoutOfText(tag("layout=linear tiles=[]"))).toBe("linear");
       // `kind=` is no longer read, so a tag that sets it makes no report.
       expect(layoutOfText(tag("kind=notebook"))).toBeNull();
       expect(layoutOfText(tag("kind=text"))).toBeNull();
@@ -100,17 +103,18 @@ describe("notebook predicates", () => {
    });
 
    it("reads an artifact property anywhere among the tag's properties", () => {
-      const second = "## dashboard { columns=2 } artifact { layout=linear }";
+      const second =
+         "## dashboard { columns=2 } artifact { layout=linear tiles=[] }";
       expect(isArtifactNoteText(second)).toBe(true);
       expect(layoutOfText(`${second}\nrun: x`)).toBe("linear");
       expect(
          layoutOfText(
-            "##| dashboard { columns=2 }\n  artifact { layout=linear }\n|##\nrun: x",
+            "##| dashboard { columns=2 }\n  artifact { layout=linear tiles=[] }\n|##\nrun: x",
          ),
       ).toBe("linear");
-      expect(layoutOfText("## 2024_q1 {} artifact { layout=linear }")).toBe(
-         "linear",
-      );
+      expect(
+         layoutOfText("## 2024_q1 {} artifact { layout=linear tiles=[] }"),
+      ).toBe("linear");
       expect(isArtifactNoteText('## dashboard { title="artifact" }')).toBe(
          false,
       );
@@ -262,10 +266,16 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/tagged.malloy",
-         `## artifact { layout=linear }\n${BASE}`,
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
       );
       write("notebooks/untagged.malloy", BASE);
+      // The retired cell format: a linear tag with no tiles is no report.
+      write("notebooks/cells.malloy", `## artifact { layout=linear }\n${BASE}`);
       await withPackage(async (pkg) => {
+         expect(pkg.isServedReport("notebooks/cells.malloy")).toBe(false);
+         expect(pkg.getModel("notebooks/cells.malloy")!.isNotebook()).toBe(
+            false,
+         );
          expect(pkg.getReportLayout("notebooks/tagged.malloy")).toBe("linear");
          expect(pkg.isServedReport("notebooks/untagged.malloy")).toBe(false);
          const model = pkg.getModel("notebooks/tagged.malloy")!;
@@ -303,7 +313,7 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/second.malloy",
-         `## dashboard { columns=2 } artifact { layout=linear }\n${BASE}`,
+         `## dashboard { columns=2 } artifact { layout=linear tiles=[] }\n${BASE}`,
       );
       write(
          "notebooks/titled.malloy",
@@ -320,11 +330,17 @@ describe("served notebooks (worker path)", () => {
 
    it("excludes a served notebook from listModels with and without a surface", async () => {
       manifest();
-      write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      write("notebooks/cells.malloy", `## artifact {}\n${BASE}`);
       write("notebooks/plain.malloy", BASE);
       write("other.malloy", BASE);
       await withPackage(async (pkg) => {
+         // A file written as cells is no report, so it lists as the model it is.
          expect((await pkg.listModels()).map((m) => m.path).sort()).toEqual([
+            "notebooks/cells.malloy",
             "notebooks/plain.malloy",
             "other.malloy",
          ]);
@@ -339,7 +355,10 @@ describe("served notebooks (worker path)", () => {
    it("re-discovers on reload: gaining or losing the artifact note flips the flag", async () => {
       manifest();
       write("notebooks/gains.malloy", BASE);
-      write("notebooks/loses.malloy", `## artifact {}\n${BASE}`);
+      write(
+         "notebooks/loses.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
       await withPackage(async (pkg) => {
          expect(pkg.getModel("notebooks/gains.malloy")!.isNotebook()).toBe(
             false,
@@ -347,7 +366,10 @@ describe("served notebooks (worker path)", () => {
          expect(pkg.getModel("notebooks/loses.malloy")!.isNotebook()).toBe(
             true,
          );
-         write("notebooks/gains.malloy", `## artifact {}\n${BASE}`);
+         write(
+            "notebooks/gains.malloy",
+            `## artifact { layout=linear tiles=[] }\n${BASE}`,
+         );
          write("notebooks/loses.malloy", BASE);
          await pkg.reloadAllModels({});
          expect(pkg.getModel("notebooks/gains.malloy")!.isNotebook()).toBe(
@@ -361,7 +383,10 @@ describe("served notebooks (worker path)", () => {
 
    it("answers the notebook GET for a served notebook whose only statement is a definition", async () => {
       manifest();
-      write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
       await withPackage(async (pkg) => {
          const raw = await pkg.getModel("notebooks/nb.malloy")!.getNotebook();
          expect(raw).toMatchObject({
@@ -398,14 +423,20 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/a_titled.malloy",
-         `##" Prose above\n## artifact { title="Explicit" }\n${BASE}`,
+         `##" Prose above\n## artifact { layout=linear tiles=[] title="Explicit" }\n${BASE}`,
       );
       write(
          "notebooks/b_described.malloy",
-         `##" First line\n##" second line\n## artifact {}\n${BASE}`,
+         `##" First line\n##" second line\n## artifact { layout=linear tiles=[] }\n${BASE}`,
       );
-      write("notebooks/c_heading.malloy", `## artifact {}\n${BASE}`);
-      write("notebooks/d_bare.malloy", `## artifact {}\n${BASE}`);
+      write(
+         "notebooks/c_heading.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      write(
+         "notebooks/d_bare.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
       await withPackage(async (pkg) => {
          pkg.getModel("notebooks/c_heading.malloy")!.setNotebookCells([
             { type: "markdown", text: "# Heading title\nbody" },
@@ -434,7 +465,7 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/nb.malloy",
-         `## artifact { title="T" }\n##(markdown) a markdown cell, not a description\n${BASE}`,
+         `## artifact { layout=linear tiles=[] title="T" }\n##(markdown) a markdown cell, not a description\n${BASE}`,
       );
       await withPackage(async (pkg) => {
          const [nb] = await listNotebooks(pkg, "env");
@@ -495,7 +526,7 @@ describe("served notebooks (worker path)", () => {
       manifest();
       write(
          "notebooks/nb.malloy",
-         `## artifact {}\n##(markdown) a markdown cell\n${BASE}`,
+         `## artifact { layout=linear tiles=[] }\n##(markdown) a markdown cell\n${BASE}`,
       );
       await withPackage(async (pkg) => {
          const [nb] = await listNotebooks(pkg, "env");
@@ -509,7 +540,10 @@ describe("served notebooks (worker path)", () => {
    describe("deprecated: explores", () => {
       it("flags a served notebook listed in explores, as it flags a .malloynb", async () => {
          manifest({ explores: ["notebooks/nb.malloy"] });
-         write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
+         write(
+            "notebooks/nb.malloy",
+            `## artifact { layout=linear tiles=[] }\n${BASE}`,
+         );
          await withPackage(async (pkg) => {
             expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
                "notebooks/nb.malloy",
@@ -520,11 +554,14 @@ describe("served notebooks (worker path)", () => {
 
    it("lists a notebook that failed to compile with its error, after a reload", async () => {
       manifest();
-      write("notebooks/nb.malloy", `## artifact {}\n${BASE}`);
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
       await withPackage(async (pkg) => {
          write(
             "notebooks/nb.malloy",
-            `## artifact {}\n##|"\n## artifact kinds\n|##\nsource: oops is\n`,
+            `## artifact { layout=linear tiles=[] }\n##|"\n## artifact kinds\n|##\nsource: oops is\n`,
          );
          await pkg.reloadAllModels({});
          const listed = await listNotebooks(pkg, "env");
@@ -549,7 +586,7 @@ describe("served notebooks (worker path)", () => {
 
    it("records the compiled text on the in-process load path", async () => {
       manifest();
-      const text = `## artifact {}\n${BASE}`;
+      const text = `## artifact { layout=linear tiles=[] }\n${BASE}`;
       write("notebooks/nb.malloy", text);
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {

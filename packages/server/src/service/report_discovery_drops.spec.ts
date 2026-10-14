@@ -45,7 +45,7 @@ const FILES: Record<string, string> = {
    "publisher.json": JSON.stringify({ name: "drops", version: "1.0.0" }),
    "base.malloy": BASE,
    "grid.malloy": `## artifact { layout=grid tiles=["s -> v"] }\nimport "base.malloy"\n`,
-   "story.malloy": `## artifact { layout=linear }\nimport "base.malloy"\nrun: s -> v\n`,
+   "story.malloy": `## artifact { layout=linear tiles=["s -> v"] }\nimport "base.malloy"\n`,
 };
 
 /** A grid report that does not compile. A first install refuses a package with one, so it arrives by a reload, which keeps a failed model (`reloadAllModels`). */

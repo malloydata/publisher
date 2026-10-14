@@ -8,8 +8,8 @@ import { openFilter } from "./helpers/filters";
 
 /**
  * The storefront package ships `category-review.malloy` at its root, a linear
- * report written as `run:` cells (a `.malloy` with a `layout=linear` artifact
- * tag), so this spec reads the bundled example rather than writing a fixture.
+ * report of text and query tiles, so this spec reads the bundled example
+ * rather than writing a fixture.
  * It opens at its path, without `.malloy`.
  */
 test.describe("package-served-notebook", () => {
@@ -36,7 +36,7 @@ test.describe("package-served-notebook", () => {
       });
    });
 
-   test("changing the Category control re-runs the cells", async ({ page }) => {
+   test("changing the Category control re-runs the tiles", async ({ page }) => {
       await page.goto(`/${DEFAULT_ENV}/${PACKAGES.storefront}/category-review`);
 
       // All three queries render; the last is the named-query table, bound to the control.

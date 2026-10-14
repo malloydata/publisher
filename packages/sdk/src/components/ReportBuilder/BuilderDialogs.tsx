@@ -1,9 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Button } from "@mui/material";
 import type { ComponentProps } from "react";
-import { AppDialog } from "../AppDialog";
 import { UnsavedChangesDialog } from "../UnsavedChangesDialog";
 import { AddTileDialog } from "./AddTileDialog";
 import type { PackageCatalog } from "./catalog";
@@ -11,15 +9,14 @@ import { isQueryTile } from "./document";
 import { DrillDialog } from "./DrillDialog";
 import { FilterDialog } from "./FilterDialog";
 import { TileMenu } from "./TileMenu";
-import type { ConversionConfirm } from "./useConversionConfirm";
 import type { useControlBindings } from "./useControlBindings";
 import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileEditing } from "./useTileEditing";
 
 /**
  * Every window the builder opens, each driven by state its hooks hold: the
- * filter window, a tile's menu, the clickable-cells window, the conversion
- * question, the unsaved-changes guard and the add-tile picker.
+ * filter window, a tile's menu, the clickable-cells window, the
+ * unsaved-changes guard and the add-tile picker.
  */
 export function BuilderDialogs({
    editor,
@@ -30,7 +27,6 @@ export function BuilderDialogs({
    tiles,
    drillSource,
    setDrillSource,
-   confirmConversion,
    exitDialog,
 }: {
    editor: ReportEditorHandle;
@@ -42,7 +38,6 @@ export function BuilderDialogs({
    /** The source whose clickable cells are being edited, if any. */
    drillSource: string | undefined;
    setDrillSource: (source: string | undefined) => void;
-   confirmConversion: ConversionConfirm | undefined;
    exitDialog: ComponentProps<typeof UnsavedChangesDialog>;
 }) {
    const { filterDialog, setFilterDialog } = bindings;
@@ -119,27 +114,6 @@ export function BuilderDialogs({
                })
             }
          />
-         <AppDialog
-            open={confirmConversion !== undefined}
-            onClose={() => confirmConversion?.stop()}
-            title="Convert this report?"
-            description="Saving rewrites this report in the tile layout. The builder cannot take that back; the file's history in your repository can."
-            actions={
-               <>
-                  <Button onClick={() => confirmConversion?.stop()}>
-                     Cancel
-                  </Button>
-                  <Button
-                     variant="contained"
-                     onClick={() => confirmConversion?.go()}
-                  >
-                     Convert and save
-                  </Button>
-               </>
-            }
-         >
-            {null}
-         </AppDialog>
          <UnsavedChangesDialog {...exitDialog} />
          <AddTileDialog
             open={tiles.addingTile}

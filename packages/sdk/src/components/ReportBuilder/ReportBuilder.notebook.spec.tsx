@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   act,
    cleanup,
    fireEvent,
    render,
@@ -10,10 +9,7 @@ import {
    waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import * as fs from "fs";
-import * as path from "path";
 import { ReportBuilder } from "./ReportBuilder";
-import { readForEditor } from "./readForEditor";
 import { openDocument } from "./testing/fixtures";
 import type { ReportEvent } from "../Report/telemetry";
 import { editInline } from "./testing/inline";
@@ -55,14 +51,6 @@ const catalog = {
       },
    ],
 };
-
-const REPO = path.resolve(import.meta.dir, "../../../../..");
-const LEGACY = fs
-   .readFileSync(
-      path.join(REPO, "examples/storefront/category-review.malloy"),
-      "utf8",
-   )
-   .replace(/\r\n/g, "\n");
 
 const button = (name: string) =>
    screen.getByRole("button", { name, hidden: true });
@@ -226,95 +214,5 @@ describe("ReportBuilder: a document's kind", () => {
       await mountText(DASHBOARD, { onSave: () => {} });
       expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
       expect(screen.queryByLabelText("Show as")).toBeNull();
-   });
-});
-
-describe("ReportBuilder: a notebook in the cell format", () => {
-   const open = async (
-      options: {
-         onSave?: (source: string) => void;
-         onEvent?: (event: ReportEvent) => void;
-         onDirtyChange?: (dirty: boolean) => void;
-      } = {},
-   ) => {
-      const result = await readForEditor(LEGACY);
-      if (result.ok === false) throw new Error(result.reason);
-      if (!result.conversion) throw new Error("expected a conversion");
-      render(
-         <ReportBuilder
-            source={LEGACY}
-            document={result.document}
-            conversion={result.conversion}
-            {...options}
-         />,
-      );
-      return result.conversion;
-   };
-
-   it("opens unsaved, says what Save does, and is not edited", async () => {
-      const onDirtyChange = mock((_dirty: boolean) => {});
-      await open({ onSave: () => {}, onDirtyChange });
-      expect(
-         screen.getByText(
-            /This report is in the cell format\. Saving rewrites it as a layout notebook, and a named query run once becomes that tile's view\./,
-         ),
-      ).toBeDefined();
-      expect(button("Save")).toBeDefined();
-      // Each tile says why it has no preview yet, beside the view it will run.
-      expect(
-         screen.getAllByText("Preview appears after you Save"),
-      ).toHaveLength(3);
-      expect(
-         screen.getByText("order_items_tiles → revenue_by_month"),
-      ).toBeDefined();
-      // No edit has been made, so a host guarding navigation is told so.
-      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
-   });
-
-   it("asks before Save converts the file, and writes it once confirmed", async () => {
-      const writes: string[] = [];
-      await open({ onSave: (source) => void writes.push(source) });
-      fireEvent.click(button("Save"));
-      expect(
-         await screen.findByText(
-            /Saving rewrites this report in the tile layout/,
-         ),
-      ).toBeDefined();
-      expect(writes).toHaveLength(0);
-      fireEvent.click(button("Convert and save"));
-      await waitFor(() => expect(writes).toHaveLength(1));
-   });
-
-   it("writes nothing when the conversion is cancelled", async () => {
-      const writes: string[] = [];
-      await open({ onSave: (source) => void writes.push(source) });
-      fireEvent.click(button("Save"));
-      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
-      await act(async () => {});
-      expect(writes).toHaveLength(0);
-      expect(button("Save")).toBeDefined();
-   });
-
-   it("saves the conversion exactly as converted", async () => {
-      const writes: string[] = [];
-      const onEvent = mock((_event: ReportEvent) => {});
-      const conversion = await open({
-         onSave: (source) => void writes.push(source),
-         onEvent,
-      });
-      fireEvent.click(button("Save"));
-      fireEvent.click(
-         await screen.findByRole("button", { name: "Convert and save" }),
-      );
-      await waitFor(() => expect(writes).toHaveLength(1));
-      // Nothing was edited, so the file written is the conversion itself.
-      expect(writes[0]).toBe(conversion.to);
-      expect(onEvent.mock.calls[0][0]).toMatchObject({
-         type: "report.saved",
-         converted: true,
-      });
-      expect(
-         screen.queryByText(/This report is in the cell format/),
-      ).toBeNull();
    });
 });

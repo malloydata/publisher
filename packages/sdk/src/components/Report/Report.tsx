@@ -5,7 +5,7 @@ import { Alert } from "@mui/material";
 import { useCallback, useEffect, useRef } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { now } from "../../utils/clock";
-import { encodeResourceUri, parseResourceUri } from "../../utils/formatting";
+import { parseResourceUri } from "../../utils/formatting";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { NavigationClick } from "../click_helper";
 import { DashboardView } from "../Dashboard/DashboardView";
@@ -14,7 +14,6 @@ import type { DrillNavigation } from "../drill";
 import { Loading, LOADING_COPY } from "../Loading";
 import { useServer } from "../ServerProvider";
 import { reportQueryOptions } from "./reportQuery";
-import { CellReport } from "./CellReport";
 import {
    failureCategory,
    ReportEventsContext,
@@ -132,12 +131,8 @@ export function Report({
       enabled: uriNamesBoth && path !== "",
    });
 
-   // The layout once the report has said; a `run:`-cell report reads top to bottom.
-   const layout = manifest
-      ? manifest.notebook
-         ? "linear"
-         : manifest.layout
-      : undefined;
+   // The layout once the report has said.
+   const layout = manifest?.layout;
    const events = useReportEmitter({ path, layout }, onEvent);
    // One open or one failure per report shown: a refetch is not another open,
    // and the guard survives a development double-run of the effect.
@@ -177,9 +172,7 @@ export function Report({
             type: "report.opened",
             surface: "view",
             from: "package",
-            tiles: manifest.notebook
-               ? (manifest.notebook.notebookCells?.length ?? 0)
-               : (manifest.tiles?.length ?? 0),
+            tiles: manifest.tiles?.length ?? 0,
             durationMs: now() - started.current.at,
          });
       }
@@ -223,46 +216,23 @@ export function Report({
          </Alert>
       );
    }
-   let body;
-   if (manifest.notebook) {
-      body = (
-         <CellReport
-            {...(manifest.title ? { title: manifest.title } : {})}
-            {...(manifest.description
-               ? { description: manifest.description }
-               : {})}
-            resourceUri={encodeResourceUri({
-               environmentName,
-               packageName,
-               versionId,
-               modelPath: path,
-            })}
-            notebook={manifest.notebook}
-            maxResultSize={maxResultSize}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onNavigate={onLinkNavigate}
-            onDrillNavigate={drillNavigate}
-         />
-      );
-   } else {
-      // Either layout: the same view, arranged as the manifest's layout says.
-      body = (
-         <DashboardView
-            manifest={manifest}
-            environmentName={environmentName}
-            packageName={packageName}
-            versionId={versionId}
-            documentName={path}
-            givens={givens}
-            onGivensChange={onGivensChange}
-            onNavigate={drillNavigate}
-            height={height}
-            maxResultSize={maxResultSize}
-            chrome={chrome}
-         />
-      );
-   }
+   // Either layout: the same view, arranged as the manifest's layout says.
+   const body = (
+      <DashboardView
+         manifest={manifest}
+         environmentName={environmentName}
+         packageName={packageName}
+         versionId={versionId}
+         documentName={path}
+         givens={givens}
+         onGivensChange={onGivensChange}
+         onNavigate={drillNavigate}
+         {...(onLinkNavigate ? { onLinkNavigate } : {})}
+         height={height}
+         maxResultSize={maxResultSize}
+         chrome={chrome}
+      />
+   );
    return (
       <ReportEventsContext.Provider value={events}>
          {body}

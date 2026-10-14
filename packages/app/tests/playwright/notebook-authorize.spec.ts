@@ -57,15 +57,21 @@ source: gated_products is duckdb.table('data/products.parquet') extend {
 }
 `;
 
-// One query cell. The report enables `experimental.givens`: authorize
-// validation compiles a `$role` probe against the report's model, which needs
-// the flag set here even though `role` itself is declared in the imported model.
+// One query tile, run as this query. The report enables `experimental.givens`:
+// authorize validation compiles a `$role` probe against the report's model,
+// which needs the flag set here even though `role` itself is declared in the
+// imported model.
 const CELL = "run: gated_products -> spotlight";
+// The tile reads `role` (a condition true whenever role is set), so the report shows a
+// control for it: a report shows controls only for the givens its tiles read,
+// and a gate's own givens are otherwise the host's to supply.
 const NOTEBOOK_SOURCE = `##! experimental.givens
-## artifact { layout=linear }
+## artifact { layout=linear tiles=["gated_tiles -> spotlight_for_role"] }
 import "authz_gate.malloy"
 
-${CELL}
+source: gated_tiles is gated_products extend {
+  view: spotlight_for_role is spotlight + { where: $role = $role }
+}
 `;
 
 async function reloadPackage(baseURL: string): Promise<void> {

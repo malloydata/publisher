@@ -88,7 +88,7 @@ async function measure(
    };
 }
 
-// A layout notebook with a query tile: an unsaved conversion draws placeholders until it is saved.
+// A linear report with a text tile and a query tile.
 const NOTEBOOK_PKG = "notebooks-malloyyo";
 const NOTEBOOK_FILE = "notebooks/browser_tour.malloy";
 const NOTEBOOK_SOURCE = `##! experimental.givens

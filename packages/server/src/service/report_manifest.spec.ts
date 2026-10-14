@@ -1373,7 +1373,7 @@ describe("service/report_manifest lint", () => {
          const findings = lintUndiscoveredReport(
             facts({
                modelPath: "dashboards/empty.malloy",
-               modelAnnotations: ['## artifact { title="x" }\n'],
+               modelAnnotations: ['## artifact { layout=grid title="x" }\n'],
             }),
          );
          expect(findings).toHaveLength(1);
@@ -1651,10 +1651,21 @@ describe("service/report_manifest silent-vanish lint", () => {
       expect(
          messages(
             facts({
-               modelAnnotations: ['## artifact { title="Overview" }\n'],
+               modelAnnotations: [
+                  '## artifact { layout=grid title="Overview" }\n',
+               ],
             }),
          ),
       ).toEqual([expect.stringContaining("declares no tiles=")]);
+   });
+
+   it("leaves a linear tag with no tiles to the text lint, which says the cell format is retired", () => {
+      for (const tag of [
+         '## artifact { title="Overview" }\n',
+         "## artifact { layout=linear }\n",
+      ]) {
+         expect(messages(facts({ modelAnnotations: [tag] }))).toEqual([]);
+      }
    });
 
    it("explains an empty tiles= as well", () => {

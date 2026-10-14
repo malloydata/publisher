@@ -3,7 +3,7 @@
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
 import { useEffect, useMemo, useState } from "react";
-import type { DashboardManifest, Given } from "../../client";
+import type { DashboardManifest } from "../../client";
 import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
@@ -62,7 +62,6 @@ const NO_MANIFEST: DashboardManifest = {};
 
 export function EditorSurface({
    textSource,
-   modelGivens,
    environmentName,
    packageName,
    modelPath,
@@ -79,8 +78,6 @@ export function EditorSurface({
    note,
 }: {
    textSource?: TextSourceOptions;
-   /** The model's own givens, for a cell-format notebook whose manifest the server cannot build until it is saved. */
-   modelGivens?: Given[];
    environmentName: string;
    packageName: string;
    modelPath: string;
@@ -90,7 +87,6 @@ export function EditorSurface({
    opened: {
       source: string;
       document: DashboardDocument;
-      conversion?: { from: string; to: string };
       generation: number;
    };
    replaces?: string;
@@ -115,13 +111,12 @@ export function EditorSurface({
    );
 
    const {
-      data: read,
+      data,
       isSuccess: manifestLoaded,
       isError: manifestFailed,
    } = useQueryWithApiError({
       // The reader's read of the same report, so opening the builder from the
-      // reader does not read it again. A report in the cell format has only the
-      // tag's starting values until it is saved.
+      // reader does not read it again.
       ...reportQueryOptions(
          apiClients,
          {
@@ -135,20 +130,6 @@ export function EditorSurface({
       // The server does not serve a dashboard with no tiles, so asking would 404.
       enabled: served && !textSource,
    });
-   const data = useMemo(
-      (): DashboardManifest | undefined =>
-         read?.notebook
-            ? {
-                 ...(read.notebook.startingGivens
-                    ? { startingGivens: read.notebook.startingGivens }
-                    : {}),
-                 ...(read.notebook.autorun === undefined
-                    ? {}
-                    : { autorun: read.notebook.autorun }),
-              }
-            : read,
-      [read],
-   );
    // A text source takes its manifest from compiling the text as the viewer.
    const runModelPath = textSource?.modelPath ?? modelPath;
    const compiled = useCompiledDocument(
@@ -264,15 +245,13 @@ export function EditorSurface({
    );
    const modelSpecs = useMemo(
       () =>
-         (
-            manifest?.givens ?? (opened.conversion ? (modelGivens ?? []) : [])
-         ).filter(
+         (manifest?.givens ?? []).filter(
             // Only a document held as text hides a `#(secure)` given's control; a saved file's givens show as before.
             (spec) =>
                !(textSource && spec.secure === true) &&
                !(spec.name !== undefined && hidden.has(spec.name)),
          ),
-      [manifest, opened.conversion, modelGivens, hidden, textSource],
+      [manifest, hidden, textSource],
    );
    const runnable = useMemo(
       () =>
@@ -462,7 +441,6 @@ export function EditorSurface({
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
             {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
-            {...(opened.conversion ? { conversion: opened.conversion } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}

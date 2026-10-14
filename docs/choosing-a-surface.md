@@ -87,7 +87,7 @@ to write one: [reports.md](reports.md). The `storefront` example package ships o
 
 - **Linear** when the deliverable is an _analysis_: a question answered, a finding explained, a sequence
   a reader should follow in order. If you would naturally write paragraphs between the queries, it is
-  linear. It is also the only layout for a report written as `run:` cells, the older form.
+  linear.
 - **Grid** when the deliverable is a _view you return to_ (business health, a funnel, a team's KPIs),
   filtered live by whoever is looking. If the reader scans rather than reads, it is a grid: `# colspan`
   and `# break` lay tiles out across columns, which one column cannot do.

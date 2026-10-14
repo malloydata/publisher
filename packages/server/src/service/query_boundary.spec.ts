@@ -1333,7 +1333,7 @@ source: locked is duckdb.sql("select 1 as id") extend {
       );
       fs.writeFileSync(
          path.join(tempDir, "report.malloy"),
-         `## artifact { layout=linear }\nimport "index.malloy"\nimport "base.malloy"\n`,
+         `## artifact { layout=linear tiles=[] }\nimport "index.malloy"\nimport "base.malloy"\n`,
       );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
@@ -1396,7 +1396,7 @@ source: locked is duckdb.sql("select 1 as id") extend {
       writeLayeredModels();
       fs.writeFileSync(
          path.join(tempDir, "report.malloy"),
-         `## artifact { layout=linear }\nimport "index.malloy"\nimport "base.malloy"\n`,
+         `## artifact { layout=linear tiles=[] }\nimport "index.malloy"\nimport "base.malloy"\n`,
       );
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {

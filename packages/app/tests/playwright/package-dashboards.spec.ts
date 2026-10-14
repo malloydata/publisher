@@ -816,10 +816,9 @@ test.describe("package-dashboards", () => {
       const count = (n: string) => page.getByText(n, { exact: true });
       await expect(count("2")).toBeVisible({ timeout: 30_000 });
 
-      // And written into the URL, so what a reader copies out of the address
-      // bar is what they are looking at. A grid's starting values do the same
-      // (`dashboards/regions?REGION=US`).
-      await expect(page).toHaveURL(/[?&]SINCE=2024-03-01/);
+      // A starting value is the file's, not the reader's, so it stays out of
+      // the URL, in either layout; only a value the reader sets is written there.
+      expect(page.url()).not.toContain("SINCE=");
 
       // A link overrides the file, so a shared URL shows the sender's view.
       await page.goto(`/${env}/${LINEAR_PKG}/orders-start?SINCE=2024-01-01`);

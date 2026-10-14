@@ -790,7 +790,7 @@ export class Model {
    private notebookReaderRefusal: NotebookReaderError | undefined;
    /** A served notebook's own notes as the reader collected them (see `NotebookReadResult.annotations`). */
    private notebookAnnotations: string[] | undefined;
-   /** The tile layout of a served notebook written as one; undefined for one written as cells. */
+   /** The tile layout of a served linear `.malloy` report; undefined for a `.malloynb`. */
    private notebookLayout: ServedReportManifest | undefined;
    /** Parsed #(filter) definitions keyed by source name. */
    private filterMap: Map<string, FilterDefinition[]>;
@@ -6334,54 +6334,26 @@ export class Model {
       if (isNotebookReaderError(parse)) return refuse(parse);
       const read = readNotebookCells(parse, modelDef, text);
       if (read.error) return refuse(read.error);
-      const anonymousQueries = this.modelInfo?.anonymous_queries ?? [];
       this.notebookAnnotations = read.annotations;
       const layout = this.readNotebookLayout();
       this.notebookLayout = layout;
-      // A layout's prose and queries are its tiles, in tile order; the file's own cells are only its definitions.
-      const fileCells = layout
-         ? read.cells.filter((cell) => cell.kind === "definition")
-         : read.cells;
-      const cells: RunnableNotebookCell[] = fileCells.map(
-         (cell): RunnableNotebookCell => {
-            if (cell.kind === "markdown") {
-               return { type: "markdown", kind: "markdown", text: cell.text };
-            }
-            if (cell.kind === "definition") {
-               return {
-                  type: "code",
-                  kind: "definition",
-                  text: cell.text,
-                  markdown: cell.markdown,
-                  proseLines: cell.proseLines,
-                  codeLine: cell.codeLine,
-                  caption: cell.caption,
-                  modelDef,
-               };
-            }
-            const k = cell.queryIndex ?? -1;
-            const anonymous = anonymousQueries[k];
-            const compiled = modelDef.queryList[k] as NamedQueryDef | undefined;
-            return {
+      // A linear report's prose and queries are its tiles, in tile order; the
+      // file's own cells are only its definitions. Its `run:` statements and
+      // floating prose are no cells: the cell format is retired (`report.ts`).
+      const cells: RunnableNotebookCell[] = read.cells
+         .filter((cell) => cell.kind === "definition")
+         .map(
+            (cell): RunnableNotebookCell => ({
                type: "code",
-               kind: "query",
+               kind: "definition",
                text: cell.text,
                markdown: cell.markdown,
                proseLines: cell.proseLines,
                codeLine: cell.codeLine,
                caption: cell.caption,
-               queryIndex: cell.queryIndex,
-               runnable: materializer.loadQuery(cell.text),
-               modelMaterializer: materializer,
-               // Whole-file given scope: 0.0.432 refuses a forward `$GIVEN`, so no cell reads a later one.
                modelDef,
-               queryInfo: anonymous && {
-                  ...anonymous,
-                  name: compiled?.as || compiled?.name || "",
-               },
-            };
-         },
-      );
+            }),
+         );
       if (layout) {
          for (const tile of layout.tiles ?? []) {
             if (tile.kind === "text") {
@@ -6411,7 +6383,7 @@ export class Model {
       return "ok";
    }
 
-   /** The manifest of a notebook written as a tile layout, or undefined when it is written as cells. */
+   /** The manifest of a served linear `.malloy` report, which lists its tiles. */
    private readNotebookLayout(): ServedReportManifest | undefined {
       // Discovery settles the compiled facts first, so both routes serve the same tile `givenNames`.
       const facts =
@@ -6469,7 +6441,7 @@ export class Model {
          return this.getNotebookModel();
       } else {
          throw new ModelNotFoundError(
-            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy with a model-level ## artifact { layout=linear } tag.`,
+            `${this.modelPath} is not a valid notebook name.  Notebook files must end in .malloynb, or be a .malloy report with a model-level ## artifact { layout=linear tiles=[…] } tag.`,
          );
       }
    }

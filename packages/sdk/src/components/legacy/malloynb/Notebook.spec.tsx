@@ -19,8 +19,8 @@ import {
    mockServerProvider,
    pending,
    serverWrapper,
-} from "../../../test/serverProvider";
-import type { RawNotebook } from "../../client";
+} from "../../../../test/serverProvider";
+import type { RawNotebook } from "../../../client";
 
 const NOTEBOOK: RawNotebook = {
    notebookCells: [
@@ -91,7 +91,7 @@ const dataSourcesDialogProps = mock(
       data?: { givens?: { name?: string }[] };
    }) => {},
 );
-mock.module("../Model/ModelExplorerDialog", () => ({
+mock.module("../../Model/ModelExplorerDialog", () => ({
    ModelExplorerDialog: (props: {
       open: boolean;
       startingGivens?: Record<string, string>;

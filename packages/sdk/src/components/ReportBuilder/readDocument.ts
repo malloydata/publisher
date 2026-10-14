@@ -16,7 +16,12 @@ import type {
 } from "./document";
 import { isTextTile } from "./document";
 import { loadMalloyTag } from "./loadMalloy";
-import { kindRemovedReason, readReportTag } from "./reportTag";
+import {
+   CELLS_REMOVED_REASON,
+   kindRemovedReason,
+   readReportTag,
+   unknownLayoutReason,
+} from "./reportTag";
 import { parseTagLines } from "./tagParse";
 import {
    parseMalloy,
@@ -67,8 +72,6 @@ export interface ReadFailure {
    reason: string;
    /** 1-based, for a message that can point at the line. */
    line?: number;
-   /** The file is a linear report in the run-cell format, which `convertLegacyNotebook` turns into a tile layout. */
-   legacyNotebook?: true;
 }
 
 export type ReadResult =
@@ -324,6 +327,14 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
       };
    if (reportTag.status === "kind-removed")
       return { ok: false, reason: kindRemovedReason(reportTag.kind) };
+   if (reportTag.status === "cells-removed")
+      return {
+         ok: false,
+         reason:
+            reportTag.unknownLayout !== undefined
+               ? unknownLayoutReason(reportTag.unknownLayout)
+               : CELLS_REMOVED_REASON,
+      };
    const layout = reportTag.layout;
 
    const artifactAt = locateArtifactTag(lines);
@@ -349,14 +360,6 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
          return {
             ok: false,
             reason: `The \`## artifact\` tag does not parse: ${tagErrors[0]}`,
-         };
-      // A linear report is told from a tile layout by whether it lists tiles at all.
-      if (layout === "linear")
-         return {
-            ok: false,
-            legacyNotebook: true,
-            reason:
-               "This report is in the cell format, with no `tiles=[…]` list.",
          };
       return {
          ok: false,
