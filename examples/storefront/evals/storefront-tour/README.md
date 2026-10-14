@@ -56,6 +56,14 @@ serve a copy of the package without `skills/` and run a second arm with
 `--package <that copy> --package-skills off`; `off` refuses while the server
 still serves package skills.
 
+The same guide is why two keys accept a second basis. Asked for the top category
+by revenue, or for the best customers, an agent following the guide may leave
+out cancelled and returned lines and say so. The guide tells it to do exactly
+that when the question does not say ("Decide which one the question wants, and
+say which you used"), so `top-category` also accepts Outerwear at about
+$422,373, and `best-customers` accepts customer 395 first on that basis.
+"Total spend" does say, which is why `top-customer-spend` does not.
+
 ### One wrong doc, left wrong on purpose
 
 `storefront.malloy` documents its `customers` source as "People who have placed
@@ -67,7 +75,7 @@ fixed, if you decide to fix it.
 
 ### What is expected, and not a defect
 
-- `verify` prints `ok=11  skipped=1`, then 17 "rubric figures to review" and
+- `verify` prints `ok=11  skipped=1`, then 22 "rubric figures to review" and
   2 "other review items" on `best-customers`. Both lists are prompts to read a
   rubric against its rows, not failures; the figures are the tolerance band
   each rubric accepts and the wrong answers it names.
@@ -159,10 +167,16 @@ the case matrix, and the notebook of aggregate tables.
 python3 $EVAL package --set $SET --label baseline-01
 ```
 
-On the bundled model a run scores about 10 of 12: summer sales and customer
-count fail, as the section above says they should. Then write the run up per
-`skill:eval-report`. It is your report on your run; it does not belong in this
-directory.
+On the bundled model a run scores about 9 of 12. Summer sales and customer
+count fail, as the section above says they should. Top customer by spend failed
+or came close in all three runs so far, and it is not one of the designed gaps:
+the package's conventions guide warns that `total_sales` includes cancelled and
+returned lines, and the agent carries that filter into a question that asks for
+total spend. That is a real finding about the guide, so the key stays strict.
+Answers vary between runs, so run the arm twice before reading a score.
+
+Then write the run up per `skill:eval-report`. It is your report on your run;
+it does not belong in this directory.
 
 ## Running it on your own questions
 
