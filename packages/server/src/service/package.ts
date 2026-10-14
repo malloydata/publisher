@@ -1499,7 +1499,6 @@ export class Package {
       let buildPlanMs: number | undefined;
       const buildPlanPhaseStart = performance.now();
       try {
-         const buildPlanStart = Date.now();
          const workerPlan = outcome.buildPlan;
          // Before a failed plan throws: the main-thread derivation records
          // each refusal and skipped digest as it goes, so one that fails
@@ -1547,7 +1546,9 @@ export class Package {
                declaration: incrementalDeclarations[sourceID],
             }));
          recordBuildPlanComputeDuration(
-            workerPlan ? workerPlan.durationMs : Date.now() - buildPlanStart,
+            workerPlan
+               ? workerPlan.durationMs
+               : performance.now() - buildPlanPhaseStart,
             workerPlan ? "worker" : "main_thread",
          );
          buildPlanMs = performance.now() - buildPlanPhaseStart;

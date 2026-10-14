@@ -9,12 +9,16 @@
  * a step does real I/O, so the whole loop ran as one macrotask: a large model's
  * validation was a single ~1 s stall in which no other request was served. A
  * loop that calls {@link EventLoopYielder.maybeYield} between steps hands the
- * event loop a turn (timers, I/O, other requests) whenever it has held it for
- * longer than the budget, and otherwise continues at once. The steps, their
- * order and their results are unchanged; only what else may run between them.
+ * event loop a turn (timers, I/O, other requests) once the budget has passed
+ * since it last yielded, and otherwise continues at once. The budget is
+ * wall-clock time, not time the loop held the event loop: a step that awaits
+ * real I/O already gives the loop a turn but does not restart the budget, so
+ * the next call may yield once more than it needed to, which costs one
+ * macrotask. The steps, their order and their results are unchanged; only
+ * what else may run between them.
  */
 
-/** How long a loop may hold the event loop before it yields, in ms. */
+/** Wall-clock time since a loop last yielded before it yields again, in ms. */
 const DEFAULT_BUDGET_MS = 10;
 let budgetMs = DEFAULT_BUDGET_MS;
 
