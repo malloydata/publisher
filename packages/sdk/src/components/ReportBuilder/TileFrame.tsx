@@ -477,7 +477,14 @@ export const selectionSx = (
       selected,
       flash = false,
       bare = false,
-   }: { selected: boolean; flash?: boolean; bare?: boolean },
+      ringOffset = BARE_RING_OFFSET_PX,
+   }: {
+      selected: boolean;
+      flash?: boolean;
+      bare?: boolean;
+      /** How far a bare ring stands off its prose. Only content outside the grid may go wider than the grid's own. */
+      ringOffset?: number;
+   },
 ): SystemStyleObject<Theme> => {
    const ring = selected || flash ? theme.accent : "transparent";
    // A soft band outside the ring, so a selection reads as lifted to the
@@ -500,7 +507,7 @@ export const selectionSx = (
          "&::before": {
             content: '""',
             position: "absolute",
-            inset: `${-BARE_RING_OFFSET_PX}px`,
+            inset: `${-ringOffset}px`,
             borderRadius: 1,
             border: `2px solid ${ring}`,
             ...(halo && { boxShadow: halo }),

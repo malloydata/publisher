@@ -10,6 +10,9 @@ import { InlineText } from "./InlineText";
 import { selectionSx } from "./TileFrame";
 import type { ReportEditorHandle } from "./useReportEditor";
 
+/** How far the description's selection ring stands off its text. */
+const DESCRIPTION_RING_OFFSET_PX = 12;
+
 /**
  * The reader's {@link ReportHeader}, with its title and description edited
  * where they stand and the builder's actions on the title's line: the same
@@ -63,9 +66,13 @@ export function BuilderHeader({
                      // Anchors the ring the bare description draws around itself.
                      position: "relative",
                      overflow: "visible",
+                     // Wider than a grid tile's ring: the description is not in
+                     // the grid, so its ring is not held inside a gutter, and
+                     // a paragraph needs more room round it than a tile's prose.
                      ...selectionSx(theme, {
                         selected: descriptionSelected,
                         bare: true,
+                        ringOffset: DESCRIPTION_RING_OFFSET_PX,
                      }),
                   }}
                >
