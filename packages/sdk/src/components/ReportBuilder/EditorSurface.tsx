@@ -474,12 +474,37 @@ export function EditorSurface({
    );
 }
 
-/** Whether a tile is unchanged from its opened self: same view, bindings, chart and heading. */
+/** Whether a tile runs as its opened self did: same view, bindings and chart ({@link whatRuns}). */
 function sameTile(
    opened: DocumentTile | undefined,
    now: DocumentTile,
 ): boolean {
    return (
-      opened !== undefined && JSON.stringify(opened) === JSON.stringify(now)
+      opened !== undefined &&
+      JSON.stringify(whatRuns(opened)) === JSON.stringify(whatRuns(now))
    );
+}
+
+/**
+ * A tile less what only frames its result: its title, subtitle, width, row
+ * and card are drawn by the tile around the result, not sent with the query.
+ * Retitling a tile re-ran it before, and its chart blinked as the same rows
+ * were drawn again.
+ */
+function whatRuns(tile: DocumentTile): DocumentTile {
+   const {
+      label: _label,
+      subtitle: _subtitle,
+      colspan: _colspan,
+      break: _break,
+      borderless: _borderless,
+      ...runs
+   } = tile as DocumentTile & {
+      label?: unknown;
+      subtitle?: unknown;
+      colspan?: unknown;
+      break?: unknown;
+      borderless?: unknown;
+   };
+   return runs as DocumentTile;
 }
