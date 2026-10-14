@@ -128,21 +128,8 @@ export async function createDocument(
    await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
       timeout: 30_000,
    });
-   await dialog.getByRole("combobox", { name: "Layout" }).click();
-   await page
-      .getByRole("option", {
-         name: kind === "Dashboard" ? /^Grid/ : /^Linear/,
-      })
-      .click();
-   await dialog.getByRole("combobox", { name: "Model" }).click();
-   await page.getByRole("option", { name: "storefront.malloy" }).click();
-   await dialog.getByRole("combobox", { name: "First query" }).click();
-   await page
-      .getByRole("option", {
-         name: "order_items → sales_by_month",
-         exact: true,
-      })
-      .click();
+   await chooseLayout(dialog, kind === "Dashboard" ? "Grid" : "Linear");
+   await pickView(dialog, "sales_by_month", "order_items in storefront.malloy");
    await dialog.getByLabel("Report title").fill(title);
    await dialog.getByRole("button", { name: "Create report" }).click();
    // At the package root: no directory is created for a new report.
@@ -175,4 +162,12 @@ export async function pickView(
       .getByRole("option", { name: new RegExp(`\\(${escaped}\\)$`) })
       .first()
       .click();
+}
+
+/** Chooses the layout in the New report window. */
+export async function chooseLayout(
+   dialog: Locator,
+   layout: "Linear" | "Grid",
+): Promise<void> {
+   await dialog.getByRole("radio", { name: layout, exact: true }).click();
 }

@@ -47,4 +47,6 @@ export const reportClasses = {
    addTileDialog: "publisher-add-tile-dialog",
    filterDialog: "publisher-filter-dialog",
    clickableCellsDialog: "publisher-clickable-cells-dialog",
+   /** The New report window. */
+   newReportDialog: "publisher-new-report-dialog",
 } as const;

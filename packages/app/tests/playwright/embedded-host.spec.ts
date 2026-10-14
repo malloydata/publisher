@@ -4,7 +4,7 @@
 import { expect, test, type Page, type Request } from "@playwright/test";
 import fs from "fs";
 import path from "path";
-import { editText } from "./helpers/builder";
+import { chooseLayout, editText, pickView } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 import {
    exampleFixture,
@@ -153,15 +153,11 @@ test.describe("embedded host", () => {
       await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "storefront.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First query" }).click();
-      await page
-         .getByRole("option", {
-            name: "order_items → sales_by_month",
-            exact: true,
-         })
-         .click();
+      await pickView(
+         dialog,
+         "sales_by_month",
+         "order_items in storefront.malloy",
+      );
       await dialog.getByLabel("Report title").fill("Hosted notebook");
       await dialog.getByRole("button", { name: "Create report" }).click();
 
@@ -207,17 +203,12 @@ test.describe("embedded host", () => {
       await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await dialog.getByRole("combobox", { name: "Layout" }).click();
-      await page.getByRole("option", { name: /^Grid/ }).click();
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "storefront.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First query" }).click();
-      await page
-         .getByRole("option", {
-            name: "order_items → sales_by_month",
-            exact: true,
-         })
-         .click();
+      await chooseLayout(dialog, "Grid");
+      await pickView(
+         dialog,
+         "sales_by_month",
+         "order_items in storefront.malloy",
+      );
       await dialog.getByLabel("Report title").fill("Hosted dashboard");
       await dialog.getByRole("button", { name: "Create report" }).click();
       await expect(page).toHaveURL(

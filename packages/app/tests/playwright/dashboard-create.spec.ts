@@ -7,6 +7,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { tmpName } from "./helpers/fixtures";
+import { chooseLayout, pickView } from "./helpers/builder";
 import { saveChanges } from "./helpers/save";
 
 /**
@@ -82,14 +83,8 @@ test.describe("dashboard-create", () => {
       await expect(dialog.getByLabel("Report title")).not.toHaveValue("", {
          timeout: 30_000,
       });
-      await dialog.getByRole("combobox", { name: "Layout" }).click();
-      await page.getByRole("option", { name: /^Grid/ }).click();
-      await dialog.getByRole("combobox", { name: "Model" }).click();
-      await page.getByRole("option", { name: "orders.malloy" }).click();
-      await dialog.getByRole("combobox", { name: "First query" }).click();
-      await page
-         .getByRole("option", { name: "orders → by_brand", exact: true })
-         .click();
+      await chooseLayout(dialog, "Grid");
+      await pickView(dialog, "by_brand", "orders in orders.malloy");
       await dialog.getByLabel("Report title").fill("Created here");
       // Written at the package root: no directory is created for a report.
       await expect(

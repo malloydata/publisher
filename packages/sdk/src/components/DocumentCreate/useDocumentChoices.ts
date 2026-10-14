@@ -6,10 +6,17 @@ import { useMemo } from "react";
 import { useServer } from "../ServerProvider";
 import { canRetryRequest } from "./canRetry";
 import { exportedSources } from "./exportedSources";
+import { chartOf, docOf } from "../ReportBuilder/viewAnnotations";
 
 export interface DocumentChoice {
    source: string;
    view: string;
+   /** The view's `#(doc)` line, which a picker shows as its title. */
+   description?: string;
+   /** The chart the view declares (`bar_chart`, …), for its icon. */
+   chart?: string;
+   /** The source's `#(doc)` line. */
+   sourceDescription?: string;
 }
 
 /**
@@ -83,9 +90,19 @@ export function useDocumentChoices({
          for (const source of result.data?.sources ?? []) {
             if (typeof source.name !== "string" || !exported.has(source.name))
                continue;
+            const sourceDescription = docOf(source.annotations);
             for (const view of source.views ?? [])
-               if (typeof view.name === "string")
-                  pairs.push({ source: source.name, view: view.name });
+               if (typeof view.name === "string") {
+                  const description = docOf(view.annotations);
+                  const chart = chartOf(view.annotations);
+                  pairs.push({
+                     source: source.name,
+                     view: view.name,
+                     ...(description ? { description } : {}),
+                     ...(chart ? { chart } : {}),
+                     ...(sourceDescription ? { sourceDescription } : {}),
+                  });
+               }
          }
          if (pairs.length > 0) out.set(models[i], pairs);
       });
