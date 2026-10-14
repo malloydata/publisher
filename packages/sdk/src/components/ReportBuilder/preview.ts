@@ -30,7 +30,9 @@ import { malloyPath } from "../../utils/malloyText";
 
 /**
  * The controls this document shows: every given some tile binds, this file's
- * own declarations first in declaration order, then the model's.
+ * own declarations first in declaration order, then the model's in the
+ * manifest's order, whether a tile binds one in this file or reads it through
+ * the model (`modelReads`, from {@link givensReadThroughModel}).
  *
  * That is the reader's rule — only a given some tile reads becomes a control
  * — applied to the document instead of the manifest. A local declaration is
@@ -41,6 +43,7 @@ import { malloyPath } from "../../utils/malloyText";
 export function previewGivens(
    document: DashboardDocument,
    modelSpecs: readonly Given[],
+   modelReads: ReadonlySet<string> = new Set(),
 ): Given[] {
    const bound = new Set<string>();
    for (const tile of document.tiles)
@@ -58,13 +61,49 @@ export function previewGivens(
       if (
          spec.name === undefined ||
          seen.has(spec.name) ||
-         !bound.has(spec.name)
+         !(bound.has(spec.name) || modelReads.has(spec.name))
       )
          continue;
       seen.add(spec.name);
       out.push(spec);
    }
    return out;
+}
+
+/**
+ * The givens the document's tiles read through the model rather than through
+ * a binding in this file: a source whose own `where:` reads a given, say.
+ *
+ * The server says what each served tile reads (`servedReads`, by tile
+ * expression), bindings in the file included. What the file bound when it
+ * was opened is taken back out, so what is left is what the model reads; a
+ * binding the author removes then takes its control with it. A tile the
+ * server has not compiled (new, or under a new name) is read by the served
+ * tile with the same expression, if there is one, and otherwise reads
+ * nothing until the next save.
+ */
+export function givensReadThroughModel(
+   document: DashboardDocument,
+   opened: DashboardDocument,
+   servedReads: ReadonlyMap<string, readonly string[]>,
+): Set<string> {
+   const boundWhenOpened = new Map<string, Set<string>>();
+   for (const tile of opened.tiles) {
+      if (!isQueryTile(tile)) continue;
+      boundWhenOpened.set(
+         tileExpressionKey(`${tile.source} -> ${tile.name}`),
+         new Set((tile.filters ?? []).map((filter) => filter.given)),
+      );
+   }
+   const reads = new Set<string>();
+   for (const tile of document.tiles) {
+      if (!isQueryTile(tile)) continue;
+      const key = tileExpressionKey(`${tile.source} -> ${tile.name}`);
+      const bound = boundWhenOpened.get(key);
+      for (const name of servedReads.get(key) ?? [])
+         if (!bound?.has(name)) reads.add(name);
+   }
+   return reads;
 }
 
 /** A `given:` this file declares, as the `Given` the control row renders. */

@@ -28,6 +28,7 @@ import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
+   isQueryTile,
    tileKey,
    type DashboardDocument,
    type DashboardTile as DocumentTile,
@@ -35,6 +36,7 @@ import {
 } from "./document";
 import type { SavesTo } from "./documentSession";
 import {
+   givensReadThroughModel,
    previewGivens,
    previewTileQuery,
    tileExpressionKey,
@@ -272,10 +274,49 @@ export function EditorSurface({
          ]),
       [modelSpecs, hostGivens],
    );
-   const specs = useMemo(
-      () => previewGivens(doc, modelSpecs),
-      [doc, modelSpecs],
+   // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
+   const servedReads = useMemo(
+      () =>
+         new Map(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.kind !== "text" && tile.query && tile.givenNames
+                  ? [[tileExpressionKey(tile.query), tile.givenNames] as const]
+                  : [],
+            ),
+         ),
+      [manifest],
    );
+   // Givens a tile reads through the model (a source's own `where:`), not a
+   // binding in this file: shown, so the row matches the reader's, but the
+   // model's to change.
+   const modelReads = useMemo(
+      () => givensReadThroughModel(doc, opened.document, servedReads),
+      [doc, opened.document, servedReads],
+   );
+   const specs = useMemo(
+      () => previewGivens(doc, modelSpecs, modelReads),
+      [doc, modelSpecs, modelReads],
+   );
+   const modelFilters = useMemo(() => {
+      const bound = new Set(
+         doc.tiles.flatMap((tile) =>
+            isQueryTile(tile) ? (tile.filters ?? []).map((f) => f.given) : [],
+         ),
+      );
+      const models = [...new Set(doc.imports.map((i) => i.from))];
+      const where =
+         models.length === 1
+            ? `the model ${models[0]}`
+            : "a model this report imports";
+      return new Map(
+         [...modelReads]
+            .filter((name) => !bound.has(name))
+            .map((name) => [
+               name,
+               `Set in ${where}. Edit the model to change it.`,
+            ]),
+      );
+   }, [doc, modelReads]);
    const { declaredTypes, applied, panel } = useDocumentControls({
       specs,
       loaded: isSuccess,
@@ -303,18 +344,6 @@ export function EditorSurface({
    );
 
    const manifestSettled = !served || isSuccess || isError;
-   // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
-   const servedReads = useMemo(
-      () =>
-         new Map(
-            (manifest?.tiles ?? []).flatMap((tile) =>
-               tile.kind !== "text" && tile.query && tile.givenNames
-                  ? [[tileExpressionKey(tile.query), tile.givenNames] as const]
-                  : [],
-            ),
-         ),
-      [manifest],
-   );
    // The tiles as the file was opened, by key: a tile still equal to its
    // opened self runs exactly as the reader runs it (below).
    const openedTiles = useMemo(
@@ -475,6 +504,7 @@ export function EditorSurface({
                : {})}
             source={opened.source}
             document={opened.document}
+            modelFilters={modelFilters}
             renderTile={renderTile}
             renderViewPreview={renderViewPreview}
             givens={specs
