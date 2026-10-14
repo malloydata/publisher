@@ -2966,6 +2966,37 @@ describe("connection integration tests", () => {
             expect(attach).toContain('AS "evil-db"');
          });
 
+         it("hands libpq require, not no-verify, in an attached database's raw connectionString", async () => {
+            const sql: string[] = [];
+            sinon
+               .stub(DuckDBConnection.prototype, "runSQL")
+               .callsFake(async (query: string) => {
+                  sql.push(query);
+                  return { rows: [], totalRows: 0, runStats: {} } as never;
+               });
+
+            await testConnectionConfig({
+               name: "probe_noverify",
+               type: "duckdb",
+               duckdbConnection: {
+                  attachedDatabases: [
+                     {
+                        name: "pg_nv",
+                        type: "postgres",
+                        postgresConnection: {
+                           connectionString:
+                              "postgres://u:p@127.0.0.1:1/db?sslmode=no-verify",
+                        },
+                     },
+                  ],
+               },
+            });
+
+            const attach = sql.find((q) => q.includes("TYPE postgres"));
+            expect(attach).toContain("sslmode=require");
+            expect(attach).not.toContain("no-verify");
+         });
+
          // An absent alias must fail before the ATTACH is built: emitting
          // `AS ""` runs a statement carrying the DSN and fails at the alias,
          // which is the truncation that defeats redaction.
@@ -3966,13 +3997,50 @@ describe("buildPgConnectionString", () => {
          );
       });
 
-      it("leaves a DuckLake catalog's string raw", () => {
+      it("rewrites no-verify in a DuckLake catalog's string too, without the connection's own options", () => {
          expect(
             buildPgConnectionString(
-               { connectionString: "host=db sslmode=no-verify" },
+               {
+                  connectionString: "host=db sslmode=no-verify",
+                  statementTimeoutMilliseconds: 5000,
+               },
                { name: "lake", applyConnectionOptions: false },
             ),
-         ).toBe("host=db sslmode=no-verify");
+         ).toBe("host=db sslmode=require");
+      });
+
+      describe("with PGSSLMODE=no-verify in the deployment", () => {
+         beforeEach(() => {
+            process.env.PGSSLMODE = "no-verify";
+         });
+
+         it("adds sslmode=require to a string that sets none, URI or keyword/value", () => {
+            for (const applyConnectionOptions of [true, false]) {
+               const build2 = (connectionString: string) =>
+                  buildPgConnectionString(
+                     { connectionString },
+                     { name: "pg_att", applyConnectionOptions },
+                  );
+               expect(build2("postgresql://u:p@db/lake")).toBe(
+                  "postgresql://u:p@db/lake?sslmode=require",
+               );
+               expect(build2("postgresql://u:p@db/lake?x=y")).toBe(
+                  "postgresql://u:p@db/lake?x=y&sslmode=require",
+               );
+               expect(build2("host=db dbname=lake")).toBe(
+                  "host=db dbname=lake sslmode=require",
+               );
+            }
+         });
+
+         it("leaves a string that sets its own sslmode to that sslmode", () => {
+            expect(build("postgresql://u:p@db/lake?sslmode=verify-full")).toBe(
+               "postgresql://u:p@db/lake?sslmode=verify-full",
+            );
+            expect(build("host=db sslmode=disable")).toBe(
+               "host=db sslmode=disable",
+            );
+         });
       });
    });
 

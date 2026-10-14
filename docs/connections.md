@@ -354,6 +354,11 @@ applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described
 - `sslmode` - the same four modes as above, applied against the configured host. When unset,
   the deployment's `PGSSLMODE` applies. When the connection is given as a `connectionString`,
   the string's own `sslmode` applies and the field is ignored, with a warning logged.
+  A raw string is read by two parsers: node-pg on the query path and libpq on a DuckDB attach.
+  `sslmode=no-verify` (encrypt without verifying; the form Credible's connection docs recommend)
+  is accepted on both, since Publisher hands libpq `require` in its place. `require` itself
+  means encrypt-only on an attach but full verification on queries, so prefer `no-verify` for
+  a server with a private or provider CA.
 - `statementTimeoutMilliseconds` - the database cancels any statement that runs longer. An
   integer from 1 to 2147483647, Postgres's own limit. When unset, the database's own
   `statement_timeout` applies. The query driver sets it on each session with
