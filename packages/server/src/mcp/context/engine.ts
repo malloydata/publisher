@@ -31,6 +31,7 @@ import type { EnvironmentStore } from "../../service/environment_store";
 import { alsoLikelyOn, fcjSettingsOf } from "../../service/package_retrieval";
 import { logger } from "../../logger";
 import { activeLlmSettings } from "../../providers/active";
+import type { ChatModel } from "../../providers/types";
 import { LlmMeter } from "../tools/get_context_llm";
 import { jsonResource, jsonToolError } from "../tool_response";
 import {
@@ -42,7 +43,7 @@ import {
 import { alsoLikelyFields } from "./also_likely";
 import { dateRangeFields } from "./date_range";
 import type { CatalogNode } from "./catalog";
-import { fcjChat, fcjStateOf, kickFcjBuild } from "./engine_state";
+import { fcjJudgeChat, fcjStateOf, kickFcjBuild } from "./engine_state";
 import {
    find,
    KINDS_BY_FIND_TARGET,
@@ -402,8 +403,17 @@ export async function runFcjQuery(args: {
    // Stage 3.
    started = performance.now();
    const meter = new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null);
-   const chat =
-      settings.judge !== false && activeLlmSettings() ? fcjChat() : null;
+   let chat: ChatModel | null = null;
+   if (settings.judge !== false && activeLlmSettings()) {
+      try {
+         chat = fcjJudgeChat(settings.judgeLlm);
+      } catch (error) {
+         logger.warn("[get_context fcj] The judge model could not be built", {
+            error: error instanceof Error ? error.message : String(error),
+         });
+         return judgeFailure(uri, error, stages);
+      }
+   }
    let verdicts: JudgeVerdict[];
    const used = meter.snapshot();
    if (chat && connectedAll.clusters.length > 0) {
@@ -568,6 +578,9 @@ export async function runFcjQuery(args: {
                          }
                        : {}),
                     connect: connectTrace(index, connected),
+                    ...(chat
+                       ? { judge_model: `${chat.provider}/${chat.model}` }
+                       : {}),
                     judge: verdicts.map((v) => ({
                        cluster: v.cluster,
                        picks: v.picks.map((p) => ({
@@ -587,6 +600,7 @@ export async function runFcjQuery(args: {
                        ...(v.routeOptions !== undefined
                           ? { route_options: v.routeOptions }
                           : {}),
+                       ...(v.jsonRepaired ? { json_repaired: true } : {}),
                     })),
                     also_likely: alsoLikely.map((a) => ({
                        id: a.id,

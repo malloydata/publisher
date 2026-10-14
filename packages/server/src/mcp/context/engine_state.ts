@@ -13,14 +13,18 @@
  */
 
 import { activeLlmSettings, getChatModel } from "../../providers/active";
-import type { ChatModel } from "../../providers/types";
+import { createChatModel } from "../../providers/registry";
+import type { ChatModel, LlmSettings } from "../../providers/types";
 import {
    embeddingConfigured,
    getEmbeddingProvider,
 } from "../../service/embedding_provider";
 import type { EnvironmentStore } from "../../service/environment_store";
 import type { Package } from "../../service/package";
-import { fcjSettingsOf } from "../../service/package_retrieval";
+import {
+   type FcjJudgeLlm,
+   fcjSettingsOf,
+} from "../../service/package_retrieval";
 import { logger } from "../../logger";
 import { PROVIDER_FAILURE_COOLDOWN_MS } from "../tools/embedding_index";
 import { embeddingSyncQueue } from "../tools/embedding_sync_queue";
@@ -62,6 +66,51 @@ export function fcjChat(): ChatModel | null {
       });
       return null;
    }
+}
+
+// Cached on the settings, as getChatModel is, so the model's cooldown state
+// survives between requests.
+let judgeCached: { fingerprint: string; model: ChatModel } | null = null;
+
+/**
+ * The judge's chat model under `retrieval.fcj.judgeLlm`: that provider and
+ * model, with `retrieval.llm`'s timeouts and limits. Null `judgeLlm` means
+ * {@link fcjChat}. Throws when `judgeLlm` is set and its client cannot be
+ * built (a missing key): a judge that was asked for must not be skipped
+ * quietly, so the request fails instead.
+ */
+export function fcjJudgeChat(judgeLlm: FcjJudgeLlm | null): ChatModel | null {
+   if (!judgeLlm) return fcjChat();
+   const base = activeLlmSettings();
+   if (!base) return null;
+   const needsKey =
+      judgeLlm.provider !== "ollama" && judgeLlm.provider !== "vertex";
+   const apiKey = needsKey
+      ? process.env.JUDGE_LLM_API_KEY?.trim() ||
+        process.env.LLM_API_KEY?.trim() ||
+        undefined
+      : undefined;
+   const settings: LlmSettings = {
+      ...base,
+      provider: judgeLlm.provider,
+      model: judgeLlm.model,
+      baseUrl: judgeLlm.baseUrl,
+      projectId: judgeLlm.projectId,
+      location: judgeLlm.location,
+      apiKey,
+   };
+   const fingerprint = JSON.stringify(settings);
+   if (!judgeCached || judgeCached.fingerprint !== fingerprint) {
+      try {
+         judgeCached = { fingerprint, model: createChatModel(settings) };
+      } catch (error) {
+         const message = error instanceof Error ? error.message : String(error);
+         throw new Error(
+            `retrieval.fcj.judgeLlm (${judgeLlm.provider}/${judgeLlm.model}) could not be built: ${message.replace("LLM_API_KEY", "JUDGE_LLM_API_KEY or LLM_API_KEY")}`,
+         );
+      }
+   }
+   return judgeCached.model;
 }
 
 /**

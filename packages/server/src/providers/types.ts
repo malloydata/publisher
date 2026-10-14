@@ -66,6 +66,8 @@ export interface JsonChatRequest<T> extends ChatRequest {
 export interface JsonChatResult<T> {
    value: T;
    usage: ChatUsage;
+   /** True when the first reply was not usable JSON and the one re-ask fixed it. */
+   repaired?: boolean;
 }
 
 export interface ChatModel {

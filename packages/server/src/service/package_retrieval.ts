@@ -16,6 +16,7 @@ import { createHash } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { PackageManifestError } from "../errors";
+import { PROVIDER_NAMES, type ProviderName } from "../providers/types";
 import {
    DEFAULT_QUESTIONS_PER_NODE,
    QUESTIONS_PROMPTS,
@@ -270,6 +271,23 @@ export interface FcjSettings {
     * computed from.
     */
    readingsRule: boolean;
+   /**
+    * PROVISIONAL, null by default: the judge uses `retrieval.llm`, as every
+    * other LLM step does. Set, the judge alone sends its calls to this model;
+    * the index-time steps keep `retrieval.llm`. Timeouts, concurrency and the
+    * call limits still come from `retrieval.llm`. A provider that needs a key
+    * reads `JUDGE_LLM_API_KEY`, then `LLM_API_KEY`. For comparing judge
+    * models on one build.
+    */
+   judgeLlm: FcjJudgeLlm | null;
+}
+
+export interface FcjJudgeLlm {
+   provider: ProviderName;
+   model: string;
+   baseUrl?: string;
+   projectId?: string;
+   location?: string;
 }
 
 export const FCJ_CONNECT_MODES = ["clusters", "list"] as const;
@@ -320,6 +338,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    dateRange: false,
    listUnion: 0,
    readingsRule: false,
+   judgeLlm: null,
 };
 
 export interface PackageRetrievalSettings {
@@ -643,6 +662,43 @@ function fcjJoinedCopies(obj: Record<string, unknown>): FcjJoinedCopies {
    return value as FcjJoinedCopies;
 }
 
+function fcjJudgeLlm(obj: Record<string, unknown>): FcjJudgeLlm | null {
+   const raw = obj.judgeLlm;
+   if (raw === undefined || raw === null) return null;
+   const example = `"judgeLlm": { "provider": "anthropic", "model": "claude-haiku-5-5" }`;
+   const o = objectBlock(
+      raw,
+      "retrieval.fcj.judgeLlm",
+      ["provider", "model", "baseUrl", "projectId", "location"],
+      example,
+   );
+   if (!(PROVIDER_NAMES as readonly unknown[]).includes(o.provider)) {
+      fail(
+         `Invalid publisher.json retrieval.fcj.judgeLlm.provider: expected one of ${PROVIDER_NAMES.join(", ")}, got ${describe(o.provider)}. Fix: ${example}`,
+      );
+   }
+   const text = (key: string, required: boolean): string | undefined => {
+      const v = o[key];
+      if (v === undefined && !required) return undefined;
+      if (typeof v !== "string" || v.trim() === "") {
+         fail(
+            `Invalid publisher.json retrieval.fcj.judgeLlm.${key}: expected a non-empty string, got ${describe(v)}. Fix: ${example}`,
+         );
+      }
+      return (v as string).trim();
+   };
+   const provider = o.provider as ProviderName;
+   const vertex = provider === "vertex";
+   const out: FcjJudgeLlm = { provider, model: text("model", true)! };
+   const baseUrl = text("baseUrl", false);
+   const projectId = text("projectId", vertex);
+   const location = text("location", vertex);
+   if (baseUrl) out.baseUrl = baseUrl;
+   if (projectId) out.projectId = projectId;
+   if (location) out.location = location;
+   return out;
+}
+
 function parseFcj(raw: unknown): FcjSettings {
    const obj = objectBlock(
       raw,
@@ -687,6 +743,7 @@ function parseFcj(raw: unknown): FcjSettings {
       dateRange: fcjBoolean(obj, "dateRange"),
       listUnion: int("listUnion", 0, 200),
       readingsRule: fcjBoolean(obj, "readingsRule"),
+      judgeLlm: fcjJudgeLlm(obj),
    };
 }
 
