@@ -42,6 +42,10 @@ describe("isManifestLocation", () => {
          "gs://",
          "gs://bucket",
          "s3://bucket/",
+         // A file URL without `//` resolves to an absolute path, but the
+         // manifest loader reads only `file://` and would take this as a
+         // relative path, binding nothing.
+         "file:/srv/manifests/pkg.json",
          // On Windows a file URL with a host is a UNC share path, which the
          // manifest loader reads.
          ...(process.platform === "win32" ? [] : ["file://host/manifest.json"]),

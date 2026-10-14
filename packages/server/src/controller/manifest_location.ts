@@ -15,11 +15,12 @@ export const MANIFEST_LOCATION_FORMS =
  * volume), which are what the manifest loader reads. A relative path is not:
  * it would resolve against the server's working directory, which the caller
  * cannot know, so a manifest named that way could bind on one server and fail
- * on the next.
+ * on the next. A file URL must be written `file://`, the only form the loader
+ * recognizes: it reads `file:/abs` as a relative path and binds nothing.
  */
 export function isManifestLocation(value: string): boolean {
    if (/^(gs|s3):\/\/[^/]+\/./.test(value)) return true;
-   if (value.startsWith("file:")) {
+   if (value.startsWith("file://")) {
       try {
          return path.isAbsolute(fileURLToPath(value));
       } catch {
