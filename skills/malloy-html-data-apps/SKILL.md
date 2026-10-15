@@ -36,7 +36,7 @@ my-package/
       chart.umd.js
 ```
 
-Only `public/` is reachable over the web, at `/environments/<env>/packages/<pkg>/<file>`. Models, data, and `publisher.json` are private and reached only through the query API, which still applies the model's filters, access modifiers, and authorize rules. There is no flag to set: a `public/` directory is what makes a package an app.
+Only `public/` is reachable over the web, at `/environments/<env>/packages/<pkg>/<file>`. Models, data, and `publisher.json` are private and reached only through the query API, which still applies the model's filters, `private:` fields, and authorize rules. There is no flag to set: a `public/` directory is what makes a package an app.
 
 ## Build sequence
 

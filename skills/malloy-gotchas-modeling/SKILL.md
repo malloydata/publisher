@@ -190,7 +190,7 @@ Malloy has two field-management mechanisms for base sources. **`include {}` is t
 
 ### Default: `include {}` for documented, curated base sources
 
-Use `include {}` whenever the source doesn't need a `rename:`. It's the only way to attach `#(doc)` tags to raw columns, and it's the canonical way to hide empty/garbage/duplicate columns (`internal:`) and sensitive ones (`private:`). See `skill:malloy-model` § Access Modifiers.
+Use `include {}` whenever the source doesn't need a `rename:`. It's the only way to attach `#(doc)` tags to raw columns, and it's the canonical way to tidy away empty/garbage/duplicate columns (`internal:`, which a caller's query can still read through its own `extend` or `include`) and to block sensitive ones (`private:`). See `skill:malloy-model` § Access Modifiers.
 
 ```malloy
 ##! experimental.access_modifiers
