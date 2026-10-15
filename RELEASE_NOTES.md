@@ -21,6 +21,14 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A SQL statement Postgres rejects answers 400 with the database's message, not 502
+
+On a Postgres connection, `sqlSource`, `sqlQuery` and `sqlTemporaryTable` (and their per-package forms) now answer **400** when the database refuses the statement itself: a column, table, function or type that does not exist, a syntax error, an ambiguous name, a type mismatch. The body carries Postgres's own sentence, for example `column "sundance_name" does not exist`. They answered 502 `Upstream connection error.` before, with that sentence logged only on the server.
+
+One case answers **404** instead: a statement naming a table the database does not have (`relation "public.spaces" does not exist`) carries `reason: "TABLE_NOT_FOUND"`, the same discriminator the table lookup has emitted since 0.2.6, so a router that re-resolves a 404 can tell it from a worker that no longer hosts the connection.
+
+If you branch on 502 to mean "the warehouse is unreachable", that is now what it means on these routes for Postgres; a rejected statement is a 4xx. Unchanged: an unreachable database (502, `reason: CONNECTION_FAILED`), rejected credentials (424), a role without `CONNECT` or a table the connection's user may not read (still 502), and every other dialect.
+
 ## [Unreleased] — SQL Server connections
 
 A connection of `type: "sqlserver"` reaches Microsoft SQL Server through `@malloydata/db-sqlserver` (Malloy 0.0.435): a SQL login over TCP with `server`, `port`, `database`, `user`, `password`, `encrypt` (on by default), `trustServerCertificate`, `hostNameInCertificate` and `instanceName`, the connector's own field names. The Console's connection dialogs offer it, the schema browser lists the schemas that own a table or a view (`dbo` the default) and a table is addressed `schema.table`. Schema and table names are matched as Unicode, so a non-ASCII name lists under any collation. The password is write-only, as for every other type, and a port that is not an integer from 1 to 65535 fails the config at load, naming the value.

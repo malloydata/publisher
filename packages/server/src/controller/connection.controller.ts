@@ -14,6 +14,7 @@ import {
    ConnectionError,
    ConnectionNotFoundError,
    databaseAccessFailure,
+   statementRejection,
    InvalidArgumentError,
    PackageNotFoundError,
    PayloadTooLargeError,
@@ -165,7 +166,11 @@ function validateAdminAuthoredConnection(
  * table as the generic "Unable to read schema.", indistinguishable from any
  * other failure, and Snowflake's DESCRIBE TABLE answers "does not exist or not
  * authorized", conflating absence with denial by design. Guessing on either
- * would be worse than leaving them 502.
+ * would be worse than leaving them 502. (A statement Postgres rejects on the
+ * sqlSource, sqlQuery and sqlTemporaryTable paths is a different case: that
+ * error carries a SQLSTATE, which statementRejection reads instead of the
+ * text. Not getTable: there the Postgres driver catches and returns the text
+ * above, and the code is gone with it.)
  */
 const BIGQUERY_NOT_FOUND = /^Not found: (Table|Dataset)\b/;
 
@@ -236,14 +241,20 @@ function classifyDriverFailure(error: unknown): Error {
          : typeof error === "string"
            ? error
            : JSON.stringify(error);
-   return databaseAccessFailure(error) ?? driverErrorToPublisherError(message);
+   return (
+      databaseAccessFailure(error) ??
+      statementRejection(error) ??
+      driverErrorToPublisherError(message)
+   );
 }
 
 /**
  * A failure running SQL the caller sent: a 502 with the driver's text logged
  * and generalized, unless the database was unreachable (502 with
- * `reason: CONNECTION_FAILED`) or rejected the credentials (424 with
- * `reason: CONNECTION_AUTH_FAILED`).
+ * `reason: CONNECTION_FAILED`), rejected the credentials (424 with
+ * `reason: CONNECTION_AUTH_FAILED`), or -- Postgres only -- rejected the
+ * statement itself (400 with the driver's message, or 404 for a table it does
+ * not have).
  */
 function sqlRunFailure(error: unknown): Error {
    // Already classified (an exhausted pool), with a message written for the
@@ -251,6 +262,7 @@ function sqlRunFailure(error: unknown): Error {
    if (error instanceof ConnectionError) return error;
    return (
       databaseAccessFailure(error) ??
+      statementRejection(error) ??
       new ConnectionError((error as Error).message)
    );
 }
