@@ -175,14 +175,6 @@ ENV PATH=$JAVA_HOME/bin:$PATH
 ENV NODE_ENV=production
 WORKDIR /publisher
 
-# CA certificates are required for the DuckDB extension bake (run by
-# packages/server's build): without them @duckdb/node-api can't verify TLS to
-# extensions.duckdb.org and every download fails with an SSL CA cert error.
-# The bun:slim base ships without them.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
-
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
 # patchedDependencies in package.json point at patches/; bun install refuses to
@@ -209,11 +201,12 @@ COPY packages/app/ ./
 RUN --mount=type=cache,target=/root/.bun \
     NODE_OPTIONS='--max-old-space-size=4096' bun run build:server
 
-# Build server
+# Build server. The bundle alone: the extensions the image ships come from the
+# duckdb-extensions stage, so the bake that ends build:server-only is skipped.
 WORKDIR /publisher/packages/server
 COPY packages/server/ ./
 RUN --mount=type=cache,target=/root/.bun \
-    bun run build:server-only
+    bun run build:server-only:bundle
 
 # Final image
 FROM base-deps AS final

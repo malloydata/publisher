@@ -17,7 +17,8 @@
  * so local dev and CI bake the same set. The Docker image runs this same script
  * in its own `duckdb-extensions` stage, keyed on the production dependencies
  * rather than the server source, so the baked tree ships as a layer that keeps
- * its digest from one release to the next.
+ * its digest from one release to the next; its builder runs
+ * `build:server-only:bundle`, which stops short of the bake.
  *
  * Each extension is baked independently: a failure (offline build, transient
  * CDN error) is logged and skipped, never aborting the others or the build.
