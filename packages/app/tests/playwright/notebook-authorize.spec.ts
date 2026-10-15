@@ -170,32 +170,34 @@ test.describe("notebook-authorize", () => {
    }
 
    /** Type a role into its filter's popover. */
-   async function supplyRole(page: import("@playwright/test").Page) {
+   async function supplyRole(
+      page: import("@playwright/test").Page,
+      role = "analyst",
+   ) {
       const filter = await openFilter(page, "role");
-      await filter.getByLabel("role", { exact: true }).fill("analyst");
+      await filter.getByLabel("role", { exact: true }).fill(role);
    }
 
    test("UI: result is gated until the given is supplied", async ({ page }) => {
-      // Wait on the actual denied cell response, not a fixed delay: the gated
-      // cell runs on load with `role` unset and the lock refuses it, 403. Arm
-      // the wait before opening so we can't miss it. A fixed timeout would
-      // either flake on a slow runner or — worse — let the `role` fill land
-      // while the notebook is still executing, where the change is recorded
-      // but not re-run.
-      const deniedResponse = page.waitForResponse(
+      // `role` declares no default, so it is a required filter: the tile that
+      // reads it waits for a value instead of running into the lock, and no
+      // cell request is sent while it waits.
+      const cellRequests: string[] = [];
+      page.on("request", (r) => {
+         if (QUERY_ROUTE.test(r.url())) cellRequests.push(r.url());
+      });
+      await openNotebook(page);
+      await expect(page.getByText("Waiting for role.")).toBeVisible();
+      await expect(page.getByText("Cobalt Bootcut Jean")).toHaveCount(0);
+      expect(cellRequests).toHaveLength(0);
+
+      // Supplying the satisfying given runs the tile and the result appears.
+      const cellResponse = page.waitForResponse(
          (r) => QUERY_ROUTE.test(r.url()) && r.request().method() === "POST",
          { timeout: 30_000 },
       );
-      await openNotebook(page);
-      expect((await deniedResponse).status()).toBe(403);
-
-      // Execution finished (no spinner) and, denied, rendered no result.
-      await expect(page.getByRole("progressbar")).toHaveCount(0);
-      await expect(page.getByText("Cobalt Bootcut Jean")).toHaveCount(0);
-
-      // With the notebook idle, supplying the satisfying given re-executes and
-      // the result appears.
       await supplyRole(page);
+      expect((await cellResponse).status()).toBe(200);
       await expect(page.getByText("Cobalt Bootcut Jean").first()).toBeVisible();
    });
 
@@ -203,7 +205,7 @@ test.describe("notebook-authorize", () => {
       page,
    }) => {
       // Hold the first (denied) cell run so the report stays executing while
-      // we fill `role`. This is the window where a given change used to be
+      // we change `role`. This is the window where a given change used to be
       // recorded but never re-run. Only the first cell run is held.
       let held = false;
       await page.route(QUERY_ROUTE, async (route) => {
@@ -214,15 +216,17 @@ test.describe("notebook-authorize", () => {
          await route.continue();
       });
 
-      // Wait until the held request is actually in flight (notebook executing),
-      // then fill — a deterministic "mid-execution" signal, no fixed delay.
+      // `role` is required, so nothing runs until it is set. Set one the lock
+      // refuses, wait until that run is actually in flight (a deterministic
+      // "mid-execution" signal, no fixed delay), then change it to one it admits.
+      await openNotebook(page);
       const firstCellRequest = page.waitForRequest(
          (r) => QUERY_ROUTE.test(r.url()),
          { timeout: 30_000 },
       );
-      await openNotebook(page);
+      await supplyRole(page, "intern");
       await firstCellRequest;
-      await supplyRole(page);
+      await supplyRole(page, "analyst");
 
       // Once the held run finishes, the mid-flight given must be picked up and
       // re-executed — the result appears without any further interaction.
