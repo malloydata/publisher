@@ -7920,7 +7920,8 @@ components:
               * VERSION_ID_INVALID (400): a requested `versionId` is not a
                 semantic version.
               * VERSION_NOT_LATEST (400): an auto-run of a version other than
-                `latest`, in a package whose versions share their tables.
+                `latest`, in a package whose versions share their tables. A
+                package with no `latest` yet refuses none.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
 
@@ -8248,7 +8249,9 @@ components:
             `scope: "package"` (the default) the versions share the package's
             tables, so an auto-run (no `buildInstructions`) of a version other
             than `latest` is refused with 400 (`reason` VERSION_NOT_LATEST): it
-            would rebuild the table `latest` serves. Pass `buildInstructions`
+            would rebuild the table `latest` serves. While the package has no
+            `latest` (`explicit` promotion, before the first `PUT …/latest`),
+            an auto-run of any named version builds. Pass `buildInstructions`
             to build any version into tables you name, other than the ones the
             versions share. A run with `buildInstructions`, or under
             `scope: "version"`, holds its own version's slot, so one such run is
