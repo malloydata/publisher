@@ -7,6 +7,7 @@ import {
    BuildInstruction,
    LedgerEntry,
    ManifestReference,
+   Materialization,
 } from "../storage/DatabaseInterface";
 import { MaterializationService } from "../service/materialization_service";
 import { queryMetadataViolations } from "../service/query_metadata";
@@ -14,6 +15,17 @@ import { queryMetadataViolations } from "../service/query_metadata";
 type RunContext = components["schemas"]["RunContext"];
 
 const RUN_TRIGGERS = ["publish", "on_demand", "scheduler"] as const;
+
+/**
+ * A run as the API answers it. The record keeps the version a run built for
+ * the server's own use, but the wire Materialization has no `version` field:
+ * the version goes out in `metadata.versionId`. So it is left off here, for
+ * every package, with versioning on or off.
+ */
+function toWire(run: Materialization): Omit<Materialization, "version"> {
+   const { version: _version, ...wire } = run;
+   return wire;
+}
 
 export class MaterializationController {
    constructor(private materializationService: MaterializationService) {}
@@ -23,10 +35,12 @@ export class MaterializationController {
       packageName: string,
       body: Record<string, unknown>,
    ) {
-      return this.materializationService.createMaterialization(
-         environmentName,
-         packageName,
-         this.validateCreateBody(body),
+      return toWire(
+         await this.materializationService.createMaterialization(
+            environmentName,
+            packageName,
+            this.validateCreateBody(body),
+         ),
       );
    }
 
@@ -404,11 +418,13 @@ export class MaterializationController {
       materializationId: string,
       versionId?: unknown,
    ) {
-      return this.materializationService.stopMaterialization(
-         environmentName,
-         packageName,
-         materializationId,
-         versionId,
+      return toWire(
+         await this.materializationService.stopMaterialization(
+            environmentName,
+            packageName,
+            materializationId,
+            versionId,
+         ),
       );
    }
 
@@ -417,11 +433,13 @@ export class MaterializationController {
       packageName: string,
       options?: { limit?: number; offset?: number; versionId?: unknown },
    ) {
-      return this.materializationService.listMaterializations(
-         environmentName,
-         packageName,
-         options,
-      );
+      return (
+         await this.materializationService.listMaterializations(
+            environmentName,
+            packageName,
+            options,
+         )
+      ).map(toWire);
    }
 
    async getMaterialization(
@@ -430,11 +448,13 @@ export class MaterializationController {
       materializationId: string,
       versionId?: unknown,
    ) {
-      return this.materializationService.getMaterialization(
-         environmentName,
-         packageName,
-         materializationId,
-         versionId,
+      return toWire(
+         await this.materializationService.getMaterialization(
+            environmentName,
+            packageName,
+            materializationId,
+            versionId,
+         ),
       );
    }
 

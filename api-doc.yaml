@@ -1050,6 +1050,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Schema"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1119,6 +1121,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Table"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1998,6 +2002,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Model"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2059,6 +2065,8 @@ paths:
             "application/json":
               schema:
                 $ref: "#/components/schemas/CompiledModel"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2422,6 +2430,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Report"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2478,6 +2488,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReportManifest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2866,6 +2878,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Dashboard"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2937,6 +2951,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardManifest"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2998,6 +3014,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Notebook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -3050,6 +3068,8 @@ paths:
             "application/json":
               schema:
                 $ref: "#/components/schemas/RawNotebook"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -3211,6 +3231,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Database"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -3519,6 +3541,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Materialization"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
@@ -3547,6 +3571,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Materialization"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "410":
@@ -3821,15 +3847,6 @@ components:
         build metadata (`+20231120.deadbeef`). Pre-release and
         build suffixes are accepted so release-candidate builds can be
         published.
-
-    VersionIdOrEmpty:
-      description: >-
-        A `VersionIdPattern`, or the empty string, which names no version and
-        so means the package's `latest`.
-      anyOf:
-        - $ref: "#/components/schemas/VersionIdPattern"
-        - type: string
-          maxLength: 0
 
     PackageVersion:
       type: object
@@ -6520,7 +6537,7 @@ components:
             {"columnName": value}. If false (default), returns the full Malloy
             result with type metadata for rendering.'
         versionId:
-          $ref: "#/components/schemas/VersionIdOrEmpty"
+          type: string
           description: >-
             The published version of the package to query. Omitted or empty,
             the query runs against the package's `latest` version. An unknown version
@@ -8216,7 +8233,7 @@ components:
         (read off `Package.buildPlan`).
       properties:
         versionId:
-          $ref: "#/components/schemas/VersionIdOrEmpty"
+          type: string
           description: >-
             The published version of the package to build. Omitted or empty, the
             package's `latest` version is built. An unknown version answers 404
@@ -9609,7 +9626,7 @@ components:
         Build metadata must be percent-encoded: send `1.2.0+build.5` as
         `1.2.0%2Bbuild.5`, since a bare `+` in a query string decodes to a space.
       schema:
-        $ref: "#/components/schemas/VersionIdOrEmpty"
+        type: string
     versionPath:
       name: version
       in: path
