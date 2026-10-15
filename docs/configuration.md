@@ -500,7 +500,9 @@ such source group to pick what to return. The response adds `clusters`, `coverag
 `unresolved_targets` beside `sources`. A source marked `#(agent-hidden)` (or defined in a file marked
 `##(agent-hidden)`) gets no card of its own: its fields are reached only through the joins of the
 sources that are served, as hosted get_context does. The mark is the source's own; a source that extends
-a hidden one is not hidden. Its knobs are in `fcj`, all optional:
+a hidden one is not hidden. When one field name is listed under several sources, the picking call is
+shown the start of each source's own doc beside its fields and told to pick the source whose doc matches
+the population the question asks for. Its knobs are in `fcj`, all optional:
 
 | Key                    | Default | Meaning                                                                                   |
 | ---------------------- | ------- | ----------------------------------------------------------------------------------------- |
