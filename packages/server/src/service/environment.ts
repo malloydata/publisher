@@ -325,6 +325,12 @@ const MAX_RECORDED_ADD_FAILURES = 100;
 export class Environment {
    private packages: Map<string, Package> = new Map();
    /**
+    * Packages whose unversioned files a first versioned publish has moved
+    * aside while it compiles the version (see holdingUnversionedReads):
+    * getPackage's lock-free fast path does not serve them until it settles.
+    */
+   private unversionedReadsHeld = new Set<string>();
+   /**
     * The version rules for this environment's packages, bound by the
     * EnvironmentStore once the environment has a registry row. Versioned
     * packages never enter `packages`: their loaded versions live in this
@@ -3011,6 +3017,14 @@ export class Environment {
                this.assertCanAdmitNewPackage(packageName, reason, false),
             withPackageLock: (packageName, fn) =>
                this.withPackageLock(packageName, fn),
+            holdingUnversionedReads: async (packageName, fn) => {
+               this.unversionedReadsHeld.add(packageName);
+               try {
+                  return await fn();
+               } finally {
+                  this.unversionedReadsHeld.delete(packageName);
+               }
+            },
             isWatchMounted: async (packageName) => {
                const stat = await fs.promises
                   .lstat(safeJoinUnderRoot(this.environmentPath, packageName))
@@ -3318,7 +3332,12 @@ export class Environment {
       // concurrent install/delete will race against an unlocked reader.
       const _package = this.packages.get(packageName);
       if (_package !== undefined && !reload) {
-         return _package;
+         if (!this.unversionedReadsHeld.has(packageName)) return _package;
+         // The package's first versioned publish has moved this copy's files
+         // aside while it compiles. Wait for it (it holds the package lock),
+         // then serve what it left: its version, or this copy put back.
+         await this.withPackageLock(packageName, async () => {});
+         return this.getPackage(packageName, reload, options);
       }
 
       // We are either reloading or about to lazy-load on a cache miss

@@ -68,6 +68,7 @@ function host(): VersionHost<Loaded> {
       admit: () => {},
       withPackageLock: (_packageName, fn) => packageLock.runExclusive(fn),
       isWatchMounted: async () => watchMounted,
+      holdingUnversionedReads: (_packageName, fn) => fn(),
       retireUnversioned: (packageName) =>
          log.push(`retire unversioned ${packageName}`),
       ensurePackageRecord: async (packageName, description) => {

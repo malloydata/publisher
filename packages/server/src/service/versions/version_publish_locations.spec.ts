@@ -195,6 +195,7 @@ function host(): VersionHost<Loaded> {
       admit: () => {},
       withPackageLock: (_packageName, fn) => packageLock.runExclusive(fn),
       isWatchMounted: async () => false,
+      holdingUnversionedReads: (_packageName, fn) => fn(),
       retireUnversioned: () => {},
       ensurePackageRecord: async (packageName, description) => {
          if (await repo.getPackageByName(ENV_ID, packageName)) return false;

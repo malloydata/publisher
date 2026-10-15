@@ -63,6 +63,19 @@ export interface VersionHost<P> {
    admit(packageName: string, reason: string): void;
    /** Run `fn` holding the package's lock (the one unversioned reads take). */
    withPackageLock<T>(packageName: string, fn: () => Promise<T>): Promise<T>;
+   /**
+    * Run `fn`, a package's first versioned publish, with reads of its
+    * unversioned copy held back. That publish moves the copy's files aside
+    * while it compiles the version, and a read served from memory would still
+    * reach for them (a query over a package-local file, a static page), so
+    * until `fn` settles such a read waits on the package lock and then serves
+    * what the publish left: its version, or the copy restored. Called holding
+    * the package lock.
+    */
+   holdingUnversionedReads<T>(
+      packageName: string,
+      fn: () => Promise<T>,
+   ): Promise<T>;
    /** Whether the package is a watch-mounted source directory. */
    isWatchMounted(packageName: string): Promise<boolean>;
    /**
@@ -378,7 +391,9 @@ export class VersionService<P = unknown> {
             return await this.publishStaged(staged, options, false);
          }
          return await host.withPackageLock(packageName, () =>
-            this.publishStaged(staged, options, true),
+            host.holdingUnversionedReads(packageName, () =>
+               this.publishStaged(staged, options, true),
+            ),
          );
       } finally {
          // Placed trees were renamed away; this only removes one that was not.
@@ -432,9 +447,10 @@ export class VersionService<P = unknown> {
          }
 
          // Only the package's first version moves an unversioned tree aside,
-         // and only while holding the package lock that unversioned reads
-         // take. Rows read under that lock are final: a concurrent first
-         // publish of another version committed before this one got it.
+         // and only while holding the package lock, with reads of the
+         // unversioned copy waiting on it (holdingUnversionedReads). Rows read
+         // under that lock are final: a concurrent first publish of another
+         // version committed before this one got it.
          const first = holdingPackageLock && versions.length === 0;
          let createdRecord = false;
          let held: Awaited<ReturnType<VersionStore["holdLegacy"]>> = null;

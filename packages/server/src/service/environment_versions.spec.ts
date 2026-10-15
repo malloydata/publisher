@@ -399,6 +399,86 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       expect(env.getFailedPackages().size).toBe(0);
    });
 
+   /** An unversioned package whose query reads a file of its own. */
+   function unversionedOverAFile(answer: number): void {
+      const dir = path.join(envPath, PKG);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+         path.join(dir, "publisher.json"),
+         JSON.stringify({ name: PKG }),
+      );
+      fs.writeFileSync(path.join(dir, "data.csv"), `answer\n${answer}\n`);
+      fs.writeFileSync(
+         path.join(dir, "model.malloy"),
+         "source: numbers is duckdb.table('data.csv') extend {\n  view: which_version is { select: answer }\n}\n",
+      );
+   }
+
+   /** Hold the next compile until the returned release is called. */
+   function holdCompile(fail = false) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const create = Package.create.bind(Package);
+      const spy = spyOn(Package, "create").mockImplementationOnce(
+         async (...args: Parameters<typeof Package.create>) => {
+            await gate;
+            if (fail) throw new Error("compile failed");
+            return create(...args);
+         },
+      );
+      return { release, restore: () => spy.mockRestore() };
+   }
+
+   it("a read of an unversioned package during its first publish waits, then serves the version", async () => {
+      unversionedOverAFile(0);
+      const env = await newEnvironment();
+      await env.addPackage(PKG);
+      expect(await answerOf(await env.getPackage(PKG))).toBe(0);
+
+      const held = holdCompile();
+      try {
+         const publishing = publish(env, source("1.0.0", 1));
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         // The publish has moved the unversioned files aside to compile.
+         expect(fs.existsSync(path.join(envPath, PKG, "data.csv"))).toBe(false);
+         // Served from memory, this read would query a file that is not
+         // there; it waits for the publish instead.
+         const reading = env.getPackage(PKG).then(answerOf);
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         held.release();
+         await publishing;
+         expect(await reading).toBe(1);
+      } finally {
+         held.release();
+         held.restore();
+      }
+   });
+
+   it("a read during a first publish that fails serves the unversioned copy put back", async () => {
+      unversionedOverAFile(0);
+      const env = await newEnvironment();
+      await env.addPackage(PKG);
+      expect(await answerOf(await env.getPackage(PKG))).toBe(0);
+
+      const held = holdCompile(true);
+      try {
+         const publishing = publish(env, source("1.0.0", 1)).then(
+            () => "published",
+            () => "failed",
+         );
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         const reading = env.getPackage(PKG).then(answerOf);
+         await new Promise((resolve) => setTimeout(resolve, 20));
+         held.release();
+         expect(await publishing).toBe("failed");
+         expect(await reading).toBe(0);
+      } finally {
+         held.release();
+         held.restore();
+      }
+      expect(fs.existsSync(path.join(envPath, PKG, "data.csv"))).toBe(true);
+   });
+
    it("lists a package with no latest yet without reporting a failure", async () => {
       const env = await newEnvironment();
       await publish(env, source("1.0.0", 1), "explicit");
