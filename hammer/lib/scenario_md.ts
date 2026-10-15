@@ -21,6 +21,10 @@
 //   ## Delete [<pkg>]                    -> unload + DELETE the package from serving
 //   ## Reclaim [<pkg>]                   -> DELETE the latest materialization with dropTables
 //                                        (destination-aware physical-table drop / GC)
+//   ## Destination tables|files|drop <table>|cleanup [(dest=lake, schema=main, snapshots=7d, files=1d)]
+//                                        -> the storage-destination table routes; `tables` and
+//                                        `files` take an Expect: table (`name` / `table`),
+//                                        `cleanup` an optional `deleted: <n>` body key
 //   ## Build refused [<pkg>]             [body: `cites: <substring>`, `excludes: <substring>`;
 //                                        `${pg.password}` / `${pg.user}` / `${pg.host}` are
 //                                        substituted with the throwaway container's values, so a
@@ -167,6 +171,20 @@ type Step =
         env: string;
         pkg: string;
         mode: PersistStorageMode;
+     }
+   | {
+        kind: "destination";
+        pub?: string;
+        env: string;
+        mode: PersistStorageMode;
+        action: "tables" | "files" | "drop" | "cleanup";
+        dest: string;
+        schema: string;
+        table?: string;
+        snapshotsAgeMs?: number;
+        filesAgeMs?: number;
+        deleted?: number;
+        expect?: Table;
      }
    | {
         kind: "buildRefused";
@@ -336,6 +354,10 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    await: { attrs: ["label"] },
    delete: {},
    reclaim: {},
+   destination: {
+      attrs: ["dest", "schema", "snapshots", "files"],
+      keys: ["deleted"],
+   },
    build: {
       attrs: ["orchestrated", "strict", "pkg"],
       // `reference:` is an orchestrated-build body line, not an assertion key.
@@ -659,6 +681,45 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                pkg: arg.trim() || defaultPackage,
                mode,
             });
+            break;
+         }
+         case "destination": {
+            const [verb, ...rest] = arg.split(/\s+/).filter(Boolean);
+            const action = (verb ?? "").toLowerCase();
+            const base = {
+               kind: "destination" as const,
+               pub,
+               env,
+               mode,
+               dest: (attrs.dest as string) || "lake",
+               schema: (attrs.schema as string) || "main",
+            };
+            if (action === "tables" || action === "files") {
+               steps.push({
+                  ...base,
+                  action,
+                  expect: requireExpectTable(sec.body, sec.header),
+               });
+            } else if (action === "drop") {
+               if (rest.length !== 1)
+                  throw new Error(
+                     `## Destination drop: expected one table name`,
+                  );
+               steps.push({ ...base, action, table: rest[0] });
+            } else if (action === "cleanup") {
+               const deleted = firstKey(sec.body, "deleted");
+               steps.push({
+                  ...base,
+                  action,
+                  snapshotsAgeMs: parseAge(attrs.snapshots, "snapshots"),
+                  filesAgeMs: parseAge(attrs.files, "files"),
+                  deleted: deleted === undefined ? undefined : Number(deleted),
+               });
+            } else {
+               throw new Error(
+                  `## Destination ${arg}: expected tables, files, drop <table> or cleanup`,
+               );
+            }
             break;
          }
          case "build": {
@@ -1067,6 +1128,20 @@ function parseHeader(header: string): {
    const kind = (sp < 0 ? h : h.slice(0, sp)).toLowerCase();
    const arg = sp < 0 ? "" : h.slice(sp + 1).trim();
    return { kind, arg, attrs };
+}
+
+/** `7d`, `12h`, `30m`, `0s` -> milliseconds. Required: a cleanup with no
+ * stated window would be one that silently picked a default. */
+function parseAge(raw: string | boolean | undefined, what: string): number {
+   const m = typeof raw === "string" ? raw.match(/^(\d+)([smhd])$/) : null;
+   if (!m)
+      throw new Error(
+         `## Destination cleanup: (${what}=<n>s|m|h|d) is required, got ${String(raw)}`,
+      );
+   const unit = { s: 1e3, m: 6e4, h: 36e5, d: 864e5 }[
+      m[2] as "s" | "m" | "h" | "d"
+   ];
+   return Number(m[1]) * unit;
 }
 
 function splitConnTable(arg: string): [string, string] {
@@ -2602,6 +2677,68 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                      entries,
                   );
                   await rest.patchPackage(step.pkg, { manifestLocation: uri });
+               }
+               break;
+            }
+            case "destination": {
+               // The storage-destination routes, as an orchestrator that owns
+               // table lifecycle calls them. `files` alone bypasses the
+               // publisher: it reads the destination's storage directory, which
+               // is the only way to tell whether bytes are really gone.
+               const label = `destination ${step.dest} ${step.action}`;
+               if (step.action === "files") {
+                  await active();
+                  compareRows(
+                     assert,
+                     label,
+                     step.expect!,
+                     ctx
+                        .storedTables(step.dest, step.schema)
+                        .map((table) => ({ table })),
+                  );
+                  break;
+               }
+               const rest = await serverFor(step.pub, step.env);
+               if (step.action === "tables") {
+                  const names = await rest.listDestinationTables(
+                     step.dest,
+                     step.schema,
+                  );
+                  compareRows(
+                     assert,
+                     label,
+                     step.expect!,
+                     names.map((name) => ({ name })),
+                  );
+               } else if (step.action === "drop") {
+                  const status = await rest.dropDestinationTable(
+                     step.dest,
+                     step.schema,
+                     step.table!,
+                  );
+                  assert.eq(`${label} ${step.table}`, status, 204);
+               } else {
+                  const now = Date.now();
+                  const result = await rest.createFileCleanup(step.dest, {
+                     snapshotsOlderThan: new Date(
+                        now - step.snapshotsAgeMs!,
+                     ).toISOString(),
+                     filesOlderThan: new Date(
+                        now - step.filesAgeMs!,
+                     ).toISOString(),
+                  });
+                  if (step.deleted !== undefined)
+                     assert.eq(
+                        `${label} deletedFiles`,
+                        result.deletedFiles,
+                        step.deleted,
+                     );
+                  else
+                     assert.ok(
+                        label,
+                        typeof result.deletedFiles === "number",
+                        `deleted ${result.deletedFiles} file(s)`,
+                     );
                }
                break;
             }
