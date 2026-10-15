@@ -19,7 +19,7 @@
       "snowflake"
    ],
    "homepage": "https://docs.malloydata.dev/documentation/user_guides/publishing/mcp_agents",
-   "version": "0.9.10",
+   "version": "0.9.11",
    "main": "dist/server.mjs",
    "bin": {
       "malloy-publisher": "dist/server.mjs"
@@ -70,6 +70,7 @@
       "@malloydata/db-postgres": "^0.0.435",
       "@malloydata/db-publisher": "^0.0.435",
       "@malloydata/db-snowflake": "^0.0.435",
+      "@malloydata/db-sqlserver": "^0.0.435",
       "@malloydata/db-trino": "^0.0.435",
       "@malloydata/malloy": "^0.0.435",
       "@malloydata/malloy-filter": "^0.0.435",

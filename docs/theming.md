@@ -121,6 +121,11 @@ in three layers. Each reaches something the others do not, so a host uses all th
 | `font.mono`                 | `ui-monospace, SFMono-Regular, …` | The face Malloy names are set in                                                  |
 | `shadow.menu`               | a soft 24px drop                  | Under menus                                                                       |
 
+The defaults set three tokens at weight 600: `type.pageTitle`, `type.tileTitle` and `type.label`.
+No report or builder part draws a weight of its own, so those three are every bold. A host whose
+font has no 600 face (many brand fonts ship only 400 and 500) should set those three weights, or
+the browser synthesizes a bold.
+
 What no token reaches is selectable by a **stable class name**, exported as `reportClasses`, for a
 global stylesheet or a styled wrapper:
 

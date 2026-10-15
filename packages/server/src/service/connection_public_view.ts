@@ -45,7 +45,8 @@ const CONNECTION_ATTRIBUTES: PublicShape = {
 // Per-type shapes. Credential fields are absent by omission, not by exclusion:
 // postgres password/connectionString, bigquery serviceAccountKeyJson, snowflake
 // password/privateKey/privateKeyPass, trino password/peakaKey, databricks
-// token/oauthClientSecret, mysql password, motherduck and publisher accessToken.
+// token/oauthClientSecret, mysql and sqlserver password, motherduck and
+// publisher accessToken.
 const POSTGRES: PublicShape = {
    host: "scalar",
    port: "scalar",
@@ -98,6 +99,17 @@ const MYSQL: PublicShape = {
    port: "scalar",
    database: "scalar",
    user: "scalar",
+};
+
+const SQLSERVER: PublicShape = {
+   server: "scalar",
+   port: "scalar",
+   database: "scalar",
+   user: "scalar",
+   encrypt: "scalar",
+   trustServerCertificate: "scalar",
+   hostNameInCertificate: "scalar",
+   instanceName: "scalar",
 };
 
 const MOTHERDUCK: PublicShape = { database: "scalar" };
@@ -189,6 +201,7 @@ const PUBLIC_CONNECTION: PublicShape = {
    trinoConnection: TRINO,
    databricksConnection: DATABRICKS,
    mysqlConnection: MYSQL,
+   sqlserverConnection: SQLSERVER,
    duckdbConnection: DUCKDB,
    motherduckConnection: MOTHERDUCK,
    ducklakeConnection: DUCKLAKE,
@@ -211,6 +224,7 @@ export const PUBLIC_FIELDS_BY_SCHEMA: Readonly<
    TrinoConnection: Object.keys(TRINO),
    DatabricksConnection: Object.keys(DATABRICKS),
    MysqlConnection: Object.keys(MYSQL),
+   SqlserverConnection: Object.keys(SQLSERVER),
    DuckdbConnection: Object.keys(DUCKDB),
    MotherDuckConnection: Object.keys(MOTHERDUCK),
    DucklakeConnection: Object.keys(DUCKLAKE),

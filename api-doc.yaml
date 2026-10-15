@@ -554,6 +554,8 @@ paths:
                   $ref: "#/components/schemas/PostgresConnection"
                 mysqlConnection:
                   $ref: "#/components/schemas/MysqlConnection"
+                sqlserverConnection:
+                  $ref: "#/components/schemas/SqlserverConnection"
                 bigqueryConnection:
                   $ref: "#/components/schemas/BigqueryConnection"
                 snowflakeConnection:
@@ -5658,6 +5660,13 @@ components:
             host's to set. The builder withholds its control only when it edits
             a document held as text; a saved dashboard or notebook renders it
             as before. Absent otherwise.
+        required:
+          type: boolean
+          description: >-
+            True when the given declares no default, so a query that reads it
+            fails until a value is supplied ("Given 'X' has no value and no
+            default"). A report's reader asks for it before running the tiles
+            that read it, rather than showing that error. Absent otherwise.
         default:
           type: string
           description: The given's default value as a Malloy source literal
@@ -6413,6 +6422,7 @@ components:
               trino,
               databricks,
               mysql,
+              sqlserver,
               duckdb,
               motherduck,
               ducklake,
@@ -6544,6 +6554,8 @@ components:
           $ref: "#/components/schemas/DatabricksConnection"
         mysqlConnection:
           $ref: "#/components/schemas/MysqlConnection"
+        sqlserverConnection:
+          $ref: "#/components/schemas/SqlserverConnection"
         duckdbConnection:
           $ref: "#/components/schemas/DuckdbConnection"
         motherduckConnection:
@@ -6711,6 +6723,58 @@ components:
         password:
           type: string
           description: MySQL password for authentication
+
+    SqlserverConnection:
+      type: object
+      description: >-
+        Microsoft SQL Server connection configuration: a SQL Server login over
+        TCP. Field names are the connector's own (`@malloydata/db-sqlserver`),
+        so a value here reaches the driver unchanged. The dialect is
+        experimental upstream; Publisher accepts it on the model author's
+        behalf, so a model needs no `##! experimental.dialect.sqlserver`
+        pragma. The connection is read-only: a `#@ persist` on a SQL Server
+        source is refused at load (see `RefusedSource.reason`).
+      properties:
+        server:
+          type: string
+          description: SQL Server host name or IP address
+        port:
+          type: integer
+          description: TCP port; 1433 when omitted. Not used when `instanceName` is set.
+        database:
+          type: string
+          description: Name of the database to open
+        user:
+          type: string
+          description: SQL Server login name
+        password:
+          type: string
+          description: SQL Server login password
+        encrypt:
+          type: boolean
+          description: >-
+            Encrypt the connection with TLS. On when omitted, as the driver
+            defaults it; a server that requires encryption refuses a
+            connection with it off.
+        trustServerCertificate:
+          type: boolean
+          description: >-
+            Accept a server certificate the client cannot verify, such as a
+            self-signed one on a local or test server. Off when omitted. Leave
+            it off for any server you do not control; a certificate the client
+            cannot verify then fails the connection rather than being trusted.
+        hostNameInCertificate:
+          type: string
+          description: >-
+            The host name the server's certificate is issued to, when it is
+            not `server` (a server reached by IP address, or through a
+            tunnel). Checked against the certificate when `encrypt` is on and
+            `trustServerCertificate` is off.
+        instanceName:
+          type: string
+          description: >-
+            A named instance, located through the SQL Browser service (UDP
+            1434); `port` is then not used.
 
     GCSConnection:
       type: object
@@ -7743,6 +7807,7 @@ components:
               authorize,
               not_duckdb_portable,
               public_surface_unknown,
+              read_only_dialect,
             ]
           description: >-
             The bounded refusal reason. Only the compile-time reasons can
@@ -7753,11 +7818,14 @@ components:
             `partition=` (`partition_without_storage`,
             `partition_column_unknown`, `partition_column_not_public`),
             `merge_key_scope_unresolved` (a `merge_key=` whose caller scope
-            cannot be expressed over the stored table's own columns), and
+            cannot be expressed over the stored table's own columns),
             `preaggregate_over_dynamic_source` (a rollup whose base is scoped by
-            a given, which has no read-time re-application to put the term back)
-            — those being the only reasons the two compile-time eligibility
-            asserts this collection is computed from produce.
+            a given, which has no read-time re-application to put the term back),
+            and `read_only_dialect` (a colocated `#@ persist` on a source whose
+            dialect cannot create tables; SQL Server today, whose connection
+            reports `canPersist: false`) — those being the only reasons the two
+            compile-time eligibility asserts this collection is computed from
+            produce.
 
 
             `given_in_persisted_query` is raised by BOTH gates, for one

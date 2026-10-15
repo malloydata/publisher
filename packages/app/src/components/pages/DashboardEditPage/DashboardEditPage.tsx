@@ -154,6 +154,19 @@ export default function DashboardEditPage({
                   // into an open field, which no draft holds yet.
                   onDirtyChange={guard.onDirtyChange}
                   onExit={done}
+                  // A filter the model sets links to the model's own page; the
+                  // edits so far stay in the browser's draft.
+                  onOpenModel={(modelPath) =>
+                     navigate(
+                        `/${[
+                           environmentName,
+                           packageName,
+                           ...modelPath.split("/"),
+                        ]
+                           .map(encodeURIComponent)
+                           .join("/")}`,
+                     )
+                  }
                   onEvent={onEvent}
                   loading={quietLoading ? null : reading}
                   onControlsChange={setControls}

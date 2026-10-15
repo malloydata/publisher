@@ -405,6 +405,49 @@ describe("listTablesForSchema", () => {
       });
    });
 
+   describe("sqlserver", () => {
+      const conn: ApiConnection = {
+         name: "test",
+         type: "sqlserver",
+         sqlserverConnection: {
+            server: "localhost",
+            port: 1433,
+            user: "sa",
+            password: "",
+            database: "testdb",
+         },
+      };
+
+      it("queries information_schema.columns for the schema and groups into ApiTable[]", async () => {
+         const m = mockConnection(columnRows);
+         const tables = await listTablesForSchema(conn, "dbo", m.conn);
+
+         expect(m.lastSQL).toContain("information_schema.columns");
+         expect(m.lastSQL).toContain("table_schema = N'dbo'");
+         // Plain rows, not the row_to_json wrapping Postgres needs.
+         expect(m.lastSQL).not.toContain("row_to_json");
+         expect(tables).toHaveLength(2);
+         expect(tables[0].resource).toBe("dbo.orders");
+         expect(tables[1].resource).toBe("dbo.customers");
+      });
+
+      it("includes IN filter when tableNames provided, quote-doubled", async () => {
+         const m = mockConnection(columnRows.slice(0, 2));
+         await listTablesForSchema(conn, "dbo", m.conn, ["orders", "o'b"]);
+         expect(m.lastSQL).toContain("AND table_name IN (N'orders', N'o''b')");
+      });
+
+      it("writes a non-ASCII schema and table name as Unicode literals", async () => {
+         // Without the N prefix, SQL Server converts the literal to the
+         // database's code page first; under a Latin1 collation `Продажи`
+         // becomes question marks and the listing comes back empty.
+         const m = mockConnection([]);
+         await listTablesForSchema(conn, "Продажи", m.conn, ["Заказы"]);
+         expect(m.lastSQL).toContain("table_schema = N'Продажи'");
+         expect(m.lastSQL).toContain("AND table_name IN (N'Заказы')");
+      });
+   });
+
    describe("column grouping", () => {
       it("lowercases data types", async () => {
          const conn: ApiConnection = {
@@ -582,6 +625,33 @@ describe("getSchemasForConnection", () => {
          expect(schemas).toHaveLength(1);
          expect(schemas[0].name).toBe("mydb");
          expect(schemas[0].isDefault).toBe(true);
+      });
+   });
+
+   describe("sqlserver", () => {
+      it("lists the schemas that own a table or view, dbo as the default", async () => {
+         const conn: ApiConnection = {
+            name: "test",
+            type: "sqlserver",
+            sqlserverConnection: {
+               server: "localhost",
+               port: 1433,
+               user: "sa",
+               password: "",
+               database: "mydb",
+            },
+         };
+         const m = mockConnection([
+            { schema_name: "dbo" },
+            { schema_name: "malloytest" },
+         ]);
+         const schemas = await getSchemasForConnection(conn, m.conn);
+
+         expect(m.lastSQL).toContain("information_schema.tables");
+         expect(schemas).toEqual([
+            { name: "dbo", isHidden: false, isDefault: true },
+            { name: "malloytest", isHidden: false, isDefault: false },
+         ]);
       });
    });
 
@@ -1358,6 +1428,7 @@ describe("SQL escaping and identifier validation", () => {
          "motherduck",
          "ducklake",
          "trino",
+         "sqlserver",
       ]) {
          expect(sqlLiteral("data\\archive", dialect)).toBe("data\\archive");
       }

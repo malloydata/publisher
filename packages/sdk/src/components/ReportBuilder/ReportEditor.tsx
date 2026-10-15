@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { clearReportDraft } from "./useReportDraft";
+import { clearReportDraft, reportDraftKey } from "./useReportDraft";
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
@@ -134,6 +134,12 @@ export type ReportEditorProps = (
     */
    onExit?: () => void;
    /**
+    * Open a model by its package path (`storefront.malloy`). Offered as "Open
+    * the model" on a filter a model sets, which the builder can set but not
+    * change; omitted, the filter only says where it is set.
+    */
+   onOpenModel?: (modelPath: string) => void;
+   /**
     * Take over the builder's page-level controls (save status and Save, undo
     * and redo, the layout switch, Add): handed over as `BuilderControls`
     * whenever they change, with no toolbar drawn on the page. Draw them with
@@ -166,8 +172,9 @@ export type ReportEditorProps = (
  * sources the document may name. The manifest is that compile's `document`, and
  * every tile, cell and control option runs as the document's definitions
  * followed by one `run:`, so each viewer sees what their own identity allows.
- * The document carries no `import`, `##!` or `given:`, so "Add filter" is off
- * and only the model's givens can be bound.
+ * The server's compile refuses an `import`, `##!` or `given:` in the text, so
+ * "Add filter" is off and only the model's givens can be bound, unless the
+ * host resolves the document's own givens itself (`compileSource`).
  */
 export interface TextSourceOptions {
    /** The model the text is compiled and run on top of. */
@@ -176,6 +183,26 @@ export interface TextSourceOptions {
    hiddenGivens?: readonly string[];
    /** The values for the givens the host sets: sent with the compile and with each tile that reads one. */
    givens?: Record<string, HostGivenValue>;
+   /**
+    * The text to compile in place of the document's own, for a host that
+    * resolves what the server's compile refuses in held text: the document's
+    * own `given:` declarations, say, written out as literal values. Called
+    * with the text as opened; the editor still edits and saves that text.
+    *
+    * A host that passes it owns how its text compiles, so "Add filter" is
+    * on: it writes a `given:` into the text like any report, and the builder
+    * runs each tile with that filter's value written in as a literal, since
+    * the server does not know the given. Without it, "Add filter" is off,
+    * because the server refuses a `given:` in held text.
+    */
+   compileSource?: (text: string) => string | Promise<string>;
+   /**
+    * Names a filter added here must not take: with `compileSource`, every
+    * given the model declares, including one only a gate reads, which the
+    * page never shows. A document given of the same name would collide with
+    * the model's once the report is published.
+    */
+   takenGivenNames?: readonly string[];
 }
 
 export function ReportEditor(props: ReportEditorProps) {
@@ -184,6 +211,7 @@ export function ReportEditor(props: ReportEditorProps) {
       loading,
       onDirtyChange,
       onExit,
+      onOpenModel,
       onControlsChange,
       keepDraft,
       kind,
@@ -370,7 +398,13 @@ export function ReportEditor(props: ReportEditorProps) {
    // One per report, version and server: a draft is never restored onto a
    // file it was not made on.
    const draftKey = keepDraft
-      ? `${server}|${environmentName}/${packageName}@${versionId ?? ""}/${path ?? dashboardName}`
+      ? reportDraftKey({
+           server,
+           environmentName,
+           packageName,
+           versionId,
+           path: path ?? dashboardName,
+        })
       : undefined;
    const saveLabel =
       savesTo === "host" && workspace?.description
@@ -519,6 +553,7 @@ export function ReportEditor(props: ReportEditorProps) {
                onSave={save}
                onDirtyChange={reportDirty}
                {...(onExit ? { onExit } : {})}
+               {...(onOpenModel ? { onOpenModel } : {})}
                {...(onControlsChange ? { onControlsChange } : {})}
                {...(draftKey !== undefined ? { draftKey } : {})}
                {...(allowLayoutChange !== undefined

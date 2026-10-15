@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { isRequiredGiven } from "./required";
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
 import {
@@ -52,6 +53,8 @@ function truncate(text: string): string {
 
 /** What a given with no value of its own shows: its default, or that it does not narrow. */
 function unsetSummary(given: Given): string {
+   // No default: nothing runs until it is set, so it does not read as "Any".
+   if (isRequiredGiven(given)) return "Required";
    const type = given.type ?? "string";
    const shown = renderGivenDefault(type, given.default);
    if (shown !== undefined && shown !== "") return summarizeText(type, shown);

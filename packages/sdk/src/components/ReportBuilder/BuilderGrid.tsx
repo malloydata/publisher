@@ -35,6 +35,7 @@ export function BuilderGrid({
    reorder,
    resizing,
    gridBox,
+   defaultSpan = 1,
    rules,
    canAdd,
    selected,
@@ -52,6 +53,8 @@ export function BuilderGrid({
    reorder: ReturnType<typeof useTileReorder>;
    resizing: ReturnType<typeof useTileResize>;
    gridBox: RefObject<HTMLDivElement | null>;
+   /** The span a tile with no `# colspan` is drawn at: as wide as the reader draws it. */
+   defaultSpan?: number;
    /** How the document arranges tiles: columns, widths, inserting between. */
    rules: LayoutRules;
    /** Whether there is a catalog to add a tile from. */
@@ -81,12 +84,15 @@ export function BuilderGrid({
    // the preview — the tile being resized at its previewed width, or the tiles
    // in their previewed order. So the row reflows under the pointer exactly as
    // it will once the edit lands.
-   const shown =
+   const drawn = (tile: DashboardTile): DashboardTile =>
+      tile.colspan === undefined ? { ...tile, colspan: defaultSpan } : tile;
+   const shown = (
       resize !== undefined
          ? editor.document.tiles.map((each, index) =>
               index === resize.index ? { ...each, colspan: resize.span } : each,
            )
-         : (preview ?? editor.document.tiles);
+         : (preview ?? editor.document.tiles)
+   ).map(drawn);
    // And, while a drag is live, the empty end of every row as a drop target.
    // While an edge is dragged too: narrowing a tile frees columns its row-mate
    // does not take, and an undrawn hole there read as a broken layout rather

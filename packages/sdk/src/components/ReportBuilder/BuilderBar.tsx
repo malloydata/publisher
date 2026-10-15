@@ -491,9 +491,12 @@ function SaveStatus({ controls }: { controls: BuilderControls }) {
 /** In the accessibility tree, not on screen: the status line's announcement. */
 const VISUALLY_HIDDEN = {
    position: "absolute",
-   width: 1,
-   height: 1,
-   margin: -1,
+   // Strings, not numbers: in `sx` a width or height of 1 is 100%, and a
+   // margin of -1 is one spacing unit. As numbers, this "hidden" span was as
+   // wide as the host's header and scrolled its panel sideways.
+   width: "1px",
+   height: "1px",
+   margin: "-1px",
    padding: 0,
    overflow: "hidden",
    clip: "rect(0 0 0 0)",

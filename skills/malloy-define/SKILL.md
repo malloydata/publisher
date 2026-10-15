@@ -177,7 +177,7 @@ The user will:
 - **Remove** fields they don't need.
 - **Change** priorities.
 
-Once the definitions are confirmed, write them into the `.malloy` model (see your modeling workflow). Use `#(doc)` annotations to document sources and fields, and `given:` parameters to declare runtime-filterable dimensions where appropriate. `#(filter)` is deprecated. Never add a `#(filter)` annotation: every use, including `required`, `implicit`, and date/number ranges, has a `given:` form. See `skill:malloy-model` § Parameterizing sources with `given:`. Keep the confirmed definitions in the conversation; there is no separate plan-file store.
+Once the definitions are confirmed, write them into the `.malloy` model (see your modeling workflow). Use `#(doc)` annotations to document sources and fields, and a `given:` only where the data's meaning or access depends on a runtime value (a gate, a value every query must supply). A filter a reader picks on a dashboard belongs to the report, not the model. `#(filter)` is deprecated. Never add a `#(filter)` annotation: every use, including `required`, `implicit`, and date/number ranges, has a `given:` form. See `skill:malloy-model` § Parameterizing sources with `given:`. Keep the confirmed definitions in the conversation; there is no separate plan-file store.
 
 ## Data-driven proposals
 

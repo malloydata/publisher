@@ -1101,8 +1101,15 @@ host's authoritative `DocumentStorage`) and `<DashboardView preamble runModelPat
 cell and control option runs as the document's definitions followed by one `run:`, sent to `modelPath`. Use the
 package's `index.malloy` as `modelPath`: a base file the package hides is refused when the document compiles and
 answers 404 when it runs. A restricted tile, or a tile the server answers 403, shows "You don't have access to
-this data". "Add filter" is off, since the document holds no `given:` of its own to write; the model's givens can
-still be bound. `hiddenGivens` names givens the host sets itself, which get no control, and `givens` carries their
+this data". The compile refuses a `given:` in held text, so "Add filter" is off and only the model's givens can be
+bound, unless the host passes `textSource.compileSource`. That function returns the text to compile in place of
+the document's own: the host removes the document's `given:` declarations and `##!` lines and writes each
+`$NAME` as a literal value (`malloyLiteral` and `localGivenSpec` are exported for this). With it, "Add filter" is
+on, the editor still saves the document's own text, and the builder runs each tile with the document's filter
+values written in as literals, never sent to the server as givens. The saved text stays a report the package can
+serve as it is. Pass `textSource.takenGivenNames` (every given the model declares) so a filter the builder adds
+never takes a model given's name, and give the reader `<DashboardView literalReads />`, the document filters each
+tile reads by its `tile.query`, so a tile filtered that way is not marked as ignoring them. `hiddenGivens` names givens the host sets itself, which get no control, and `givens` carries their
 values. A gate whose given the request did not send denies, so a host that never sends them sees every tile on a
 gated source as restricted.
 

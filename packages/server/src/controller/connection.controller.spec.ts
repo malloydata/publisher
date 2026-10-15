@@ -27,7 +27,10 @@ import {
 } from "../errors";
 import { logger } from "../logger";
 import type { EnvironmentStore } from "../service/environment_store";
-import { ConnectionController } from "./connection.controller";
+import {
+   ConnectionController,
+   lookupFailureDriverMessage,
+} from "./connection.controller";
 
 /**
  * Tests for the row-cap path inside
@@ -1577,5 +1580,38 @@ describe("ConnectionController connection lookup failures", () => {
          status: 404,
          json: { code: 404, message: "Connection warehuose not found" },
       });
+   });
+});
+
+describe("lookupFailureDriverMessage", () => {
+   it("takes the driver message from Postgres's and Databricks's shape", () => {
+      expect(
+         lookupFailureDriverMessage(
+            "Error fetching schema for public.t: connect ECONNREFUSED 10.0.0.5:5432",
+            "public.t",
+         ),
+      ).toBe("connect ECONNREFUSED 10.0.0.5:5432");
+   });
+
+   it("takes it from the SQL Server connector's shape, without the error number", () => {
+      // 0 is the connector's number for a failure before the server answered.
+      expect(
+         lookupFailureDriverMessage(
+            "Error fetching schema for table dbo.t: 0: Failed to connect to 127.0.0.1:1 - Could not connect (sequence)",
+            "dbo.t",
+         ),
+      ).toBe("Failed to connect to 127.0.0.1:1 - Could not connect (sequence)");
+      expect(
+         lookupFailureDriverMessage(
+            "Error fetching schema for table dbo.t: 229: The SELECT permission was denied",
+            "dbo.t",
+         ),
+      ).toBe("The SELECT permission was denied");
+   });
+
+   it("is undefined for any other text", () => {
+      expect(
+         lookupFailureDriverMessage("Invalid table path x: bad", "x"),
+      ).toBeUndefined();
    });
 });
