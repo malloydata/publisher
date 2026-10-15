@@ -85,6 +85,41 @@ export const SUPERSEDED_TABLES_KEY = "supersededTables";
  */
 export const WRITES_TABLES_KEY = "writesTables";
 
+/**
+ * Where an auto-run of a `scope: version` version records, before it builds,
+ * where each table it writes lives: the table, its source's connection, and
+ * its storage destination for a `storage=` table. Its manifest names the
+ * tables only once it commits, so this is what lets the version's archive
+ * reclaim the tables of a run that failed or was cancelled part-way.
+ */
+export const WRITES_TARGETS_KEY = "writesTargets";
+
+/** A table a run writes, as {@link WRITES_TARGETS_KEY} records it. */
+export interface WriteTarget {
+   sourceEntityId: string;
+   physicalTableName: string;
+   connectionName: string;
+   storageDestinationName?: string;
+}
+
+/** The {@link WriteTarget}s a run's metadata records, or empty. */
+export function writeTargetsIn(
+   metadata: Record<string, unknown> | null,
+): WriteTarget[] {
+   const targets = metadata?.[WRITES_TARGETS_KEY];
+   if (!Array.isArray(targets)) return [];
+   return targets.filter(
+      (t): t is WriteTarget =>
+         typeof t === "object" &&
+         t !== null &&
+         typeof (t as WriteTarget).sourceEntityId === "string" &&
+         typeof (t as WriteTarget).physicalTableName === "string" &&
+         typeof (t as WriteTarget).connectionName === "string" &&
+         ((t as WriteTarget).storageDestinationName === undefined ||
+            typeof (t as WriteTarget).storageDestinationName === "string"),
+   );
+}
+
 /** A metadata list of table names, or empty. */
 export function tableNamesIn(
    metadata: Record<string, unknown> | null,

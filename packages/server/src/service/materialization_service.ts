@@ -97,6 +97,9 @@ import {
    tableIdentity,
    tableNamesIn,
    WRITES_TABLES_KEY,
+   WRITES_TARGETS_KEY,
+   type WriteTarget,
+   writeTargetsIn,
    versionedTableName,
    versionTableSuffix,
 } from "./versions/materialization_scope";
@@ -940,6 +943,79 @@ function tableKeyOf(
 }
 
 /**
+ * The tables an archived version's run owes back: its manifest's entries, and
+ * every table it recorded writing ({@link WRITES_TARGETS_KEY}) that the
+ * manifest does not name. For a run that failed or was cancelled before it
+ * committed, the manifest names none, so the recorded tables are all of them;
+ * without them the reclaim would delete the run's record and leave its tables
+ * with nothing that names them.
+ */
+function reclaimableEntries(m: Materialization): ManifestEntry[] {
+   const entries = Object.values(m.manifest?.entries ?? {});
+   const named = new Set(
+      entries.map((e) =>
+         tableKeyOf(
+            e.connectionName ?? "",
+            e.storageDestinationName,
+            e.physicalTableName,
+         ),
+      ),
+   );
+   for (const target of writeTargetsIn(m.metadata ?? null)) {
+      const key = tableKeyOf(
+         target.connectionName,
+         target.storageDestinationName,
+         target.physicalTableName,
+      );
+      if (named.has(key)) continue;
+      named.add(key);
+      entries.push({
+         sourceEntityId: target.sourceEntityId,
+         physicalTableName: target.physicalTableName,
+         connectionName: target.connectionName,
+         ...(target.storageDestinationName
+            ? { storageDestinationName: target.storageDestinationName }
+            : {}),
+      });
+   }
+   return entries;
+}
+
+/**
+ * Where each instructed table lives, as {@link WRITES_TARGETS_KEY} records it:
+ * the instruction's table and destination, with the connection of the plan
+ * source it builds. Matched by sourceID when the instruction carries one, else
+ * by content address, the order the build matches instructions in. An
+ * instruction the plan does not know is left out.
+ */
+function writeTargetsFor(
+   plan: BuildPlan | null,
+   instructions: BuildInstruction[],
+): WriteTarget[] {
+   if (!plan) return [];
+   const byAddress = new Map(
+      Object.values(plan.sources).map((s) => [s.sourceEntityId, s]),
+   );
+   const targets: WriteTarget[] = [];
+   for (const instruction of instructions) {
+      const source =
+         (instruction.sourceID
+            ? plan.sources[instruction.sourceID]
+            : undefined) ?? byAddress.get(instruction.sourceEntityId);
+      if (!source?.connectionName) continue;
+      targets.push({
+         sourceEntityId: instruction.sourceEntityId,
+         physicalTableName: instruction.physicalTableName,
+         connectionName: source.connectionName,
+         ...(instruction.destination
+            ? { storageDestinationName: instruction.destination }
+            : {}),
+      });
+   }
+   return targets;
+}
+
+/**
  * Name the stored tables a failed run wrote and did not reclaim.
  *
  * Without this there is no record at all: the run committed no manifest, the
@@ -1750,12 +1826,18 @@ export class MaterializationService {
             // claim, not the naming, keeps another active run off them, since
             // a run with instructions may name any table. No other run reads
             // them, so nothing is superseded or rebound.
+            // It also records where each table lives, which its manifest says
+            // only once it commits: the version's archive reclaims the tables
+            // of a run that failed or was cancelled part-way from this.
             await this.claimTables(
                environmentId,
                packageName,
                id,
                instructions,
-               { supersede: false },
+               {
+                  supersede: false,
+                  targets: writeTargetsFor(pkg.getBuildPlan(), instructions),
+               },
             );
          }
 
@@ -1991,7 +2073,10 @@ export class MaterializationService {
       packageName: string,
       id: string,
       instructions: BuildInstruction[],
-      { supersede }: { supersede: boolean } = { supersede: true },
+      {
+         supersede,
+         targets,
+      }: { supersede: boolean; targets?: WriteTarget[] } = { supersede: true },
    ): Promise<void> {
       const tables = [...new Set(instructions.map((i) => i.physicalTableName))];
       await this.tableLockFor(environmentId, packageName).runExclusive(
@@ -2008,6 +2093,7 @@ export class MaterializationService {
                metadata: {
                   ...(run?.metadata ?? {}),
                   [WRITES_TABLES_KEY]: tables,
+                  ...(targets ? { [WRITES_TARGETS_KEY]: targets } : {}),
                },
             });
             if (!supersede) return;
@@ -5477,11 +5563,15 @@ export class MaterializationService {
     * Left alone: a table any other run of the package still references; the
     * tables of an orchestrated run, whose names and lifetime the caller that
     * assigned them owns; and everything under `scope: package`, whose tables
-    * the package's versions share. The reclaimed runs are then deleted, so an
+    * the package's versions share. A run that failed or was cancelled before
+    * it committed is reclaimed too: its manifest names no table, so the tables
+    * it recorded writing before it built are dropped instead
+    * (reclaimableEntries). The reclaimed runs are then deleted, so an
     * unarchived version serves live until it is built again rather than
     * binding to tables that are gone. A table that could not be dropped keeps
-    * a FAILED record naming it, which the next reclaim (another archive, or
-    * the sweep at startup) tries again.
+    * a FAILED record naming it, which the sweep at startup tries again (as
+    * does archiving the version again after an unarchive; archiving one that
+    * is already archived changes nothing and starts no reclaim).
     *
     * Done under the version's lock, and only while it is still archived: an
     * unarchive, and a run of the version (which is refused while it is
@@ -5540,7 +5630,7 @@ export class MaterializationService {
                   environmentName,
                   packageName,
                   m.id,
-                  Object.values(m.manifest?.entries ?? {}),
+                  reclaimableEntries(m),
                   stillReferenced,
                   connectionFor,
                );

@@ -17,6 +17,7 @@ import { MaterializationService } from "./materialization_service";
 import {
    storageBindingResolverFor,
    versionTableSuffix,
+   writeTargetsIn,
 } from "./versions/materialization_scope";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
@@ -412,6 +413,41 @@ describe("reclaiming an archived version's tables", () => {
             (e) => e.physicalTableName,
          ),
       ).toEqual(["host_v1"]);
+   });
+
+   it("reclaims the tables of a run that failed after building them, though its manifest names none", async () => {
+      await publish("1.0.0", 1, "version", { detail: true });
+      await publish("2.0.0", 2, "version");
+      // The run builds both tables, then cannot commit: it ends FAILED with
+      // no manifest, the shape a cancelled or crashed run leaves too.
+      const commit = spyOn(
+         service as unknown as {
+            commitManifest: (...args: unknown[]) => Promise<void>;
+         },
+         "commitManifest",
+      ).mockImplementationOnce(async () => {
+         throw new Error("the store refused the commit");
+      });
+      const failed = await build({ versionId: "1.0.0" });
+      commit.mockRestore();
+      expect(failed.status).toBe("FAILED");
+      expect(Object.keys(failed.manifest?.entries ?? {})).toEqual([]);
+      expect((await tablesIn(env)).sort()).toEqual(
+         [DETAIL_V1, TABLE_V1].sort(),
+      );
+      // Before it built, it recorded where each table lives.
+      expect(
+         writeTargetsIn(failed.metadata ?? null)
+            .map((t) => `${t.connectionName}:${t.physicalTableName}`)
+            .sort(),
+      ).toEqual([`warehouse:${DETAIL_V1}`, `warehouse:${TABLE_V1}`].sort());
+
+      await archive("1.0.0");
+
+      // Both tables are dropped and the record goes with them, so nothing
+      // is left behind that no record names.
+      expect(await tablesIn(env)).toEqual([]);
+      expect(await statusOf(failed.id)).toBeNull();
    });
 
    it("reclaims nothing of a `scope: package` version, even when the package's later version is `scope: version`", async () => {
