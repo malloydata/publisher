@@ -36,6 +36,7 @@ import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
    isQueryTile,
+   isReadOnlyTile,
    tileExpression,
    tileKey,
    type DashboardDocument,
@@ -299,6 +300,21 @@ export function EditorSurface({
          ),
       [manifest],
    );
+   // The served tiles' labels, keyed the same way. A tile the builder shows
+   // read-only (its view in the model, or a named query) carries no label in
+   // the document, since its `# label` sits on a declaration the builder does
+   // not read; the reader titles it from the server's label, and so does this.
+   const servedLabels = useMemo(
+      () =>
+         new Map(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.kind !== "text" && tile.query && tile.label
+                  ? [[tileExpressionKey(tile.query), tile.label] as const]
+                  : [],
+            ),
+         ),
+      [manifest],
+   );
    // Givens a tile reads through the model (a source's own `where:`), not a
    // binding in this file: shown, so the row matches the reader's, but the
    // model's to change.
@@ -416,13 +432,17 @@ export function EditorSurface({
             heading?: TileHeadingSlots,
             chrome: TileChrome = "card",
          ) {
+            const title =
+               (isReadOnlyTile(tile)
+                  ? servedLabels.get(tileExpressionKey(tileExpression(tile)))
+                  : undefined) ?? tileDisplayTitle(tile);
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             // Until then the tile's own card and heading stand, so nothing pops in when it runs.
             if (notCompiled)
                return (
                   <TileCard chrome={chrome}>
                      <TileHeading
-                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        title={heading?.title ?? title}
                         subtitle={heading ? heading.subtitle : tile.subtitle}
                      />
                      <Typography
@@ -437,7 +457,7 @@ export function EditorSurface({
                return (
                   <TileCard chrome={chrome}>
                      <TileHeading
-                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        title={heading?.title ?? title}
                         subtitle={heading ? heading.subtitle : tile.subtitle}
                      />
                      <Loading text="Running…" />
@@ -478,7 +498,7 @@ export function EditorSurface({
                   {...(query.annotation
                      ? { annotation: query.annotation }
                      : {})}
-                  label={tileDisplayTitle(tile)}
+                  label={title}
                   chrome={chrome}
                   subtitle={tile.subtitle}
                   {...(heading ? { heading } : {})}
@@ -509,6 +529,7 @@ export function EditorSurface({
          missing,
          runnable,
          servedReads,
+         servedLabels,
          environmentName,
          packageName,
          versionId,
