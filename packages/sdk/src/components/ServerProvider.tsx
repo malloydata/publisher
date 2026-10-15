@@ -24,6 +24,7 @@ import {
    PackagesApi,
    PublisherApi,
    ReportsApi,
+   VersionsApi,
    WatchModeApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
@@ -165,6 +166,7 @@ const getApiClients = (
          axiosInstance,
       ),
       watchMode: new WatchModeApi(config, basePath, axiosInstance),
+      versions: new VersionsApi(config, basePath, axiosInstance),
    };
 };
 

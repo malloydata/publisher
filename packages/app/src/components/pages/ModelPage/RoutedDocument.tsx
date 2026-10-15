@@ -42,9 +42,15 @@ export default function RoutedDocument({
    edit,
    notFound,
    notFoundUntilListed = false,
+   versionId,
+   readOnly = false,
 }: {
    environmentName: string;
    packageName: string;
+   /** The version to read, for a pinned version; absent means `latest`. */
+   versionId?: string;
+   /** A published version: read it, never open the builder on it. */
+   readOnly?: boolean;
    /** The route's path under the package, as the URL spells it (no `?edit`). */
    routePath: string;
    /** The route carries `?edit`. */
@@ -61,6 +67,7 @@ export default function RoutedDocument({
    const { reports, settled, isFetching, isError, refetch } = useReportListing(
       environmentName,
       packageName,
+      versionId,
    );
    const { search } = useLocation();
    const path = `${routePath}.malloy`;
@@ -131,10 +138,11 @@ export default function RoutedDocument({
          <ReadAndEdit
             environmentName={environmentName}
             packageName={packageName}
+            {...(versionId !== undefined ? { versionId } : {})}
             path={report.path}
-            editable={report.editable}
+            editable={readOnly ? false : report.editable}
             layout={report.layout}
-            edit={edit}
+            edit={edit && !readOnly}
          />
       );
 
@@ -187,6 +195,7 @@ export default function RoutedDocument({
 function ReadAndEdit({
    environmentName,
    packageName,
+   versionId,
    path,
    editable,
    layout,
@@ -194,6 +203,7 @@ function ReadAndEdit({
 }: {
    environmentName: string;
    packageName: string;
+   versionId?: string;
    path: string;
    editable: boolean | undefined;
    layout: ReportLayout | undefined;
@@ -230,6 +240,7 @@ function ReadAndEdit({
                <ReportPage
                   environmentName={environmentName}
                   packageName={packageName}
+                  {...(versionId !== undefined ? { versionId } : {})}
                   path={path}
                   {...(editable !== undefined ? { editable } : {})}
                   onReady={() => {
