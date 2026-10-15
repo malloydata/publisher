@@ -17,7 +17,8 @@
 # built together from one definition, so pinning the tag pins both.
 #
 # dhi.io/bun carries only the current 1.x line (1.4 today); there is no 1.3
-# tag. The server's floor is `bun >=1.3.13` (package.json engines).
+# tag. The server's floor is `bun >=1.4.3` (package.json engines), the same
+# version, so the runtime, CI and a clone all run one Bun.
 ARG BUN_IMAGE=dhi.io/bun:1.4.3-debian13
 ARG GIT_IMAGE=dhi.io/git:2-debian13
 ARG JAVA_IMAGE=dhi.io/amazoncorretto:21-debian13-dev

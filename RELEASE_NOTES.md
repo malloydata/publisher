@@ -29,7 +29,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **There is no shell in the image.** `docker exec <container> sh`, `--entrypoint bash`, and a `CMD-SHELL` healthcheck no longer work. `docker exec` of a binary does, and `docker exec <container> bun -e '<script>'` is the probe that replaces `sh -c`; the Compose example's healthcheck is now a `bun -e` fetch. For an interactive shell beside a running container use `docker debug`, or on Kubernetes an ephemeral `kubectl debug` container from the `-dev` variant of the base. `curl`, `unzip`, `ping` and `file` are no longer in the image; `git` is, with its dpkg records, so a scan of the image still sees it.
 
-The DuckDB CLI moved with the home directory, to `/home/nonroot/.duckdb/cli/<version>/duckdb`, and is on `PATH` as before. Bun moved from 1.3.13 to 1.4.3, the line `dhi.io/bun` carries. The base image tags are Dockerfile build args (`BUN_IMAGE`, `GIT_IMAGE`, `JAVA_IMAGE`), so a build can pin a digest or use a mirror in your own registry.
+The DuckDB CLI moved with the home directory, to `/home/nonroot/.duckdb/cli/<version>/duckdb`, and is on `PATH` as before. Bun moved from 1.3.13 to 1.4.3, the line `dhi.io/bun` carries, and the repository's own pins (`engines`, `.tool-versions`, CI) moved with it, so a clone needs Bun 1.4.3 or newer. The base image tags are Dockerfile build args (`BUN_IMAGE`, `GIT_IMAGE`, `JAVA_IMAGE`), so a build can pin a digest or use a mirror in your own registry.
 
 ## [0.9.12] — A SQL statement Postgres rejects answers 400 with the database's message, not 502
 
