@@ -134,7 +134,7 @@ come back is one whose docs do not say what people ask; `eval-diagnose` calls it
 surface. Those look identical in an answer score and have different owners,
 which is what makes this number worth having. It uses the search terms the answerer chose, so it
 attributes a failure *within* an arm and does not compare retrieval across arms
--- that is the engine-side `eval-retrieval` skill, which does not ship here.
+-- for that, replay fixed requests (`skill:eval-loop`, `reference/retrieval-replay.md`).
 
 Where a case names golden `searchTargets`, `scripts/score_targets.py` scores
 the same attempt one search target at a time, and answers three questions in

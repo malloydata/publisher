@@ -6,6 +6,7 @@
   python3 eval.py serve truth --set <set-dir>      # the answer key's server
   python3 eval.py verify   --set <set-dir>         # goldens still re-derive
   python3 eval.py run      --set <set-dir> --label baseline-01
+  python3 eval.py replay   --set <set-dir> --label replay-01   # retrieval only, no answerer
   python3 eval.py diagnose --set <set-dir> --label baseline-01
   python3 eval.py package  --set <set-dir> --label baseline-01
 
@@ -13,7 +14,7 @@ Each verb runs one script's `main` with the arguments given, after `--set`
 has picked up the set's eval.toml (skills/eval-answer/scripts/config.py). Any
 flag the script takes passes through, so `run --only q3 --no-judge` works.
 
-`--label` names a run the same way for every verb: `run` writes it to
+`--label` names a run the same way for every verb: `run` and `replay` write it to
 <workdir>/runs/<label>, and `diagnose` and `package` read it from there
 unless `--run` is given.
 
@@ -31,7 +32,7 @@ for d in ("eval-answer", "eval-loop", "eval-diagnose"):
 
 import config  # noqa: E402
 
-VERBS = ("check", "serve", "verify", "run", "diagnose", "package")
+VERBS = ("check", "serve", "verify", "run", "replay", "diagnose", "package")
 
 
 def flag_value(args: list[str], flag: str) -> str | None:
@@ -125,6 +126,9 @@ def dispatch(argv: list[str]) -> int:
     if verb == "run":
         import run_baseline
         return run_baseline.main(rest)
+    if verb == "replay":
+        import retrieval_replay
+        return retrieval_replay.main(rest)
     if verb == "diagnose":
         import diagnose
         return diagnose.main(run_dir_from_label(rest))

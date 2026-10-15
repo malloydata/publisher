@@ -44,6 +44,7 @@ all of them for every run is how a skill stops being read.
 | auditing a key you doubt, or a set you did not author | `reference/auditing-an-answer-key.md` |
 | deciding whether an edit stays | `reference/acceptance-check.md` |
 | about to quote a number, set the band, or read a set's flips | `reference/measurement.md` |
+| measuring whether `get_context` returns the right fields, with no answerer | `reference/retrieval-replay.md` |
 | the run finished and someone has to read it | `skill:eval-report` |
 | you changed judge doctrine or its inputs | `reference/checking-the-judge.md` |
 
