@@ -738,42 +738,50 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
       expect(await statusOf(server, v2.id)).toBe("MANIFEST_FILE_READY");
    });
 
-   it("after a restart, the startup sweep finishes a reclaim that never ran, and an environment reloaded from the database reclaims on archive", async () => {
-      // A process that stopped between the archive's commit and its reclaim.
-      const before = await openServer({ wired: false });
-      await before.store.addEnvironment({
-         name: ENV,
-         connections: [WAREHOUSE],
-      } as never);
-      await publish(before, "1.0.0", 1);
-      await publish(before, "2.0.0", 2);
-      await publish(before, "3.0.0", 3);
-      const v1 = await build(before, "1.0.0");
-      const v2 = await build(before, "2.0.0");
-      await archive(before, "1.0.0");
-      expect(before.calls).toEqual([]);
-      expect(await tables(before)).toEqual([TABLE_V1, TABLE_V2]);
-      expect(await statusOf(before, v1.id)).toBe("MANIFEST_FILE_READY");
-      await closeServer(before);
+   // Skipped on Windows, where DuckDB keeps the OS handle on a file database
+   // after close(), so the restarted store, in this same process, cannot open
+   // the warehouse file again ("being used by another process"); the same
+   // limitation as materialization_build_session.spec.ts. POSIX releases it.
+   // The reclaim itself runs on Windows in the test above.
+   it.skipIf(process.platform === "win32")(
+      "after a restart, the startup sweep finishes a reclaim that never ran, and an environment reloaded from the database reclaims on archive",
+      async () => {
+         // A process that stopped between the archive's commit and its reclaim.
+         const before = await openServer({ wired: false });
+         await before.store.addEnvironment({
+            name: ENV,
+            connections: [WAREHOUSE],
+         } as never);
+         await publish(before, "1.0.0", 1);
+         await publish(before, "2.0.0", 2);
+         await publish(before, "3.0.0", 3);
+         const v1 = await build(before, "1.0.0");
+         const v2 = await build(before, "2.0.0");
+         await archive(before, "1.0.0");
+         expect(before.calls).toEqual([]);
+         expect(await tables(before)).toEqual([TABLE_V1, TABLE_V2]);
+         expect(await statusOf(before, v1.id)).toBe("MANIFEST_FILE_READY");
+         await closeServer(before);
 
-      const after = await openServer();
-      await after.sweep;
-      await Promise.all(after.reclaims);
-      expect(after.calls).toEqual([[ENV, PKG, "1.0.0"]]);
-      expect(await tables(after)).toEqual([TABLE_V2]);
-      expect(await statusOf(after, v1.id)).toBeNull();
-      expect(await statusOf(after, v2.id)).toBe("MANIFEST_FILE_READY");
+         const after = await openServer();
+         await after.sweep;
+         await Promise.all(after.reclaims);
+         expect(after.calls).toEqual([[ENV, PKG, "1.0.0"]]);
+         expect(await tables(after)).toEqual([TABLE_V2]);
+         expect(await statusOf(after, v1.id)).toBeNull();
+         expect(await statusOf(after, v2.id)).toBe("MANIFEST_FILE_READY");
 
-      // The environment came back from the database with the hook attached.
-      await archive(after, "2.0.0");
-      await Promise.all(after.reclaims);
-      expect(after.calls).toEqual([
-         [ENV, PKG, "1.0.0"],
-         [ENV, PKG, "2.0.0"],
-      ]);
-      expect(await tables(after)).toEqual([]);
-      expect(await statusOf(after, v2.id)).toBeNull();
-   });
+         // The environment came back from the database with the hook attached.
+         await archive(after, "2.0.0");
+         await Promise.all(after.reclaims);
+         expect(after.calls).toEqual([
+            [ENV, PKG, "1.0.0"],
+            [ENV, PKG, "2.0.0"],
+         ]);
+         expect(await tables(after)).toEqual([]);
+         expect(await statusOf(after, v2.id)).toBeNull();
+      },
+   );
 
    it("server.ts registers that hook and that sweep on the materialization service", () => {
       // The two tests above register server.ts's closures on a real store;
