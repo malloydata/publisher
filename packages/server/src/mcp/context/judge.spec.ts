@@ -274,6 +274,7 @@ You are shown the search targets the user's agent wrote and, for each target, ca
 - For a view, source or join target, pick the candidates that are that thing.
 - Read each candidate's documentation, rules included, before choosing. When a rule changes how the field must be used (an exclusion, a filter, a grain), add it to "caveats".
 - When "caveats" names a filter the query needs, also pick the field it filters on, under the target it serves. A filter written only as a caveat leaves the answer without its field.
+- When the same field name is listed under several sources, those sources hold different rows: a different population, filter, breakdown or grain. Read each source's doc and pick the field on the source whose doc matches the population or breakdown the target or the question asks for. When the question names none, pick the source the docs name as the default and say so in the reason. Pick it on more than one source only when the question could mean either, and say which is which. Sharing a query never decides between them.
 - When several sources serve a target, prefer the one that can share a query with the other targets' picks: the same source, or a source its joins reach. Say in "caveats" which picks can be queried together.
 - Pick nothing for a target no listed source can answer. Do not pick a candidate only because its name repeats a word of the target.
 
