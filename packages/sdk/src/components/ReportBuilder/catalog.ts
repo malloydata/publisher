@@ -195,23 +195,56 @@ function viewShapesOf(
    return bySource;
 }
 
+type ModelSource = NonNullable<CompiledModel["sources"]>[number];
+type ModelView = NonNullable<ModelSource["views"]>[number];
+
+/** One view of a model's source as the catalog lists it: its doc line, the chart it declares, and its shape. */
+function catalogViewOf(
+   view: ModelView & { name: string },
+   shape: Omit<CatalogView, "name"> | undefined,
+): CatalogView {
+   const description = docOf(view.annotations);
+   const chart = chartOf(view.annotations);
+   return {
+      name: view.name,
+      ...(description ? { description } : {}),
+      ...(chart ? { chart } : {}),
+      ...shape,
+   };
+}
+
+const namedViews = (source: ModelSource) =>
+   (source.views ?? []).filter(
+      (view): view is ModelView & { name: string } =>
+         typeof view.name === "string",
+   );
+
 /**
  * The views a report file declares, from its own compiled model, keyed by
  * source then view. The file's sources extend the package's, so its model
  * lists their views too; only the ones under the file's own source names are
- * the file's, and those are what a tile in it names.
+ * the file's, and those are what a tile in it names. Each carries the chart
+ * its view declares, as a catalog view does: a pick negates that tag, and
+ * without it a `# line_chart` view picked as a bar would ask for both.
  */
 export function documentViewsOf(
    model: CompiledModel,
 ): Map<string, Map<string, CatalogView>> {
+   const shapes = viewShapesOf(model);
    const out = new Map<string, Map<string, CatalogView>>();
-   for (const [source, views] of viewShapesOf(model))
+   for (const source of model.sources ?? []) {
+      if (!source.name) continue;
+      const own = shapes.get(source.name);
       out.set(
-         source,
+         source.name,
          new Map(
-            Array.from(views, ([name, shape]) => [name, { name, ...shape }]),
+            namedViews(source).map((view) => [
+               view.name,
+               catalogViewOf(view, own?.get(view.name)),
+            ]),
          ),
       );
+   }
    return out;
 }
 
@@ -300,18 +333,9 @@ export function buildCatalog(
             ...(docOf(source.annotations)
                ? { description: docOf(source.annotations) as string }
                : {}),
-            views: (source.views ?? [])
-               .filter((view) => typeof view.name === "string")
-               .map((view) => ({
-                  name: view.name as string,
-                  ...(docOf(view.annotations)
-                     ? { description: docOf(view.annotations) as string }
-                     : {}),
-                  ...(chartOf(view.annotations)
-                     ? { chart: chartOf(view.annotations) as string }
-                     : {}),
-                  ...shapes.get(name)?.get(view.name as string),
-               })),
+            views: namedViews(source).map((view) =>
+               catalogViewOf(view, shapes.get(name)?.get(view.name)),
+            ),
             givens,
             fields: fields.get(name) ?? [],
          });

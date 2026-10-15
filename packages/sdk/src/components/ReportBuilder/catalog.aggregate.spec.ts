@@ -64,6 +64,40 @@ describe("documentViewsOf, the views a report file declares itself", () => {
       // A nest is neither an x-axis field nor a total.
       expect(views?.get("nst")?.shape).toEqual({ groupBys: 1, totals: 0 });
    });
+
+   // A pick negates the chart its view declares. Without it, a bar picked on
+   // a `# line_chart` view wrote `# -viz bar_chart` and the renderer was asked
+   // for both charts at once, and drew an error.
+   it("carries the chart and doc line each view declares, as the catalog does", () => {
+      const withNotes = {
+         ...MODEL,
+         sources: [
+            {
+               name: "s",
+               views: [
+                  {
+                     name: "by_calc_n",
+                     annotations: ["#(doc) Orders by month\n", "# line_chart\n"],
+                  },
+                  { name: "kpi" },
+               ],
+            },
+         ],
+      } as unknown as CompiledModel;
+      const views = documentViewsOf(withNotes).get("s");
+      expect(views?.get("by_calc_n")).toEqual({
+         name: "by_calc_n",
+         description: "Orders by month",
+         chart: "line_chart",
+         shape: { groupBys: 1, totals: 1 },
+      });
+      expect(views?.get("kpi")?.chart).toBeUndefined();
+      expect(views?.get("by_calc_n")).toEqual(
+         buildCatalog([withNotes]).sources[0].views.find(
+            (v) => v.name === "by_calc_n",
+         ),
+      );
+   });
 });
 
 describe("buildCatalog, combo-chart views", () => {
