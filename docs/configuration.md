@@ -496,7 +496,7 @@ such source group to pick what to return. The response adds `clusters`, `coverag
 sources that are served, as hosted get_context does. The mark is the source's own; a source that extends
 a hidden one is not hidden. When one field name is listed under several sources, the picking call is
 shown the start of each source's own doc beside its fields and told to pick the source whose doc matches
-the population the question asks for. Its knobs are in `fcj`, all optional:
+the population the question asks for. The picking call also names its best pick per target, which is listed first, so its source's card comes first. Its knobs are in `fcj`, all optional:
 
 | Key                    | Default | Meaning                                                                                   |
 | ---------------------- | ------- | ----------------------------------------------------------------------------------------- |
@@ -514,6 +514,7 @@ the population the question asks for. Its knobs are in `fcj`, all optional:
 | `fcj.docParts`         | `auto`  | Index-time split of long docs by the LLM; by rules otherwise. As for `refine.enabled`.    |
 | `fcj.judge`            | `auto`  | The picking call. `false` returns each group's best few candidates instead.               |
 | `fcj.collapseCopies`   | `false` | Provisional, off by default. A field an extension inherits unchanged is searched once, as the same field on the source it extends, but only when both sources hold the same rows: no `where:` of its own, the same table, SQL or query, the same arguments, no access gate of its own. An extension with other rows is a different source, and the fields it inherits are searched and returned on it. |
+| `fcj.twinRule`         | `false` | Provisional, off by default. After the picking call, among one target's picks that are the same inherited field on near-identical sources (rows that differ by a filter or a population), keep only the call's `best` pick, unless it said the question could mean either. Routes and joined copies are never dropped. |
 | `fcj.contenderShare`   | `0`     | Provisional, off by default. A source scoring at least this share of the best source on the same targets joins its group (up to three), so the picking call chooses between near-tied sources. |
 | `fcj.connect`          | `clusters` | Provisional. `list` skips the source groups: one picking call sees every target's best `fcj.listTopK` candidates from the first step, grouped by source, plus the home source's extras (its dates for a period, a measure's inputs). The home is the source of the first measure target's best candidate. A baseline for comparing connect rules. |
 | `fcj.listTopK`         | `15`    | Provisional. With `fcj.connect: "list"`, candidates per target the picking call sees. |
