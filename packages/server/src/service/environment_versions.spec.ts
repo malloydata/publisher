@@ -414,19 +414,28 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       );
    }
 
-   /** Hold the next compile until the returned release is called. */
+   /**
+    * Hold the next compile until the returned release is called. `reached`
+    * settles once the compile has started, which a first versioned publish
+    * does only after it has moved the unversioned files aside.
+    */
    function holdCompile(fail = false) {
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
+      let reachedCompile!: () => void;
+      const reached = new Promise<void>(
+         (resolve) => (reachedCompile = resolve),
+      );
       const create = Package.create.bind(Package);
       const spy = spyOn(Package, "create").mockImplementationOnce(
          async (...args: Parameters<typeof Package.create>) => {
+            reachedCompile();
             await gate;
             if (fail) throw new Error("compile failed");
             return create(...args);
          },
       );
-      return { release, restore: () => spy.mockRestore() };
+      return { release, reached, restore: () => spy.mockRestore() };
    }
 
    it("a read of an unversioned package during its first publish waits, then serves the version", async () => {
@@ -438,7 +447,7 @@ describe("Environment loading: races, listings and bookkeeping", () => {
       const held = holdCompile();
       try {
          const publishing = publish(env, source("1.0.0", 1));
-         await new Promise((resolve) => setTimeout(resolve, 20));
+         await held.reached;
          // The publish has moved the unversioned files aside to compile.
          expect(fs.existsSync(path.join(envPath, PKG, "data.csv"))).toBe(false);
          // Served from memory, this read would query a file that is not
@@ -466,7 +475,7 @@ describe("Environment loading: races, listings and bookkeeping", () => {
             () => "published",
             () => "failed",
          );
-         await new Promise((resolve) => setTimeout(resolve, 20));
+         await held.reached;
          const reading = env.getPackage(PKG).then(answerOf);
          await new Promise((resolve) => setTimeout(resolve, 20));
          held.release();
