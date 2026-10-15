@@ -3,42 +3,60 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Prepares the workspace package.json files in the Docker image's `prod-deps`
- * stage, before its `bun install --production`. Run only there.
+ * Prepares the workspace manifests the Docker image installs its production
+ * node_modules from. It runs in the Dockerfile's `prod-manifests` stage, and
+ * `prod-deps` copies the result in, so the install's build cache is keyed on
+ * these prepared files rather than on the manifests as committed.
  *
- * That stage installs node_modules from the dependency manifests alone, so its
- * build cache, and the image layer it produces, stays the same until a
- * dependency changes. Two things in the manifests would defeat that or break
- * the install, and this script handles both:
+ * It rewrites package.json files and truncates bin targets, so it refuses to
+ * run unless PREPARE_PROD_DEPS=docker, which only that stage sets.
  *
- * 1. The `version` of each workspace package is bumped by every release. Nothing
- *    installs by it (app takes the sdk as `workspace:*`), so it is pinned to one
- *    value here. Otherwise every release would change the stage's inputs and
- *    rerun the install.
+ * For every packages/<name>/package.json present:
  *
- * 2. bun links a workspace's `bin` into node_modules/.bin only when the bin's
- *    target file exists, and this stage has no dist/. Each bin target gets an
- *    empty placeholder so the install creates the link. Only node_modules leaves
- *    the stage, so the placeholders never ship; in the image the links resolve
- *    to the real dist/ files copied from the builder.
+ * 1. The `version` is pinned to 0.0.0, with scripts/set-version.mjs. Every
+ *    release bumps it and nothing installs by it (app takes the sdk as
+ *    `workspace:*`), so pinning keeps a release from changing the install's
+ *    cache key.
+ *
+ * 2. Each `bin` target gets an empty placeholder. bun links a workspace's bin
+ *    into node_modules/.bin only when the target file exists, and the stage has
+ *    no dist/. Only node_modules leaves prod-deps, so the placeholders never
+ *    ship; in the image the links resolve to the real dist/ files copied from
+ *    the builder.
  */
 
-const WORKSPACES = ["server", "app", "sdk"];
+import path from "node:path";
+import { Glob } from "bun";
+
 const PINNED_VERSION = "0.0.0";
 
-for (const workspace of WORKSPACES) {
-   const manifestPath = `packages/${workspace}/package.json`;
-   const manifest = await Bun.file(manifestPath).json();
+if (process.env.PREPARE_PROD_DEPS !== "docker") {
+  console.error(
+    "prepare-prod-deps: refusing to run outside the Dockerfile's prod-manifests stage (PREPARE_PROD_DEPS=docker)",
+  );
+  process.exit(1);
+}
 
-   manifest.version = PINNED_VERSION;
-   await Bun.write(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+const manifests = [...new Glob("packages/*/package.json").scanSync(".")].sort();
+if (manifests.length === 0) {
+  console.error("prepare-prod-deps: no packages/*/package.json to prepare");
+  process.exit(1);
+}
 
-   // `bin` is either a single path or a map of command name to path.
-   const binTargets =
-      typeof manifest.bin === "string"
-         ? [manifest.bin]
-         : Object.values(manifest.bin ?? {});
-   for (const target of binTargets) {
-      await Bun.write(`packages/${workspace}/${target}`, "");
-   }
+const pin = Bun.spawnSync(
+  ["bun", "scripts/set-version.mjs", PINNED_VERSION, ...manifests],
+  { stdout: "inherit", stderr: "inherit" },
+);
+if (pin.exitCode !== 0) process.exit(pin.exitCode ?? 1);
+
+for (const manifestPath of manifests) {
+  const manifest = await Bun.file(manifestPath).json();
+  // `bin` is either a single path or a map of command name to path.
+  const binTargets =
+    typeof manifest.bin === "string"
+      ? [manifest.bin]
+      : Object.values(manifest.bin ?? {});
+  for (const target of binTargets) {
+    await Bun.write(path.join(path.dirname(manifestPath), target), "");
+  }
 }

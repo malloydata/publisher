@@ -22,9 +22,15 @@
  *
  * Each extension is baked independently: a failure (offline build, transient
  * CDN error) is logged and skipped, never aborting the others or the build.
+ * With DUCKDB_BAKE_STRICT=1, which the Docker image's stage sets, the script
+ * still tries every extension but exits non-zero if any failed: that stage's
+ * output is cached across builds, so a skipped extension would not come back
+ * on the next one.
  */
 
 import { DuckDBInstance } from "@duckdb/node-api";
+
+const STRICT = process.env.DUCKDB_BAKE_STRICT === "1";
 
 // Every extension the connection layer (packages/server/src/service/connection.ts)
 // and storage manager INSTALL/LOAD at runtime, for cloud attach, the per-package
@@ -102,13 +108,21 @@ async function main() {
 
    connection.closeSync();
    instance.closeSync();
+
+   if (STRICT && missing.length) {
+      console.error(
+         `DUCKDB_BAKE_STRICT: failing the bake, ${missing.length} extension(s) not loaded`,
+      );
+      process.exitCode = 1;
+   }
 }
 
 main().catch((err) => {
    // Never fail the build on a bake error -- the extensions are an optimization,
    // not a correctness requirement (the runtime can still fetch on demand where
-   // the network allows).
+   // the network allows). Strict mode is the exception; see the header.
    console.warn(
       `DuckDB extension bake skipped: ${err instanceof Error ? err.message : String(err)}`,
    );
+   if (STRICT) process.exitCode = 1;
 });
