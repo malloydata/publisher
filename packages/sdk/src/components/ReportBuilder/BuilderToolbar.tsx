@@ -11,8 +11,6 @@ import {
    Divider,
    IconButton,
    Stack,
-   ToggleButton,
-   ToggleButtonGroup,
    Tooltip,
 } from "@mui/material";
 import type { ReactNode, Ref } from "react";
@@ -68,11 +66,12 @@ export const dividerSx = {
 } as const;
 
 /**
- * A segmented control, built as an outlined button group: the same edge,
- * height, radius and padding as "+ Tile" beside it, each segment the full
- * height of the control with a rule between them, and the chosen one tinted
- * edge to edge. An inset chip inside the outline read as a control within a
- * control, a size smaller than the button next to it.
+ * A segmented control, built as an outlined button group, for the builder's
+ * windows (the tile picker, the filter window): the same edge, height, radius
+ * and padding as "+ Tile", each segment the full height of the control with a
+ * rule between them, and the chosen one tinted edge to edge. An inset chip
+ * inside the outline read as a control within a control, a size smaller than
+ * the button next to it.
  */
 export const segmentedSx = (edge: string, ui: ReportUi = DEFAULT_UI) =>
    ({
@@ -140,10 +139,6 @@ export interface BuilderToolbarProps {
     * Console leaves from its own header and passes nothing.
     */
    onExit?: () => void;
-   /** The report's layout, for the switch. Absent, no switch is drawn. */
-   layout?: "grid" | "linear";
-   /** Switch the layout: rewrites `layout=` in the tag and nothing else. */
-   onLayoutChange?: (layout: "grid" | "linear") => void;
 }
 
 export function BuilderToolbar({
@@ -160,8 +155,6 @@ export function BuilderToolbar({
    actions,
    onAddTile,
    onExit,
-   layout,
-   onLayoutChange,
 }: BuilderToolbarProps) {
    const { theme } = usePublisherTheme();
    const edge = edgeColor(theme.cardBorder);
@@ -179,31 +172,6 @@ export function BuilderToolbar({
             "& .MuiButton-root": { whiteSpace: "nowrap" },
          }}
       >
-         {/* How the page is laid out: one property of the tag, switched in place. */}
-         {layout && onLayoutChange && (
-            <>
-               <Tooltip title="Layout: tiles side by side, or one after another">
-                  <ToggleButtonGroup
-                     size="small"
-                     exclusive
-                     value={layout}
-                     aria-label="Layout"
-                     onChange={(_event, next: "grid" | "linear" | null) => {
-                        if (next && next !== layout) onLayoutChange(next);
-                     }}
-                     sx={segmentedSx(edge, theme.ui)}
-                  >
-                     <ToggleButton value="linear" aria-label="Linear layout">
-                        Linear
-                     </ToggleButton>
-                     <ToggleButton value="grid" aria-label="Grid layout">
-                        Grid
-                     </ToggleButton>
-                  </ToggleButtonGroup>
-               </Tooltip>
-               <Divider orientation="vertical" sx={dividerSx} />
-            </>
-         )}
          {/* What the page is made of. */}
          {onAddTile && (
             <Button

@@ -108,7 +108,7 @@ export type ReportEditorProps = (
     * report's copy is read back only from an authoritative store) and is what
     * a save records until the text says otherwise; once open, the document's
     * own tag decides how it is drawn, what a save records and which events it
-    * reports, and the layout switch changes that.
+    * reports.
     */
    layout?: ReportLayout;
    /** @deprecated Pass `layout`: `dashboard` is grid, `notebook` linear. */
@@ -141,7 +141,7 @@ export type ReportEditorProps = (
    onOpenModel?: (modelPath: string) => void;
    /**
     * Take over the builder's page-level controls (save status and Save, undo
-    * and redo, the layout switch, Add): handed over as `BuilderControls`
+    * and redo, Add): handed over as `BuilderControls`
     * whenever they change, with no toolbar drawn on the page. Draw them with
     * `BuilderBar` in the host's header, or place each in its own chrome.
     */
@@ -155,13 +155,6 @@ export type ReportEditorProps = (
    keepDraft?: boolean;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
-   /**
-    * Whether the toolbar offers the Linear / Grid layout switch. Default
-    * true. A host that files a report by its layout passes false, so an
-    * author cannot change a layout the host files by. A document held as text
-    * never gets the switch.
-    */
-   allowLayoutChange?: boolean;
 };
 
 /**
@@ -217,7 +210,6 @@ export function ReportEditor(props: ReportEditorProps) {
       kind,
       path,
       textSource,
-      allowLayoutChange,
    } = props;
    const layout: ReportLayout =
       props.layout ?? (kind ? layoutOfKind(kind) : "grid");
@@ -556,9 +548,6 @@ export function ReportEditor(props: ReportEditorProps) {
                {...(onOpenModel ? { onOpenModel } : {})}
                {...(onControlsChange ? { onControlsChange } : {})}
                {...(draftKey !== undefined ? { draftKey } : {})}
-               {...(allowLayoutChange !== undefined
-                  ? { allowLayoutChange }
-                  : {})}
                savesTo={savesTo}
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}

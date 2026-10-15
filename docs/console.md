@@ -84,7 +84,7 @@ is a Console convenience.
   `"` description or its opening markdown heading.
 - **Build a report by dragging** — every report page has an **Edit** button in the header, beside the
   breadcrumbs, that opens it in the builder. In the builder that spot holds the builder's bar: the save
-  status, undo and redo, the **Linear / Grid** switch, an **Add** menu (a tile, text or a filter), and
+  status, undo and redo, an **Add** menu (a tile, text or a filter), and
   **Done**, which returns to the report. The page under it stays the report as it reads. On a grid
   report, drag a tile by its heading or its padding to move it, drag the grip on its right edge to set
   its width (a label says the width it will snap to), and set its chart and clickable cells, or duplicate it,
@@ -102,7 +102,8 @@ is a Console convenience.
   from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list). A query
   tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and
   Segment map; a choice the view cannot render stays in the list, greyed, with its reason under it.
-  The **layout switch** rewrites `layout=` and nothing else. Adding a tile
+  The layout is the file's: the builder draws the report as its `layout=` says and never rewrites
+  it. Adding a tile
   offers every source the package publishes; when the file cannot already see the chosen source,
   the builder adds a named import for it. The classic dashboard-building feel, over a file you can
   still read and review ([reports.md](reports.md#editing-in-the-console)).

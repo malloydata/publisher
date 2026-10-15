@@ -11,7 +11,7 @@ are no open questions.
 
 - **Shipped** (Delivery steps 1–4): the report rule and layout reader on the server and in the SDK,
   path identity, `GET …/reports` and `…/reports/{path}`, one report lint, the curation edges, the
-  write path, the builder with its layout switch, New report at the package root, drafts keyed by
+  write path, the one builder for both layouts, New report at the package root, drafts keyed by
   path, drill by path, the Console's path routes, and the docs and skills. `kind=`, the query-level
   `# artifact` and the bare-name drill fallback are removed, not deprecated: `kind=` is the
   `report-kind-removed` error.
@@ -171,14 +171,14 @@ them one column wide, top to bottom, and ignores `colspan` / `break` (today's
 `break`. Nothing else depends on layout. In particular, every feature one kind has today and the
 other lacks becomes available to both, as part of this change or as a listed follow-up:
 
-| Feature                                               | Today                                 | Reports                          |
-| ----------------------------------------------------- | ------------------------------------- | -------------------------------- |
-| Filter bar from givens, URL-synced, Apply / `autorun` | both                                  | both                             |
-| Text tiles                                            | both                                  | both                             |
-| `# drill` click-through                               | both render it; target is a dashboard | target is any report (§3)        |
-| Opened in the builder                                 | both (`DashboardEditor` with `kind`)  | one editor, with a layout switch |
-| `run:` cells, definitions in the file                 | notebook only                         | retired: rewrite as tiles        |
-| Package-page section, viewer page, route              | separate per kind                     | one each (§9, §10)               |
+| Feature                                               | Today                                 | Reports                     |
+| ----------------------------------------------------- | ------------------------------------- | --------------------------- |
+| Filter bar from givens, URL-synced, Apply / `autorun` | both                                  | both                        |
+| Text tiles                                            | both                                  | both                        |
+| `# drill` click-through                               | both render it; target is a dashboard | target is any report (§3)   |
+| Opened in the builder                                 | both (`DashboardEditor` with `kind`)  | one editor for both layouts |
+| `run:` cells, definitions in the file                 | notebook only                         | retired: rewrite as tiles   |
+| Package-page section, viewer page, route              | separate per kind                     | one each (§9, §10)          |
 
 ### 3. Identity: the path, only
 
@@ -338,7 +338,8 @@ and its old by-name link, and gives back a package's own `public/dashboards/` an
   the package root whose basename is `README`", replacing the `notebooks/readme.malloy` check; the
   new-report model picker excludes listed report paths instead of two prefixes.
 - **Builder** (`catalog.ts`, `EditorSurface.tsx`, `ReportEditor`): one editor, keyed by `path`,
-  with a layout switch that rewrites `layout=` and nothing else. Reports are excluded from the
+  drawing whichever layout the tag declares (a Linear / Grid switch shipped and was removed: it
+  rewrote `layout=` and nothing else, and read as a mess). Reports are excluded from the
   source catalog by the listed paths, not by prefix. The drill editor writes path targets.
 - **Create** (`DocumentCreate/*`, `newDashboard.ts`, `newNotebook.ts`): one **New report** action
   that asks for a title and a layout, defaulting to linear, and writes `<slug>.malloy` at the
@@ -420,7 +421,7 @@ Each step is shippable alone and leaves the system consistent.
    `GET …/reports` and `…/reports/{path}`, the deprecated aliases, and the `api-doc.yaml` rewrite.
 2. **Console and SDK reading.** `Report`, `ReportPage`, one package-page section, path routes, the
    alias, drill by path, and the SPA fallback (§9, §10 minus create).
-3. **Write path, builder, and create.** §7, the one editor with its layout switch, New report at
+3. **Write path, builder, and create.** §7, the one editor for both layouts, New report at
    the root, and drafts by path, with the `security-posture.md` rewrite in the same pull request.
 4. **Docs, skills, and storefront.** §12, plus the release note.
 5. **Later release: end the deprecations.** The `…/dashboards` and `…/notebooks` routes and the

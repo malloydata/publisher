@@ -7,9 +7,8 @@ import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import { nudgedSpan, useDefaultTileSpan } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
-import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
-import { reportEmitter, type ReportEventHandler } from "../Report/telemetry";
+import type { ReportEventHandler } from "../Report/telemetry";
 import type { BuilderGiven } from "./controls";
 import { BuilderDialogs } from "./BuilderDialogs";
 import type { ViewPreview } from "./AddTileDialog";
@@ -240,13 +239,6 @@ export interface ReportBuilderProps {
     * One key per report and place it is saved to. Absent, nothing is kept.
     */
    draftKey?: string;
-   /**
-    * Whether the toolbar offers the Linear / Grid layout switch. Default
-    * true. A host that files a report by its layout passes false, so an
-    * author cannot change a layout the host files by. A document held as text
-    * never gets the switch.
-    */
-   allowLayoutChange?: boolean;
 }
 
 export function ReportBuilder({
@@ -256,7 +248,6 @@ export function ReportBuilder({
    onChange,
    onDirtyChange,
    onExit,
-   allowLayoutChange = true,
    renderTile,
    renderViewPreview,
    controls,
@@ -434,25 +425,6 @@ export function ReportBuilder({
    });
 
    const empty = editor.document.tiles.length === 0;
-   // A text-held document's layout is the host's record, so only a file gets
-   // the switch, and only when the host allows it.
-   const layoutSwitch =
-      visibleSources === undefined && allowLayoutChange
-         ? {
-              layout: editor.document.layout,
-              onLayoutChange: (next: ReportLayout) => {
-                 const from = editor.document.layout;
-                 if (next === from) return;
-                 editor.update((draft) => {
-                    draft.layout = next;
-                 });
-                 reportEmitter(
-                    { path: modelPath ?? "", layout: next },
-                    onEvent,
-                 ).emit({ type: "report.layout_changed", from, to: next });
-              },
-           }
-         : undefined;
    const { toolbarProps } = session;
    useReportControls(onControlsChange, {
       status: session.saving
@@ -466,14 +438,6 @@ export function ReportBuilder({
       undo: toolbarProps.onUndo,
       canRedo: toolbarProps.canRedo,
       redo: toolbarProps.onRedo,
-      ...(layoutSwitch
-         ? {
-              layout: {
-                 value: layoutSwitch.layout,
-                 set: layoutSwitch.onLayoutChange,
-              },
-           }
-         : {}),
       add: {
          ...(catalog ? { tile: () => tiles.openAdd() } : {}),
          text: tiles.appendText,
@@ -500,7 +464,6 @@ export function ReportBuilder({
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
-         {...(layoutSwitch ?? {})}
       />
    );
    return (

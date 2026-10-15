@@ -21,6 +21,12 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — The builder's Linear / Grid switch is gone
+
+The report builder no longer offers a switch between `layout=linear` and `layout=grid`, in the Console's bar or in the SDK's `BuilderToolbar`. The builder draws a report in the layout its `## artifact` tag declares and never rewrites `layout=`; to change a report's layout, edit the tag in the file. The switch turned a dashboard into a story (or back) in one click, and the page it left behind was more often a mess than the report anyone meant.
+
+For a host on the SDK: `ReportEditor` and `ReportBuilder` drop the `allowLayoutChange` prop, `BuilderControls` drops its `layout` entry (so a host drawing the controls itself has nothing to draw for it), and the `report.layout_changed` event is no longer emitted or in the `ReportEvent` union. `readReportTagOfText` still reads the layout from any text.
+
 ## [0.9.12] — A SQL statement Postgres rejects answers 400 with the database's message, not 502
 
 On a Postgres connection, `sqlSource`, `sqlQuery` and `sqlTemporaryTable` (and their per-package forms) now answer **400** when the database refuses the statement itself: a column, table, function or type that does not exist, a syntax error, an ambiguous name, a type mismatch. The body carries Postgres's own sentence, for example `column "sundance_name" does not exist`. They answered 502 `Upstream connection error.` before, with that sentence logged only on the server.

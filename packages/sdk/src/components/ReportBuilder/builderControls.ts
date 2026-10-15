@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import { useEffect, useMemo, useRef } from "react";
-import type { ReportLayout } from "../Package/documentLocation";
 
 /**
  * The builder's page-level controls, as state and actions rather than as a
@@ -25,11 +24,6 @@ export interface BuilderControls {
    undo: () => void;
    canRedo: boolean;
    redo: () => void;
-   /** The layout and its switch. Absent when the layout cannot be changed here. */
-   layout?: {
-      value: ReportLayout;
-      set: (layout: ReportLayout) => void;
-   };
    /** What can be added to the page. A missing entry is not offered. */
    add: {
       /** Open the picker of views for a query tile. */
@@ -81,8 +75,6 @@ export function useReportControls(
          save: () => latest.current.save?.(),
          undo: () => latest.current.undo(),
          redo: () => latest.current.redo(),
-         setLayout: (layout: ReportLayout) =>
-            latest.current.layout?.set(layout),
          addTile: () => latest.current.add.tile?.(),
          addText: () => latest.current.add.text?.(),
          addFilter: () => latest.current.add.filter?.(),
@@ -101,7 +93,6 @@ export function useReportControls(
       add: { filterUnavailable },
    } = controls;
    const hasSave = controls.save !== undefined;
-   const layout = controls.layout?.value;
    const hasTile = controls.add.tile !== undefined;
    const hasText = controls.add.text !== undefined;
    const hasFilter = controls.add.filter !== undefined;
@@ -119,9 +110,6 @@ export function useReportControls(
          undo: actions.undo,
          canRedo,
          redo: actions.redo,
-         ...(layout !== undefined
-            ? { layout: { value: layout, set: actions.setLayout } }
-            : {}),
          add: {
             ...(hasTile ? { tile: actions.addTile } : {}),
             ...(hasText ? { text: actions.addText } : {}),
@@ -140,7 +128,6 @@ export function useReportControls(
          hasSave,
          canUndo,
          canRedo,
-         layout,
          hasTile,
          hasText,
          hasFilter,
