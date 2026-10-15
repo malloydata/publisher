@@ -13,6 +13,9 @@ import { warmMalloyRenderer } from "./loadRenderer";
 import { summarizeRenderLogs } from "./renderLogs";
 import { resolveResultHeight, type ResultSizing } from "./resultSizing";
 
+/** The box a dashboard tile's result scrolls in when it is taller than its cap. */
+export const RESULT_SCROLLER_CLASS = "publisher-result-scroller";
+
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 
 interface ResultContainerProps {
@@ -150,7 +153,10 @@ export default function ResultContainer({
             height: "auto",
             border: "0px",
             borderRadius: 0,
-            overflow: "hidden",
+            // Unfilled, the box is the result's own height, so a result that
+            // outgrows its cap scrolls here rather than being cut off.
+            overflowX: "hidden",
+            overflowY: fill ? "hidden" : "auto",
             // Grows from the unfloored height, so a result that gets shorter
             // lets its row shrink; the result is out of flow for the same reason.
             ...(fill && {
@@ -160,7 +166,22 @@ export default function ResultContainer({
          }}
       >
          {fill ? (
-            <Box sx={{ position: "absolute", inset: 0 }}>{renderedResult}</Box>
+            // Scrolls rather than clips. A result taller than its cap (a row of
+            // KPI cards wrapped one per line in a narrow tile, say) draws past
+            // the box it was given; clipped, its last cards could not be reached
+            // at all. A table never overflows here: it is held to the box and
+            // scrolls inside itself, under its own pinned header.
+            <Box
+               className={RESULT_SCROLLER_CLASS}
+               sx={{
+                  position: "absolute",
+                  inset: 0,
+                  overflowX: "hidden",
+                  overflowY: "auto",
+               }}
+            >
+               {renderedResult}
+            </Box>
          ) : (
             renderedResult
          )}

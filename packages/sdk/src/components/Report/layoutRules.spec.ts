@@ -3,15 +3,17 @@
 
 import { describe, expect, it } from "bun:test";
 import { DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
+import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { layoutRules } from "./layoutRules";
 
 describe("layoutRules", () => {
-   it("lays a linear report in one column of full-width tiles, added between others", () => {
+   it("lays a linear report in one column of full-width tiles that grow to fit, added between others", () => {
       expect(layoutRules("linear", 12)).toEqual({
          layout: "linear",
          columns: 1,
          widths: false,
          insertBetween: true,
+         tileMaxHeight: undefined,
       });
    });
 
@@ -21,6 +23,7 @@ describe("layoutRules", () => {
          columns: 12,
          widths: true,
          insertBetween: false,
+         tileMaxHeight: TILE_MAX_HEIGHT,
       });
    });
 

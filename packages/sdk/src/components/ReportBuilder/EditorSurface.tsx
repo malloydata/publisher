@@ -18,7 +18,7 @@ import { tileIgnoredFilterLabels } from "../Dashboard/TileFilterTag";
 import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
-import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
+import { layoutRules } from "../Report/layoutRules";
 import { useReportListing } from "../Package/useDocumentLocation";
 import {
    BUILDER_HANDOFF_STALE_MS,
@@ -497,7 +497,7 @@ export function EditorSurface({
                         : {};
                   })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
-                  height={TILE_MAX_HEIGHT}
+                  height={layoutRules(doc.layout, doc.columns).tileMaxHeight}
                />
             );
          },

@@ -89,6 +89,12 @@ export function TileCard({
                borderRadius: bare ? 0 : ui.radius.tile,
                background: bare ? "none" : theme.tile,
                overflow: "hidden",
+               // Its own stacking context, so nothing inside a tile is drawn
+               // over the page around it. A table's pinned header row is
+               // `z-index: 100` in the renderer's CSS; without this it painted
+               // over the sticky control row (z 4) as the tile scrolled under
+               // it. Popups (tooltips, menus) are portalled out and unaffected.
+               isolation: "isolate",
                // A column so a tile's result can take the room under its heading.
                display: "flex",
                flexDirection: "column",

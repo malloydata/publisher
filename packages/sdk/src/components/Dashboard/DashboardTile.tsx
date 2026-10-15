@@ -68,7 +68,8 @@ export interface DashboardTileProps {
     * server accepts: a surfaced given a query does not reference is ignored.
     */
    givenNames?: string[];
-   height: number;
+   /** Cap on the result's height, past which it scrolls. Undefined is no cap: the tile grows to fit. */
+   height: number | undefined;
    maxResultSize?: number;
    /** Cell clicks and their affordance, for the dashboard's `# drill`. */
    drill?: DrillBinding;

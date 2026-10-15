@@ -170,6 +170,25 @@ describe("the manifest fetch", () => {
    });
 });
 
+describe("the host's actions", () => {
+   it("draws them on the title's line, not on a row of their own above it", async () => {
+      manifest = { ...TILES, layout: "linear" };
+      render(
+         <Report
+            resourceUri={URI}
+            path="sales/q3.malloy"
+            actions={<button type="button">Download</button>}
+         />,
+         { wrapper: serverWrapper },
+      );
+
+      const title = await screen.findByText("Third quarter");
+      const action = screen.getByRole("button", { name: "Download" });
+      // The title's own row holds both.
+      expect(title.parentElement?.contains(action)).toBe(true);
+   });
+});
+
 describe("rendering by layout", () => {
    it("draws a grid report's tiles as cards, run against the report's path", async () => {
       manifest = { ...TILES, layout: "grid" };
