@@ -12,7 +12,7 @@
 //   bun hammer/run.ts --keep              # leave pg + workdir up for inspection
 //   bun hammer/run.ts --rebuild           # force a fresh server build
 
-import { mkdirSync, mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "fs";
 import os from "os";
 import path from "path";
 import {
@@ -792,6 +792,21 @@ async function main(): Promise<void> {
             restOf: (name) => bind(mgr.restOf(name)),
             editPackageModel: editPackageModelFor(r),
             operatorSql: operatorSqlFor(r, lakes, warehouses),
+            storedTables: (conn, schema) => {
+               // DuckLake writes `<storage>/<schema>/<table>/<file>.parquet`.
+               const dir = path.join(r.storageDirFor(conn), schema);
+               if (!existsSync(dir)) return [];
+               return readdirSync(dir, { withFileTypes: true })
+                  .filter(
+                     (d) =>
+                        d.isDirectory() &&
+                        readdirSync(path.join(dir, d.name)).some((f) =>
+                           f.endsWith(".parquet"),
+                        ),
+                  )
+                  .map((d) => d.name)
+                  .sort();
+            },
             writeManifest,
          };
          try {
