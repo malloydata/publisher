@@ -802,12 +802,29 @@ describe("readDashboardDocument: what it refuses", () => {
       if (readFailed(r)) expect(r.reason).toContain("not a report");
    });
 
-   it("refuses a tile that is not a source -> view expression", async () => {
+   it("refuses a tile that is neither a source -> view expression nor a query's name", async () => {
       const r = await readDashboardDocument(
-         `## artifact { title="T" tiles=["just_a_name"] }\nsource: a is b extend { view: x is y }`,
+         `## artifact { title="T" tiles=["a -> x -> y"] }\nsource: a is b extend { view: x is y }`,
       );
       expect(r.ok).toBe(false);
       if (readFailed(r)) expect(r.reason).toContain("source -> view");
+   });
+
+   // The server's reader runs a quoted bare name as `run: <name>`, so a report
+   // listing a named query is served; the builder used to refuse it whole.
+   it("opens a tile that names a query, read-only and with no source", async () => {
+      const doc = await read(
+         `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+      );
+      expect(doc.tiles).toEqual([
+         { name: "by_carrier", declaration: { kind: "query" } },
+         {
+            name: "by_month",
+            source: "flights",
+            declaration: { kind: "inherited" },
+         },
+      ]);
+      expect(tileKey(doc.tiles[0])).toBe("query.by_carrier");
    });
 
    // NOT a refusal, and the tripwire is what taught us so: a dashboard whose

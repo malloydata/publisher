@@ -27,6 +27,7 @@ import {
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import {
    isTextTile,
+   tileExpression,
    tileKey,
    tileLabel,
    type DashboardTile,
@@ -577,7 +578,7 @@ export function TilePlaceholder({
             variant="caption"
             sx={{ display: "block", color: theme.tileTitle, opacity: 0.7 }}
          >
-            {tile.source} → {tile.name}
+            {tileExpression(tile).replace("->", "→")}
          </Typography>
       </TileCard>
    );

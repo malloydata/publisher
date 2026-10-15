@@ -619,6 +619,57 @@ describe("ReportBuilder: a tile's own settings", () => {
    });
 });
 
+describe("ReportBuilder: a tile that names a query", () => {
+   const named = `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }
+import { flights } from '../flights.malloy'
+
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+
+   it("opens the report and shows the tile, with nothing on it to edit", async () => {
+      const document = await openDocument(named);
+      render(<ReportBuilder source={named} document={document} />);
+      // Titled as the reader titles it, from the query's name.
+      expect(
+         within(screen.getByLabelText("Tile by_carrier")).getByText(
+            "By carrier",
+         ),
+      ).toBeDefined();
+      // No title field on the tile, no width edge, and a menu that says why.
+      fireEvent.click(screen.getByText("By carrier"));
+      expect(screen.queryByLabelText("Tile title")).toBeNull();
+      expect(
+         screen.queryByRole("separator", { name: "Width of by_carrier" }),
+      ).toBeNull();
+      fireEvent.click(screen.getByLabelText("Settings for by_carrier"));
+      expect(
+         screen.getByText(
+            "It names a query, so its chart is set where that query is declared.",
+         ),
+      ).toBeDefined();
+   });
+
+   it("removes it from the list and saves the query untouched", async () => {
+      let written: string | undefined;
+      const document = await openDocument(named);
+      render(
+         <ReportBuilder
+            source={named}
+            document={document}
+            onSave={(next) => {
+               written = next;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Remove by_carrier"));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain('tiles=["flights -> by_month"]');
+      expect(written).toContain("query: by_carrier is flights");
+   });
+});
+
 describe("ReportBuilder: widths and the page's own settings", () => {
    it("steps a tile's width from the keyboard on its edge, one undo step each", async () => {
       await mount();

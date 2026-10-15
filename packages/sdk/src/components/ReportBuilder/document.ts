@@ -95,7 +95,7 @@ export interface DashboardDrill {
 /**
  * Where a tile's view is declared, and therefore what the builder may edit.
  *
- * Four forms, all of them found in dashboards that ship in this repository, and
+ * Five forms, all of them found in dashboards that ship in this repository, and
  * the distinction decides which affordances a tile gets:
  *
  * - `reference` — `view: revenue_trend is sales_by_month` in this file. Fully
@@ -117,12 +117,19 @@ export interface DashboardDrill {
  *   tile is `orders -> by_brand` against an imported source. Nothing about it is
  *   editable here, because its tags live on the model's own view and the builder
  *   does not write model files. Read and shown, not changed.
+ * - `query` — the entry names a query rather than a view: `tiles=["by_carrier"]`
+ *   over a `query: by_carrier is flights -> { … }`, in this file or the model.
+ *   The tile runs `run: by_carrier`, exactly as the reader does, and has no
+ *   `source` of its own. Like `inherited` it is read and shown, and moved or
+ *   removed in the list, but not changed: its tags sit on a `query:` statement
+ *   the writer does not locate, and its body may be anything a query can be.
  */
 export type TileDeclaration =
    | { kind: "reference"; from: string }
    | { kind: "inline" }
    | { kind: "opaque"; why: string }
-   | { kind: "inherited" };
+   | { kind: "inherited" }
+   | { kind: "query" };
 
 /** A tile that runs a view: a view shown on the page, plus how it is presented. */
 export interface QueryTile {
@@ -138,9 +145,10 @@ export interface QueryTile {
    /**
     * The source it reads, by NAME — an index would break on reorder. May name a
     * source this file declares in {@link DashboardDocument.sources}, or one it
-    * merely imports.
+    * merely imports. Absent on a tile that names a query (`declaration.kind`
+    * `"query"`), whose source is whatever the query's own definition reads.
     */
-   source: string;
+   source?: string;
    declaration: TileDeclaration;
    /**
     * Given bindings: a `+ { where: … }` refinement on a `reference` tile, or a
@@ -227,9 +235,32 @@ export interface DashboardSource {
    scopedBy?: string[];
 }
 
+/**
+ * What a query tile runs, as its `tiles=[…]` entry names it: `source -> view`,
+ * or a query's bare name. The one spelling every preview, served-tile lookup
+ * and new list entry derives from.
+ */
+export const tileExpression = (tile: QueryTile): string =>
+   tile.declaration.kind === "query"
+      ? tile.name
+      : `${tile.source} -> ${tile.name}`;
+
+/**
+ * Whether the builder can write nothing about this tile but its place in the
+ * list: declared on the model's view (`inherited`), or a named query, whose
+ * tags are on a `query:` statement the writer does not edit.
+ */
+export const isReadOnlyTile = (tile: QueryTile): boolean =>
+   tile.declaration.kind === "inherited" || tile.declaration.kind === "query";
+
 /** A tile's identity across a reorder: what the grid keys on, a drag names and the writer matches. */
 export const tileKey = (tile: DashboardTile) =>
-   isTextTile(tile) ? `text.${tile.name}` : `${tile.source}.${tile.name}`;
+   isTextTile(tile)
+      ? `text.${tile.name}`
+      : tile.declaration.kind === "query"
+        ? // `query` is a Malloy keyword, so no source can carry this prefix.
+          `query.${tile.name}`
+        : `${tile.source}.${tile.name}`;
 
 /** `dimension: <name> is <expression>` in the dashboard's own extension. */
 export interface DashboardDimension {

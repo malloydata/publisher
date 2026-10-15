@@ -102,6 +102,8 @@ export function duplicateBlocked(tile: QueryTile): string | undefined {
          return "Its query is written in this file, and the builder does not copy a query's body.";
       case "opaque":
          return `Its query is ${tile.declaration.why}, which the builder does not copy.`;
+      case "query":
+         return "It names a query, and a copy could not be told apart from it: the builder writes nothing about such a tile but its place.";
       default:
          return tile.chart === "custom"
             ? "Its chart line is one the builder does not write, so a copy would lose it."

@@ -18,7 +18,12 @@ import { useDraft } from "./useDraft";
 import { edgeColor } from "../controlTokens";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import type { CatalogView } from "./catalog";
-import { isQueryTile, type DashboardTile, type QueryTile } from "./document";
+import {
+   isQueryTile,
+   isReadOnlyTile,
+   type DashboardTile,
+   type QueryTile,
+} from "./document";
 import { chartChoices } from "./ChartPicker";
 import type { ChartState } from "./chartLine";
 
@@ -73,6 +78,8 @@ const CHART_DOES_NOT_CLICK =
    "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.";
 const INHERITED_CHART =
    "Declared on its source, so its chart is set in the model.";
+const QUERY_CHART =
+   "It names a query, so its chart is set where that query is declared.";
 
 export function TileMenu({
    anchor,
@@ -98,8 +105,7 @@ export function TileMenu({
    >(undefined);
 
    const query = draft !== undefined && isQueryTile(draft) ? draft : undefined;
-   const editable =
-      query !== undefined && query.declaration.kind !== "inherited";
+   const editable = query !== undefined && !isReadOnlyTile(query);
    // The draft is a query tile whenever the controls that call this are shown.
    // Committed at once, so the tile redraws in the new chart while the menu is
    // still open rather than when it closes.
@@ -125,11 +131,13 @@ export function TileMenu({
    const choices = chartChoices(view, chartState);
    const chartBlocked = !query
       ? undefined
-      : !editable
-        ? INHERITED_CHART
-        : query.chart === "custom"
-          ? customChart(query.chartLines)
-          : undefined;
+      : query.declaration.kind === "query"
+        ? QUERY_CHART
+        : !editable
+          ? INHERITED_CHART
+          : query.chart === "custom"
+            ? customChart(query.chartLines)
+            : undefined;
    const pickChart = (next: ChartState) =>
       applyQuery((t) => {
          const was = openedChart.current;
@@ -192,7 +200,11 @@ export function TileMenu({
             MenuListProps={{
                dense: true,
                disabledItemsFocusable: true,
-               "aria-label": query ? `${query.source} ${query.name}` : "Tile",
+               "aria-label": query
+                  ? query.declaration.kind === "query"
+                     ? query.name
+                     : `${query.source} ${query.name}`
+                  : "Tile",
             }}
             // Set like the builder's other menus: a rounded, bordered card.
             slotProps={{

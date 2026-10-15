@@ -36,6 +36,7 @@ import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
    isQueryTile,
+   tileExpression,
    tileKey,
    type DashboardDocument,
    type DashboardTile as DocumentTile,
@@ -443,7 +444,7 @@ export function EditorSurface({
                   </TileCard>
                );
             const servedReadsOf = servedReads.get(
-               tileExpressionKey(`${tile.source} -> ${tile.name}`),
+               tileExpressionKey(tileExpression(tile)),
             );
             // A tile not yet edited runs the served view with the served
             // tile's givens: the request the reader sends, so it shares the
@@ -456,7 +457,7 @@ export function EditorSurface({
                sameTile(openedTiles.get(tileKey(tile)), tile);
             const query: PreviewTileQuery = untouched
                ? {
-                    expression: `${tile.source} -> ${tile.name}`,
+                    expression: tileExpression(tile),
                     givenNames: [...servedReadsOf],
                     reads: [...servedReadsOf],
                  }
@@ -469,7 +470,7 @@ export function EditorSurface({
                   modelPath={runModelPath}
                   {...(preamble !== undefined ? { preamble } : {})}
                   {...(restrictedTiles.has(
-                     tileExpressionKey(`${tile.source} -> ${tile.name}`),
+                     tileExpressionKey(tileExpression(tile)),
                   )
                      ? { restricted: true }
                      : {})}

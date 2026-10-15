@@ -280,6 +280,8 @@ function gridWidth(
 
 const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
+/** A quoted entry that is one plain name: a query, as the server's reader takes it. */
+const NAMED_QUERY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
 export async function readDashboardDocument(
@@ -451,13 +453,23 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
          continue;
       }
       const entry = quoted?.[1] ?? entryText;
+      // A bare name is a named query, `query: by_carrier is flights -> { … }`,
+      // here or in the model: the server's reader runs it as `run: by_carrier`.
+      // Shown and movable, never rewritten — see the `query` declaration.
+      if (quoted && NAMED_QUERY.test(entry.trim())) {
+         tiles.push({
+            name: entry.trim(),
+            declaration: { kind: "query" },
+         });
+         continue;
+      }
       const steps = quoted ? tileSteps(entry) : undefined;
       if (!steps) {
          return {
             ok: false,
             reason:
-               `The tile \`${entry}\` is not a \`source -> view\` expression, ` +
-               `which is the only form the builder can lay out.`,
+               `The tile \`${entry}\` is neither a \`source -> view\` expression ` +
+               `nor the name of a query, which are the forms the builder can lay out.`,
          };
       }
       const { source: sourceName, view: viewName } = steps;

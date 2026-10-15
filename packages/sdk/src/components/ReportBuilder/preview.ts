@@ -7,6 +7,8 @@ import { malloyLiteral } from "../../utils/malloyLiteral";
 import { chartLineText, isChartPick } from "./chartLine";
 import {
    isQueryTile,
+   isReadOnlyTile,
+   tileExpression,
    type DashboardDocument,
    type QueryTile,
 } from "./document";
@@ -91,14 +93,14 @@ export function givensReadThroughModel(
    for (const tile of opened.tiles) {
       if (!isQueryTile(tile)) continue;
       boundWhenOpened.set(
-         tileExpressionKey(`${tile.source} -> ${tile.name}`),
+         tileExpressionKey(tileExpression(tile)),
          new Set((tile.filters ?? []).map((filter) => filter.given)),
       );
    }
    const reads = new Set<string>();
    for (const tile of document.tiles) {
       if (!isQueryTile(tile)) continue;
-      const key = tileExpressionKey(`${tile.source} -> ${tile.name}`);
+      const key = tileExpressionKey(tileExpression(tile));
       const bound = boundWhenOpened.get(key);
       for (const name of servedReads.get(key) ?? [])
          if (!bound?.has(name)) reads.add(name);
@@ -213,11 +215,11 @@ export function previewTileQuery(
    /** What the served file's compiled tile reads (`DashboardTile.givenNames`), when it has this tile. */
    served?: readonly string[],
 ): PreviewTileQuery {
-   if (tile.declaration.kind === "inherited") {
-      // Declared in the model; bindings live there too, out of this
-      // document's reach, so the server is sent the whole row as it does.
+   if (isReadOnlyTile(tile)) {
+      // Declared in the model, or a named query; bindings live there too, out
+      // of this document's reach, so the server is sent the whole row as it does.
       return {
-         expression: `${tile.source} -> ${tile.name}`,
+         expression: tileExpression(tile),
          givenNames: undefined,
          reads: served && [...served],
       };

@@ -25,6 +25,7 @@ import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
 import {
    isQueryTile,
+   isReadOnlyTile,
    type DashboardDocument,
    type QueryTile,
 } from "./document";
@@ -381,11 +382,7 @@ export function ReportBuilder({
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
             if (dragging || selected === undefined || !rules.widths) return;
             const tile = editor.document.tiles[selected];
-            if (
-               !tile ||
-               (isQueryTile(tile) && tile.declaration.kind === "inherited")
-            )
-               return;
+            if (!tile || (isQueryTile(tile) && isReadOnlyTile(tile))) return;
             const span = nudgedSpan(
                tile.colspan ?? defaultSpan,
                delta,

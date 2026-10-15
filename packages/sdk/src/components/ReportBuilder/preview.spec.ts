@@ -352,6 +352,18 @@ describe("previewTileQuery", () => {
       expect(q.givenNames).toEqual(["CATEGORY"]);
    });
 
+   it("runs a named-query tile by its name, sending the whole row", () => {
+      const named: QueryTile = {
+         name: "by_carrier",
+         declaration: { kind: "query" },
+      };
+      expect(previewTileQuery(document, named, runnable)).toEqual({
+         expression: "by_carrier",
+         givenNames: undefined,
+         reads: undefined,
+      });
+   });
+
    it("runs an inherited tile as the model has it, sending the whole row", () => {
       const inherited: QueryTile = {
          name: "by_brand",

@@ -17,7 +17,12 @@ import type {
    QueryTile,
    TextTile,
 } from "./document";
-import { isQueryTile, isTextTile } from "./document";
+import {
+   isQueryTile,
+   isReadOnlyTile,
+   isTextTile,
+   tileExpression,
+} from "./document";
 import type { LocalGiven } from "./document";
 import {
    artifactLine,
@@ -530,6 +535,8 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
       if (quoted) {
          const parts = quoted[1].split("->").map((part) => part.trim());
          if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, text);
+         // A named query: kept as written, never resolved to what it reads.
+         else if (parts.length === 1) byKey.set(`query.${parts[0]}`, text);
          continue;
       }
       const name = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/.exec(text)?.[1];
@@ -550,8 +557,11 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
               : undefined;
       }
       return (
-         byKey.get(`${tile.source}->${tile.name}`) ??
-         (isNew ? `"${tile.source} -> ${tile.name}"` : undefined)
+         byKey.get(
+            tile.declaration.kind === "query"
+               ? `query.${tile.name}`
+               : `${tile.source}->${tile.name}`,
+         ) ?? (isNew ? `"${tileExpression(tile)}"` : undefined)
       );
    });
    if (nextEntries.some((entry) => entry === undefined)) {
@@ -1149,9 +1159,10 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, removedTiles, edits, parsed } = ctx;
    // REMOVED TILES: the declaration and its `#` tags. An inline view's body
    // runs to its closing brace; a reference is one line. An inherited tile has
-   // nothing here to remove — its entry left the artifact list above.
+   // nothing here to remove — its entry left the artifact list above — and nor
+   // does a named query, whose `query:` may be read by more than this list.
    for (const tile of removedTiles) {
-      if (isTextTile(tile) || tile.declaration.kind === "inherited") continue;
+      if (isTextTile(tile) || isReadOnlyTile(tile)) continue;
       const view = viewOf(ctx, tile);
       if (!view) {
          return {
@@ -1353,8 +1364,16 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          return {
             ok: false,
             reason:
-               `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
+               `\`${tileExpression(tile)}\` is declared on its source, ` +
                `not in this report, so its presentation cannot be changed here.`,
+         };
+      }
+      if (tile.declaration.kind === "query") {
+         return {
+            ok: false,
+            reason:
+               `\`${tile.name}\` names a query, whose presentation is the ` +
+               `query's own, so it cannot be changed here.`,
          };
       }
 
