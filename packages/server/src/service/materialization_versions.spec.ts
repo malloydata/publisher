@@ -1339,6 +1339,85 @@ describe("a package with no versions", () => {
    });
 });
 
+describe("a package's first versioned publish, while reads of its unversioned copy are held", () => {
+   /** Hold the next compile; `reached` resolves once it is held. */
+   function holdNextCompile() {
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const atGate = new Promise<void>((resolve) => (reached = resolve));
+      const create = Package.create.bind(Package);
+      const spy = spyOn(Package, "create").mockImplementationOnce(
+         async (...args: Parameters<typeof Package.create>) => {
+            reached();
+            await gate;
+            return create(...args);
+         },
+      );
+      return { release, reached: atGate, restore: () => spy.mockRestore() };
+   }
+
+   const within = <T>(promise: Promise<T>, ms: number) =>
+      Promise.race([
+         promise.then(() => "settled" as const),
+         new Promise<"stuck">((resolve) =>
+            setTimeout(() => resolve("stuck"), ms),
+         ),
+      ]);
+
+   it("never waits on itself: its compile, store binding and load hook run, and a run and a read held behind it settle after", async () => {
+      // The package, unversioned, built into the shared `summary` by a run
+      // from before versions, so the version's load binds from the store.
+      const tree = writePackage("0.0.0", 1, "package");
+      fs.cpSync(tree, path.join(envPath, PKG), { recursive: true });
+      const legacy = await build({});
+      expect([legacy.status, legacy.version]).toEqual([
+         "MANIFEST_FILE_READY",
+         null,
+      ]);
+      await tamper("summary", 11);
+      expect(await answerOf()).toBe(11);
+
+      // A load hook that reads the package (as an index refresh would), and a
+      // run of the unversioned package waiting to start.
+      const hookReads: Promise<number>[] = [];
+      env.setPackageLoadedHook(() => {
+         hookReads.push(answerOf());
+      });
+      const releaseRuns = holdRuns();
+      const waitingRun = await service.createMaterialization(ENV, PKG, {});
+
+      const compile = holdNextCompile();
+      try {
+         const publishing = publish("1.0.0", 1, "package");
+         await compile.reached;
+         // Inside the publish: the run goes on to read the package, and so
+         // does a request. Both meet the held unversioned copy.
+         releaseRuns();
+         let readSettled = false;
+         const reading = answerOf().finally(() => (readSettled = true));
+         await new Promise((resolve) => setTimeout(resolve, 50));
+         // Held behind the publish, not served from the copy in memory.
+         expect(readSettled).toBe(false);
+         compile.release();
+         expect(await within(publishing, 30_000)).toBe("settled");
+         expect((await publishing).version.versionId).toBe("1.0.0");
+         // The version binds the table its definition built before versions.
+         expect(await reading).toBe(11);
+      } finally {
+         compile.release();
+         compile.restore();
+         env.setPackageLoadedHook(null);
+      }
+      expect(await within(Promise.all(hookReads), 30_000)).toBe("settled");
+      expect(await Promise.all(hookReads)).toEqual(hookReads.map(() => 11));
+      const run = await settled(waitingRun.id);
+      expect(["MANIFEST_FILE_READY", "FAILED", "CANCELLED"]).toContain(
+         run.status,
+      );
+   });
+});
+
 describe("the scheduler, per published version", () => {
    function scheduler(): MaterializationScheduler {
       const store = {
