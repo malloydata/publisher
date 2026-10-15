@@ -36,7 +36,7 @@ jobs:
           path: |
             ~/.bun/install/cache
             ~/.cache/openapi-generator-cli
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: Typecheck
@@ -65,7 +65,7 @@ jobs:
           path: |
             ~/.bun/install/cache
             ~/.cache/openapi-generator-cli
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: Install dependencies
@@ -173,7 +173,7 @@ jobs:
           path: |
             ~/.bun/install/cache
             ~/.cache/openapi-generator-cli
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: build server
