@@ -445,15 +445,24 @@ export class ConnectionController {
          }
          // BigQueryConnection returns `error.message` as a string on failure instead of throwing.
          if (typeof source === "string") {
+            // The SQL Server connector answers an object the server reports
+            // missing (its error 208) with this exact text.
+            if (source === `Table ${tablePath} not found`) {
+               throw new TableNotFoundError(source);
+            }
             // Malloy's Postgres and Databricks drivers return a failed lookup
-            // as `Error fetching schema for <path>: <driver message>`, which
-            // drops the error's code. The driver message is still matched
-            // like any other code-less one, so a dead database answers 502
-            // CONNECTION_FAILED here as on every other route.
-            const prefix = `Error fetching schema for ${tablePath}: `;
-            const accessFailure = source.startsWith(prefix)
-               ? databaseAccessFailure(new Error(source.slice(prefix.length)))
-               : undefined;
+            // as `Error fetching schema for <path>: <driver message>`, and the
+            // SQL Server connector as `Error fetching schema for table <path>:
+            // <number>: <driver message>`, the number being SQL Server's (0
+            // for a failure before the server answered). Both drop the error's
+            // code. The driver message is still matched like any other
+            // code-less one, so a dead database answers 502 CONNECTION_FAILED
+            // here as on every other route.
+            const driverMessage = lookupFailureDriverMessage(source, tablePath);
+            const accessFailure =
+               driverMessage === undefined
+                  ? undefined
+                  : databaseAccessFailure(new Error(driverMessage));
             throw accessFailure ?? driverErrorToPublisherError(source);
          }
 
@@ -1136,4 +1145,21 @@ export class ConnectionController {
          message: `Connection "${connectionName}" deleted successfully`,
       };
    }
+}
+
+/**
+ * The driver's own message inside a table lookup's failure text, or undefined
+ * when the text is not one of the shapes the drivers produce.
+ */
+export function lookupFailureDriverMessage(
+   source: string,
+   tablePath: string,
+): string | undefined {
+   const prefix = `Error fetching schema for ${tablePath}: `;
+   if (source.startsWith(prefix)) return source.slice(prefix.length);
+   const sqlserverPrefix = `Error fetching schema for table ${tablePath}: `;
+   if (source.startsWith(sqlserverPrefix)) {
+      return source.slice(sqlserverPrefix.length).replace(/^\d+: /, "");
+   }
+   return undefined;
 }

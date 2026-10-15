@@ -386,7 +386,7 @@ export function registerSearchDatabaseSchemaTool(
       const n = entities.filter((e) => !canPasteSource(e)).length;
       if (n === 0) return [];
       return [
-         `${n} table(s) have a path this server will not vouch for across every dialect it serves, so malloySource is omitted for them rather than risk a line that does not compile. Build it from tablePath: on your own dialect the path may work as-is, or may need the offending segment quoted. Double quotes on DuckDB, Postgres, Snowflake and Trino; backticks on MySQL, BigQuery and Databricks.`,
+         `${n} table(s) have a path this server will not vouch for across every dialect it serves, so malloySource is omitted for them rather than risk a line that does not compile. Build it from tablePath: on your own dialect the path may work as-is, or may need the offending segment quoted. Double quotes on DuckDB, Postgres, Snowflake, Trino and SQL Server; backticks on MySQL, BigQuery and Databricks.`,
       ];
    };
 

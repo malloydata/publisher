@@ -9,9 +9,65 @@ SPDX-License-Identifier: MIT
 > environment-level connections, naming rules, and the SSH-bastion proxy. For the config file itself,
 > see [configuration.md](configuration.md).
 
-Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
+Publisher uses **connections** to reach databases and query engines. Connections are defined per-environment in `publisher.config.json`; each one has a unique `name` and a `type` (`bigquery`, `snowflake`, `postgres`, `mysql`, `sqlserver`, `duckdb`, `trino`, etc.) plus type-specific configuration under a matching `*Connection` key.
 
 For full setup details per connection type, see [docs.malloydata.dev/documentation/user_guides/publishing/connections](https://docs.malloydata.dev/documentation/user_guides/publishing/connections).
+
+## SQL Server (`type: "sqlserver"`)
+
+A SQL Server login over TCP, through `@malloydata/db-sqlserver`. The fields are the connector's own:
+
+```json
+{
+  "name": "warehouse_mssql",
+  "type": "sqlserver",
+  "sqlserverConnection": {
+    "server": "mssql.example.com",
+    "port": 1433,
+    "database": "analytics",
+    "user": "publisher",
+    "password": "…",
+    "encrypt": true,
+    "trustServerCertificate": false
+  }
+}
+```
+
+- `encrypt` is on when omitted, as the driver defaults it; a server that requires encryption refuses
+  a connection with it off.
+- `trustServerCertificate` accepts a certificate the client cannot verify, such as a self-signed one
+  on a local container. Leave it off for a server you do not control: a certificate that does not
+  verify then fails the connection, as a config fault rather than an unreachable server. It is not
+  a retryable 502; a route answers as for any unclassified driver failure, the server log names the
+  certificate, and `POST /connections/test` returns the driver's message, which names it.
+- `hostNameInCertificate` is the name the certificate is issued to when it is not `server` (a server
+  reached by IP address). `instanceName` locates a named instance through SQL Browser (UDP 1434);
+  `port` is then not used. Either one left empty is read as not set.
+- `port`, when given, must be an integer from 1 to 65535; anything else fails the config at load,
+  naming the value.
+
+A database holds schemas, `dbo` by default, and a table is addressed `schema.table`:
+`warehouse_mssql.table('dbo.orders')`. The schema browser lists the schemas that own a table or a
+view.
+
+A login the server refuses answers as rejected credentials (424, `CONNECTION_AUTH_FAILED`), and a
+server that cannot be reached as unreachable (502, `CONNECTION_FAILED`). Two limits:
+
+- The driver reports every login refusal the same way and drops the server's error number, so a
+  transient refusal also answers 424 once the driver's own retries are spent. On Azure SQL that
+  includes a serverless database that is paused or resuming (errors 40613, 40501, 40197): if
+  credentials that worked before start answering 424, check the database's state before the
+  password.
+- On the single-table lookup (`…/schemas/{schema}/tables/{table}`) the driver returns its failure as
+  text with the code dropped. An unreachable server is still recognized from the text and answers
+  502, and a table that does not exist answers 404, but a refused login answers as a plain driver
+  error rather than 424, as it does for Postgres there.
+
+The dialect is **experimental** upstream. Publisher accepts it on the author's behalf, so a model
+needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a colocated
+`#@ persist` on a SQL Server source is refused at load with reason `read_only_dialect` and the
+source serves live. The connector's README lists what the dialect does not translate yet (`nest:`,
+a boolean used as a condition, `all()`/`exclude()`, regular expressions before SQL Server 2025).
 
 ## BigQuery service-account impersonation
 

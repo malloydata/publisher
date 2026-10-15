@@ -26,6 +26,7 @@ import {
    attachedDatabaseConnectionFieldName,
    attributesFieldName,
    connectionFieldsByType,
+   typedConnectionConfig,
    gcsAttachedDatabaseFields,
    getAttachedDatabaseFields,
    s3AttachedDatabaseFields,
@@ -429,6 +430,22 @@ export default function EditConnectionDialog({
                   );
                }
             }
+         } else if (type === "sqlserver") {
+            const requiredFields = ["server", "database", "user"];
+            // A named instance is located through SQL Browser and the port is
+            // then not used; otherwise the driver needs one.
+            if (!connectionConfig.instanceName && !connectionConfig.port) {
+               throw new Error(
+                  "Port is required unless an instance name is given",
+               );
+            }
+            for (const fieldName of requiredFields) {
+               if (!connectionConfig[fieldName]) {
+                  throw new Error(
+                     `${fields.find((f) => f.name === fieldName)?.label || fieldName} is required`,
+                  );
+               }
+            }
          } else if (type === "databricks") {
             if (!connectionConfig.host) {
                throw new Error("Host is required");
@@ -441,7 +458,10 @@ export default function EditConnectionDialog({
          connectionPayload = {
             name,
             type,
-            [attributesFieldName[type]]: connectionConfig,
+            [attributesFieldName[type]]: typedConnectionConfig(
+               type,
+               connectionConfig,
+            ),
          } satisfies Connection;
       }
 
@@ -987,6 +1007,14 @@ export default function EditConnectionDialog({
                         const isStored = withheldFields.has(
                            `${attributesFieldName[type] ?? ""}.${field.name}`,
                         );
+                        // A select shows the stored value as the option it
+                        // names (a boolean reads back as `true`/`false`), and
+                        // the first option when nothing is stored.
+                        const selectValue = field.selectOptions
+                           ? existingValue === "" || existingValue === undefined
+                              ? field.selectOptions[0]?.value
+                              : String(existingValue)
+                           : undefined;
                         return (
                            <TextField
                               key={field.name}
@@ -1001,7 +1029,12 @@ export default function EditConnectionDialog({
                                  !isPasswordField &&
                                  !existingValue
                               }
-                              defaultValue={existingValue}
+                              select={!!field.selectOptions}
+                              defaultValue={
+                                 field.selectOptions
+                                    ? selectValue
+                                    : existingValue
+                              }
                               placeholder={
                                  isStored
                                     ? "Leave empty to keep existing"
@@ -1014,7 +1047,16 @@ export default function EditConnectionDialog({
                                        : "No value stored."
                                     : undefined
                               }
-                           />
+                           >
+                              {field.selectOptions?.map((option) => (
+                                 <MenuItem
+                                    key={option.value}
+                                    value={option.value}
+                                 >
+                                    {option.label}
+                                 </MenuItem>
+                              ))}
+                           </TextField>
                         );
                      })
                   )}

@@ -40,6 +40,7 @@ await build({
       "@malloydata/db-mysql",
       "@malloydata/db-postgres",
       "@malloydata/db-snowflake",
+      "@malloydata/db-sqlserver",
       "@malloydata/db-trino",
       "@malloydata/db-databricks",
       "@google-cloud/storage",
