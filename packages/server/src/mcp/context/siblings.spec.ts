@@ -9,11 +9,18 @@ import {
    type FcjIndexFixture,
 } from "../../test_helpers/fcj_index_fixture";
 import { embedText } from "../../test_helpers/get_context_llm_harness";
-import type { Catalog } from "./catalog";
+import type { Catalog, CatalogNode } from "./catalog";
 import { buildCatalog, catalogInputOf } from "./catalog";
 import { connect } from "./connect";
 import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "./find";
-import { judgeOptions, renderJudgePrompt } from "./judge";
+import {
+   dropTwins,
+   judgeOptions,
+   renderJudgePrompt,
+   validateVerdict,
+   type JudgePick,
+   type JudgeVerdict,
+} from "./judge";
 import { toUnit } from "./vectors";
 
 /**
@@ -258,3 +265,71 @@ describe("the judge reads each twin source's doc", () => {
    });
 });
 
+describe("the judge's best pick and twinRule", () => {
+   const node = (key: string, twinKey?: string, joinPath?: string) =>
+      ({ key, twinKey, joinPath }) as unknown as CatalogNode;
+   const nodes = new Map(
+      [
+         node("m:a:reach", "T"),
+         node("m:b:reach", "T"),
+         node("m:c:reach", "T"),
+         node("m:a:audience"),
+         node("m:hub:a.reach", "T", "a"),
+      ].map((n) => [n.key, n]),
+   );
+   const verdict = (pick: Partial<JudgePick>): JudgeVerdict[] => [
+      { cluster: "x", caveats: [], picks: [{ target: 0, keys: [], ...pick }] },
+   ];
+
+   it("reads best and lists it first", () => {
+      const targets: FindTarget[] = [
+         {
+            index: 0,
+            type: "measure",
+            text: "reach",
+            kinds: KINDS_BY_FIND_TARGET.measure,
+         },
+      ];
+      const options = ["m:a:reach", "m:b:reach"].map((key, i) => ({
+         number: i + 1,
+         key,
+         targets: [0],
+      }));
+      const out = validateVerdict(
+         targets,
+         options,
+      )({
+         picks: [{ target: 1, candidates: [1, 2], best: 2, reason: "r" }],
+         caveats: [],
+      });
+      expect(out.picks[0].keys).toEqual(["m:b:reach", "m:a:reach"]);
+      expect(out.picks[0].best).toBe("m:b:reach");
+   });
+
+   it("keeps the best twin and drops the others; off, keeps all", () => {
+      const v = verdict({
+         keys: ["m:a:reach", "m:b:reach", "m:c:reach", "m:a:audience"],
+         best: "m:b:reach",
+      });
+      const out = dropTwins(v, true, (k) => nodes.get(k))[0].picks[0];
+      expect(out.keys).toEqual(["m:b:reach", "m:a:audience"]);
+      expect(out.droppedTwins).toEqual(["m:a:reach", "m:c:reach"]);
+      expect(
+         dropTwins(v, false, (k) => nodes.get(k))[0].picks[0].keys,
+      ).toHaveLength(4);
+   });
+
+   it("leaves a readings pick, joined copies and fields without twins alone", () => {
+      const readings = verdict({
+         keys: ["m:a:reach", "m:b:reach"],
+         readings: true,
+      });
+      expect(
+         dropTwins(readings, true, (k) => nodes.get(k))[0].picks[0].keys,
+      ).toEqual(["m:a:reach", "m:b:reach"]);
+      const joined = verdict({ keys: ["m:a:reach", "m:hub:a.reach"] });
+      expect(
+         dropTwins(joined, true, (k) => nodes.get(k))[0].picks[0].keys,
+      ).toEqual(["m:a:reach", "m:hub:a.reach"]);
+   });
+});

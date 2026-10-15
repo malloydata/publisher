@@ -272,6 +272,15 @@ export interface FcjSettings {
     */
    readingsRule: boolean;
    /**
+    * PROVISIONAL, off by default. After the judge, among a target's picks
+    * that are one inherited field on near-identical sources (the catalog's
+    * `twinKey`: the same definition on sources whose rows differ), keep only
+    * the judge's best (or its first listed) unless the judge said the
+    * question could mean either set of rows. Routes, joined copies and
+    * fields with other names are never dropped.
+    */
+   twinRule: boolean;
+   /**
     * PROVISIONAL, null by default: the judge uses `retrieval.llm`, as every
     * other LLM step does. Set, the judge alone sends its calls to this model;
     * the index-time steps keep `retrieval.llm`. Timeouts, concurrency and the
@@ -338,6 +347,7 @@ export const DEFAULT_FCJ_SETTINGS: FcjSettings = {
    dateRange: false,
    listUnion: 0,
    readingsRule: false,
+   twinRule: false,
    judgeLlm: null,
 };
 
@@ -743,6 +753,7 @@ function parseFcj(raw: unknown): FcjSettings {
       dateRange: fcjBoolean(obj, "dateRange"),
       listUnion: int("listUnion", 0, 200),
       readingsRule: fcjBoolean(obj, "readingsRule"),
+      twinRule: fcjBoolean(obj, "twinRule"),
       judgeLlm: fcjJudgeLlm(obj),
    };
 }
