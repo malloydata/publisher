@@ -932,7 +932,8 @@ palette is the author's, and the builder leaves it as written.
 A chart's axes are titled from each field's `# label`; a field with none is titled from its name written as
 a sentence (`total_revenue` reads "Total revenue"), on charts only, so a table keeps the column names its
 author chose. A plotted chart is drawn no narrower than 320px, and a bar chart no narrower than it takes to
-draw every bar; in a narrower tile it scrolls sideways rather than dropping bars.
+draw every bar, up to 4000px; in a narrower tile it scrolls sideways rather than dropping bars. A chart with
+more bars than fit in 4000px still has the rest dropped under "Showing limited results".
 
 A grid report with `tiles=[]` (only possible by hand-editing) opens in the builder but is not served until it
 has a tile, and the builder will not remove the last tile of a report saved with tiles. A filter on a
