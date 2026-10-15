@@ -120,6 +120,7 @@ export function TileMenu({
    // moves with them, and "back to where it started" means where the menu
    // started.
    const openedChart = useRef<QueryTile["chart"]>(undefined);
+   const otherColor = useRef<HTMLInputElement>(null);
    const opened = anchor !== null;
    useEffect(() => {
       if (opened)
@@ -468,8 +469,18 @@ export function TileMenu({
                   !swatches.some((c) => c.toLowerCase() === query.color)
                }
                role="menuitemradio"
+               // A label opens its input on a click only. Menu focus sits on
+               // this item, not the input, so Enter and Space open the picker
+               // here, as they choose any other item.
+               onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                     event.preventDefault();
+                     otherColor.current?.click();
+                  }
+               }}
             >
                <input
+                  ref={otherColor}
                   type="color"
                   aria-label="Other color"
                   value={query?.color ?? toHex(theme.series[0])}

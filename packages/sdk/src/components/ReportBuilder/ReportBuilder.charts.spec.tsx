@@ -300,6 +300,20 @@ describe("ReportBuilder: a chart's color", () => {
       expect(tile && "color" in tile ? tile.color : undefined).toBe(color);
    });
 
+   it("opens the platform's picker from the keyboard, where focus is on the item and not its input", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const other = swatches().at(-1) as HTMLElement;
+      expect(primary(other)).toBe("Other color…");
+      const input = within(other).getByLabelText("Other color");
+      let opened = 0;
+      input.addEventListener("click", () => opened++);
+      fireEvent.keyDown(other, { key: "Enter" });
+      fireEvent.keyDown(other, { key: " " });
+      expect(opened).toBe(2);
+   });
+
    it("offers no color on a table, which draws no series", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
