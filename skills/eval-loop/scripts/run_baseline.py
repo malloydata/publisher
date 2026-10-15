@@ -887,8 +887,12 @@ def retrieval_error_message(reason: str | None) -> str:
 
 
 def mcp_call(url: str, tool: str, arguments: dict[str, Any],
-             timeout: int = 60) -> Any:
+             timeout: int = 60,
+             headers: dict[str, str] | None = None) -> Any:
     """One MCP `tools/call`, returning the tool's parsed JSON payload.
+
+    `headers` are added to the request as given (an auth header for a server
+    that needs one, say). Nothing here supplies or stores a credential.
 
     Stateless streamable HTTP, so the reply is either a JSON body or one SSE
     `data:` frame; both are accepted because which one arrives is the
@@ -907,7 +911,8 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any],
     req = urllib.request.Request(
         url, data=body.encode(), method="POST",
         headers={"Content-Type": "application/json",
-                 "Accept": "application/json, text/event-stream"})
+                 "Accept": "application/json, text/event-stream",
+                 **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read().decode()
     if raw.lstrip().startswith("event:") or "\ndata: " in raw:
@@ -1001,7 +1006,10 @@ def retrieval_probe(a: argparse.Namespace) -> tuple[str | None, str | None]:
     waiting for something that cannot arrive.
     """
     try:
-        payload = mcp_call(a.mcp_url, "get_context", probe_arguments(a))
+        # `mcp_headers` is set by retrieval_replay.py, whose requests carry
+        # extra headers; an answer run's namespace has none.
+        payload = mcp_call(a.mcp_url, "get_context", probe_arguments(a),
+                           headers=getattr(a, "mcp_headers", None))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise AuthRequired(e.code, a.mcp_url) from e

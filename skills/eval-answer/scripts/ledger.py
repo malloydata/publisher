@@ -221,7 +221,14 @@ RUN_OPTIONAL = {"label", "effort", "environment", "package", "modelPath",
                 # How the package's own skills reached the answerer, and a hash
                 # of the tree they came from. Two runs can differ ONLY in
                 # guidance, and without these the ledger cannot tell them apart.
-                "packageSkillsMode", "packageSkillsSha"} | RUN_RECOMMENDED
+                "packageSkillsMode", "packageSkillsSha",
+                # A set published as a versioned bundle: the version it was
+                # published under and the sha256 of that bundle's manifest
+                # file, so a run names the exact copy it read. Written by
+                # retrieval_replay.py when given. `mcpHeaderNames` are the
+                # names (never the values) of extra headers the requests
+                # carried, since a header can change what the server returns.
+                "setVersion", "setManifestSha256", "mcpHeaderNames"} | RUN_RECOMMENDED
 
 
 def dataset_sha(set_dir: pathlib.Path) -> str | None:
@@ -406,14 +413,17 @@ def validate_run(run_dir: pathlib.Path) -> tuple[list[str], list[str]]:
             cfg = {}
         for f in sorted(RUN_REQUIRED - cfg.keys()):
             errors.append(f"run.json: missing {f!r}")
-        # A probe run has no judge, no answerer and no re-executed
-        # predictions, so the judge and model pins can never be filled for it.
-        # Warning about them anyway is noise that teaches readers to skip
-        # warnings, which is worse than not checking.
+        # A probe run or a retrieval replay has no judge, no answerer and no
+        # re-executed predictions, so the judge and model pins can never be
+        # filled for it. Warning about them anyway is noise that teaches
+        # readers to skip warnings, which is worse than not checking. A replay
+        # loads no skills either, so it has no skills version to pin.
         recommended = RUN_RECOMMENDED
-        if cfg.get("phase") == "probe":
+        if cfg.get("phase") in ("probe", "replay"):
             recommended = recommended - {"judgeModel", "judgeVersion",
                                          "modelSha", "answererManifest"}
+        if cfg.get("phase") == "replay":
+            recommended = recommended - {"skillsVersion"}
         for f in sorted(recommended - cfg.keys()):
             warnings.append(f"run.json: no {f!r} -- this run cannot anchor "
                             f"a comparison on that pin")
