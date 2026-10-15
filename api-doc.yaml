@@ -5658,6 +5658,13 @@ components:
             host's to set. The builder withholds its control only when it edits
             a document held as text; a saved dashboard or notebook renders it
             as before. Absent otherwise.
+        required:
+          type: boolean
+          description: >-
+            True when the given declares no default, so a query that reads it
+            fails until a value is supplied ("Given 'X' has no value and no
+            default"). A report's reader asks for it before running the tiles
+            that read it, rather than showing that error. Absent otherwise.
         default:
           type: string
           description: The given's default value as a Malloy source literal

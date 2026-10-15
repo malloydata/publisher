@@ -5,7 +5,7 @@ import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
 import { Alert, Button, Stack, Typography } from "@mui/material";
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { nudgedSpan } from "../Dashboard/DashboardGrid";
+import { nudgedSpan, useDefaultTileSpan } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
 import type { ReportLayout } from "../Package/documentLocation";
 import type { SavesTo } from "./documentSession";
@@ -28,7 +28,7 @@ import {
    type DashboardDocument,
    type QueryTile,
 } from "./document";
-import { FilterStrip } from "./FilterStrip";
+import { FilterStrip, type FixedFilter } from "./FilterStrip";
 import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
@@ -198,6 +198,24 @@ export interface ReportBuilderProps {
     */
    addFilterDisabledReason?: string;
    /**
+    * Filters in the row a tile reads other than through a binding the
+    * builder writes (the model's own `where:`, or this report's own
+    * `source:`), each with why it cannot be changed here. They can be set,
+    * as in the reader, but not removed or configured.
+    */
+   fixedFilters?: ReadonlyMap<string, FixedFilter>;
+   /**
+    * Open a model by its package path: offered as "Open the model" on a filter
+    * the model sets. Omitted, the filter only says where it is set.
+    */
+   onOpenModel?: (modelPath: string) => void;
+   /**
+    * Names a filter the builder adds must not take, beyond the givens on the
+    * page: a host that resolves held text itself passes every given the model
+    * declares, so a new filter never takes a model given's name.
+    */
+   takenGivenNames?: readonly string[];
+   /**
     * The host's own extra actions for the edit bar, rendered beside undo, redo
     * and save.
     */
@@ -253,6 +271,9 @@ export function ReportBuilder({
    modelPath,
    visibleSources,
    addFilterDisabledReason,
+   fixedFilters,
+   onOpenModel,
+   takenGivenNames,
    onControlsChange,
    draftKey,
 }: ReportBuilderProps) {
@@ -293,8 +314,22 @@ export function ReportBuilder({
    });
    const { dragging } = reorder;
    // Dragging a tile's right edge sets its width, written once on release.
+   // A tile with no `# colspan` is drawn as the reader draws it, at least
+   // MIN_TILE_PX wide, rather than one column: the width handle and the row
+   // arithmetic start from that span. Only drawn; nothing is written until
+   // the author sets a width.
+   const defaultSpan = useDefaultTileSpan(gridBox, columns);
+   const laidOut = useMemo(
+      () =>
+         editor.document.tiles.map((tile) =>
+            tile.colspan === undefined
+               ? { ...tile, colspan: defaultSpan }
+               : tile,
+         ),
+      [editor.document.tiles, defaultSpan],
+   );
    const resizing = useTileResize({
-      tiles: editor.document.tiles,
+      tiles: laidOut,
       columns,
       gridBox,
       onStart: selectTile,
@@ -351,14 +386,19 @@ export function ReportBuilder({
                (isQueryTile(tile) && tile.declaration.kind === "inherited")
             )
                return;
-            const span = nudgedSpan(tile.colspan ?? 1, delta, columns);
-            if (span === (tile.colspan ?? 1)) return;
+            const span = nudgedSpan(
+               tile.colspan ?? defaultSpan,
+               delta,
+               columns,
+            );
+            if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
                draft.tiles[selected].colspan = span;
             });
          },
       }),
       [
+         defaultSpan,
          editor,
          menu,
          filterDialog,
@@ -512,6 +552,21 @@ export function ReportBuilder({
                            ? { addDisabledReason: addFilterDisabledReason }
                            : {})}
                         onRemove={bindings.dropControl}
+                        {...(fixedFilters ? { fixedFilters } : {})}
+                        {...(onOpenModel ? { onOpenModel } : {})}
+                        {...(editor.document.startingGivens
+                           ? { startingValues: editor.document.startingGivens }
+                           : {})}
+                        onStartingValue={(name, text) =>
+                           editor.update((draft) => {
+                              const next = { ...(draft.startingGivens ?? {}) };
+                              if (text === undefined) delete next[name];
+                              else next[name] = text;
+                              if (Object.keys(next).length > 0)
+                                 draft.startingGivens = next;
+                              else delete draft.startingGivens;
+                           })
+                        }
                      >
                         {controls}
                      </FilterStrip>
@@ -596,6 +651,7 @@ export function ReportBuilder({
                   reorder={reorder}
                   resizing={resizing}
                   gridBox={gridBox}
+                  defaultSpan={defaultSpan}
                   rules={rules}
                   canAdd={!!catalog}
                   selected={selected}
@@ -629,6 +685,7 @@ export function ReportBuilder({
                   setDrillSource={setDrillSource}
                   exitDialog={session.exitGuard.dialog}
                   {...(renderViewPreview ? { renderViewPreview } : {})}
+                  {...(takenGivenNames ? { takenGivenNames } : {})}
                />
             </ReportPage>
          </Stack>

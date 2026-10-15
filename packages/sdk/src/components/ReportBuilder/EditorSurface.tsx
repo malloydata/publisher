@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardManifest } from "../../client";
 import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -26,8 +26,16 @@ import {
 } from "../Report/reportQuery";
 import { useServer } from "../ServerProvider";
 import { ReportBuilder } from "./ReportBuilder";
+import {
+   missingRequiredGivens,
+   requiredPrompt,
+   waitingOn,
+   waitingText,
+} from "../given/required";
+import type { FixedFilter } from "./FilterStrip";
 import type { ReportLayout } from "../Package/documentLocation";
 import {
+   isQueryTile,
    tileKey,
    type DashboardDocument,
    type DashboardTile as DocumentTile,
@@ -35,6 +43,7 @@ import {
 } from "./document";
 import type { SavesTo } from "./documentSession";
 import {
+   givensReadThroughModel,
    previewGivens,
    previewTileQuery,
    tileExpressionKey,
@@ -74,6 +83,7 @@ export function EditorSurface({
    onSave,
    onDirtyChange,
    onExit,
+   onOpenModel,
    onControlsChange,
    draftKey,
    allowLayoutChange,
@@ -99,6 +109,7 @@ export function EditorSurface({
    onSave?: (source: string, layout: ReportLayout) => Promise<void>;
    onDirtyChange: (dirty: boolean, wouldLose: boolean) => void;
    onExit?: () => void;
+   onOpenModel?: (modelPath: string) => void;
    onControlsChange?: BuilderControlsHandler;
    /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
    draftKey?: string;
@@ -140,15 +151,16 @@ export function EditorSurface({
    });
    // A text source takes its manifest from compiling the text as the viewer.
    const runModelPath = textSource?.modelPath ?? modelPath;
+   const compileText = useCompileText(opened.source, textSource?.compileSource);
    const compiled = useCompiledDocument(
       {
          environmentName,
          packageName,
          modelPath: runModelPath,
-         source: opened.source,
+         source: compileText.text ?? opened.source,
          ...(textSource?.givens ? { givens: textSource.givens } : {}),
       },
-      { enabled: textSource !== undefined },
+      { enabled: textSource !== undefined && compileText.text !== undefined },
    );
    const compiledDocument = compiled.data?.document;
    const manifest: DashboardManifest | undefined = textSource
@@ -157,7 +169,9 @@ export function EditorSurface({
          : undefined
       : data;
    const isSuccess = textSource ? compiled.isSuccess : manifestLoaded;
-   const isError = textSource ? compiled.isError : manifestFailed;
+   const isError = textSource
+      ? compiled.isError || compileText.problem !== undefined
+      : manifestFailed;
    const preamble = textSource
       ? documentPreamble(compiledDocument?.cells)
       : undefined;
@@ -272,10 +286,77 @@ export function EditorSurface({
          ]),
       [modelSpecs, hostGivens],
    );
-   const specs = useMemo(
-      () => previewGivens(doc, modelSpecs),
-      [doc, modelSpecs],
+   // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
+   const servedReads = useMemo(
+      () =>
+         new Map(
+            (manifest?.tiles ?? []).flatMap((tile) =>
+               tile.kind !== "text" && tile.query && tile.givenNames
+                  ? [[tileExpressionKey(tile.query), tile.givenNames] as const]
+                  : [],
+            ),
+         ),
+      [manifest],
    );
+   // Givens a tile reads through the model (a source's own `where:`), not a
+   // binding in this file: shown, so the row matches the reader's, but the
+   // model's to change.
+   const modelReads = useMemo(
+      () => givensReadThroughModel(doc, opened.document, servedReads),
+      [doc, opened.document, servedReads],
+   );
+   const specs = useMemo(
+      () => previewGivens(doc, modelSpecs, modelReads),
+      [doc, modelSpecs, modelReads],
+   );
+   // A filter in the row the builder can show and set but not change: say
+   // where it is set instead. Not always the model: a report's own `source:`
+   // can apply a given to every tile on it with a `where:` of its own.
+   const fixedFilters = useMemo(() => {
+      const bound = new Set(
+         doc.tiles.flatMap((tile) =>
+            isQueryTile(tile) ? (tile.filters ?? []).map((f) => f.given) : [],
+         ),
+      );
+      const declared = new Set((doc.localGivens ?? []).map((g) => g.name));
+      const models = [...new Set(doc.imports.map((i) => i.from))];
+      // The model by its package path, for "Open the model": an import is
+      // relative to the report's own folder.
+      const modelFile =
+         models.length === 1
+            ? packagePathOf(modelPath, models[0]!)
+            : models.length === 0 && textSource
+              ? textSource.modelPath
+              : undefined;
+      const reason = (name: string): FixedFilter => {
+         const scoping = doc.sources
+            .filter((source) => source.scopedBy?.includes(name))
+            .map((source) => source.name);
+         if (scoping.length > 0)
+            return {
+               reason: `Applied to every tile on ${scoping.join(", ")} by this report's own source. Edit the file to change it.`,
+            };
+         if (declared.has(name))
+            return {
+               reason:
+                  "Read by a query in this report the builder cannot edit. Edit the file to change it.",
+            };
+         return modelFile !== undefined
+            ? {
+                 reason: `Set in the model ${modelFile}. Edit the model to change it.`,
+                 modelPath: modelFile,
+              }
+            : {
+                 reason:
+                    "Set in a model this report imports. Edit the model to change it.",
+              };
+      };
+      return new Map(
+         [...modelReads]
+            .filter((name) => !bound.has(name))
+            .map((name) => [name, reason(name)]),
+      );
+   }, [doc, modelReads, textSource, modelPath]);
    const { declaredTypes, applied, panel } = useDocumentControls({
       specs,
       loaded: isSuccess,
@@ -291,6 +372,12 @@ export function EditorSurface({
       ...(preamble !== undefined ? { preamble } : {}),
       ...(hostGivens ? { hostGivens } : {}),
    });
+   // Required filters with no value yet: as in the reader, a tile that
+   // reads one waits, and the page asks for them.
+   const missing = useMemo(
+      () => missingRequiredGivens(specs, applied, hostGivens),
+      [specs, applied, hostGivens],
+   );
    // A given only a gate reads has no control, so the host's value is added; each tile then sends just the names it reads.
    const tileHostGivens = useMemo(
       () =>
@@ -303,18 +390,15 @@ export function EditorSurface({
    );
 
    const manifestSettled = !served || isSuccess || isError;
-   // What the saved file's compiled tiles read, keyed as the server keys a tile expression.
-   const servedReads = useMemo(
-      () =>
-         new Map(
-            (manifest?.tiles ?? []).flatMap((tile) =>
-               tile.kind !== "text" && tile.query && tile.givenNames
-                  ? [[tileExpressionKey(tile.query), tile.givenNames] as const]
-                  : [],
-            ),
-         ),
-      [manifest],
-   );
+   // Held text that did not compile, or that the host's `compileSource`
+   // refused: nothing declares its sources, so a tile run would only fail with
+   // "Reference to undefined object". Its tiles are drawn but never run; the
+   // problem itself is said once, above the page.
+   const notCompiled =
+      textSource !== undefined &&
+      (compileText.problem !== undefined ||
+         compiled.isError ||
+         compileErrors.length > 0);
    // The tiles as the file was opened, by key: a tile still equal to its
    // opened self runs exactly as the reader runs it (below).
    const openedTiles = useMemo(
@@ -333,6 +417,21 @@ export function EditorSurface({
          ) {
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             // Until then the tile's own card and heading stand, so nothing pops in when it runs.
+            if (notCompiled)
+               return (
+                  <TileCard chrome={chrome}>
+                     <TileHeading
+                        title={heading?.title ?? tileDisplayTitle(tile)}
+                        subtitle={heading ? heading.subtitle : tile.subtitle}
+                     />
+                     <Typography
+                        variant="body2"
+                        sx={{ color: "text.secondary", py: 1 }}
+                     >
+                        Not run: this document did not compile.
+                     </Typography>
+                  </TileCard>
+               );
             if (!manifestSettled)
                return (
                   <TileCard chrome={chrome}>
@@ -387,6 +486,15 @@ export function EditorSurface({
                   hostGivens={tileHostGivens}
                   declaredTypes={declaredTypes}
                   givenNames={query.givenNames}
+                  {...(() => {
+                     const waiting = waitingOn(
+                        missing,
+                        query.reads ?? query.givenNames,
+                     );
+                     return waiting.length > 0
+                        ? { waitingFor: waitingText(waiting) }
+                        : {};
+                  })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
                   height={TILE_MAX_HEIGHT}
                />
@@ -396,6 +504,8 @@ export function EditorSurface({
          doc,
          openedTiles,
          manifestSettled,
+         notCompiled,
+         missing,
          runnable,
          servedReads,
          environmentName,
@@ -460,6 +570,15 @@ export function EditorSurface({
                {compileErrors.map((problem) => problem.message).join("; ")}
             </Alert>
          )}
+         {missing.length > 0 && !notCompiled && (
+            <Alert severity="info">{requiredPrompt(missing)}</Alert>
+         )}
+         {textSource && compileText.problem !== undefined && (
+            <Alert severity="error">
+               This document could not be prepared to compile:{" "}
+               {compileText.problem}
+            </Alert>
+         )}
          {textSource && compiled.isError && (
             <Alert severity="error">
                The server could not compile this document:{" "}
@@ -467,7 +586,7 @@ export function EditorSurface({
             </Alert>
          )}
          <ReportBuilder
-            {...(textSource
+            {...(textSource && !textSource.compileSource
                ? {
                     addFilterDisabledReason:
                        "This document holds no given: of its own. Bind a filter the model offers from its chip.",
@@ -475,6 +594,10 @@ export function EditorSurface({
                : {})}
             source={opened.source}
             document={opened.document}
+            fixedFilters={fixedFilters}
+            {...(textSource?.takenGivenNames
+               ? { takenGivenNames: textSource.takenGivenNames }
+               : {})}
             renderTile={renderTile}
             renderViewPreview={renderViewPreview}
             givens={specs
@@ -490,6 +613,7 @@ export function EditorSurface({
             onChange={setDoc}
             onDirtyChange={onDirtyChange}
             {...(onExit ? { onExit } : {})}
+            {...(onOpenModel ? { onOpenModel } : {})}
             {...(onControlsChange ? { onControlsChange } : {})}
             {...(draftKey !== undefined ? { draftKey } : {})}
             {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
@@ -551,4 +675,61 @@ function whatRuns(tile: DocumentTile): DocumentTile {
       borderless?: unknown;
    };
    return runs as DocumentTile;
+}
+
+/**
+ * The text a held document is compiled from: its own, or what the host's
+ * `compileSource` makes of it. Read once per opened text, so a host passing
+ * a new function each render does not recompile.
+ */
+function useCompileText(
+   source: string,
+   compileSource: ((text: string) => string | Promise<string>) | undefined,
+): { text?: string; problem?: string } {
+   const transform = useRef(compileSource);
+   transform.current = compileSource;
+   const hosted = compileSource !== undefined;
+   const [state, setState] = useState<{
+      from: string;
+      text?: string;
+      problem?: string;
+   }>();
+   useEffect(() => {
+      if (!hosted) return;
+      let live = true;
+      Promise.resolve()
+         .then(() => transform.current!(source))
+         .then(
+            (text) => {
+               if (live) setState({ from: source, text });
+            },
+            (error: unknown) => {
+               if (live)
+                  setState({
+                     from: source,
+                     problem:
+                        error instanceof Error ? error.message : String(error),
+                  });
+            },
+         );
+      return () => {
+         live = false;
+      };
+   }, [source, hosted]);
+   if (!hosted) return { text: source };
+   // Until this text is resolved, nothing: never the previous text's result.
+   if (state?.from !== source) return {};
+   return state.problem !== undefined
+      ? { problem: state.problem }
+      : { text: state.text };
+}
+
+/** An import's path (`../storefront.malloy`) as a package path, from the importing file's own path. */
+function packagePathOf(fromFile: string, imported: string): string {
+   const parts = fromFile.split("/").slice(0, -1);
+   for (const part of imported.split("/")) {
+      if (part === "..") parts.pop();
+      else if (part !== "." && part !== "") parts.push(part);
+   }
+   return parts.join("/");
 }

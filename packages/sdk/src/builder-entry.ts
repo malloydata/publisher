@@ -22,6 +22,7 @@ if (typeof globalThis.process === "undefined") {
 }
 
 export { ReportBuilder } from "./components/ReportBuilder/ReportBuilder";
+export type { FixedFilter } from "./components/ReportBuilder/FilterStrip";
 export {
    BuilderBar,
    type BuilderBarProps,

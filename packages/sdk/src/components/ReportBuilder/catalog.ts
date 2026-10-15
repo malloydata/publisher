@@ -191,16 +191,16 @@ export const isReportModel = (
 ) => path !== undefined && reportPaths.has(path);
 
 /**
- * The model's own path.
+ * The model's own path: `path`, the field the API declares.
  *
- * Two spellings, and the generated client only knows one: the models LIST
- * returns `path`, while a single model returns `modelPath`. Reading `path`
- * alone yields an empty string against the real server, which silently disables
- * the report exclusion below and leaves a preview with nothing to run
- * against.
+ * A server before this release names a single model's path only as
+ * `modelPath`, which the spec never declared, so it is still read when `path`
+ * is missing. An empty path silently disables the report exclusion below and
+ * leaves a preview with nothing to run against, so `useEditorCatalog` sets
+ * `path` itself, from the path it asked for.
  */
 const pathOf = (model: CompiledModel): string =>
-   (model as { modelPath?: string }).modelPath ?? model.path ?? "";
+   model.path || (model as { modelPath?: string }).modelPath || "";
 
 export function buildCatalog(
    models: CompiledModel[],

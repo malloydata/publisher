@@ -18,6 +18,7 @@ import {
    serverWrapper,
 } from "../../../test/serverProvider";
 import type { ReportManifest } from "../../client";
+import { globalQueryClient } from "../../utils/queryClient";
 
 let manifest = {} as ReportManifest;
 const getReport = mock(
@@ -114,6 +115,44 @@ describe("the manifest fetch", () => {
       expect(cacheKeys("report")).toEqual([
          '["report","env","pkg",null,"sales/q3.malloy","http://localhost/api/v0"]',
       ]);
+   });
+
+   it("asks again on every mount unless the host says otherwise", async () => {
+      manifest = { ...TILES, layout: "grid" };
+      const first = render(
+         <Report resourceUri={URI} path="sales/q3.malloy" />,
+         {
+            wrapper: serverWrapper,
+         },
+      );
+      await waitFor(() => expect(getReport).toHaveBeenCalledTimes(1));
+      first.unmount();
+      render(<Report resourceUri={URI} path="sales/q3.malloy" />, {
+         wrapper: serverWrapper,
+      });
+      await waitFor(() => expect(getReport).toHaveBeenCalledTimes(2));
+   });
+
+   it("leaves the read's staleness to the host's default for the report key", async () => {
+      // A host that reads the manifest itself first, then mounts the report
+      // over the same entry, keeps that entry fresh with one default.
+      globalQueryClient.setQueryDefaults(["report"], { staleTime: Infinity });
+      try {
+         manifest = { ...TILES, layout: "grid" };
+         const first = render(
+            <Report resourceUri={URI} path="sales/q3.malloy" />,
+            { wrapper: serverWrapper },
+         );
+         await waitFor(() => expect(getReport).toHaveBeenCalledTimes(1));
+         first.unmount();
+         render(<Report resourceUri={URI} path="sales/q3.malloy" />, {
+            wrapper: serverWrapper,
+         });
+         await screen.findAllByText("Third quarter");
+         expect(getReport).toHaveBeenCalledTimes(1);
+      } finally {
+         globalQueryClient.setQueryDefaults(["report"], {});
+      }
    });
 
    it("says so, rather than throwing, for a URI that names no package", () => {

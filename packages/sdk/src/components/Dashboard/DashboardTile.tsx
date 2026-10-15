@@ -89,6 +89,13 @@ export interface DashboardTileProps {
    preamble?: string;
    /** The server marked this tile unreadable for the viewer: nothing is run. */
    restricted?: boolean;
+   /**
+    * Set while a required filter this tile reads has no value: what to say in
+    * place of the result ("Waiting for Recall Year."). Nothing is run, since
+    * the query would only fail with the compiler's "has no value and no
+    * default".
+    */
+   waitingFor?: string;
    /** Its position in the report, for the `report.query_failed` it reports. */
    index?: number;
 }
@@ -141,6 +148,7 @@ export function DashboardTile({
    ignoredFilters,
    preamble,
    restricted,
+   waitingFor,
    index,
 }: DashboardTileProps) {
    const { theme } = usePublisherTheme();
@@ -171,7 +179,10 @@ export function DashboardTile({
          ),
       },
       // Restricted tiles never run; the rest wait to come near the viewport.
-      { enabled: nearViewport && restricted !== true },
+      {
+         enabled:
+            nearViewport && restricted !== true && waitingFor === undefined,
+      },
    );
    // Each failed run once: the error is drawn in place, and the report's host
    // hears of it when one is listening.
@@ -237,7 +248,13 @@ export function DashboardTile({
             />
          )}
          {ignoredFilters && <TileFilterTag ignored={ignoredFilters} />}
-         {noAccess ? (
+         {waitingFor !== undefined ? (
+            <Box sx={{ p: 2 }}>
+               <Typography variant="body2" role="status" color="text.secondary">
+                  {waitingFor}
+               </Typography>
+            </Box>
+         ) : noAccess ? (
             <Box sx={{ p: 2 }}>
                <Typography variant="body2" role="status" color="text.secondary">
                   {RESTRICTED_NOTICE}

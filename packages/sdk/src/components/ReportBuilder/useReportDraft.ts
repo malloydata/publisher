@@ -50,9 +50,78 @@ export interface RestoredDraft {
    pending: boolean;
 }
 
-/** Drop the draft kept under `key`: for a host whose author chose another version. */
-export function clearReportDraft(key: string): void {
-   remove(key);
+/** The report a draft is kept for. */
+export interface ReportDraftTarget {
+   environmentName: string;
+   packageName: string;
+   /** The report's package path, `sales/q3.malloy`. */
+   path: string;
+   /** The package version the edits were made on; none for the live package. */
+   versionId?: string;
+}
+
+/**
+ * The key the builder keeps a report's draft under: one per server, report and
+ * version, so a draft is never restored onto a file it was not made on.
+ * `server` is the `ServerProvider`'s server: its `baseURL`, or this page's own
+ * `/api/v0` when it was given none.
+ */
+export function reportDraftKey(
+   target: ReportDraftTarget & { server: string },
+): string {
+   const { server, environmentName, packageName, versionId, path } = target;
+   return `${server}|${environmentName}/${packageName}@${versionId ?? ""}/${path}`;
+}
+
+/**
+ * Drop drafts kept in this browser: for a host that deleted, renamed or
+ * replaced a report itself, so its old edits are not offered again.
+ *
+ * Given a report, every draft kept for it goes, on any server and any version,
+ * unless `server` or `versionId` narrow it. Given a key from
+ * {@link reportDraftKey}, that one draft.
+ */
+export function clearReportDraft(
+   target: string | (ReportDraftTarget & { server?: string }),
+): void {
+   if (typeof target === "string") {
+      remove(target);
+      return;
+   }
+   const { server, environmentName, packageName, path } = target;
+   const report = `${environmentName}/${packageName}@`;
+   // Narrowed only by a version actually named: a spread that carries
+   // `versionId: undefined` still clears every version.
+   const version =
+      target.versionId !== undefined
+         ? `${target.versionId}/${path}`
+         : undefined;
+   try {
+      const storage = draftStore.storage();
+      const matching: string[] = [];
+      for (let i = 0; i < storage.length; i++) {
+         const stored = storage.key(i);
+         if (!stored?.startsWith(PREFIX)) continue;
+         const key = stored.slice(PREFIX.length);
+         const bar = key.indexOf("|");
+         if (bar === -1) continue;
+         const [keyServer, rest] = [key.slice(0, bar), key.slice(bar + 1)];
+         if (server !== undefined && keyServer !== server) continue;
+         if (!rest.startsWith(report)) continue;
+         const tail = rest.slice(report.length);
+         if (
+            version !== undefined
+               ? tail !== version
+               : tail.slice(tail.indexOf("/") + 1) !== path
+         )
+            continue;
+         matching.push(stored);
+      }
+      // Removed after the walk: removing during it shifts the indexes.
+      for (const stored of matching) storage.removeItem(stored);
+   } catch {
+      // Nothing kept, nothing to remove.
+   }
 }
 
 /** Whether this browser keeps drafts at all. */

@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 import { Box } from "@mui/material";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+   useEffect,
+   useRef,
+   useState,
+   type ReactNode,
+   type RefObject,
+} from "react";
 
 /** Grid width when the dashboard declares no `# dashboard { columns=N }`. */
 export const DEFAULT_COLUMNS = 2;
@@ -44,6 +50,34 @@ export function tileGridColumn(
 ): string {
    const span = Math.min(tile.colspan ?? 1, columns);
    return tile.break ? `1 / span ${span}` : `span ${span}`;
+}
+
+/** Narrowest a tile that sets no `colspan` is drawn, by the reader and the builder alike. */
+export const MIN_TILE_PX = 240;
+
+/**
+ * The span a tile with no `# colspan` is drawn at in the grid inside `box`:
+ * {@link defaultTileSpan} on its measured width. For a surface that lays the
+ * grid out itself (the builder, whose width handle and row arithmetic need
+ * the span a tile is drawn at, not the one it writes).
+ */
+export function useDefaultTileSpan(
+   box: RefObject<HTMLElement | null>,
+   columns: number,
+   minTilePx: number = MIN_TILE_PX,
+): number {
+   const [width, setWidth] = useState(0);
+   useEffect(() => {
+      const node = box.current;
+      if (!node || typeof ResizeObserver === "undefined") return;
+      setWidth(node.getBoundingClientRect().width);
+      const observer = new ResizeObserver(([entry]) =>
+         setWidth(entry?.contentRect.width ?? 0),
+      );
+      observer.observe(node);
+      return () => observer.disconnect();
+   }, [box]);
+   return defaultTileSpan(columns, width, minTilePx);
 }
 
 /**
