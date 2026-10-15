@@ -1,24 +1,30 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// Lives under `tests/unit/` (not `src/`) on purpose: it builds a real
+// EnvironmentStore over the real StorageManager, which sibling specs under
+// `src/` replace with `mock.module(...)`. Bun's module mocks persist
+// process-wide across spec files, so under `src/` it would get the mock; the
+// integration runner gives it a clean module cache (see theme_store.spec.ts).
+
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { PackageController } from "../controller/package.controller";
-import { VersionController } from "../controller/version.controller";
-import type { Materialization } from "../storage/DatabaseInterface";
-import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../storage/duckdb/schema";
-import { Environment } from "./environment";
-import { EnvironmentStore } from "./environment_store";
-import { MaterializationService } from "./materialization_service";
+import { PackageController } from "../../../src/controller/package.controller";
+import { VersionController } from "../../../src/controller/version.controller";
+import type { Materialization } from "../../../src/storage/DatabaseInterface";
+import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
+import { DuckDBRepository } from "../../../src/storage/duckdb/DuckDBRepository";
+import { initializeSchema } from "../../../src/storage/duckdb/schema";
+import { Environment } from "../../../src/service/environment";
+import { EnvironmentStore } from "../../../src/service/environment_store";
+import { MaterializationService } from "../../../src/service/materialization_service";
 import {
    storageBindingResolverFor,
    versionTableSuffix,
    writeTargetsIn,
-} from "./versions/materialization_scope";
+} from "../../../src/service/versions/materialization_scope";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -780,7 +786,10 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
             .replace(/\s+/g, "")
             .replace(/,(?=[)}])/g, "");
       const server = squash(
-         fs.readFileSync(path.resolve(import.meta.dir, "../server.ts"), "utf8"),
+         fs.readFileSync(
+            path.resolve(import.meta.dir, "../../../src/server.ts"),
+            "utf8",
+         ),
       );
       expect(server).toContain(
          squash(
