@@ -9002,14 +9002,22 @@ export class Model {
     * dashboard's text is always returned, because its editor saves through
     * it; the notebook editor fetches a notebook's text with
     * `includeHiddenFilesAndSources`.
+    *
+    * A notebook exports nothing the surface serves, yet `contents` lists
+    * every source it imports. So a name the notebook may read (one the
+    * surface serves, or one its cells build on one) is not hidden, and
+    * neither is one of its own `given:` declarations.
     */
    public showsFileText(text: string): boolean {
       if (this.isGridReport()) return true;
       const published = this.publishedNames();
       if (!published) return true;
+      const readable = this.isNotebook() ? this.notebookReadable() : undefined;
+      const givens = new Set((this.givens ?? []).map((given) => given.name));
       const unpublished = new Set(
          Object.keys(this.modelDef?.contents ?? {}).filter(
-            (name) => !published.has(name),
+            (name) =>
+               !published.has(name) && !givens.has(name) && !readable?.(name),
          ),
       );
       if (unpublished.size === 0) return true;
@@ -9051,15 +9059,16 @@ export class Model {
    /**
     * Under an active surface, a predicate for the source names a notebook may
     * read and so show: what the surface publishes, and what the code cells up
-    * to `cellIndex` derive from it. Undefined when nothing is curated.
+    * to `cellIndex` (every cell when omitted) derive from it. Undefined when
+    * nothing is curated.
     */
    private notebookReadable(
-      cellIndex: number,
+      cellIndex?: number,
    ): ((name: string) => boolean) | undefined {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return undefined;
       const context = (this.runnableNotebookCells ?? [])
-         .slice(0, cellIndex + 1)
+         .slice(0, cellIndex === undefined ? undefined : cellIndex + 1)
          .filter((c) => c.type === "code")
          .map((c) => c.text)
          .join("\n");
