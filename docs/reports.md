@@ -902,7 +902,7 @@ behind the tiles and a label saying the width during the drag; the edge is also 
 it, Left and Right step one column, Home and End go to one column and full width).
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Chart**, a submenu, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its
+The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its
 right edge (or focusing that edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
 they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
@@ -922,6 +922,17 @@ axis and the second as a line on the right. To pick which totals go where, write
 `# combo_chart { y=orders y2=revenue }` on the view by hand. A chart line the builder
 does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and Chart is disabled for that
 tile with the reason shown; so is a tile inherited from a declaration on the source.
+
+**Color** sets a bar, line, scatter or bar-and-line chart's color: the theme's own (the default), one of
+the theme's series colors, or any other through the platform's color picker. It is written above the tile
+as the per-chart theme line `# theme.palette.series=["#1f6aa8"]`, the same annotation a model can carry
+(see [Theming](theming.md)), so it reads back when the file is reopened. A line listing a whole
+palette is the author's, and the builder leaves it as written.
+
+A chart's axes are titled from each field's `# label`; a field with none is titled from its name written as
+a sentence (`total_revenue` reads "Total revenue"), on charts only, so a table keeps the column names its
+author chose. A plotted chart is drawn no narrower than 320px, and a bar chart no narrower than it takes to
+draw every bar; in a narrower tile it scrolls sideways rather than dropping bars.
 
 A grid report with `tiles=[]` (only possible by hand-editing) opens in the builder but is not served until it
 has a tile, and the builder will not remove the last tile of a report saved with tiles. A filter on a

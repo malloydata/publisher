@@ -264,3 +264,47 @@ source: a is scoped_orders extend {
       );
    });
 });
+
+describe("ReportBuilder: a chart's color", () => {
+   const colorItem = () =>
+      screen.getByRole("menuitem", { name: /^Color/, hidden: true });
+   const swatches = () => {
+      fireEvent.click(colorItem());
+      const menu = screen.getByRole("menu", { name: "Color", hidden: true });
+      return within(menu).getAllByRole("menuitemradio", { hidden: true });
+   };
+
+   it("sets a bar chart's color from the theme's series and writes the one line", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const choices = swatches();
+      // The theme's own colors first, then any other.
+      expect(primary(choices[0])).toBe("Theme");
+      const second = choices[2];
+      const color = primary(second) as string;
+      expect(color).toMatch(/^#[0-9a-f]{6}$/);
+      fireEvent.click(second);
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(`  # theme.palette.series=["${color}"]\n`);
+      // And reopening the file reads it back.
+      const reopened = await openDocument(written as string);
+      const tile = reopened.tiles.find((t) => t.name === "by_cat");
+      expect(tile && "color" in tile ? tile.color : undefined).toBe(color);
+   });
+
+   it("offers no color on a table, which draws no series", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Table");
+      expect(colorItem().getAttribute("aria-disabled")).toBe("true");
+      expect(screen.getByText(/has a color to set/)).toBeDefined();
+   });
+});

@@ -4,6 +4,7 @@
 import {
    chartLinesOf,
    chartStateOfTagLines,
+   seriesColorOf,
    type ChartState,
 } from "./chartLine";
 import type {
@@ -151,13 +152,17 @@ const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
 function chartField(tags: Array<{ text: string }>): {
    chart?: ChartState;
    chartLines?: string[];
+   color?: string;
 } {
    const lines = tagText(tags);
    const chart = chartStateOfTagLines(lines);
-   if (chart === undefined) return {};
+   // The last colour line wins, as it does in the renderer's tag merge.
+   const color = lines.map(seriesColorOf).filter(Boolean).at(-1);
+   const colored = color ? { color } : {};
+   if (chart === undefined) return colored;
    return chart === "custom"
-      ? { chart, chartLines: chartLinesOf(lines) }
-      : { chart };
+      ? { chart, chartLines: chartLinesOf(lines), ...colored }
+      : { chart, ...colored };
 }
 
 /**

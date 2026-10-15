@@ -7,6 +7,8 @@ import {
    isChartPick,
    mentionsChartTag,
    parseChartLine,
+   seriesColorLine,
+   seriesColorOf,
    type ChartPick,
 } from "./chartLine";
 import type {
@@ -190,11 +192,21 @@ function tagsFor(tile: QueryTile, withChart = true): string[] {
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    const chart = withChart ? writableChart(tile.chart) : undefined;
    if (chart !== undefined) tags.push(chartLineText(chart, tile.chartCarried));
+   if (tile.color !== undefined) tags.push(seriesColorLine(tile.color));
    return tags;
 }
 
-/** Which property a tag line carries, so an existing line can be replaced. */
+/** The key of the one-colour line the builder writes; see `seriesColorLine`. */
+const SERIES_COLOR_KEY = "theme.palette.series";
+
+/**
+ * Which property a tag line carries, so an existing line can be replaced. A
+ * colour line is keyed only when it is the builder's own one-colour form: a
+ * `# theme.palette.series` that lists a whole palette is the author's, and is
+ * keyed apart so it is never rewritten or removed.
+ */
 function tagKey(text: string): string | undefined {
+   if (seriesColorOf(text) !== undefined) return SERIES_COLOR_KEY;
    const m = /^#\s*([a-z_]+)/.exec(text);
    return m?.[1];
 }
@@ -216,6 +228,7 @@ const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
    "borderless",
    "label",
    "subtitle",
+   SERIES_COLOR_KEY,
 ]);
 
 /**

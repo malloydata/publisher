@@ -177,6 +177,12 @@ export interface QueryTile {
    colspan?: number;
    break?: boolean;
    borderless?: boolean;
+   /**
+    * The chart's colour, `#rrggbb`: its first series colour, written as the
+    * per-chart theme line `# theme.palette.series=["#…"]` the renderer reads.
+    * Absent, the chart takes the theme's own series.
+    */
+   color?: string;
 }
 
 /**

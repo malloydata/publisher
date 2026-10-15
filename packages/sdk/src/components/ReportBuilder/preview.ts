@@ -4,7 +4,12 @@
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
 import { malloyLiteral } from "../../utils/malloyLiteral";
-import { chartLineText, chartResetLine, isChartPick } from "./chartLine";
+import {
+   chartLineText,
+   chartResetLine,
+   isChartPick,
+   seriesColorLine,
+} from "./chartLine";
 import {
    isQueryTile,
    isReadOnlyTile,
@@ -272,7 +277,7 @@ export function previewTileQuery(
    }
    const refinement = clauses.join(", ");
    const chart = tile.chart;
-   const annotation =
+   const chartAnnotation =
       chart === "none" || isChartPick(chart)
          ? chartLineText(chart, tile.chartCarried)
          : chart === "custom" && tile.chartLines?.length
@@ -280,6 +285,15 @@ export function previewTileQuery(
            : chart === "default" && dropsBaseChart(tile.declaration)
              ? chartResetLine()
              : undefined;
+   // The tile's colour, under its chart line: the base view never saw the
+   // wrapper's line, so the preview carries it as it carries the chart.
+   const annotation =
+      [
+         chartAnnotation,
+         tile.color !== undefined ? seriesColorLine(tile.color) : undefined,
+      ]
+         .filter(Boolean)
+         .join("\n") || undefined;
    return {
       ...(annotation ? { annotation } : {}),
       expression:

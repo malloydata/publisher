@@ -141,6 +141,28 @@ export function chartStateOfTagLines(lines: string[]): ChartState | undefined {
    return ours.length === 0 ? undefined : chartStateOf(ours);
 }
 
+/**
+ * The one colour line a builder writes above a tile: its chart's first series
+ * colour, as the per-chart theme annotation the renderer already reads
+ * (`# theme.palette.series=["#1f6aa8"]`). One colour only, so a line with a
+ * whole palette is the author's and never rewritten.
+ */
+const SERIES_COLOR_LINE =
+   /^#[ \t]*theme\.palette\.series[ \t]*=[ \t]*\[[ \t]*"(#[0-9A-Fa-f]{6})"[ \t]*\][ \t]*$/;
+
+/** The colour a builder-written colour line sets, or undefined for any other line. */
+export function seriesColorOf(line: string): string | undefined {
+   return SERIES_COLOR_LINE.exec(line.trim())?.[1]?.toLowerCase();
+}
+
+/** The colour line for a tile's chart colour. */
+export const seriesColorLine = (color: string): string =>
+   `# theme.palette.series=["${color.toLowerCase()}"]`;
+
+/** Whether a colour is one the builder writes: `#rrggbb`. */
+export const isSeriesColor = (value: string): boolean =>
+   /^#[0-9A-Fa-f]{6}$/.test(value);
+
 /** The lines of `lines` that are about the chart, recognized or not: what a "custom" state is made of. */
 export const chartLinesOf = (lines: string[]): string[] =>
    lines.filter((line) => parseChartLine(line) || mentionsChartTag(line));

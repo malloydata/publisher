@@ -232,7 +232,11 @@ export interface ServedReportManifest {
  * this once the grammar moves into a shared malloydata package the renderer can
  * know about (`docs/malloyyo-dashboards-design.md` §Follow-ups).
  */
-const PUBLISHER_OWNED_TAGS = ["artifact", "drill"];
+//
+// `theme` is the per-chart theme (`# theme.palette.series=[…]`), which the SDK
+// reads off the result to colour that one chart; the report builder writes it
+// for a tile's colour, so without it every coloured tile warned.
+const PUBLISHER_OWNED_TAGS = ["artifact", "drill", "theme"];
 
 /**
  * The renderer's own per-child dashboard tags, which Publisher also reads for a

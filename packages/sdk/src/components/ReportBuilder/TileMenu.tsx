@@ -25,7 +25,7 @@ import {
    type QueryTile,
 } from "./document";
 import { chartChoices, type ViewStatus } from "./ChartPicker";
-import type { ChartState } from "./chartLine";
+import { isSeriesColor, type ChartState } from "./chartLine";
 
 /**
  * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
@@ -96,7 +96,7 @@ export function TileMenu({
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
    const ui = theme.ui;
-   const { draft, apply, close } = useDraft(
+   const { draft, apply, patch, close } = useDraft(
       tile,
       anchor !== null,
       onCommit,
@@ -104,7 +104,7 @@ export function TileMenu({
    );
    // Which submenu is open, anchored to its item.
    const [sub, setSub] = useState<
-      { kind: "chart"; anchor: HTMLElement } | undefined
+      { kind: "chart" | "color"; anchor: HTMLElement } | undefined
    >(undefined);
 
    const query = draft !== undefined && isQueryTile(draft) ? draft : undefined;
@@ -171,8 +171,26 @@ export function TileMenu({
          ? CHART_DOES_NOT_CLICK
          : undefined;
 
-   const subOpen = (kind: "chart") => (event: { currentTarget: HTMLElement }) =>
-      setSub({ kind, anchor: event.currentTarget });
+   const subOpen =
+      (kind: "chart" | "color") => (event: { currentTarget: HTMLElement }) =>
+         setSub({ kind, anchor: event.currentTarget });
+
+   // A tile's colour is the chart's first series colour. Offered from the
+   // theme's own series, so a pick stays on the palette the page uses, with
+   // any other colour a picker away. Not on a table or KPI tile, which draw
+   // no series; and not offered at all where the chart is locked, since the
+   // Chart item already says why.
+   const colorBlocked =
+      chartBlocked ??
+      (drawn === undefined || !COLORED_CHARTS.has(drawn)
+         ? "Only a bar, line, scatter or bar and line chart has a color to set."
+         : undefined);
+   const swatches = theme.series.slice(0, 8);
+   const pickColor = (next: string | undefined) =>
+      applyQuery((t) => {
+         if (next === undefined) delete t.color;
+         else t.color = next.toLowerCase();
+      });
    const label = (text: string, value?: string, reason?: string) => (
       <>
          <ListItemText
@@ -248,6 +266,35 @@ export function TileMenu({
                         ? undefined
                         : choices.find((c) => c.value === chartState)?.label,
                      chartBlocked,
+                  )}
+                  <ChevronRightIcon
+                     fontSize="small"
+                     sx={{ ml: 1, color: "text.secondary" }}
+                  />
+               </MenuItem>
+            )}
+            {/* Not where the chart itself is locked: the Chart item says why. */}
+            {query && chartBlocked === undefined && (
+               <MenuItem
+                  aria-haspopup="menu"
+                  aria-expanded={sub?.kind === "color"}
+                  disabled={colorBlocked !== undefined}
+                  onClick={subOpen("color")}
+                  onKeyDown={(event) => {
+                     if (
+                        event.key === "ArrowRight" &&
+                        colorBlocked === undefined
+                     )
+                        setSub({ kind: "color", anchor: event.currentTarget });
+                  }}
+               >
+                  {label(
+                     "Color",
+                     colorBlocked ? undefined : (query.color ?? "Theme"),
+                     colorBlocked,
+                  )}
+                  {!colorBlocked && (
+                     <Swatch color={query.color ?? theme.series[0]} />
                   )}
                   <ChevronRightIcon
                      fontSize="small"
@@ -360,6 +407,131 @@ export function TileMenu({
                   </MenuItem>
                ))}
          </Menu>
+
+         <Menu
+            className={reportClasses.menu}
+            open={sub?.kind === "color"}
+            anchorEl={sub?.anchor ?? null}
+            onClose={() => setSub(undefined)}
+            anchorOrigin={{ vertical: "top", horizontal: "left" }}
+            transformOrigin={{ vertical: "top", horizontal: "right" }}
+            MenuListProps={{
+               dense: true,
+               "aria-label": "Color",
+               onKeyDown: (event) => {
+                  if (event.key === "ArrowLeft") {
+                     event.preventDefault();
+                     setSub(undefined);
+                  }
+               },
+            }}
+         >
+            <MenuItem
+               role="menuitemradio"
+               aria-checked={query?.color === undefined}
+               onClick={() => {
+                  pickColor(undefined);
+                  setSub(undefined);
+               }}
+            >
+               <Swatch color={theme.series[0]} />
+               <ListItemText
+                  primary="Theme"
+                  secondary="The page's own colors"
+               />
+               {query?.color === undefined && <Check color={theme.accent} />}
+            </MenuItem>
+            {swatches.map((color) => (
+               <MenuItem
+                  key={color}
+                  role="menuitemradio"
+                  aria-checked={query?.color === color.toLowerCase()}
+                  onClick={() => {
+                     pickColor(color);
+                     setSub(undefined);
+                  }}
+               >
+                  <Swatch color={color} />
+                  <ListItemText primary={color.toLowerCase()} />
+                  {query?.color === color.toLowerCase() && (
+                     <Check color={theme.accent} />
+                  )}
+               </MenuItem>
+            ))}
+            <Divider />
+            {/* Any other colour: the platform's own picker, committed as the
+             reader lets go of it. */}
+            <MenuItem
+               component="label"
+               aria-checked={
+                  query?.color !== undefined &&
+                  !swatches.some((c) => c.toLowerCase() === query.color)
+               }
+               role="menuitemradio"
+            >
+               <input
+                  type="color"
+                  aria-label="Other color"
+                  value={query?.color ?? toHex(theme.series[0])}
+                  // Held in the draft while the picker is dragged, and
+                  // committed once as the menu closes: one undo step, not
+                  // one per shade passed on the way.
+                  onChange={(event) => {
+                     const next = event.target.value;
+                     if (isSeriesColor(next))
+                        patch((t) => {
+                           if (isQueryTile(t)) t.color = next.toLowerCase();
+                        });
+                  }}
+                  style={{
+                     width: 18,
+                     height: 18,
+                     padding: 0,
+                     border: "none",
+                     background: "none",
+                     marginRight: 12,
+                  }}
+               />
+               <ListItemText primary="Other color…" />
+            </MenuItem>
+         </Menu>
       </>
+   );
+}
+
+/** Charts that draw a series, and so have a colour to set. */
+const COLORED_CHARTS = new Set<string>([
+   "bar_chart",
+   "line_chart",
+   "scatter_chart",
+   "combo_chart",
+]);
+
+/** A colour input takes `#rrggbb` only. */
+const toHex = (color: string | undefined) =>
+   color && isSeriesColor(color) ? color.toLowerCase() : "#000000";
+
+function Swatch({ color }: { color: string | undefined }) {
+   return (
+      <Box
+         aria-hidden
+         sx={{
+            width: 14,
+            height: 14,
+            borderRadius: "3px",
+            bgcolor: color,
+            border: "1px solid rgba(0,0,0,0.15)",
+            mr: 1.5,
+            flex: "none",
+         }}
+      />
+   );
+}
+
+function Check({ color }: { color: string }) {
+   return (
+      <ListItemIcon sx={{ minWidth: 0, ml: 2 }}>
+         <CheckIcon fontSize="small" sx={{ color }} />
+      </ListItemIcon>
    );
 }
