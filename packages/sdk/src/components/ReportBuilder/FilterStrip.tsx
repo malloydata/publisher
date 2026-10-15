@@ -27,6 +27,13 @@ import type { BuilderControl } from "./controls";
  * Without a live row (no server to run the controls), every filter is drawn
  * as a settings button, so the file's filters can still be edited.
  */
+/** A filter the builder shows and sets but cannot change: why, and the model that sets it, if one does. */
+export interface FixedFilter {
+   reason: string;
+   /** The model's package path, for "Open the model". */
+   modelPath?: string;
+}
+
 export function FilterStrip({
    controls: controlList,
    unknownFieldsOf,
@@ -34,6 +41,10 @@ export function FilterStrip({
    onAdd,
    addDisabledReason,
    onRemove,
+   fixedFilters,
+   onOpenModel,
+   startingValues,
+   onStartingValue,
    children,
 }: {
    controls: BuilderControl[];
@@ -45,6 +56,14 @@ export function FilterStrip({
    addDisabledReason?: string;
    /** Take a control off the dashboard, as its window's Remove does. */
    onRemove: (name: string) => void;
+   /** Filters a tile reads other than through a binding, by name: why they are fixed here, and the model that sets one. */
+   fixedFilters?: ReadonlyMap<string, FixedFilter>;
+   /** Open a model by its package path, when the host can. */
+   onOpenModel?: (modelPath: string) => void;
+   /** The report's starting values (`givens { … }`), as the file spells them. */
+   startingValues?: Readonly<Record<string, string>>;
+   /** Set a filter's starting value, or drop it with undefined. */
+   onStartingValue?: (name: string, text: string | undefined) => void;
    /** The host's live control row. */
    children?: ReactNode;
 }) {
@@ -53,6 +72,19 @@ export function FilterStrip({
       const byName = new Map(controlList.map((c) => [c.name, c]));
       return {
          stateOf: (name) => {
+            // Read other than through a binding the builder writes: fixed
+            // here, whatever the builder knows of it.
+            const fixed = fixedFilters?.get(name);
+            if (fixed !== undefined) {
+               const { modelPath } = fixed;
+               return {
+                  origin: "model",
+                  fixed: fixed.reason,
+                  ...(modelPath !== undefined && onOpenModel
+                     ? { openModel: () => onOpenModel(modelPath) }
+                     : {}),
+               };
+            }
             const control = byName.get(name);
             if (!control) return undefined;
             const unknown = unknownFieldsOf(control.name, control.type);
@@ -69,7 +101,10 @@ export function FilterStrip({
          // reads, so the rest are drawn here.
          unrendered: live
             ? controlList
-                 .filter((c) => c.boundTiles === 0)
+                 // A fixed filter has its control in the row already.
+                 .filter(
+                    (c) => c.boundTiles === 0 && !fixedFilters?.has(c.name),
+                 )
                  .map((c) => ({ name: c.name, label: c.label ?? c.name }))
             : [],
          onEdit: (name) => {
@@ -79,6 +114,12 @@ export function FilterStrip({
          onRemove,
          onAdd,
          ...(addDisabledReason !== undefined ? { addDisabledReason } : {}),
+         ...(onStartingValue
+            ? {
+                 startingValueOf: (name: string) => startingValues?.[name],
+                 setStartingValue: onStartingValue,
+              }
+            : {}),
       };
    }, [
       controlList,
@@ -88,6 +129,10 @@ export function FilterStrip({
       onRemove,
       onAdd,
       addDisabledReason,
+      fixedFilters,
+      onOpenModel,
+      startingValues,
+      onStartingValue,
    ]);
    return (
       // Pinned as the reader's control row is.

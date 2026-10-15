@@ -136,6 +136,8 @@ export interface CallerJoinContext {
    isModelSource(name: string): boolean;
    /** The on-disk model declares a named query by this name. */
    isModelQuery(name: string): boolean;
+   /** The model source a named query runs against; `undefined` for any other name or an import-hop query. */
+   modelQuerySource(name: string): string | undefined;
    /** The URLs of the on-disk model's own files: it and its imports. */
    authorUrls: ReadonlySet<string>;
 }
@@ -420,6 +422,7 @@ export function derivationTerminals(
    basesOf: Map<string, Set<string>>,
    isModelSource: (name: string) => boolean,
    maxNames: number = DERIVATION_CHAIN_MAX_NAMES,
+   modelQuerySource?: (name: string) => string | undefined,
 ): { proven: true; terminals: string[] } | { proven: false; at: string } {
    const seen = new Set<string>();
    const terminals: string[] = [];
@@ -436,7 +439,13 @@ export function derivationTerminals(
          continue;
       }
       const bases = basesOf.get(name);
-      if (!bases || bases.size === 0) return { proven: false, at: name };
+      if (!bases || bases.size === 0) {
+         // A model named query is no source key, so its gate lives on the source it runs against.
+         const querySource = modelQuerySource?.(name);
+         if (!querySource) return { proven: false, at: name };
+         worklist.push(querySource);
+         continue;
+      }
       for (const base of bases) worklist.push(base);
    }
    return { proven: true, terminals };
@@ -484,8 +493,12 @@ export function resolveCallerJoin(
    };
 
    const chainOf = (start: string) =>
-      derivationTerminals(start, text.derivations(), (name) =>
-         context.isModelSource(name),
+      derivationTerminals(
+         start,
+         text.derivations(),
+         (name) => context.isModelSource(name),
+         undefined,
+         (name) => context.modelQuerySource(name),
       );
 
    // Keyed like the on-disk gate map: by the entry's own `as ?? name`. Says

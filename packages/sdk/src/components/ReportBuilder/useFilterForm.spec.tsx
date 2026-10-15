@@ -68,6 +68,23 @@ describe("useFilterForm: a new control", () => {
       expect(view.result.current.canApply).toBe(true);
    });
 
+   it("never takes a name the host says is taken, such as a model given the page does not show", async () => {
+      const document = await openDocument(SOURCE);
+      const view = renderHook(() =>
+         useFilterForm({
+            open: true,
+            document,
+            control: undefined,
+            available: [],
+            takenNames: ["BRAND"],
+            fieldsFor,
+            onApply: () => {},
+         }),
+      );
+      act(() => view.result.current.pickField("brand"));
+      expect(view.result.current.newName).toBe("BRAND_2");
+   });
+
    it("follows the field's type to the kind of control, and the comparison it needs", async () => {
       const { view } = await form(await openDocument(SOURCE));
       // A number range is still a filter expression, compared with `~`.

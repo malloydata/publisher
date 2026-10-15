@@ -153,6 +153,27 @@ describe("service/model", () => {
 
             sinon.restore();
          });
+
+         it("names the model in `path`, the field the API declares", async () => {
+            const model = new Model(
+               packageName,
+               mockModelPath,
+               {},
+               "model",
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+               undefined,
+            );
+
+            const compiled = await model.getModel();
+            expect(compiled.path).toBe(mockModelPath);
+
+            sinon.restore();
+         });
       });
 
       describe("getNotebook", () => {

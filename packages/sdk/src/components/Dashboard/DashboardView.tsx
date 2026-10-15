@@ -15,10 +15,16 @@ import {
 } from "../drill";
 import { GivensPanel, type GivensLayout } from "../given";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
+import {
+   missingRequiredGivens,
+   requiredPrompt,
+   waitingOn,
+   waitingText,
+} from "../given/required";
 import { Prose, type ProseLinkContext } from "../Prose";
 import type { NavigationClick } from "../click_helper";
 import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
-import { DashboardGrid, GRID_GAP_PX } from "./DashboardGrid";
+import { DashboardGrid, GRID_GAP_PX, MIN_TILE_PX } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
 import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
 import { useReportEvents } from "../Report/telemetry";
@@ -31,9 +37,6 @@ import {
    StickyControls,
    TextTileFrame,
 } from "../Report/ReportPage";
-
-/** Narrowest a tile that sets no `colspan` is allowed to render. */
-const MIN_TILE_PX = 240;
 
 /** Re-exported for hosts that import it from here; defined with the page parts. */
 export { STICKY_CONTROLS_Z } from "../Report/ReportPage";
@@ -81,6 +84,14 @@ export interface DashboardViewProps {
    /** Givens the host sets itself: no control is shown for them. */
    hiddenGivens?: readonly string[];
    /**
+    * Filters each tile reads through values the host writes into its query
+    * text rather than sending them as givens: a report held as text whose
+    * own `given:` the host resolves to literals before compiling. Keyed by
+    * the manifest's `tile.query`. Counted as read, so the tile is not marked
+    * as ignoring that filter, and never sent: the server does not know them.
+    */
+   literalReads?: Readonly<Record<string, readonly string[]>>;
+   /**
     * An ordinary link in the report's prose (its description and text tiles),
     * for a host with its own router. Omitted, links are plain anchors.
     */
@@ -108,6 +119,7 @@ export function DashboardView({
    preamble,
    runModelPath,
    hiddenGivens,
+   literalReads,
    onLinkNavigate,
 }: DashboardViewProps) {
    // Where a relative link in the report's prose resolves from, and how the
@@ -244,6 +256,14 @@ export function DashboardView({
       manifest.dashboardColumns,
    );
 
+   // Required filters with no value yet: the tiles that read one wait, and the
+   // page asks for them, rather than every tile failing with the compiler's
+   // "has no value and no default".
+   const missing = useMemo(
+      () => missingRequiredGivens(specs, applied, givens),
+      [specs, applied, givens],
+   );
+
    // Reachable on the in-process load path only: production aborts the package
    // on the first compile error, so an uncompilable file answers 424 instead.
    if (manifest.error) {
@@ -274,6 +294,9 @@ export function DashboardView({
             ) : undefined
          }
       >
+         {missing.length > 0 && (
+            <Alert severity="info">{requiredPrompt(missing)}</Alert>
+         )}
          {modelPath === undefined ? (
             <Alert severity="error">
                This dashboard has no model path, so there is nothing to run.
@@ -319,12 +342,24 @@ export function DashboardView({
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
                         ignoredFilters={tileIgnoredFilterLabels(
-                           tile.givenNames,
+                           tile.givenNames &&
+                              (tile.query && literalReads?.[tile.query]
+                                 ? [
+                                      ...tile.givenNames,
+                                      ...literalReads[tile.query]!,
+                                   ]
+                                 : tile.givenNames),
                            specs,
                         )}
                         {...(preamble !== undefined
                            ? { preamble, restricted: tile.restricted }
                            : {})}
+                        {...(() => {
+                           const waiting = waitingOn(missing, tile.givenNames);
+                           return waiting.length > 0
+                              ? { waitingFor: waitingText(waiting) }
+                              : {};
+                        })()}
                      />
                   )
                }

@@ -31,6 +31,7 @@ export function BuilderDialogs({
    setDrillSource,
    exitDialog,
    renderViewPreview,
+   takenGivenNames,
 }: {
    editor: ReportEditorHandle;
    catalog: PackageCatalog | undefined;
@@ -43,6 +44,7 @@ export function BuilderDialogs({
    setDrillSource: (source: string | undefined) => void;
    exitDialog: ComponentProps<typeof UnsavedChangesDialog>;
    renderViewPreview?: (view: ViewPreview) => ReactNode;
+   takenGivenNames?: readonly string[];
 }) {
    const { filterDialog, setFilterDialog } = bindings;
    const { menu, setMenu } = tiles;
@@ -75,6 +77,7 @@ export function BuilderDialogs({
                ? { control: filterDialog.control }
                : {})}
             available={bindings.available}
+            {...(takenGivenNames ? { takenNames: takenGivenNames } : {})}
             {...(catalog ? { fieldsFor: bindings.fieldsFor } : {})}
             onClose={() => setFilterDialog(undefined)}
             onApply={bindings.applyFilter}

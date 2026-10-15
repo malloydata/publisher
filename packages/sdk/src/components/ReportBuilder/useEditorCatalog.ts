@@ -106,8 +106,13 @@ export function useEditorCatalog({
       () =>
          settled
             ? buildCatalog(
-                 results.flatMap((r) =>
-                    r.data ? [r.data as CompiledModel] : [],
+                 // Each model under the path it was asked for, not one read
+                 // back off the body: a client or proxy that keeps only the
+                 // spec's fields may drop the server's spelling of it.
+                 results.flatMap((r, i) =>
+                    r.data
+                       ? [{ ...(r.data as CompiledModel), path: wanted[i] }]
+                       : [],
                  ),
                  excluded,
               )

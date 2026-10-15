@@ -28,7 +28,8 @@ export function reportQueryOptions(
       path: string;
       versionId: string | undefined;
    },
-   staleTime = 0,
+   /** Omitted, the query client's staleness for the `report` key decides. */
+   staleTime?: number,
 ) {
    return {
       // Every value the request is built from, so two versions of one report
@@ -44,7 +45,7 @@ export function reportQueryOptions(
                { signal },
             )
          ).data,
-      staleTime,
+      ...(staleTime === undefined ? {} : { staleTime }),
    };
 }
 
