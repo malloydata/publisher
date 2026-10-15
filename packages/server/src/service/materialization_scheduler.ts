@@ -67,6 +67,8 @@ export class MaterializationScheduler {
    private timer: ReturnType<typeof setInterval> | null = null;
    private readonly cron: CronEvaluator;
    private readonly state = new Map<string, ScheduleState>();
+   /** Versions whose unreadable publisher.json was already warned about. */
+   private readonly unreadableVersions = new Set<string>();
 
    constructor(
       private readonly environmentStore: EnvironmentStore,
@@ -232,6 +234,26 @@ export class MaterializationScheduler {
       const manifest = await env
          .getVersionService()
          ?.publishedManifestOf(version);
+      // A publish checked this publisher.json, so not reading it means the
+      // version's tree is missing or damaged on disk. Its schedule cannot be
+      // read, and the version stays in the sweep, so say so once rather
+      // than every tick.
+      const unreadableKey = `${env.getEnvironmentName()}::${version.packageName}@${version.versionId}`;
+      if (!manifest) {
+         if (!this.unreadableVersions.has(unreadableKey)) {
+            this.unreadableVersions.add(unreadableKey);
+            logger.warn(
+               "MaterializationScheduler: a published version's publisher.json cannot be read, so its schedule is skipped until it loads; a read of the version fetches its tree again from where it was published",
+               {
+                  environmentName: env.getEnvironmentName(),
+                  packageName: version.packageName,
+                  versionId: version.versionId,
+               },
+            );
+         }
+         return null;
+      }
+      this.unreadableVersions.delete(unreadableKey);
       const materialization = manifest?.materialization as
          | { schedule?: unknown }
          | null
