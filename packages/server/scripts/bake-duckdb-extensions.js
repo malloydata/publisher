@@ -14,9 +14,10 @@
  * so later INSTALL/LOAD calls are served from disk.
  *
  * Runs as the last step of this package's build (`build` / `build:server-only`),
- * so local dev, CI, and the Docker builder all bake the same set. The Docker
- * final stage copies the baked ~/.duckdb/extensions from the builder rather
- * than re-baking, keeping a single bake mechanism.
+ * so local dev and CI bake the same set. The Docker image runs this same script
+ * in its own `duckdb-extensions` stage, keyed on the production dependencies
+ * rather than the server source, so the baked tree ships as a layer that keeps
+ * its digest from one release to the next.
  *
  * Each extension is baked independently: a failure (offline build, transient
  * CDN error) is logged and skipped, never aborting the others or the build.

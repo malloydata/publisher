@@ -37,6 +37,7 @@ malloy-samples/
 docs/
 scripts/*
 !scripts/add-license-headers.mjs
+!scripts/prepare-prod-deps.mjs
 .github/
 
 # Exclude development files
