@@ -262,11 +262,14 @@ resolves their assigned values, and replaces anything the request supplied. Publ
 not itself strip or resolve it. If nothing in front of Publisher implements that, marking a
 given `#(secure)` changes nothing about who can send what.
 
-**A `#(secure)` given must be set-valued**, and the shape that scopes by one is therefore
-`in`, not `=`:
+Which givens the deployment resolves, and which given types it supports, are defined by that
+deployment, not by Publisher; see [givens.md](givens.md#secure-a-given-the-deployment-resolves-not-the-caller).
+A set-valued given is the usual shape for this, because an empty set gives the deployment a
+value that matches nothing, and the shape that scopes by one is `in`, not `=`:
 
 ```malloy
-// A boundary: the caller cannot supply ORG_IDS, and an unassigned caller sees nothing.
+// A boundary: the caller cannot supply ORG_IDS. A deployment that resolves an unassigned
+// caller to an empty list returns that caller no rows.
 #(secure)
 given: ORG_IDS :: number[]
 
@@ -276,15 +279,13 @@ source: orders is raw -> { select: * } extend {
 }
 ```
 
-The reason is that it has to fail closed. A set has an empty list as a natural
-impossible value, so a caller with nothing assigned filters to zero rows whatever
-operator the model uses. A scalar has no equivalent — there is no value of `number` that
-matches nothing — so a caller with nothing assigned cannot be given one.
-
-This matters because a host implementing the contract has nothing to fail on: a scalar
-declaration is the shape it cannot honour, so the safe outcome is that the given is simply
-never resolved and the caller's own value is honoured — by a model that reads as though it
-were gated. Declare the attribute as a set and scope with `in`.
+Supplying an empty list is the deployment's part. Publisher on its own refuses a query that leaves
+this given with no value (`Given 'ORG_IDS' has no value and no default`), and there is no way to
+write an empty-list default (`is []` does not compile). A scalar has no value that matches nothing,
+so a deployment cannot fail closed on one the same way; what it does with a scalar `#(secure)`
+given is up to it. If it does not resolve the given, the caller's own value is used, by a model
+that reads as though it were gated. Check your deployment's documentation for its current
+requirements.
 
 ### `partition=`: laying the artifact out
 
