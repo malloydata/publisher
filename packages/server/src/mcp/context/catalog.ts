@@ -84,6 +84,12 @@ export interface CatalogNode {
    copyOf?: string;
    /** With `collapseCopies`: the copies of this node in extensions, by key. */
    copies?: string[];
+   /**
+    * With `collapseCopies`: shared by the fields that are one inherited
+    * definition left on several sources whose rows differ (near-identical
+    * sources, `twinRule`). Absent on a field with no such twin.
+    */
+   twinKey?: string;
    /** One shipped entity per model path, in `modelPaths` order. */
    entities: Entity[];
 }
@@ -406,6 +412,21 @@ function locationKey(loc: CompiledLocation | undefined): string | undefined {
    return `${loc.url}#${start.line}:${start.character}-${end.line}:${end.character}`;
 }
 
+/** Whether `inner` lies inside `outer`, in the same file. */
+function contains(outer: CompiledLocation, inner: CompiledLocation): boolean {
+   if (!outer.url || outer.url !== inner.url || !outer.range || !inner.range) {
+      return false;
+   }
+   const before = (
+      a: { line: number; character: number },
+      b: { line: number; character: number },
+   ) => a.line < b.line || (a.line === b.line && a.character <= b.character);
+   return (
+      before(outer.range.start, inner.range.start) &&
+      before(inner.range.end, outer.range.end)
+   );
+}
+
 function compiledSource(
    modelDef: ModelDef | undefined,
    name: string,
@@ -477,8 +498,9 @@ function compiledById(
 ): CompiledSource | undefined {
    if (!id) return undefined;
    for (const model of models) {
-      const contents = (model.modelDef as { contents?: Record<string, unknown> })
-         ?.contents;
+      const contents = (
+         model.modelDef as { contents?: Record<string, unknown> }
+      )?.contents;
       for (const c of Object.values(contents ?? {})) {
          if ((c as CompiledSource).sourceID === id) return c as CompiledSource;
       }
@@ -491,26 +513,72 @@ function parentIdOf(compiled: CompiledSource | undefined): string | undefined {
    return compiled?.extends ?? compiled?.referenceID;
 }
 
+/** Start lines of every compiled source definition, by file URL. */
+const sourceStartsCache = new WeakMap<
+   readonly CatalogModel[],
+   Map<string, number[]>
+>();
+function sourceStarts(models: readonly CatalogModel[]): Map<string, number[]> {
+   const cached = sourceStartsCache.get(models);
+   if (cached) return cached;
+   const out = new Map<string, Set<number>>();
+   for (const model of models) {
+      const contents = (
+         model.modelDef as { contents?: Record<string, unknown> }
+      )?.contents;
+      for (const c of Object.values(contents ?? {})) {
+         const loc = (c as CompiledSource).location;
+         if (!loc?.url || !loc.range) continue;
+         const set = out.get(loc.url) ?? new Set<number>();
+         set.add(loc.range.start.line);
+         out.set(loc.url, set);
+      }
+   }
+   const sorted = new Map(
+      [...out].map(([u, set]) => [u, [...set].sort((a, b) => a - b)]),
+   );
+   sourceStartsCache.set(models, sorted);
+   return sorted;
+}
+
 /**
  * The notes a source writes itself. The compiler hands an extension (or a
  * plain reference) with no notes of its own its parent's notes as its own
- * `blockNotes`, so a note is the source's own only when its parent, or
- * anything the parent inherits, does not hold the same note at the same
- * place. A parent that cannot be found leaves every block note as the
- * source's own.
+ * `blockNotes`. When the parent is known (`extends`, `referenceID`), a note
+ * is the source's own when the parent, or anything the parent inherits,
+ * does not hold the same note at the same place. A table source's
+ * extension does not record its parent; then a note is the source's own
+ * when it sits in the source's file above the source's definition, with no
+ * other source definition in between.
  */
 function ownNoteTexts(
    models: readonly CatalogModel[],
    compiled: CompiledSource,
 ): string[] {
+   const notes = compiled.annotations?.blockNotes ?? [];
    const parent = compiledById(models, parentIdOf(compiled));
-   const inherited = new Set(
-      parent ? allNotes(parent.annotations).map(noteKey) : [],
-   );
-   return (compiled.annotations?.blockNotes ?? [])
-      .filter((n) => !inherited.has(noteKey(n)))
-      .map((n) => n.text ?? "")
-      .filter(Boolean);
+   let own: typeof notes;
+   if (parent) {
+      const inherited = new Set(allNotes(parent.annotations).map(noteKey));
+      own = notes.filter((n) => !inherited.has(noteKey(n)));
+   } else {
+      const loc = compiled.location;
+      const starts = loc?.url ? (sourceStarts(models).get(loc.url) ?? []) : [];
+      own = notes.filter((n) => {
+         if (!loc?.range || !n.at?.range || n.at.url !== loc.url) {
+            // Nothing to place it by: read as the source's own only when
+            // the source has no location to compare against either.
+            return !loc?.range;
+         }
+         const line = n.at.range.start.line;
+         const start = loc.range.start.line;
+         return (
+            line <= start &&
+            !starts.some((other) => other > line && other < start)
+         );
+      });
+   }
+   return own.map((n) => n.text ?? "").filter(Boolean);
 }
 
 /** `#(agent-hidden)` on a source; any bracket pair Malloy routes, as hosted reads it. */
@@ -1312,6 +1380,11 @@ export function buildCatalog(input: CatalogInput): Catalog {
       for (const list of groups.values()) {
          if (list.length < 2) continue;
          const bySource = new Map(list.map((n) => [n.sourceKey, n]));
+         const fieldAt = definitionAt.get(list[0].key)!;
+         const definer = list.find((n) => {
+            const own = compiledOf.get(n.sourceKey)?.location;
+            return own ? contains(own, fieldAt) : false;
+         });
          for (const n of list) {
             let at = n.sourceKey;
             for (let i = 0; i < 32; i++) {
@@ -1319,15 +1392,40 @@ export function buildCatalog(input: CatalogInput): Catalog {
                if (up === undefined || !bySource.has(up)) break;
                at = up;
             }
-            const rep = bySource.get(at)!;
+            let rep = bySource.get(at)!;
+            if (rep === n && definer && definer !== n) {
+               // A table source's extension records no parent: compare it
+               // with the source whose own definition holds the field.
+               const compiled = compiledOf.get(n.sourceKey);
+               if (
+                  compiled &&
+                  sameRows(
+                     compiled,
+                     compiledOf.get(definer.sourceKey),
+                     ownNoteTexts(input.models, compiled),
+                  ) &&
+                  sources.get(n.sourceKey)?.gated ===
+                     sources.get(definer.sourceKey)?.gated
+               ) {
+                  rep = definer;
+               }
+            }
             if (rep === n) {
-               // Inherited, with the same definition elsewhere, but its own.
-               if (parentIdOf(compiledOf.get(n.sourceKey))) copiesKeptApart += 1;
+               // Inherited, with the same definition elsewhere, but its own:
+               // a near-identical source holding other rows (or a definer).
+               if (n !== definer) copiesKeptApart += 1;
                continue;
             }
             n.copyOf = rep.key;
             (rep.copies ??= []).push(n.key);
             copiesFolded += 1;
+         }
+         // The fields left searched in this group are near-identical: one
+         // definition inherited onto sources whose rows differ.
+         const kept = list.filter((n) => !n.copyOf);
+         if (kept.length > 1) {
+            const twinKey = kept.map((n) => n.key).sort()[0];
+            for (const n of kept) n.twinKey = twinKey;
          }
       }
    }
