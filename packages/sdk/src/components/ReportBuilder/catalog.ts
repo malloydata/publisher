@@ -40,8 +40,6 @@ export interface CatalogView {
    chart?: string;
    /** Every output column is an aggregate, which is the only shape `big_value` renders. Absent when the model did not say. */
    aggregateOnly?: boolean;
-   /** At least one group-by and exactly two totals: the shape a bare `# combo_chart` draws, bars for the first and a line for the second. Absent when the model did not say. */
-   comboShape?: boolean;
    /** How many of its output columns are group-bys and how many are totals, when the model said: what decides which charts can draw it. */
    shape?: ViewShape;
 }
@@ -169,7 +167,7 @@ const isGroupByColumn = (field: Record<string, unknown>) =>
    !isAggregateColumn(field) &&
    (field["type"] as { kind?: string } | undefined)?.kind !== "array_type";
 
-/** Per source, per view: the shape of its output, whether every column is a total, and whether a bare `# combo_chart` can draw it. */
+/** Per source, per view: the shape of its output, and whether every column is a total. */
 function viewShapesOf(
    model: CompiledModel,
 ): Map<string, Map<string, Omit<CatalogView, "name">>> {
@@ -187,7 +185,6 @@ function viewShapesOf(
          views.set(field["name"], {
             shape: { groupBys, totals },
             ...(totals === columns.length ? { aggregateOnly: true } : {}),
-            ...(totals === 2 && groupBys > 0 ? { comboShape: true } : {}),
          });
       }
       bySource.set(info.name, views);

@@ -5,6 +5,7 @@ import { ListItemText, MenuItem, TextField } from "@mui/material";
 import { useId } from "react";
 import type { CatalogView } from "./catalog";
 import type { ChartPick, ChartState } from "./chartLine";
+import { chartShapeGap } from "../RenderedResult/chartShapeProblem";
 
 export interface ChartChoice {
    value: ChartState;
@@ -36,9 +37,7 @@ const LABELS: Record<ChartPick, string> = {
  * Whatever the cell has now stays selectable, so the select never shows a value it does not offer.
  */
 export function chartChoices(
-   view:
-      | Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape" | "shape">
-      | undefined,
+   view: Pick<CatalogView, "chart" | "aggregateOnly" | "shape"> | undefined,
    current: ChartState,
    viewStatus?: ViewStatus,
 ): ChartChoice[] {
@@ -56,34 +55,35 @@ export function chartChoices(
       if (pick === "big_value")
          return view?.aggregateOnly === true
             ? undefined
-            : shape
+            : shape && shape.groupBys > 0
               ? "This view has a group by, so it is more than one row; big numbers need a view of totals only"
               : (unknown ?? "Needs a view with only totals (no group by)");
-      // A bare `# combo_chart` draws the first total as bars on the left axis
-      // and the second as a line on the right, over the group-by; any other
-      // count of totals is an error the renderer shows in the tile.
-      if (pick === "combo_chart")
-         return view?.comboShape === true || view?.chart === pick
-            ? undefined
-            : shape && shape.groupBys === 0
-              ? NO_X_AXIS("A bar and line chart")
-              : shape
-                ? `A bar and line chart needs exactly two totals, the first drawn as bars and the second as a line; this view has ${shape.totals}`
-                : (unknown ??
-                  "Needs a view with a group by and exactly two totals: the first is drawn as bars, the second as a line");
       if (pick === "shape_map" || pick === "segment_map")
          return view?.chart === pick
             ? undefined
             : (unknown ?? "Needs a view that already carries a map chart");
-      // The same check, for the charts that plot rows: each needs a field to
-      // spread the rows along the x axis, and a total to plot. Unknown shape
-      // stays pickable, as before: nothing says it cannot draw.
-      if (!shape || view?.chart === pick) return undefined;
+      if (view?.chart === pick) return undefined;
+      // The charts that plot rows, by the same rule the result panel applies.
+      // An unknown shape leaves them pickable, since nothing says they cannot
+      // draw, except a bar and line chart, which few views can fill: a bare
+      // `# combo_chart` draws the first total as bars on the left axis and the
+      // second as a line on the right, and any other count is an error.
+      if (!shape)
+         return pick === "combo_chart"
+            ? (unknown ??
+                 "Needs a view with a group by and exactly two totals: the first is drawn as bars, the second as a line")
+            : undefined;
       const chart = `A ${LABELS[pick].toLowerCase()} chart`;
-      if (shape.groupBys === 0) return NO_X_AXIS(chart);
-      if (shape.totals === 0)
-         return `This view has no total for the y-axis: ${chart.toLowerCase()} needs at least one aggregate`;
-      return undefined;
+      switch (chartShapeGap(pick, shape)) {
+         case "no_x_axis":
+            return NO_X_AXIS(chart);
+         case "combo_totals":
+            return `A bar and line chart needs exactly two totals, the first drawn as bars and the second as a line; this view has ${shape.totals}`;
+         case "no_y_axis":
+            return `This view has no total for the y-axis: ${chart.toLowerCase()} needs at least one aggregate`;
+         default:
+            return undefined;
+      }
    };
    const picks: ChartPick[] = [
       "line_chart",
@@ -123,9 +123,7 @@ export function ChartPicker({
 }: {
    state: ChartState;
    /** The catalog's view this cell runs, when it is one the catalog knows. */
-   view:
-      | Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape" | "shape">
-      | undefined;
+   view: Pick<CatalogView, "chart" | "aggregateOnly" | "shape"> | undefined;
    /** Why `view` is absent, worded into the reasons on the charts that need its shape. */
    viewStatus?: ViewStatus;
    /** Which cell this is, so the control is named apart from its neighbours. */

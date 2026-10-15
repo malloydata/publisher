@@ -62,7 +62,9 @@ describe("chartChoices", () => {
    });
 
    it("enables a combo chart for a view with a group by and exactly two totals, and says what it needs otherwise", () => {
-      expect(enabled({ comboShape: true }, "default")).toContain("combo_chart");
+      expect(
+         enabled({ shape: { groupBys: 1, totals: 2 } }, "default"),
+      ).toContain("combo_chart");
       expect(enabled({ chart: "combo_chart" }, "default")).toContain(
          "combo_chart",
       );
@@ -123,6 +125,16 @@ describe("chartChoices on a view whose shape the model reported", () => {
       const noTotals = { shape: { groupBys: 2, totals: 0 } };
       expect(choice("bar_chart", noTotals, "default").reason).toBe(
          "This view has no total for the y-axis: a bar chart needs at least one aggregate",
+      );
+      // A scatter chart may plot two group-bys against each other, as the
+      // result panel also allows.
+      expect(enabled(noTotals, "default")).toContain("scatter_chart");
+   });
+
+   it("does not say a view of totals and a nest has a group by", () => {
+      const nested = { shape: { groupBys: 0, totals: 1 } };
+      expect(choice("big_value", nested, "default").reason).toBe(
+         "Needs a view with only totals (no group by)",
       );
    });
 

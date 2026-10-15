@@ -4,7 +4,12 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
 import type { QueryResultState } from "../../hooks/useQueryResult";
-import { chartShapeProblem, requestedChart } from "./chartShapeProblem";
+import {
+   chartShapeGap,
+   chartShapeProblem,
+   marksCalculation,
+   requestedChart,
+} from "./chartShapeProblem";
 import { ResultPanel } from "./ResultPanel";
 
 // Fields as the server returns them: every output column is a "dimension",
@@ -52,8 +57,68 @@ describe("requestedChart", () => {
       expect(requestedChart([hostile])).toBe("line_chart");
       expect(
          chartShapeProblem(result([groupBy("month")], [hostile])),
-      ).toStartWith("This tile has no total for the y-axis.");
+      ).toStartWith("This chart has no total for the y-axis.");
       expect(performance.now() - started).toBeLessThan(500);
+   });
+});
+
+describe("marksCalculation", () => {
+   it("reads calculation as one of the note's own properties only", () => {
+      expect(
+         marksCalculation(
+            '#(malloy) reference_id = "x" calculation drill_expression { kind = field_reference name = n }\n',
+         ),
+      ).toBe(true);
+      // A group-by literally named `calculation`: the word is in its drill
+      // expression and in a quoted value, never a property of the note.
+      expect(
+         marksCalculation(
+            '#(malloy) reference_id = "calculation" drill_expression { kind = field_reference name = calculation }\n',
+         ),
+      ).toBe(false);
+      expect(marksCalculation("#(malloy) label = calculation\n")).toBe(false);
+      expect(marksCalculation("# calculation\n")).toBe(false);
+   });
+
+   it("counts a group-by named calculation as a group-by, so a line chart over it draws", () => {
+      const named = {
+         name: "calculation",
+         kind: "dimension",
+         type: { kind: "string_type" },
+         annotations: [
+            {
+               value: "#(malloy) drill_expression { kind = field_reference name = calculation }\n",
+            },
+         ],
+      };
+      expect(
+         chartShapeProblem(
+            result([named, total("revenue")], ["# line_chart\n"]),
+         ),
+      ).toBeUndefined();
+   });
+});
+
+describe("chartShapeGap", () => {
+   it("names what a chart that plots rows is missing, and nothing for any other chart", () => {
+      expect(chartShapeGap("line_chart", { groupBys: 0, totals: 2 })).toBe(
+         "no_x_axis",
+      );
+      expect(chartShapeGap("bar_chart", { groupBys: 1, totals: 0 })).toBe(
+         "no_y_axis",
+      );
+      expect(
+         chartShapeGap("scatter_chart", { groupBys: 2, totals: 0 }),
+      ).toBeUndefined();
+      expect(chartShapeGap("combo_chart", { groupBys: 1, totals: 3 })).toBe(
+         "combo_totals",
+      );
+      expect(
+         chartShapeGap("combo_chart", { groupBys: 1, totals: 2 }),
+      ).toBeUndefined();
+      expect(
+         chartShapeGap("big_value", { groupBys: 0, totals: 0 }),
+      ).toBeUndefined();
    });
 });
 
@@ -62,7 +127,7 @@ describe("chartShapeProblem", () => {
 
    it("names the missing x-axis on a line chart of totals only, in plain words", () => {
       expect(chartShapeProblem(result(kpis, ["# line_chart\n"]))).toBe(
-         "This tile has no field for the x-axis. A line chart needs a group by, such as a date or a category. Show it as big numbers or a table instead, or add a group by to its view.",
+         "This chart has no field for the x-axis. A line chart needs a group by, such as a date or a category. Show it as big numbers or a table instead, or add a group by to its query.",
       );
    });
 
@@ -70,7 +135,7 @@ describe("chartShapeProblem", () => {
       expect(
          chartShapeProblem(result([groupBy("carrier")], ["# bar_chart\n"])),
       ).toBe(
-         "This tile has no total for the y-axis. A bar chart needs at least one aggregate, such as a count or a sum.",
+         "This chart has no total for the y-axis. A bar chart needs at least one aggregate, such as a count or a sum.",
       );
    });
 
@@ -83,7 +148,7 @@ describe("chartShapeProblem", () => {
             ),
          ),
       ).toBe(
-         "A bar and line chart needs exactly two totals, the first drawn as bars and the second as a line. This tile has 3.",
+         "A bar and line chart needs exactly two totals, the first drawn as bars and the second as a line. This one has 3.",
       );
    });
 
@@ -125,7 +190,7 @@ describe("ResultPanel with a chart its result cannot fill", () => {
       expect(
          screen
             .getByRole("status")
-            .textContent?.startsWith("This tile has no field for the x-axis."),
+            .textContent?.startsWith("This chart has no field for the x-axis."),
       ).toBe(true);
    });
 });

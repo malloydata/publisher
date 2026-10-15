@@ -69,7 +69,9 @@ export function requestedChart(lines: readonly string[]): string | undefined {
             const at = on.indexOf(name);
             if (at >= 0) on.splice(at, 1);
          } else if (word.startsWith("viz=")) {
-            viz = VIZ_NAMES[word.slice(4).replace(/"/g, "")];
+            // A quoted value was blanked to `""`, so `viz="bar"` reads as no
+            // chart and is left to the renderer.
+            viz = VIZ_NAMES[word.slice(4)];
          } else if (ROW_CHARTS[word] !== undefined || word === "big_value") {
             const at = on.indexOf(word);
             if (at >= 0) on.splice(at, 1);
@@ -79,11 +81,66 @@ export function requestedChart(lines: readonly string[]): string | undefined {
    return viz ?? on.at(-1);
 }
 
+/** Whether the lines ask for a chart that plots rows (bar, line, scatter, bar and line), not big numbers or a table. */
+export function requestsRowChart(lines: readonly string[]): boolean {
+   const chart = requestedChart(lines);
+   return chart !== undefined && ROW_CHARTS[chart] !== undefined;
+}
+
+/** A result's or a view's output columns by role: group-bys for the x axis, totals for the y axis. */
+export interface ColumnCounts {
+   groupBys: number;
+   totals: number;
+}
+
+/** What a chart that plots rows is missing: a group-by, a total, or exactly two totals for a bar and line chart. */
+export type ChartShapeGap = "no_x_axis" | "no_y_axis" | "combo_totals";
+
+/**
+ * What keeps `chart` from drawing columns of this shape, or undefined when
+ * nothing does or `chart` does not plot rows. The one rule both the builder's
+ * chart picker and the result panel apply. A scatter chart may plot two
+ * group-bys against each other, so it is not held to having a total.
+ */
+export function chartShapeGap(
+   chart: string,
+   { groupBys, totals }: ColumnCounts,
+): ChartShapeGap | undefined {
+   if (ROW_CHARTS[chart] === undefined) return undefined;
+   if (groupBys === 0) return "no_x_axis";
+   if (chart === "combo_chart")
+      return totals === 2 ? undefined : "combo_totals";
+   if (totals === 0 && chart !== "scatter_chart") return "no_y_axis";
+   return undefined;
+}
+
+/**
+ * Whether a `#(malloy)` note marks its column a total: `calculation` as one of
+ * the note's own properties. The note also carries a `drill_expression { … }`
+ * whose `name = …` can be a group-by literally named `calculation`, so only
+ * words outside any `{…}` or `[…]` and outside quotes count, and never a
+ * property's value.
+ */
+export function marksCalculation(note: string): boolean {
+   const text = note.trim();
+   if (!text.startsWith("#(malloy)")) return false;
+   const body = blankQuoted(text.slice("#(malloy)".length));
+   let top = "";
+   let depth = 0;
+   for (const ch of body) {
+      if (ch === "{" || ch === "[") depth++;
+      else if (ch === "}" || ch === "]") depth = Math.max(0, depth - 1);
+      else if (depth === 0) top += ch === "=" ? " = " : ch;
+   }
+   const words = top.split(/\s+/);
+   return words.some(
+      (word, at) => word === "calculation" && words[at - 1] !== "=",
+   );
+}
+
 const isTotal = (field: ResultField) =>
    field.kind === "measure" ||
-   (field.annotations ?? []).some((note) =>
-      /^#\(malloy\)[\s\S]*\bcalculation\b/.test((note.value ?? "").trim()),
-   );
+   (field.annotations ?? []).some((note) => marksCalculation(note.value ?? ""));
 const isNest = (field: ResultField) =>
    field.kind === "join" || field.type?.kind === "array_type";
 
@@ -104,7 +161,7 @@ export function chartShapeProblem(
       .filter((value): value is string => typeof value === "string");
    const chart = requestedChart(lines);
    const name = chart && ROW_CHARTS[chart];
-   if (!name) return undefined;
+   if (!chart || !name) return undefined;
    const handPlaced = fields.some((field) =>
       (field.annotations ?? []).some((note) =>
          tagWords(note.value ?? "").some((word) =>
@@ -115,11 +172,14 @@ export function chartShapeProblem(
    if (handPlaced) return undefined;
    const totals = fields.filter(isTotal).length;
    const groupBys = fields.filter((f) => !isTotal(f) && !isNest(f)).length;
-   if (groupBys === 0)
-      return `This tile has no field for the x-axis. ${name} needs a group by, such as a date or a category. Show it as big numbers or a table instead, or add a group by to its view.`;
-   if (chart === "combo_chart" && totals !== 2)
-      return `${name} needs exactly two totals, the first drawn as bars and the second as a line. This tile has ${totals}.`;
-   if (totals === 0 && chart !== "scatter_chart")
-      return `This tile has no total for the y-axis. ${name} needs at least one aggregate, such as a count or a sum.`;
-   return undefined;
+   switch (chartShapeGap(chart, { groupBys, totals })) {
+      case "no_x_axis":
+         return `This chart has no field for the x-axis. ${name} needs a group by, such as a date or a category. Show it as big numbers or a table instead, or add a group by to its query.`;
+      case "combo_totals":
+         return `${name} needs exactly two totals, the first drawn as bars and the second as a line. This one has ${totals}.`;
+      case "no_y_axis":
+         return `This chart has no total for the y-axis. ${name} needs at least one aggregate, such as a count or a sum.`;
+      default:
+         return undefined;
+   }
 }

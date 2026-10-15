@@ -7,8 +7,8 @@ import {
    humanizeFieldName,
    labelChartFields,
    MIN_CHART_WIDTH_PX,
-   picksChart,
 } from "./chartPresentation";
+import { requestsRowChart } from "./chartShapeProblem";
 
 // The shape the server returns: output fields with their annotations, the
 // query's own annotations at the root. Trimmed from a real `orders` result.
@@ -115,12 +115,12 @@ describe("labelChartFields", () => {
    });
 });
 
-describe("picksChart", () => {
+describe("requestsRowChart", () => {
    it("reads viz= as a chart, and ignores doc and quoted text", () => {
-      expect(picksChart(["# viz=bar"])).toBe(true);
-      expect(picksChart(['#" a bar_chart of sales'])).toBe(false);
-      expect(picksChart(['# label="bar_chart"'])).toBe(false);
-      expect(picksChart(["# big_value"])).toBe(false);
+      expect(requestsRowChart(["# viz=bar"])).toBe(true);
+      expect(requestsRowChart(['#" a bar_chart of sales'])).toBe(false);
+      expect(requestsRowChart(['# label="bar_chart"'])).toBe(false);
+      expect(requestsRowChart(["# big_value"])).toBe(false);
    });
 });
 

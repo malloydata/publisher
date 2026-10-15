@@ -21,18 +21,7 @@
  * renderer.
  */
 
-import { blankQuoted } from "../../utils/blankQuoted";
-
-/** The chart tags a `#` line can pick, in the renderer's spelling. */
-const CHART_TAGS = new Set([
-   "bar_chart",
-   "line_chart",
-   "scatter_chart",
-   "combo_chart",
-]);
-
-/** The `viz=` values that name the same charts. */
-const CHART_VIZ = new Set(["bar", "line", "scatter", "combo"]);
+import { requestsRowChart } from "./chartShapeProblem";
 
 interface Annotation {
    value?: string;
@@ -59,44 +48,6 @@ const linesOf = (annotations: Annotation[] | undefined): string[] =>
    (annotations ?? [])
       .map((a) => a?.value)
       .filter((v): v is string => typeof v === "string");
-
-/**
- * Whether these `#` lines, read in order, leave a chart picked: `# bar_chart`
- * picks one and `# -bar_chart` takes it back, as the builder's chart lines do
- * (`# -line_chart -viz bar_chart`). `#(…)` and `#"` lines are not tags.
- */
-export function picksChart(lines: readonly string[]): boolean {
-   const active = new Set<string>();
-   for (const line of lines) {
-      const text = line.trim();
-      if (!text.startsWith("#") || /^#[("|]/.test(text)) continue;
-      // A quoted value is never a tag name.
-      const body = blankQuoted(text.slice(1));
-      for (const token of body.split(/[\s{}]+/)) {
-         if (token === "") continue;
-         const negated = token.startsWith("-");
-         const word = negated ? token.slice(1) : token;
-         const viz = /^viz=(\w+)$/.exec(word)?.[1];
-         if (word === "viz" && negated) {
-            for (const name of [...active])
-               if (name.startsWith("viz:")) active.delete(name);
-            continue;
-         }
-         const name =
-            viz !== undefined
-               ? CHART_VIZ.has(viz)
-                  ? `viz:${viz}`
-                  : undefined
-               : CHART_TAGS.has(word)
-                 ? word
-                 : undefined;
-         if (name === undefined) continue;
-         if (negated) active.delete(name);
-         else active.add(name);
-      }
-   }
-   return active.size > 0;
-}
 
 /** `total_revenue` → "Total revenue". */
 export function humanizeFieldName(name: string): string {
@@ -129,7 +80,7 @@ function labelFields(
          // A nest is its own chart, or not, by its own tags.
          const inner = labelFields(
             children,
-            picksChart(linesOf(field.annotations)),
+            requestsRowChart(linesOf(field.annotations)),
          );
          if (!inner.changed) return field;
          changed = true;
@@ -170,7 +121,7 @@ export function labelChartFields<T>(result: T): T {
    if (!Array.isArray(fields)) return result;
    const { fields: labelled, changed } = labelFields(
       fields,
-      picksChart(linesOf(shape.annotations)),
+      requestsRowChart(linesOf(shape.annotations)),
    );
    if (!changed) return result;
    return { ...shape, schema: { ...shape.schema, fields: labelled } } as T;

@@ -60,7 +60,7 @@ export interface TileMenuProps {
    /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
    duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
-   view?: Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape" | "shape">;
+   view?: Pick<CatalogView, "chart" | "aggregateOnly" | "shape">;
    /** Why `view` is absent: still loading, or a view the catalog does not list. */
    viewStatus?: ViewStatus;
 }

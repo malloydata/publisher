@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { CompiledModel } from "../../client";
+import { chartShapeGap } from "../RenderedResult/chartShapeProblem";
 import { buildCatalog, documentViewsOf } from "./catalog";
 
 /**
@@ -77,7 +78,10 @@ describe("documentViewsOf, the views a report file declares itself", () => {
                views: [
                   {
                      name: "by_calc_n",
-                     annotations: ["#(doc) Orders by month\n", "# line_chart\n"],
+                     annotations: [
+                        "#(doc) Orders by month\n",
+                        "# line_chart\n",
+                     ],
                   },
                   { name: "kpi" },
                ],
@@ -149,16 +153,34 @@ describe("buildCatalog, combo-chart views", () => {
       sourceInfos: [JSON.stringify({ name: "s", schema: { fields: VIEWS } })],
    } as unknown as CompiledModel;
 
-   it("marks only a view with a group by and exactly two totals, the shape a bare # combo_chart draws", () => {
+   it("counts each view's group-bys and totals, a nest being neither", () => {
       const [source] = buildCatalog([COMBO]).sources;
       expect(
-         Object.fromEntries(source.views.map((v) => [v.name, v.comboShape])),
+         Object.fromEntries(source.views.map((v) => [v.name, v.shape])),
       ).toEqual({
-         by_month: true,
-         one_total: undefined,
-         three_totals: undefined,
-         totals_only: undefined,
-         nested_only: undefined,
+         by_month: { groupBys: 1, totals: 2 },
+         one_total: { groupBys: 1, totals: 1 },
+         three_totals: { groupBys: 1, totals: 3 },
+         totals_only: { groupBys: 0, totals: 2 },
+         nested_only: { groupBys: 0, totals: 2 },
+      });
+   });
+
+   it("gives only a view with a group by and exactly two totals the shape a bare # combo_chart draws", () => {
+      const [source] = buildCatalog([COMBO]).sources;
+      expect(
+         Object.fromEntries(
+            source.views.map((v) => [
+               v.name,
+               v.shape && chartShapeGap("combo_chart", v.shape),
+            ]),
+         ),
+      ).toEqual({
+         by_month: undefined,
+         one_total: "combo_totals",
+         three_totals: "combo_totals",
+         totals_only: "no_x_axis",
+         nested_only: "no_x_axis",
       });
    });
 });
