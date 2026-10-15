@@ -1,10 +1,20 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { DEFAULT_FCJ_SETTINGS } from "../../service/package_retrieval";
 import { compileFcjFixture } from "../../test_helpers/fcj_fixture";
+import {
+   buildFcjIndexFixture,
+   type FcjIndexFixture,
+} from "../../test_helpers/fcj_index_fixture";
+import { embedText } from "../../test_helpers/get_context_llm_harness";
 import type { Catalog } from "./catalog";
 import { buildCatalog, catalogInputOf } from "./catalog";
+import { connect } from "./connect";
+import { find, KINDS_BY_FIND_TARGET, type FindTarget } from "./find";
+import { judgeOptions, renderJudgePrompt } from "./judge";
+import { toUnit } from "./vectors";
 
 /**
  * Near-identical sources: extensions that inherit the same fields but hold
@@ -134,3 +144,63 @@ describe("near-identical sources", () => {
    });
 });
 
+describe("the judge reads each twin source's doc", () => {
+   let p: FcjIndexFixture;
+   beforeAll(async () => {
+      p = await buildFcjIndexFixture(
+         { ...DEFAULT_FCJ_SETTINGS, collapseCopies: true },
+         FILES,
+      );
+   });
+   afterAll(async () => p.close());
+
+   it("puts a source's doc beside its fields when a field name is listed under several sources", () => {
+      const targets: FindTarget[] = [
+         {
+            index: 0,
+            type: "measure",
+            text: "households reached",
+            kinds: KINDS_BY_FIND_TARGET.measure,
+         },
+      ];
+      const queries = new Map([[0, toUnit(embedText("households reached"))]]);
+      const found = find({
+         index: p.index,
+         targets,
+         queries,
+         perTarget: 30,
+         keyword: true,
+         values: true,
+         allow: () => true,
+      });
+      const cluster = connect({
+         index: p.index,
+         found,
+         queries,
+         settings: { ...DEFAULT_FCJ_SETTINGS, connect: "list", listTopK: 5 },
+         allow: () => true,
+      }).clusters[0];
+      // A summary that leaves out which rows the source holds.
+      const web = [...p.index.catalog.sources.values()].find(
+         (s) => s.name === "web_deliveries",
+      )!;
+      p.index.summaries.set(web.key, "Delivery metrics.");
+      const prompt = renderJudgePrompt(
+         p.index,
+         cluster,
+         targets,
+         judgeOptions(cluster, targets),
+      );
+      expect(prompt).toContain(
+         '- web_deliveries - Delivery metrics.\n  Its doc begins: "Web deliveries only."',
+      );
+      expect(prompt).toContain(
+         '  From web_deliveries (its doc: "Web deliveries only."):',
+      );
+      expect(prompt).toContain(
+         '  From deliveries (its doc: "Every delivery row, all channels."):',
+      );
+      // Folded copies are not listed: one reach per set of rows.
+      expect(prompt).not.toContain("From labelled_deliveries");
+   });
+});
