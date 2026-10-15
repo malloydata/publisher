@@ -186,6 +186,7 @@ describe("carriesRenderTag", () => {
          carriesRenderTag(['# label="Sales" bar_chart { x=month }\n']),
       ).toBe(true);
       expect(carriesRenderTag(["# bar_chart.stack\n"])).toBe(true);
+      expect(carriesRenderTag(["# combo_chart { y2=revenue }\n"])).toBe(true);
    });
 
    it("ignores documentation lines and formatting-only tags", () => {

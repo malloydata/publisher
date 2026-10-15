@@ -244,10 +244,10 @@ describe("previewTileQuery", () => {
             runnable,
          ).annotation;
       expect(withChart("bar_chart")).toBe(
-         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -viz bar_chart",
+         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz bar_chart",
       );
       expect(withChart("none")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz",
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz",
       );
       expect(withChart("custom")).toBe("# bar_chart { size=spark }");
       expect(withChart("default")).toBeUndefined();
@@ -256,7 +256,7 @@ describe("previewTileQuery", () => {
 
    it("clears the saved view's own chart line for an inline or opaque tile on Default", () => {
       const NONE =
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz";
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz";
       const annotationOf = (
          declaration: QueryTile["declaration"],
          chart: QueryTile["chart"],

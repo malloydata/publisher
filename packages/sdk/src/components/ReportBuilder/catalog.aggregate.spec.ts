@@ -48,3 +48,66 @@ describe("buildCatalog, aggregate-only views, from real compiler output", () => 
       );
    });
 });
+
+describe("buildCatalog, combo-chart views", () => {
+   // Columns as the compiler annotates them: an aggregate carries
+   // `calculation` in its `#(malloy)` note, a group-by does not.
+   const column = (name: string, aggregate: boolean, array = false) => ({
+      kind: "dimension",
+      name,
+      type: array
+         ? {
+              kind: "array_type",
+              element_type: { kind: "record_type", fields: [] },
+           }
+         : { kind: "number_type" },
+      annotations: [
+         {
+            value: `#(malloy) ${aggregate ? "calculation " : ""}drill_expression { kind = field_reference name = ${name} }\n`,
+         },
+      ],
+   });
+   const view = (name: string, columns: unknown[]) => ({
+      kind: "view",
+      name,
+      schema: { fields: columns },
+   });
+   const VIEWS = [
+      view("by_month", [
+         column("month", false),
+         column("orders", true),
+         column("revenue", true),
+      ]),
+      view("one_total", [column("month", false), column("orders", true)]),
+      view("three_totals", [
+         column("month", false),
+         column("a", true),
+         column("b", true),
+         column("c", true),
+      ]),
+      view("totals_only", [column("a", true), column("b", true)]),
+      view("nested_only", [
+         column("rows", false, true),
+         column("a", true),
+         column("b", true),
+      ]),
+   ];
+   const COMBO = {
+      ...MODEL,
+      sources: [{ name: "s", views: VIEWS.map((v) => ({ name: v.name })) }],
+      sourceInfos: [JSON.stringify({ name: "s", schema: { fields: VIEWS } })],
+   } as unknown as CompiledModel;
+
+   it("marks only a view with a group by and exactly two totals, the shape a bare # combo_chart draws", () => {
+      const [source] = buildCatalog([COMBO]).sources;
+      expect(
+         Object.fromEntries(source.views.map((v) => [v.name, v.comboShape])),
+      ).toEqual({
+         by_month: true,
+         one_total: undefined,
+         three_totals: undefined,
+         totals_only: undefined,
+         nested_only: undefined,
+      });
+   });
+});

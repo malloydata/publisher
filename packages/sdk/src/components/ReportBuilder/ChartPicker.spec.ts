@@ -27,6 +27,7 @@ describe("chartChoices", () => {
          "scatter_chart",
          "shape_map",
          "segment_map",
+         "combo_chart",
       ]);
       expect(enabled(undefined, "default")).toEqual([
          "default",
@@ -57,6 +58,19 @@ describe("chartChoices", () => {
       ).toMatchObject({
          disabled: true,
          reason: "Needs a view that already carries a map chart",
+      });
+   });
+
+   it("enables a combo chart for a view with a group by and exactly two totals, and says what it needs otherwise", () => {
+      expect(enabled({ comboShape: true }, "default")).toContain("combo_chart");
+      expect(enabled({ chart: "combo_chart" }, "default")).toContain(
+         "combo_chart",
+      );
+      expect(choice("combo_chart", {}, "default")).toMatchObject({
+         label: "Bar and line",
+         disabled: true,
+         reason:
+            "Needs a view with a group by and exactly two totals: the first is drawn as bars, the second as a line",
       });
    });
 

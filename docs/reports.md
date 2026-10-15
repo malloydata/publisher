@@ -914,9 +914,12 @@ builder does not set them. Adding a tile offers every source the package publish
 cannot already see the chosen source the builder adds a named import for it, at the right relative path for
 the report's location.
 
-The **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment
-map. A choice the view cannot render stays in the list, greyed, with its reason under it: Big value needs a
-view with only totals, and a map needs a view that already carries a map chart. A chart line the builder
+The **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map, Segment map and
+Bar and line. A choice the view cannot render stays in the list, greyed, with its reason under it: Big value
+needs a view with only totals, a map needs a view that already carries a map chart, and Bar and line
+(`# combo_chart`) needs a view with a group by and exactly two totals, drawing the first as bars on the left
+axis and the second as a line on the right. To pick which totals go where, write
+`# combo_chart { y=orders y2=revenue }` on the view by hand. A chart line the builder
 does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and Chart is disabled for that
 tile with the reason shown; so is a tile inherited from a declaration on the source.
 

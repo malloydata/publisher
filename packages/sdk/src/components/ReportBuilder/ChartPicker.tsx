@@ -24,6 +24,7 @@ const LABELS: Record<ChartPick, string> = {
    scatter_chart: "Scatter",
    shape_map: "Shape map",
    segment_map: "Segment map",
+   combo_chart: "Bar and line",
 };
 
 /**
@@ -31,7 +32,9 @@ const LABELS: Record<ChartPick, string> = {
  * Whatever the cell has now stays selectable, so the select never shows a value it does not offer.
  */
 export function chartChoices(
-   view: Pick<CatalogView, "chart" | "aggregateOnly"> | undefined,
+   view:
+      | Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape">
+      | undefined,
    current: ChartState,
    viewStatus?: ViewStatus,
 ): ChartChoice[] {
@@ -49,6 +52,14 @@ export function chartChoices(
          return view?.aggregateOnly === true
             ? undefined
             : (unknown ?? "Needs a view with only totals (no group by)");
+      // A bare `# combo_chart` draws the first total as bars on the left axis
+      // and the second as a line on the right, over the group-by; any other
+      // count of totals is an error the renderer shows in the tile.
+      if (pick === "combo_chart")
+         return view?.comboShape === true || view?.chart === pick
+            ? undefined
+            : (unknown ??
+                 "Needs a view with a group by and exactly two totals: the first is drawn as bars, the second as a line");
       if (pick === "shape_map" || pick === "segment_map")
          return view?.chart === pick
             ? undefined
@@ -62,6 +73,7 @@ export function chartChoices(
       "scatter_chart",
       "shape_map",
       "segment_map",
+      "combo_chart",
    ];
    return [
       { value: "default", label: "From the view" },
@@ -92,7 +104,9 @@ export function ChartPicker({
 }: {
    state: ChartState;
    /** The catalog's view this cell runs, when it is one the catalog knows. */
-   view: Pick<CatalogView, "chart" | "aggregateOnly"> | undefined;
+   view:
+      | Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape">
+      | undefined;
    /** Why `view` is absent, worded into the reasons on the charts that need its shape. */
    viewStatus?: ViewStatus;
    /** Which cell this is, so the control is named apart from its neighbours. */

@@ -55,7 +55,7 @@ export interface TileMenuProps {
    /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
    duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
-   view?: Pick<CatalogView, "chart" | "aggregateOnly">;
+   view?: Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape">;
 }
 
 const customChart = (lines: string[] | undefined) =>
@@ -67,6 +67,7 @@ const CLICKLESS_CHARTS = new Set<string>([
    "bar_chart",
    "line_chart",
    "scatter_chart",
+   "combo_chart",
 ]);
 const CHART_DOES_NOT_CLICK =
    "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.";

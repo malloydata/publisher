@@ -64,16 +64,25 @@ describe("mentionsChartTag", () => {
 describe("chartLineText", () => {
    it("negates every other chart tag and viz, in a fixed order", () => {
       expect(chartLineText("line_chart")).toBe(
-         "# -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz line_chart",
+         "# -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz line_chart",
       );
       expect(chartLineText("bar_chart")).toBe(
-         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -viz bar_chart",
+         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz bar_chart",
+      );
+   });
+
+   it("writes a combo chart, bars and a line on two axes, like any other pick", () => {
+      expect(chartLineText("combo_chart")).toBe(
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz combo_chart",
+      );
+      expect(chartLineText("combo_chart", ["bar_chart"])).toBe(
+         "# -bar_chart -viz combo_chart",
       );
    });
 
    it("writes -viz on the no-chart line, which keeps a viz= view from rendering a chart", () => {
       expect(chartLineText("none")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz",
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz",
       );
    });
 
@@ -112,9 +121,11 @@ describe("chartLineText through the tag parser", () => {
       "scatter_chart",
       "shape_map",
       "segment_map",
+      "combo_chart",
    ] as const;
    const BASES = [
       "# bar_chart",
+      "# combo_chart",
       "# line_chart",
       "# viz=line",
       "# big_value",
@@ -167,6 +178,7 @@ describe("chartStateOf", () => {
       expect(chartStateOf(["# line_chart", "# -viz"])).toBe("custom");
       expect(chartStateOf(["# sparkline"])).toBe("custom");
       expect(chartStateOf(["# bar_chart"])).toBe("bar_chart");
+      expect(chartStateOf(["# combo_chart"])).toBe("combo_chart");
    });
 });
 

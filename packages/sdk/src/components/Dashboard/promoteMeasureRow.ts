@@ -32,6 +32,7 @@ const RENDER_TAGS = new Set([
    "bar_chart",
    "line_chart",
    "scatter_chart",
+   "combo_chart",
    "shape_map",
    "segment_map",
    "point_map",

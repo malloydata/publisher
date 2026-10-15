@@ -102,8 +102,8 @@ is a Console convenience.
   wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
   back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
   from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list). A query
-  tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and
-  Segment map; a choice the view cannot render stays in the list, greyed, with its reason under it.
+  tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map,
+  Segment map and Bar and line; a choice the view cannot render stays in the list, greyed, with its reason under it.
   The **layout switch** rewrites `layout=` and nothing else. Adding a tile
   offers every source the package publishes; when the file cannot already see the chosen source,
   the builder adds a named import for it. The classic dashboard-building feel, over a file you can

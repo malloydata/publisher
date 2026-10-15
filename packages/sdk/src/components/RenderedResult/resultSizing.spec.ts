@@ -20,7 +20,7 @@ describe("resultSizing", () => {
    // spellings "bar_chart" and "line_chart" never come back from it. Getting
    // this wrong is invisible: the chart is simply measured, and a `# line_chart`
    // tile quietly shrinks to the inset height it drew itself at.
-   it.each(["bar", "line", "chart", "scatter_chart"])(
+   it.each(["bar", "line", "chart", "scatter_chart", "combo"])(
       "calls %s container-sized",
       (renderAs) => {
          expect(resultSizing(renderAs)).toBe("container");
@@ -112,7 +112,7 @@ describe("remeasuresAfterReady", () => {
    // The one root re-measuring is not safe for, and the reason it used to be
    // tables only: a chart insets itself inside its box, so feeding its height
    // back would ratchet the container down every pass. It is never measured now.
-   it.each(["bar", "line", "chart", "scatter_chart"])(
+   it.each(["bar", "line", "chart", "scatter_chart", "combo"])(
       "never measures %s at all",
       (renderAs) => {
          expect(remeasuresAfterReady(renderAs)).toBe(false);

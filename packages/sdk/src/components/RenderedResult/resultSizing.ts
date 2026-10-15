@@ -61,7 +61,7 @@ export type ResultSizing = "content" | "container";
  * put a map that needs 365px into 700px of cell.
  *
  * Every name here is checked against the plugin's declared strategy at runtime
- * and agrees with it today (`bar:fill`, `line:fill`, `shape_map:fixed`); the
+ * and agrees with it today (`bar:fill`, `line:fill`, `combo:fill`, `shape_map:fixed`); the
  * strategy wins where both are available, so this list carries the roots no
  * plugin claims and anything a renderer stops declaring.
  */
@@ -70,6 +70,7 @@ const CONTAINER_SIZED_ROOTS: ReadonlySet<string> = new Set([
    "line",
    "chart",
    "scatter_chart",
+   "combo",
 ]);
 
 /**

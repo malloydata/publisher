@@ -96,6 +96,7 @@ const DECLARED: Record<string, string> = {
    bar_chart: "a bar chart",
    line_chart: "a line chart",
    scatter_chart: "a scatter chart",
+   combo_chart: "a bar and line chart",
    shape_map: "a shape map",
    segment_map: "a segment map",
    big_value: "a big value",

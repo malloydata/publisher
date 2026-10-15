@@ -15,6 +15,7 @@ export const CHART_TAGS = [
    "segment_map",
    "big_value",
    "sparkline",
+   "combo_chart",
 ];
 
 /** The tags the renderer has a plugin for, in the order a line negates them. */
@@ -25,6 +26,8 @@ const PLUGIN_TAGS = [
    "scatter_chart",
    "shape_map",
    "segment_map",
+   // Last, so the lines written before the renderer had it keep their order.
+   "combo_chart",
 ] as const;
 
 export type ChartPick = (typeof PLUGIN_TAGS)[number];

@@ -40,6 +40,8 @@ export interface CatalogView {
    chart?: string;
    /** Every output column is an aggregate, which is the only shape `big_value` renders. Absent when the model did not say. */
    aggregateOnly?: boolean;
+   /** At least one group-by and exactly two totals: the shape a bare `# combo_chart` draws, bars for the first and a line for the second. Absent when the model did not say. */
+   comboShape?: boolean;
 }
 
 export interface CatalogSource {
@@ -147,22 +149,38 @@ const isAggregateColumn = (field: Record<string, unknown>) =>
       },
    );
 
-/** Per source, the views whose every output column is an aggregate. */
-function aggregateViewsOf(model: CompiledModel): Map<string, Set<string>> {
-   const bySource = new Map<string, Set<string>>();
+/** Whether a column is a group-by a chart can put on its x axis: not an aggregate, and not a nest. */
+const isGroupByColumn = (field: Record<string, unknown>) =>
+   !isAggregateColumn(field) &&
+   (field["type"] as { kind?: string } | undefined)?.kind !== "array_type";
+
+/** Per source, the views whose every output column is an aggregate, and the views a bare `# combo_chart` can draw. */
+function viewShapesOf(model: CompiledModel): {
+   aggregateOnly: Map<string, Set<string>>;
+   combo: Map<string, Set<string>>;
+} {
+   const aggregateOnly = new Map<string, Set<string>>();
+   const combo = new Map<string, Set<string>>();
    for (const info of parsedSourceInfos(model)) {
-      const names = new Set<string>();
+      const totalsOnly = new Set<string>();
+      const comboViews = new Set<string>();
       for (const field of info.schema?.fields ?? []) {
          if (field["kind"] !== "view" || typeof field["name"] !== "string")
             continue;
          const columns = (field["schema"] as { fields?: unknown } | undefined)
             ?.fields as Array<Record<string, unknown>> | undefined;
-         if (columns && columns.length > 0 && columns.every(isAggregateColumn))
-            names.add(field["name"]);
+         if (!columns || columns.length === 0) continue;
+         if (columns.every(isAggregateColumn)) totalsOnly.add(field["name"]);
+         if (
+            columns.filter(isAggregateColumn).length === 2 &&
+            columns.some(isGroupByColumn)
+         )
+            comboViews.add(field["name"]);
       }
-      bySource.set(info.name, names);
+      aggregateOnly.set(info.name, totalsOnly);
+      combo.set(info.name, comboViews);
    }
-   return bySource;
+   return { aggregateOnly, combo };
 }
 
 /**
@@ -227,7 +245,7 @@ export function buildCatalog(
       const modelPath = pathOf(model);
       if (isReportModel(modelPath, reportPaths)) continue;
       const fields = fieldsOf(model);
-      const aggregates = aggregateViewsOf(model);
+      const shapes = viewShapesOf(model);
 
       for (const source of model.sources ?? []) {
          const name = source.name;
@@ -260,8 +278,11 @@ export function buildCatalog(
                   ...(chartOf(view.annotations)
                      ? { chart: chartOf(view.annotations) as string }
                      : {}),
-                  ...(aggregates.get(name)?.has(view.name as string)
+                  ...(shapes.aggregateOnly.get(name)?.has(view.name as string)
                      ? { aggregateOnly: true }
+                     : {}),
+                  ...(shapes.combo.get(name)?.has(view.name as string)
+                     ? { comboShape: true }
                      : {}),
                })),
             givens,
