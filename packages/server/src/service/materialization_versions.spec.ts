@@ -589,6 +589,20 @@ describe('scope "package": the versions share the package\'s tables', () => {
       expect(await warehouseTables()).toEqual(["summary"]);
    });
 
+   it("under explicit promotion, builds a version before anything is latest", async () => {
+      // Publish, build, check, then promote: with no `latest` nothing serves
+      // the shared table yet, so the version's auto-run is not refused.
+      await publish("1.0.0", 1, "package", "explicit");
+      expect(await env.getVersionService()!.latestOf(PKG)).toBeNull();
+      const built = await build({ versionId: "1.0.0" });
+      expect(built.status).toBe("MANIFEST_FILE_READY");
+      expect(built.version).toBe("1.0.0");
+      await tamper("summary", 101);
+
+      await env.getVersionService()!.setLatest(PKG, "1.0.0");
+      expect(await answerOf()).toBe(101);
+   });
+
    it("an older version never serves rows latest's definition built", async () => {
       await publish("1.0.0", 1, "package");
       await build({});

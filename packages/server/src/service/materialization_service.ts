@@ -1343,17 +1343,17 @@ export class MaterializationService {
       const buildInstructions = options.buildInstructions;
       const orchestrated = buildInstructions !== undefined;
       const versions = environment.getVersionService();
-      if (
-         version !== null &&
-         versions &&
-         !orchestrated &&
-         scope === "package" &&
-         version !== (await versions.latestOf(packageName))
-      ) {
+      const latest =
+         version !== null && versions && !orchestrated && scope === "package"
+            ? await versions.latestOf(packageName)
+            : null;
+      if (latest !== null && version !== latest) {
          // A `scope: package` table is the package's, shared by its versions
          // under one self-assigned name, and `latest` is what serves it. An
          // auto-run of another version would rebuild it from that version's
-         // definition under `latest`'s feet.
+         // definition under `latest`'s feet. With no `latest` yet (explicit
+         // promotion, before the first `PUT …/latest`) nothing serves the
+         // table, so a version is built before it is promoted.
          throw new PackageVersionError(
             "VERSION_NOT_LATEST",
             `Version ${version} of package ${packageName} is not its latest, and the package's materialization scope is "package": its versions share the package's tables, so an auto-run of this version would rebuild what latest serves. Build latest, give each version tables of its own with "materialization": { "scope": "version" } in publisher.json, or pass buildInstructions to build into tables you name.`,
