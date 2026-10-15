@@ -468,6 +468,13 @@ export class Environment {
       packageName: string,
       reader: ServingReader,
    ) => Promise<Record<string, ManifestEntry>>;
+   // Whether an UNVERSIONED package restores its serve bindings from the local
+   // store when it loads. Only an environment reloaded from the database at
+   // startup does, exactly as before versions existed; one created at runtime
+   // (over the API, or from config on its first boot) serves an unversioned
+   // package live until a build binds it. A published version always restores
+   // its own: the resolver is installed for every environment for them.
+   private restoreUnversionedFromLocalStore = false;
    // Materializations running now, per `package@version`: a version is never
    // archived while one builds it (see registerVersionBuild).
    private readonly versionBuilds = new Map<string, number>();
@@ -2624,6 +2631,16 @@ export class Environment {
    }
 
    /**
+    * Let unversioned packages restore their serve bindings from the local
+    * store on load, as versions always do. Called for an environment reloaded
+    * from the database at startup, the one place the restore ran before
+    * versions existed (see {@link restoreUnversionedFromLocalStore}).
+    */
+   public restoreUnversionedBindingsFromLocalStore(): void {
+      this.restoreUnversionedFromLocalStore = true;
+   }
+
+   /**
     * Attach (or detach with `null`) the callback run when a version is
     * archived, which reclaims the tables that version alone owns. It must
     * only schedule work, and must not throw.
@@ -2747,6 +2764,12 @@ export class Environment {
       pkg: Package,
    ): Promise<void> {
       if (!this.storageBindingResolver) return;
+      if (
+         pkg.getVersionId() === undefined &&
+         !this.restoreUnversionedFromLocalStore
+      ) {
+         return;
+      }
       // Host-authoritative: a bound manifestLocation means bindManifest already
       // supplied both tiers' serve bindings from the host's manifest; the local
       // store must not clobber them (mutually-exclusive binding sources).

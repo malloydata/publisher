@@ -873,6 +873,12 @@ export class EnvironmentStore {
                            environmentInstance,
                            envId,
                         );
+                        // Reloaded from the database: its unversioned packages
+                        // restore their serve bindings from the local store on
+                        // load, so serving survives a restart. The only path
+                        // that did so before versions existed; environments
+                        // created at runtime still do not.
+                        environmentInstance.restoreUnversionedBindingsFromLocalStore();
 
                         // Get packages from database
                         const packages = await repository.listPackages(
