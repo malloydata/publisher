@@ -71,6 +71,12 @@ export interface JudgePick {
    droppedRoutes?: string[];
    /** Keys of a split item's picks past `splitItemPicks`, taken out, for the trace. */
    capped?: string[];
+   /** The judge's best candidate for the target; `keys` lists it first. */
+   best?: string;
+   /** The judge kept the same field on several sources: the question could mean either set of rows. */
+   readings?: boolean;
+   /** Near-identical twins `twinRule` took out, for the trace. */
+   droppedTwins?: string[];
 }
 
 export interface JudgeVerdict {
@@ -491,7 +497,7 @@ export function validateVerdict(
    return (
       value: unknown,
    ): {
-      picks: Array<{ target: number; keys: string[]; reason?: string }>;
+      picks: JudgePick[];
       caveats: string[];
    } => {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -500,13 +506,14 @@ export function validateVerdict(
       const v = value as { picks?: unknown; caveats?: unknown };
       if (!Array.isArray(v.picks)) throw new Error('"picks" must be a list');
       const bad: string[] = [];
-      const picks: Array<{ target: number; keys: string[]; reason?: string }> =
-         [];
+      const picks: JudgePick[] = [];
       for (const raw of v.picks) {
          const p = raw as {
             target?: unknown;
             candidates?: unknown;
             reason?: unknown;
+            best?: unknown;
+            readings?: unknown;
          };
          const tn = typeof p.target === "number" ? p.target : Number(p.target);
          if (!Number.isInteger(tn) || tn < 1 || tn > targets.length) {
@@ -526,9 +533,19 @@ export function validateVerdict(
             }
             if (!keys.includes(o.key)) keys.push(o.key);
          }
+         // "best" is read leniently: a number not among this pick's
+         // candidates is ignored rather than re-asked.
+         const bn = typeof p.best === "number" ? p.best : Number(p.best);
+         const best = Number.isInteger(bn) ? byNumber.get(bn)?.key : undefined;
+         if (best !== undefined && keys.includes(best)) {
+            keys.splice(keys.indexOf(best), 1);
+            keys.unshift(best);
+         }
          picks.push({
             target: targets[tn - 1].index,
             keys,
+            ...(best !== undefined && keys.includes(best) ? { best } : {}),
+            ...(p.readings === true ? { readings: true } : {}),
             ...(typeof p.reason === "string" && p.reason.trim()
                ? { reason: p.reason.trim().slice(0, 300) }
                : {}),
@@ -593,6 +610,51 @@ export function dropBesideRoutes(
             ...p,
             keys: p.keys.filter((k) => !drop.has(k)),
             droppedRoutes: beside,
+         };
+      }),
+   }));
+}
+
+/**
+ * `twinRule`: within one target's picks, fields that are one inherited
+ * definition on near-identical sources (the same `twinKey`: rows that differ
+ * by a filter or a population) keep only the judge's best, or the first
+ * listed when the best is not among them. A pick the judge marked
+ * `readings` (the question could mean either set of rows) is left alone, as
+ * are routes, joined copies and fields with no twin. Off returns the
+ * verdicts unchanged.
+ */
+export function dropTwins(
+   verdicts: readonly JudgeVerdict[],
+   on: boolean,
+   nodeOf: (key: string) => CatalogNode | undefined,
+): JudgeVerdict[] {
+   if (!on) return [...verdicts];
+   return verdicts.map((v) => ({
+      ...v,
+      picks: v.picks.map((p) => {
+         if (p.readings || p.keys.length < 2) return p;
+         const byTwin = new Map<string, string[]>();
+         for (const k of p.keys) {
+            if (parseRouteKey(k)) continue;
+            const n = nodeOf(k);
+            if (!n?.twinKey || n.joinPath) continue;
+            byTwin.set(n.twinKey, [...(byTwin.get(n.twinKey) ?? []), k]);
+         }
+         const drop = new Set<string>();
+         for (const group of byTwin.values()) {
+            if (group.length < 2) continue;
+            const keep =
+               p.best !== undefined && group.includes(p.best)
+                  ? p.best
+                  : group[0];
+            for (const k of group) if (k !== keep) drop.add(k);
+         }
+         if (drop.size === 0) return p;
+         return {
+            ...p,
+            keys: p.keys.filter((k) => !drop.has(k)),
+            droppedTwins: [...drop],
          };
       }),
    }));
