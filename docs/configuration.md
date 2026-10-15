@@ -491,7 +491,10 @@ It builds its own index at load (a catalog of the package, derived search text p
 index of `#(index)` dimensions) and answers in three steps: per target, the best candidates of the
 whole package; the few sources whose joins reach what the targets ask for together; one LLM call per
 such source group to pick what to return. The response adds `clusters`, `coverage` and
-`unresolved_targets` beside `sources`. Its knobs are in `fcj`, all optional:
+`unresolved_targets` beside `sources`. A source marked `#(agent-hidden)` (or defined in a file marked
+`##(agent-hidden)`) gets no card of its own: its fields are reached only through the joins of the
+sources that are served, as hosted get_context does. The mark is the source's own; a source that extends
+a hidden one is not hidden. Its knobs are in `fcj`, all optional:
 
 | Key                    | Default | Meaning                                                                                   |
 | ---------------------- | ------- | ----------------------------------------------------------------------------------------- |
@@ -508,7 +511,7 @@ such source group to pick what to return. The response adds `clusters`, `coverag
 | `fcj.questions`        | `auto`  | Index-time questions written by the LLM. As for `refine.enabled`.                         |
 | `fcj.docParts`         | `auto`  | Index-time split of long docs by the LLM; by rules otherwise. As for `refine.enabled`.    |
 | `fcj.judge`            | `auto`  | The picking call. `false` returns each group's best few candidates instead.               |
-| `fcj.collapseCopies`   | `false` | Provisional, off by default. A field an extension inherits unchanged is searched once, as the field where it is defined; the extension competes only with the fields it adds. |
+| `fcj.collapseCopies`   | `false` | Provisional, off by default. A field an extension inherits unchanged is searched once, as the same field on the source it extends, but only when both sources hold the same rows: no `where:` of its own, the same table, SQL or query, the same arguments, no access gate of its own. An extension with other rows is a different source, and the fields it inherits are searched and returned on it. |
 | `fcj.contenderShare`   | `0`     | Provisional, off by default. A source scoring at least this share of the best source on the same targets joins its group (up to three), so the picking call chooses between near-tied sources. |
 | `fcj.connect`          | `clusters` | Provisional. `list` skips the source groups: one picking call sees every target's best `fcj.listTopK` candidates from the first step, grouped by source, plus the home source's extras (its dates for a period, a measure's inputs). The home is the source of the first measure target's best candidate. A baseline for comparing connect rules. |
 | `fcj.listTopK`         | `15`    | Provisional. With `fcj.connect: "list"`, candidates per target the picking call sees. |
