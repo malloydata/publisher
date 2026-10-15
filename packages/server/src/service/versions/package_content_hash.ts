@@ -23,6 +23,13 @@ const SKIPPED_DIRECTORIES = new Set([".git"]);
  * A symbolic link is hashed as its target text and never followed, so a link
  * out of the tree cannot pull outside content into the hash. `.git` is skipped
  * because a clone carries repository state, not package content.
+ *
+ * Reading the files costs more than hashing them, mostly in waiting on each
+ * one in turn, so the entries ahead of the one being hashed are read at the
+ * same time (READ_AHEAD of them). Only files up to READ_WHOLE_MAX_BYTES are
+ * read ahead whole; a larger one is streamed when its turn comes, so the
+ * memory held stays bounded however large the package is. Neither changes the
+ * digest, which is always taken in sorted order.
  */
 export async function hashPackageTree(root: string): Promise<string> {
    const hash = crypto.createHash("sha256");
@@ -30,25 +37,67 @@ export async function hashPackageTree(root: string): Promise<string> {
    entries.sort((a, b) =>
       a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0,
    );
-   for (const entry of entries) {
-      const absolute = path.join(root, ...entry.relative.split("/"));
-      if (entry.kind === "dir") {
-         hash.update(`dir\0${entry.relative}\0\0`);
-      } else if (entry.kind === "link") {
-         const target = await fs.promises.readlink(absolute);
-         hash.update(`link\0${entry.relative}\0${target}\0`);
+   const reads: (Promise<EntryContent> | undefined)[] = [];
+   const readAhead = (index: number) => {
+      if (index >= entries.length || reads[index] !== undefined) return;
+      const read = readEntry(root, entries[index]);
+      // Awaited in turn below; until then a failure must not go unhandled.
+      read.catch(() => undefined);
+      reads[index] = read;
+   };
+   for (let index = 0; index < entries.length; index++) {
+      for (let ahead = index; ahead < index + READ_AHEAD; ahead++) {
+         readAhead(ahead);
+      }
+      const content = await reads[index]!;
+      reads[index] = undefined;
+      const { relative } = entries[index];
+      if (content.kind === "dir") {
+         hash.update(`dir\0${relative}\0\0`);
+      } else if (content.kind === "link") {
+         hash.update(`link\0${relative}\0${content.target}\0`);
       } else {
-         const { size } = await fs.promises.stat(absolute);
-         hash.update(`file\0${entry.relative}\0${size}\0`);
-         await new Promise<void>((resolve, reject) => {
-            fs.createReadStream(absolute)
-               .on("data", (chunk) => hash.update(chunk))
-               .on("end", () => resolve())
-               .on("error", reject);
-         });
+         hash.update(`file\0${relative}\0${content.size}\0`);
+         if (content.bytes) {
+            hash.update(content.bytes);
+         } else {
+            await new Promise<void>((resolve, reject) => {
+               fs.createReadStream(content.absolute, {
+                  highWaterMark: READ_WHOLE_MAX_BYTES,
+               })
+                  .on("data", (chunk) => hash.update(chunk))
+                  .on("end", () => resolve())
+                  .on("error", reject);
+            });
+         }
       }
    }
    return hash.digest("hex");
+}
+
+/** How many entries are read at once, ahead of the one being hashed. */
+const READ_AHEAD = 16;
+/** The largest file read ahead whole; a larger one is streamed in turn. */
+const READ_WHOLE_MAX_BYTES = 1024 * 1024;
+
+type EntryContent =
+   | { kind: "dir" }
+   | { kind: "link"; target: string }
+   | { kind: "file"; absolute: string; size: number; bytes?: Buffer };
+
+async function readEntry(
+   root: string,
+   entry: TreeEntry,
+): Promise<EntryContent> {
+   const absolute = path.join(root, ...entry.relative.split("/"));
+   if (entry.kind === "dir") return { kind: "dir" };
+   if (entry.kind === "link") {
+      return { kind: "link", target: await fs.promises.readlink(absolute) };
+   }
+   const { size } = await fs.promises.stat(absolute);
+   if (size > READ_WHOLE_MAX_BYTES) return { kind: "file", absolute, size };
+   const bytes = await fs.promises.readFile(absolute);
+   return { kind: "file", absolute, size: bytes.length, bytes };
 }
 
 interface TreeEntry {
