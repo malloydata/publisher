@@ -119,10 +119,13 @@ text as `emptyReason` for as long as no environment exists.
 
 If you expected packages and see `environments=0`, the config did not reach `/publisher`.
 
-The server runs as uid 1000, not root, so a volume or bind mount it writes to must be writable by
-that uid. A new named volume is. One that an earlier image, which ran as root, wrote to needs a
-one-time chown; [`packages/server/README.docker.md`](../packages/server/README.docker.md#the-server-runs-as-a-non-root-user)
-has the command.
+The image is built on a [Docker Hardened Image](https://docs.docker.com/dhi/) runtime: it has no
+shell and no package manager, and the server runs as uid 65532 (`nonroot`), not root, so a volume or
+bind mount it writes to must be writable by that uid. A new named volume is. One that an earlier
+image wrote to, as root (before 0.9.0) or as uid 1000 (0.9.x), needs a one-time chown;
+[`packages/server/README.docker.md`](../packages/server/README.docker.md#the-server-runs-as-a-non-root-user)
+has the command, and its [hardened base](../packages/server/README.docker.md#the-image-is-a-hardened-runtime-image-no-shell)
+section says how to get a shell next to a running container when you need one.
 
 ### Build from source
 

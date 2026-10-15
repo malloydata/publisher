@@ -78,15 +78,6 @@ jobs:
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
 
-      # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
-      # layer rebuilds daily instead of being served from the build cache forever.
-      # Daily rather than weekly so a Debian fix published mid-week is picked up by
-      # the next build instead of waiting for the week to roll over.
-      - name: Date for the apt refresh
-        id: day
-        run: echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-        shell: bash
-
       - name: Build and push tag
         id: build
         uses: docker/build-push-action@v6
@@ -100,7 +91,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
-            APT_REFRESH=${{ steps.day.outputs.value }}
           tags: ${{ env.REGISTRY_IMAGE }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           # Attach an SPDX SBOM and SLSA provenance to each platform image as

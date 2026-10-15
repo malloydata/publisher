@@ -1,0 +1,7 @@
+metadata:
+  display-name: Malloy Publisher
+  short-description: Malloy Publisher is an open-source semantic model server for Malloy, serving model packages over REST and MCP.
+  featured: false
+  home-url: https://github.com/malloydata/publisher
+  categories:
+    - data-and-analytics

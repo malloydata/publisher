@@ -79,7 +79,7 @@
       "lint": "bunx eslint ./src ./test --fix",
       "format": "bunx prettier --write --parser typescript '**/*.{ts,tsx}'",
       "analyze": "bunx vite-bundle-visualizer",
-      "generate-api-types": "bunx openapi-generator-cli generate -i ../../api-doc.yaml -g typescript-axios -o src/client/"
+      "generate-api-types": "bun ../../scripts/generate-api-types.mjs -i ../../api-doc.yaml -g typescript-axios -o src/client/"
    },
    "peerDependencies": {
       "@malloydata/malloy": "^0.0.435",

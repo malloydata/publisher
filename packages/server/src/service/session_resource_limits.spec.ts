@@ -232,23 +232,31 @@ describe("applySessionResourceLimits", () => {
          expect(() => assertDuckDBResourceConfig()).not.toThrow();
       });
 
-      it("fails on an existing directory it cannot write to", () => {
-         // The common Kubernetes shape: a volume mounted with the wrong
-         // ownership. `mkdirSync(…, { recursive: true })` returns silently for an
-         // existing directory whatever its mode, so without the explicit access
-         // check this surfaced only at the first spill.
-         const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
-         chmodSync(dir, 0o500);
-         process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
-         try {
-            expect(() => assertDuckDBResourceConfig()).toThrow(
-               /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
-            );
-         } finally {
-            chmodSync(dir, 0o700);
-            rmSync(dir, { recursive: true, force: true });
-         }
-      });
+      // Not on Windows: chmod cannot make a directory unwritable on NTFS (the
+      // read-only attribute it sets does not stop files being created inside),
+      // and Bun 1.4's accessSync(W_OK) reports that truthfully, where 1.3
+      // reported the attribute. The check under test is the same call; it is
+      // the fixture that has no Windows equivalent short of an ACL.
+      it.skipIf(process.platform === "win32")(
+         "fails on an existing directory it cannot write to",
+         () => {
+            // The common Kubernetes shape: a volume mounted with the wrong
+            // ownership. `mkdirSync(…, { recursive: true })` returns silently for an
+            // existing directory whatever its mode, so without the explicit access
+            // check this surfaced only at the first spill.
+            const dir = mkdtempSync(path.join(os.tmpdir(), "unwritable-"));
+            chmodSync(dir, 0o500);
+            process.env.PUBLISHER_DUCKDB_TEMP_DIRECTORY = dir;
+            try {
+               expect(() => assertDuckDBResourceConfig()).toThrow(
+                  /PUBLISHER_DUCKDB_TEMP_DIRECTORY/,
+               );
+            } finally {
+               chmodSync(dir, 0o700);
+               rmSync(dir, { recursive: true, force: true });
+            }
+         },
+      );
 
       it("creates a missing spill directory rather than failing at first spill", () => {
          const base = mkdtempSync(path.join(os.tmpdir(), "spillbase-"));

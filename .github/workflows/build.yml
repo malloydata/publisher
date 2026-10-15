@@ -9,7 +9,7 @@ on:
   pull_request:
 
 env:
-  BUN_VERSION: 1.3.13
+  BUN_VERSION: 1.4.3
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # self contained tests
@@ -33,8 +33,10 @@ jobs:
         id: bun-cache
         uses: actions/cache@v4
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/openapi-generator-cli
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: Typecheck
@@ -60,8 +62,10 @@ jobs:
         id: bun-cache
         uses: actions/cache@v4
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/openapi-generator-cli
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: Install dependencies
@@ -166,8 +170,10 @@ jobs:
         id: bun-cache
         uses: actions/cache@v4
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/openapi-generator-cli
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
       - name: build server
@@ -286,14 +292,6 @@ jobs:
         id: duckdb
         run: echo "version=$(node scripts/duckdb-version.js)" >> "$GITHUB_OUTPUT"
         shell: bash
-      # The UTC date, passed as APT_REFRESH so the Dockerfile's `apt-get upgrade`
-      # layer rebuilds daily instead of being served from the build cache forever.
-      # Daily rather than weekly so a Debian fix published mid-week is picked up by
-      # the next build instead of waiting for the week to roll over.
-      - name: Date for the apt refresh
-        id: day
-        run: echo "value=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-        shell: bash
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -302,7 +300,6 @@ jobs:
           load: true
           build-args: |
             DUCKDB_VERSION=${{ steps.duckdb.outputs.version }}
-            APT_REFRESH=${{ steps.day.outputs.value }}
           tags: malloy-publisher:smoke-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -345,14 +342,38 @@ jobs:
           echo "$env_json" | jq -e 'index("PUBLISHER_NO_MCP_CONFIG=1")' >/dev/null \
             || { echo "✗ Image does not set PUBLISHER_NO_MCP_CONFIG=1"; exit 1; }
           echo "✓ .mcp.json creation suppressed in the image"
-          # The server runs as uid 1000, and the USER must stay numeric:
-          # Kubernetes' runAsNonRoot cannot verify a named user. A new final
-          # stage, or a USER line lost in a reorder, would put the server back
-          # on root with every other check here still passing.
+          # The server runs as uid 65532 (`nonroot`, the user the hardened base
+          # ships), and the USER must stay numeric: Kubernetes' runAsNonRoot
+          # cannot verify a named user. A new final stage, or a USER line lost
+          # in a reorder, would put the server back on root with every other
+          # check here still passing.
           user=$(docker inspect malloy-publisher:smoke-test --format='{{.Config.User}}')
-          [ "$user" = "1000:1000" ] \
-            || { echo "✗ Image USER is '${user:-<unset, root>}', expected 1000:1000"; exit 1; }
-          echo "✓ Image runs as uid 1000"
+          [ "$user" = "65532:65532" ] \
+            || { echo "✗ Image USER is '${user:-<unset, root>}', expected 65532:65532"; exit 1; }
+          echo "✓ Image runs as uid 65532"
+          # The final stage is a Docker Hardened Image RUNTIME variant: no shell,
+          # no package manager. The base's own label says which variant the
+          # stage was built from, and the exec probes say what actually shipped;
+          # a final stage switched to the -dev variant, or a shell copied in,
+          # would boot and serve exactly as well, so nothing else here would see it.
+          variant=$(docker inspect malloy-publisher:smoke-test \
+            --format='{{index .Config.Labels "com.docker.dhi.variant"}}')
+          [ "$variant" = runtime ] \
+            || { echo "✗ final stage is not a hardened runtime variant (com.docker.dhi.variant='${variant:-<unset>}')"; exit 1; }
+          # A missing binary fails at exec (127); a present one runs the
+          # harmless command. Shells get `-c true` rather than `--version`,
+          # which dash rejects, so a dash `sh` would otherwise read as absent.
+          for shell in sh bash; do
+            if docker run --rm --entrypoint "$shell" malloy-publisher:smoke-test -c true >/dev/null 2>&1; then
+              echo "✗ the runtime image carries a shell ($shell)"; exit 1
+            fi
+          done
+          for tool in apt-get dpkg; do
+            if docker run --rm --entrypoint "$tool" malloy-publisher:smoke-test --version >/dev/null 2>&1; then
+              echo "✗ the runtime image carries $tool"; exit 1
+            fi
+          done
+          echo "✓ hardened runtime base: no shell and no package manager in the image"
       - name: Verify baked DuckDB extensions
         run: |
           # The image bakes the DuckDB extensions the server loads at runtime
@@ -411,14 +432,21 @@ jobs:
           #    the shim alone loads and then fails every query when its driver is
           #    missing, which is the exact failure this step exists to catch. When the
           #    shim is removed, drop the .real.so line and this note.
-          docker run --rm --entrypoint sh malloy-publisher:smoke-test -c '
-            n=$(find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" | wc -l)
-            [ "$n" -gt 0 ] || { echo "no snowflake.duckdb_extension in the image"; exit 1; }
-            find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf "%h\n" \
-              | while read -r d; do
-                  [ -f "$d/libadbc_driver_snowflake.so" ] || { echo "no driver beside $d"; exit 1; }
-                  [ -f "$d/libadbc_driver_snowflake.real.so" ] || { echo "no real driver beside $d (ADBC-SHIM)"; exit 1; }
-                done' \
+          #    The image has no shell, so the walk is a Bun one-liner: `bun -e`
+          #    runs as the image's own user against the image's own filesystem,
+          #    which is also what the server sees.
+          docker run --rm malloy-publisher:smoke-test bun -e '
+            const fs = require("fs"), path = require("path");
+            const dirs = [];
+            const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+              const p = path.join(d, e.name);
+              if (e.isDirectory()) walk(p); else if (e.name === "snowflake.duckdb_extension") dirs.push(d); } };
+            walk("/home/nonroot/.duckdb/extensions");
+            if (dirs.length === 0) { console.error("no snowflake.duckdb_extension in the image"); process.exit(1); }
+            for (const d of dirs) {
+              if (!fs.existsSync(d + "/libadbc_driver_snowflake.so")) { console.error("no driver beside " + d); process.exit(1); }
+              if (!fs.existsSync(d + "/libadbc_driver_snowflake.real.so")) { console.error("no real driver beside " + d + " (ADBC-SHIM)"); process.exit(1); }
+            }' \
             || { echo "✗ ADBC Snowflake driver (shim + real) not co-located with the extension"; exit 1; }
           echo "✓ ADBC driver shim and real driver sit beside every snowflake.duckdb_extension"
 
@@ -439,12 +467,14 @@ jobs:
           #    costs ~10s rather than the ~3.5 MINUTES that letting the login
           #    retries exhaust takes. That wait is the retry loop itself and is not
           #    avoidable by pointing the secret at loopback (measured: identical).
+          #
+          #    `timeout` is coreutils, which the runtime image keeps although it
+          #    has no shell; it runs the duckdb binary directly.
           rc=0
-          docker run --rm --network none --entrypoint bash \
-            malloy-publisher:smoke-test -c \
-            "timeout 10 duckdb -c \"LOAD snowflake;
+          docker run --rm --network none --entrypoint timeout \
+            malloy-publisher:smoke-test 10 duckdb -c "LOAD snowflake;
                CREATE SECRET s (TYPE snowflake, ACCOUNT 'x', USER 'y', PASSWORD 'z');
-               SELECT * FROM snowflake_query('SELECT 1','s');\" >/dev/null 2>&1" \
+               SELECT * FROM snowflake_query('SELECT 1','s');" \
             >/dev/null 2>&1 || rc=$?
           if [ "$rc" -ne 124 ]; then
             echo "✗ snowflake_query() died before reaching the network (exit $rc)"
@@ -453,6 +483,28 @@ jobs:
           fi
           echo "✓ ADBC driver loads (a real query reaches Snowflake's login retry)"
           echo "✓ All baked DuckDB extensions load offline"
+      - name: Assert git is in the image, works, and is in the package inventory
+        run: |
+          # A GitHub package location is cloned through git (simple-git shells
+          # out to it). The runtime base has no package manager, so git arrives
+          # by COPY from Docker's hardened git image, closure and dpkg records
+          # together. Three things are proved: the binary runs; an HTTPS
+          # transport works end to end (git-remote-https, libcurl-gnutls, the CA
+          # bundle); and git is in /var/lib/dpkg/status, which is what the SBOM
+          # generator and a vulnerability scanner read. A git on disk that the
+          # inventory does not list is a git no scan of this image would report.
+          set -e
+          docker run --rm --entrypoint git malloy-publisher:smoke-test --version
+          docker run --rm --entrypoint git malloy-publisher:smoke-test \
+            ls-remote --heads https://github.com/malloydata/publisher.git main | grep -q refs/heads/main \
+            || { echo "✗ git cannot reach GitHub over HTTPS from the image"; exit 1; }
+          docker run --rm malloy-publisher:smoke-test bun -e '
+            const status = require("fs").readFileSync("/var/lib/dpkg/status", "utf8");
+            for (const p of ["git", "libcurl3t64-gnutls"]) {
+              if (!new RegExp("^Package: " + p + "$", "m").test(status)) { console.error(p + " is not in /var/lib/dpkg/status"); process.exit(1); }
+            }' \
+            || { echo "✗ git is in the image but not in its package inventory"; exit 1; }
+          echo "✓ git runs, clones over HTTPS, and is listed in the dpkg inventory"
       - name: Start container
         run: |
           # A fresh named volume on publisher_data/, the way the Compose
@@ -521,27 +573,30 @@ jobs:
             | grep -q "Serving with no environments: no publisher.config.json was found at /publisher/publisher.config.json" \
             || { echo "✗ empty boot did not name its missing config"; echo "$logs" | tail -30; exit 1; }
           echo "✓ the empty boot names its missing config"
-      - name: Assert the server writes as uid 1000
+      - name: Assert the server writes as uid 65532
         run: |
           # The image's USER says what the container starts as; this says what
           # the running server actually wrote as. Both writable places are
           # checked: the server root, where publisher.db lives, and the named
           # volume. Reaching serving proves neither: a server denied
           # publisher_data/ still serves, with the environment it could not
-          # write reported under loadErrors.
+          # write reported under loadErrors. No shell in the image, so the
+          # probe is a Bun one-liner run in the server's container.
           set -e
-          docker exec malloy-publisher-smoke sh -c '
-            for f in /publisher/publisher.db /publisher/publisher_data /publisher/ducklake_data; do
-              [ -e "$f" ] || { echo "$f does not exist"; exit 1; }
-              owner=$(stat -c %u "$f")
-              [ "$owner" = 1000 ] || { echo "$f is owned by uid $owner"; exit 1; }
-            done
-            touch /publisher/publisher_data/.write-probe && rm /publisher/publisher_data/.write-probe' \
-            || { echo "✗ the server is not writing as uid 1000"; exit 1; }
-          echo "✓ publisher.db, publisher_data and ducklake_data are owned by uid 1000"
-      - name: Assert a fresh volume on ducklake_data takes a DuckLake write as uid 1000
+          docker exec malloy-publisher-smoke bun -e '
+            const fs = require("fs");
+            for (const f of ["/publisher/publisher.db", "/publisher/publisher_data", "/publisher/ducklake_data"]) {
+              if (!fs.existsSync(f)) { console.error(f + " does not exist"); process.exit(1); }
+              const owner = fs.statSync(f).uid;
+              if (owner !== 65532) { console.error(f + " is owned by uid " + owner); process.exit(1); }
+            }
+            fs.writeFileSync("/publisher/publisher_data/.write-probe", "");
+            fs.unlinkSync("/publisher/publisher_data/.write-probe");' \
+            || { echo "✗ the server is not writing as uid 65532"; exit 1; }
+          echo "✓ publisher.db, publisher_data and ducklake_data are owned by uid 65532"
+      - name: Assert a fresh volume on ducklake_data takes a DuckLake write as uid 65532
         # What the prepared directory is for: a named volume mounted there is
-        # seeded owned by uid 1000, so a DuckLake storage destination with a
+        # seeded owned by uid 65532, so a DuckLake storage destination with a
         # local bucketUrl can write Parquet into it with no chown. Uses the
         # image's baked duckdb CLI and the ducklake extension offline, with a
         # metadata-file catalog so no Postgres is needed. DATA_INLINING_ROW_LIMIT
@@ -558,34 +613,44 @@ jobs:
                 (DATA_PATH '/publisher/ducklake_data/data/', DATA_INLINING_ROW_LIMIT 0);
               CREATE TABLE l.t AS SELECT range AS x FROM range(1000);
               SELECT count(*) FROM l.t;" | grep -qx 1000 \
-            || { echo "✗ a fresh ducklake_data volume is not writable by uid 1000"; exit 1; }
-          docker run --rm -v smoke-ducklake:/d --entrypoint sh malloy-publisher:smoke-test \
-            -c 'find /d -name "*.parquet" -user 1000 | grep -q .' \
-            || { echo "✗ no Parquet file written as uid 1000"; exit 1; }
-          echo "✓ a fresh ducklake_data volume takes a DuckLake write as uid 1000"
+            || { echo "✗ a fresh ducklake_data volume is not writable by uid 65532"; exit 1; }
+          docker run --rm -v smoke-ducklake:/d malloy-publisher:smoke-test bun -e '
+            const fs = require("fs"), path = require("path");
+            let found = false;
+            const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+              const p = path.join(d, e.name);
+              if (e.isDirectory()) walk(p); else if (e.name.endsWith(".parquet") && fs.statSync(p).uid === 65532) found = true; } };
+            walk("/d");
+            process.exit(found ? 0 : 1);' \
+            || { echo "✗ no Parquet file written as uid 65532"; exit 1; }
+          echo "✓ a fresh ducklake_data volume takes a DuckLake write as uid 65532"
       - name: Assert the image runs on Bun and carries no Node or Python runtime
         run: |
           # The server is a Bun process and nothing in it spawns `node`, so the
-          # image installs no Node: the NodeSource package would also bring in
-          # python3 and its unfixed Debian CVEs. This pins that decision. Three
-          # things are checked against the running container: PID 1 is Bun (the
-          # image's CMD), a `node` command resolves to the Bun fallback the
-          # oven/bun base provides rather than to a real Node, and python3 is
-          # absent. Reaching 'serving' alone shows the server boots, not that
-          # a real Node did not quietly come back.
+          # image installs no Node, and nothing in it needs Python. This pins
+          # that decision. Three things are checked against the running
+          # container: PID 1 is Bun (the image's CMD), a `node` command resolves
+          # to the Bun fallback the hardened bun base provides rather than to a
+          # real Node, and python3 is absent from PATH. Reaching 'serving' alone
+          # shows the server boots, not that a real Node did not quietly come
+          # back.
           set -e
-          docker exec malloy-publisher-smoke sh -c '
-            exe=$(basename "$(readlink /proc/1/exe)")
-            [ "$exe" = bun ] || { echo "PID 1 is $exe, not bun"; exit 1; }
-            runtime=$(node -e "console.log(typeof Bun)")
-            [ "$runtime" = object ] || { echo "node resolves to a runtime where typeof Bun is $runtime, not Bun"; exit 1; }
-            if command -v python3 >/dev/null 2>&1; then echo "python3 is installed: $(command -v python3)"; exit 1; fi' \
-            || { echo "FAIL: the image is expected to run on Bun with no Node or Python runtime"; exit 1; }
+          docker exec malloy-publisher-smoke bun -e '
+            const fs = require("fs");
+            const exe = fs.readlinkSync("/proc/1/exe").split("/").pop();
+            if (exe !== "bun") { console.error("PID 1 is " + exe + ", not bun"); process.exit(1); }
+            for (const dir of (process.env.PATH || "").split(":")) {
+              if (dir && fs.existsSync(dir + "/python3")) { console.error("python3 is installed: " + dir + "/python3"); process.exit(1); }
+            }' \
+            || { echo "FAIL: the image is expected to run on Bun with no Python runtime"; exit 1; }
+          runtime=$(docker exec malloy-publisher-smoke node -e "console.log(typeof Bun)")
+          [ "$runtime" = object ] \
+            || { echo "FAIL: node resolves to a runtime where typeof Bun is $runtime, not Bun"; exit 1; }
           echo "OK: PID 1 is Bun, node resolves to Bun, and python3 is absent"
       - name: Assert package mounts need no writes, and a refused access names its errno
         # The step above proves the server CAN write where the image prepared
         # it to. This one proves a root-owned or read-only package mount still
-        # loads (nothing is written beside a zip), and that a write the uid-1000
+        # loads (nothing is written beside a zip), and that a write the uid-65532
         # server cannot make -- a publisher_data volume left root-owned by a
         # 0.8.x, an unreadable config or credentials file -- is reported with
         # its errno rather than a bare 500. Its own containers and volumes, on

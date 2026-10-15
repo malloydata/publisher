@@ -22,7 +22,7 @@ permissions: {}
 # bake did not put them and fetch them again.
 
 env:
-  BUN_VERSION: 1.3.13
+  BUN_VERSION: 1.4.3
   WINDOWS_USERPROFILE: "D:\\"
   WINDOWS_BUN_CACHE_DIR: "D:\\.bun\\install\\cache"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -67,8 +67,10 @@ jobs:
         if: runner.os != 'Windows'
         uses: actions/cache@v5
         with:
-          path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/openapi-generator-cli
+          key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock', 'e2e/bun.lock', 'examples/data-app/bun.lock', 'packages/server/k6-tests/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-
 
       - name: Install dependencies

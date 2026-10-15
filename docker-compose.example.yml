@@ -17,16 +17,18 @@
 # restarts, so the first-boot clone of sample packages from GitHub
 # only happens once.
 #
-# The server runs as uid 1000, not root. A new `publisher_data` volume
-# is created writable by it. One an earlier, root-run image created
-# needs a one-time chown through Compose, from this directory:
+# The server runs as uid 65532 (`nonroot`, the user of the Docker Hardened
+# Image it is built on), not root. A new `publisher_data` volume is created
+# writable by it. One an earlier image created, as root (before 0.9.0) or as
+# uid 1000 (0.9.x), needs a one-time chown through Compose, from this
+# directory:
 #
 #   docker compose run --rm --no-deps --user 0 --entrypoint chown \
-#     publisher -R 1000:1000 /publisher/publisher_data
+#     publisher -R 65532:65532 /publisher/publisher_data
 #
 # Not `docker run -v publisher_data:...`: Compose names the volume
 # `<project>_publisher_data`, so that would chown a new, empty one.
-# Any other writable volume you add must be prepared for uid 1000 too;
+# Any other writable volume you add must be prepared for uid 65532 too;
 # packages/server/README.docker.md explains how.
 
 services:
@@ -39,18 +41,19 @@ services:
       - "4040:4040" # MCP
     volumes:
       # Read only: the server only needs to read it, so bind it :ro. It must be
-      # readable by uid 1000 (a 0644 file is).
+      # readable by uid 65532 (a 0644 file is).
       - ./publisher.config.json:/publisher/publisher.config.json:ro
       # Written: a new named volume here is seeded from the image, owned by
-      # uid 1000. One created by an image older than 0.9.0 needs the one-time
-      # chown in the comment at the top of this file.
+      # uid 65532. One created by an earlier image (root before 0.9.0, uid 1000
+      # in 0.9.x) needs the one-time chown in the comment at the top of this
+      # file.
       - publisher_data:/publisher/publisher_data
       # Written, when a DuckLake storage destination's bucketUrl is a local
       # path. Same seeding as publisher_data; leave it out otherwise.
       # - ducklake_data:/publisher/ducklake_data
       # Read only: a key file for GOOGLE_APPLICATION_CREDENTIALS. A gcloud
-      # application-default credentials file is 0600 and uid 1000 cannot read
-      # it; bind a copy made with `sudo install -o 1000 -g 1000 -m 0400`.
+      # application-default credentials file is 0600 and uid 65532 cannot read
+      # it; bind a copy made with `sudo install -o 65532 -g 65532 -m 0400`.
       # - ./secrets/key.json:/var/secrets/google/key.json:ro
     # Uncomment to override defaults. See packages/server/README.docker.md
     # for the full env-var table.
@@ -61,11 +64,15 @@ services:
     # The first boot clones sample packages from GitHub, which can
     # take ~30s on a slow link; `start_period` keeps the container
     # marked "starting" (not "unhealthy") during that window.
+    # No shell and no curl in the image (it is a hardened runtime image), so
+    # the probe is a Bun one-liner, which runs as the server's own user.
     healthcheck:
       test:
         [
-          "CMD-SHELL",
-          "curl -fs http://localhost:4000/api/v0/status | grep -q '\"operationalState\":\"serving\"' || exit 1",
+          "CMD",
+          "bun",
+          "-e",
+          "const r = await fetch('http://localhost:4000/api/v0/status'); const s = await r.json(); process.exit(s.operationalState === 'serving' ? 0 : 1)",
         ]
       interval: 30s
       timeout: 5s
