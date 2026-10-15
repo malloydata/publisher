@@ -741,6 +741,57 @@ source: a is scoped_orders extend {
       );
    });
 
+   const clickableItem = () =>
+      screen.getByRole("menuitem", {
+         name: /^Clickable cells/,
+         hidden: true,
+      });
+
+   it("says which clicks it sets up, and that none act while editing", async () => {
+      // The renderer reports clicks on table cells only, never on a bar, and
+      // the builder renders tiles without click handling, because a press there
+      // selects the tile. The window says both, so the setting does not look
+      // broken when a click in the builder does nothing.
+      const doc = await openDocument(WITH_DIMENSION);
+      render(<ReportBuilder source={WITH_DIMENSION} document={doc} />);
+      fireEvent.click(screen.getByLabelText("Settings for x"));
+      fireEvent.click(clickableItem());
+      const dialog = screen.getByRole("dialog", { hidden: true });
+      expect(dialog.textContent).toContain(
+         "A click on a table cell sets a filter to its value, on this report or on the one it opens.",
+      );
+      expect(dialog.textContent).toContain(
+         "Bars, lines and points on a chart do not respond to a click.",
+      );
+      expect(dialog.textContent).toContain(
+         "Clicks work in the report, not while you edit it.",
+      );
+   });
+
+   it("warns on a chart tile that its bars will not click", async () => {
+      const BAR = WITH_DIMENSION.replace(
+         "  # colspan=6\n  view: x",
+         "  # colspan=6\n  # bar_chart\n  view: x",
+      );
+      expect(BAR).toContain("# bar_chart");
+      const doc = await openDocument(BAR);
+      render(<ReportBuilder source={BAR} document={doc} />);
+      fireEvent.click(screen.getByLabelText("Settings for x"));
+      expect(clickableItem().textContent).toContain(
+         "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.",
+      );
+      // Still offered: the tag is on the dimension, which a table tile on the
+      // same source can use.
+      expect(clickableItem().getAttribute("aria-disabled")).not.toBe("true");
+   });
+
+   it("adds no chart warning to a table tile", async () => {
+      const doc = await openDocument(WITH_DIMENSION);
+      render(<ReportBuilder source={WITH_DIMENSION} document={doc} />);
+      fireEvent.click(screen.getByLabelText("Settings for x"));
+      expect(clickableItem().textContent).toBe("Clickable cells…");
+   });
+
    it("offers no Drill when the source declares no dimension here", async () => {
       // A window whose only content is why its Apply is off is a dead end;
       // the menu leaves the entry out instead.

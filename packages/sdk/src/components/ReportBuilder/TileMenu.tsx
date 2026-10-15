@@ -62,6 +62,14 @@ const customChart = (lines: string[] | undefined) =>
    lines && lines.length === 1
       ? `This tile's chart line (${lines[0]}) is not one the builder models, so its chart cannot be changed here.`
       : `This tile has ${lines?.length ?? "several"} chart lines${lines ? ` (${lines.join(" and ")})` : ""}, so its chart cannot be changed here.`;
+/** Charts whose marks the renderer gives no click to: its click payload is a table cell or a dashboard item, never a mark. */
+const CLICKLESS_CHARTS = new Set<string>([
+   "bar_chart",
+   "line_chart",
+   "scatter_chart",
+]);
+const CHART_DOES_NOT_CLICK =
+   "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.";
 const INHERITED_CHART =
    "Declared on its source, so its chart is set in the model.";
 
@@ -141,6 +149,15 @@ export function TileMenu({
       : onDrills
         ? undefined
         : "Its source declares no dimension a click could filter by.";
+
+   // The renderer reports a click on a table cell only, so on a tile drawn as
+   // a chart the setting does nothing there. Said, not blocked: the tag is on
+   // the dimension, and a table tile over the same source does use it.
+   const drawn = chartState === "default" ? view?.chart : chartState;
+   const drillNote =
+      drawn !== undefined && CLICKLESS_CHARTS.has(drawn)
+         ? CHART_DOES_NOT_CLICK
+         : undefined;
 
    const subOpen = (kind: "chart") => (event: { currentTarget: HTMLElement }) =>
       setSub({ kind, anchor: event.currentTarget });
@@ -231,7 +248,11 @@ export function TileMenu({
                      onDrills?.();
                   }}
                >
-                  {label("Clickable cells…", undefined, drillBlocked)}
+                  {label(
+                     "Clickable cells…",
+                     undefined,
+                     drillBlocked ?? drillNote,
+                  )}
                </MenuItem>
             )}
             {query && onDuplicate && (

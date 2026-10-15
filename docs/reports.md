@@ -700,8 +700,9 @@ and numbers, and carries the tag.
 **What a reader sees.** Cells in a drillable **table** column take a pointer cursor, and turn blue and
 underlined under the pointer. They carry a button role and are reachable from the keyboard: one tab stop
 per drillable column, ArrowDown and ArrowUp to step a row, Home and End to jump to the ends, and Enter or
-Space to fire. Chart marks get no such affordance, so a report meant to be drilled wants at least one
-untagged (table) tile.
+Space to fire. A chart's bars, lines and points do not respond to a click at all, because the renderer
+reports clicks on table cells only, so a report meant to be drilled wants at least one untagged (table)
+tile.
 
 A destination the surface cannot honor is not marked and not offered, deliberately, since a dead link is
 worse than none; a `to=self` in a report that declares no control for its given is the usual case. Two

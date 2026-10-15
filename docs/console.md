@@ -95,7 +95,9 @@ is a Console convenience.
   pick the field (its type is shown), the control from five pictured kinds (a kind the field cannot
   take is greyed, with why), and, under **Choose tiles**, which tiles it applies to; a preview shows
   its button. **Clickable cells** is a switch per dimension, with where a click opens and which filter
-  it sets. Titles,
+  it sets. It applies to table cells: a chart's bars, lines and points do not respond to a click, and
+  the menu says so on a chart tile. Clicks work in the report, not in the builder, where a click
+  selects the tile. Titles,
   descriptions and text tiles are edited where they are shown: under the pointer they take a faint
   wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
   back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
