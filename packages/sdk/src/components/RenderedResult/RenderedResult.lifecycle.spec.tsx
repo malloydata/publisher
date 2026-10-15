@@ -31,6 +31,9 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
  * test's control so a render can be held mid-flight.
  */
 
+/** What the fake renderer reports the root draws as; undefined reports no metadata. */
+let rootRenderAs: string | undefined;
+
 /** Every viz the component has created, in order. */
 const vizzes: FakeViz[] = [];
 
@@ -43,7 +46,11 @@ class FakeViz {
    paint() {
       this.ready?.();
    }
-   setResult() {}
+   /** What the component handed the renderer. */
+   result: unknown;
+   setResult(result: unknown) {
+      this.result = result;
+   }
    render(element: HTMLElement) {
       this.stage = element;
       const painted = document.createElement("div");
@@ -57,7 +64,13 @@ class FakeViz {
       this.ready = callback;
    }
    getMetadata() {
-      return null;
+      const renderAs = rootRenderAs;
+      return renderAs === undefined
+         ? null
+         : {
+              getRootField: () => ({ key: "root", renderAs: () => renderAs }),
+              getPluginsForField: () => [],
+           };
    }
    getDrillMetadata() {
       return null;
@@ -91,6 +104,7 @@ const stagesIn = (container: HTMLElement): Element[] => {
 
 beforeEach(() => {
    vizzes.length = 0;
+   rootRenderAs = undefined;
 });
 
 describe("RenderedResult: the stage lifecycle", () => {
@@ -194,5 +208,58 @@ describe("RenderedResult: the stage lifecycle", () => {
       // A render resolving after unmount must not re-attach anything.
       act(() => vizzes[0].paint());
       expect(vizzes[0].removed).toBe(true);
+   });
+});
+
+describe("RenderedResult: how a chart reads", () => {
+   const barResult = (rows: number) =>
+      JSON.stringify({
+         annotations: [{ value: "# bar_chart\n" }],
+         schema: {
+            fields: [
+               { kind: "dimension", name: "carrier", annotations: [] },
+               { kind: "dimension", name: "flight_count", annotations: [] },
+            ],
+         },
+         data: {
+            kind: "array_cell",
+            array_value: Array.from({ length: rows }),
+         },
+      });
+
+   it("hands the renderer a chart whose unlabelled fields are titled", async () => {
+      rootRenderAs = "bar";
+      render(<RenderedResult result={barResult(3)} />);
+      await waitFor(() => expect(vizzes).toHaveLength(1));
+      await waitFor(() => expect(vizzes[0].result).toBeDefined());
+      const fields = (
+         vizzes[0].result as {
+            schema: {
+               fields: Array<{ annotations: Array<{ value: string }> }>;
+            };
+         }
+      ).schema.fields;
+      expect(fields[1].annotations[0].value).toBe('# label="Flight count"\n');
+   });
+
+   it("draws a many-bar chart wide enough for every bar, scrolling sideways", async () => {
+      rootRenderAs = "bar";
+      const view = render(<RenderedResult result={barResult(80)} />);
+      await waitFor(() => expect(vizzes).toHaveLength(1));
+      await waitFor(() => expect(vizzes[0].stage).not.toBeNull());
+      const stage = vizzes[0].stage!;
+      expect(parseInt(stage.style.minWidth, 10)).toBeGreaterThanOrEqual(640);
+      const box = view.container.firstElementChild as HTMLElement;
+      expect(box.style.overflowX).toBe("auto");
+   });
+
+   it("leaves a table's width to its box", async () => {
+      rootRenderAs = "table";
+      const view = render(<RenderedResult result={barResult(80)} />);
+      await waitFor(() => expect(vizzes).toHaveLength(1));
+      await waitFor(() => expect(vizzes[0].stage).not.toBeNull());
+      expect(vizzes[0].stage!.style.minWidth).toBe("");
+      const box = view.container.firstElementChild as HTMLElement;
+      expect(box.style.overflowX).toBe("");
    });
 });

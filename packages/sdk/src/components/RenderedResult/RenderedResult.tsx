@@ -29,6 +29,7 @@ import { readChartAnnotations } from "../../theme/readChartAnnotations";
 import { resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { loadMalloyRenderer } from "./loadRenderer";
+import { chartMinWidth, labelChartFields } from "./chartPresentation";
 import type { ResolvedTheme } from "../../theme/types";
 import {
    DRILL_CELL_CLASS,
@@ -663,7 +664,9 @@ function RenderedResultInner({
          try {
             // The renderer accepts a Malloy Result; we don't import that type
             // in the SDK to avoid pinning to the malloy core types here.
-            viz.setResult(parsed);
+            // A chart's unlabelled fields titled the way a reader says them;
+            // see `chartPresentation`.
+            viz.setResult(labelChartFields(parsed));
             // Read the root's render type before painting, so the first
             // measurement already knows whether it is worth taking. Metadata is
             // complete as soon as the result is set; the DOM is not.
@@ -691,6 +694,17 @@ function RenderedResultInner({
             // — that the rendered markup does not spell out anywhere.
             stage.dataset.malloyRenderAs = renderAs ?? "unknown";
             stage.dataset.malloySizing = resultSizing(renderAs, strategy);
+            // A plotted chart is drawn no narrower than it reads, and its
+            // panel scrolls sideways past that, rather than squeezing it until
+            // the renderer drops bars under "Showing limited results".
+            const minWidth = chartMinWidth(renderAs, parsed);
+            stage.style.minWidth =
+               minWidth === undefined ? "" : `${minWidth}px`;
+            // Only a chart scrolls here, and only sideways: anything taller
+            // than its box is the panel's to scroll, which an overflow set on
+            // this box would take over on both axes.
+            element.style.overflowX = minWidth === undefined ? "" : "auto";
+            element.style.overflowY = minWidth === undefined ? "" : "hidden";
             viz.render(stage);
 
             // Mark the cells a `# drill` makes clickable, so they read as
