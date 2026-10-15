@@ -119,6 +119,7 @@ import {
    FRAME_ANCESTORS_ENV,
    frameAncestorsMiddleware,
 } from "./frame_ancestors";
+import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
 
 // The first statement this module runs. On an unsupported Node this exits
 // non-zero here, before any argument parsing, any storage init, and any
@@ -262,6 +263,10 @@ getPersistCollisionEnforce();
 // ("false", "0", "disabled") would boot clean and then fail every query and
 // every build — the one thing the metadata path promises never to do.
 getQueryMetadataMode();
+
+// Before any compile on this thread: a connection-test, an MCP compile or a
+// package load on the main thread would otherwise refuse a SQL Server model.
+acceptBundledExperimentalDialects();
 
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";

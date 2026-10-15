@@ -145,6 +145,7 @@ import {
 } from "../service/given";
 import { errMessage, ignoreDotfiles } from "../utils";
 import { RpcWaitAccountant } from "./rpc_wait_accountant";
+import { acceptBundledExperimentalDialects } from "../service/experimental_dialects";
 import {
    setEligibilityRefusalSink,
    type EligibilityRefusalReason,
@@ -193,6 +194,9 @@ if (!parentPort) {
       "package_load_worker.ts must be loaded inside a worker_threads Worker",
    );
 }
+
+// This thread has its own dialect registry; see experimental_dialects.ts.
+acceptBundledExperimentalDialects();
 
 const port = parentPort;
 

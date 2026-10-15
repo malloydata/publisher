@@ -22,6 +22,8 @@ import {
    buildPoolOptions,
    SnowflakeConnection,
 } from "@malloydata/db-snowflake";
+import "@malloydata/db-sqlserver";
+import type { SQLServerConnection } from "@malloydata/db-sqlserver";
 import "@malloydata/db-trino";
 import type { TrinoConnection } from "@malloydata/db-trino";
 import {
@@ -105,6 +107,7 @@ export type InternalConnection = ApiConnection & {
    trinoConnection?: components["schemas"]["TrinoConnection"];
    databricksConnection?: components["schemas"]["DatabricksConnection"];
    mysqlConnection?: components["schemas"]["MysqlConnection"];
+   sqlserverConnection?: components["schemas"]["SqlserverConnection"];
    duckdbConnection?: components["schemas"]["DuckdbConnection"];
    ducklakeConnection?: components["schemas"]["DucklakeConnection"];
 };
@@ -3481,6 +3484,7 @@ export async function testConnectionConfig(
                | SnowflakeConnection
                | TrinoConnection
                | MySQLConnection
+               | SQLServerConnection
          ).test();
       }
 
