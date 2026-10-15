@@ -40,7 +40,9 @@ jobs:
         id: bun-cache
         uses: actions/cache@v4
         with:
-          path: ~/.bun/install/cache
+          path: |
+            ~/.bun/install/cache
+            ~/.cache/openapi-generator-cli
           key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-

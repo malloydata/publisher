@@ -77,8 +77,9 @@ Docker's pipeline, which is the point of submitting rather than self-publishing.
 Three things the build environment taught, each now in the definition: its JDK package registers
 no `/usr/bin/java`, so the build step sets `JAVA_HOME` from `/usr/lib/jvm`; a build stage gets only
 the packages it lists (`gpg` for the Bun checksum, `bunx` as a symlink); and the OpenAPI generator
-downloads its jar from Maven Central at build time, which a reviewer may ask to see pinned as a
-`files:` entry.
+downloads its jar from Maven Central at build time. That version is pinned in the repository's
+`openapitools.json`, the build's cache keeps the jar between runs, and `scripts/generate-api-types.mjs`
+retries a failed download, but a reviewer may still ask to see the jar as a checksummed `files:` entry.
 
 ## Submitting to the catalog
 
@@ -98,8 +99,9 @@ There is no partner programme to join first. Two steps, in this order:
    Publisher, which stays MIT and is referenced, not vendored). Expect the review to ask for a
    build from the catalog's own CI and to adjust conventions a local build cannot settle: whether
    the `tests` block ran (the build log does not show it), whether the maintainers want the
-   OpenAPI generator jar pinned, and how they prefer git's closure handled (the frontend resolved
-   `git` without `perl`, matching the root `Dockerfile`).
+   OpenAPI generator jar vendored as a `files:` entry rather than fetched, and how they prefer
+   git's closure handled (the frontend resolved `git` without `perl`, matching the root
+   `Dockerfile`).
 
 The image then lives at `dhi.io/malloy-publisher:<tag>`, which anyone can pull, and which an
 organisation with a DHI subscription can mirror into its own namespace and customise.

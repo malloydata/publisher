@@ -188,11 +188,11 @@ ENV NODE_ENV=production
 WORKDIR /publisher
 
 # Copy package files first for better layer caching
-COPY package.json bun.lock api-doc.yaml ./
+COPY package.json bun.lock api-doc.yaml openapitools.json ./
 # patchedDependencies in package.json point at patches/; bun install refuses to
 # run without the patch files, so they have to arrive before it does.
 COPY patches/ ./patches/
-COPY scripts/add-license-headers.mjs ./scripts/
+COPY scripts/add-license-headers.mjs scripts/generate-api-types.mjs ./scripts/
 COPY packages/server/package.json ./packages/server/package.json
 COPY packages/app/package.json ./packages/app/package.json
 COPY packages/sdk/package.json ./packages/sdk/package.json
@@ -201,10 +201,13 @@ COPY packages/sdk/package.json ./packages/sdk/package.json
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install
 
-# Build SDK first
+# Build SDK first. Its build generates the API client with
+# openapi-generator-cli, whose jar (pinned in openapitools.json) is cached
+# under ~/.cache so a rebuild does not reach Maven Central again.
 COPY packages/sdk/ ./packages/sdk/
 WORKDIR /publisher/packages/sdk
 RUN --mount=type=cache,target=/root/.bun \
+    --mount=type=cache,target=/root/.cache/openapi-generator-cli \
     bun run build
 
 # Build app

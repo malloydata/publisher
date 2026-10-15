@@ -37,6 +37,7 @@ malloy-samples/
 docs/
 scripts/*
 !scripts/add-license-headers.mjs
+!scripts/generate-api-types.mjs
 .github/
 
 # Exclude development files
