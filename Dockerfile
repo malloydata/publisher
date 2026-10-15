@@ -162,7 +162,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 COPY packages/server/scripts/bake-duckdb-extensions.js ./packages/server/scripts/
-RUN cd packages/server && HOME=/root bun scripts/bake-duckdb-extensions.js
+WORKDIR /publisher/packages/server
+RUN HOME=/root bun scripts/bake-duckdb-extensions.js
 RUN --mount=type=bind,from=adbc-driver,source=/out,target=/tmp/adbc \
     find /root/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
       | while read -r d; do cp /tmp/adbc/libadbc_driver_snowflake.so /tmp/adbc/libadbc_driver_snowflake.real.so "$d/"; done
