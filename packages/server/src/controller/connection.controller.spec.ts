@@ -1187,6 +1187,41 @@ describe("ConnectionController getConnectionSqlSource error mapping", () => {
       );
    });
 
+   it("answers a statement Postgres rejected as a 400 with the driver's message", async () => {
+      // node-pg's DatabaseError, as fetchSelectSchema lets it through: prod
+      // 2026-10-13, a column the customer dropped while their model still
+      // selected it. Classified as 502 before, this paged the router SLO.
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(
+            Object.assign(new Error('column "sundance_name" does not exist'), {
+               code: "42703",
+            }),
+         ),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         InvalidArgumentError,
+      );
+      await expect(getSqlSource(controller)).rejects.toThrow(
+         'column "sundance_name" does not exist',
+      );
+   });
+
+   it("answers a table the statement names but Postgres lacks as not found", async () => {
+      const { controller } = buildSqlController(
+         sinon.stub().rejects(
+            Object.assign(
+               new Error('relation "public.spaces" does not exist'),
+               {
+                  code: "42P01",
+               },
+            ),
+         ),
+      );
+      await expect(getSqlSource(controller)).rejects.toBeInstanceOf(
+         TableNotFoundError,
+      );
+   });
+
    it("preserves the message of a thrown string", async () => {
       // `(error as Error).message` on a thrown string is undefined, which lost
       // the only diagnostic the caller had.
@@ -1198,6 +1233,126 @@ describe("ConnectionController getConnectionSqlSource error mapping", () => {
       await expect(getSqlSource(controller)).rejects.toThrow(
          "plain string failure",
       );
+   });
+});
+
+describe("ConnectionController.getConnectionQueryData statement rejection", () => {
+   afterEach(() => sinon.restore());
+
+   it("answers a statement Postgres rejected as a 400, not an upstream fault", async () => {
+      // Same classification as sqlSource: runSQL lets node-pg's DatabaseError
+      // through, and its SQLSTATE says the statement, not the connection, is
+      // what the caller has to fix.
+      const runSQL = sinon.stub().rejects(
+         Object.assign(new Error('column "sundance_name" does not exist'), {
+            code: "42703",
+         }),
+      );
+      const { controller } = buildController(runSQL);
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT sundance_name FROM public.spaces",
+            "",
+         ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+   });
+
+   it("answers a table the statement names but Postgres lacks as not found, on this path too", async () => {
+      // sqlRunFailure is the only place the sqlQuery wiring lives, and the
+      // router's retry suppression depends on the 404 carrying
+      // TABLE_NOT_FOUND here as on sqlSource.
+      const { controller } = buildController(
+         sinon
+            .stub()
+            .rejects(
+               Object.assign(
+                  new Error('relation "public.spaces" does not exist'),
+                  { code: "42P01" },
+               ),
+            ),
+      );
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT 1 FROM public.spaces",
+            "",
+         ),
+      ).rejects.toBeInstanceOf(TableNotFoundError);
+   });
+
+   it("classifies the same on the streaming path Postgres actually takes in prod", async () => {
+      // Postgres canStream()s, so prod goes through runSQLStream and
+      // streamSqlWithBudget rethrows the driver error unwrapped. Pin that
+      // the SQLSTATE survives that path, not only buffered runSQL.
+      const fakeConnection = {
+         canStream(): true {
+            return true;
+         },
+         // eslint-disable-next-line require-yield
+         async *runSQLStream(): AsyncIterableIterator<QueryRecord> {
+            throw Object.assign(
+               new Error('column "sundance_name" does not exist'),
+               { code: "42703" },
+            );
+         },
+      } as unknown as StreamingConnection;
+      const fakeStore = {
+         getEnvironment: sinon.stub().resolves({
+            assertCanAdmitQuery: sinon.stub().returns(undefined),
+         }),
+      } as unknown as EnvironmentStore;
+      const controller = new ConnectionController(fakeStore);
+      sinon
+         .stub(
+            controller as unknown as {
+               getMalloyConnection: (...args: unknown[]) => Promise<Connection>;
+            },
+            "getMalloyConnection",
+         )
+         .resolves(fakeConnection as unknown as Connection);
+      await expect(
+         controller.getConnectionQueryData(
+            "env",
+            "conn",
+            "SELECT sundance_name FROM public.spaces",
+            "",
+         ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
+   });
+
+   it("still answers a codeless driver failure as a 502-class ConnectionError", async () => {
+      const { controller } = buildController(
+         sinon.stub().rejects(new Error("something the driver said")),
+      );
+      await expect(
+         controller.getConnectionQueryData("env", "conn", "SELECT 1", ""),
+      ).rejects.toBeInstanceOf(ConnectionError);
+   });
+});
+
+describe("ConnectionController.getConnectionTemporaryTable statement rejection", () => {
+   afterEach(() => sinon.restore());
+
+   it("answers a statement Postgres rejected in CREATE TEMPORARY TABLE AS as a 400", async () => {
+      // The same sqlRunFailure as sqlQuery, behind the timeout race.
+      const manifestTemporaryTable = sinon.stub().rejects(
+         Object.assign(new Error('column "sundance_name" does not exist'), {
+            code: "42703",
+         }),
+      );
+      const { controller } = buildTemporaryTableController(
+         manifestTemporaryTable,
+      );
+      await expect(
+         controller.getConnectionTemporaryTable(
+            "env",
+            "conn",
+            "SELECT sundance_name FROM public.spaces",
+         ),
+      ).rejects.toBeInstanceOf(InvalidArgumentError);
    });
 });
 
