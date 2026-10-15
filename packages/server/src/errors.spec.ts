@@ -365,6 +365,120 @@ describe("isConnectionFailure", () => {
       expect(isConnectionFailure(wrapped)).toBe(true);
    });
 
+   it("recognizes tedious's unreachable-server codes, as mssql rewraps them", () => {
+      // tedious raises a refused or cut TCP connect as ESOCKET, a connect
+      // timeout as ETIMEOUT and a failed SQL Browser lookup as EINSTLOOKUP;
+      // the mssql pool copies the code onto its own ConnectionError.
+      for (const code of ["ESOCKET", "ETIMEOUT", "EINSTLOOKUP"]) {
+         const error = Object.assign(
+            new Error("Failed to connect to db.example:1433 in 15000ms"),
+            { code, name: "ConnectionError" },
+         );
+         expect(isConnectionFailure(error)).toBe(true);
+         expect(isCredentialRejection(error)).toBe(false);
+      }
+      // A connection cut while a query ran reaches the caller as mssql's
+      // RequestError, still carrying ESOCKET.
+      expect(
+         isConnectionFailure(
+            Object.assign(new Error("Connection lost - read ECONNRESET"), {
+               code: "ESOCKET",
+               name: "RequestError",
+            }),
+         ),
+      ).toBe(true);
+   });
+
+   it("does not read a SQL Server request timeout as a server that is down", () => {
+      // tedious's ETIMEOUT on a RequestError is a query that outran
+      // requestTimeoutMs; the server was reached and ran it. Answering it as
+      // unreachable would tell the caller to retry the slow query.
+      const error = Object.assign(
+         new Error("Timeout: Request failed to complete in 600000ms"),
+         { code: "ETIMEOUT", name: "RequestError" },
+      );
+      expect(isConnectionFailure(error)).toBe(false);
+      expect(databaseAccessFailure(error)).toBeUndefined();
+   });
+
+   /**
+    * The chain the driver produces, as measured under Bun against a SQL
+    * Server with a self-signed certificate: mssql's ConnectionError carries
+    * tedious's code and keeps tedious's error on `originalError`, not
+    * `cause`; tedious's error carries Node's TLS error on `cause`.
+    */
+   function mssqlWrapped(
+      code: string,
+      message: string,
+      inner?: Error,
+      name = "ConnectionError",
+   ): Error {
+      const tedious = Object.assign(new Error(message, { cause: inner }), {
+         code,
+      });
+      const mssql = Object.assign(new Error(message), { code, name });
+      Object.defineProperty(mssql, "originalError", {
+         enumerable: true,
+         value: tedious,
+      });
+      return mssql;
+   }
+
+   it("does not read a SQL Server certificate the client cannot verify as a server that is down", () => {
+      // With encrypt on and trustServerCertificate off, a self-signed
+      // certificate fails the TLS handshake; tedious words it as an ESOCKET
+      // whose cause is Node's TLS error. A retry cannot fix it.
+      const tls = Object.assign(new Error("self signed certificate"), {
+         code: "DEPTH_ZERO_SELF_SIGNED_CERT",
+      });
+      const error = mssqlWrapped(
+         "ESOCKET",
+         "Failed to connect to db.example:1433 - self signed certificate",
+         tls,
+      );
+      // The outer error has no `cause`: the walk has to follow originalError
+      // to find the certificate, which is what this pins.
+      expect(error.cause).toBeUndefined();
+      expect(isConnectionFailure(error)).toBe(false);
+      expect(databaseAccessFailure(error)).toBeUndefined();
+   });
+
+   it("still reads an mssql-wrapped refused connect as unreachable", () => {
+      const refused = Object.assign(
+         new Error("connect ECONNREFUSED 127.0.0.1:1"),
+         { code: "ECONNREFUSED" },
+      );
+      expect(
+         isConnectionFailure(
+            mssqlWrapped(
+               "ESOCKET",
+               "Failed to connect to 127.0.0.1:1 - Could not connect (sequence)",
+               refused,
+            ),
+         ),
+      ).toBe(true);
+   });
+
+   it("recognizes tedious's unreachable wording when only the text survives", () => {
+      // The SQL Server connector's table lookup returns a failure as text with
+      // the code dropped.
+      for (const message of [
+         "Failed to connect to 127.0.0.1:1 - Could not connect (sequence)",
+         "Failed to connect to db.example:1433 in 15000ms",
+         "Failed to connect to db.example:1433 (redirected from gw.example:1433) - connect ECONNRESET",
+      ]) {
+         expect(isConnectionFailure(new Error(message))).toBe(true);
+      }
+      // A certificate failure in the same wording is config, not unreachable.
+      for (const message of [
+         "Failed to connect to db.example:1433 - self signed certificate",
+         "Failed to connect to db.example:1433 - unable to verify the first certificate",
+         "Failed to connect to db.example:1433 - Hostname/IP does not match certificate's altnames: IP: 10.0.0.5 is not in the cert's list: ",
+      ]) {
+         expect(isConnectionFailure(new Error(message))).toBe(false);
+      }
+   });
+
    it("recognizes a Postgres connection SQLSTATE and a server shutdown", () => {
       // node-pg puts the SQLSTATE in `code`.
       for (const code of ["08006", "08001", "57P01"]) {
@@ -509,9 +623,29 @@ describe("isCredentialRejection", () => {
       { code: "ER_ACCESS_DENIED_ERROR", fatal: true },
    );
 
-   it("recognizes a rejected login from Postgres, MySQL, Snowflake and BigQuery", () => {
+   // tedious: every login the server refuses is an ELOGIN carrying the
+   // server's own message; a wrong password is its 18456.
+   // As the driver produces it: mssql's ConnectionError copies the code and
+   // keeps tedious's error on originalError.
+   const sqlserver = Object.assign(new Error("Login failed for user 'sa'."), {
+      code: "ELOGIN",
+      name: "ConnectionError",
+   });
+   Object.defineProperty(sqlserver, "originalError", {
+      enumerable: true,
+      value: Object.assign(new Error("Login failed for user 'sa'."), {
+         code: "ELOGIN",
+      }),
+   });
+
+   it("recognizes a rejected login from Postgres, MySQL, SQL Server, Snowflake and BigQuery", () => {
       expect(isCredentialRejection(postgres)).toBe(true);
       expect(isCredentialRejection(mysql)).toBe(true);
+      expect(isCredentialRejection(sqlserver)).toBe(true);
+      expect(isConnectionFailure(sqlserver)).toBe(false);
+      expect(databaseAccessFailure(sqlserver)).toBeInstanceOf(
+         ConnectionAuthError,
+      );
       // Snowflake's key-pair failure, as staging logged it, with its code.
       expect(
          isCredentialRejection(

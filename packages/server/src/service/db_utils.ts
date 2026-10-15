@@ -285,6 +285,51 @@ async function getSchemasForPostgres(
    }
 }
 
+/**
+ * A SQL Server database holds schemas (`dbo` by default), so the list is the
+ * schemas that own at least one table or view, the way a modeler addresses
+ * one: `connection.table('schema.table')`. Read from `information_schema.tables`
+ * rather than `information_schema.schemata`, which also lists the fixed-role
+ * schemas (`db_owner`, `db_datareader`, ...) that never hold a table; and from
+ * that view rather than `sys.tables`, so a schema holding only views is listed,
+ * as the column listing below (`information_schema.columns`) includes them.
+ */
+async function getSchemasForSQLServer(
+   connection: ApiConnection,
+   malloyConnection: Connection,
+): Promise<ApiSchema[]> {
+   if (!connection.sqlserverConnection) {
+      throw new Error("SQL Server connection is required");
+   }
+   try {
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         "SELECT DISTINCT table_schema AS schema_name FROM information_schema.tables ORDER BY table_schema",
+      );
+      const rows = standardizeRunSQLResult(result);
+      return rows.map((row: unknown) => {
+         const typedRow = row as Record<string, unknown>;
+         const schemaName = String(
+            typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+         );
+         return {
+            name: schemaName,
+            isHidden: false,
+            isDefault: schemaName === "dbo",
+         };
+      });
+   } catch (error) {
+      logger.error(
+         `Error getting schemas for SQL Server connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get schemas for SQL Server connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
+      );
+   }
+}
+
 async function getSchemasForMySQL(
    connection: ApiConnection,
 ): Promise<ApiSchema[]> {
@@ -1036,6 +1081,8 @@ export async function getSchemasForConnection(
          return getSchemasForPostgres(connection, malloyConnection);
       case "mysql":
          return getSchemasForMySQL(connection);
+      case "sqlserver":
+         return getSchemasForSQLServer(connection, malloyConnection);
       case "snowflake":
          return getSchemasForSnowflake(connection, malloyConnection);
       case "trino":
@@ -1333,6 +1380,13 @@ export async function listTablesForSchema(
             malloyConnection,
             tableNames,
          );
+      case "sqlserver":
+         return listTablesForSQLServer(
+            connection,
+            schemaName,
+            malloyConnection,
+            tableNames,
+         );
       case "snowflake":
          return listTablesForSnowflake(
             connection,
@@ -1482,6 +1536,54 @@ async function listTablesForMySQL(
       );
       throw new Error(
          `Failed to get tables for MySQL schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
+         { cause: error },
+      );
+   }
+}
+
+/**
+ * A SQL Server Unicode string literal, `N'…'`. Here rather than in
+ * {@link sqlLiteral}, which serves dialects with no `N'…'` syntax.
+ */
+function sqlserverNLiteral(value: string): string {
+   return `N'${sqlLiteral(value, "sqlserver")}'`;
+}
+
+/** {@link sqlInFilter} for SQL Server, with each value a Unicode literal. */
+function sqlserverInFilter(columnName: string, values?: string[]): string {
+   if (!values || values.length === 0) return "";
+   return `AND ${columnName} IN (${values.map(sqlserverNLiteral).join(", ")})`;
+}
+
+async function listTablesForSQLServer(
+   connection: ApiConnection,
+   schemaName: string,
+   malloyConnection: Connection,
+   tableNames?: string[],
+): Promise<ApiTable[]> {
+   if (!connection.sqlserverConnection) {
+      throw new Error("SQL Server connection is required");
+   }
+   try {
+      // The SQL Server connector returns rows as plain objects keyed by column
+      // name, so no row_to_json wrapping as for Postgres. Every literal is
+      // N'…': a plain '…' is converted to the database's code page before it
+      // is compared, so under a Latin1 collation a schema named `Продажи`
+      // becomes question marks and matches nothing. The information_schema
+      // columns are nvarchar, so the Unicode literal compares as written.
+      const result = await runIntrospectionSQL(
+         malloyConnection,
+         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = ${sqlserverNLiteral(schemaName)} ${sqlserverInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+      );
+      const rows = standardizeRunSQLResult(result);
+      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+   } catch (error) {
+      logger.error(
+         `Error getting tables for SQL Server schema ${schemaName} in connection ${connection.name}`,
+         { error },
+      );
+      throw new Error(
+         `Failed to get tables for SQL Server schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
          { cause: error },
       );
    }

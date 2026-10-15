@@ -236,7 +236,7 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 ### Run anywhere
 
 - **Any data.** DuckDB is built in for CSV, Parquet, JSON, and Excel; connect BigQuery, Snowflake,
-  Postgres, MySQL, Trino, Databricks, MotherDuck, and DuckLake — [docs/connections.md](docs/connections.md).
+  Postgres, MySQL, SQL Server, Trino, Databricks, MotherDuck, and DuckLake — [docs/connections.md](docs/connections.md).
 - **Any host.** `npx`, Docker, or Docker Compose, in minutes — [docs/deployment.md](docs/deployment.md).
 - **Alongside dbt.** Where Malloy and dbt fit together, and the plan to close the gaps —
   [docs/dbt-roadmap.md](docs/dbt-roadmap.md).

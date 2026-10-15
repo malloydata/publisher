@@ -21,19 +21,27 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — The builder shows the filters a report reads through its model; the skills put a reader's filters in the report
+## [Unreleased] — SQL Server connections
+
+A connection of `type: "sqlserver"` reaches Microsoft SQL Server through `@malloydata/db-sqlserver` (Malloy 0.0.435): a SQL login over TCP with `server`, `port`, `database`, `user`, `password`, `encrypt` (on by default), `trustServerCertificate`, `hostNameInCertificate` and `instanceName`, the connector's own field names. The Console's connection dialogs offer it, the schema browser lists the schemas that own a table or a view (`dbo` the default) and a table is addressed `schema.table`. Schema and table names are matched as Unicode, so a non-ASCII name lists under any collation. The password is write-only, as for every other type, and a port that is not an integer from 1 to 65535 fails the config at load, naming the value.
+
+The dialect is experimental upstream; the server accepts it for every compile, so a model needs no `##! experimental.dialect.sqlserver` pragma. The connection is read-only: a colocated `#@ persist` on a SQL Server source is refused at load with the new `RefusedSource.reason` value `read_only_dialect`, and the source serves live. A rejected login answers as rejected credentials (424) and an unreachable server as unreachable (502). A certificate the client cannot verify is neither, since a retry cannot fix it: it answers as any unclassified driver failure on that route does (a 500 on schema and table listing), the server log names the certificate, and the connection test returns the driver's message naming it. A query that outruns `requestTimeoutMs` is likewise not read as an unreachable server.
+
+Not covered yet, as for Postgres in 0.9.7: on the single-table lookup (`…/tables/{tablePath}`) a refused login answers as a plain driver error rather than 424, because the driver returns that failure as text with its code dropped. An unreachable server is recognized there from the text and answers 502, and a table that does not exist answers 404. Every login refusal answers 424, including a transient one such as a paused Azure SQL serverless database once the driver's retries are spent, since the driver drops the server's error number. See [docs/connections.md](docs/connections.md#sql-server-type-sqlserver).
+
+## [0.9.11] — The builder shows the filters a report reads through its model; the skills put a reader's filters in the report
 
 **The builder's filter row now matches the reader's.** A report whose tiles read a given through the model (a source's own `where: Manufacturer ~ $manufacturer_filter`) showed that filter in the reader and not in the builder, which drew only givens bound in the report file. The builder now draws it too, after the report's own filters, in the manifest's order. It can be set, as in the reader, but has no remove badge and no settings: its popover says where it is set and is changed: the model, or a `where:` on this report's own `source:` that applies it to every tile there. Any filter's popover in the builder, a fixed one included, can **open the report with its current value**, written as the report's starting value (`## artifact { givens { … } }`), or put it back to its default; and a filter a model sets offers **Open the model** when the host passes `ReportEditor`'s `onOpenModel(modelPath)` (the Console opens the model's page). `previewGivens` takes the given names read through the model as a third argument (`givensReadThroughModel` computes them), and `FilterEditState` gains `fixed`, the reason a filter cannot be changed here.
 
 **The skills now say where a filter belongs.** A filter a reader picks on a dashboard or notebook (a manufacturer, a date range, a "major only" toggle) is declared in the report and bound on its tiles, and the model's sources are left unfiltered. A given stays in the model only when the data's meaning or access depends on it: a gate, a value every query must supply, a parameter a field is defined with, or scoping meant for every consumer. `malloy-model`, `malloy-reports` (with a before-and-after worked example), `malloy-analysis-report` and `malloy-define` are updated, and an agent that used to put such a filter in the source now puts it in the report.
 
-## [Unreleased] — A required filter asks for a value instead of failing every tile
+## [0.9.11] — A required filter asks for a value instead of failing every tile
 
 **A given with no default is now `required: true`** on every given the API publishes (`Given.required`, on the model surface and in a report's manifest). A query that reads one fails until a value is supplied, and a report used to run every tile straight into the compiler's "Given 'RECALL_YEAR' has no value and no default…". Now the reader and the builder run no tile that reads an unset required filter: each such tile says "Waiting for Recall Year.", the page says "Pick a value for Recall Year to see this report.", and the filter's button reads "Required" with a warning edge. Tiles that don't read it run as before, and setting a value runs the rest. A server or proxy that does not send `required` leaves everything running as before.
 
 **In the builder:** a tile with no `# colspan` beside a sized one is drawn as wide as the reader draws it (at least 240px), not one column wide, and its width handle starts from that width; opening a report writes nothing. A report held as text that did not compile, or whose host's `compileSource` refused it, no longer runs its tiles into "Reference to undefined object": they are drawn with "Not run: this document did not compile.", and the problem is said once above the page.
 
-## [Unreleased] — A model's path is in the declared `path` field; hosts own a report's staleness and its drafts
+## [0.9.11] — A model's path is in the declared `path` field; hosts own a report's staleness and its drafts
 
 **`GET …/models/{path}` now sets `path`**, the field `api-doc.yaml` declares, which it used to leave null while sending the same value as `modelPath`, a field the spec never declared. A client generated from the spec, or a proxy that re-serializes the response through it, dropped `modelPath` and so had no path at all. Behind such a proxy the builder's Add a tile previewed every view against `models//query` (a 405) and could write an import of `""` for a source the report did not import yet. `modelPath` is still sent, deprecated: read `path`. The builder also no longer depends on either: it uses the path it asked for, so it works behind such a proxy even against an older server.
 
@@ -45,7 +53,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 **`clearReportDraft` and `reportDraftKey` are exported from `@malloy-publisher/sdk`**, for a host that deletes, renames or replaces a report itself and wants the builder's kept edits gone with it. `clearReportDraft({ environmentName, packageName, path })` drops every draft of that report in this browser, on any server and version, and `server` or `versionId` narrow it. `reportDraftKey(…)` is the key the builder keeps a draft under, and `clearReportDraft(key)` drops that one.
 
-## [Unreleased] — A caller's extend of a gated source, or of a model named query, now follows the gate it inherits
+## [0.9.11] — A caller's extend of a gated source, or of a model named query, now follows the gate it inherits
 
 A caller who sends `source: mine is orders extend {}` and `run: mine` got a 403 from `/compile` that `/query` did not give, even when the `#(authorize)` lock on `orders` admitted them (#1400). `/compile` now decides it as `/query` does.
 
@@ -53,7 +61,7 @@ A caller who sends `source: mine is orders extend {}` and `run: mine` got a 403 
 
 A derivation whose chain cannot be proven stays refused: a named query reached through an import, a chain past 64 names, a composite member with a row filter. See [docs/authorize.md](docs/authorize.md).
 
-## [Unreleased] — `sslmode=no-verify` in a Postgres connection string no longer breaks DuckDB attaches
+## [0.9.11] — `sslmode=no-verify` in a Postgres connection string no longer breaks DuckDB attaches
 
 A raw Postgres `connectionString` with `sslmode=no-verify` (the spelling node-pg takes for "encrypt, don't verify") failed to attach through DuckDB with libpq's `invalid sslmode value`. The string is now handed to libpq with `sslmode=require` in its place, for an attached database, a federated source and a DuckLake catalog alike. Queries through the Postgres driver still read the string as written, so `no-verify` keeps its meaning there.
 
@@ -61,7 +69,7 @@ The other node-pg-only URI spellings libpq rejects are normalized the same way: 
 
 **Deployment `PGSSLMODE=no-verify`** now means `require` on an attach (it previously mapped to `disable`, i.e. plaintext), and is applied to a raw connection string that sets no `sslmode` of its own. A deployment that relied on that to attach a server without TLS now fails the attach; set `PGSSLMODE=disable` or the connection's own `sslmode` for such a server.
 
-## [Unreleased] — A host can theme the report reader and builder to its own design system
+## [0.9.11] — A host can theme the report reader and builder to its own design system
 
 **`ServerProvider` (and `ThemeProvider`) take `ui`: the chrome's design tokens.** Radii (control, tile, menu, dialog), control and chip heights, the type scale (page title, tile title, prose, control, caption, label, code), the mono face and the menu shadow, any subset, the rest staying the SDK's. Every report and builder surface reads them from the theme (`theme.ui`) instead of the fixed values it drew with before, so an embedding app such as Credible matches its own system by passing its values. They are the host's, not the server's, so they are a prop rather than part of the `Theme` object. Defaults are unchanged: a host that passes nothing sees no difference.
 
@@ -69,7 +77,7 @@ The other node-pg-only URI spellings libpq rejects are normalized the same way: 
 
 `CONTROL_RADIUS`, `TILE_RADIUS`, `DIALOG_RADIUS`, `CONTROL_HEIGHT_PX`, `CHIP_HEIGHT_PX` and `TYPE` remain, deprecated, as the defaults. `AppDialog` takes `className` and draws its corners in `ui.radius.dialog`. See [docs/theming.md](docs/theming.md#embedding-matching-a-hosts-design-system).
 
-## [Unreleased] — The builder's windows: Add a tile, Add a filter and Clickable cells, redrawn
+## [0.9.11] — The builder's windows: Add a tile, Add a filter and Clickable cells, redrawn
 
 **Add a tile** is every view in the package in one searchable list, grouped by source, each by its title and Malloy name with its chart's icon; the arrow keys move and Enter adds. The picked view runs beside it as the tile it would add, with the page's filters, over its Title and a row of only the charts it can take. The Query / Text toggle is gone: **Add text instead** is in the footer. **Add a filter** shows each field's type, offers the control as five pictured kinds (one the field cannot take is greyed with the reason, rather than chosen and then refused), sums up which tiles it applies to until **Choose tiles** opens the list, and previews the filter's button. **Clickable cells** (it was titled Drill) is a switch per dimension, with "Opens … sets …" beside each one switched on. The Add menu and the tile menu are drawn as the builder's other cards.
 
@@ -79,7 +87,7 @@ The line under every report saying where Save writes is shown only when it says 
 
 For an SDK host: `ReportBuilder` takes `renderViewPreview` for the picker's preview (`ReportEditor` passes one); `AppDialog` takes `initialFocus`, a ref focused once the window has opened, since a child's `autoFocus` loses to the focus trap. A test that drove the picker's Source dropdown and "View x" buttons picks an option named `"<title> (<view>)"` instead; one that chose a filter kind from the "Filter kind" dropdown clicks the radio of that name.
 
-## [Unreleased] — Results stay on screen while they re-run, and switching to edit no longer blanks the report
+## [0.9.11] — Results stay on screen while they re-run, and switching to edit no longer blanks the report
 
 **A result that re-runs keeps its previous answer up until the new one lands.** Changing a filter used to drop every tile on the page to "Running…" and draw it again from nothing; now each keeps its rows, eased back after a moment, with a thin progress bar along its top, and the new rows replace them in place. This is in `useQueryResult` (react-query's `keepPreviousData`), so it holds for every surface that runs a query through `ResultPanel`: report tiles, `QueryResult`, model cells. A host test that waited for "Running…" after a change of givens waits for the new rows instead; the panel is `aria-busy` meanwhile.
 
@@ -87,7 +95,7 @@ For an SDK host: `ReportBuilder` takes `renderViewPreview` for the picker's prev
 
 **In the builder:** retitling, resizing or moving a tile no longer re-runs its query, and a press anywhere off the selected tile or description clears the selection.
 
-## [Unreleased] — The report builder's controls move to the header; a host can place them itself
+## [0.9.11] — The report builder's controls move to the header; a host can place them itself
 
 **The builder's page-level controls are one bar in the header.** In the Console, where **Edit** sits on a report, the builder draws its save status, undo and redo, the Linear / Grid switch, an **Add** menu (a tile, text or a filter) and **Done**. There is no Save button: edits are kept in this browser as they are made (**Draft saved**), and **Done** writes them and shows the report. Leaving any other way loses nothing and no longer asks; opening the report for editing again puts the edits back, with a note and **Discard edits**. Cmd/Ctrl+S still writes without leaving. A test or automation that clicked Save presses Cmd/Ctrl+S, or clicks Done. The page under it is the report as it reads: no toolbar on the title's line, no pencils after every title. Done returns to the report and asks first when edits are unsaved, as **View** did; View is gone from the builder.
 
@@ -105,7 +113,7 @@ What an SDK host sees:
 - **Escape in an open text tile drops the draft**, and its Done and Cancel buttons are gone. A test or automation that clicked Done presses Cmd/Ctrl+Enter, or moves focus out of the field; one that clicked Cancel presses Escape.
 - **The tile menu's Viz type field is gone**: its choices are the **Chart** submenu's `menuitemradio` items, and Drill is **Clickable cells…**.
 
-## [Unreleased] — Server: package loads share the event loop with other requests, queries reuse each model's query model, and a load-phase metric
+## [0.9.11] — Server: package loads share the event loop with other requests, queries reuse each model's query model, and a load-phase metric
 
 Package loads and queries do less on the main thread. Nothing an API or MCP caller sees changes: the same plans, findings, warnings and answers.
 
@@ -115,7 +123,7 @@ Package loads and queries do less on the main thread. Nothing an API or MCP call
 
 **New metric:** `publisher_package_load_phase_duration_ms{phase}`, one sample per stage of a successful load: `worker`, `hydrate`, `render_validation`, `discovery`, `lint`, `build_plan` and `total`. Since 0.9.9 the load worker derives the build plan, so `build_plan` is the time to apply it, or to derive it on the main thread when the worker left it at its soft deadline. `malloy_package_load_duration` is unchanged and still stops before report discovery and the build plan; `total` is the whole load. Each stage is wall-clock time, so a main-thread stage includes the requests served while it yields. Package loads record it; reloads do not. See `docs/configuration.md`.
 
-## [Unreleased] — Reports written as `run:` cells are no longer reports (BREAKING)
+## [0.9.11] — Reports written as `run:` cells are no longer reports (BREAKING)
 
 **A `.malloy` file whose artifact tag reads as linear and lists no `tiles` is no longer a report.** That was the older linear form: `run:` statements with `(markdown)` notes between them. Publisher stops listing it, its route opens nothing, `GET …/reports/{path}` does not serve it, and the builder refuses to open it rather than converting it. The package names each such file with a new `error` finding, `report-cells-removed`, whose message gives the fix, and the compile check answers the same finding. The file still compiles as a model, so nothing that imports it breaks.
 
@@ -129,11 +137,11 @@ What an SDK host sees:
 - **`DashboardView` takes `onLinkNavigate`**, for links inside text tiles and the description, as `Report` passes it. Without it, relative links stay as written.
 - **`.malloynb` support is unchanged and fenced off.** Its renderer now lives in one folder of the SDK's legacy code, marked deprecated, and a lint rule stops anything else from importing it. `Notebook` still renders a `.malloynb`.
 
-## [Unreleased] — A multi-pick filter keeps the value you just picked when you click away
+## [0.9.11] — A multi-pick filter keeps the value you just picked when you click away
 
 In a filter that takes several values (`control=multiselect` on a `filter<string>` given), picking a value and then clicking anywhere else on the page removed the value again: the filter read "All" and the query ran unfiltered. The list stays open after a pick so you can pick another value, and leaving it re-picked the option still highlighted, which in a multi-pick takes it back out. A picked value now stays. Text you typed without picking from the list is still kept when you click away, as before. Single-value pickers were never affected.
 
-## [Unreleased] — Reports: one look for every layout, a row of filter buttons, and package problems on the package page
+## [0.9.11] — Reports: one look for every layout, a row of filter buttons, and package problems on the package page
 
 **Every report draws the same page.** A grid report and a linear report now draw the same header, the same filter row, query results in the same cards and prose as bare text, in the reader and in the builder alike. The layout decides only how tiles are arranged: a linear report is one full-width column with tiles inserted between others, a grid has columns and widths. Before, a linear report drew no cards, wider gaps and its own title block.
 
@@ -313,7 +321,7 @@ A tile naming a view that does not exist, a `# drill` pointing at no dashboard, 
 - **A check that cannot run is reported, not fatal.** A dashboard check that throws returns one `warn` saying the findings are unknown rather than clean, instead of failing the whole call. A model that will not hydrate costs only its own findings: it gets an `error` of its own, since the reload would fail on it, and every other file keeps its findings.
 - **No repeated `#(authorize)` log lines.** A package-scope compile no longer logs each model's `#(authorize)` warnings again on every call; the package logged them when it loaded.
 
-## [Unreleased] — A `where:` on a composite source is served again
+## [0.9.11] — A `where:` on a composite source is served again
 
 Since 0.8.1, a query on a composite source carrying a `where:` could answer 403 `Access denied for source "<member>"` with no gate in the package: a `where:` on a field the members declare, one written inside a member, and, since 0.8.3, one through a join declared on the composite. These are served again, including for a composite reached through a join. Rebinding a field such a filter reads is still refused, and so are two shapes this does not cover: a member whose own join is a composite, queried through that join, and a member dimension that reads a private member field. Upgrading is enough. See #1277.
 
