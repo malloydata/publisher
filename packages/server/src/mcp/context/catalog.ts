@@ -77,8 +77,9 @@ export interface CatalogNode {
    indexed: boolean;
    /**
     * With `collapseCopies`: the node this one is an unchanged copy of (a field
-    * an extension inherits keeps its parent's compiled definition). A copy is
-    * never searched; it is the same field under another source's name.
+    * an extension inherits keeps its parent's compiled definition), on a
+    * source with the same rows as this node's source (see sameRows). A copy
+    * is never searched; it is the same field under another source's name.
     */
    copyOf?: string;
    /** With `collapseCopies`: the copies of this node in extensions, by key. */
@@ -135,6 +136,19 @@ export interface CatalogReport {
    unresolvedReferences: number;
    /** With `collapseCopies`: nodes folded into the field they copy. */
    copiesFolded: number;
+   /**
+    * With `collapseCopies`: inherited fields kept on their own source, because
+    * its rows differ from its parent's (a `where:`, another base, other
+    * arguments, or a gate of its own) or its parent is not in the catalog
+    * (hidden or unserved).
+    */
+   copiesKeptApart: number;
+   /**
+    * Sources left out because they are marked `#(agent-hidden)` (on the
+    * source itself, or `##(agent-hidden)` on the file that defines it). Their
+    * fields are reached only through a served source's joins.
+    */
+   hiddenSources: number;
    /** Join paths the walk recorded, over every source. */
    joinPaths: number;
    /** Joins in the longest recorded path. */
@@ -199,8 +213,11 @@ export interface CatalogInput {
    models: readonly CatalogModel[];
    /**
     * PROVISIONAL, a diagnostic of the connect rule (`retrieval.fcj.collapseCopies`).
-    * Fold a field an extension inherits unchanged into the field where it is
-    * defined, so an extension competes only with the fields it adds.
+    * Fold a field an extension inherits unchanged into the same field on the
+    * source it extends, when both sources hold the same rows (sameRows), so
+    * an extension that only adds fields competes only with the fields it
+    * adds. An extension with rows of its own (a `where:`, another base) is a
+    * different source, and every field it inherits stays its own.
     */
    collapseCopies?: boolean;
    /**
@@ -366,9 +383,20 @@ interface CompiledSource {
    as?: string;
    sourceID?: string;
    extends?: string;
+   /** Set when the source is an unmodified reference (`source: a is b`). */
+   referenceID?: string;
    location?: CompiledLocation;
    annotations?: CompiledNotes;
    fields?: CompiledField[];
+   /** What the rows come from: `table`, `sql_select`, `query_source`, ... */
+   type?: string;
+   tablePath?: string;
+   selectStr?: string;
+   query?: unknown;
+   connection?: string;
+   /** Every `where:` in force, the parent's first (an extension adds to it). */
+   filterList?: Array<{ code?: string }>;
+   arguments?: unknown;
 }
 
 /** A location as one comparable string, or undefined when the compiler gave none. */
@@ -376,21 +404,6 @@ function locationKey(loc: CompiledLocation | undefined): string | undefined {
    if (!loc?.url || !loc.range) return undefined;
    const { start, end } = loc.range;
    return `${loc.url}#${start.line}:${start.character}-${end.line}:${end.character}`;
-}
-
-/** Whether `inner` lies inside `outer`, in the same file. */
-function contains(outer: CompiledLocation, inner: CompiledLocation): boolean {
-   if (!outer.url || outer.url !== inner.url || !outer.range || !inner.range) {
-      return false;
-   }
-   const before = (
-      a: { line: number; character: number },
-      b: { line: number; character: number },
-   ) => a.line < b.line || (a.line === b.line && a.character <= b.character);
-   return (
-      before(outer.range.start, inner.range.start) &&
-      before(inner.range.end, outer.range.end)
-   );
 }
 
 function compiledSource(
@@ -455,6 +468,137 @@ function ownNotesOf(
       .filter((n) => !inherited.has(noteKey(n)))
       .map((n) => n.text ?? "")
       .filter(Boolean);
+}
+
+/** A compiled source anywhere in the package, by its `sourceID` (`name@url`). */
+function compiledById(
+   models: readonly CatalogModel[],
+   id: string | undefined,
+): CompiledSource | undefined {
+   if (!id) return undefined;
+   for (const model of models) {
+      const contents = (model.modelDef as { contents?: Record<string, unknown> })
+         ?.contents;
+      for (const c of Object.values(contents ?? {})) {
+         if ((c as CompiledSource).sourceID === id) return c as CompiledSource;
+      }
+   }
+   return undefined;
+}
+
+/** The source a source was made from: the one it extends or plainly names. */
+function parentIdOf(compiled: CompiledSource | undefined): string | undefined {
+   return compiled?.extends ?? compiled?.referenceID;
+}
+
+/**
+ * The notes a source writes itself. The compiler hands an extension (or a
+ * plain reference) with no notes of its own its parent's notes as its own
+ * `blockNotes`, so a note is the source's own only when its parent, or
+ * anything the parent inherits, does not hold the same note at the same
+ * place. A parent that cannot be found leaves every block note as the
+ * source's own.
+ */
+function ownNoteTexts(
+   models: readonly CatalogModel[],
+   compiled: CompiledSource,
+): string[] {
+   const parent = compiledById(models, parentIdOf(compiled));
+   const inherited = new Set(
+      parent ? allNotes(parent.annotations).map(noteKey) : [],
+   );
+   return (compiled.annotations?.blockNotes ?? [])
+      .filter((n) => !inherited.has(noteKey(n)))
+      .map((n) => n.text ?? "")
+      .filter(Boolean);
+}
+
+/** `#(agent-hidden)` on a source; any bracket pair Malloy routes, as hosted reads it. */
+const AGENT_HIDDEN_SOURCE = /^#\|?\s*[([{<]?\s*agent-hidden\b/;
+/** `##(agent-hidden)` on a model file: hides the sources that file defines. */
+const AGENT_HIDDEN_FILE = /^##\|?\s*[([{<]?\s*agent-hidden\b/;
+/** An access gate a source writes itself: it changes which rows a caller sees. */
+const OWN_GATE = /^#\|?\s*[([{<]?\s*(access_filter|authorize)\b/;
+
+/**
+ * Whether a source is marked `#(agent-hidden)`: on its own notes (a parent's
+ * mark never carries through `extend`), or `##(agent-hidden)` on the file
+ * that defines it (never on a file that only imports it). Deprecated, but
+ * models still use it to keep internal bases out of retrieval, and
+ * hosted get_context honours it the same way.
+ */
+function isAgentHidden(
+   models: readonly CatalogModel[],
+   compiled: CompiledSource | undefined,
+): boolean {
+   if (!compiled) return false;
+   if (ownNoteTexts(models, compiled).some((t) => AGENT_HIDDEN_SOURCE.test(t)))
+      return true;
+   const url = splitSourceId(compiled.sourceID)?.url ?? compiled.location?.url;
+   if (!url) return false;
+   for (const model of models) {
+      const file = (
+         model.modelDef as {
+            modelAnnotations?: Record<
+               string,
+               { ownNotes?: { notes?: Array<{ text?: string }> } }
+            >;
+         }
+      )?.modelAnnotations?.[url];
+      if (file) {
+         return (file.ownNotes?.notes ?? []).some((n) =>
+            AGENT_HIDDEN_FILE.test(n.text ?? ""),
+         );
+      }
+   }
+   return false;
+}
+
+/**
+ * Whether a source holds exactly the rows of the source it was made from, so
+ * a field it inherits unchanged is the same field with the same values.
+ * True only when nothing that picks rows differs: the same kind of base
+ * (table, SQL, query), the same table, SQL or query, the same `where:`
+ * filters, the same arguments, and no access gate of its own. Adding fields,
+ * renaming, hiding fields or adding joins keeps the rows (a Malloy join
+ * never changes which rows a source's measures aggregate). Anything unread
+ * or unclear answers false: two sources are kept apart when in doubt.
+ */
+export function sameRows(
+   child: CompiledSource | undefined,
+   parent: CompiledSource | undefined,
+   childOwnNotes: readonly string[],
+): boolean {
+   if (!child || !parent || !child.type || child.type !== parent.type) {
+      return false;
+   }
+   const base = (s: CompiledSource) => {
+      switch (s.type) {
+         case "table":
+            return s.tablePath;
+         case "sql_select":
+            return s.selectStr;
+         case "query_source":
+            return JSON.stringify(s.query);
+         default:
+            return undefined;
+      }
+   };
+   const childBase = base(child);
+   if (childBase === undefined || childBase !== base(parent)) return false;
+   if ((child.connection ?? "") !== (parent.connection ?? "")) return false;
+   const filters = (s: CompiledSource) =>
+      JSON.stringify((s.filterList ?? []).map((f) => f.code ?? null));
+   if (filters(child) !== filters(parent)) return false;
+   // No arguments is written as absent or as `{}`.
+   const args = (s: CompiledSource) =>
+      s.arguments &&
+      typeof s.arguments === "object" &&
+      Object.keys(s.arguments).length > 0
+         ? JSON.stringify(s.arguments)
+         : "";
+   if (args(child) !== args(parent)) return false;
+   return !childOwnNotes.some((t) => OWN_GATE.test(t));
 }
 
 /**
@@ -761,8 +905,21 @@ export function buildCatalog(input: CatalogInput): Catalog {
       };
    };
    const extendsOf = new Map<string, string>();
+   // An `#(agent-hidden)` source is left out like an unserved one: no node
+   // of its own, so none of its fields is ever a home card; a served
+   // source's joins still reach it (joined copies, unservedCopies).
+   const hidden = new Set<string>();
    for (const e of input.entities) {
       if (e.kind !== "source") continue;
+      if (
+         isAgentHidden(
+            input.models,
+            compiledSource(modelByPath.get(e.modelPath)?.modelDef, e.name),
+         )
+      ) {
+         hidden.add(e.name);
+         continue;
+      }
       const { definedIn, extendsKey } = definitionOf(e.modelPath, e.name);
       const key = sourceKeyOf(e.name, definedIn);
       sourceKeyByContext.set(sourceContextKey(e.modelPath, e.name), key);
@@ -925,10 +1082,10 @@ export function buildCatalog(input: CatalogInput): Catalog {
       return hop ? fieldNode(hop.to, path[path.length - 1]) : undefined;
    };
    const seenSource = new Set<string>();
-   // Where each node's definition is, and where each source's own definition
-   // is, for collapseCopies.
+   // Where each node's definition is, and each source's compiled definition,
+   // for collapseCopies.
    const definitionAt = new Map<string, CompiledLocation>();
-   const sourceAt = new Map<string, CompiledLocation>();
+   const compiledOf = new Map<string, CompiledSource>();
    for (const model of input.models) {
       for (const raw of model.sourceInfos) {
          const info = raw as {
@@ -961,7 +1118,7 @@ export function buildCatalog(input: CatalogInput): Catalog {
             }
          }
          const compiled = compiledSource(model.modelDef, info.name);
-         if (compiled?.location) sourceAt.set(sourceKey, compiled.location);
+         if (compiled) compiledOf.set(sourceKey, compiled);
          const joinKinds = new Map<string, string>();
          const joinIds = joinSourceIds(
             compiled?.fields,
@@ -1108,10 +1265,40 @@ export function buildCatalog(input: CatalogInput): Catalog {
       joinedCopiesDropped = dropped.size;
    }
 
-   // 5. With collapseCopies, fold each unchanged inherited copy into the node
-   // of the source whose own definition holds the field's definition.
+   // 5. With collapseCopies, fold each inherited copy into the same field on
+   // the source it was made from, but only along `extend` (or plain
+   // reference) steps that keep the rows (sameRows). An extension with a
+   // `where:` of its own, another base or a gate of its own holds other rows:
+   // its inherited fields stay its own and are searched and returned on it.
+   // A chain folds as far up as the rows stay the same, so `c is b extend
+   // {dimension: ...}` folds into `b` even when `b is a extend {where: ...}`.
    let copiesFolded = 0;
+   let copiesKeptApart = 0;
    if (input.collapseCopies) {
+      const keyById = new Map<string, string>();
+      for (const [key, compiled] of compiledOf) {
+         if (compiled.sourceID) keyById.set(compiled.sourceID, key);
+      }
+      // The source a source's rows are the same as, one step up; undefined
+      // when it was made from nothing in the catalog, or its rows differ.
+      const sameRowsParent = new Map<string, string | undefined>();
+      const rowsParentOf = (key: string): string | undefined => {
+         if (sameRowsParent.has(key)) return sameRowsParent.get(key);
+         const compiled = compiledOf.get(key);
+         const parentKey = keyById.get(parentIdOf(compiled) ?? "");
+         const same =
+            parentKey !== undefined &&
+            parentKey !== key &&
+            sameRows(
+               compiled,
+               compiledOf.get(parentKey),
+               compiled ? ownNoteTexts(input.models, compiled) : [],
+            ) &&
+            sources.get(key)?.gated === sources.get(parentKey)?.gated;
+         const out = same ? parentKey : undefined;
+         sameRowsParent.set(key, out);
+         return out;
+      };
       const groups = new Map<string, CatalogNode[]>();
       for (const node of nodes.values()) {
          if (node.kind === "source" || node.joinPath) continue;
@@ -1124,16 +1311,22 @@ export function buildCatalog(input: CatalogInput): Catalog {
       }
       for (const list of groups.values()) {
          if (list.length < 2) continue;
-         const at = definitionAt.get(list[0].key)!;
-         const definer = list.find((n) => {
-            const own = sourceAt.get(n.sourceKey);
-            return own ? contains(own, at) : false;
-         });
-         if (!definer) continue;
+         const bySource = new Map(list.map((n) => [n.sourceKey, n]));
          for (const n of list) {
-            if (n === definer) continue;
-            n.copyOf = definer.key;
-            (definer.copies ??= []).push(n.key);
+            let at = n.sourceKey;
+            for (let i = 0; i < 32; i++) {
+               const up = rowsParentOf(at);
+               if (up === undefined || !bySource.has(up)) break;
+               at = up;
+            }
+            const rep = bySource.get(at)!;
+            if (rep === n) {
+               // Inherited, with the same definition elsewhere, but its own.
+               if (parentIdOf(compiledOf.get(n.sourceKey))) copiesKeptApart += 1;
+               continue;
+            }
+            n.copyOf = rep.key;
+            (rep.copies ??= []).push(n.key);
             copiesFolded += 1;
          }
       }
@@ -1170,6 +1363,8 @@ export function buildCatalog(input: CatalogInput): Catalog {
          gatedSources: [...sources.values()].filter((s) => s.gated).length,
          unresolvedReferences: unresolved,
          copiesFolded,
+         copiesKeptApart,
+         hiddenSources: hidden.size,
          joinPaths: allPaths.length,
          deepestJoinPath: allPaths.reduce(
             (n, h) => Math.max(n, h.path.length),

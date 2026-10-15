@@ -159,7 +159,7 @@ describe("join walk on a compiled package", () => {
       expect(indexed.report.deepestJoinPath).toBe(4);
       expect(indexed.report.joinPathsCapped).toBe(0);
       expect(catalogReportLine(indexed.report)).toBe(
-         "7 sources; nodes: 7 source, 21 dimension, 6 join, 2 measure; edges: 29 contains, 5 joins, 1 extends, 0 depends, 0 uses; 0 nodes resolve in more than one file; 0 #(index) dimensions; 0 gated sources; 3 field references resolved to no node; 11 join paths, the longest 4 joins",
+         "7 sources; nodes: 7 source, 21 dimension, 6 join, 2 measure; edges: 29 contains, 5 joins, 1 extends, 0 depends, 0 uses; 0 nodes resolve in more than one file; 0 #(index) dimensions; 0 gated sources; 3 field references resolved to no node; 11 join paths, the longest 4 joins; 3 inherited copies folded (same rows), 0 kept on their own source (other rows)",
       );
    });
 
@@ -219,7 +219,7 @@ describe("join walk on a compiled package", () => {
          "dimension:parcels:shipment.shipped_order.date_dim.yr",
       ]);
       expect(catalogReportLine(routes.report)).toBe(
-         "7 sources; nodes: 7 source, 19 dimension, 6 join, 2 measure; edges: 27 contains, 5 joins, 1 extends, 0 depends, 0 uses; 0 nodes resolve in more than one file; 0 #(index) dimensions; 0 gated sources; 3 field references resolved to no node; 11 join paths, the longest 4 joins; 2 joined copies left out (searched on their own source, reached by route)",
+         "7 sources; nodes: 7 source, 19 dimension, 6 join, 2 measure; edges: 27 contains, 5 joins, 1 extends, 0 depends, 0 uses; 0 nodes resolve in more than one file; 0 #(index) dimensions; 0 gated sources; 3 field references resolved to no node; 11 join paths, the longest 4 joins; 3 inherited copies folded (same rows), 0 kept on their own source (other rows); 2 joined copies left out (searched on their own source, reached by route)",
       );
    });
 

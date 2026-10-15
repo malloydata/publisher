@@ -50,6 +50,8 @@ describe("catalog", () => {
          gatedSources: 0,
          unresolvedReferences: 3,
          copiesFolded: 0,
+         copiesKeptApart: 0,
+         hiddenSources: 0,
          joinPaths: 10,
          deepestJoinPath: 3,
          joinPathsCapped: 0,

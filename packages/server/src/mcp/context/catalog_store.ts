@@ -108,6 +108,12 @@ export function catalogReportLine(report: CatalogReport): string {
       (report.joinPathsCapped > 0
          ? `; ${report.joinPathsCapped} join paths stopped at the guard (${JOIN_WALK_MAX_HOPS} joins, or ${JOIN_WALK_MAX_PATHS} paths from one source)`
          : "") +
+      (report.hiddenSources > 0
+         ? `; ${report.hiddenSources} #(agent-hidden) sources left out (reached only through joins)`
+         : "") +
+      (report.copiesFolded > 0 || report.copiesKeptApart > 0
+         ? `; ${report.copiesFolded} inherited copies folded (same rows), ${report.copiesKeptApart} kept on their own source (other rows)`
+         : "") +
       (report.joinedCopiesDropped > 0
          ? `; ${report.joinedCopiesDropped} joined copies left out (searched on their own source, reached by route)`
          : "") +
