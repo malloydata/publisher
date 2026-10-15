@@ -22,6 +22,9 @@ describe("isSemver", () => {
       "1.0.0+20231120.deadbeef",
       "1.0.0-rc.1+build.5",
       "1.0.0-x-y-z.--",
+      "1.0.0-0",
+      "1.0.0-0a.1",
+      "1.0.0+001",
    ];
    for (const version of accepted) {
       it(`accepts ${version}`, () => expect(isSemver(version)).toBe(true));
@@ -39,6 +42,13 @@ describe("isSemver", () => {
       "1.2.3 ",
       "latest",
       "../1.0.0",
+      // A numeric identifier with a leading zero: it would publish beside
+      // the version it compares equal to.
+      "01.0.0",
+      "1.01.0",
+      "1.0.01",
+      "1.0.0-01",
+      "1.0.0-rc.01",
    ];
    for (const version of refused) {
       it(`refuses ${JSON.stringify(version)}`, () =>

@@ -3840,13 +3840,14 @@ components:
 
     VersionIdPattern:
       type: string
-      pattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
       description: >-
         A package version: a semantic version (SemVer 2.0), MAJOR.MINOR.PATCH
         with an optional pre-release suffix (`-rc1`, `-alpha.2`) and optional
         build metadata (`+20231120.deadbeef`). Pre-release and
         build suffixes are accepted so release-candidate builds can be
-        published.
+        published. A numeric identifier has no leading zero (SemVer 2.0), so
+        `01.0.0` and `1.0.0-rc.01` are refused; build metadata may have one.
 
     PackageVersion:
       type: object

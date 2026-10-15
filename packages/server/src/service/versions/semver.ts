@@ -7,10 +7,13 @@
  * (`+20231120.deadbeef`).
  *
  * The pattern is the spec's `VersionIdPattern`, byte for byte, so the route
- * validation and the publish gate accept exactly the same versions.
+ * validation and the publish gate accept exactly the same versions. Numeric
+ * identifiers carry no leading zeros (SemVer 2.0 sections 2 and 9): `01.0.0`
+ * would otherwise publish beside `1.0.0`, in a folder of its own, and compare
+ * equal to it.
  */
 export const SEMVER_PATTERN =
-   /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
+   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 
 export function isSemver(value: string): boolean {
    return SEMVER_PATTERN.test(value);
