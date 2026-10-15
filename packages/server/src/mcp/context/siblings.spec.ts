@@ -144,6 +144,59 @@ describe("near-identical sources", () => {
    });
 });
 
+describe("table sources, whose extensions record no parent", () => {
+   let c: Catalog;
+   beforeAll(async () => {
+      const { pkgIndex } = await compileFcjFixture(
+         {
+            "t.malloy": `
+#(agent-hidden)
+#(doc) Every table.
+source: base is duckdb.table('information_schema.tables') extend {
+  measure: n is count()
+}
+source: plain is base extend { dimension: d is 1 }
+#(doc) Tables in the main schema only.
+source: mains is base extend { where: table_schema = 'main' }
+#(doc) Every table, served.
+source: vbase is duckdb.table('information_schema.tables') extend { measure: m is count() }
+source: vplain is vbase extend { dimension: d is 1 }
+source: vwhere is vbase extend { where: table_schema = 'main' }
+`,
+         },
+         {},
+      );
+      c = buildCatalog({
+         ...(await catalogInputOf(pkgIndex)),
+         collapseCopies: true,
+      });
+   });
+   const at = (key: string) => c.nodes.get(key)!;
+
+   it("reads a hidden mark only from the notes above the source itself", () => {
+      // `plain` has no notes of its own; the compiler hands it base's.
+      expect([...c.sources.values()].map((s) => s.name)).toEqual([
+         "plain",
+         "mains",
+         "vbase",
+         "vplain",
+         "vwhere",
+      ]);
+   });
+
+   it("folds a same-rows extension into the source that defines the field, and marks the rest as twins", () => {
+      expect(at("measure:vplain@t.malloy:m").copyOf).toBe(
+         "measure:vbase@t.malloy:m",
+      );
+      expect(at("measure:vwhere@t.malloy:m").copyOf).toBeUndefined();
+      expect(at("measure:vwhere@t.malloy:m").twinKey).toBe(
+         at("measure:vbase@t.malloy:m").twinKey,
+      );
+      expect(at("measure:vbase@t.malloy:m").twinKey).toBeDefined();
+      expect(at("measure:vplain@t.malloy:m").twinKey).toBeUndefined();
+   });
+});
+
 describe("the judge reads each twin source's doc", () => {
    let p: FcjIndexFixture;
    beforeAll(async () => {
@@ -204,3 +257,4 @@ describe("the judge reads each twin source's doc", () => {
       expect(prompt).not.toContain("From labelled_deliveries");
    });
 });
+
