@@ -53,7 +53,7 @@ import {
 } from "./find";
 import type { FcjIndex } from "./index_build";
 import { connect, type ConnectResult } from "./connect";
-import { dropBesideRoutes, judge, type JudgeVerdict } from "./judge";
+import { dropBesideRoutes, dropTwins, judge, type JudgeVerdict } from "./judge";
 import {
    FCJ_MAX_CHARS,
    FCJ_RESERVE_CHARS,
@@ -455,6 +455,9 @@ export async function runFcjQuery(args: {
             ),
          ),
       );
+      verdicts = dropTwins(verdicts, settings.twinRule, (key) =>
+         index.catalog.nodes.get(key),
+      );
       if (split) {
          verdicts = capItemPicks(split, verdicts, settings.splitItemPicks);
       }
@@ -591,6 +594,17 @@ export async function runFcjQuery(args: {
                           ...(p.droppedRoutes
                              ? {
                                   dropped_routes: p.droppedRoutes.map((k) =>
+                                     optionId(index.catalog, k),
+                                  ),
+                               }
+                             : {}),
+                          ...(p.best
+                             ? { best: optionId(index.catalog, p.best) }
+                             : {}),
+                          ...(p.readings ? { readings: true } : {}),
+                          ...(p.droppedTwins
+                             ? {
+                                  dropped_twins: p.droppedTwins.map((k) =>
                                      optionId(index.catalog, k),
                                   ),
                                }

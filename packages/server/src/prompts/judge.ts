@@ -93,8 +93,8 @@ ${SAME_FIELD_RULE}
 ${DATA_LINE}`;
 
 export const JUDGE_REPLY_FORMAT = `Reply with one JSON object and nothing else:
-{"picks": [{"target": <target number>, "candidates": [<candidate numbers>], "reason": "<one short sentence>"}, ...], "caveats": ["<one short sentence>", ...]}
-Give one element per target, with an empty "candidates" list for a target this group cannot answer. Use only the candidate numbers listed under that target or under "Also in this group".`;
+{"picks": [{"target": <target number>, "candidates": [<candidate numbers, best first>], "best": <the one candidate number that best answers the target>, "reason": "<one short sentence>", "readings": <true only when you picked the same field on several sources because the question could mean either set of rows>}, ...], "caveats": ["<one short sentence>", ...]}
+Give one element per target, with an empty "candidates" list for a target this group cannot answer. Use only the candidate numbers listed under that target or under "Also in this group". List "candidates" best first; "best" is one of them, the field on the source whose doc best matches the population or breakdown the target and the question ask for. Leave "readings" out unless it is true.`;
 
 /**
  * Added to the judge's instructions, with `splitBundles` on, on a request
