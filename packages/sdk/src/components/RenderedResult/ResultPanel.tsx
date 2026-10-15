@@ -1,12 +1,13 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { Box, LinearProgress } from "@mui/material";
+import { Box, LinearProgress, Typography } from "@mui/material";
 import { useEffect, useMemo } from "react";
 import type { QueryResultState } from "../../hooks/useQueryResult";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
 import type { DrillBinding } from "../drill/useDrill";
 import { Loading, LOADING_COPY } from "../Loading";
+import { chartShapeProblem } from "./chartShapeProblem";
 import { warmMalloyRenderer } from "./loadRenderer";
 import ResultContainer from "./ResultContainer";
 
@@ -64,6 +65,9 @@ export function ResultPanel({
       () => (raw !== undefined && transform ? transform(raw) : raw),
       [raw, transform],
    );
+   // A chart the result cannot fill, said in plain words in place of the
+   // renderer's own error.
+   const problem = useMemo(() => chartShapeProblem(result), [result]);
 
    if (isError) {
       return (
@@ -79,6 +83,14 @@ export function ResultPanel({
          <Loading
             text={fetchStatus === "idle" ? LOADING_COPY.loading : loadingText}
          />
+      );
+   if (problem)
+      return (
+         <Box sx={{ p: 2 }}>
+            <Typography variant="body2" role="status" color="text.secondary">
+               {problem}
+            </Typography>
+         </Box>
       );
    const shown = (
       <ResultContainer

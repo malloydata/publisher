@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { CompiledModel } from "../../client";
-import { buildCatalog } from "./catalog";
+import { buildCatalog, documentViewsOf } from "./catalog";
 
 /**
  * `sourceInfos` as the compiler wrote it (modelDefToModelInfo on a DuckDB source with a measure `n`
@@ -46,6 +46,23 @@ describe("buildCatalog, aggregate-only views, from real compiler output", () => 
       expect(source.views.every((v) => v.aggregateOnly === undefined)).toBe(
          true,
       );
+   });
+});
+
+describe("documentViewsOf, the views a report file declares itself", () => {
+   it("gives each view its shape, from the file's own compiled model", () => {
+      const views = documentViewsOf(MODEL).get("s");
+      expect(views?.get("kpi")).toEqual({
+         name: "kpi",
+         aggregateOnly: true,
+         shape: { groupBys: 0, totals: 1 },
+      });
+      expect(views?.get("by_calc_n")?.shape).toEqual({
+         groupBys: 1,
+         totals: 1,
+      });
+      // A nest is neither an x-axis field nor a total.
+      expect(views?.get("nst")?.shape).toEqual({ groupBys: 1, totals: 0 });
    });
 });
 

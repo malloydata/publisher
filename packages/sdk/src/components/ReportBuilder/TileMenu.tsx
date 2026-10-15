@@ -24,7 +24,7 @@ import {
    type DashboardTile,
    type QueryTile,
 } from "./document";
-import { chartChoices } from "./ChartPicker";
+import { chartChoices, type ViewStatus } from "./ChartPicker";
 import type { ChartState } from "./chartLine";
 
 /**
@@ -60,7 +60,9 @@ export interface TileMenuProps {
    /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
    duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
-   view?: Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape">;
+   view?: Pick<CatalogView, "chart" | "aggregateOnly" | "comboShape" | "shape">;
+   /** Why `view` is absent: still loading, or a view the catalog does not list. */
+   viewStatus?: ViewStatus;
 }
 
 const customChart = (lines: string[] | undefined) =>
@@ -90,6 +92,7 @@ export function TileMenu({
    onDuplicate,
    duplicateBlocked,
    view,
+   viewStatus,
 }: TileMenuProps) {
    const { theme } = usePublisherTheme();
    const ui = theme.ui;
@@ -128,7 +131,7 @@ export function TileMenu({
    }, [opened]);
 
    const chartState: ChartState = query?.chart ?? "default";
-   const choices = chartChoices(view, chartState);
+   const choices = chartChoices(view, chartState, viewStatus);
    const chartBlocked = !query
       ? undefined
       : query.declaration.kind === "query"

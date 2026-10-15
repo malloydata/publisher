@@ -255,8 +255,10 @@ describe("previewTileQuery", () => {
    });
 
    it("clears the saved view's own chart line for an inline or opaque tile on Default", () => {
+      // Every chart tag off and `viz` left alone: not Table's line, so a view
+      // of totals still draws as big numbers, as it does with no line at all.
       const NONE =
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz";
+         "# -line_chart -bar_chart -scatter_chart -shape_map -segment_map -combo_chart";
       const annotationOf = (
          declaration: QueryTile["declaration"],
          chart: QueryTile["chart"],

@@ -80,6 +80,28 @@ export function mentionsChartTag(line: string): boolean {
 }
 
 /**
+ * The line that previews "From the view" on a tile whose saved body may carry
+ * a chart line of its own: the chart tags taken off, and nothing put on.
+ * Unlike Table's line it does not negate `viz`, so it is not a choice of
+ * rendering: what the view's own shape gives is what draws.
+ *
+ * `big_value` is left alone. A one-row view of totals draws as big numbers
+ * with no tag at all (see `promoteMeasureRowToKpis`), which is what "From the
+ * view" must show; measured, a `# big_value` after a `# -big_value` in the
+ * same result does not bring the cards back, and the tile drew a one-row
+ * table. Big value can only have been picked on such a view, so keeping it
+ * changes nothing that Default would otherwise show.
+ */
+export function chartResetLine(): string {
+   return [
+      "#",
+      ...PLUGIN_TAGS.filter((tag) => tag !== "big_value").map(
+         (tag) => `-${tag}`,
+      ),
+   ].join(" ");
+}
+
+/**
  * The line for a pick. Given the chart tags the view carries it negates only those; without them
  * (the catalog does not know the view) it negates every other chart tag. `-viz` stays either way,
  * since the catalog does not report a `viz=` tag.

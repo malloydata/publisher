@@ -19,6 +19,8 @@ import { documentPreamble } from "../Dashboard/textSource";
 import { GivensPanel } from "../given";
 import { Loading } from "../Loading";
 import { layoutRules } from "../Report/layoutRules";
+import type { CompiledModel } from "../../client";
+import { documentViewsOf } from "./catalog";
 import { useReportListing } from "../Package/useDocumentLocation";
 import {
    BUILDER_HANDOFF_STALE_MS,
@@ -93,7 +95,14 @@ export function EditorSurface({
    savesTo,
    saveLabel,
    note,
+   fileModel,
 }: {
+   /**
+    * The file's own compiled model as the package serves it, for the shapes
+    * of the views it declares (which charts each tile can take). Absent for a
+    * document held as text, whose compile answer carries no per-view shapes.
+    */
+   fileModel?: CompiledModel;
    textSource?: TextSourceOptions;
    environmentName: string;
    packageName: string;
@@ -240,17 +249,21 @@ export function EditorSurface({
             : undefined,
       [catalog, textSource, runModelPath],
    );
-   const offered = useMemo(
-      () =>
+   const documentViews = useMemo(
+      () => (fileModel ? documentViewsOf(fileModel) : undefined),
+      [fileModel],
+   );
+   const offered = useMemo(() => {
+      const scoped =
          catalog && runSources
             ? {
                  sources: catalog.sources.filter((s) =>
                     runSources.includes(s.name),
                  ),
               }
-            : catalog,
-      [catalog, runSources],
-   );
+            : catalog;
+      return scoped && documentViews ? { ...scoped, documentViews } : scoped;
+   }, [catalog, runSources, documentViews]);
 
    const [doc, setDoc] = useState(opened.document);
    useEffect(() => setDoc(opened.document), [opened.document]);

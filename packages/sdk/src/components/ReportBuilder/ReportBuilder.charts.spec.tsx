@@ -198,3 +198,69 @@ describe("ReportBuilder: charts", () => {
       ).toBe(true);
    });
 });
+
+describe("ReportBuilder: charts on a view the report declares itself", () => {
+   // A tile of big numbers whose body is written in the report: in no model
+   // the catalog reads, so its shape comes from the report's own compile.
+   const INLINE = `## artifact { title="Overview" tiles=["a -> kpis"] }
+import { scoped_orders } from "../data_app.malloy"
+
+source: a is scoped_orders extend {
+  # label="Key figures"
+  view: kpis is { aggregate: revenue, order_count }
+}`;
+   const withOwnViews = {
+      ...catalog,
+      documentViews: new Map([
+         [
+            "a",
+            new Map([
+               [
+                  "kpis",
+                  {
+                     name: "kpis",
+                     aggregateOnly: true,
+                     shape: { groupBys: 0, totals: 2 },
+                  },
+               ],
+            ]),
+         ],
+      ]),
+   };
+
+   it("offers big numbers and greys out every chart that needs an x-axis, before and after a switch", async () => {
+      const document = await openDocument(INLINE);
+      render(
+         <ReportBuilder
+            source={INLINE}
+            document={document}
+            catalog={withOwnViews}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for Key figures"));
+      expect(enabledCharts()).toEqual(["From the view", "Table", "Big value"]);
+      const line = chartItems().find((o) => primary(o) === "Line");
+      expect(line?.textContent).toContain(
+         "This view has no field for the x-axis",
+      );
+      pickChart("Table");
+      pickChart("From the view");
+      expect(enabledCharts()).toEqual(["From the view", "Table", "Big value"]);
+   });
+
+   it("says the shape is unknown, rather than what the view lacks, when no model reported it", async () => {
+      const document = await openDocument(INLINE);
+      render(
+         <ReportBuilder
+            source={INLINE}
+            document={document}
+            catalog={catalog}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for Key figures"));
+      const big = chartItems().find((o) => primary(o) === "Big value");
+      expect(big?.textContent).toContain(
+         "Not a view the catalog lists, so its shape is unknown",
+      );
+   });
+});

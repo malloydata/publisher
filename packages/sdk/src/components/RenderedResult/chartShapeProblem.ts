@@ -1,0 +1,125 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * What stops a result's chart from drawing, said in the reader's words, or
+ * undefined when nothing does.
+ *
+ * The renderer refuses a chart its result cannot fill, but says so in its own
+ * terms ("Line chart settings error: Malloy Line Chart: No dimensions found.
+ * A line chart must have at least 1 dimension for the x axis."), which a
+ * reader who never wrote the query cannot act on. This reads the same two
+ * facts the renderer checks, which chart the result asks for and how many of
+ * its columns are group-bys and totals, so the panel can say what is missing
+ * before the renderer is asked.
+ *
+ * Conservative by design: anything it cannot read (a channel tagged by hand,
+ * a result that does not parse) is left to the renderer.
+ */
+
+/** The charts that plot rows along an x axis, by their tag and their `viz=` name. */
+const ROW_CHARTS: Record<string, string> = {
+   line_chart: "A line chart",
+   bar_chart: "A bar chart",
+   scatter_chart: "A scatter chart",
+   combo_chart: "A bar and line chart",
+};
+const VIZ_NAMES: Record<string, string> = {
+   line: "line_chart",
+   bar: "bar_chart",
+   scatter: "scatter_chart",
+   combo: "combo_chart",
+};
+
+/** A field tag that names a chart channel: the author placed fields by hand. */
+const CHANNEL_TAGS = new Set(["x", "y", "y2", "series"]);
+
+interface ResultField {
+   kind?: string;
+   type?: { kind?: string };
+   annotations?: Array<{ value?: string }>;
+}
+
+interface ResultShape {
+   schema?: { fields?: ResultField[] };
+   annotations?: Array<{ value?: string }>;
+}
+
+/** The words of a `#` tag line, quoted values blanked; doc and internal notes have none. */
+function tagWords(line: string): string[] {
+   const text = line.trim();
+   if (!text.startsWith("#") || text.startsWith("#(") || text.startsWith('#"'))
+      return [];
+   return text
+      .slice(1)
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .split(/[\s{}[\],]+/)
+      .filter(Boolean);
+}
+
+/** The chart the result's lines ask for, read in order: a later line overrides, `-tag` takes one off. */
+export function requestedChart(lines: readonly string[]): string | undefined {
+   const on: string[] = [];
+   let viz: string | undefined;
+   for (const line of lines)
+      for (const word of tagWords(line)) {
+         if (word.startsWith("-")) {
+            const name = word.slice(1);
+            if (name === "viz") viz = undefined;
+            const at = on.indexOf(name);
+            if (at >= 0) on.splice(at, 1);
+         } else if (word.startsWith("viz=")) {
+            viz = VIZ_NAMES[word.slice(4).replace(/"/g, "")];
+         } else if (ROW_CHARTS[word] !== undefined || word === "big_value") {
+            const at = on.indexOf(word);
+            if (at >= 0) on.splice(at, 1);
+            on.push(word);
+         }
+      }
+   return viz ?? on.at(-1);
+}
+
+const isTotal = (field: ResultField) =>
+   field.kind === "measure" ||
+   (field.annotations ?? []).some((note) =>
+      /^#\(malloy\)[\s\S]*\bcalculation\b/.test((note.value ?? "").trim()),
+   );
+const isNest = (field: ResultField) =>
+   field.kind === "join" || field.type?.kind === "array_type";
+
+export function chartShapeProblem(
+   result: string | undefined,
+): string | undefined {
+   if (!result) return undefined;
+   let parsed: ResultShape;
+   try {
+      parsed = JSON.parse(result) as ResultShape;
+   } catch {
+      return undefined;
+   }
+   const fields = parsed?.schema?.fields;
+   if (!Array.isArray(fields) || fields.length === 0) return undefined;
+   const lines = (parsed.annotations ?? [])
+      .map((note) => note?.value)
+      .filter((value): value is string => typeof value === "string");
+   const chart = requestedChart(lines);
+   const name = chart && ROW_CHARTS[chart];
+   if (!name) return undefined;
+   const handPlaced = fields.some((field) =>
+      (field.annotations ?? []).some((note) =>
+         tagWords(note.value ?? "").some((word) =>
+            CHANNEL_TAGS.has(word.split("=")[0]),
+         ),
+      ),
+   );
+   if (handPlaced) return undefined;
+   const totals = fields.filter(isTotal).length;
+   const groupBys = fields.filter((f) => !isTotal(f) && !isNest(f)).length;
+   if (groupBys === 0)
+      return `This tile has no field for the x-axis. ${name} needs a group by, such as a date or a category. Show it as big numbers or a table instead, or add a group by to its view.`;
+   if (chart === "combo_chart" && totals !== 2)
+      return `${name} needs exactly two totals, the first drawn as bars and the second as a line. This tile has ${totals}.`;
+   if (totals === 0 && chart !== "scatter_chart")
+      return `This tile has no total for the y-axis. ${name} needs at least one aggregate, such as a count or a sum.`;
+   return undefined;
+}

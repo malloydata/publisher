@@ -89,3 +89,47 @@ describe("chartChoices", () => {
       expect(values({}, "custom")).toContain("custom");
    });
 });
+
+describe("chartChoices on a view whose shape the model reported", () => {
+   const totalsOnly = {
+      aggregateOnly: true,
+      shape: { groupBys: 0, totals: 3 },
+   } as const;
+
+   it("greys out every chart that plots rows on a view of totals only, saying what is missing", () => {
+      expect(enabled(totalsOnly, "default")).toEqual([
+         "default",
+         "none",
+         "big_value",
+      ]);
+      for (const pick of ["line_chart", "bar_chart", "scatter_chart"])
+         expect(choice(pick, totalsOnly, "default").reason).toMatch(
+            /^This view has no field for the x-axis: a .* chart needs a group by, such as a date or a category$/,
+         );
+      expect(choice("combo_chart", totalsOnly, "default").reason).toBe(
+         "This view has no field for the x-axis: a bar and line chart needs a group by, such as a date or a category",
+      );
+   });
+
+   it("says a grouped view is more than one row when big numbers are asked for", () => {
+      const grouped = { shape: { groupBys: 1, totals: 1 } };
+      expect(choice("big_value", grouped, "default").reason).toBe(
+         "This view has a group by, so it is more than one row; big numbers need a view of totals only",
+      );
+      expect(enabled(grouped, "default")).toContain("line_chart");
+   });
+
+   it("says a view with no total has nothing for the y-axis", () => {
+      const noTotals = { shape: { groupBys: 2, totals: 0 } };
+      expect(choice("bar_chart", noTotals, "default").reason).toBe(
+         "This view has no total for the y-axis: a bar chart needs at least one aggregate",
+      );
+   });
+
+   it("names the count when a bar and line chart gets the wrong number of totals", () => {
+      const three = { shape: { groupBys: 1, totals: 3 } };
+      expect(choice("combo_chart", three, "default").reason).toBe(
+         "A bar and line chart needs exactly two totals, the first drawn as bars and the second as a line; this view has 3",
+      );
+   });
+});

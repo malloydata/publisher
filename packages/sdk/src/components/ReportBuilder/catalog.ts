@@ -42,6 +42,14 @@ export interface CatalogView {
    aggregateOnly?: boolean;
    /** At least one group-by and exactly two totals: the shape a bare `# combo_chart` draws, bars for the first and a line for the second. Absent when the model did not say. */
    comboShape?: boolean;
+   /** How many of its output columns are group-bys and how many are totals, when the model said: what decides which charts can draw it. */
+   shape?: ViewShape;
+}
+
+/** A view's output columns by role: a group-by is a field a chart can put on its x axis, a total one it can put on its y axis. */
+export interface ViewShape {
+   groupBys: number;
+   totals: number;
 }
 
 export interface CatalogSource {
@@ -66,6 +74,13 @@ export interface CatalogSource {
 
 export interface PackageCatalog {
    sources: CatalogSource[];
+   /**
+    * The views the report file itself declares, by source then view, from the
+    * file's own compiled model: an inline `view: kpis is { aggregate: … }` is
+    * in no other model, so without these the builder could not tell which
+    * charts such a tile can take. Absent until that model has answered.
+    */
+   documentViews?: Map<string, Map<string, CatalogView>>;
 }
 
 /**
@@ -154,33 +169,50 @@ const isGroupByColumn = (field: Record<string, unknown>) =>
    !isAggregateColumn(field) &&
    (field["type"] as { kind?: string } | undefined)?.kind !== "array_type";
 
-/** Per source, the views whose every output column is an aggregate, and the views a bare `# combo_chart` can draw. */
-function viewShapesOf(model: CompiledModel): {
-   aggregateOnly: Map<string, Set<string>>;
-   combo: Map<string, Set<string>>;
-} {
-   const aggregateOnly = new Map<string, Set<string>>();
-   const combo = new Map<string, Set<string>>();
+/** Per source, per view: the shape of its output, whether every column is a total, and whether a bare `# combo_chart` can draw it. */
+function viewShapesOf(
+   model: CompiledModel,
+): Map<string, Map<string, Omit<CatalogView, "name">>> {
+   const bySource = new Map<string, Map<string, Omit<CatalogView, "name">>>();
    for (const info of parsedSourceInfos(model)) {
-      const totalsOnly = new Set<string>();
-      const comboViews = new Set<string>();
+      const views = new Map<string, Omit<CatalogView, "name">>();
       for (const field of info.schema?.fields ?? []) {
          if (field["kind"] !== "view" || typeof field["name"] !== "string")
             continue;
          const columns = (field["schema"] as { fields?: unknown } | undefined)
             ?.fields as Array<Record<string, unknown>> | undefined;
          if (!columns || columns.length === 0) continue;
-         if (columns.every(isAggregateColumn)) totalsOnly.add(field["name"]);
-         if (
-            columns.filter(isAggregateColumn).length === 2 &&
-            columns.some(isGroupByColumn)
-         )
-            comboViews.add(field["name"]);
+         const totals = columns.filter(isAggregateColumn).length;
+         const groupBys = columns.filter(isGroupByColumn).length;
+         views.set(field["name"], {
+            shape: { groupBys, totals },
+            ...(totals === columns.length ? { aggregateOnly: true } : {}),
+            ...(totals === 2 && groupBys > 0 ? { comboShape: true } : {}),
+         });
       }
-      aggregateOnly.set(info.name, totalsOnly);
-      combo.set(info.name, comboViews);
+      bySource.set(info.name, views);
    }
-   return { aggregateOnly, combo };
+   return bySource;
+}
+
+/**
+ * The views a report file declares, from its own compiled model, keyed by
+ * source then view. The file's sources extend the package's, so its model
+ * lists their views too; only the ones under the file's own source names are
+ * the file's, and those are what a tile in it names.
+ */
+export function documentViewsOf(
+   model: CompiledModel,
+): Map<string, Map<string, CatalogView>> {
+   const out = new Map<string, Map<string, CatalogView>>();
+   for (const [source, views] of viewShapesOf(model))
+      out.set(
+         source,
+         new Map(
+            Array.from(views, ([name, shape]) => [name, { name, ...shape }]),
+         ),
+      );
+   return out;
 }
 
 /**
@@ -278,12 +310,7 @@ export function buildCatalog(
                   ...(chartOf(view.annotations)
                      ? { chart: chartOf(view.annotations) as string }
                      : {}),
-                  ...(shapes.aggregateOnly.get(name)?.has(view.name as string)
-                     ? { aggregateOnly: true }
-                     : {}),
-                  ...(shapes.combo.get(name)?.has(view.name as string)
-                     ? { comboShape: true }
-                     : {}),
+                  ...shapes.get(name)?.get(view.name as string),
                })),
             givens,
             fields: fields.get(name) ?? [],

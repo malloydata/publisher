@@ -5,6 +5,7 @@ import { clearReportDraft, reportDraftKey } from "./useReportDraft";
 import { Alert, Button, Stack } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
+import type { CompiledModel } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { ApiErrorDisplay } from "../ApiErrorDisplay";
@@ -563,6 +564,9 @@ export function ReportEditor(props: ReportEditorProps) {
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}
                note={note}
+               {...(!textSource && modelQuery.data?.data
+                  ? { fileModel: modelQuery.data.data as CompiledModel }
+                  : {})}
             />
          )}
       </Stack>

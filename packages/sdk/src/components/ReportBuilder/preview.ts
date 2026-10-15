@@ -4,7 +4,7 @@
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
 import { malloyLiteral } from "../../utils/malloyLiteral";
-import { chartLineText, isChartPick } from "./chartLine";
+import { chartLineText, chartResetLine, isChartPick } from "./chartLine";
 import {
    isQueryTile,
    isReadOnlyTile,
@@ -278,7 +278,7 @@ export function previewTileQuery(
          : chart === "custom" && tile.chartLines?.length
            ? tile.chartLines.join("\n")
            : chart === "default" && dropsBaseChart(tile.declaration)
-             ? chartLineText("none")
+             ? chartResetLine()
              : undefined;
    return {
       ...(annotation ? { annotation } : {}),

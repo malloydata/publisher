@@ -7,7 +7,7 @@ import { previewTileQuery } from "./preview";
 import { openDocument, queryTile, spliced } from "./testing/fixtures";
 
 const NONE =
-   "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz";
+   "# -line_chart -bar_chart -scatter_chart -shape_map -segment_map -combo_chart";
 
 const SHAPES = `## artifact { title="T" tiles=["a -> inl", "a -> comp", "a -> pipe", "a -> chain", "a -> paren", "a -> ref"] }
 import "../m.malloy"
