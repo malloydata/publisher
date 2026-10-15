@@ -7,16 +7,43 @@
  * (`+20231120.deadbeef`).
  *
  * The pattern is the spec's `VersionIdPattern`, byte for byte, so the route
- * validation and the publish gate accept exactly the same versions. Numeric
- * identifiers carry no leading zeros (SemVer 2.0 sections 2 and 9): `01.0.0`
- * would otherwise publish beside `1.0.0`, in a folder of its own, and compare
- * equal to it.
+ * validation and the publish gate accept exactly the same versions. It lets a
+ * numeric identifier carry leading zeros (`01.0.0`), which strict SemVer 2.0
+ * does not, so a version a system in front of Publisher validated with the
+ * same pattern is never refused here. Such a version compares equal to the
+ * one without the zeros, and the publish path refuses a version that differs
+ * from a published one only that way.
  */
 export const SEMVER_PATTERN =
-   /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
+   /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 
 export function isSemver(value: string): boolean {
    return SEMVER_PATTERN.test(value);
+}
+
+/**
+ * A version as it compares and as a case-insensitive filesystem sees it:
+ * lower case, with leading zeros dropped from numeric identifiers (build
+ * metadata is kept as written, since it never counts in a comparison and its
+ * digits are not numbers). Two different versions with the same spelling key
+ * here (`1.0.0-RC1` and `1.0.0-rc1`, `01.0.0` and `1.0.0`) are one version
+ * written two ways, and only one of them is published.
+ */
+export function versionSpellingKey(version: string): string {
+   const plus = version.indexOf("+");
+   const precedence = plus === -1 ? version : version.slice(0, plus);
+   const build = plus === -1 ? "" : version.slice(plus);
+   const dash = precedence.indexOf("-");
+   const core = dash === -1 ? precedence : precedence.slice(0, dash);
+   const preRelease = dash === -1 ? null : precedence.slice(dash + 1);
+   const unpad = (identifiers: string) =>
+      identifiers
+         .split(".")
+         .map((id) => (NUMERIC.test(id) ? BigInt(id).toString() : id))
+         .join(".");
+   const key =
+      preRelease === null ? unpad(core) : `${unpad(core)}-${unpad(preRelease)}`;
+   return `${key}${build}`.toLowerCase();
 }
 
 interface ParsedVersion {

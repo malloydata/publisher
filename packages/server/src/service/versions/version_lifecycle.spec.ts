@@ -354,8 +354,11 @@ describe("moving latest", () => {
       expect((await svc.getVersion(PKG, "2.0.0")).demotedAt).toBeInstanceOf(
          Date,
       );
-      expect(log).toEqual([
-         "load 1.0.0",
+      // Loaded before the move; its load reports it served, and the move
+      // reports it served as latest. The load's report reads `latest` on its
+      // own, so it may land either side of the move's.
+      expect(log[0]).toBe("load 1.0.0");
+      expect(log.slice(1).sort()).toEqual([
          "served 1.0.0",
          "served 1.0.0 latest",
       ]);
@@ -421,15 +424,15 @@ describe("lifecycle races and failures", () => {
       let reached!: () => void;
       const reporting = new Promise<void>((resolve) => (reached = resolve));
       let armed = false;
-      const read = repo.getPackageByName.bind(repo);
-      const spy = spyOn(repo, "getPackageByName").mockImplementation(
-         async (...args: Parameters<typeof repo.getPackageByName>) => {
+      const read = svc.latestOf.bind(svc);
+      const spy = spyOn(svc, "latestOf").mockImplementation(
+         async (packageName: string) => {
             if (armed) {
                armed = false;
                reached();
                await gate;
             }
-            return read(...args);
+            return read(packageName);
          },
       );
       try {
@@ -571,5 +574,157 @@ describe("lifecycle races and failures", () => {
       expect(
          internalErrorToHttpError(error as Error, { log: false }).status,
       ).toBe(424);
+   });
+});
+
+describe("the registry records requests read", () => {
+   /** Counts the registry reads `fn` makes. */
+   async function readsDuring(fn: () => Promise<unknown>): Promise<number> {
+      const methods = [
+         "getPackageByName",
+         "listVersions",
+         "getVersion",
+         "hasVersions",
+      ] as const;
+      let reads = 0;
+      const spies = methods.map((method) => {
+         const original = (repo[method] as (...a: unknown[]) => unknown).bind(
+            repo,
+         );
+         return spyOn(repo, method).mockImplementation(((
+            ...args: unknown[]
+         ) => {
+            reads++;
+            return original(...args);
+         }) as never);
+      });
+      try {
+         await fn();
+      } finally {
+         for (const spy of spies) spy.mockRestore();
+      }
+      return reads;
+   }
+
+   it("serves requests from the package's records, read once", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      const requests = async () => {
+         expect((await svc.resolve(PKG))!.versionId).toBe("2.0.0");
+         expect((await svc.resolve(PKG, "latest"))!.versionId).toBe("2.0.0");
+         expect((await svc.resolve(PKG, "1.0.0"))!.versionId).toBe("1.0.0");
+         expect((await svc.getLoaded(PKG, "1.0.0"))!.version.versionId).toBe(
+            "1.0.0",
+         );
+         expect(await svc.isVersioned(PKG)).toBe(true);
+         expect(await svc.latestOf(PKG)).toBe("2.0.0");
+         expect(await svc.packageDescriptionOf(PKG)).toBeNull();
+         expect(await svc.pinnableVersion(PKG, "1.0.0")).toBe("1.0.0");
+      };
+      // The first requests read the package's row and its versions...
+      expect(await readsDuring(requests)).toBe(2);
+      // ...and later ones read nothing.
+      expect(await readsDuring(requests)).toBe(0);
+   });
+
+   it("reads them again after every write, so no request sees what a write replaced", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      expect((await svc.resolve(PKG))!.versionId).toBe("2.0.0");
+
+      await svc.setLatest(PKG, "1.0.0");
+      expect((await svc.resolve(PKG))!.versionId).toBe("1.0.0");
+
+      await svc.setArchiveStatus(PKG, "2.0.0", "archive");
+      await expectReason(svc.resolve(PKG, "2.0.0"), "VERSION_ARCHIVED");
+      await svc.setArchiveStatus(PKG, "2.0.0", "unarchive");
+      expect((await svc.resolve(PKG, "2.0.0"))!.archiveStatus).toBe(
+         "unarchive",
+      );
+
+      await svc.setManifest(PKG, "1.0.0", "gs://m/one.json");
+      expect((await svc.resolve(PKG, "1.0.0"))!.manifestPath).toBe(
+         "gs://m/one.json",
+      );
+
+      // Setting the package's description is a write too (this host does not
+      // store it): the next request reads the records again.
+      await svc.packageDescriptionOf(PKG);
+      await svc.setPackageDescription(PKG, "the sales package");
+      expect(await readsDuring(() => svc.packageDescriptionOf(PKG))).toBe(2);
+
+      // Under on-publish a higher version takes `latest`.
+      await publish(svc, "3.0.0");
+      expect((await svc.resolve(PKG))!.versionId).toBe("3.0.0");
+      expect((await svc.resolve(PKG, "3.0.0"))!.versionId).toBe("3.0.0");
+   });
+
+   it("does not keep a read that a write overtook", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await publish(svc, "2.0.0");
+      svc.forgetPackage(PKG);
+      // A request reads the package's row, then waits while `latest` moves.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const between = new Promise<void>((resolve) => (reached = resolve));
+      let armed = true;
+      const read = repo.getPackageByName.bind(repo);
+      const spy = spyOn(repo, "getPackageByName").mockImplementation(
+         async (...args: Parameters<typeof repo.getPackageByName>) => {
+            const row = await read(...args);
+            if (armed) {
+               armed = false;
+               reached();
+               await gate;
+            }
+            return row;
+         },
+      );
+      try {
+         const overtaken = svc.resolve(PKG);
+         await between;
+         await svc.setLatest(PKG, "1.0.0");
+         release();
+         // It answers as it would have just before the move...
+         expect((await overtaken)!.versionId).toBe("2.0.0");
+      } finally {
+         release();
+         spy.mockRestore();
+      }
+      // ...and the next request reads the move.
+      expect((await svc.resolve(PKG))!.versionId).toBe("1.0.0");
+   });
+
+   it("keeps nothing for a package with no versions, and forgets a deleted package", async () => {
+      const svc = service();
+      expect(
+         await readsDuring(async () => {
+            expect(await svc.resolve("plain")).toBeNull();
+            expect(await svc.resolve("plain")).toBeNull();
+         }),
+      ).toBe(4);
+
+      await publish(svc, "1.0.0");
+      expect((await svc.resolve(PKG))!.versionId).toBe("1.0.0");
+      const row = await repo.getPackageByName(ENV_ID, PKG);
+      await repo.deletePackage(row!.id);
+      svc.forgetPackage(PKG);
+      expect(await svc.resolve(PKG)).toBeNull();
+      await expectReason(svc.resolve(PKG, "1.0.0"), "VERSION_NOT_FOUND");
+   });
+
+   it("takes `latest` where a request may name a version, never where it must", async () => {
+      const svc = service();
+      await publish(svc, "1.0.0");
+      await expectReason(svc.setLatest(PKG, "latest"), "VERSION_ID_INVALID");
+      await expectReason(
+         svc.setArchiveStatus(PKG, "latest", "archive"),
+         "VERSION_ID_INVALID",
+      );
+      await expectReason(svc.getVersion(PKG, "latest"), "VERSION_ID_INVALID");
    });
 });

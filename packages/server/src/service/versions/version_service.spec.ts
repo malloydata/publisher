@@ -73,15 +73,17 @@ async function expectReason(
 }
 
 describe("requestedVersionId", () => {
-   it("reads absent, empty and null as no version", () => {
+   it("reads absent, empty, null and `latest` as no version", () => {
       expect(requestedVersionId(undefined)).toBeUndefined();
       expect(requestedVersionId(null)).toBeUndefined();
       expect(requestedVersionId("")).toBeUndefined();
+      expect(requestedVersionId("latest")).toBeUndefined();
    });
 
    it("passes a semantic version through, and refuses anything else with 400", () => {
       expect(requestedVersionId("1.2.0-rc.1+b.5")).toBe("1.2.0-rc.1+b.5");
-      for (const bad of ["latest", "1.2", "v1.2.0", " 1.2.0", ["1.0.0"], 1]) {
+      expect(requestedVersionId("01.0.0")).toBe("01.0.0");
+      for (const bad of ["Latest", "1.2", "v1.2.0", " 1.2.0", ["1.0.0"], 1]) {
          expect(() => requestedVersionId(bad)).toThrow(PackageVersionError);
          try {
             requestedVersionId(bad);
@@ -117,6 +119,9 @@ describe("VersionService.resolve", () => {
       const service = new VersionService(repo, ENV_ID);
       expect((await service.resolve("sales"))!.versionId).toBe("2.0.0");
       expect((await service.resolve("sales", null))!.versionId).toBe("2.0.0");
+      expect((await service.resolve("sales", "latest"))!.versionId).toBe(
+         "2.0.0",
+      );
       expect((await service.resolve("sales", "1.0.0"))!.versionId).toBe(
          "1.0.0",
       );

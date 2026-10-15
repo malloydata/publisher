@@ -9,6 +9,7 @@ import {
    isSemver,
    SEMVER_PATTERN,
    versionDirName,
+   versionSpellingKey,
 } from "./semver";
 
 describe("isSemver", () => {
@@ -25,6 +26,12 @@ describe("isSemver", () => {
       "1.0.0-0",
       "1.0.0-0a.1",
       "1.0.0+001",
+      // The control plane's pattern takes leading zeros, so this one does.
+      "01.0.0",
+      "1.01.0",
+      "1.0.01",
+      "1.0.0-01",
+      "1.0.0-rc.01",
    ];
    for (const version of accepted) {
       it(`accepts ${version}`, () => expect(isSemver(version)).toBe(true));
@@ -42,13 +49,6 @@ describe("isSemver", () => {
       "1.2.3 ",
       "latest",
       "../1.0.0",
-      // A numeric identifier with a leading zero: it would publish beside
-      // the version it compares equal to.
-      "01.0.0",
-      "1.01.0",
-      "1.0.01",
-      "1.0.0-01",
-      "1.0.0-rc.01",
    ];
    for (const version of refused) {
       it(`refuses ${JSON.stringify(version)}`, () =>
@@ -68,6 +68,15 @@ describe("isSemver", () => {
       );
       expect(declared).not.toBeNull();
       expect(declared![1].replace(/''/g, "'")).toBe(SEMVER_PATTERN.source);
+   });
+
+   it("stays the pattern systems in front of Publisher validate with, byte for byte", () => {
+      // A system that publishes here may validate versions with this same
+      // pattern before it does; a version it accepts must not be refused
+      // here, so tightening it is a breaking change, not a fix.
+      expect(SEMVER_PATTERN.source).toBe(
+         "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$",
+      );
    });
 });
 
@@ -129,5 +138,37 @@ describe("versionDirName", () => {
       expect(() => versionDirName("../../etc")).toThrow(
          "Not a semantic version",
       );
+   });
+});
+
+describe("versionSpellingKey", () => {
+   it("is one key for one version written two ways", () => {
+      for (const [a, b] of [
+         ["1.0.0-RC1", "1.0.0-rc1"],
+         ["01.0.0", "1.0.0"],
+         ["1.002.03", "1.2.3"],
+         ["1.0.0-rc.01", "1.0.0-rc.1"],
+         ["1.0.0-00", "1.0.0-0"],
+      ]) {
+         expect([a, versionSpellingKey(a)]).toEqual([a, versionSpellingKey(b)]);
+      }
+      // Leading zeros only: the two compare equal.
+      expect(compareSemver("01.0.0-rc.01", "1.0.0-rc.1")).toBe(0);
+   });
+
+   it("keeps apart versions that are different, even when they compare equal", () => {
+      for (const [a, b] of [
+         // Build metadata does not count in a comparison, but its digits are
+         // not numbers: these are two versions.
+         ["1.0.0+001", "1.0.0+1"],
+         ["1.0.0+a", "1.0.0+b"],
+         // Alphanumeric identifiers keep their zeros, and a hyphen inside one
+         // is part of it.
+         ["1.0.0-00a", "1.0.0-0a"],
+         ["1.0.0-x-01", "1.0.0-x-1"],
+         ["1.0.0-rc1", "1.0.0-rc.1"],
+      ]) {
+         expect(versionSpellingKey(a)).not.toBe(versionSpellingKey(b));
+      }
    });
 });

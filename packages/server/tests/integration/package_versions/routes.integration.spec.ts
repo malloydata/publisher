@@ -183,6 +183,9 @@ describe("package-scoped routes of a versioned package", () => {
       expect(
          (await json(await fetch(api(`${PKG}?versionId=`)))).versionId,
       ).toBe("2.0.0");
+      expect(
+         (await json(await fetch(api(`${PKG}?versionId=latest`)))).versionId,
+      ).toBe("2.0.0");
    });
 
    it("reload=true returns a published version unchanged", async () => {
@@ -196,6 +199,7 @@ describe("package-scoped routes of a versioned package", () => {
       expect(await answerOf()).toBe(2);
       expect(await answerOf("1.0.0")).toBe(1);
       expect(await answerOf("")).toBe(2);
+      expect(await answerOf("latest")).toBe(2);
    });
 
    it("models list and model get read the named version's files", async () => {
@@ -378,7 +382,7 @@ describe("package-scoped routes of a versioned package", () => {
       expect((await json(res)).reason).toBe("PACKAGE_IS_VERSIONED");
    });
 
-   it("answers an unknown version 404, a malformed one 400, on every route", async () => {
+   it("answers an unknown version 404, a malformed one 400, and `latest` with latest, on every route", async () => {
       const routes = [
          `${PKG}`,
          `${PKG}/models`,
@@ -398,17 +402,30 @@ describe("package-scoped routes of a versioned package", () => {
          const missing = await fetch(api(`${route}${sep}versionId=9.9.9`));
          expect([route, missing.status]).toEqual([route, 404]);
          expect((await json(missing)).reason).toBe("VERSION_NOT_FOUND");
-         const malformed = await fetch(api(`${route}${sep}versionId=latest`));
+         const malformed = await fetch(
+            api(`${route}${sep}versionId=not-a-version`),
+         );
          expect([route, malformed.status]).toEqual([route, 400]);
          expect((await json(malformed)).reason).toBe("VERSION_ID_INVALID");
+         // `latest` answers exactly what naming no version answers.
+         const aliased = await fetch(api(`${route}${sep}versionId=latest`));
+         const unnamed = await fetch(api(route));
+         expect([route, aliased.status]).toEqual([route, 200]);
+         expect([route, await aliased.text()]).toEqual([
+            route,
+            await unnamed.text(),
+         ]);
       }
    });
 
-   it("answers a named version on a package with none 404", async () => {
+   it("answers a named version on a package with none 404, and serves it for `latest`", async () => {
       const res = await fetch(api(`${PLAIN}/models?versionId=1.0.0`));
       expect(res.status).toBe(404);
       expect((await json(res)).reason).toBe("VERSION_NOT_FOUND");
       expect((await fetch(api(`${PLAIN}/models`))).status).toBe(200);
+      expect(
+         (await fetch(api(`${PLAIN}/models?versionId=latest`))).status,
+      ).toBe(200);
    });
 
    it("lists a data app with its version, and a pinned page queries that version", async () => {

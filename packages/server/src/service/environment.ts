@@ -105,7 +105,11 @@ import {
 import { ApiConnection, Model } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
-import { VersionRegistry, VersionService } from "./versions/version_service";
+import {
+   requestedVersionId,
+   VersionRegistry,
+   VersionService,
+} from "./versions/version_service";
 import { VersionStore } from "./versions/version_store";
 import {
    ownedVersionOf,
@@ -760,7 +764,7 @@ export class Environment {
       if (
          this.versionService &&
          (!this.packages.has(packageName) ||
-            (versionId !== undefined && versionId !== null && versionId !== ""))
+            requestedVersionId(versionId) !== undefined)
       ) {
          versioned = (
             await this.versionService.getLoaded(packageName, versionId)
@@ -3326,16 +3330,13 @@ export class Environment {
       assertSafePackageName(packageName);
       // A published version is immutable, so it has nothing to reload: a
       // versioned package answers with the named version (or `latest`) as it
-      // is, resolved through the registry, never the disk. An unversioned
+      // is, resolved from its registry records, never the disk. An unversioned
       // package already loaded here skips the lookup unless the request names
-      // a version, which it does not have (404).
-      const namesVersion =
-         options.versionId !== undefined &&
-         options.versionId !== null &&
-         options.versionId !== "";
+      // a version (`latest` names none), which it does not have (404).
       if (
          this.versionService &&
-         (namesVersion || !this.packages.has(packageName))
+         (requestedVersionId(options.versionId) !== undefined ||
+            !this.packages.has(packageName))
       ) {
          const versioned = await this.versionService.getLoaded(
             packageName,

@@ -1440,8 +1440,8 @@ paths:
         per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
 
         A package with published versions is listed once, as its `latest` version. A
-        non-empty `versionId` is rejected with 400: read one version with
-        `GET /environments/{environmentName}/packages/{packageName}?versionId=`.
+        `versionId` other than empty or `latest` is rejected with 400: read one
+        version with `GET /environments/{environmentName}/packages/{packageName}?versionId=`.
       parameters:
         - name: environmentName
           in: path
@@ -3835,14 +3835,18 @@ components:
 
     VersionIdPattern:
       type: string
-      pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      pattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
       description: >-
         A package version: a semantic version (SemVer 2.0), MAJOR.MINOR.PATCH
         with an optional pre-release suffix (`-rc1`, `-alpha.2`) and optional
         build metadata (`+20231120.deadbeef`). Pre-release and
         build suffixes are accepted so release-candidate builds can be
-        published. A numeric identifier has no leading zero (SemVer 2.0), so
-        `01.0.0` and `1.0.0-rc.01` are refused; build metadata may have one.
+        published. A numeric identifier may have leading zeros (`01.0.0`),
+        which strict SemVer 2.0 does not allow, so a version a system in front
+        of Publisher validated with this same pattern is never refused. Such a
+        version compares equal to the one without the zeros, and a package
+        holds only one of the two: publishing the other is 409
+        `VERSION_CONFLICT`.
 
     PackageVersion:
       type: object
@@ -6535,8 +6539,8 @@ components:
         versionId:
           type: string
           description: >-
-            The published version of the package to query. Omitted or empty,
-            the query runs against the package's `latest` version. An unknown version
+            The published version of the package to query. `latest`, omitted or
+            empty, the query runs against the package's `latest` version. An unknown version
             answers 404 (`reason` VERSION_NOT_FOUND) and an archived one 410
             (`reason` VERSION_ARCHIVED). A `versionId` in the request's query
             string, as a proxy forwarding a page's URL sends, is read the same way;
@@ -8232,8 +8236,8 @@ components:
         versionId:
           type: string
           description: >-
-            The published version of the package to build. Omitted or empty, the
-            package's `latest` version is built. An unknown version answers 404
+            The published version of the package to build. `latest`, omitted or
+            empty, the package's `latest` version is built. An unknown version answers 404
             (`reason` VERSION_NOT_FOUND) and an archived one 410 (`reason`
             VERSION_ARCHIVED). Carried in the body rather than the query string
             because the body is optional: a new optional query parameter ahead
@@ -9610,11 +9614,11 @@ components:
       allowEmptyValue: true
       description: |
         The published version of the package to serve, a semantic version such
-        as `1.2.0` or `1.2.0-rc1`. Omitted or empty (`versionId=`, which a proxy
-        forwarding a page's query string may send), the request is served from
-        the package's `latest` version.
+        as `1.2.0` or `1.2.0-rc1`. `latest`, omitted or empty (`versionId=`,
+        which a proxy forwarding a page's query string may send), the request
+        is served from the package's `latest` version.
 
-        A value that is not a semantic version answers 400 with `reason`
+        Any other value that is not a semantic version answers 400 with `reason`
         VERSION_ID_INVALID, so a malformed value is told apart from a missing
         version. An unknown version answers 404 with `reason` VERSION_NOT_FOUND,
         and an archived one answers 410 with `reason` VERSION_ARCHIVED. A

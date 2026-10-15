@@ -100,6 +100,7 @@ import {
 import { booleanParamOr400, setCollectionReloadError } from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
+import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
 import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
 import { resolveSpaFallback, type LoadedRoutes } from "./spa_fallback";
 import { timeReportRead } from "./report_metrics";
@@ -1697,7 +1698,8 @@ app.get(
    async (req, res) => {
       // Listing is not package-scoped and takes no version. An empty one is
       // what a proxy forwarding a page's query string may send: no version.
-      if (req.query.versionId) {
+      // `latest` is what the listing answers with anyway.
+      if (req.query.versionId && req.query.versionId !== LATEST_VERSION_ALIAS) {
          const { json, status } = internalErrorToHttpError(
             new BadRequestError(
                "A package listing takes no versionId: it lists every package, each as its latest version. Read one version with GET .../packages/{packageName}?versionId=.",

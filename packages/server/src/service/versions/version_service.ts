@@ -17,7 +17,7 @@ import {
    ResourceRepository,
    Version,
 } from "../../storage/DatabaseInterface";
-import { compareSemver, isSemver } from "./semver";
+import { compareSemver, isSemver, versionSpellingKey } from "./semver";
 import { VersionCache, VersionEvictedDuringLoadError } from "./version_cache";
 import { StagedVersion, VersionStore } from "./version_store";
 
@@ -126,14 +126,33 @@ export interface PublishResult<P> {
    created: boolean;
 }
 
+/** One package's registry rows, as request paths read them. */
+interface PackageRecords {
+   latest: string | null;
+   /** The package's own description, set by a request; null when none was. */
+   description: string | null;
+   /** Every version, archived ones included, by version. */
+   versions: Map<string, Version>;
+}
+
+/** The `versionId` that names a package's `latest`, as omitting it does. */
+export const LATEST_VERSION_ALIAS = "latest";
+
 /**
- * A `versionId` as a request carries it, normalized: absent, `""` and null
- * all mean "no version", which serves the package's `latest`. A value that is
- * not a semantic version is refused with 400, so a malformed value is told
- * apart from a version that does not exist.
+ * A `versionId` as a request carries it, normalized: absent, `""`, null and
+ * `latest` all mean "no version", which serves the package's `latest`. A value
+ * that is not a semantic version is refused with 400, so a malformed value is
+ * told apart from a version that does not exist.
  */
 export function requestedVersionId(raw: unknown): string | undefined {
-   if (raw === undefined || raw === null || raw === "") return undefined;
+   if (
+      raw === undefined ||
+      raw === null ||
+      raw === "" ||
+      raw === LATEST_VERSION_ALIAS
+   ) {
+      return undefined;
+   }
    if (typeof raw !== "string" || !isSemver(raw)) {
       throw new PackageVersionError(
          "VERSION_ID_INVALID",
@@ -156,9 +175,20 @@ export class VersionService<P = unknown> {
    /**
     * The `latest` last read or set for each package, for the callers that
     * need it synchronously (which version answers a lookup by name). Never
-    * consulted to decide a request: `latestOf` reads the registry.
+    * consulted to decide a request: `latestOf` reads the package's records.
     */
    private readonly latestSeen = new Map<string, string | null>();
+   /**
+    * What the registry holds for each versioned package, as requests read
+    * it: its `latest`, its own description and its versions. It is read once
+    * and kept, so serving a request reads nothing from the registry. Only
+    * this server writes those rows, and every write forgets the package's
+    * entry once it has written (`forgetRecords`), so the next request reads
+    * them again. A request already reading when a write lands is answered as
+    * it would have been just before the write. The writes, and the checks
+    * that guard them, read the registry itself.
+    */
+   private readonly records = new Map<string, Promise<PackageRecords>>();
    /**
     * When restoring a version's missing folder last failed, by package,
     * version and hash, so a listing or poll that touches it does not fetch
@@ -216,6 +246,7 @@ export class VersionService<P = unknown> {
    forgetPackage(packageName: string): void {
       this.cache.evictPackage(packageName);
       this.latestSeen.delete(packageName);
+      this.forgetRecords(packageName);
       for (const key of [...this.restoreFailedAt.keys()]) {
          if (key.startsWith(`${packageName}@`))
             this.restoreFailedAt.delete(key);
@@ -229,27 +260,26 @@ export class VersionService<P = unknown> {
 
    /**
     * The version a request is served from, decided once per request from the
-    * registry, never from the disk.
+    * package's registry records, never from the disk.
     *
     *  - An unversioned package (one with no version rows) resolves to null,
     *    and is served as before, when the request names no version. Naming
     *    one is 404 VERSION_NOT_FOUND.
-    *  - A named version must exist (404 VERSION_NOT_FOUND) and must not be
-    *    archived (410 VERSION_ARCHIVED).
-    *  - No version means the package's `latest`. A versioned package with no
-    *    `latest` yet (explicit promotion, before the first move) is 404.
+    *  - A named version is that version, whatever `latest` is: it must exist
+    *    (404 VERSION_NOT_FOUND) and must not be archived (410
+    *    VERSION_ARCHIVED).
+    *  - No version, or `latest`, means the package's `latest`. A versioned
+    *    package with no `latest` yet (explicit promotion, before the first
+    *    move) is 404.
     */
    async resolve(
       packageName: string,
       rawVersionId?: unknown,
    ): Promise<Version | null> {
       const requested = requestedVersionId(rawVersionId);
+      const records = await this.recordsOf(packageName);
       if (requested !== undefined) {
-         const row = await this.registry.getVersion(
-            this.environmentId,
-            packageName,
-            requested,
-         );
+         const row = records.versions.get(requested);
          if (!row) {
             throw new PackageVersionError(
                "VERSION_NOT_FOUND",
@@ -265,16 +295,11 @@ export class VersionService<P = unknown> {
          return row;
       }
 
-      const latest = await this.latestOf(packageName);
-      if (latest !== null) {
-         const row = await this.registry.getVersion(
-            this.environmentId,
-            packageName,
-            latest,
-         );
+      if (records.latest !== null) {
+         const row = records.versions.get(records.latest);
          if (row) return row;
       }
-      if (await this.isVersioned(packageName)) {
+      if (records.versions.size > 0) {
          throw new PackageVersionError(
             "VERSION_NOT_FOUND",
             `Package ${packageName} has no latest version yet; name a version, or make one latest.`,
@@ -295,28 +320,66 @@ export class VersionService<P = unknown> {
       raw: unknown,
    ): Promise<string | undefined> {
       if (typeof raw !== "string" || !isSemver(raw)) return undefined;
-      const row = await this.registry.getVersion(
-         this.environmentId,
-         packageName,
-         raw,
-      );
-      return row ? raw : undefined;
+      const records = await this.recordsOf(packageName);
+      return records.versions.has(raw) ? raw : undefined;
    }
 
    /** Whether the package has any published version. */
    async isVersioned(packageName: string): Promise<boolean> {
-      return this.registry.hasVersions(this.environmentId, packageName);
+      return (await this.recordsOf(packageName)).versions.size > 0;
    }
 
    /** The package's `latest` version, or null. */
    async latestOf(packageName: string): Promise<string | null> {
+      return (await this.recordsOf(packageName)).latest;
+   }
+
+   /**
+    * The package's registry records: kept from an earlier read, or read now
+    * (two statements). Kept only for a package that has versions, so names
+    * requested of packages that have none hold nothing here.
+    */
+   private recordsOf(packageName: string): Promise<PackageRecords> {
+      const kept = this.records.get(packageName);
+      if (kept) return kept;
+      const reading = this.readRecords(packageName);
+      this.records.set(packageName, reading);
+      const drop = () => {
+         if (this.records.get(packageName) === reading) {
+            this.records.delete(packageName);
+         }
+      };
+      reading.then((read) => {
+         if (read.versions.size === 0) drop();
+      }, drop);
+      return reading;
+   }
+
+   private async readRecords(packageName: string): Promise<PackageRecords> {
       const pkg = await this.registry.getPackageByName(
+         this.environmentId,
+         packageName,
+      );
+      const versions = await this.registry.listVersions(
          this.environmentId,
          packageName,
       );
       const latest = pkg?.latestVersion ?? null;
       this.latestSeen.set(packageName, latest);
-      return latest;
+      return {
+         latest,
+         description: pkg?.description ?? null,
+         versions: new Map(versions.map((v) => [v.versionId, v])),
+      };
+   }
+
+   /**
+    * Forget the package's kept records, once a write to them has landed (or
+    * failed, leaving them in a state nobody read), so the next request reads
+    * the registry again.
+    */
+   private forgetRecords(packageName: string): void {
+      this.records.delete(packageName);
    }
 
    /**
@@ -422,7 +485,7 @@ export class VersionService<P = unknown> {
       holdingPackageLock: boolean,
    ): Promise<PublishResult<P>> {
       const { packageName, versionId, dirName } = staged;
-      return this.withVersionLock(packageName, versionId, async () => {
+      return this.withVersionWrite(packageName, versionId, async () => {
          const host = this.requireHost();
          const store = this.requireStore();
          const existing = await this.registry.getVersion(
@@ -436,13 +499,16 @@ export class VersionService<P = unknown> {
             this.environmentId,
             packageName,
          );
-         const caseTwin = versions.find(
-            (v) => v.versionId.toLowerCase() === versionId.toLowerCase(),
+         const spelling = versionSpellingKey(versionId);
+         const twin = versions.find(
+            (v) => versionSpellingKey(v.versionId) === spelling,
          );
-         if (caseTwin) {
+         if (twin) {
             throw new PackageVersionError(
                "VERSION_CONFLICT",
-               `Version ${versionId} differs from the published version ${caseTwin.versionId} only by letter case, and the two would share a folder on a case-insensitive filesystem. Publish under another version.`,
+               twin.versionId.toLowerCase() === versionId.toLowerCase()
+                  ? `Version ${versionId} differs from the published version ${twin.versionId} only by letter case, and the two would share a folder on a case-insensitive filesystem. Publish under another version.`
+                  : `Version ${versionId} is the published version ${twin.versionId} written with leading zeros, and the two would compare equal. Publish under another version.`,
             );
          }
 
@@ -686,7 +752,11 @@ export class VersionService<P = unknown> {
       packageName: string,
       description: string,
    ): Promise<void> {
-      await this.requireHost().ensurePackageRecord(packageName, description);
+      try {
+         await this.requireHost().ensurePackageRecord(packageName, description);
+      } finally {
+         this.forgetRecords(packageName);
+      }
    }
 
    /**
@@ -694,11 +764,7 @@ export class VersionService<P = unknown> {
     * when none was. A version's publisher.json description is that version's.
     */
    async packageDescriptionOf(packageName: string): Promise<string | null> {
-      const row = await this.registry.getPackageByName(
-         this.environmentId,
-         packageName,
-      );
-      return row?.description ?? null;
+      return (await this.recordsOf(packageName)).description;
    }
 
    /** Every version in service (not archived), of every package here. */
@@ -779,7 +845,7 @@ export class VersionService<P = unknown> {
       // Looked up before the lock, so a request naming a version that does
       // not exist leaves no lock behind.
       await this.getVersion(packageName, versionId);
-      return this.withVersionLock(packageName, versionId, async () => {
+      return this.withVersionWrite(packageName, versionId, async () => {
          const current = await this.getVersion(packageName, versionId);
          if (current.archiveStatus === status) {
             // An archived version is never served: if anything of it is
@@ -845,7 +911,7 @@ export class VersionService<P = unknown> {
       // Looked up before the lock, so a request naming a version that does
       // not exist leaves no lock behind.
       await this.getVersion(packageName, versionId);
-      return this.withVersionLock(packageName, versionId, async () => {
+      return this.withVersionWrite(packageName, versionId, async () => {
          const current = await this.getVersion(packageName, versionId);
          if (current.archiveStatus === "archive") {
             throw versionArchived(packageName, versionId);
@@ -926,11 +992,16 @@ export class VersionService<P = unknown> {
          throw versionArchived(packageName, versionId);
       }
       const loaded = await this.loadOrRefuse(packageName, versionId);
-      const moved = await this.registry.setLatestVersion(
-         this.environmentId,
-         packageName,
-         versionId,
-      );
+      let moved: boolean;
+      try {
+         moved = await this.registry.setLatestVersion(
+            this.environmentId,
+            packageName,
+            versionId,
+         );
+      } finally {
+         this.forgetRecords(packageName);
+      }
       if (moved) {
          this.latestSeen.set(packageName, versionId);
          this.requireHost().onVersionLoaded?.(packageName, loaded, true);
@@ -939,9 +1010,10 @@ export class VersionService<P = unknown> {
    }
 
    /**
-    * Run `fn` holding one version's lock. Keyed without letter case, so two
-    * versions that differ only by case (and would share a folder on a
-    * case-insensitive filesystem) never run side by side.
+    * Run `fn` holding one version's lock. Keyed by the version's spelling
+    * key, so two versions that are one version written two ways (`1.0.0-RC1`
+    * and `1.0.0-rc1`, which would share a folder on a case-insensitive
+    * filesystem; `01.0.0` and `1.0.0`) never run side by side.
     */
    async withVersionLock<T>(
       packageName: string,
@@ -950,8 +1022,29 @@ export class VersionService<P = unknown> {
    ): Promise<T> {
       return lockFor(
          this.versionLocks,
-         `${packageName}@${versionId.toLowerCase()}`,
+         `${packageName}@${versionSpellingKey(versionId)}`,
       ).runExclusive(fn);
+   }
+
+   /**
+    * Run `fn`, which writes one version's rows, holding the version's lock.
+    * The package's kept records are forgotten once it settles, whether it
+    * wrote everything or failed partway, and before the lock is let go: what
+    * waits on the lock to re-check the version (a run of it, say) reads what
+    * `fn` wrote.
+    */
+   private async withVersionWrite<T>(
+      packageName: string,
+      versionId: string,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      return this.withVersionLock(packageName, versionId, async () => {
+         try {
+            return await fn();
+         } finally {
+            this.forgetRecords(packageName);
+         }
+      });
    }
 
    /**
@@ -1095,7 +1188,10 @@ function echo(raw: unknown): string {
    return text.length > 64 ? `${text.slice(0, 61)}...` : text;
 }
 
-/** A version a route names in its path or body: required, and semver. */
+/**
+ * A version a route names in its path or body: required, and semver. The
+ * `latest` alias is not one: these routes act on one version by name.
+ */
 function requiredVersionId(raw: unknown): string {
    const versionId = requestedVersionId(raw);
    if (versionId === undefined) {

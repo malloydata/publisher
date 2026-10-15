@@ -13,7 +13,8 @@
  *  - a malformed `versionId` answers 400 `VERSION_ID_INVALID` on the
  *    package-scoped routes, which api-doc.yaml declares (see
  *    src/version_id_contract.spec.ts);
- *  - a version with a leading zero is refused, at publish and in a read;
+ *  - a version with a leading zero publishes, and the same version written
+ *    without it is then refused, so one package never holds both;
  *  - under explicit promotion a `scope: package` version is built before
  *    anything is `latest`, and serves the table it built once promoted.
  */
@@ -375,26 +376,30 @@ describe("the versions contract a generated client sees", () => {
       }
    });
 
-   it("refuses a version with a leading zero, at publish and in a read, and keeps build metadata digits", async () => {
+   it("publishes a version with a leading zero, refuses it written without, and keeps build metadata digits", async () => {
       setEnv(FLAG, "on");
-      for (const version of ["01.0.0", "1.0.0-rc.01"]) {
-         const refused = await publish(
-            "zeros",
-            writePackage(`zeros-${version}`, { name: "zeros", version }, 9),
-         );
-         expect([version, refused.status, refused.json.reason]).toEqual([
-            version,
-            400,
-            "MANIFEST_VERSION_INVALID",
-         ]);
-      }
-      // Nothing was created for either.
-      expect((await fetch(pkgApi("zeros"))).status).toBe(404);
-
-      const read = await fetch(`${pkgApi("ver")}?versionId=01.0.0`);
-      expect([read.status, (await body(read)).reason]).toEqual([
-         400,
-         "VERSION_ID_INVALID",
+      const padded = await publish(
+         "zeros",
+         writePackage("zeros-padded", { name: "zeros", version: "01.0.0" }, 9),
+      );
+      expect([padded.status, padded.json.versionId]).toEqual([200, "01.0.0"]);
+      const unpadded = await publish(
+         "zeros",
+         writePackage("zeros-unpadded", { name: "zeros", version: "1.0.0" }, 8),
+      );
+      expect([unpadded.status, unpadded.json.reason]).toEqual([
+         409,
+         "VERSION_CONFLICT",
+      ]);
+      const read = await fetch(`${pkgApi("zeros")}?versionId=01.0.0`);
+      expect([read.status, (await body(read)).versionId]).toEqual([
+         200,
+         "01.0.0",
+      ]);
+      const other = await fetch(`${pkgApi("zeros")}?versionId=1.0.0`);
+      expect([other.status, (await body(other)).reason]).toEqual([
+         404,
+         "VERSION_NOT_FOUND",
       ]);
 
       const withBuild = await publish(
