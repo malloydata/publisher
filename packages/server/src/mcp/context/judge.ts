@@ -288,6 +288,41 @@ function sourceLine(index: FcjIndex, key: string): string {
    return `${source?.name ?? key}${summary ? ` - ${summary}` : ""}`;
 }
 
+/** Longest start of a source's own doc the judge is shown beside it. */
+export const SOURCE_DOC_MAX_CHARS = 300;
+
+/**
+ * The start of a source's own doc, in its author's words: its first
+ * sentences up to SOURCE_DOC_MAX_CHARS. This is where an author says which
+ * rows a source holds ("Total Universe only", "for per-audience use ..."),
+ * which a generated summary can drop and an inherited field's doc never
+ * says. Undefined when the source has no doc, or (unless asked otherwise)
+ * when the source's line already shows it: the stored summary is that same
+ * text, or there is no summary and the line shows the whole doc.
+ */
+export function sourceDocStart(
+   index: FcjIndex,
+   key: string,
+   max = SOURCE_DOC_MAX_CHARS,
+   /** False beside a twin's fields: shown there even when the summary says the same. */
+   unlessSummary = true,
+): string | undefined {
+   const source = index.catalog.sources.get(key);
+   const doc = (source?.node.doc ?? "").replace(/\s+/g, " ").trim();
+   if (!doc) return undefined;
+   let out = "";
+   for (const sentence of doc.split(/(?<=[.!?])\s+/)) {
+      if (out && out.length + 1 + sentence.length > max) break;
+      out = out ? `${out} ${sentence}` : sentence;
+      if (out.length >= max) break;
+   }
+   if (out.length > max) out = `${out.slice(0, max)}…`;
+   if (!unlessSummary) return out;
+   // With no stored summary, the source's line already shows its whole doc.
+   const summary = index.summaries.get(key)?.replace(/\s+/g, " ").trim();
+   return summary === undefined || out === summary ? undefined : out;
+}
+
 /** The user message for one cluster. Targets are numbered from 1 in the caller's order. */
 export function renderJudgePrompt(
    index: FcjIndex,
@@ -334,8 +369,23 @@ export function renderJudgePrompt(
          return;
       }
       // A list: the target's candidates in their own order, under the
-      // source that owns them.
+      // source that owns them. When one field name is listed under several
+      // sources, each of those sources' headers carries the first sentence
+      // of its doc, so the rows each holds are read beside the fields.
       const byKey = new Map(listed.map((o) => [o.key, o]));
+      const sourcesByName = new Map<string, Set<string>>();
+      for (const o of listed) {
+         const n = index.catalog.nodes.get(o.key);
+         if (!n || o.route) continue;
+         const set = sourcesByName.get(n.name) ?? new Set<string>();
+         set.add(n.sourceKey);
+         sourcesByName.set(n.name, set);
+      }
+      const twinSources = new Set(
+         [...sourcesByName.values()]
+            .filter((set) => set.size > 1)
+            .flatMap((set) => [...set]),
+      );
       let owner: string | undefined;
       for (const c of cluster.candidates.get(t.index) ?? []) {
          const o = byKey.get(c.key);
@@ -343,7 +393,12 @@ export function renderJudgePrompt(
          const source = index.catalog.nodes.get(c.key)!.sourceKey;
          if (source !== owner) {
             owner = source;
-            lines.push(`  From ${nameOf(source)}:`);
+            const doc = twinSources.has(source)
+               ? sourceDocStart(index, source, ROUTE_NOTE_MAX_CHARS, false)
+               : undefined;
+            lines.push(
+               `  From ${nameOf(source)}${doc ? ` (its doc: ${JSON.stringify(doc)})` : ""}:`,
+            );
          }
          lines.push(
             `    ${optionLine(index, cluster, o, noteOf(t, o), routeCap)}`,
@@ -405,6 +460,8 @@ function peerLines(index: FcjIndex, cluster: Cluster): string[] {
    for (const peer of cluster.peers ?? []) {
       const name = nameOf(peer.source);
       lines.push(`- ${sourceLine(index, peer.source)}`);
+      const doc = sourceDocStart(index, peer.source);
+      if (doc) lines.push(`  Its doc begins: ${JSON.stringify(doc)}`);
       lines.push(
          peer.reaches.length === 0
             ? `  A query from ${name} can use none of the other listed sources.`
