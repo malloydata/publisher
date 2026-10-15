@@ -3726,12 +3726,6 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
-    NotImplemented:
-      description: The requested operation is not implemented
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
     ModelCompilationError:
       description: Model compilation failed due to syntax or semantic errors
       content:

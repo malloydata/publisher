@@ -1976,9 +1976,10 @@ export class Environment {
    /**
     * Snapshot of the packages currently loaded in memory (does not trigger a
     * load or reload). Used by the standalone materialization scheduler to sweep
-    * only already-loaded packages — a not-yet-loaded package is simply not
-    * scheduled until something else loads it, so the scheduler never forces a
-    * load of its own.
+    * only already-loaded unversioned packages — a not-yet-loaded one is simply
+    * not scheduled until something else loads it. Published versions are swept
+    * separately (VersionService.activeVersions), and the scheduler does load a
+    * version when its schedule comes due.
     */
    public getLoadedPackages(): Package[] {
       return [...this.packages.values()];

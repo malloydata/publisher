@@ -35,8 +35,8 @@ export interface VersionCacheHooks<T> {
  * with no lock: there is nothing to reload. Loads are single-flight per
  * version, so concurrent first reads of one version share one load while
  * other versions load in parallel. A version stays loaded until it is
- * archived or its package is deleted ({@link evict}); being superseded as
- * `latest` does not unload it.
+ * archived, its package is deleted, or a rebind after a build that it cannot
+ * take unloads it ({@link evict}); being superseded as `latest` does not.
  */
 export class VersionCache<T> {
    private readonly loaded = new Map<string, T>();
