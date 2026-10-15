@@ -17,6 +17,8 @@
  * a result that does not parse) is left to the renderer.
  */
 
+import { blankQuoted } from "../../utils/blankQuoted";
+
 /** The charts that plot rows along an x axis, by their tag and their `viz=` name. */
 const ROW_CHARTS: Record<string, string> = {
    line_chart: "A line chart",
@@ -50,9 +52,7 @@ function tagWords(line: string): string[] {
    const text = line.trim();
    if (!text.startsWith("#") || text.startsWith("#(") || text.startsWith('#"'))
       return [];
-   return text
-      .slice(1)
-      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+   return blankQuoted(text.slice(1))
       .split(/[\s{}[\],]+/)
       .filter(Boolean);
 }

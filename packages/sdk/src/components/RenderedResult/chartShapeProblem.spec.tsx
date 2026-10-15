@@ -39,6 +39,21 @@ describe("requestedChart", () => {
       );
       expect(requestedChart(["# viz=bar\n"])).toBe("bar_chart");
       expect(requestedChart(['#(doc) "a line_chart"\n'])).toBe(undefined);
+      expect(requestedChart(['# label="bar_chart" line_chart\n'])).toBe(
+         "line_chart",
+      );
+   });
+
+   // Result annotations come from the model. A line of one quote and many
+   // escaped quotes made the quoted-value regex this used quadratic.
+   it("reads a long unclosed quoted value in linear time", () => {
+      const hostile = `# line_chart label="${'\\"'.repeat(200_000)}\n`;
+      const started = performance.now();
+      expect(requestedChart([hostile])).toBe("line_chart");
+      expect(
+         chartShapeProblem(result([groupBy("month")], [hostile])),
+      ).toStartWith("This tile has no total for the y-axis.");
+      expect(performance.now() - started).toBeLessThan(500);
    });
 });
 

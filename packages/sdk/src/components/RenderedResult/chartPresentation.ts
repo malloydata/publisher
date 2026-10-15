@@ -21,6 +21,8 @@
  * renderer.
  */
 
+import { blankQuoted } from "../../utils/blankQuoted";
+
 /** The chart tags a `#` line can pick, in the renderer's spelling. */
 const CHART_TAGS = new Set([
    "bar_chart",
@@ -69,7 +71,7 @@ export function picksChart(lines: readonly string[]): boolean {
       const text = line.trim();
       if (!text.startsWith("#") || /^#[("|]/.test(text)) continue;
       // A quoted value is never a tag name.
-      const body = text.slice(1).replace(/"(?:[^"\\]|\\.)*"/g, '""');
+      const body = blankQuoted(text.slice(1));
       for (const token of body.split(/[\s{}]+/)) {
          if (token === "") continue;
          const negated = token.startsWith("-");

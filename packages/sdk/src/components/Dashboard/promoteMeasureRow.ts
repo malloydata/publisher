@@ -20,9 +20,11 @@
  *
  * Textual rather than through `@malloydata/malloy-tag`, which the SDK loads
  * lazily so a host may bundle without it; a synchronous check in the render
- * path cannot wait on that import. The cost is that a tag NAME inside a quoted
- * string reads as a tag, which only ever withholds the promotion.
+ * path cannot wait on that import. Quoted values are blanked before the line is
+ * split, so a tag name inside one (`# label="table"`) is not read as a tag.
  */
+
+import { blankQuoted } from "../../utils/blankQuoted";
 
 /**
  * The renderer's top-level render tags: any one of these on the result means
@@ -124,7 +126,7 @@ export function carriesRenderTag(annotations: readonly string[]): boolean {
          text.startsWith('#"')
       )
          continue;
-      const body = text.slice(1).replace(/"(?:[^"\\]|\\.)*"/g, '""');
+      const body = blankQuoted(text.slice(1));
       for (const token of body.split(/[\s{}=.,[\]]+/)) {
          if (RENDER_TAGS.has(token)) return true;
       }

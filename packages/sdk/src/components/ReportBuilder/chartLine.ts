@@ -6,6 +6,8 @@
  * Pure text, with no Malloy import, so both writers and the main entry can reach it.
  */
 
+import { blankQuoted } from "../../utils/blankQuoted";
+
 /** The renderer's chart tags, as they are spelled in a model. */
 export const CHART_TAGS = [
    "bar_chart",
@@ -73,7 +75,7 @@ export function parseChartLine(line: string): ChartLineParts | undefined {
 export function mentionsChartTag(line: string): boolean {
    const trimmed = line.trim();
    if (!/^#[ \t]/.test(trimmed) || parseChartLine(trimmed)) return false;
-   const unquoted = trimmed.replace(/"(?:[^"\\]|\\.)*"/g, '""');
+   const unquoted = blankQuoted(trimmed);
    return (unquoted.match(/[A-Za-z_]+/g) ?? []).some((word) =>
       LINE_NAMES.has(word),
    );
