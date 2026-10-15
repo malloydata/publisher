@@ -2,56 +2,29 @@
 # Copyright (c) Credible Data Inc.
 # SPDX-License-Identifier: MIT
 
-# Java for generate-api-types scripts
-FROM amazoncorretto:21.0.8 AS java-base
-
-FROM oven/bun:1.3.13-slim AS base-deps
-
-# `apt-get upgrade` because the Debian packages in oven/bun's layer are frozen at
-# the date that tag was published. Without it every image built from the same tag
-# ships the same package versions, including ones Debian has since patched.
+# Every stage starts from a Docker Hardened Image (dhi.io). The runtime stage is
+# the `bun` runtime variant: no shell, no package manager, runs as `nonroot`
+# (uid 65532). Everything that needs a shell runs in a `-dev` stage and is
+# COPYd across. The images are free to pull (`docker login dhi.io` is not
+# needed for the public catalog), rebuilt by Docker when Debian ships a fix,
+# and carry their own SBOM, SLSA provenance and VEX; `apt-get upgrade` and the
+# APT_REFRESH cache-buster the previous base needed have no job here.
 #
-# No dnsutils: nothing in the server calls dig or nslookup, and its bind9-libs
-# dependency brings liblmdb0 and libxml2, which carry CRITICAL CVEs Debian has
-# not fixed.
+# One Bun image for every bun stage ON PURPOSE. The adbc-driver stage compiles
+# a shim with `-ldl` against the dev image's glibc and self-tests it there; the
+# runtime image has to be the same build (same Debian release, same glibc) or
+# the self-test proves nothing. `-dev` and runtime variants of one tag are
+# built together from one definition, so pinning the tag pins both.
 #
-# APT_REFRESH exists to invalidate this layer. BuildKit caches a RUN by its
-# parent layer and its command text, so while the base tag keeps its digest the
-# upgrade would run once and its package versions would freeze in the build
-# cache. CI passes the UTC date (for example 2026-10-01), so the layer, and every
-# layer after it, rebuilds at least daily. A local build that passes nothing
-# caches as before.
-ARG APT_REFRESH=
-RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
-    apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    curl ca-certificates unzip git \
-    openssl libcurl4 libssl3 iputils-ping file && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+# dhi.io/bun carries only the current 1.x line (1.4 today); there is no 1.3
+# tag. The server's floor is `bun >=1.3.13` (package.json engines).
+ARG BUN_IMAGE=dhi.io/bun:1.4.3-debian13
+ARG GIT_IMAGE=dhi.io/git:2-debian13
+ARG JAVA_IMAGE=dhi.io/amazoncorretto:21-debian13-dev
 
-# DuckDB CLI version, pinned to @duckdb/node-api (the query engine) so the
-# CLI bakes extensions into the same ~/.duckdb/extensions/v<version>/ dir
-# the runtime reads. CI passes --build-arg DUCKDB_VERSION derived from the
-# lockfile (the source of truth); the default below is a fallback for plain
-# `docker build`, kept in sync by scripts/sync-duckdb-version.js and enforced
-# by the CI consistency check.
-#
-# The CLI and its extensions go under the home of `bun` (uid 1000, shipped by
-# the oven/bun base), the user the server runs as, because DuckDB resolves
-# ~/.duckdb from HOME. Installed as root with HOME pointed there, then handed to
-# that user in the same layer, so the chown adds no copy of the files.
-ARG DUCKDB_VERSION=1.5.5
-RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://install.duckdb.org | bash" && \
-    ln -s /home/bun/.duckdb/cli/${DUCKDB_VERSION}/duckdb /usr/local/bin/duckdb && \
-    HOME=/home/bun duckdb -c "INSTALL snowflake FROM community; LOAD snowflake; SELECT snowflake_version();" || \
-    echo "Snowflake verification skipped (offline build)" && \
-    chown -R bun:bun /home/bun/.duckdb
-
-# No Node runtime. The server runs under Bun (CMD below) and nothing in it spawns
-# `node`; where a `node` command is needed, the oven/bun base provides one that
-# resolves to Bun. The NodeSource apt package is deliberately not installed: it
-# hard-depends on python3, which brings the Debian python3.13 packages and their
-# unfixed CVEs into the runtime image for a runtime nothing here uses.
+# Java for generate-api-types scripts. Same Debian as the bun images, so the
+# JVM copied out of it below links against the builder's libraries.
+FROM ${JAVA_IMAGE} AS java-base
 
 # ADBC Snowflake driver + shim (ADBC-SHIM). Kept in its own stage so the
 # compiler never reaches the runtime image and so a broken driver/shim pair
@@ -62,10 +35,10 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
 # dlopen'd into the server process, and a version tag is mutable — an asset can
 # be re-uploaded under it. Pin the bytes, not the name.
 #
-# No `|| echo` fallback, unlike the extension install in base-deps: a failed
-# fetch FAILS THE BUILD. That tolerance is exactly what let this ship broken
-# once. An image without the driver cannot answer a single Snowflake query and
-# must not leave the builder reporting success.
+# No `|| echo` fallback: a failed fetch FAILS THE BUILD. That tolerance is
+# exactly what let this ship broken once. An image without the driver cannot
+# answer a single Snowflake query and must not leave the builder reporting
+# success.
 #
 # The shim (packages/server/adbc-shim/) is compiled here and installed under the
 # driver's own file name, with the real driver renamed beside it; selftest.c
@@ -75,20 +48,18 @@ RUN DUCKDB_VERSION=${DUCKDB_VERSION} HOME=/home/bun bash -c "curl -L https://ins
 # When bumping DUCKDB_VERSION, re-check this: the community extension moves with
 # DuckDB and the driver ABI may move with it, and a mismatch surfaces only at
 # query time.
-# Same base as `final` ON PURPOSE: `-ldl` binds the shim's dlopen to this
-# glibc (dlopen@GLIBC_2.34), and the selftest below runs against THIS libc. A
-# final stage on a different base would pass the selftest here and fail to load
-# the shim at runtime, where only smoke-test 4b would notice. Change both or
-# neither -- including the `apt-get upgrade`, which is why this stage reads
-# APT_REFRESH too.
-FROM oven/bun:1.3.13-slim AS adbc-driver
+#
+# No `apt-get upgrade` here: the runtime stage cannot upgrade (no apt), so an
+# upgrade would move THIS stage's glibc ahead of the one the shim runs against.
+# The dev and runtime variants of ${BUN_IMAGE} share a glibc as built; the
+# smoke test's driver-load step (build.yml, 4b) is what proves the shim loads
+# in the shipped image.
+FROM ${BUN_IMAGE}-dev AS adbc-driver
 ARG ADBC_SNOWFLAKE_VERSION=1.12.0
 ARG ADBC_SNOWFLAKE_SHA256_AMD64=9f3b44bd2c5d1a84acd1dadf7b9995e47bad78ca37f799c9e8460ac196fd319c
 ARG ADBC_SNOWFLAKE_SHA256_ARM64=7648311005788d9576ee06ced1efd0f4f5849a5e70ef9946abad08588e312283
-ARG APT_REFRESH=
-RUN echo "apt refresh: ${APT_REFRESH:-not set}" && \
-    apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends curl ca-certificates gcc libc6-dev && \
-    update-ca-certificates && \
+# gzip because the dev image has none and the driver ships as a .tar.gz.
+RUN apt-get update && apt-get install -y --no-install-recommends curl gzip gcc libc6-dev && \
     rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /out && ADBC_ARCH="$(dpkg --print-architecture)" && \
     if [ "${ADBC_ARCH}" = "amd64" ]; then ADBC_SHA="${ADBC_SNOWFLAKE_SHA256_AMD64}"; \
@@ -117,21 +88,103 @@ RUN echo "${ADBC_HEADER_SHA256}  /src/adbc-shim/adbc.h" | sha256sum -c - && \
     gcc -O2 -Wall -Wextra -I/src/adbc-shim -shared -fPIC -o /tmp/stub/libadbc_driver_snowflake.real.so /src/adbc-shim/stub_driver.c && \
     ADBC_REAL_DRIVER=/tmp/stub/libadbc_driver_snowflake.real.so /tmp/selftest /out/libadbc_driver_snowflake.so
 
+# DuckDB CLI, pinned to @duckdb/node-api (the query engine) so the CLI reads
+# the same ~/.duckdb/extensions/v<version>/ dir the runtime bakes. CI passes
+# --build-arg DUCKDB_VERSION derived from the lockfile (the source of truth);
+# the default below is a fallback for plain `docker build`, kept in sync by
+# scripts/sync-duckdb-version.js and enforced by the CI consistency check.
+#
+# Fetched as the release zip rather than through install.duckdb.org's
+# `curl | bash`: that installer wants gzip and a shell profile to edit, and
+# this stage only needs the one binary. The version check at the end is the
+# verification: the binary must report the version the tag names.
+#
+# Staged under /out with the path it will have in the runtime image, under the
+# home of `nonroot` (uid 65532), the user the server runs as, because DuckDB
+# resolves ~/.duckdb from HOME.
+FROM ${BUN_IMAGE}-dev AS duckdb-cli
+ARG DUCKDB_VERSION=1.5.5
+RUN DUCKDB_VERSION="${DUCKDB_VERSION}"; set -eu; \
+    apt-get update && apt-get install -y --no-install-recommends curl unzip && \
+    rm -rf /var/lib/apt/lists/*; \
+    ARCH="$(dpkg --print-architecture)"; \
+    CLI_DIR="/out/home/nonroot/.duckdb/cli/${DUCKDB_VERSION}"; \
+    curl -fsSL --retry 8 --retry-delay 3 --retry-max-time 180 --retry-all-errors \
+      -o /tmp/duckdb_cli.zip \
+      "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-${ARCH}.zip"; \
+    mkdir -p "${CLI_DIR}" && unzip -q /tmp/duckdb_cli.zip -d "${CLI_DIR}" && rm -f /tmp/duckdb_cli.zip; \
+    chmod 0755 "${CLI_DIR}/duckdb"; \
+    got="$("${CLI_DIR}/duckdb" -noheader -list -c 'SELECT version();')"; \
+    test "${got}" = "v${DUCKDB_VERSION}" || { echo "duckdb CLI reports ${got}, expected v${DUCKDB_VERSION}" >&2; exit 1; }
+
+# git, for package locations that are GitHub repositories (the server shells
+# out to it through simple-git). The runtime image has no apt, so the binary
+# and its libraries come from Docker's own hardened git image, which is built
+# on the same Debian release from the same package repository.
+#
+# Not the whole git image: it carries curl, git-lfs and perl, and a blanket
+# COPY of its root would also overwrite the runtime's /etc/passwd and dpkg
+# database. Instead this stage walks git's dependency closure in the git
+# image's dpkg database and copies exactly the packages the runtime image does
+# not already have, each one's files AND its dpkg records, and appends their
+# stanzas to a copy of the runtime image's package database. The result is an
+# inventory the SBOM generator and a vulnerability scanner both see: a `git`
+# that showed up in the filesystem but not in /var/lib/dpkg/status would be
+# invisible to every scan of this image.
+#
+# Left out, with the reason: git-man (manual pages); perl and the three
+# packages that exist for it (perl-base is already in the runtime; `git clone`,
+# fetch and checkout are C, and the perl subcommands -- git-send-email,
+# git-add --interactive -- are not something a server runs).
+#
+# The runtime image's package database is read from the SAME ${BUN_IMAGE} the
+# final stage uses, so the appended status file describes the image it lands in.
+FROM ${GIT_IMAGE} AS git
+FROM ${BUN_IMAGE} AS runtime-base
+FROM ${BUN_IMAGE}-dev AS git-closure
+COPY --from=git / /git-root
+COPY --from=runtime-base /var/lib/dpkg/status /tmp/runtime-status
+RUN set -eu; \
+    admin=/git-root/var/lib/dpkg; \
+    grep '^Package: ' /tmp/runtime-status | cut -d' ' -f2 | sort -u > /tmp/have; \
+    printf '%s\n' git-man perl perl-base perl-modules-5.40 libperl5.40 liberror-perl > /tmp/skip; \
+    echo git > /tmp/want; : > /tmp/closure; \
+    while [ -s /tmp/want ]; do \
+      p=$(head -n1 /tmp/want); sed -i '1d' /tmp/want; \
+      grep -qx "$p" /tmp/closure && continue; \
+      grep -qx "$p" /tmp/have && continue; \
+      grep -qx "$p" /tmp/skip && continue; \
+      dpkg-query --admindir="$admin" -W -f '${Package}\n' "$p" >/dev/null 2>&1 \
+        || { echo "git depends on $p, which ${GIT_IMAGE:-the git image} does not carry" >&2; exit 1; }; \
+      echo "$p" >> /tmp/closure; \
+      dpkg-query --admindir="$admin" -W -f '${Pre-Depends}, ${Depends}\n' "$p" \
+        | tr ',' '\n' | sed -e 's/|.*//' -e 's/(.*//' -e 's/:any//' -e 's/^ *//' -e 's/ *$//' \
+        | grep . >> /tmp/want || true; \
+    done; \
+    echo "git closure: $(tr '\n' ' ' < /tmp/closure)"; \
+    mkdir -p /git-files/var/lib/dpkg/info; \
+    : > /tmp/files; \
+    while read -r p; do \
+      dpkg-query --admindir="$admin" -L "$p" | while read -r f; do \
+        [ "$f" = "/." ] && continue; \
+        if [ -e "/git-root$f" ] || [ -L "/git-root$f" ]; then printf '%s\n' "${f#/}" >> /tmp/files; fi; \
+      done; \
+      cp "$admin/info/$p."* /git-files/var/lib/dpkg/info/; \
+    done < /tmp/closure; \
+    sort -u /tmp/files > /tmp/files.sorted; \
+    tar -C /git-root --no-recursion -cf - -T /tmp/files.sorted | tar -C /git-files -xf -; \
+    cp /tmp/runtime-status /git-files/var/lib/dpkg/status; \
+    while read -r p; do dpkg-query --admindir="$admin" -s "$p"; echo; done < /tmp/closure \
+      >> /git-files/var/lib/dpkg/status; \
+    test -x /git-files/usr/bin/git && test -x /git-files/usr/lib/git-core/git-remote-https
+
 # Builder stage
-FROM oven/bun:1.3.13-slim AS builder
+FROM ${BUN_IMAGE}-dev AS builder
 COPY --from=java-base /usr/lib/jvm /usr/lib/jvm
 ENV JAVA_HOME=/usr/lib/jvm/java-21-amazon-corretto
 ENV PATH=$JAVA_HOME/bin:$PATH
 ENV NODE_ENV=production
 WORKDIR /publisher
-
-# CA certificates are required for the DuckDB extension bake (run by
-# packages/server's build): without them @duckdb/node-api can't verify TLS to
-# extensions.duckdb.org and every download fails with an SSL CA cert error.
-# The bun:slim base ships without them.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
 
 # Copy package files first for better layer caching
 COPY package.json bun.lock api-doc.yaml ./
@@ -159,74 +212,51 @@ COPY packages/app/ ./
 RUN --mount=type=cache,target=/root/.bun \
     NODE_OPTIONS='--max-old-space-size=4096' bun run build:server
 
-# Build server
+# Build server. Its build ends with bake-duckdb-extensions, which populates
+# ~/.duckdb/extensions (/root here) through the same @duckdb/node-api engine
+# the runtime uses; the dev image ships the CA certificates that fetch needs.
 WORKDIR /publisher/packages/server
 COPY packages/server/ ./
 RUN --mount=type=cache,target=/root/.bun \
     bun run build:server-only
 
-# Final image
-FROM base-deps AS final
-WORKDIR /publisher
-
-# The server runs as `bun` (uid 1000), not root; USER is set just before CMD so
-# the build steps below still run as root. Every application file stays
-# root-owned, so the server cannot modify one in place. The server root
-# directory itself is owned by uid 1000, because publisher.db is created
-# directly in it, and that lets the server rename aside and replace any of its
-# top-level entries: package.json, bun.lock, and the packages/ and
-# node_modules/ directories. Such a change lasts as long as the container. Some
-# storage drivers, Docker's default overlayfs among them, refuse to rename a
-# directory that comes from an image layer; that limit belongs to the driver,
-# not this image.
-#
-# publisher_data/ and ducklake_data/ are created here, owned by that user,
-# because Docker seeds a new named volume from the image's directory, ownership
-# included: a volume mounted on either on first run is writable without a
-# chown. ducklake_data/ is the mount point for a DuckLake storage destination
-# whose bucketUrl is a local path; the server writes there only when one is
-# configured. These are the only mount points the image prepares; a new volume
-# at any path the image lacks starts root-owned. A volume an older, root-run
-# image already populated is not writable either. packages/server/README.docker.md
-# covers both.
-RUN mkdir -p /publisher/publisher_data /publisher/ducklake_data && \
-    chown bun:bun /publisher /publisher/publisher_data /publisher/ducklake_data
-
-# OCI image metadata — surfaces in `docker inspect`, registry UIs
-# (Docker Hub / GHCR), and Docker Desktop. The description is kept short
-# (some tools truncate at 80–120 chars); the `documentation` URL points
-# at the root README's Docker section for build/run/mount-path details.
-LABEL org.opencontainers.image.title="Malloy Publisher" \
-    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
-    org.opencontainers.image.source="https://github.com/malloydata/publisher" \
-    org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
-    org.opencontainers.image.licenses="MIT"
+# Assembly: everything the runtime image holds, laid out under /out with its
+# final paths and ownership, in a stage that has a shell. The runtime stage
+# has none, so it can only COPY. Copying /out/ onto / is what carries the
+# ownership across: a multi-stage COPY keeps the uid of every entry BELOW the
+# path it copies and resets the path itself to root, so /publisher has to be
+# copied as a child of something.
+FROM ${BUN_IMAGE}-dev AS assemble
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /out/publisher
 
 # Copy built artifacts from builder
 COPY --from=builder /publisher/package.json /publisher/bun.lock ./
-COPY --from=builder /publisher/patches/ /publisher/patches/
-COPY --from=builder /publisher/packages/app/dist/ /publisher/packages/app/dist/
-COPY --from=builder /publisher/packages/app/package.json /publisher/packages/app/package.json
-COPY --from=builder /publisher/packages/server/dist/ /publisher/packages/server/dist/
-COPY --from=builder /publisher/packages/server/package.json /publisher/packages/server/package.json
-COPY --from=builder /publisher/packages/sdk/dist/ /publisher/packages/sdk/dist/
-COPY --from=builder /publisher/packages/sdk/package.json /publisher/packages/sdk/package.json
+COPY --from=builder /publisher/patches/ ./patches/
+COPY --from=builder /publisher/packages/app/dist/ ./packages/app/dist/
+COPY --from=builder /publisher/packages/app/package.json ./packages/app/package.json
+COPY --from=builder /publisher/packages/server/dist/ ./packages/server/dist/
+COPY --from=builder /publisher/packages/server/package.json ./packages/server/package.json
+COPY --from=builder /publisher/packages/sdk/dist/ ./packages/sdk/dist/
+COPY --from=builder /publisher/packages/sdk/package.json ./packages/sdk/package.json
 
-# Install production-only deps
+# Install production-only deps. Workspace links in node_modules are relative,
+# so the tree can move from /out/publisher to /publisher unchanged.
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --production
 
 # Carry over the DuckDB extensions baked during the builder stage's
-# `build:server-only` (packages/server's build runs bake-duckdb-extensions).
-# They live in ~/.duckdb/extensions/v<version>/, which the runtime engine reads
-# at INSTALL/LOAD time -- so the server finds them on disk and skips the network
-# fetch. Copying the baked cache from the builder keeps a single bake mechanism
-# (the server build) instead of re-running it here. The CLI (base-deps) and
-# runtime engine are pinned to the same DuckDB version, so all agree on one dir.
-# The bake ran as root in the builder, so its cache is under /root there; here
-# it lands in the runtime user's home, owned by that user so an INSTALL at run
-# time of an extension the bake did not cover can still write beside it.
-COPY --from=builder --chown=bun:bun /root/.duckdb/extensions /home/bun/.duckdb/extensions
+# `build:server-only`. They live in ~/.duckdb/extensions/v<version>/, which the
+# runtime engine reads at INSTALL/LOAD time -- so the server finds them on disk
+# and skips the network fetch. Copying the baked cache from the builder keeps a
+# single bake mechanism (the server build) instead of re-running it here. The
+# CLI (duckdb-cli stage) and runtime engine are pinned to the same DuckDB
+# version, so all agree on one dir. The bake ran as root in the builder, so its
+# cache is under /root there; here it lands in the runtime user's home, handed
+# to that user below so an INSTALL at run time of an extension the bake did not
+# cover can still write beside it.
+COPY --from=builder /root/.duckdb/extensions /out/home/nonroot/.duckdb/extensions
 
 # The Snowflake extension is a wrapper over the ADBC Snowflake driver, and
 # `INSTALL snowflake FROM community` does NOT bring it — the extension ships
@@ -250,9 +280,7 @@ COPY --from=builder --chown=bun:bun /root/.duckdb/extensions /home/bun/.duckdb/e
 # earlier: the extension resolves the driver by calling dladdr on ITSELF and
 # looking beside the loaded object, so the driver has to sit next to whichever
 # snowflake.duckdb_extension the runtime actually loads. That directory is
-# discovered rather than reconstructed from a platform string — the CLI
-# (base-deps) and the bake (@duckdb/node-api, in the builder) each write their
-# own, and this is the layer that ships.
+# discovered rather than reconstructed from a platform string.
 #
 # The closing count-match is the verification — one shim and one real driver
 # for EVERY extension directory, not "at least one somewhere": a pipeline's
@@ -260,12 +288,12 @@ COPY --from=builder --chown=bun:bun /root/.duckdb/extensions /home/bun/.duckdb/e
 # iteration would otherwise pass. snowflake_version() cannot serve as a check,
 # being a scalar that never touches the driver.
 COPY --from=adbc-driver /out/libadbc_driver_snowflake.so /out/libadbc_driver_snowflake.real.so /tmp/adbc/
-RUN find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
+RUN find /out/home/nonroot/.duckdb/extensions -name snowflake.duckdb_extension -printf '%h\n' \
       | while read -r d; do cp /tmp/adbc/libadbc_driver_snowflake.so /tmp/adbc/libadbc_driver_snowflake.real.so "$d/"; done && \
     rm -rf /tmp/adbc && \
-    ext=$(find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
-    shim=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
-    real=$(find /home/bun/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \
+    ext=$(find /out/home/nonroot/.duckdb/extensions -name snowflake.duckdb_extension | wc -l) && \
+    shim=$(find /out/home/nonroot/.duckdb/extensions -name libadbc_driver_snowflake.so | wc -l) && \
+    real=$(find /out/home/nonroot/.duckdb/extensions -name libadbc_driver_snowflake.real.so | wc -l) && \
     test "$ext" -gt 0 && test "$shim" -eq "$ext" && test "$real" -eq "$ext"
 
 # ADBC-SHIM operator note. The shim is opt-in: with neither variable set it is a pure pass-through and
@@ -286,6 +314,68 @@ RUN find /home/bun/.duckdb/extensions -name snowflake.duckdb_extension -printf '
 # Deliberately not defaulted here, like PUBLISHER_DUCKLAKE_*: an image upgrade
 # must not change what the driver does until an operator asks it to.
 
+# Trust the Amazon RDS root CAs so Postgres->RDS connections verify the server
+# certificate out of the box. Node/Bun ignore the OS trust store and use their
+# own bundled CA set, so NODE_EXTRA_CA_CERTS is the load-bearing knob (it appends
+# to that set). Fetched at build rather than vendored, so there is no committed
+# cert to keep fresh: a CA rotation is picked up on the next image
+# build/release, and every consumer of this image (the worker, the SSH-bastion
+# connection path) inherits the trust anchor without re-mounting a CA.
+RUN mkdir -p /out/etc/ssl/certs && \
+    curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    -o /out/etc/ssl/certs/rds-global-bundle.pem
+
+# The server runs as `nonroot` (uid 65532), the user the runtime image ships;
+# nothing here runs as root. Every application file stays root-owned, so the
+# server cannot modify one in place. The server root directory itself is owned
+# by uid 65532, because publisher.db is created directly in it, and that lets
+# the server rename aside and replace any of its top-level entries:
+# package.json, bun.lock, and the packages/ and node_modules/ directories. Such
+# a change lasts as long as the container. Some storage drivers, Docker's
+# default overlayfs among them, refuse to rename a directory that comes from an
+# image layer; that limit belongs to the driver, not this image.
+#
+# publisher_data/ and ducklake_data/ are created here, owned by that user,
+# because Docker seeds a new named volume from the image's directory, ownership
+# included: a volume mounted on either on first run is writable without a
+# chown. ducklake_data/ is the mount point for a DuckLake storage destination
+# whose bucketUrl is a local path; the server writes there only when one is
+# configured. These are the only mount points the image prepares; a new volume
+# at any path the image lacks starts root-owned. A volume an older image
+# populated as uid 1000 (0.9.x) or root (0.8.x) is not writable either.
+# packages/server/README.docker.md covers both.
+#
+# /etc/publisher is an empty directory outside the application tree, the
+# documented place to mount credential files.
+RUN mkdir -p /out/publisher/publisher_data /out/publisher/ducklake_data /out/etc/publisher && \
+    chown 65532:65532 /out/publisher /out/publisher/publisher_data /out/publisher/ducklake_data && \
+    chown -R 65532:65532 /out/home/nonroot
+
+# Final image: the runtime variant. No shell, so no RUN; every file arrives by
+# COPY from a stage above. `docker run --entrypoint <binary>` and `docker exec`
+# of a binary both still work (coreutils and `bun` are in the image; `sh` is
+# not), and `docker debug` attaches a toolbox shell to a running container.
+FROM ${BUN_IMAGE} AS final
+
+# OCI image metadata — surfaces in `docker inspect`, registry UIs
+# (Docker Hub / GHCR), and Docker Desktop. The description is kept short
+# (some tools truncate at 80–120 chars); the `documentation` URL points
+# at the root README's Docker section for build/run/mount-path details.
+LABEL org.opencontainers.image.title="Malloy Publisher" \
+    org.opencontainers.image.description="Open-source semantic model server for Malloy (REST :4000, MCP :4040)." \
+    org.opencontainers.image.source="https://github.com/malloydata/publisher" \
+    org.opencontainers.image.documentation="https://github.com/malloydata/publisher#docker" \
+    org.opencontainers.image.licenses="MIT"
+
+# Order matters for one file: git-closure's /var/lib/dpkg/status is the
+# runtime image's own database plus git's packages, and must land before
+# anything else touches /var/lib/dpkg (nothing below does; keep it that way).
+COPY --from=git-closure /git-files/ /
+COPY --from=duckdb-cli /out/ /
+COPY --from=assemble /out/ /
+
+WORKDIR /publisher
+
 # Runtime config
 ARG DUCKDB_VERSION=1.5.5
 ENV NODE_ENV=production
@@ -299,22 +389,11 @@ ENV NODE_ENV=production
 # or a Compose `environment:` entry with none, deletes this ENV when the host
 # does not have the variable, which re-enables the write.
 ENV PUBLISHER_NO_MCP_CONFIG=1
-ENV PATH="/home/bun/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
+ENV PATH="/home/nonroot/.duckdb/cli/${DUCKDB_VERSION}:$PATH"
 # Set rather than left to USER, which derives HOME from /etc/passwd: run as
 # `--user 0`, the server would otherwise resolve ~/.duckdb under /root and find
 # none of the baked extensions.
-ENV HOME=/home/bun
-RUN mkdir -p /etc/publisher
-
-# Trust the Amazon RDS root CAs so Postgres->RDS connections verify the server
-# certificate out of the box. Node/Bun ignore the OS trust store and use their
-# own bundled CA set, so NODE_EXTRA_CA_CERTS is the load-bearing knob (it appends
-# to that set). Fetched at build (curl is in base-deps) rather than vendored, so
-# there is no committed cert to keep fresh: a CA rotation is picked up on the next
-# image build/release, and every consumer of this image (the worker, the
-# SSH-bastion connection path) inherits the trust anchor without re-mounting a CA.
-RUN curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
-    -o /etc/ssl/certs/rds-global-bundle.pem
+ENV HOME=/home/nonroot
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/rds-global-bundle.pem
 # Declare the runtime ports so `docker run -P` and Docker Desktop's
 # port-preview surface them. The server listens on both (REST on 4000, MCP on
@@ -329,8 +408,9 @@ EXPOSE 4000 4040
 # Operators that want a config provide it at /publisher/publisher.config.json
 # (mount as volume) or override CMD with --config <path>.
 #
-# Numeric, not `bun`: Kubernetes' runAsNonRoot can only verify a numeric USER,
-# and refuses to start an image whose USER is a name unless the pod also sets
-# runAsUser.
-USER 1000:1000
+# Numeric, not `nonroot`: Kubernetes' runAsNonRoot can only verify a numeric
+# USER, and refuses to start an image whose USER is a name unless the pod also
+# sets runAsUser. The base image already sets 65532; stated here so a base
+# that changed its default could not change what this image runs as.
+USER 65532:65532
 CMD ["bun", "run", "./packages/server/dist/server.mjs", "--server_root", "/publisher"]

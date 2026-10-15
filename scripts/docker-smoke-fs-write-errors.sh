@@ -2,7 +2,7 @@
 # Copyright (c) Credible Data Inc.
 # SPDX-License-Identifier: MIT
 
-# A filesystem access the uid-1000 image cannot make must say why, not answer
+# A filesystem access the uid-65532 image cannot make must say why, not answer
 # a bare 500 or sit silently in a state that reads as "still starting"; and a
 # package location the server only reads must not need to be writable.
 #
@@ -11,7 +11,8 @@
 #
 #   scripts/docker-smoke-fs-write-errors.sh malloy-publisher:smoke-test
 #
-# The server runs as uid 1000 (#1273), so every mount it writes to has to be
+# The server runs as uid 65532, `nonroot` in the hardened base image (#1273
+# took it off root, as uid 1000), so every mount it writes to has to be
 # writable by that user, and every file it reads readable by it. The
 # shapes below are how an orchestrated deployment meets that: an orchestrator
 # running as root writes package zips into a mount it shares with the server
@@ -32,7 +33,7 @@
 #        server cannot open publisher.db, and /status must say so.
 #   S7   An unreadable publisher.config.json: /status must say so.
 # Credentials
-#   C1   GOOGLE_APPLICATION_CREDENTIALS names a file uid 1000 cannot read
+#   C1   GOOGLE_APPLICATION_CREDENTIALS names a file uid 65532 cannot read
 #        (a 0600 file owned by someone else): a gs:// package add must name
 #        EACCES, and so must the BigQuery connection test.
 #   C2   GOOGLE_APPLICATION_CREDENTIALS names a directory, which is what a bind
@@ -46,6 +47,11 @@
 set -euo pipefail
 
 IMAGE="${1:-malloy-publisher:smoke-test}"
+# The image under test has no shell: it is built on a Docker Hardened Image
+# runtime variant. The orchestrator-side setup below (populate a mount as root,
+# chown a volume, write a config) runs `sh -c`, so it runs in this image
+# instead, on the same mounts. Anything with a shell, cp, chown and chmod does.
+HELPER_IMAGE="${HELPER_IMAGE:-busybox:1.37}"
 GENERIC='Internal server error.'
 BASE_PORT="${BASE_PORT:-4100}"
 PREFIX=fsw-smoke
@@ -89,7 +95,7 @@ cleanup() {
    done
    docker volume rm -f "${VOLUMES[@]}" >/dev/null 2>&1 || true
    # The bind source is root-owned, so the runner user cannot remove it.
-   docker run --rm --user 0 -v "$work:/w" "$IMAGE" rm -rf /w/packages >/dev/null 2>&1 || true
+   docker run --rm --user 0 -v "$work:/w" "$HELPER_IMAGE" rm -rf /w/packages >/dev/null 2>&1 || true
    rm -rf "$work"
 }
 trap cleanup EXIT
@@ -235,7 +241,7 @@ done
 # zips, and leave a directory named like the old one's zip, as a root-run 0.8.x
 # extracting beside it did, with a file of its own in it.
 populate() {
-   as_root -v "$1" -v "$work/src:/src:ro" "$IMAGE" sh -c "
+   as_root -v "$1" -v "$work/src:/src:ro" "$HELPER_IMAGE" sh -c "
       set -e
       cp -r /src/seed /tmp/packages/seed
       for v in $NEW_VERSION $OLD_VERSION; do cp /src/$PKG.zip /tmp/packages/$PKG-\$v.zip; done
@@ -265,7 +271,7 @@ assert_loads() {
 # holds its own file.
 assert_mount_untouched() {
    local label=$1 mount=$2 listing
-   listing=$(as_root -v "$mount" "$IMAGE" sh -c \
+   listing=$(as_root -v "$mount" "$HELPER_IMAGE" sh -c \
       "cd /tmp/packages && ls -1A . | tr '\n' ' ' && cat $PKG-$OLD_VERSION/keep.txt")
    if [ "$listing" = "$PKG-$OLD_VERSION $PKG-$OLD_VERSION.zip $PKG-$NEW_VERSION.zip seed mine" ]; then
       pass "$label: nothing written beside the zips"
@@ -310,9 +316,9 @@ echo "== Server data"
 echo "S2: a publisher_data volume left root-owned by a 0.8.x"
 # Not left empty: Docker re-seeds an EMPTY volume from the image's directory
 # on every mount, ownership included, which would quietly hand it back to uid
-# 1000. A real 0.8.x volume holds the environment it wrote, so this one does.
+# 65532. A real 0.8.x volume holds the environment it wrote, so this one does.
 docker volume create "$DATA_VOLUME" >/dev/null
-as_root -v "$DATA_VOLUME:/publisher/publisher_data" "$IMAGE" \
+as_root -v "$DATA_VOLUME:/publisher/publisher_data" "$HELPER_IMAGE" \
    sh -c "mkdir -p '/publisher/publisher_data/$ENV_NAME' && chown -R 0:0 /publisher/publisher_data && chmod -R 755 /publisher/publisher_data"
 start s2 -v "$DATA_VOLUME:/publisher/publisher_data" -v "$PACKAGES_MOUNT" \
    -v "$work/seed.json:/publisher/publisher.config.json:ro"
@@ -328,7 +334,7 @@ assert_status_names S6 'EROFS|read-only'
 
 echo "S7: an unreadable publisher.config.json"
 docker volume create "$CONFIG_VOLUME" >/dev/null
-as_root -v "$CONFIG_VOLUME:/cfg" "$IMAGE" sh -c \
+as_root -v "$CONFIG_VOLUME:/cfg" "$HELPER_IMAGE" sh -c \
    'printf "{\"environments\":[]}" >/cfg/publisher.config.json && chown 0:0 /cfg/publisher.config.json && chmod 600 /cfg/publisher.config.json'
 start s7 -v "$CONFIG_VOLUME:/cfg" -e PUBLISHER_CONFIG_PATH=/cfg/publisher.config.json
 wait_state s7 serving initializing >/dev/null
@@ -336,9 +342,9 @@ sleep 3
 assert_status_names S7 'EACCES|permission denied'
 
 echo "== Credentials"
-echo "C1: GOOGLE_APPLICATION_CREDENTIALS names a file uid 1000 cannot read"
+echo "C1: GOOGLE_APPLICATION_CREDENTIALS names a file uid 65532 cannot read"
 docker volume create "$CREDS_VOLUME" >/dev/null
-as_root -v "$CREDS_VOLUME:/var/secrets/google" "$IMAGE" sh -c \
+as_root -v "$CREDS_VOLUME:/var/secrets/google" "$HELPER_IMAGE" sh -c \
    "printf '{\"type\":\"service_account\",\"project_id\":\"smoke\",\"client_email\":\"smoke@smoke.iam.gserviceaccount.com\",\"private_key\":\"x\"}' >$CREDS && chown 0:0 $CREDS && chmod 600 $CREDS"
 start c1 -v "$PACKAGES_MOUNT" -v "$CREDS_VOLUME:/var/secrets/google" -e "GOOGLE_APPLICATION_CREDENTIALS=$CREDS"
 wait_serving c1
