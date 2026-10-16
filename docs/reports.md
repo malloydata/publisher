@@ -1036,6 +1036,14 @@ switching to reading is the exit, through the same `onDirtyChange` guard.
 `versionId` on the URI pins every read the editor makes; it never reaches the write, and Save turns itself
 off against a pinned version rather than opening onto a compare-and-swap it can never win.
 
+`queryVersionId` pins the editor's queries without pinning the document. The tiles, the manifest, filter
+options, the report listing and the field catalog all run at that version. The document is still the one
+`resourceUri` and `path` name, and it alone decides the kept draft, where Save writes, and whether Save is a
+pinned one. Use it for a package that is republished on every change: open the editor on an unversioned
+`resourceUri` with the version the reader ran at as `queryVersionId`. Edit then reuses the reader's cached
+results instead of running every tile again, and kept edits survive the next republish. A text-held
+document's compile takes no version, so only its tiles and options follow `queryVersionId`.
+
 The other exports of `@malloy-publisher/sdk/builder`: `NotebookEditor` (a deprecated wrapper over
 `ReportEditor`), `DashboardEditor` and `DashboardBuilder` (deprecated aliases of `ReportEditor` and
 `ReportBuilder`, with their `*Props` types), `createRoute` (whether a host can create reports: `"package"`, `"storage"`, or

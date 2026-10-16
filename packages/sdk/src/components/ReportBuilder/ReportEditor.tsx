@@ -155,6 +155,24 @@ export type ReportEditorProps = (
    keepDraft?: boolean;
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
+   /**
+    * The package version the builder's queries run at, apart from the
+    * document's own identity: every tile, the report's manifest, filter
+    * options and suggestions, the report listing and the field catalog.
+    *
+    * The document is still the one `resourceUri` and `path` name, so the kept
+    * draft, where a save goes, the save caption and whether a save is a pinned
+    * one all follow `resourceUri` alone. A host editing a package that is
+    * republished on every change passes an unversioned `resourceUri` and the
+    * version its reader ran at here: the builder then reuses the reader's
+    * results instead of running every tile again, and kept edits survive the
+    * next republish.
+    *
+    * Unset, queries run at the `resourceUri`'s version, as before. A text-held
+    * document's compile has no version, so it is compiled as today; its tiles
+    * do run at this version.
+    */
+   queryVersionId?: string;
 };
 
 /**
@@ -210,6 +228,7 @@ export function ReportEditor(props: ReportEditorProps) {
       kind,
       path,
       textSource,
+      queryVersionId,
    } = props;
    const layout: ReportLayout =
       props.layout ?? (kind ? layoutOfKind(kind) : "grid");
@@ -536,6 +555,9 @@ export function ReportEditor(props: ReportEditorProps) {
                {...(textSource ? { textSource } : {})}
                slug={dashboardName}
                {...(versionId !== undefined ? { versionId } : {})}
+               {...((queryVersionId ?? versionId) !== undefined
+                  ? { queryVersionId: queryVersionId ?? versionId }
+                  : {})}
                opened={opened}
                {...(fromDraft &&
                writer === "package" &&
