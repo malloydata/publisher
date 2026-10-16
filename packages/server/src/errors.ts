@@ -5,6 +5,7 @@ import { MalloyError, type LogMessage } from "@malloydata/malloy";
 import { PUBLISHER_CONFIG_NAME } from "./constants";
 import { logger } from "./logger";
 import type { EligibilityRefusalReason } from "./materialization_metrics";
+import { redactPgSecrets } from "./pg_helpers";
 
 // Client-facing body for an internal failure (500/502). The specific error
 // message can carry internal detail -- a filesystem path, an SQL fragment, an
@@ -88,6 +89,11 @@ const MAX_LOGGED_DETAIL_CHARS = 2000;
  * separators): those reach the rendered line verbatim under both formats, so
  * `format.json()` is not a backstop for them the way it is for `\n`.
  *
+ * Postgres passwords and URI userinfo are redacted, because a failed attach
+ * echoes the command it ran: DuckDB's error for a DuckLake catalog names the
+ * whole metadata connection string, password included, and a driver error can
+ * carry a connection URI.
+ *
  * `level` separates the two cases that reach here, because they mean different
  * things to whoever is watching. An unrecognized error is a bug in this server
  * and belongs at `error`. An upstream connection failure is usually the
@@ -118,8 +124,14 @@ export function logInternalFailure(
    logger[level](summary, {
       error: {
          name: error.name,
-         message: strip(message).slice(0, MAX_LOGGED_DETAIL_CHARS),
-         stack: strip(framesOnly).slice(0, MAX_LOGGED_DETAIL_CHARS),
+         message: redactPgSecrets(strip(message)).slice(
+            0,
+            MAX_LOGGED_DETAIL_CHARS,
+         ),
+         stack: redactPgSecrets(strip(framesOnly)).slice(
+            0,
+            MAX_LOGGED_DETAIL_CHARS,
+         ),
       },
    });
 }
@@ -671,6 +683,8 @@ export function internalErrorToHttpError(
       return httpError(404, error.message);
    } else if (error instanceof StorageDestinationNotFoundError) {
       return httpError(404, error.message);
+   } else if (error instanceof StorageCatalogNotFoundError) {
+      return httpError(404, error.message);
    } else if (error instanceof DestinationNotFoundError) {
       return httpError(422, error.message);
    } else if (error instanceof ConnectionAuthError) {
@@ -1025,6 +1039,19 @@ export class DestinationNotFoundError extends Error {
  * a build or serve that named something unconfigured.
  */
 export class StorageDestinationNotFoundError extends Error {
+   constructor(message: string) {
+      super(message);
+   }
+}
+
+/**
+ * A DuckLake storage destination is configured, but its catalog has never been
+ * created: nothing has been built into it yet. 404, because the catalog is what
+ * a listing addresses. Raised only where the attach was read-only, which refuses
+ * to create a catalog; the message is composed here, never copied from DuckDB's,
+ * which names the metadata connection string.
+ */
+export class StorageCatalogNotFoundError extends Error {
    constructor(message: string) {
       super(message);
    }

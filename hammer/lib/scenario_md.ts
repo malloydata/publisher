@@ -184,6 +184,8 @@ type Step =
         snapshotsAgeMs?: number;
         filesAgeMs?: number;
         deleted?: number;
+        /** `tables` only: an expected non-200 status, in place of an `Expect:` table. */
+        status?: number;
         expect?: Table;
      }
    | {
@@ -356,7 +358,7 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    reclaim: {},
    destination: {
       attrs: ["dest", "schema", "snapshots", "files"],
-      keys: ["deleted"],
+      keys: ["deleted", "status"],
    },
    build: {
       attrs: ["orchestrated", "strict", "pkg"],
@@ -369,7 +371,10 @@ const SECTION_SPEC: Record<string, { attrs?: string[]; keys?: string[] }> = {
    },
    sql: {},
    operator: {},
-   connection: { attrs: ["type", "refused", "rows"], keys: ["cites"] },
+   connection: {
+      attrs: ["type", "refused", "rows", "metadataschema"],
+      keys: ["cites"],
+   },
    rejected: { keys: ["cites"] },
    warns: { keys: ["cites"] },
    republish: { attrs: ["refused"], keys: ["cites"] },
@@ -694,7 +699,24 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                dest: (attrs.dest as string) || "lake",
                schema: (attrs.schema as string) || "main",
             };
-            if (action === "tables" || action === "files") {
+            const status = firstKey(sec.body, "status");
+            if (status !== undefined && action !== "tables")
+               throw new Error(
+                  `## Destination ${action}: status: applies only to ## Destination tables`,
+               );
+            if (action === "tables" && status !== undefined) {
+               // A refused listing: the status is the whole assertion, so an
+               // Expect: table beside it would never be compared.
+               if (!/^\d{3}$/.test(status))
+                  throw new Error(
+                     `## Destination tables: status must be an HTTP status code, got ${status}`,
+                  );
+               if (parseExpectTable(sec.body))
+                  throw new Error(
+                     `## Destination tables: give status: or an Expect: table, not both`,
+                  );
+               steps.push({ ...base, action, status: Number(status) });
+            } else if (action === "tables" || action === "files") {
                steps.push({
                   ...base,
                   action,
@@ -907,7 +929,27 @@ function parseMarkdown(text: string, fallbackId: string): ParsedMd {
                      `## Connection ${arg}: unsupported type="${attrs.type}" (expected postgres | ducklake | duckdb)`,
                   );
                }
-               connectionDecls.push({ env, name: arg.trim(), kind });
+               const metadataSchema =
+                  typeof attrs.metadataschema === "string"
+                     ? attrs.metadataschema
+                     : undefined;
+               if (metadataSchema !== undefined && kind !== "ducklake")
+                  throw new Error(
+                     `## Connection ${arg}: metadataSchema applies only to type=ducklake`,
+                  );
+               if (
+                  metadataSchema !== undefined &&
+                  !/^[A-Za-z_][A-Za-z0-9_]*$/.test(metadataSchema)
+               )
+                  throw new Error(
+                     `## Connection ${arg}: metadataSchema must be a plain identifier, got ${metadataSchema}`,
+                  );
+               connectionDecls.push({
+                  env,
+                  name: arg.trim(),
+                  kind,
+                  ...(metadataSchema ? { metadataSchema } : {}),
+               });
                break;
             }
             const sql = extractCode(sec.body, "sql");
@@ -2699,7 +2741,21 @@ export async function parseScenarioFile(dir: string): Promise<Scenario> {
                   break;
                }
                const rest = await serverFor(step.pub, step.env);
-               if (step.action === "tables") {
+               if (step.action === "tables" && step.status !== undefined) {
+                  const { status, body } =
+                     await rest.listDestinationTablesStatus(
+                        step.dest,
+                        step.schema,
+                     );
+                  assert.eq(`${label} status`, status, step.status);
+                  // A refusal names what is missing in the server's own words;
+                  // it must never echo the catalog's connection string.
+                  assert.ok(
+                     `${label} body names no credential`,
+                     !/password=|:\/\/[^/\s]*:[^@\s]*@/i.test(body),
+                     body,
+                  );
+               } else if (step.action === "tables") {
                   const names = await rest.listDestinationTables(
                      step.dest,
                      step.schema,

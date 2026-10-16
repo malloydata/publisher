@@ -970,14 +970,23 @@ function runSQLRows(result: unknown): Record<string, unknown>[] {
  * rather than the catalog connection's default one. Getting this wrong is not
  * loud: the read would simply miss, the catch below would log and return, and the
  * range check would stop protecting precisely the catalogs that set the option.
+ *
+ * Returns whether the catalog exists. With a `metadataSchema` it is looked up
+ * rather than inferred from a failed read: a schema with no `ducklake_metadata`
+ * table is `absent`, the normal state before the first read-write attach creates
+ * the catalog. `unknown` is everything the preflight could not settle — a catalog
+ * in the connection's default schema whose read failed, or a catalog database it
+ * could not reach — and leaves the real ATTACH to decide, as before.
  */
+export type DuckLakeCatalogPresence = "present" | "absent" | "unknown";
+
 let ducklakePreflightSeq = 0;
 async function preflightDuckLakeCatalogFormat(
    connection: DuckDBConnection,
    dbName: string,
    pgConnString: string,
    metadataSchema?: string,
-): Promise<void> {
+): Promise<DuckLakeCatalogPresence> {
    const tempDb = `${dbName}_fmt_preflight_${++ducklakePreflightSeq}`;
    const tempDbRef = quoteIdentifier(tempDb, "duckdb");
    // Identifier position, not a string literal, so the schema is double-quoted.
@@ -998,6 +1007,17 @@ async function preflightDuckLakeCatalogFormat(
       await connection.runSQL(
          `ATTACH '${escapeSQL(pgConnString)}' AS ${tempDbRef} (TYPE postgres, READ_ONLY);`,
       );
+      if (metadataSchema !== undefined) {
+         const found = await connection.runSQL(
+            `SELECT count(*) AS n FROM duckdb_tables() ` +
+               `WHERE database_name = '${escapeSQL(tempDb)}' ` +
+               `AND schema_name = '${escapeSQL(metadataSchema)}' ` +
+               `AND table_name = 'ducklake_metadata';`,
+         );
+         if (Number(runSQLRows(found)[0]?.n ?? 0) === 0) {
+            return "absent";
+         }
+      }
       const result = await connection.runSQL(
          `SELECT value FROM ${metadataRef} WHERE key = 'version' LIMIT 1;`,
       );
@@ -1007,32 +1027,11 @@ async function preflightDuckLakeCatalogFormat(
       const message = redactPgSecrets(
          error instanceof Error ? error.message : String(error),
       );
-      // A named metadata schema holding no catalog has two very different causes,
-      // and the preflight cannot tell them apart: it is the NORMAL state before the
-      // first read-write attach creates the catalog, and it is also what a typo (or
-      // adding `metadataSchema` to a catalog whose metadata lives elsewhere) looks
-      // like. Neither is loud on its own — a read-write attach CREATES an empty
-      // catalog there and materializes into it, and a read-only attach fails with an
-      // error that says nothing about the schema — so name the schema and say both,
-      // rather than implying a mistake on a path that is expected to hit this once
-      // per catalog. The message also has to hedge on the cause: `does not exist`
-      // matches a missing database or role too, not only a missing table.
-      if (metadataSchema !== undefined && /does not exist/i.test(message)) {
-         logger.warn(
-            "No DuckLake catalog found in the configured metadata schema. This is " +
-               "expected the first time a catalog is created there: a read-write " +
-               "attach will create it, and a read-only attach will fail until it " +
-               "exists. Otherwise check the schema name, and the catalog database " +
-               "and role, against the error.",
-            { dbName, metadataSchema, error: message },
-         );
-         return;
-      }
       logger.warn(
          "DuckLake catalog-format preflight read failed; falling back to ATTACH",
          { dbName, error: message },
       );
-      return;
+      return "unknown";
    } finally {
       try {
          await connection.runSQL(`DETACH ${tempDbRef};`);
@@ -1043,7 +1042,7 @@ async function preflightDuckLakeCatalogFormat(
 
    if (!catalogFormat) {
       // Table present but no version row, or unreadable value: let ATTACH decide.
-      return;
+      return "present";
    }
 
    // Derive the supported range from the engine DuckDB actually reports. An
@@ -1061,7 +1060,7 @@ async function preflightDuckLakeCatalogFormat(
             error: error instanceof Error ? error.message : String(error),
          },
       );
-      return;
+      return "present";
    }
 
    const range = catalogFormatRangeForEngine(engineVersion);
@@ -1070,7 +1069,7 @@ async function preflightDuckLakeCatalogFormat(
          "DuckLake catalog-format preflight: engine not covered by the format matrix; skipping",
          { dbName, engineVersion },
       );
-      return;
+      return "present";
    }
 
    if (!isCatalogFormatInRange(catalogFormat, range)) {
@@ -1100,6 +1099,7 @@ async function preflightDuckLakeCatalogFormat(
       `DuckLake catalog '${dbName}' format ${catalogFormat} is within supported range ` +
          `${range.min}..${range.max} (engine v${range.engineVersion})`,
    );
+   return "present";
 }
 
 /**
@@ -1111,13 +1111,17 @@ async function preflightDuckLakeCatalogFormat(
  * migration is a coordinated fleet cutover, never an implicit side effect of a
  * build attach. Both range-preflight the catalog format first (see
  * {@link preflightDuckLakeCatalogFormat}).
+ *
+ * `skipIfAbsent` is for a caller that only looks: when the preflight finds no
+ * catalog it returns `false` without attaching, rather than letting a read-only
+ * attach fail on it. Otherwise it returns `true` once attached.
  */
 async function attachDuckLakeWithMode(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
-   options: { readOnly: boolean },
-): Promise<void> {
+   options: { readOnly: boolean; skipIfAbsent?: boolean },
+): Promise<boolean> {
    // Tier build/serve DuckLake sessions never implicitly auto-install (Publisher
    // installs the DuckLake stack explicitly below) — regardless of the policy.
    await applyExtensionSessionSettings(connection, {
@@ -1188,12 +1192,29 @@ async function attachDuckLakeWithMode(
    // when the metadata does not live in the catalog's default schema an unqualified
    // read misses it — and the preflight fails SOFT (logs and returns), so the range
    // check would silently stop protecting exactly the catalogs using this option.
-   await preflightDuckLakeCatalogFormat(
+   const presence = await preflightDuckLakeCatalogFormat(
       connection,
       dbName,
       pgConnString,
       metadataSchema,
    );
+   if (presence === "absent") {
+      if (options.skipIfAbsent) {
+         return false;
+      }
+      // The normal state before the first read-write attach creates the catalog,
+      // and also what a mistyped schema name looks like. Neither is loud on its
+      // own — a read-write attach CREATES an empty catalog there and materializes
+      // into it, and a read-only attach fails with an error that says nothing
+      // about the schema — so name the schema and say both.
+      logger.warn(
+         "No DuckLake catalog found in the configured metadata schema. This is " +
+            "expected the first time a catalog is created there: a read-write " +
+            "attach will create it, and a read-only attach will fail until it " +
+            "exists. Otherwise check the schema name against the configuration.",
+         { dbName, metadataSchema },
+      );
+   }
    // READ_ONLY is stated explicitly; read-write omits the flag (DuckLake's
    // default is writable). AUTOMATIC_MIGRATION is never set in either mode.
    const readOnlyClause = options.readOnly ? ", READ_ONLY true" : "";
@@ -1227,6 +1248,7 @@ async function attachDuckLakeWithMode(
          throw error;
       }
    }
+   return true;
 }
 
 async function attachDuckLake(
@@ -1250,6 +1272,25 @@ export async function attachDuckLakeReadOnly(
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
 ): Promise<void> {
    await attachDuckLake(connection, dbName, ducklakeConfig);
+}
+
+/**
+ * {@link attachDuckLakeReadOnly}, unless the catalog does not exist yet: then it
+ * attaches nothing and returns `false`. For a caller that only looks, where a
+ * catalog nothing has been built into is an ordinary answer rather than a failed
+ * attach. A catalog in the connection's default schema (no `metadataSchema`) is
+ * never found absent, because the preflight cannot look it up; its attach
+ * decides, as for {@link attachDuckLakeReadOnly}.
+ */
+export async function attachDuckLakeReadOnlyIfPresent(
+   connection: DuckDBConnection,
+   dbName: string,
+   ducklakeConfig: components["schemas"]["DucklakeConnection"],
+): Promise<boolean> {
+   return attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
+      readOnly: true,
+      skipIfAbsent: true,
+   });
 }
 
 /**
