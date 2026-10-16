@@ -356,8 +356,8 @@ jobs:
       - name: Verify baked DuckDB extensions
         run: |
           # The image bakes the DuckDB extensions the server loads at runtime
-          # (packages/server build runs bake-duckdb-extensions; the builder's
-          # ~/.duckdb/extensions is copied into the final image). This asserts
+          # (the Dockerfile's duckdb-extensions stage runs bake-duckdb-extensions
+          # and the final image copies its ~/.duckdb/extensions). This asserts
           # they are actually present and LOAD *offline* -- with the network cut
           # off, so a load can only succeed from the baked on-disk cache, never a
           # fallback download. Catches a broken bake, a version mismatch between

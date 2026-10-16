@@ -19,7 +19,7 @@
       "snowflake"
    ],
    "homepage": "https://docs.malloydata.dev/documentation/user_guides/publishing/mcp_agents",
-   "version": "0.9.12",
+   "version": "0.9.14",
    "main": "dist/server.mjs",
    "bin": {
       "malloy-publisher": "dist/server.mjs"
@@ -44,7 +44,8 @@
       "test:unit": "bun test --timeout 100000 ./src",
       "test:integration": "bun test --timeout 200000 ./tests --max-workers=1",
       "build": "bun generate-api-types && bun build:app && NODE_ENV=production bun run build.ts && bun run bake-duckdb-extensions",
-      "build:server-only": "bun generate-api-types && NODE_ENV=production SKIP_APP_BUNDLE=1 bun run build.ts && bun run bake-duckdb-extensions",
+      "build:server-only": "bun run build:server-only:bundle && bun run bake-duckdb-extensions",
+      "build:server-only:bundle": "bun generate-api-types && NODE_ENV=production SKIP_APP_BUNDLE=1 bun run build.ts",
       "bake-duckdb-extensions": "bun scripts/bake-duckdb-extensions.js",
       "start": "NODE_ENV=production bun run ./dist/server.mjs",
       "start:init": "NODE_ENV=production bun run ./dist/server.mjs --init",
