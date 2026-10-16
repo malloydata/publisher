@@ -159,6 +159,39 @@ export function resolveTheme(
 }
 
 /**
+ * A chart's own `# theme.*` layer, ready to go on top of `layers`.
+ *
+ * A one-colour `series` on a chart sets the chart's FIRST series colour (it is
+ * what the builder's Color item writes). Taken as the whole list, every series
+ * would cycle through that one colour, so a bar and line chart, or any chart
+ * with more than one series, would draw them all alike. So the other series
+ * keep the colours `layers` give them, in order, less the one picked. A list of
+ * two or more colours is the author's whole palette and is used as written.
+ */
+export function chartThemeLayer(
+   layers: Array<Theme | undefined>,
+   chart: Theme,
+): Theme {
+   const own = chart.palette?.series;
+   if (!Array.isArray(own) || own.length !== 1) return chart;
+   const first = own[0];
+   const inherited = layers.reduce<string[]>(
+      (series, layer) =>
+         Array.isArray(layer?.palette?.series)
+            ? (layer.palette.series as string[])
+            : series,
+      (DEFAULT_THEME.palette?.series as string[]) ?? [],
+   );
+   const rest = inherited.filter(
+      (color) => color.toLowerCase() !== first.toLowerCase(),
+   );
+   return {
+      ...chart,
+      palette: { ...chart.palette, series: [first, ...rest] },
+   };
+}
+
+/**
  * Pick the active mode for a viewer given the operator's `defaultMode`,
  * any persisted viewer choice, and a snapshot of the OS dark-mode
  * preference. "auto" is resolved here; callers see only "light" or

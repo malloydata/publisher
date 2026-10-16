@@ -36,6 +36,12 @@ let rootRenderAs: string | undefined;
 
 /** Every viz the component has created, in order. */
 const vizzes: FakeViz[] = [];
+/** The options each renderer was built with, in order. */
+const rendererOptions: Array<{
+   vegaConfigOverride?: (chartType: string) => {
+      range?: { category?: string[] };
+   };
+}> = [];
 
 class FakeViz {
    /** The stage it was told to paint into. */
@@ -79,6 +85,9 @@ class FakeViz {
 
 mock.module("@malloydata/render", () => ({
    MalloyRenderer: class {
+      constructor(options: (typeof rendererOptions)[number]) {
+         rendererOptions.push(options);
+      }
       createViz() {
          const viz = new FakeViz();
          vizzes.push(viz);
@@ -104,6 +113,7 @@ const stagesIn = (container: HTMLElement): Element[] => {
 
 beforeEach(() => {
    vizzes.length = 0;
+   rendererOptions.length = 0;
    rootRenderAs = undefined;
 });
 
@@ -261,5 +271,29 @@ describe("RenderedResult: how a chart reads", () => {
       expect(vizzes[0].stage!.style.minWidth).toBe("");
       const box = view.container.firstElementChild as HTMLElement;
       expect(box.style.overflowX).toBe("");
+   });
+});
+
+describe("RenderedResult: a chart's own colour", () => {
+   // The builder's Color item writes one colour above the view. A bar and line
+   // chart draws its line from the second series colour, so a one-colour list
+   // painted the line the same colour as the bars.
+   it("sets the first series and keeps the second distinct", async () => {
+      const combo = JSON.stringify({
+         annotations: [
+            { value: "# combo_chart\n" },
+            { value: '# theme.palette.series=["#7f9862"]\n' },
+         ],
+         schema: { fields: [] },
+         data: { kind: "array_cell", array_value: [] },
+      });
+      render(<RenderedResult result={combo} />);
+      await waitFor(() => expect(rendererOptions).toHaveLength(1));
+      const category =
+         rendererOptions[0].vegaConfigOverride?.("combo_chart")?.range
+            ?.category;
+      expect(category?.[0]).toBe("#7f9862");
+      expect(category?.[1]).toBeDefined();
+      expect(category?.[1]).not.toBe("#7f9862");
    });
 });

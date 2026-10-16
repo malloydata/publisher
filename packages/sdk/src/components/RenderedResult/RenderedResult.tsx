@@ -26,7 +26,7 @@ import {
    type ResultSizing,
 } from "./resultSizing";
 import { readChartAnnotations } from "../../theme/readChartAnnotations";
-import { resolveTheme } from "../../theme/resolveTheme";
+import { chartThemeLayer, resolveTheme } from "../../theme/resolveTheme";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { loadMalloyRenderer } from "./loadRenderer";
 import { chartMinWidth, labelChartFields } from "./chartPresentation";
@@ -566,7 +566,7 @@ function RenderedResultInner({
 
          const perChart = await extractChartThemeOverride(parsed);
          const effectiveTheme = perChart
-            ? resolveTheme([...layers, perChart], mode)
+            ? resolveTheme([...layers, chartThemeLayer(layers, perChart)], mode)
             : baseTheme;
 
          if (!isCurrent()) return;

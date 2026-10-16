@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { resolveMode, resolveTheme } from "./resolveTheme";
+import { chartThemeLayer, resolveMode, resolveTheme } from "./resolveTheme";
 import type { Theme } from "./types";
 
 describe("resolveTheme cascade", () => {
@@ -241,5 +241,55 @@ describe("resolveTheme series in dark mode", () => {
       );
       expect(dark.series[0]).not.toBe("#1a1a1a");
       expect(dark.series[1]).toBe("#60a5fa");
+   });
+});
+
+describe("a chart's own theme layer", () => {
+   const host: Theme = {
+      palette: { series: ["#628698", "#8a6a50", "#6f6a8f", "#7f9862"] },
+   };
+   const drawn = (chart: Theme) =>
+      resolveTheme([host, chartThemeLayer([host], chart)], "light").series;
+
+   // The builder's Color item writes one colour. On a bar and line chart the
+   // line is the second series: drawn from a one-colour list it came out the
+   // same colour as the bars and vanished against them.
+   it("takes one colour as the first series and keeps the rest distinct", () => {
+      const series = drawn({ palette: { series: ["#7F9862"] } });
+      expect(series).toEqual(["#7F9862", "#628698", "#8a6a50", "#6f6a8f"]);
+   });
+
+   it("keeps the host's order after a colour that is not on its palette", () => {
+      const series = drawn({ palette: { series: ["#123456"] } });
+      expect(series).toEqual([
+         "#123456",
+         "#628698",
+         "#8a6a50",
+         "#6f6a8f",
+         "#7f9862",
+      ]);
+   });
+
+   it("falls back to the default series with no host palette", () => {
+      const series = resolveTheme(
+         [chartThemeLayer([], { palette: { series: ["#123456"] } })],
+         "light",
+      ).series;
+      expect(series[0]).toBe("#123456");
+      expect(series.slice(1)).toEqual(
+         resolveTheme([], "light").series.filter((c) => c !== "#123456"),
+      );
+   });
+
+   it("uses a list of two or more colours as written", () => {
+      expect(drawn({ palette: { series: ["#111111", "#222222"] } })).toEqual([
+         "#111111",
+         "#222222",
+      ]);
+   });
+
+   it("leaves a layer that sets no series alone", () => {
+      const chart: Theme = { font: { size: 14 } };
+      expect(chartThemeLayer([host], chart)).toBe(chart);
    });
 });
