@@ -151,9 +151,8 @@ export function StickyControls({ children }: { children: ReactNode }) {
             position: "sticky",
             // Under whatever the host pins above the report (its own toolbar,
             // say), which it says by setting `--publisher-sticky-top` on an
-            // ancestor. A host that sets it gives up the pinned edge: the
-            // bar is then never clipped by the scroller, which is what
-            // `useStuck` watches for.
+            // ancestor. `useStuck` measures against this line, so the fill
+            // and edge still come on when the bar pins below the host's.
             top: `calc(var(${STICKY_TOP_VAR}, 0px) + ${STUCK_TOP_PX}px)`,
             zIndex: STICKY_CONTROLS_Z,
             // Filled only while pinned, when the tiles pass under it. Unpinned
