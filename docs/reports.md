@@ -197,10 +197,10 @@ label, its width, a `# viz=`, a colour), merged over the view's, and its `+ { wh
 controls the tile answers to (its **binding**, see [Filter controls](#filter-controls)). That is what
 lets one modelled view sit at different widths, under different labels, on different reports. A `where:`
 in the refinement filters the rows the view reads, so it also works on a field the view does not show
-and on the first stage of a two-stage view. Put it there rather than on the source
-(`order_items extend { where: … } -> sales_by_month`): plain Malloy gives the same rows either way, but
-Publisher refuses a tile written on an extended source when that source carries an `#(access_filter)`.
-The builder reads and edits such a filter where an author wrote it, and writes its own as a refinement.
+and on the first stage of a two-stage view. A filter on the source
+(`order_items extend { where: … } -> sales_by_month`) gives the same rows, and a source's
+`#(access_filter)` applies to it the same way. The builder writes its own filters as a refinement, and
+reads and edits a filter on the source where an author wrote it.
 
 **A report declares no source.** Do not write a `source: x_tiles is x extend { … }` to hold the tiles: it
 copies the served model into the report. A report written that way still loads and edits, but new ones

@@ -1191,10 +1191,10 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
  * The filters are a refinement of the NAMED view, which Malloy applies to the
  * view's first stage, so a field the view does not output, a joined field, or
  * one a second stage drops still filters (measured, with exact rows, in
- * reportForms.compile.spec.ts). Not `source extend { where: … } -> view`,
- * though that also gives those rows in plain Malloy: Publisher cannot attach a
- * source's `#(access_filter)` to a query whose source is extended, and refuses
- * every such tile (report_tile_access.spec.ts in the server). The failure
+ * reportForms.compile.spec.ts). `source extend { where: … } -> view` gives the
+ * same rows, with the source's `#(access_filter)` applied the same way
+ * (report_tile_access.spec.ts in the server), but one form is enough to write
+ * and this one keeps the tile on the named view. The failure
  * malloydata/publisher#723 reported for a trailing refinement of an inline
  * multi-stage query does not reproduce on the Malloy this package pins
  * (reportForms.compile.spec.ts), and the builder writes only named views. A

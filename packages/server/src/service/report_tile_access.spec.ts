@@ -223,7 +223,7 @@ describe("a report's tiles over a source with an access filter", () => {
    });
 
    it("gives the same answers as the extension form, for every caller", async () => {
-      for (const givens of [
+      for (const givens of <Array<Record<string, GivenValue> | undefined>>[
          { CARRIER_SCOPE: "WN", CARRIER: "WN" },
          { CARRIER_SCOPE: "WN", CARRIER: "AA" },
          { CARRIER_SCOPE: "AA" },
@@ -298,7 +298,7 @@ describe("a report's tiles over a source with an authorize gate", () => {
    });
 
    it("gives the same answers as the extension form, for every caller", async () => {
-      for (const givens of [
+      for (const givens of <Array<Record<string, GivenValue> | undefined>>[
          { ROLE: "analyst", CARRIER: "WN" },
          { ROLE: "intern" },
          undefined,
@@ -321,12 +321,10 @@ describe("a report's tiles over a source with an authorize gate", () => {
 
 /**
  * The other place a report could put a filter, on the tile's source:
- * `flights extend { where: … } -> by_carrier`. Plain Malloy gives the same rows
- * as the refinement, but Publisher cannot attach a source's `#(access_filter)`
- * to a query whose source is extended, and refuses the tile outright, for every
- * caller. That is fail-closed (no row is ever widened), and it is why the
- * builder writes a report's filters as `+ { where: … }` on the named view. A
- * gate (`#(authorize)`) is unaffected.
+ * `flights extend { where: … } -> by_carrier`. The builder writes
+ * `+ { where: … }` on the named view instead, but an author may write this
+ * form, and Publisher applies the source's `#(access_filter)` to it the same
+ * way: the caller's rows only, with the report's filter on top.
  */
 describe("a filter on the tile's source, the form the builder does not write", () => {
    const SCOPED = (source: string) => `##! experimental.givens
@@ -338,7 +336,7 @@ given: CARRIER :: filter<string> is f''
 query: scoped_tile is ${source} extend { where: carrier_code ~ $CARRIER } -> by_carrier
 `;
 
-   it("is refused over an access filter, whatever the caller, and admitted through a gate", async () => {
+   it("returns only the caller's rows over an access filter, and admits through a gate", async () => {
       await fs.writeFile(
          path.join(PKG_DIR, "af_scoped.malloy"),
          SCOPED("flights_af"),
@@ -347,13 +345,29 @@ query: scoped_tile is ${source} extend { where: carrier_code ~ $CARRIER } -> by_
          path.join(PKG_DIR, "gate_scoped.malloy"),
          SCOPED("flights_gate"),
       );
-      for (const givens of [
-         { CARRIER_SCOPE: "WN", CARRIER: "WN" },
-         { CARRIER_SCOPE: "WN" },
-      ])
-         expect(
-            await run("af_scoped.malloy", "run: scoped_tile", givens),
-         ).toEqual({ refused: "AccessDeniedError" });
+      expect(
+         await run("af_scoped.malloy", "run: scoped_tile", {
+            CARRIER_SCOPE: "WN",
+            CARRIER: "WN",
+         }),
+      ).toEqual({ rows: WN });
+      // No report filter: still only the access filter's rows.
+      expect(
+         await run("af_scoped.malloy", "run: scoped_tile", {
+            CARRIER_SCOPE: "WN",
+         }),
+      ).toEqual({ rows: WN });
+      // A report filter on another carrier never widens it.
+      expect(
+         await run("af_scoped.malloy", "run: scoped_tile", {
+            CARRIER_SCOPE: "WN",
+            CARRIER: "AA",
+         }),
+      ).toEqual({ rows: [] });
+      // No givens: a 403, as when the source is queried directly.
+      expect(await run("af_scoped.malloy", "run: scoped_tile")).toEqual({
+         refused: "AccessDeniedError",
+      });
       expect(
          await run("gate_scoped.malloy", "run: scoped_tile", {
             ROLE: "analyst",
