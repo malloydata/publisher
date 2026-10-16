@@ -183,6 +183,13 @@ export interface QueryTile {
     * Absent, the chart takes the theme's own series.
     */
    color?: string;
+   /**
+    * The tile's own tags set `theme.palette.series` in a line the builder did
+    * not write: a list of two or more colours, or any other spelling. Read from
+    * the file, never written. The preview keeps that line when the tile is on
+    * Theme, where it otherwise takes a saved builder colour off.
+    */
+   ownPalette?: true;
 }
 
 /**

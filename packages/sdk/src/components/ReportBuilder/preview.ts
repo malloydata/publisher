@@ -290,10 +290,12 @@ export function previewTileQuery(
    // wrapper's line, so the preview carries it as it carries the chart. With
    // no colour (Theme), an inline or opaque tile runs its own SAVED view, whose
    // last-saved colour line would still apply, so the preview takes it off.
+   // Not where the tile's own tags carry a palette the builder did not write:
+   // that line is the author's, it stays in the file, and the page draws it.
    const colorAnnotation =
       tile.color !== undefined
          ? seriesColorLine(tile.color)
-         : tile.declaration.kind !== "reference"
+         : tile.declaration.kind !== "reference" && !tile.ownPalette
            ? seriesColorResetLine
            : undefined;
    const annotation =

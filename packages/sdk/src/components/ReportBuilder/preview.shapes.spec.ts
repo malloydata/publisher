@@ -48,6 +48,43 @@ describe("the Default chart preview, for the shapes a real dashboard reads", () 
    });
 });
 
+describe("the Theme colour preview, for the colour lines a real dashboard reads", () => {
+   const COLORS = `## artifact { title="T" tiles=["a -> picked", "a -> listed", "a -> block", "a -> spelled"] }
+import "../m.malloy"
+
+source: a is one extend {
+  # theme.palette.series=["#7f9862"]
+  view: picked is { group_by: x }
+  # theme.palette.series=["#111111", "#222222"]
+  view: listed is { group_by: x }
+  # theme { palette.series=["#111111"] }
+  view: block is { group_by: x }
+  # theme.palette.series = [ '#111111' ]
+  view: spelled is { group_by: x }
+}`;
+
+   it("takes a builder colour off on Theme, and keeps a palette the author wrote", async () => {
+      const document = await openDocument(COLORS);
+      const annotations = Object.fromEntries(
+         document.tiles.map((tile) => {
+            // Theme: what the Color item's Theme leaves on the tile.
+            const { color: _picked, ...theme } = tile as QueryTile;
+            return [
+               tile.name,
+               previewTileQuery(document, theme as QueryTile, new Set())
+                  .annotation,
+            ];
+         }),
+      );
+      expect(annotations).toEqual({
+         picked: "# -theme.palette.series",
+         listed: undefined,
+         block: undefined,
+         spelled: undefined,
+      });
+   });
+});
+
 describe("a filter field is read and written as it stands", () => {
    const FILTERS = `##! experimental.givens
 ## artifact { title="T" tiles=["a -> x", "a -> y", "a -> z"] }

@@ -166,6 +166,24 @@ function chartField(tags: Array<{ text: string }>): {
 }
 
 /**
+ * Whether a tile's own tags set the series palette in a line the builder did
+ * not write; see {@link QueryTile.ownPalette}. Each line is parsed on its own,
+ * so `# theme { palette.series=[…] }` counts as well as the dotted spelling.
+ */
+function ownPaletteField(
+   tags: Array<{ text: string }>,
+   parse: ParseTags,
+): { ownPalette?: true } {
+   const own = tagText(tags).some(
+      (line) =>
+         seriesColorOf(line) === undefined &&
+         parse([line]).tag?.tag("theme")?.tag("palette")?.tag("series") !==
+            undefined,
+   );
+   return own ? { ownPalette: true } : {};
+}
+
+/**
  * The builder-managed filters of a `{ … }` block: every clause the tree says
  * is exactly `field <op> $GIVEN`.
  *
@@ -526,6 +544,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
                ? { colspan: t.numeric("colspan") as number }
                : {}),
             ...chartField(view.tags),
+            ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
             ...(t?.has("break") ? { break: true } : {}),
             ...(t?.has("borderless") ? { borderless: true } : {}),
          });
@@ -553,6 +572,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             ? { colspan: t.numeric("colspan") as number }
             : {}),
          ...chartField(view.tags),
+         ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
          ...(t?.has("break") ? { break: true } : {}),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });
