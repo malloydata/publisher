@@ -95,8 +95,19 @@ export interface DashboardDrill {
 /**
  * Where a tile's view is declared, and therefore what the builder may edit.
  *
- * Five forms, all of them found in dashboards that ship in this repository, and
- * the distinction decides which affordances a tile gets:
+ * The builder writes two of these, and declares no source to write them:
+ *
+ * - `inherited` — the entry names a served view directly, `"flights -> kpis"`,
+ *   and nothing about it is in this file. A tile is this until it needs
+ *   something the view does not have.
+ * - `named` — `query: kpis_tile is flights -> kpis + { where: … }` in this
+ *   file, with its settings as `#` tags above it, and the entry names the
+ *   query. A tile becomes one when it is given a chart, a width, a colour, a
+ *   title or a filter of its own, and goes back to `inherited` when every one
+ *   of them is the view's again ({@link normalizeTileForms}).
+ *
+ * The rest are read from files written another way, which the builder keeps
+ * and edits in place but never creates:
  *
  * - `reference` — `view: revenue_trend is sales_by_month` in this file. Fully
  *   editable: the layout tags sit above that line and the builder owns them.
@@ -113,22 +124,18 @@ export interface DashboardDrill {
  *   one block is where a binding belongs. Its TAGS are ordinary `#` lines here,
  *   so its label, colspan and position are editable like any other tile's; only
  *   a FILTER has nowhere to go, and `why` says which shape it is.
- * - `inherited` — not declared in this file at all, as in a dashboard whose only
- *   tile is `orders -> by_brand` against an imported source. Nothing about it is
- *   editable here, because its tags live on the model's own view and the builder
- *   does not write model files. Read and shown, not changed.
- * - `query` — the entry names a query rather than a view: `tiles=["by_carrier"]`
- *   over a `query: by_carrier is flights -> { … }`, in this file or the model.
- *   The tile runs `run: by_carrier`, exactly as the reader does, and has no
- *   `source` of its own. Like `inherited` it is read and shown, and moved or
- *   removed in the list, but not changed: its tags sit on a `query:` statement
- *   the writer does not locate, and its body may be anything a query can be.
+ * - `query` — the entry names a query that is not `named`: a query in the
+ *   model, or one in this file of another shape (`flights -> { … }`, a
+ *   pipeline). The tile runs `run: by_carrier`, exactly as the reader does,
+ *   and has no `source` of its own. It is read and shown, and moved or removed
+ *   in the list, but not changed: its body may be anything a query can be.
  */
 export type TileDeclaration =
    | { kind: "reference"; from: string }
    | { kind: "inline" }
    | { kind: "opaque"; why: string }
    | { kind: "inherited" }
+   | { kind: "named"; from: string }
    | { kind: "query" };
 
 /** A tile that runs a view: a view shown on the page, plus how it is presented. */
@@ -172,8 +179,6 @@ export interface QueryTile {
    chart?: ChartState;
    /** The chart lines behind a `"custom"` chart, as written; read-only, so a picker can say what it will not change. */
    chartLines?: string[];
-   /** The chart tags the tile's view carries, when the catalog knows them: the writer negates only these. Never read from a file. */
-   chartCarried?: string[];
    colspan?: number;
    break?: boolean;
    borderless?: boolean;
@@ -190,6 +195,14 @@ export interface QueryTile {
     * Theme, where it otherwise takes a saved builder colour off.
     */
    ownPalette?: true;
+   /**
+    * A `named` tile's query says more than the builder writes: a tag it does
+    * not model, or a statement in its refinement that is not a filter binding
+    * (`limit:`, a `where:` on a literal). Read from the file, never written.
+    * Such a query stays a query whatever its settings, since the served view
+    * alone would lose what it says.
+    */
+   unmodelled?: true;
 }
 
 /**
@@ -254,23 +267,34 @@ export interface DashboardSource {
  * and new list entry derives from.
  */
 export const tileExpression = (tile: QueryTile): string =>
-   tile.declaration.kind === "query"
-      ? tile.name
-      : `${tile.source} -> ${tile.name}`;
+   namesQuery(tile) ? tile.name : `${tile.source} -> ${tile.name}`;
+
+/** Whether the tile's entry names a query (`"kpis_tile"`) rather than a view. */
+export const namesQuery = (tile: QueryTile): boolean =>
+   tile.declaration.kind === "query" || tile.declaration.kind === "named";
+
+/**
+ * The served view a tile shows, as `source -> view`: what an `inherited` tile
+ * names, and what a `named` tile's query reads. Any other tile's own
+ * expression.
+ */
+export const tileViewExpression = (tile: QueryTile): string =>
+   tile.declaration.kind === "named"
+      ? `${tile.source} -> ${tile.declaration.from}`
+      : tileExpression(tile);
 
 /**
  * Whether the builder can write nothing about this tile but its place in the
- * list: declared on the model's view (`inherited`), or a named query, whose
- * tags are on a `query:` statement the writer does not edit.
+ * list: a query that is not `named`, whose body may be anything.
  */
 export const isReadOnlyTile = (tile: QueryTile): boolean =>
-   tile.declaration.kind === "inherited" || tile.declaration.kind === "query";
+   tile.declaration.kind === "query";
 
 /** A tile's identity across a reorder: what the grid keys on, a drag names and the writer matches. */
 export const tileKey = (tile: DashboardTile) =>
    isTextTile(tile)
       ? `text.${tile.name}`
-      : tile.declaration.kind === "query"
+      : namesQuery(tile)
         ? // `query` is a Malloy keyword, so no source can carry this prefix.
           `query.${tile.name}`
         : `${tile.source}.${tile.name}`;

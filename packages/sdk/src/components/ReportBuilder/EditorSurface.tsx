@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box, Stack, Typography } from "@mui/material";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardManifest } from "../../client";
 import { useCompiledDocument } from "../../hooks/useCompiledDocument";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -41,6 +41,7 @@ import {
    isReadOnlyTile,
    tileExpression,
    tileKey,
+   tileViewExpression,
    type DashboardDocument,
    type DashboardTile as DocumentTile,
    type QueryTile,
@@ -51,7 +52,7 @@ import {
    previewGivens,
    previewTileQuery,
    tileExpressionKey,
-   unsavedSources,
+   unsavedImports,
    type PreviewTileQuery,
 } from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
@@ -445,11 +446,26 @@ export function EditorSurface({
          ),
       [opened.document],
    );
-   // Extensions this session added, which the model the tiles run on does not
-   // have until the file is saved and served: a tile on one runs on its base.
+   // Sources this session imported, which the report the tiles run on cannot
+   // see until the file is saved and served: a tile on one runs on its model.
    const unsaved = useMemo(
-      () => unsavedSources(doc, opened.document, modelPath, !!textSource),
+      () => unsavedImports(doc, opened.document, modelPath, !!textSource),
       [doc, opened.document, modelPath, textSource],
+   );
+   // A tile with no title of its own shows its view's, as the reader does:
+   // the served label of the query or view it names, else of the view a query
+   // of the report's own reads, else one derived from the view's name.
+   const titleOf = useCallback(
+      (tile: QueryTile) =>
+         tile.label ??
+         (isReadOnlyTile(tile) ||
+         tile.declaration.kind === "inherited" ||
+         tile.declaration.kind === "named"
+            ? (servedLabels.get(tileExpressionKey(tileExpression(tile))) ??
+              servedLabels.get(tileExpressionKey(tileViewExpression(tile))))
+            : undefined) ??
+         tileDisplayTitle(tile),
+      [servedLabels],
    );
    const renderTile = useMemo(
       () =>
@@ -458,10 +474,7 @@ export function EditorSurface({
             heading?: TileHeadingSlots,
             chrome: TileChrome = "card",
          ) {
-            const title =
-               (isReadOnlyTile(tile)
-                  ? servedLabels.get(tileExpressionKey(tileExpression(tile)))
-                  : undefined) ?? tileDisplayTitle(tile);
+            const title = titleOf(tile);
             // The bindings a tile runs with come from the manifest; running before it lands queries every tile once unbound and again bound.
             // Until then the tile's own card and heading stand, so nothing pops in when it runs.
             if (notCompiled)
@@ -564,7 +577,7 @@ export function EditorSurface({
          missing,
          runnable,
          servedReads,
-         servedLabels,
+         titleOf,
          environmentName,
          packageName,
          queryVersionId,
@@ -594,10 +607,7 @@ export function EditorSurface({
                   tile={`${view.base} -> ${view.view}`}
                   {...(view.chart
                      ? {
-                          annotation: chartLineText(
-                             view.chart,
-                             view.chartCarried,
-                          ),
+                          annotation: chartLineText(view.chart),
                        }
                      : {})}
                   label={view.label}
@@ -657,6 +667,7 @@ export function EditorSurface({
                ? { takenGivenNames: textSource.takenGivenNames }
                : {})}
             renderTile={renderTile}
+            titleOf={titleOf}
             renderViewPreview={renderViewPreview}
             givens={specs
                .filter((spec) => spec.name !== undefined)

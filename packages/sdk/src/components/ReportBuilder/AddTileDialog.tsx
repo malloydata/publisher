@@ -54,8 +54,6 @@ export interface NewTile {
    label?: string;
    /** A chart for the tile; absent keeps the view's own. */
    chart?: ChartPick | "none";
-   /** The chart tags the view carries, so the chart line negates only those. */
-   chartCarried?: string[];
    /** Columns the tile spans; absent writes none, where that draws the same (`writtenSpan`). */
    colspan?: number;
 }
@@ -70,7 +68,6 @@ export interface ViewPreview {
    label: string;
    /** A chart for the preview; absent keeps the view's own. */
    chart?: ChartPick | "none";
-   chartCarried?: string[];
    /** The givens the source is scoped by, the ones the preview sends. */
    givens: string[];
 }
@@ -205,13 +202,7 @@ export function AddTileDialog({
       : undefined;
    const canAdd = picked !== undefined && unwritable === undefined;
    const title = picked ? viewTitle(picked.view) : "";
-   const chartPart =
-      chart !== "default" && picked
-         ? {
-              chart,
-              chartCarried: picked.view.chart ? [picked.view.chart] : [],
-           }
-         : {};
+   const chartPart = chart !== "default" && picked ? { chart } : {};
    const add = (entry: Entry | undefined = picked) => {
       if (!entry) return;
       if (![entry.source.name, entry.view.name].every(isBareName)) return;

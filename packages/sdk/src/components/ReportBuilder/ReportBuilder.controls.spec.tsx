@@ -185,7 +185,7 @@ describe("BuilderBar", () => {
 });
 
 describe("Duplicate, from a tile's menu", () => {
-   it("writes a copy as a view of its own, right after the original", async () => {
+   it("writes a copy as a query of the report's own, right after the original", async () => {
       const saved = mock((_source: string) => {});
       render(
          <ReportBuilder
@@ -205,9 +205,9 @@ describe("Duplicate, from a tile's menu", () => {
       screen.getByRole("button", { name: "Save", hidden: true }).click();
       await waitFor(() => expect(saved).toHaveBeenCalledTimes(1));
       const text = saved.mock.calls[0]?.[0] ?? "";
-      expect(text).toContain('tiles=["a -> by_cat", "a -> by_category_tile"]');
-      expect(text).toMatch(
-         /# colspan=6\n\s*# label="By category"\n\s*view: by_category_tile is by_category/,
+      expect(text).toContain('tiles=["a -> by_cat", "by_category_tile"]');
+      expect(text).toContain(
+         '\n\n# colspan=6\n# label="By category"\nquery: by_category_tile is a -> by_category\n',
       );
    });
 

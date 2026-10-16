@@ -7,6 +7,7 @@
  */
 
 import { blankQuoted } from "../../utils/blankQuoted";
+import { resolvedChart } from "../../utils/resolvedChart";
 
 /** The renderer's chart tags, as they are spelled in a model. */
 export const CHART_TAGS = [
@@ -47,9 +48,36 @@ export interface ChartLineParts {
    pick?: string;
 }
 
-/** `#`, any `-name`s, at most one `name`, every name a chart tag or `viz`, no `{` and no `=`; anything else is not ours to rewrite. */
+/** The `viz=` value the builder writes for a pick the renderer selects by `viz`. */
+const VIZ_OF: Partial<Record<ChartPick | "none", string>> = {
+   line_chart: "line",
+   bar_chart: "bar",
+   combo_chart: "combo",
+   none: "table",
+};
+
+/** `# viz=bar`, alone on its line: the builder's own chart line. */
+const VIZ_LINE = /^#[ \t]*viz[ \t]*=[ \t]*(line|bar|combo|table)[ \t]*$/;
+
+/**
+ * A chart line the builder can rewrite: its own `# viz=<line|bar|combo|table>`,
+ * or `#` with any `-name`s and at most one `name`, every name a chart tag or
+ * `viz`, no `{` and no `=` (a bare `# big_value`, and the lines earlier
+ * builders wrote). Anything else is not ours to rewrite.
+ */
 export function parseChartLine(line: string): ChartLineParts | undefined {
    const trimmed = line.trim();
+   const viz = VIZ_LINE.exec(trimmed)?.[1];
+   if (viz !== undefined)
+      return {
+         negated: [],
+         pick:
+            viz === "table"
+               ? "table"
+               : (Object.keys(VIZ_OF).find(
+                    (pick) => VIZ_OF[pick as ChartPick] === viz,
+                 ) as string),
+      };
    if (!/^#[ \t]/.test(trimmed) || /[{=]/.test(trimmed)) return undefined;
    const words = trimmed
       .slice(1)
@@ -104,25 +132,38 @@ export function chartResetLine(): string {
 }
 
 /**
- * The line for a pick. Given the chart tags the view carries it negates only those; without them
- * (the catalog does not know the view) it negates every other chart tag. `-viz` stays either way,
- * since the catalog does not report a `viz=` tag.
+ * The line for a pick, which takes nothing off: a tile's tags merge over its
+ * view's, and the renderer picks the chart from the merged tag
+ * ({@link resolvedChart}). Line, bar, bar and line and a table are a `viz=`,
+ * which replaces any of those the view sets. Big value, scatter and the maps
+ * are their own key, which draws only where nothing earlier in the renderer's
+ * order matches; {@link drawsAs} says whether a pick does over a given view.
  */
-export function chartLineText(
-   chart: ChartPick | "none",
-   carried?: readonly string[],
-): string {
-   const negated = PLUGIN_TAGS.filter(
-      (tag) =>
-         tag !== chart && (carried === undefined || carried.includes(tag)),
-   ).map((tag) => `-${tag}`);
-   return ["#", ...negated, "-viz", ...(chart === "none" ? [] : [chart])].join(
-      " ",
-   );
+export function chartLineText(chart: ChartPick | "none"): string {
+   const viz = VIZ_OF[chart];
+   return viz !== undefined ? `# viz=${viz}` : `# ${chart}`;
+}
+
+/**
+ * Whether `pick`'s line, written over a view that draws as `viewChart` (the
+ * catalog's {@link chartOf}), draws as `pick`. A bar over a big value view
+ * does; a table over one does not, since big value matches whatever `viz`
+ * says, and the builder writes no line that takes the view's chart off.
+ */
+export function drawsAs(
+   pick: ChartPick | "none",
+   viewChart: string | undefined,
+): boolean {
+   const drawn = resolvedChart([
+      ...(viewChart ? [`# ${viewChart}`] : []),
+      chartLineText(pick),
+   ]);
+   return pick === "none" ? drawn === "table" : drawn === pick;
 }
 
 /** What a recognized line says: its pick, a table when it negates `viz` and picks nothing, otherwise a line the picker cannot show. */
 function chartStateOfParts(parts: ChartLineParts): ChartState {
+   if (parts.pick === "table") return "none";
    if (parts.pick !== undefined)
       return isChartPick(parts.pick) ? parts.pick : "custom";
    return parts.negated.includes("viz") ? "none" : "custom";

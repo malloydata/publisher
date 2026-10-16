@@ -243,12 +243,8 @@ describe("previewTileQuery", () => {
             } as QueryTile,
             runnable,
          ).annotation;
-      expect(withChart("bar_chart")).toBe(
-         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz bar_chart",
-      );
-      expect(withChart("none")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz",
-      );
+      expect(withChart("bar_chart")).toBe("# viz=bar");
+      expect(withChart("none")).toBe("# viz=table");
       expect(withChart("custom")).toBe("# bar_chart { size=spark }");
       expect(withChart("default")).toBeUndefined();
       expect(withChart(undefined)).toBeUndefined();
@@ -320,16 +316,16 @@ describe("previewTileQuery", () => {
             },
             runnable,
          ).annotation?.split("\n");
-      expect(annotationOf({ kind: "inline" })).toEqual([
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz combo_chart",
-         RESET,
-      ]);
+      expect(annotationOf({ kind: "inline" })).toEqual(["# viz=combo", RESET]);
       expect(
          annotationOf({ kind: "opaque", why: "a chained refinement" })?.at(-1),
       ).toBe(RESET);
-      expect(
-         annotationOf({ kind: "reference", from: "v" })?.includes(RESET),
-      ).toBe(false);
+      for (const declaration of [
+         { kind: "reference", from: "v" },
+         { kind: "named", from: "v" },
+         { kind: "inherited" },
+      ] as const)
+         expect(annotationOf(declaration)?.includes(RESET)).toBe(false);
       expect(annotationOf({ kind: "inline" }, "#7f9862")?.at(-1)).toBe(
          '# theme.palette.series=["#7f9862"]',
       );
@@ -422,6 +418,25 @@ describe("previewTileQuery", () => {
          expression: "orders -> by_brand",
          givenNames: undefined,
          reads: undefined,
+      });
+   });
+
+   it("runs a query of the report's own as its view, under its chart and with its bindings", () => {
+      const named: QueryTile = {
+         name: "by_brand_tile",
+         source: "orders",
+         declaration: { kind: "named", from: "by_brand" },
+         chart: "line_chart",
+         color: "#7f9862",
+         filters: [{ field: "category", given: "CATEGORY" }],
+      };
+      expect(
+         previewTileQuery(document, named, runnable, new Map(), []),
+      ).toEqual({
+         annotation: '# viz=line\n# theme.palette.series=["#7f9862"]',
+         expression: "orders -> by_brand + { where: category ~ $CATEGORY }",
+         givenNames: ["CATEGORY"],
+         reads: ["CATEGORY"],
       });
    });
 });

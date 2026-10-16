@@ -108,6 +108,18 @@ export interface TreeView extends Positioned {
    body: TreeViewBody;
 }
 
+/**
+ * A `query:` statement's one query. `source` is set only when it is
+ * `<source> -> <segment>` with a plain source name on the left; then `body`
+ * reads the segment the way a view's body is read, so `flights -> by_carrier +
+ * { … }` is a reference to `by_carrier` with a refinement. Anything else (a
+ * pipeline, source arguments, a query of a query) has no `source`, and the
+ * builder only reads it.
+ */
+export interface TreeQuery extends TreeView {
+   source?: string;
+}
+
 export interface TreeDimension extends Positioned {
    name: string;
    expression: string;
@@ -173,6 +185,8 @@ export interface ParsedMalloy {
    lineStarts: number[];
    imports: TreeImport[];
    sources: TreeSource[];
+   /** The file's `query:` statements, one entry per query they declare. */
+   queries: TreeQuery[];
    givens: TreeGiven[];
    /** The closed floating `(markdown)` / `(text)` blocks, in file order. */
    textBlocks: TreeTextBlock[];
@@ -257,6 +271,12 @@ const IS = {
    whereStatement: (c: Ctx) => has(c, "WHERE", "filterClauseList"),
    givenDef: (c: Ctx) => has(c, "givenNameDef"),
    givenStatement: (c: Ctx) => has(c, "GIVEN", "givenDefList"),
+   defineQuery: (c: Ctx) => has(c, "QUERY", "topLevelQueryDef"),
+   topLevelQueryDef: (c: Ctx) => has(c, "queryName", "isDefine", "sqExpr"),
+   /** `lhs -> segment`, at the level of a query rather than a view. */
+   sqArrow: (c: Ctx) => has(c, "sqExpr", "ARROW", "segExpr"),
+   /** A source by name, `flights`, or `flights(…)` with arguments. */
+   sqID: (c: Ctx) => has(c, "id", "sourceArguments"),
    importStatement: (c: Ctx) => has(c, "IMPORT", "importURL"),
    // A `vExpr` is either one stage or an `->` pipeline; a `segExpr` is a bare
    // reference, a `{ … }` body, a `( … )`, or `lhs + rhs`.
@@ -536,7 +556,11 @@ function readViewBody(r: Reader, vExpr: Ctx): TreeViewBody {
    // is read and all that may ever be rewritten.
    const seg = call(vExpr, "segExpr");
    if (!seg) return { kind: "unsupported", why: "an unreadable expression" };
-   const pipeline = IS.vArrow(vExpr);
+   return readSegment(r, seg, IS.vArrow(vExpr));
+}
+
+/** One segment of a view or a query: a reference, a refined reference, or a `{ … }` body. */
+function readSegment(r: Reader, seg: Ctx, pipeline: boolean): TreeViewBody {
    if (IS.segOps(seg)) {
       const props = call(seg, "queryProperties");
       const stage = props && readStage(r, props);
@@ -627,6 +651,49 @@ function readViews(r: Reader, props: Ctx): TreeView[] {
             tags: readTags(r, statement, keyword?.start ?? span.start),
             siblings: defs.length,
             body: readViewBody(r, vExpr),
+         });
+      }
+   }
+   return out;
+}
+
+function readQueries(r: Reader, root: Ctx): TreeQuery[] {
+   const out: TreeQuery[] = [];
+   for (const stmt of collect(root, IS.defineQuery)) {
+      const statement = r.span(stmt);
+      if (!statement) continue;
+      const defs = callAll(stmt, "topLevelQueryDef").filter(
+         IS.topLevelQueryDef,
+      );
+      const keyword = r.terminal(call(stmt, "QUERY"));
+      for (const def of defs) {
+         const span = r.span(def);
+         const name = r.text_(call(def, "queryName"))?.trim();
+         const sq = call(def, "sqExpr");
+         if (!span || !name || !sq) continue;
+         const lhs = IS.sqArrow(sq) ? call(sq, "sqExpr") : undefined;
+         const seg = IS.sqArrow(sq) ? call(sq, "segExpr") : undefined;
+         // A source by name and nothing else: `flights(x=1)` reads another
+         // source than `flights` does, so it is not one the builder can name.
+         const source =
+            lhs &&
+            seg &&
+            IS.sqID(lhs) &&
+            r.text_(call(lhs, "sourceArguments")) === undefined
+               ? r.text_(call(lhs, "id"))?.trim()
+               : undefined;
+         out.push({
+            name,
+            span,
+            line: r.line(span.start),
+            statement,
+            tags: readTags(r, statement, keyword?.start ?? span.start),
+            siblings: defs.length,
+            body:
+               source && seg
+                  ? readSegment(r, seg, false)
+                  : { kind: "unsupported", why: "not a source and a view" },
+            ...(source ? { source } : {}),
          });
       }
    }
@@ -855,6 +922,7 @@ export async function parseMalloy(text: string): Promise<ParseResult> {
          lineStarts: r.lineStarts,
          imports: readImports(r, root),
          sources,
+         queries: readQueries(r, root),
          givens: readGivens(r, root),
          textBlocks: readTextBlocks(r, tokenStream),
          modelNotes: readModelNotes(r, root),

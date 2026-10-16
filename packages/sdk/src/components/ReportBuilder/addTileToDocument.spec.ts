@@ -54,12 +54,55 @@ describe("addTileToDocument", () => {
       expect(draft.imports).toEqual([]);
    });
 
-   it("puts the tile on a new extension of its base, and leaves a notebook tile without a width", () => {
+   it("names the served view, declares no source, and leaves a notebook tile without a width", () => {
       const draft = document();
       addTileToDocument(draft, tile, { ...context, widths: false });
-      expect(draft.sources).toEqual([{ name: "orders_tiles", base: "orders" }]);
-      expect(draft.tiles).toHaveLength(1);
-      expect(draft.tiles[0]).not.toHaveProperty("colspan");
+      expect(draft.sources).toEqual([]);
+      expect(draft.tiles).toEqual([
+         {
+            name: "by_day",
+            source: "orders",
+            declaration: { kind: "inherited" },
+         },
+      ]);
+   });
+
+   it("makes a tile with a width, title or chart a query of the report's own", () => {
+      const draft = document();
+      addTileToDocument(
+         draft,
+         { ...tile, label: "Daily", chart: "bar_chart" },
+         context,
+      );
+      expect(draft.sources).toEqual([]);
+      expect(draft.tiles).toEqual([
+         {
+            name: "by_day_tile",
+            source: "orders",
+            declaration: { kind: "named", from: "by_day" },
+            colspan: 6,
+            label: "Daily",
+            chart: "bar_chart",
+         },
+      ]);
+   });
+
+   it("makes a second tile on a view already shown a query, so the two can be told apart", () => {
+      const draft = document();
+      addTileToDocument(draft, { ...tile, colspan: undefined }, context);
+      addTileToDocument(draft, { ...tile, colspan: undefined }, context);
+      expect(draft.tiles).toEqual([
+         {
+            name: "by_day",
+            source: "orders",
+            declaration: { kind: "inherited" },
+         },
+         {
+            name: "by_day_tile",
+            source: "orders",
+            declaration: { kind: "named", from: "by_day" },
+         },
+      ]);
    });
 });
 
@@ -72,7 +115,7 @@ describe("duplicateTile", () => {
       tiles,
    });
 
-   it("copies a view this file declares, as a view of its own right after it", () => {
+   it("copies a view this file declares as a query of the report's own over the same view, right after it", () => {
       const draft = withTiles([
          {
             name: "by_day_tile",
@@ -89,7 +132,7 @@ describe("duplicateTile", () => {
       expect(draft.tiles[1]).toEqual({
          name: "by_day_tile_2",
          source: "orders_tiles",
-         declaration: { kind: "reference", from: "by_day" },
+         declaration: { kind: "named", from: "by_day" },
          label: "Daily",
          chart: "bar_chart",
          colspan: 6,
@@ -97,7 +140,7 @@ describe("duplicateTile", () => {
       });
    });
 
-   it("copies a view the model declares onto the file's extension of its source", () => {
+   it("copies a served view as a query of the report's own over it, with its settings, declaring no source", () => {
       const draft: DashboardDocument = {
          ...document(),
          tiles: [
@@ -111,11 +154,12 @@ describe("duplicateTile", () => {
          ],
       };
       expect(duplicateTile(draft, 0)).toBe(1);
-      expect(draft.sources).toEqual([{ name: "orders_tiles", base: "orders" }]);
+      expect(draft.sources).toEqual([]);
       expect(draft.tiles[1]).toEqual({
          name: "by_brand_tile",
-         source: "orders_tiles",
-         declaration: { kind: "reference", from: "by_brand" },
+         source: "orders",
+         declaration: { kind: "named", from: "by_brand" },
+         label: "From the model",
          colspan: 4,
       });
    });
@@ -133,8 +177,8 @@ describe("duplicateTile", () => {
    });
 });
 
-describe("duplicateTile onto a narrowed extension", () => {
-   it("copies a model view onto an unnarrowed extension, never a scoped one", () => {
+describe("duplicateTile beside a narrowed extension", () => {
+   it("copies a served view onto that view, never onto an extension that narrows it", () => {
       const draft: DashboardDocument = {
          ...document(),
          sources: [
@@ -149,10 +193,10 @@ describe("duplicateTile onto a narrowed extension", () => {
          ],
       };
       expect(duplicateTile(draft, 0)).toBe(1);
-      expect(draft.tiles[1]).toMatchObject({ source: "orders_tiles" });
-      expect(draft.sources.map((s) => s.name)).toEqual([
-         "orders_west",
-         "orders_tiles",
-      ]);
+      expect(draft.tiles[1]).toMatchObject({
+         source: "orders",
+         declaration: { kind: "named", from: "by_brand" },
+      });
+      expect(draft.sources.map((s) => s.name)).toEqual(["orders_west"]);
    });
 });

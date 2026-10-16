@@ -78,7 +78,8 @@ export function BuilderDialogs({
          editor.document.sources.find((s) => s.name === menuTile.source)
             ?.base ?? menuTile.source;
       const viewName =
-         menuTile.declaration.kind === "reference"
+         menuTile.declaration.kind === "reference" ||
+         menuTile.declaration.kind === "named"
             ? menuTile.declaration.from
             : menuTile.name;
       return catalog.sources

@@ -85,7 +85,7 @@ describe("a read-only tile's title in the builder", () => {
          await within(named).findByText("Flights by airline"),
       ).toBeDefined();
       expect(within(named).queryByText("By carrier")).toBeNull();
-      // A view in the model is read-only too, and titled the same way.
+      // A tile naming a view in the model is titled the same way.
       const inherited = screen.getByLabelText("Tile by_month");
       expect(within(inherited).getByText("Flights each month")).toBeDefined();
    });

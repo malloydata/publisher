@@ -14,6 +14,7 @@ import type {
    DashboardSource,
    DashboardTile,
    LocalGiven,
+   QueryTile,
 } from "./document";
 import { isTextTile } from "./document";
 import { loadMalloyTag } from "./loadMalloy";
@@ -29,9 +30,11 @@ import {
    parseRefused,
    readTileList,
    type ParsedMalloy,
+   type TreeQuery,
    type TreeStage,
    type TreeView,
 } from "./malloyTree";
+import { isBuilderTag } from "./tileTags";
 import {
    ARTIFACT_NOT_FIRST,
    artifactLeads,
@@ -210,12 +213,59 @@ function filtersOf(
 }
 
 /**
+ * A query in this file as a `named` tile, or undefined when it is not one the
+ * builder can edit: `query: q is <source> -> <view>`, with at most a `+ { … }`
+ * refinement, declared alone in its statement. Its settings are its own tags,
+ * read as a view's are, and its filters are the refinement's bindings.
+ */
+function namedTile(query: TreeQuery, parse: ParseTags): QueryTile | undefined {
+   const { body, source } = query;
+   if (
+      source === undefined ||
+      query.siblings !== 1 ||
+      body.kind !== "reference" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(body.from)
+   )
+      return undefined;
+   const t = parse(tagText(query.tags)).tag;
+   const refinement = body.refinement;
+   const ownStatements =
+      refinement !== undefined &&
+      (refinement.statements.some(
+         (st) => !refinement.wheres.some((w) => w.span.start === st.span.start),
+      ) ||
+         refinement.wheres.some((w) => w.clauses.some((c) => !c.binding)));
+   const unmodelled =
+      ownStatements || query.tags.some((tag) => !isBuilderTag(tag.text));
+   const filters = filtersOf(refinement);
+   return {
+      name: query.name,
+      source,
+      declaration: { kind: "named", from: body.from },
+      ...(filters ? { filters } : {}),
+      ...(t?.text("label") ? { label: t.text("label") as string } : {}),
+      ...(t?.text("subtitle")
+         ? { subtitle: t.text("subtitle") as string }
+         : {}),
+      ...(t?.numeric("colspan") !== undefined
+         ? { colspan: t.numeric("colspan") as number }
+         : {}),
+      ...chartField(query.tags),
+      ...ownPaletteField(query.tags, parse),
+      ...(t?.has("break") ? { break: true } : {}),
+      ...(t?.has("borderless") ? { borderless: true } : {}),
+      ...(unmodelled ? { unmodelled: true } : {}),
+   };
+}
+
+/**
  * A tag object, as `parseAnnotation` returns it. Only the reads this file makes.
  */
 type TagLike = {
    text: (key: string) => string | undefined;
    numeric: (key: string) => number | undefined;
    tag: (key: string) => TagLike | undefined;
+   has: (key: string) => boolean;
 };
 type ParseTags = (lines: string[]) => { tag?: TagLike | null };
 
@@ -478,12 +528,13 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
       const entry = quoted?.[1] ?? entryText;
       // A bare name is a named query, `query: by_carrier is flights -> { … }`,
       // here or in the model: the server's reader runs it as `run: by_carrier`.
-      // Shown and movable, never rewritten — see the `query` declaration.
+      // One in this file that reads `<source> -> <view>` is the builder's to
+      // edit (`named`); any other is shown and movable, never rewritten.
       if (quoted && NAMED_QUERY.test(entry.trim())) {
-         tiles.push({
-            name: entry.trim(),
-            declaration: { kind: "query" },
-         });
+         const name = entry.trim();
+         const query = parsed.queries.find((q) => q.name === name);
+         const named = query && namedTile(query, parseAnnotation as ParseTags);
+         tiles.push(named ?? { name, declaration: { kind: "query" } });
          continue;
       }
       const steps = quoted ? tileSteps(entry) : undefined;

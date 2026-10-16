@@ -21,6 +21,7 @@ import type { CatalogView } from "./catalog";
 import {
    isQueryTile,
    isReadOnlyTile,
+   namesQuery,
    type DashboardTile,
    type QueryTile,
 } from "./document";
@@ -78,8 +79,6 @@ const CLICKLESS_CHARTS = new Set<string>([
 ]);
 const CHART_DOES_NOT_CLICK =
    "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.";
-const INHERITED_CHART =
-   "Declared on its source, so its chart is set in the model.";
 const QUERY_CHART =
    "It names a query, so its chart is set where that query is declared.";
 
@@ -135,13 +134,11 @@ export function TileMenu({
    const choices = chartChoices(view, chartState, viewStatus);
    const chartBlocked = !query
       ? undefined
-      : query.declaration.kind === "query"
+      : !editable
         ? QUERY_CHART
-        : !editable
-          ? INHERITED_CHART
-          : query.chart === "custom"
-            ? customChart(query.chartLines)
-            : undefined;
+        : query.chart === "custom"
+          ? customChart(query.chartLines)
+          : undefined;
    const pickChart = (next: ChartState) =>
       applyQuery((t) => {
          const was = openedChart.current;
@@ -149,11 +146,8 @@ export function TileMenu({
          if (next === (was ?? "default")) {
             if (was === undefined) delete t.chart;
             else t.chart = was;
-            delete t.chartCarried;
          } else {
             t.chart = next;
-            if (view) t.chartCarried = view.chart ? [view.chart] : [];
-            else delete t.chartCarried;
          }
       });
 
@@ -223,7 +217,7 @@ export function TileMenu({
                dense: true,
                disabledItemsFocusable: true,
                "aria-label": query
-                  ? query.declaration.kind === "query"
+                  ? namesQuery(query)
                      ? query.name
                      : `${query.source} ${query.name}`
                   : "Tile",

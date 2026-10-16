@@ -2,19 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 import { annotationTextProblem } from "./annotationText";
+import { MODELLED_TAG_KEYS, tagKey } from "./tileTags";
 import {
    chartLineText,
    isChartPick,
    mentionsChartTag,
    parseChartLine,
    seriesColorLine,
-   seriesColorOf,
    type ChartPick,
 } from "./chartLine";
 import type {
    DashboardDocument,
    DashboardDrill,
-   DashboardSource,
    DashboardTile,
    QueryTile,
    TextTile,
@@ -23,6 +22,7 @@ import {
    isQueryTile,
    isReadOnlyTile,
    isTextTile,
+   namesQuery,
    tileExpression,
 } from "./document";
 import type { LocalGiven } from "./document";
@@ -94,9 +94,10 @@ export async function syntaxErrors(text: string): Promise<string[]> {
  * tiles, and the dashboard's OWN givens — added, removed or retagged. Never an
  * import, and never a model file: a filter the builder adds is a declaration in
  * this file, which is the convention {@link LocalGiven} describes. And tiles
- * ADDED or REMOVED: a new `view:` inside the extension of the source it reads
- * (or a new extension, when the file imports that source by name), a removed
- * one deleted with its `#` tags. Those moves are the one place the file cannot
+ * ADDED or REMOVED: a new tile is an entry naming a served view, or a
+ * `query:` of the report's own over one when it has settings of its own; a
+ * removed one goes with its `query:` or `view:` and their `#` tags. The writer
+ * never declares, changes or removes a source. Those moves are the one place the file cannot
  * say who owns the comment beside a declaration, so the `//` comments are left
  * where they were and the author can read the change back with View change.
  *
@@ -191,45 +192,10 @@ function tagsFor(tile: QueryTile, withChart = true): string[] {
    if (tile.subtitle !== undefined)
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    const chart = withChart ? writableChart(tile.chart) : undefined;
-   if (chart !== undefined) tags.push(chartLineText(chart, tile.chartCarried));
+   if (chart !== undefined) tags.push(chartLineText(chart));
    if (tile.color !== undefined) tags.push(seriesColorLine(tile.color));
    return tags;
 }
-
-/** The key of the one-colour line the builder writes; see `seriesColorLine`. */
-const SERIES_COLOR_KEY = "theme.palette.series";
-
-/**
- * Which property a tag line carries, so an existing line can be replaced. A
- * colour line is keyed only when it is the builder's own one-colour form: a
- * `# theme.palette.series` that lists a whole palette is the author's, and is
- * keyed apart so it is never rewritten or removed.
- */
-function tagKey(text: string): string | undefined {
-   if (seriesColorOf(text) !== undefined) return SERIES_COLOR_KEY;
-   const m = /^#\s*([a-z_]+)/.exec(text);
-   return m?.[1];
-}
-
-/**
- * The tag keys the document MODELS, and therefore the only tag lines the
- * writer may rewrite or remove. Every other `#` line on a tile — `# big_value`,
- * `# bar_chart`, `# currency`, a host's own tag — is the renderer's, not ours,
- * and survives an edit like any other unmodelled Malloy.
- *
- * Without this rule, unticking one filter on the storefront overview's KPI
- * strip deleted its `# big_value` and the strip came back as a one-row table;
- * the round-trip gate cannot catch that, because the projection never held
- * the tag it lost.
- */
-const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
-   "colspan",
-   "break",
-   "borderless",
-   "label",
-   "subtitle",
-   SERIES_COLOR_KEY,
-]);
 
 /**
  * The same rule for a given: the keys {@link givenTagLine} writes are the only
@@ -278,30 +244,6 @@ function givenTagLine(given: LocalGiven): string | undefined {
 const givenDeclaration = (given: LocalGiven) =>
    `given: ${given.name} :: ${given.type} is ${given.default}`;
 
-/**
- * The line where `<source>` declares `view: <view>`, or -1.
- *
- * Scoped to that source's own `extend { … }` block, because a view name is
- * only unique WITHIN a source: two sources in one dashboard may each declare
- * `by_month`, and a file-wide search finds whichever comes first and then
- * rewrites its tags — silently retagging a tile the author never touched.
- *
- * A source this file does not extend has nothing here to patch, so -1 is the
- * honest answer; the caller refuses rather than reaching for another source's
- * view. Tiles whose view lives on the model are `inherited` and never get
- * this far.
- */
-function viewDeclarationLine(
-   parsed: ParsedMalloy,
-   sourceName: string,
-   viewName: string,
-): number {
-   const view = parsed.sources
-      .find((source) => source.name === sourceName)
-      ?.views.find((v) => v.name === viewName);
-   return view ? view.line : -1;
-}
-
 /** `# drill { to=… given=… }`, one line, as the reader spells it back. */
 function drillTagLine(drill: DashboardDrill): string {
    // A path target (`sales/overview`) is not a bare tag value, so it is
@@ -345,8 +287,6 @@ interface TileMembership {
    nextKeys: Set<string>;
    removedTiles: DashboardTile[];
    addedTiles: DashboardTile[];
-   newSources: DashboardSource[];
-   currentSources: Map<string, DashboardSource>;
    reordered: boolean;
 }
 
@@ -388,62 +328,57 @@ function checkShape(
    const membershipChanged = removedTiles.length > 0 || addedTiles.length > 0;
    const reordered =
       membershipChanged || tileIdentity(current) !== tileIdentity(next);
+   // A tile the builder adds names a served view, or is a query of the
+   // report's own over one; it never declares a source to hold it. The view's
+   // source has to be one the file can see: imported by name, extended here,
+   // or brought in by a whole-file import, or the run model's for a document
+   // held as text.
+   const visible = new Set([
+      ...next.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
+      ...current.sources.map((s) => s.name),
+      ...(visibleSources ?? []),
+   ]);
+   const wholeFile = next.imports.some((i) => i.kind === "all");
    for (const tile of addedTiles) {
-      if (isQueryTile(tile) && tile.declaration.kind !== "reference") {
+      if (!isQueryTile(tile)) continue;
+      const kind = tile.declaration.kind;
+      if (kind !== "inherited" && kind !== "named") {
          return {
             ok: false,
             reason:
                `A new tile names a view of a source; \`${tile.name}\` is ` +
-               `${tile.declaration.kind === "inline" ? "an inline query" : "not declared here"}, ` +
+               `${kind === "inline" ? "an inline query" : `a ${kind} declaration`}, ` +
                `which the builder cannot write.`,
          };
       }
-   }
-   // Sources may only be ADDED, and only for a tile being added on them — the
-   // builder never renames or removes an extension, so a new extension's base
-   // has to be a source the file imports by name, already extends, or gets
-   // through a whole-file import; a document held as text sees its run model's.
-   const currentSources = new Map(current.sources.map((s) => [s.name, s]));
-   const importedByName = new Set(
-      next.imports.flatMap((i) => (i.kind === "names" ? i.names : [])),
-   );
-   for (const source of current.sources) importedByName.add(source.base);
-   const wholeFile = next.imports.some((i) => i.kind === "all");
-   const newSources = next.sources.filter((s) => !currentSources.has(s.name));
-   for (const source of current.sources) {
-      const still = next.sources.find((s) => s.name === source.name);
-      if (!still || still.base !== source.base) {
-         return {
-            ok: false,
-            reason: `The source \`${source.name}\` cannot be changed or removed here.`,
-         };
-      }
-   }
-   for (const source of newSources) {
-      if (!addedTiles.some((t) => isQueryTile(t) && t.source === source.name)) {
-         return {
-            ok: false,
-            reason: `A new source \`${source.name}\` needs a tile on it.`,
-         };
-      }
       if (
-         !importedByName.has(source.base) &&
-         !wholeFile &&
-         !visibleSources?.includes(source.base)
+         tile.source === undefined ||
+         (!visible.has(tile.source) && !wholeFile)
       ) {
          return {
             ok: false,
-            reason: `\`${source.base}\` is not imported in this file, so a tile cannot be put on it.`,
+            reason: `\`${tile.source}\` is not imported in this file, so a tile cannot be put on it.`,
          };
       }
+   }
+   // The builder never adds, renames or removes a source: a report it writes
+   // declares none, and one it reads keeps those it has.
+   const currentSources = new Map(current.sources.map((s) => [s.name, s]));
+   if (
+      next.sources.length !== current.sources.length ||
+      next.sources.some((s) => currentSources.get(s.name)?.base !== s.base)
+   ) {
+      return {
+         ok: false,
+         reason:
+            "The builder does not add, change or remove a source; a report's tiles name served views.",
+      };
    }
    return {
       currentKeys,
       nextKeys,
       removedTiles,
       addedTiles,
-      newSources,
-      currentSources,
       reordered,
    };
 }
@@ -571,7 +506,7 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
       }
       return (
          byKey.get(
-            tile.declaration.kind === "query"
+            namesQuery(tile)
                ? `query.${tile.name}`
                : `${tile.source}->${tile.name}`,
          ) ?? (isNew ? `"${tileExpression(tile)}"` : undefined)
@@ -1170,13 +1105,20 @@ function planDrills(ctx: SpliceContext): SpliceFailure | undefined {
 
 function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, removedTiles, edits, parsed } = ctx;
-   // REMOVED TILES: the declaration and its `#` tags. An inline view's body
-   // runs to its closing brace; a reference is one line. An inherited tile has
-   // nothing here to remove — its entry left the artifact list above — and nor
-   // does a named query, whose `query:` may be read by more than this list.
+   // REMOVED TILES: the declaration and its `#` tags — a view in an
+   // extension, or the report's own `query:`. An inline view's body runs to
+   // its closing brace; a reference is one line. A tile that names a served
+   // view has nothing here to remove — its entry left the artifact list above
+   // — and nor does a query the builder only reads, which may be read by more
+   // than this list.
    for (const tile of removedTiles) {
-      if (isTextTile(tile) || isReadOnlyTile(tile)) continue;
-      const view = viewOf(ctx, tile);
+      if (
+         isTextTile(tile) ||
+         isReadOnlyTile(tile) ||
+         tile.declaration.kind === "inherited"
+      )
+         continue;
+      const view = declarationOf(ctx, tile);
       if (!view) {
          return {
             ok: false,
@@ -1225,6 +1167,13 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
       // that is being left behind: closing the gap would hand that comment to
       // the next tile, which is the ownership guess this whole rule avoids.
       const before = first === 0 ? "" : lines[first - 1].trim();
+      // A query of the report's own sits at the top level, set off by the
+      // blank line the writer put above it, and that line goes with it. Taking
+      // the one ABOVE means two removed in a row never claim the same line.
+      if (tile.declaration.kind === "named" && first > 0 && before === "") {
+         edits.push({ ...wholeLine(first - 1), text: "" });
+         continue;
+      }
       if (
          (lines[endLine + 1] ?? "x").trim() === "" &&
          (first === 0 || before === "" || before.endsWith("{"))
@@ -1234,120 +1183,72 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    return undefined;
 }
 
+/** `query: name is source -> view [+ { bindings }]`, with the tile's tags above it. */
+function queryStatement(tile: QueryTile & { declaration: { from: string } }) {
+   const bindings = (tile.filters ?? []).map(bindingText).join(", ");
+   return [
+      ...tagsFor(tile),
+      `query: ${tile.name} is ${tile.source} -> ${tile.declaration.from}${
+         bindings ? ` + { ${bindings} }` : ""
+      }`,
+   ].join("\n");
+}
+
 function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
-   const {
-      sourceText,
-      lines,
-      wholeLine,
-      addedTiles,
-      newSources,
-      currentSources,
-      edits,
-      parsed,
-   } = ctx;
-   // ADDED TILES: a `view:` with its tags, inside the extension of the source
-   // the tile reads — before that extension's closing brace — or in a new
-   // extension after the last one, when the file has none for that source.
-   const byExtension = new Map<string, QueryTile[]>();
-   for (const tile of addedTiles) {
-      if (isTextTile(tile)) continue;
-      const list = byExtension.get(tile.source) ?? [];
-      list.push(tile);
-      byExtension.set(tile.source, list);
-   }
-   const declarationOf = (tile: QueryTile, indent: string) => {
-      const from =
-         tile.declaration.kind === "reference"
-            ? tile.declaration.from
-            : tile.name;
-      const bindings = (tile.filters ?? [])
-         .map((f) => `where: ${malloyPath(f.field)} ${f.op ?? "~"} $${f.given}`)
-         .join(", ");
-      return [
-         ...tagsFor(tile).map((tag) => `${indent}${tag}`),
-         `${indent}view: ${tile.name} is ${from}${bindings ? ` + { ${bindings} }` : ""}`,
-      ].join("\n");
-   };
-   // An anchor for a NEW extension: the last line any source's declaration
-   // reaches, so one added after it cannot land inside another.
-   let lastExtensionEnd = -1;
-   for (const source of parsed.sources)
-      lastExtensionEnd = Math.max(
-         lastExtensionEnd,
-         lineOf(parsed, source.span.end - 1),
-      );
-   for (const [sourceName, tiles] of byExtension) {
-      if (currentSources.has(sourceName)) {
-         const source = parsed.sources.find((s) => s.name === sourceName);
-         if (!source) {
-            return {
-               ok: false,
-               reason: `Could not find where the source \`${sourceName}\` is declared.`,
-            };
-         }
-         if (!source.properties) {
-            return {
-               ok: false,
-               reason:
-                  `\`${sourceName}\` never opens an \`extend { … }\` block, so a ` +
-                  `new tile cannot be added inside it.`,
-            };
-         }
-         const open = source.line;
-         const close = lineOf(parsed, source.properties.closeStart);
-         // The indent the extension already uses for its views, else two spaces.
-         let indent = "  ";
-         for (let i = open + 1; i < close; i++) {
-            const m = /^(\s+)view:/.exec(lines[i]);
-            if (m) {
-               indent = m[1];
-               break;
-            }
-         }
-         // Before the closing brace, set off by a blank line from what precedes.
-         const at = wholeLine(close).start;
-         const precededByBlank = (lines[close - 1] ?? "").trim() === "";
-         edits.push({
-            start: at,
-            end: at,
-            text:
-               (precededByBlank ? "" : "\n") +
-               tiles.map((tile) => declarationOf(tile, indent)).join("\n\n") +
-               "\n",
-         });
-      } else {
-         const source = newSources.find((s) => s.name === sourceName);
-         if (!source) {
-            return {
-               ok: false,
-               reason: `The tile's source \`${sourceName}\` is not declared.`,
-            };
-         }
-         const block =
-            `\nsource: ${source.name} is ${source.base} extend {\n` +
-            tiles.map((tile) => declarationOf(tile, "  ")).join("\n\n") +
-            "\n}\n";
-         // After the last extension; failing that, after the last given or
-         // import, where the page's own declarations begin.
-         let anchor = lastExtensionEnd;
-         if (anchor < 0) {
-            for (let i = 0; i < lines.length; i++) {
-               const text = lines[i].trim();
-               if (
-                  /^(import\s|given:|}\s*from\s)/.test(text) ||
-                  /^[A-Z_]+\s*::/.test(text)
-               )
-                  anchor = i;
-            }
-         }
-         const at = anchor >= 0 ? wholeLine(anchor).end : sourceText.length;
-         // A file that ends without a newline needs one before the block.
-         const separator =
-            at === sourceText.length && !sourceText.endsWith("\n") ? "\n" : "";
-         edits.push({ start: at, end: at, text: separator + block });
-         lastExtensionEnd = anchor;
+   const { sourceText, lines, wholeLine, addedTiles, edits, parsed } = ctx;
+   // ADDED TILES. One that names a served view is only its entry in the list,
+   // which `planOrder` writes. One with settings of its own is a `query:` of
+   // the report's own, written after the file's last query, else after its
+   // last source, else after its imports and givens.
+   const queries = addedTiles.filter(
+      (
+         tile,
+      ): tile is QueryTile & { declaration: { kind: "named"; from: string } } =>
+         isQueryTile(tile) && tile.declaration.kind === "named",
+   );
+   if (queries.length === 0) return undefined;
+   // A `query:` shares the file's top-level namespace with every source,
+   // query and given it declares or imports by name.
+   const taken = new Set<string>([
+      ...parsed.queries.map((q) => q.name),
+      ...parsed.sources.map((s) => s.name),
+      ...parsed.givens.map((g) => g.name),
+      ...parsed.imports.flatMap((i) => i.names ?? []),
+   ]);
+   for (const tile of queries) {
+      const problem = nameProblem(tile.name);
+      if (problem) return { ok: false, reason: problem };
+      if (taken.has(tile.name)) {
+         return {
+            ok: false,
+            reason: `This report already declares or imports \`${tile.name}\`, so a tile's query cannot take that name.`,
+         };
       }
    }
+   let anchor = -1;
+   for (const declared of [...parsed.queries, ...parsed.sources])
+      anchor = Math.max(anchor, lineOf(parsed, declared.statement.end - 1));
+   if (anchor < 0) {
+      for (let i = 0; i < lines.length; i++) {
+         const text = lines[i].trim();
+         if (
+            /^(import\s|given:|}\s*from\s)/.test(text) ||
+            /^[A-Z_]+\s*::/.test(text)
+         )
+            anchor = i;
+      }
+   }
+   const at = anchor >= 0 ? wholeLine(anchor).end : sourceText.length;
+   // A file that ends without a newline needs one before the first statement.
+   const separator =
+      at === sourceText.length && !sourceText.endsWith("\n") ? "\n" : "";
+   edits.push({
+      start: at,
+      end: at,
+      text:
+         separator +
+         queries.map((tile) => `\n${queryStatement(tile)}\n`).join(""),
+   });
    return undefined;
 }
 
@@ -1370,15 +1271,16 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       )
          continue;
 
-      // Declared in the model, not here, so there is nothing in this file to
-      // patch -- saying so beats writing a tag that would land on the wrong
-      // object.
+      // A served view has nothing in this file to patch: a setting on one
+      // makes it a query of the report's own (`normalizeTileForms`), which
+      // reaches here as a new tile. Saying so beats writing a tag that would
+      // land on the wrong object.
       if (tile.declaration.kind === "inherited") {
          return {
             ok: false,
             reason:
-               `\`${tileExpression(tile)}\` is declared on its source, ` +
-               `not in this report, so its presentation cannot be changed here.`,
+               `\`${tileExpression(tile)}\` names a served view, so a setting ` +
+               `on it needs a query of the report's own.`,
          };
       }
       if (tile.declaration.kind === "query") {
@@ -1394,15 +1296,14 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // lines in this file, so a label or colspan change is safe. Only a filter
       // has nowhere to go, and the filter pass refuses that on its own.
 
-      const declLine = viewDeclarationLine(parsed, tile.source, tile.name);
-      if (declLine < 0) {
+      const declared = declarationOf(ctx, tile);
+      if (!declared) {
          return {
             ok: false,
-            reason:
-               `Could not find where \`${tile.name}\` is declared inside ` +
-               `\`${tile.source}\`.`,
+            reason: `Could not find where \`${tile.name}\` is declared.`,
          };
       }
+      const declLine = declared.line;
 
       const { tags } = blockAbove(parsed, lines, declLine);
       const indent = indentOf(declLine);
@@ -1447,10 +1348,10 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          if (chartChanged && parseChartLine(tag.text)) {
             if (wantChart === undefined)
                edits.push({ ...wholeLine(tag.line), text: "" });
-            else if (tag.text !== chartLineText(wantChart, tile.chartCarried))
+            else if (tag.text !== chartLineText(wantChart))
                edits.push({
                   ...wholeLine(tag.line),
-                  text: `${indent}${chartLineText(wantChart, tile.chartCarried)}\n`,
+                  text: `${indent}${chartLineText(wantChart)}\n`,
                });
             chartPlaced = true;
             continue;
@@ -1473,7 +1374,7 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // looks for them and where `blockAbove` will find them again.
       const added = wanted.filter((text) => !seen.has(tagKey(text) ?? text));
       if (chartChanged && wantChart !== undefined && !chartPlaced)
-         added.push(chartLineText(wantChart, tile.chartCarried));
+         added.push(chartLineText(wantChart));
       if (added.length > 0) {
          const at = starts[declLine];
          edits.push({
@@ -1488,7 +1389,7 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // `where:` on a literal someone wrote is unmodeled Malloy and stays
       // exactly as written, in both shapes.
       if (canonical(was.filters) === canonical(tile.filters)) continue;
-      const view = viewOf(ctx, tile);
+      const view = declarationOf(ctx, tile);
       if (!view) {
          return {
             ok: false,
@@ -1520,9 +1421,9 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 const chartOf = (tile: QueryTile) =>
    tile.chart === "default" ? undefined : tile.chart;
 
-/** The tile as the writer compares it: "default" is no line, and `chartLines` and `chartCarried` are not part of what is asked for. */
+/** The tile as the writer compares it: "default" is no line, and `chartLines` is not part of what is asked for. */
 const withoutDefaultChart = (tile: QueryTile): QueryTile => {
-   const { chartLines: _lines, chartCarried: _carried, ...rest } = tile;
+   const { chartLines: _lines, ...rest } = tile;
    if (rest.chart !== "default") return rest;
    const { chart: _chart, ...bare } = rest;
    return bare;
@@ -1731,7 +1632,10 @@ function unwritable(
       }
       if (before === undefined) {
          const names = [tile.name, tile.source];
-         if (tile.declaration.kind === "reference")
+         if (
+            tile.declaration.kind === "reference" ||
+            tile.declaration.kind === "named"
+         )
             names.push(tile.declaration.from);
          for (const name of names) {
             const problem = nameProblem(name);
@@ -1804,8 +1708,19 @@ function unwritable(
 const lineOf = (parsed: ParsedMalloy, offset: number): number =>
    parsed.lineStarts.findLastIndex((at) => at <= offset);
 
-/** The parsed declaration a tile names, if this file declares it. */
-function viewOf(ctx: SpliceContext, tile: QueryTile): TreeView | undefined {
+/**
+ * Where this file declares a tile: the report's own `query:` for a `named`
+ * tile, else its `view:` inside the extension it names. Scoped to that
+ * extension, because a view name is only unique WITHIN a source: two sources
+ * may each declare `by_month`, and a file-wide search would retag a tile the
+ * author never touched. Undefined when the file does not declare it.
+ */
+function declarationOf(
+   ctx: SpliceContext,
+   tile: QueryTile,
+): TreeView | undefined {
+   if (tile.declaration.kind === "named")
+      return ctx.parsed.queries.find((query) => query.name === tile.name);
    return ctx.parsed.sources
       .find((source) => source.name === tile.source)
       ?.views.find((view) => view.name === tile.name);

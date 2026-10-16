@@ -113,6 +113,8 @@ export interface ReportBuilderProps {
       /** Always `card`, in either layout; kept for hosts written against it. */
       chrome?: TileChrome,
    ) => ReactNode;
+   /** The title a tile with none of its own is drawn under, which the host may know from what it serves; absent, one derived from its view's name. */
+   titleOf?: (tile: QueryTile) => string;
    /** A view picked in Add a tile, run as the tile it would add; absent, the picker says what will run. */
    renderViewPreview?: (view: ViewPreview) => ReactNode;
    /**
@@ -251,6 +253,7 @@ export function ReportBuilder({
    onDirtyChange,
    onExit,
    renderTile,
+   titleOf,
    renderViewPreview,
    controls,
    givens,
@@ -642,6 +645,7 @@ export function ReportBuilder({
                   openAdd={openAdd}
                   editTile={tiles.editTile}
                   {...(renderTile ? { renderTile } : {})}
+                  {...(titleOf ? { titleOf } : {})}
                />
                <BuilderDialogs
                   editor={editor}

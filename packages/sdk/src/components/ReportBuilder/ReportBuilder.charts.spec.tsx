@@ -85,10 +85,12 @@ describe("ReportBuilder: charts", () => {
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       const names = enabledCharts();
-      // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
+      // The wrapper's view `by_category` carries a shape map, so it is
+      // enabled; the rest are listed disabled. A table is too: a shape map
+      // draws whatever `viz` says, and the builder writes no line that takes
+      // the view's chart off.
       expect(names).toEqual([
          "From the view",
-         "Table",
          "Line",
          "Bar",
          "Scatter",
@@ -101,7 +103,7 @@ describe("ReportBuilder: charts", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `  ${chartLineText("line_chart", ["shape_map"])}\n  view: by_cat is by_category`,
+         `  ${chartLineText("line_chart")}\n  view: by_cat is by_category`,
       );
    });
 
@@ -140,15 +142,34 @@ describe("ReportBuilder: charts", () => {
       expect(written).toContain('# label="Brands"');
    });
 
-   it("disables the picker on a tile the model owns, with the reason", async () => {
+   it("sets a chart on a tile naming a served view as a query of the report's own", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const document = await openDocument(source);
-      render(<ReportBuilder source={source} document={document} />);
+      let written: string | undefined;
+      render(
+         <ReportBuilder
+            source={source}
+            document={document}
+            onSave={(next) => {
+               written = next;
+            }}
+         />,
+      );
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      expect(chartItem().getAttribute("aria-disabled")).toBe("true");
-      expect(
-         screen.getByText(/so its chart is set in the model/),
-      ).toBeDefined();
+      expect(chartItem().getAttribute("aria-disabled")).toBeNull();
+      fireEvent.click(chartItem());
+      pickChart("Bar");
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toBe(`## artifact { title="T" tiles=["by_brand_tile"] }
+import { orders } from '../orders.malloy'
+
+# viz=bar
+query: by_brand_tile is orders -> by_brand
+`);
    });
 
    it("adds a tile with a chart, offering big value only for an aggregate-only view", async () => {
@@ -179,8 +200,9 @@ describe("ReportBuilder: charts", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `  ${chartLineText("big_value", [])}\n  view: kpis_tile is kpis`,
+         `\n\n# colspan=6\n${chartLineText("big_value")}\nquery: kpis_tile is scoped_orders -> kpis\n`,
       );
+      expect(written).not.toContain("view: kpis_tile");
    });
 
    it("says why a view the writer cannot name is not addable", async () => {
