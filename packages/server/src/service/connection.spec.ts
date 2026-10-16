@@ -3545,6 +3545,98 @@ describe("resolveCloudStorageCredentials", () => {
    });
 });
 
+// DuckDB prefixes its own scheme onto ENDPOINT, so a scheme in the config has to
+// leave the string and re-enter as USE_SSL: the verbatim forms request
+// `https://https://h`.
+describe("buildCloudStorageSecretSQL — endpoint scheme", () => {
+   const keys = { accessKeyId: "AKIA", secretAccessKey: "shhh" };
+   const secretSQL = (
+      s3Connection: components["schemas"]["S3Connection"],
+   ): string =>
+      buildCloudStorageSecretSQL(
+         "s3_root",
+         resolveCloudStorageCredentials({
+            name: "root",
+            type: "s3",
+            s3Connection,
+         }),
+      );
+   const keyBased = (endpoint: string) =>
+      secretSQL({ ...keys, region: "us-west-2", endpoint });
+   const chain = (endpoint: string) =>
+      secretSQL({
+         provider: "credential_chain",
+         region: "us-west-2",
+         endpoint,
+      });
+
+   for (const [label, build] of [
+      ["key-based", keyBased],
+      ["credential_chain", chain],
+   ] as const) {
+      describe(label, () => {
+         it("leaves a bare host as-is and never emits USE_SSL", () => {
+            const out = build("minio.internal:9000");
+            expect(out).toContain("ENDPOINT 'minio.internal:9000'");
+            expect(out).not.toContain("USE_SSL");
+         });
+
+         it("strips https:// and does not emit USE_SSL", () => {
+            const out = build("https://minio.internal:9000");
+            expect(out).toContain("ENDPOINT 'minio.internal:9000'");
+            expect(out).not.toContain("USE_SSL");
+         });
+
+         it("reads the scheme case-insensitively", () => {
+            const out = build("HTTPS://minio.internal");
+            expect(out).toContain("ENDPOINT 'minio.internal'");
+            expect(out).not.toContain("USE_SSL");
+         });
+
+         it("strips http:// and turns SSL off", () => {
+            const out = build("http://minio.internal:9000");
+            expect(out).toContain("ENDPOINT 'minio.internal:9000'");
+            expect(out).toContain("USE_SSL false");
+         });
+
+         it("strips every trailing slash", () => {
+            expect(build("https://minio.internal:9000///")).toContain(
+               "ENDPOINT 'minio.internal:9000'",
+            );
+         });
+
+         it("keeps a path", () => {
+            expect(build("http://h:1/prefix/")).toContain(
+               "ENDPOINT 'h:1/prefix'",
+            );
+         });
+      });
+   }
+
+   it("keeps the session token beside an endpoint", () => {
+      const out = secretSQL({
+         ...keys,
+         region: "us-west-2",
+         endpoint: "http://mi.no",
+         sessionToken: "tok",
+      });
+      expect(out).toContain("SESSION_TOKEN 'tok'");
+      expect(out).toContain("ENDPOINT 'mi.no'");
+   });
+
+   it("rejects a query string, a fragment and a foreign scheme", () => {
+      for (const endpoint of ["h:9000?x=1", "h:9000#frag", "ftp://h:9000"]) {
+         expect(() =>
+            resolveCloudStorageCredentials({
+               name: "root",
+               type: "s3",
+               s3Connection: { ...keys, endpoint },
+            }),
+         ).toThrow(/S3 endpoint/);
+      }
+   });
+});
+
 describe("buildCloudStorageSecretSQL", () => {
    const chainSQL = (
       s3Connection: components["schemas"]["S3Connection"],
@@ -3616,10 +3708,10 @@ describe("buildCloudStorageSecretSQL", () => {
       it("composes with a custom endpoint", () => {
          const sql = chainSQL({
             provider: "credential_chain",
-            endpoint: "https://minio.internal:9000",
+            endpoint: "minio.internal:9000",
          });
          expect(sql).toContain("PROVIDER credential_chain");
-         expect(sql).toContain("ENDPOINT 'https://minio.internal:9000'");
+         expect(sql).toContain("ENDPOINT 'minio.internal:9000'");
          expect(sql).toContain("URL_STYLE 'path'");
          expect(sql).not.toContain("KEY_ID");
       });
@@ -3653,7 +3745,7 @@ describe("buildCloudStorageSecretSQL", () => {
             chainSQL({
                ...keys,
                region: "us-west-2",
-               endpoint: "https://mi.no",
+               endpoint: "mi.no",
             }),
          ).toBe(`
             CREATE OR REPLACE SECRET s3_root (
@@ -3661,7 +3753,7 @@ describe("buildCloudStorageSecretSQL", () => {
                KEY_ID 'AKIA',
                SECRET 'shhh',
                REGION 'us-west-2',
-               ENDPOINT 'https://mi.no',
+               ENDPOINT 'mi.no',
                URL_STYLE 'path'
             );
          `);
@@ -3675,6 +3767,27 @@ describe("buildCloudStorageSecretSQL", () => {
                KEY_ID 'AKIA',
                SECRET 'shhh',
                REGION 'us-west-2',
+               SESSION_TOKEN 'tok'
+            );
+         `);
+      });
+
+      it("endpoint and session token together keep both", () => {
+         expect(
+            chainSQL({
+               ...keys,
+               region: "us-west-2",
+               endpoint: "mi.no",
+               sessionToken: "tok",
+            }),
+         ).toBe(`
+            CREATE OR REPLACE SECRET s3_root (
+               TYPE s3,
+               KEY_ID 'AKIA',
+               SECRET 'shhh',
+               REGION 'us-west-2',
+               ENDPOINT 'mi.no',
+               URL_STYLE 'path',
                SESSION_TOKEN 'tok'
             );
          `);

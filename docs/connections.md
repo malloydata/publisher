@@ -156,6 +156,40 @@ The script runs whenever the connection is opened, and again after it has been i
 - **Don't name an attachment after the connection.** The connection's own database already has its name, so `ATTACH … AS orca` on a connection named `orca` fails with `database with name "orca" already exists`.
 - **The script is withheld from API responses**, as credentials are, since it may hold them. Reads list it in `withheldFields` as `duckdbConnection.setupSQL`. An update that leaves it out keeps the stored script; to remove it, send `"setupSQL": ""`. See [Credentials in API responses](#credentials-in-api-responses).
 
+### Data files in a bucket or at a link
+
+A CSV, Parquet, or Excel file in object storage is a Malloy source with no conversion step. Declare an environment DuckDB connection with an `s3` or `gcs` attachment, then name the file by its URL:
+
+```json
+{
+  "name": "files",
+  "type": "duckdb",
+  "duckdbConnection": {
+    "attachedDatabases": [
+      {
+        "name": "store",
+        "type": "s3",
+        "s3Connection": { "accessKeyId": "…", "secretAccessKey": "…", "region": "us-east-1" }
+      }
+    ]
+  }
+}
+```
+
+```malloy
+source: sales is files.table('s3://my-bucket/exports/sales.csv')
+```
+
+The attachment supplies the credentials, and DuckDB reads the file where it sits. `gs://` works the same way through a `gcs` attachment, which takes an HMAC `keyId` and `secret` (not a service account key). `files.sql("SELECT * FROM read_xlsx('s3://my-bucket/budget.xlsx', sheet = 'Q2')")` is the form for Excel options.
+
+- **Custom endpoints.** For an S3-compatible store, set `s3Connection.endpoint` to a host with an optional port and path. A leading `http://` or `https://` is accepted and trailing slashes are dropped; `http://` turns TLS off for that attachment, and any other form uses TLS. A query string, a fragment, or another scheme is refused at load.
+- **A direct link needs no attachment.** The per-package `duckdb` sandbox (see [above](#per-package-duckdb-sandboxes)) reads an `https://` URL: `duckdb.table('https://example.com/data.csv')`. The URL has to return the file itself. A Dropbox share link needs `?dl=1`, and a Google Drive share link returns an HTML page, not the file.
+- **The schema is read when the package loads.** Reload the package to pick up columns added to the file.
+- **Prefer Parquet for large files.** CSV and Excel are parsed in full on every query.
+- **Versioned buckets** work, and the source reads the current version. Pinning one with `?versionId=` or `?generation=` is not supported: DuckDB rejects the query parameter.
+
+An environment DuckDB connection must declare `attachedDatabases` or `setupSQL`, and cannot be named `duckdb` (see [Connection naming rules](#connection-naming-rules)).
+
 ## DuckLake connections (`type: "ducklake"`)
 
 A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.

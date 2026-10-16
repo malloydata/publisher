@@ -43,6 +43,7 @@ import type { PoolConfig } from "pg";
 import tls from "tls";
 import { components } from "../api";
 import {
+   ConnectionOrigin,
    getDuckDBMemoryLimit,
    getDuckLakeRowGroupSizeBytes,
    getDuckLakeTargetFileSizeBytes,
@@ -82,6 +83,7 @@ import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
 import {
    CloudStorageCredentials,
    DEFAULT_S3_CREDENTIAL_CHAIN,
+   parseS3Endpoint,
    resolveCloudStorageCredentials,
 } from "./gcs_s3_utils";
 import { openProxy, type ProxyEndpoint } from "./proxy";
@@ -1120,7 +1122,11 @@ async function attachDuckLakeWithMode(
    connection: DuckDBConnection,
    dbName: string,
    ducklakeConfig: components["schemas"]["DucklakeConnection"],
-   options: { readOnly: boolean; skipIfAbsent?: boolean },
+   options: {
+      readOnly: boolean;
+      skipIfAbsent?: boolean;
+      origin?: ConnectionOrigin;
+   },
 ): Promise<boolean> {
    // Tier build/serve DuckLake sessions never implicitly auto-install (Publisher
    // installs the DuckLake stack explicitly below) — regardless of the policy.
@@ -1146,11 +1152,15 @@ async function attachDuckLakeWithMode(
    const hasGCS = !!ducklakeConfig.storage.gcsConnection;
 
    if (hasS3) {
-      await attachCloudStorage(connection, {
-         name: `${dbName}_storage`,
-         type: "s3",
-         s3Connection: ducklakeConfig.storage.s3Connection,
-      });
+      await attachCloudStorage(
+         connection,
+         {
+            name: `${dbName}_storage`,
+            type: "s3",
+            s3Connection: ducklakeConfig.storage.s3Connection,
+         },
+         options.origin,
+      );
    } else if (hasGCS) {
       await attachCloudStorage(connection, {
          name: `${dbName}_storage`,
@@ -1251,36 +1261,14 @@ async function attachDuckLakeWithMode(
    return true;
 }
 
-async function attachDuckLake(
-   connection: DuckDBConnection,
-   dbName: string,
-   ducklakeConfig: components["schemas"]["DucklakeConnection"],
-): Promise<void> {
-   await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
-      readOnly: true,
-   });
-}
-
 /**
- * Read-only DuckLake attach on a caller-owned session — the same attach the live
- * user-facing connection makes, for an operator path that only needs to look
- * (listing a storage destination's tables) and so should not take write access.
- */
-export async function attachDuckLakeReadOnly(
-   connection: DuckDBConnection,
-   dbName: string,
-   ducklakeConfig: components["schemas"]["DucklakeConnection"],
-): Promise<void> {
-   await attachDuckLake(connection, dbName, ducklakeConfig);
-}
-
-/**
- * {@link attachDuckLakeReadOnly}, unless the catalog does not exist yet: then it
- * attaches nothing and returns `false`. For a caller that only looks, where a
- * catalog nothing has been built into is an ordinary answer rather than a failed
- * attach. A catalog in the connection's default schema (no `metadataSchema`) is
- * never found absent, because the preflight cannot look it up; its attach
- * decides, as for {@link attachDuckLakeReadOnly}.
+ * Read-only DuckLake attach of a storage destination on a caller-owned session,
+ * the same attach the live user-facing connection makes, unless the catalog does
+ * not exist yet: then it attaches nothing and returns `false`. For a caller that
+ * only looks, where a catalog nothing has been built into is an ordinary answer
+ * rather than a failed attach. A catalog in the connection's default schema (no
+ * `metadataSchema`) is never found absent, because the preflight cannot look it
+ * up; its attach decides.
  */
 export async function attachDuckLakeReadOnlyIfPresent(
    connection: DuckDBConnection,
@@ -1290,6 +1278,7 @@ export async function attachDuckLakeReadOnlyIfPresent(
    return attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: true,
       skipIfAbsent: true,
+      origin: "storage-destination",
    });
 }
 
@@ -1308,6 +1297,7 @@ export async function attachDuckLakeReadWrite(
 ): Promise<void> {
    await attachDuckLakeWithMode(connection, dbName, ducklakeConfig, {
       readOnly: false,
+      origin: "storage-destination",
    });
 }
 
@@ -1847,14 +1837,6 @@ function libpqStatementTimeoutParts(
 }
 
 /**
- * Assembles the CREATE OR REPLACE SECRET for a GCS or S3 storage root.
- *
- * Split out from `attachCloudStorage` so the emitted statement can be asserted
- * without a live DuckDB: the S3 arm now picks between four shapes, and the three
- * key-based ones have to stay byte-identical to what they were before chain auth
- * existed.
- */
-/**
  * Whether a failure is object storage refusing an EXPIRED credential, as opposed to
  * refusing a wrong one.
  *
@@ -1896,6 +1878,14 @@ export function isExpiredCredentialError(error: unknown): boolean {
    return message.includes("ExpiredToken");
 }
 
+/**
+ * Assembles the CREATE OR REPLACE SECRET for a GCS or S3 storage root.
+ *
+ * Split out from `attachCloudStorage` so the emitted statement can be asserted
+ * without a live DuckDB. The S3 arm is one clause list, so the bare-host,
+ * no-token key-based output has to stay byte-identical to what it was before
+ * chain auth and endpoint handling existed.
+ */
 export function buildCloudStorageSecretSQL(
    secretName: string,
    credentials: CloudStorageCredentials,
@@ -1928,6 +1918,7 @@ export function buildCloudStorageSecretSQL(
          );
       }
 
+      let clauses: string[];
       if (credentials.provider === "credential_chain") {
          // CHAIN is load-bearing, not decorative: with it omitted DuckDB
          // resolves against `config` alone, which is the one provider that
@@ -1952,60 +1943,45 @@ export function buildCloudStorageSecretSQL(
          // omitting the clause, which for a bare `sts`/`web_identity` chain
          // arms it by default. Not caller-configurable because a frozen
          // snapshot of an expiring credential has no use.
-         const clauses = [
+         clauses = [
             "TYPE s3",
             "PROVIDER credential_chain",
             `CHAIN '${chain}'`,
             "REFRESH 'auto'",
             `REGION '${region}'`,
          ];
-         // Additive, not an alternative: an S3-compatible endpoint behind a host
-         // role is a real combination, and the key-based branches below can only
-         // express one modifier at a time.
-         if (credentials.endpoint) {
-            clauses.push(
-               `ENDPOINT '${escapeSQL(credentials.endpoint)}'`,
-               "URL_STYLE 'path'",
-            );
+      } else {
+         clauses = [
+            "TYPE s3",
+            `KEY_ID '${escapedKeyId}'`,
+            `SECRET '${escapedSecret}'`,
+            `REGION '${region}'`,
+         ];
+      }
+      if (credentials.endpoint) {
+         // DuckDB prefixes its own scheme onto ENDPOINT, so the scheme travels as
+         // USE_SSL instead. `true` is never emitted: it is DuckDB's default.
+         const { hostAndPath, useSsl } = parseS3Endpoint(credentials.endpoint);
+         clauses.push(
+            `ENDPOINT '${escapeSQL(hostAndPath)}'`,
+            "URL_STYLE 'path'",
+         );
+         if (!useSsl) {
+            clauses.push("USE_SSL false");
          }
-         createSecretCommand = `
+      }
+      // A chain secret resolves its own session token.
+      if (
+         credentials.provider !== "credential_chain" &&
+         credentials.sessionToken
+      ) {
+         clauses.push(`SESSION_TOKEN '${escapeSQL(credentials.sessionToken)}'`);
+      }
+      createSecretCommand = `
             CREATE OR REPLACE SECRET ${secretName} (
                ${clauses.join(",\n               ")}
             );
          `;
-      } else if (credentials.endpoint) {
-         const escapedEndpoint = escapeSQL(credentials.endpoint);
-         createSecretCommand = `
-            CREATE OR REPLACE SECRET ${secretName} (
-               TYPE s3,
-               KEY_ID '${escapedKeyId}',
-               SECRET '${escapedSecret}',
-               REGION '${region}',
-               ENDPOINT '${escapedEndpoint}',
-               URL_STYLE 'path'
-            );
-         `;
-      } else if (credentials.sessionToken) {
-         const escapedToken = escapeSQL(credentials.sessionToken);
-         createSecretCommand = `
-            CREATE OR REPLACE SECRET ${secretName} (
-               TYPE s3,
-               KEY_ID '${escapedKeyId}',
-               SECRET '${escapedSecret}',
-               REGION '${region}',
-               SESSION_TOKEN '${escapedToken}'
-            );
-         `;
-      } else {
-         createSecretCommand = `
-            CREATE OR REPLACE SECRET ${secretName} (
-               TYPE s3,
-               KEY_ID '${escapedKeyId}',
-               SECRET '${escapedSecret}',
-               REGION '${region}'
-            );
-         `;
-      }
    }
 
    return createSecretCommand;
@@ -2014,9 +1990,10 @@ export function buildCloudStorageSecretSQL(
 async function attachCloudStorage(
    connection: DuckDBConnection,
    attachedDb: AttachedDatabase,
+   origin: ConnectionOrigin = "connection",
 ): Promise<void> {
    const storageType = attachedDb.type?.toUpperCase() || "";
-   const credentials = resolveCloudStorageCredentials(attachedDb);
+   const credentials = resolveCloudStorageCredentials(attachedDb, origin);
 
    await installAndLoadExtension(connection, "httpfs");
    // `credential_chain` is implemented by the `aws` extension and resolves when
@@ -2889,15 +2866,19 @@ function isDuckDBConnection(
  *   trusting whatever attach state the prior generation left behind. On a
  *   fresh environment the existing-attach check fails anyway, so the flag is a
  *   no-op there. Only the DuckLake branch consults it today.
+ * @param options.origin "storage-destination" for the operator's own storage
+ *   destinations, which the S3 credential-chain policy treats differently.
  */
 export function buildEnvironmentMalloyConfig(
    connections: ApiConnection[] = [],
    environmentPath: string = "",
    isUpdateConnectionRequest: boolean = false,
+   { origin = "connection" }: { origin?: ConnectionOrigin } = {},
 ): EnvironmentMalloyConfig {
    const assembled = assembleEnvironmentConnections(
       connections,
       environmentPath,
+      origin,
    );
    // Cache the build Promise rather than the resolved Connection so two
    // concurrent lookupConnection() calls for the same name share one build
@@ -2982,10 +2963,11 @@ export function buildEnvironmentMalloyConfig(
                   isUpdateConnectionRequest ||
                   !(await isDatabaseAttached(connection, name!))
                ) {
-                  await attachDuckLake(
+                  await attachDuckLakeWithMode(
                      connection,
                      name!,
                      metadata.apiConnection.ducklakeConnection!,
+                     { readOnly: true, origin },
                   );
                }
                return connection;
