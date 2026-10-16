@@ -180,4 +180,23 @@ describe("layout and title", () => {
       fireEvent.click(screen.getByRole("button", { name: "Reset" }));
       expect(reset).toBe(1);
    });
+
+   it("offers no Reset when the values are already where it would put them", () => {
+      // A value the document starts with is set, but Reset would change
+      // nothing: offered anyway, it was a button that did nothing.
+      render(
+         <GivensPanel
+            {...props}
+            layout="bar"
+            values={new Map([["BRAND", "Nike"]])}
+            canReset={false}
+         />,
+      );
+      expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
+   });
+
+   it("offers Reset when the values have moved off the start, even to empty", () => {
+      render(<GivensPanel {...props} layout="bar" canReset />);
+      expect(screen.getByRole("button", { name: "Reset" })).toBeDefined();
+   });
 });

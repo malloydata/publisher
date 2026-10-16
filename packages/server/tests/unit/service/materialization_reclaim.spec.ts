@@ -1,23 +1,30 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// Lives under `tests/unit/` (not `src/`) on purpose: it builds a real
+// EnvironmentStore over the real StorageManager, which sibling specs under
+// `src/` replace with `mock.module(...)`. Bun's module mocks persist
+// process-wide across spec files, so under `src/` it would get the mock; the
+// integration runner gives it a clean module cache (see theme_store.spec.ts).
+
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { PackageController } from "../controller/package.controller";
-import { VersionController } from "../controller/version.controller";
-import type { Materialization } from "../storage/DatabaseInterface";
-import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../storage/duckdb/DuckDBRepository";
-import { initializeSchema } from "../storage/duckdb/schema";
-import { Environment } from "./environment";
-import { EnvironmentStore } from "./environment_store";
-import { MaterializationService } from "./materialization_service";
+import { PackageController } from "../../../src/controller/package.controller";
+import { VersionController } from "../../../src/controller/version.controller";
+import type { Materialization } from "../../../src/storage/DatabaseInterface";
+import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
+import { DuckDBRepository } from "../../../src/storage/duckdb/DuckDBRepository";
+import { initializeSchema } from "../../../src/storage/duckdb/schema";
+import { Environment } from "../../../src/service/environment";
+import { EnvironmentStore } from "../../../src/service/environment_store";
+import { MaterializationService } from "../../../src/service/materialization_service";
 import {
    storageBindingResolverFor,
    versionTableSuffix,
-} from "./versions/materialization_scope";
+   writeTargetsIn,
+} from "../../../src/service/versions/materialization_scope";
 
 // What archiving a version reclaims, and what it must leave alone: the keep
 // rules of MaterializationService.reclaimVersionTables (a table another
@@ -414,6 +421,41 @@ describe("reclaiming an archived version's tables", () => {
       ).toEqual(["host_v1"]);
    });
 
+   it("reclaims the tables of a run that failed after building them, though its manifest names none", async () => {
+      await publish("1.0.0", 1, "version", { detail: true });
+      await publish("2.0.0", 2, "version");
+      // The run builds both tables, then cannot commit: it ends FAILED with
+      // no manifest, the shape a cancelled or crashed run leaves too.
+      const commit = spyOn(
+         service as unknown as {
+            commitManifest: (...args: unknown[]) => Promise<void>;
+         },
+         "commitManifest",
+      ).mockImplementationOnce(async () => {
+         throw new Error("the store refused the commit");
+      });
+      const failed = await build({ versionId: "1.0.0" });
+      commit.mockRestore();
+      expect(failed.status).toBe("FAILED");
+      expect(Object.keys(failed.manifest?.entries ?? {})).toEqual([]);
+      expect((await tablesIn(env)).sort()).toEqual(
+         [DETAIL_V1, TABLE_V1].sort(),
+      );
+      // Before it built, it recorded where each table lives.
+      expect(
+         writeTargetsIn(failed.metadata ?? null)
+            .map((t) => `${t.connectionName}:${t.physicalTableName}`)
+            .sort(),
+      ).toEqual([`warehouse:${DETAIL_V1}`, `warehouse:${TABLE_V1}`].sort());
+
+      await archive("1.0.0");
+
+      // Both tables are dropped and the record goes with them, so nothing
+      // is left behind that no record names.
+      expect(await tablesIn(env)).toEqual([]);
+      expect(await statusOf(failed.id)).toBeNull();
+   });
+
    it("reclaims nothing of a `scope: package` version, even when the package's later version is `scope: version`", async () => {
       // Whose a run's tables are is the run's own scope, not the package's
       // current one: 1.0.0 built the shared `summary`, 2.0.0 its own table.
@@ -696,42 +738,50 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
       expect(await statusOf(server, v2.id)).toBe("MANIFEST_FILE_READY");
    });
 
-   it("after a restart, the startup sweep finishes a reclaim that never ran, and an environment reloaded from the database reclaims on archive", async () => {
-      // A process that stopped between the archive's commit and its reclaim.
-      const before = await openServer({ wired: false });
-      await before.store.addEnvironment({
-         name: ENV,
-         connections: [WAREHOUSE],
-      } as never);
-      await publish(before, "1.0.0", 1);
-      await publish(before, "2.0.0", 2);
-      await publish(before, "3.0.0", 3);
-      const v1 = await build(before, "1.0.0");
-      const v2 = await build(before, "2.0.0");
-      await archive(before, "1.0.0");
-      expect(before.calls).toEqual([]);
-      expect(await tables(before)).toEqual([TABLE_V1, TABLE_V2]);
-      expect(await statusOf(before, v1.id)).toBe("MANIFEST_FILE_READY");
-      await closeServer(before);
+   // Skipped on Windows, where DuckDB keeps the OS handle on a file database
+   // after close(), so the restarted store, in this same process, cannot open
+   // the warehouse file again ("being used by another process"); the same
+   // limitation as materialization_build_session.spec.ts. POSIX releases it.
+   // The reclaim itself runs on Windows in the test above.
+   it.skipIf(process.platform === "win32")(
+      "after a restart, the startup sweep finishes a reclaim that never ran, and an environment reloaded from the database reclaims on archive",
+      async () => {
+         // A process that stopped between the archive's commit and its reclaim.
+         const before = await openServer({ wired: false });
+         await before.store.addEnvironment({
+            name: ENV,
+            connections: [WAREHOUSE],
+         } as never);
+         await publish(before, "1.0.0", 1);
+         await publish(before, "2.0.0", 2);
+         await publish(before, "3.0.0", 3);
+         const v1 = await build(before, "1.0.0");
+         const v2 = await build(before, "2.0.0");
+         await archive(before, "1.0.0");
+         expect(before.calls).toEqual([]);
+         expect(await tables(before)).toEqual([TABLE_V1, TABLE_V2]);
+         expect(await statusOf(before, v1.id)).toBe("MANIFEST_FILE_READY");
+         await closeServer(before);
 
-      const after = await openServer();
-      await after.sweep;
-      await Promise.all(after.reclaims);
-      expect(after.calls).toEqual([[ENV, PKG, "1.0.0"]]);
-      expect(await tables(after)).toEqual([TABLE_V2]);
-      expect(await statusOf(after, v1.id)).toBeNull();
-      expect(await statusOf(after, v2.id)).toBe("MANIFEST_FILE_READY");
+         const after = await openServer();
+         await after.sweep;
+         await Promise.all(after.reclaims);
+         expect(after.calls).toEqual([[ENV, PKG, "1.0.0"]]);
+         expect(await tables(after)).toEqual([TABLE_V2]);
+         expect(await statusOf(after, v1.id)).toBeNull();
+         expect(await statusOf(after, v2.id)).toBe("MANIFEST_FILE_READY");
 
-      // The environment came back from the database with the hook attached.
-      await archive(after, "2.0.0");
-      await Promise.all(after.reclaims);
-      expect(after.calls).toEqual([
-         [ENV, PKG, "1.0.0"],
-         [ENV, PKG, "2.0.0"],
-      ]);
-      expect(await tables(after)).toEqual([]);
-      expect(await statusOf(after, v2.id)).toBeNull();
-   });
+         // The environment came back from the database with the hook attached.
+         await archive(after, "2.0.0");
+         await Promise.all(after.reclaims);
+         expect(after.calls).toEqual([
+            [ENV, PKG, "1.0.0"],
+            [ENV, PKG, "2.0.0"],
+         ]);
+         expect(await tables(after)).toEqual([]);
+         expect(await statusOf(after, v2.id)).toBeNull();
+      },
+   );
 
    it("server.ts registers that hook and that sweep on the materialization service", () => {
       // The two tests above register server.ts's closures on a real store;
@@ -744,7 +794,10 @@ describe("the archive hook and the startup sweep, as server.ts wires them", () =
             .replace(/\s+/g, "")
             .replace(/,(?=[)}])/g, "");
       const server = squash(
-         fs.readFileSync(path.resolve(import.meta.dir, "../server.ts"), "utf8"),
+         fs.readFileSync(
+            path.resolve(import.meta.dir, "../../../src/server.ts"),
+            "utf8",
+         ),
       );
       expect(server).toContain(
          squash(

@@ -1,12 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// Lives under `tests/unit/` (not `src/`) on purpose: it builds a real
+// EnvironmentStore over the real StorageManager, which sibling specs under
+// `src/` replace with `mock.module(...)`. Bun's module mocks persist
+// process-wide across spec files, so under `src/` it would get the mock; the
+// integration runner gives it a clean module cache (see theme_store.spec.ts).
+
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { PackageController } from "../controller/package.controller";
-import { EnvironmentStore } from "./environment_store";
+import { PackageController } from "../../../src/controller/package.controller";
+import { EnvironmentStore } from "../../../src/service/environment_store";
 
 /**
  * The startup cleanup of version folders, as a restart runs it: an

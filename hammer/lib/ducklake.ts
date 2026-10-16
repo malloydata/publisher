@@ -4,8 +4,9 @@
 // The OPERATOR's own DuckLake client — deliberately EXTERNAL to the publisher.
 // A real orchestrator provisions the catalog (CREATE SCHEMA, grants, …) through
 // its own read-write DuckLake connection, NOT through anything the publisher
-// exposes: the publisher's serve/sqlQuery attach is read-only by design, and no
-// publisher endpoint offers read-write DDL on a storage destination. This client
+// exposes: the publisher's serve/sqlQuery attach is read-only by design, and its
+// storage-destination routes cover only table lifecycle (list, drop, reclaim the
+// files behind them), never arbitrary DDL. This client
 // stands in for that orchestrator: it opens its own DuckDB session and attaches
 // the same physical catalog + storage read-write, independently of the connection
 // the publisher is configured with. Nothing here goes through the publisher.

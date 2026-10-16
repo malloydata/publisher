@@ -40,10 +40,18 @@ let failLoadFor: Set<string>;
 let watchMounted: boolean;
 let descriptions: (string | null | undefined)[];
 let packageLock: Mutex;
+/** Loads of these versions wait, inside their version's lock, until released. */
+let heldLoads: Map<string, Promise<void>>;
+let loadsWaiting: string[];
 
 function host(): VersionHost<Loaded> {
    return {
       loadVersion: async (packageName, versionPath, version) => {
+         const held = heldLoads.get(version.versionId);
+         if (held) {
+            loadsWaiting.push(version.versionId);
+            await held;
+         }
          if (failLoadFor.has(version.versionId)) {
             throw new Error(`compile failed for ${version.versionId}`);
          }
@@ -181,6 +189,8 @@ beforeEach(async () => {
    watchMounted = false;
    descriptions = [];
    packageLock = new Mutex();
+   heldLoads = new Map();
+   loadsWaiting = [];
 });
 
 afterEach(async () => {
@@ -314,6 +324,61 @@ describe("VersionService.publish", () => {
          publish(svc, source("b", { version: "1.0.0-rc1" })),
          "VERSION_CONFLICT",
       );
+   });
+
+   it("publishes a version with leading zeros, and refuses the same version written without them, either way round", async () => {
+      const svc = service();
+      const padded = await publish(svc, source("a", { version: "01.0.0" }));
+      expect(padded.version.versionId).toBe("01.0.0");
+      await expectReason(
+         publish(svc, source("b", { version: "1.0.0" })),
+         "VERSION_CONFLICT",
+      );
+      await expectReason(
+         publish(svc, source("c", { version: "1.00.0" })),
+         "VERSION_CONFLICT",
+      );
+      await publish(svc, source("d", { version: "1.0.0-rc.1" }));
+      await expectReason(
+         publish(svc, source("e", { version: "01.0.0-rc.01" })),
+         "VERSION_CONFLICT",
+      );
+      // Only the first of each was published, and build metadata's digits
+      // still make a version of their own.
+      await publish(svc, source("f", { version: "1.0.0+001" }));
+      await publish(svc, source("g", { version: "1.0.0+1" }));
+      expect(versionDirs()).toEqual([
+         "01.0.0",
+         "1.0.0-rc.1",
+         "1.0.0_001",
+         "1.0.0_1",
+      ]);
+   });
+
+   it("lets only one of two spellings of a version publish when both arrive at once", async () => {
+      const svc = service();
+      // Not the package's first version, which takes the package's own lock:
+      // here only the version's lock keeps the two apart.
+      await publish(svc, source("earlier", { version: "0.1.0" }));
+      // The first holds its compile, past its check for a twin and before
+      // it commits.
+      let release!: () => void;
+      heldLoads.set(
+         "1.0.0",
+         new Promise<void>((resolve) => (release = resolve)),
+      );
+      const first = publish(svc, source("a", { version: "1.0.0" }));
+      while (!loadsWaiting.includes("1.0.0")) {
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      // The second has time to check for a twin, and would commit first, if
+      // the two spellings did not share one lock.
+      const second = publish(svc, source("b", { version: "01.0.0" }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      release();
+      expect((await first).version.versionId).toBe("1.0.0");
+      await expectReason(second, "VERSION_CONFLICT");
+      expect(versionDirs()).toEqual(["0.1.0", "1.0.0"]);
    });
 
    it("publishes two versions in parallel", async () => {

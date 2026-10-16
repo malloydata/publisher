@@ -282,7 +282,7 @@ For a grid, write `layout=grid`, add `dashboard { columns=12 }` after the tag's 
 
 ## Editing in the Console
 
-A person can open any report in the Console's builder (**Edit** on the report page; **+ Report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; its layout switch rewrites `layout=` and nothing else. A file written as `run:` cells, the retired linear form, is no report and does not open (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
+A person can open any report in the Console's builder (**Edit** on the report page; **+ Report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; it never rewrites `layout=`, so the layout is set in the file. A file written as `run:` cells, the retired linear form, is no report and does not open (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
 
 ## What "done" means
 

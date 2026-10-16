@@ -108,7 +108,7 @@ export type ReportEditorProps = (
     * report's copy is read back only from an authoritative store) and is what
     * a save records until the text says otherwise; once open, the document's
     * own tag decides how it is drawn, what a save records and which events it
-    * reports, and the layout switch changes that.
+    * reports.
     */
    layout?: ReportLayout;
    /** @deprecated Pass `layout`: `dashboard` is grid, `notebook` linear. */
@@ -141,7 +141,7 @@ export type ReportEditorProps = (
    onOpenModel?: (modelPath: string) => void;
    /**
     * Take over the builder's page-level controls (save status and Save, undo
-    * and redo, the layout switch, Add): handed over as `BuilderControls`
+    * and redo, Add): handed over as `BuilderControls`
     * whenever they change, with no toolbar drawn on the page. Draw them with
     * `BuilderBar` in the host's header, or place each in its own chrome.
     */
@@ -156,12 +156,23 @@ export type ReportEditorProps = (
    /** Edit a document held as text; see {@link TextSourceOptions}. */
    textSource?: TextSourceOptions;
    /**
-    * Whether the toolbar offers the Linear / Grid layout switch. Default
-    * true. A host that files a report by its layout passes false, so an
-    * author cannot change a layout the host files by. A document held as text
-    * never gets the switch.
+    * The package version the builder's queries run at, apart from the
+    * document's own identity: every tile, the report's manifest, filter
+    * options and suggestions, the report listing and the field catalog.
+    *
+    * The document is still the one `resourceUri` and `path` name, so the kept
+    * draft, where a save goes, the save caption and whether a save is a pinned
+    * one all follow `resourceUri` alone. A host editing a package that is
+    * republished on every change passes an unversioned `resourceUri` and the
+    * version its reader ran at here: the builder then reuses the reader's
+    * results instead of running every tile again, and kept edits survive the
+    * next republish.
+    *
+    * Unset, queries run at the `resourceUri`'s version, as before. A text-held
+    * document's compile has no version, so it is compiled as today; its tiles
+    * do run at this version.
     */
-   allowLayoutChange?: boolean;
+   queryVersionId?: string;
 };
 
 /**
@@ -217,7 +228,7 @@ export function ReportEditor(props: ReportEditorProps) {
       kind,
       path,
       textSource,
-      allowLayoutChange,
+      queryVersionId,
    } = props;
    const layout: ReportLayout =
       props.layout ?? (kind ? layoutOfKind(kind) : "grid");
@@ -544,6 +555,9 @@ export function ReportEditor(props: ReportEditorProps) {
                {...(textSource ? { textSource } : {})}
                slug={dashboardName}
                {...(versionId !== undefined ? { versionId } : {})}
+               {...((queryVersionId ?? versionId) !== undefined
+                  ? { queryVersionId: queryVersionId ?? versionId }
+                  : {})}
                opened={opened}
                {...(fromDraft &&
                writer === "package" &&
@@ -556,9 +570,6 @@ export function ReportEditor(props: ReportEditorProps) {
                {...(onOpenModel ? { onOpenModel } : {})}
                {...(onControlsChange ? { onControlsChange } : {})}
                {...(draftKey !== undefined ? { draftKey } : {})}
-               {...(allowLayoutChange !== undefined
-                  ? { allowLayoutChange }
-                  : {})}
                savesTo={savesTo}
                {...(saveLabel ? { saveLabel } : {})}
                {...(onEvent ? { onEvent: reportEvent } : {})}

@@ -478,8 +478,12 @@ export const selectionSx = (
       selected: boolean;
       flash?: boolean;
       bare?: boolean;
-      /** How far a bare ring stands off its prose. Only content outside the grid may go wider than the grid's own. */
-      ringOffset?: number;
+      /**
+       * How far a bare ring stands off its prose: one distance, or one across
+       * and one above and below. Only content outside the grid may go wider
+       * than the grid's own.
+       */
+      ringOffset?: number | { x: number; y: number };
    },
 ): SystemStyleObject<Theme> => {
    const ui = theme.ui;
@@ -504,7 +508,10 @@ export const selectionSx = (
          "&::before": {
             content: '""',
             position: "absolute",
-            inset: `${-ringOffset}px`,
+            inset:
+               typeof ringOffset === "number"
+                  ? `${-ringOffset}px`
+                  : `${-ringOffset.y}px ${-ringOffset.x}px`,
             borderRadius: 1,
             border: `2px solid ${ring}`,
             ...(halo && { boxShadow: halo }),

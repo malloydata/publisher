@@ -78,6 +78,7 @@ export function EditorSurface({
    packageName,
    modelPath,
    versionId,
+   queryVersionId,
    opened,
    replaces,
    onSave,
@@ -86,7 +87,6 @@ export function EditorSurface({
    onOpenModel,
    onControlsChange,
    draftKey,
-   allowLayoutChange,
    onEvent,
    savesTo,
    saveLabel,
@@ -98,7 +98,14 @@ export function EditorSurface({
    modelPath: string;
    /** A display label; the editor keys on `modelPath`. */
    slug: string;
+   /** The document's version, from its `resourceUri`: what its control state is keyed by. */
    versionId?: string;
+   /**
+    * The package version every query runs at: tiles, the manifest, filter
+    * options, the listing and the catalog. `ReportEditor` passes its
+    * `queryVersionId`, or the document's own version when there is none.
+    */
+   queryVersionId?: string;
    opened: {
       source: string;
       document: DashboardDocument;
@@ -113,7 +120,6 @@ export function EditorSurface({
    onControlsChange?: BuilderControlsHandler;
    /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
    draftKey?: string;
-   allowLayoutChange?: boolean;
    onEvent?: ReportEventHandler;
    savesTo: SavesTo;
    saveLabel?: string;
@@ -142,7 +148,7 @@ export function EditorSurface({
             environmentName,
             packageName,
             path: modelPath,
-            versionId,
+            versionId: queryVersionId,
          },
          BUILDER_HANDOFF_STALE_MS,
       ),
@@ -200,7 +206,7 @@ export function EditorSurface({
    const { reports: reportList, settled: reportsSettled } = useReportListing(
       environmentName,
       packageName,
-      versionId,
+      queryVersionId,
    );
    const otherDashboards = useMemo(
       () =>
@@ -218,7 +224,7 @@ export function EditorSurface({
    const catalog = useEditorCatalog({
       environmentName,
       packageName,
-      ...(versionId !== undefined ? { versionId } : {}),
+      ...(queryVersionId !== undefined ? { versionId: queryVersionId } : {}),
       modelPath,
       reports: reportList,
       reportsSettled,
@@ -367,7 +373,7 @@ export function EditorSurface({
       environmentName,
       packageName,
       modelPath: textSource ? runModelPath : manifest?.path,
-      versionId,
+      versionId: queryVersionId,
       documentName: modelPath,
       ...(preamble !== undefined ? { preamble } : {}),
       ...(hostGivens ? { hostGivens } : {}),
@@ -465,7 +471,7 @@ export function EditorSurface({
                <DashboardTile
                   environmentName={environmentName}
                   packageName={packageName}
-                  versionId={versionId}
+                  versionId={queryVersionId}
                   modelPath={runModelPath}
                   {...(preamble !== undefined ? { preamble } : {})}
                   {...(restrictedTiles.has(
@@ -510,7 +516,7 @@ export function EditorSurface({
          servedReads,
          environmentName,
          packageName,
-         versionId,
+         queryVersionId,
          runModelPath,
          preamble,
          restrictedTiles,
@@ -531,7 +537,7 @@ export function EditorSurface({
                <DashboardTile
                   environmentName={environmentName}
                   packageName={packageName}
-                  versionId={versionId}
+                  versionId={queryVersionId}
                   modelPath={view.modelPath}
                   tile={`${view.base} -> ${view.view}`}
                   {...(view.chart
@@ -555,7 +561,7 @@ export function EditorSurface({
       [
          environmentName,
          packageName,
-         versionId,
+         queryVersionId,
          applied,
          tileHostGivens,
          declaredTypes,
@@ -616,7 +622,6 @@ export function EditorSurface({
             {...(onOpenModel ? { onOpenModel } : {})}
             {...(onControlsChange ? { onControlsChange } : {})}
             {...(draftKey !== undefined ? { draftKey } : {})}
-            {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}

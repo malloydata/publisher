@@ -98,6 +98,11 @@ tags:
     description:
       Published, immutable versions of a package, the package's `latest`
       pointer, and each version's lifecycle (archive, manifest binding)
+  - name: storage-destinations
+    description: |
+      Table lifecycle inside an environment's storage destinations, for an
+      orchestrator that assigns its own physical table names and so owns their
+      garbage collection
 
 paths:
   /status:
@@ -1440,8 +1445,8 @@ paths:
         per-package: use `GET /environments/{environmentName}/packages/{packageName}?reload=true`.
 
         A package with published versions is listed once, as its `latest` version. A
-        non-empty `versionId` is rejected with 400: read one version with
-        `GET /environments/{environmentName}/packages/{packageName}?versionId=`.
+        `versionId` other than empty or `latest` is rejected with 400: read one
+        version with `GET /environments/{environmentName}/packages/{packageName}?versionId=`.
       parameters:
         - name: environmentName
           in: path
@@ -3665,6 +3670,120 @@ paths:
         "410":
           $ref: "#/components/responses/Gone"
 
+  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables:
+    get:
+      tags:
+        - storage-destinations
+      operationId: list-storage-destination-tables
+      summary: List tables in a storage destination
+      description: |
+        Lists the tables in one schema of a storage destination, in name order.
+        Storage destinations are never reachable through the connection routes, so
+        this is how an orchestrator finds tables it has lost track of. A DuckLake
+        destination is attached read-only for the listing.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+      responses:
+        "200":
+          description: The tables in the schema
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StorageTable"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /environments/{environmentName}/storageDestinations/{destinationName}/schemas/{schemaName}/tables/{tableName}:
+    delete:
+      tags:
+        - storage-destinations
+      operationId: delete-storage-destination-table
+      summary: Drop a table from a storage destination
+      description: |
+        Drops one named table from a storage destination. Idempotent: a table that
+        does not exist answers 204 as well, so a retried drop is free.
+
+        For a DuckLake destination this retires the table in the catalog; its data
+        files stay in storage until a file cleanup reclaims them (see
+        `create-storage-destination-file-cleanup`), which is also the window in
+        which the table can still be read at an earlier snapshot.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+        - $ref: "#/components/parameters/storageSchemaName"
+        - name: tableName
+          in: path
+          required: true
+          description: Name of the table
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+      responses:
+        "204":
+          description: The table is dropped, or did not exist
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /environments/{environmentName}/storageDestinations/{destinationName}/fileCleanups:
+    post:
+      tags:
+        - storage-destinations
+      operationId: create-storage-destination-file-cleanup
+      summary: Reclaim storage behind dropped tables in a DuckLake destination
+      description: |
+        Reclaims the object-storage bytes that dropped and rewritten tables leave
+        behind in a DuckLake destination. Runs, in order:
+
+        1. `ducklake_expire_snapshots(older_than => snapshotsOlderThan)` — forgets
+           snapshots older than the cutoff (never the latest) and schedules for
+           deletion the files only they referenced. Snapshots that remain are what
+           time travel can still read, so this cutoff is the recovery window for a
+           dropped table.
+        2. `ducklake_cleanup_old_files(older_than => filesOlderThan)` — deletes the
+           files scheduled for deletion before the cutoff. The age counts from when
+           step 1 scheduled the file, so this protects readers still scanning a
+           file from a snapshot that was just expired.
+
+        Only files the catalog itself recorded and then retired are deleted. It
+        does not run `CHECKPOINT` or `ducklake_delete_orphaned_files`, which also
+        delete untracked files — another catalog's, when two share a data path, or
+        a concurrent build's not-yet-committed output.
+
+        Synchronous. Refused with 400 for a destination that is not DuckLake.
+      parameters:
+        - $ref: "#/components/parameters/environmentName"
+        - $ref: "#/components/parameters/destinationName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StorageFileCleanupRequest"
+      responses:
+        "201":
+          description: The cleanup ran; what it reclaimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageFileCleanup"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   responses:
     BadRequest:
@@ -3833,16 +3952,71 @@ components:
       pattern: "^[a-zA-Z0-9_-]+$"
       description: Standard identifier pattern for resource names
 
+    StorageTable:
+      type: object
+      description: A table in a storage destination
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Table name, unqualified
+
+    StorageFileCleanupRequest:
+      type: object
+      required:
+        - snapshotsOlderThan
+        - filesOlderThan
+      properties:
+        snapshotsOlderThan:
+          type: string
+          format: date-time
+          description: |
+            Expire snapshots older than this. Sets how long a dropped table stays
+            recoverable.
+        filesOlderThan:
+          type: string
+          format: date-time
+          description: |
+            Delete files scheduled for deletion before this. Must outlast the
+            longest query reading the destination.
+
+    StorageFileCleanup:
+      type: object
+      description: What one file cleanup reclaimed
+      required:
+        - snapshotsOlderThan
+        - filesOlderThan
+        - expiredSnapshots
+        - deletedFiles
+      properties:
+        snapshotsOlderThan:
+          type: string
+          format: date-time
+        filesOlderThan:
+          type: string
+          format: date-time
+        expiredSnapshots:
+          type: integer
+          description: Snapshots this cleanup expired
+        deletedFiles:
+          type: integer
+          description: Data and delete files this cleanup removed from storage
+
     VersionIdPattern:
       type: string
-      pattern: '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+      pattern: '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
       description: >-
         A package version: a semantic version (SemVer 2.0), MAJOR.MINOR.PATCH
         with an optional pre-release suffix (`-rc1`, `-alpha.2`) and optional
         build metadata (`+20231120.deadbeef`). Pre-release and
         build suffixes are accepted so release-candidate builds can be
-        published. A numeric identifier has no leading zero (SemVer 2.0), so
-        `01.0.0` and `1.0.0-rc.01` are refused; build metadata may have one.
+        published. A numeric identifier may have leading zeros (`01.0.0`),
+        which strict SemVer 2.0 does not allow, so a version a system in front
+        of Publisher validated with this same pattern is never refused. Such a
+        version compares equal to the one without the zeros, and a package
+        holds only one of the two: publishing the other is 409
+        `VERSION_CONFLICT`.
 
     PackageVersion:
       type: object
@@ -6535,8 +6709,8 @@ components:
         versionId:
           type: string
           description: >-
-            The published version of the package to query. Omitted or empty,
-            the query runs against the package's `latest` version. An unknown version
+            The published version of the package to query. `latest`, omitted or
+            empty, the query runs against the package's `latest` version. An unknown version
             answers 404 (`reason` VERSION_NOT_FOUND) and an archived one 410
             (`reason` VERSION_ARCHIVED). A `versionId` in the request's query
             string, as a proxy forwarding a page's URL sends, is read the same way;
@@ -7920,7 +8094,8 @@ components:
               * VERSION_ID_INVALID (400): a requested `versionId` is not a
                 semantic version.
               * VERSION_NOT_LATEST (400): an auto-run of a version other than
-                `latest`, in a package whose versions share their tables.
+                `latest`, in a package whose versions share their tables. A
+                package with no `latest` yet refuses none.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
 
@@ -8231,8 +8406,8 @@ components:
         versionId:
           type: string
           description: >-
-            The published version of the package to build. Omitted or empty, the
-            package's `latest` version is built. An unknown version answers 404
+            The published version of the package to build. `latest`, omitted or
+            empty, the package's `latest` version is built. An unknown version answers 404
             (`reason` VERSION_NOT_FOUND) and an archived one 410 (`reason`
             VERSION_ARCHIVED). Carried in the body rather than the query string
             because the body is optional: a new optional query parameter ahead
@@ -8248,7 +8423,9 @@ components:
             `scope: "package"` (the default) the versions share the package's
             tables, so an auto-run (no `buildInstructions`) of a version other
             than `latest` is refused with 400 (`reason` VERSION_NOT_LATEST): it
-            would rebuild the table `latest` serves. Pass `buildInstructions`
+            would rebuild the table `latest` serves. While the package has no
+            `latest` (`explicit` promotion, before the first `PUT …/latest`),
+            an auto-run of any named version builds. Pass `buildInstructions`
             to build any version into tables you name, other than the ones the
             versions share. A run with `buildInstructions`, or under
             `scope: "version"`, holds its own version's slot, so one such run is
@@ -9593,6 +9770,22 @@ components:
       description: Name of the package
       schema:
         type: string
+    destinationName:
+      name: destinationName
+      in: path
+      required: true
+      description: Name of a storage destination configured on the environment
+      schema:
+        $ref: "#/components/schemas/IdentifierPattern"
+    storageSchemaName:
+      name: schemaName
+      in: path
+      required: true
+      description: |
+        Schema within the storage destination. A table built from a bare
+        physical name lives in `main`.
+      schema:
+        $ref: "#/components/schemas/IdentifierPattern"
     materializationId:
       name: materializationId
       in: path
@@ -9607,11 +9800,11 @@ components:
       allowEmptyValue: true
       description: |
         The published version of the package to serve, a semantic version such
-        as `1.2.0` or `1.2.0-rc1`. Omitted or empty (`versionId=`, which a proxy
-        forwarding a page's query string may send), the request is served from
-        the package's `latest` version.
+        as `1.2.0` or `1.2.0-rc1`. `latest`, omitted or empty (`versionId=`,
+        which a proxy forwarding a page's query string may send), the request
+        is served from the package's `latest` version.
 
-        A value that is not a semantic version answers 400 with `reason`
+        Any other value that is not a semantic version answers 400 with `reason`
         VERSION_ID_INVALID, so a malformed value is told apart from a missing
         version. An unknown version answers 404 with `reason` VERSION_NOT_FOUND,
         and an archived one answers 410 with `reason` VERSION_ARCHIVED. A

@@ -67,6 +67,13 @@ export interface UseGivensStateResult {
    apply: () => void;
    /** Whether the draft differs from what is applied. */
    pending: boolean;
+   /**
+    * Whether the controls, shown and applied, are already where Reset would
+    * put them. A surface offers Reset only when this is false: a report that
+    * saves a starting value showed Reset beside it, and pressing it set the
+    * controls to what they already were, so the button looked broken.
+    */
+   atStart: boolean;
 }
 
 /**
@@ -431,5 +438,18 @@ export function useGivensState({
       return false;
    }, [autorun, draft, applied]);
 
-   return { draft, applied, setGiven, reset, apply, pending };
+   // Compared as the URL would carry them, so a date and its encoding, or a
+   // list and its spelling, count as the same value.
+   const atStart = useMemo(() => {
+      const start = givensToParams(
+         prune(startingPoint, declaredTypes),
+         declaredTypes,
+      );
+      return (
+         sameParams(givensToParams(draft, declaredTypes), start) &&
+         sameParams(appliedParams, start)
+      );
+   }, [startingPoint, draft, appliedParams, declaredTypes]);
+
+   return { draft, applied, setGiven, reset, apply, pending, atStart };
 }

@@ -94,4 +94,23 @@ describe("hashPackageTree", () => {
       expect(await hashPackageTree(a)).toBe(before);
       expect(await hashPackageTree(b)).toBe(before);
    });
+
+   it("gives the digest the registry already stores for this tree", async () => {
+      // A published version's row keeps this digest, and a later publish of
+      // the version is compared with it, so how the tree is read may change
+      // but the digest of a given tree may not. The tree has every kind of
+      // entry: nested folders, an empty file, a link, many small files and
+      // one larger than any file read whole.
+      const small: Record<string, string> = {};
+      for (let i = 0; i < 40; i++) small[`data/part-${i}.csv`] = `id\n${i}\n`;
+      const root = tree({ ...PACKAGE, ...small, "empty.txt": "" });
+      const large = Buffer.alloc(3 * 1024 * 1024);
+      for (let i = 0; i < large.length; i++) large[i] = i % 251;
+      fs.writeFileSync(path.join(root, "data", "large.bin"), large);
+      fs.symlinkSync("sales.malloy", path.join(root, "alias.malloy"));
+      expect(await hashPackageTree(root)).toBe(GOLDEN_DIGEST);
+   });
 });
+
+const GOLDEN_DIGEST =
+   "6195e59fdf0bf87dec0618674ca2071d0643e0a0a708576a770a70129026846e";
