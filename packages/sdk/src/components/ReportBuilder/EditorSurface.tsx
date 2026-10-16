@@ -90,7 +90,6 @@ export function EditorSurface({
    onOpenModel,
    onControlsChange,
    draftKey,
-   allowLayoutChange,
    onEvent,
    savesTo,
    saveLabel,
@@ -124,7 +123,6 @@ export function EditorSurface({
    onControlsChange?: BuilderControlsHandler;
    /** Keep unsaved edits in this browser under this key; see `ReportBuilderProps.draftKey`. */
    draftKey?: string;
-   allowLayoutChange?: boolean;
    onEvent?: ReportEventHandler;
    savesTo: SavesTo;
    saveLabel?: string;
@@ -651,7 +649,6 @@ export function EditorSurface({
             {...(onOpenModel ? { onOpenModel } : {})}
             {...(onControlsChange ? { onControlsChange } : {})}
             {...(draftKey !== undefined ? { draftKey } : {})}
-            {...(allowLayoutChange !== undefined ? { allowLayoutChange } : {})}
             {...(offered ? { catalog: offered } : {})}
             dashboards={otherDashboards}
             {...(onEvent ? { onEvent } : {})}

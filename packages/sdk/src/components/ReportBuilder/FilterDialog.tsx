@@ -340,7 +340,7 @@ export function FilterDialog({
                 })
               : "Any"
            : "All";
-   // The builder's own segmented control, as the bar's layout switch is.
+   // The builder's own segmented control, as the tile picker's is.
    const segmentSx = {
       ...segmentedSx(edge, ui),
       alignSelf: "flex-start",

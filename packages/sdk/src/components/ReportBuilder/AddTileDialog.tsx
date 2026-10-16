@@ -422,8 +422,8 @@ export function AddTileDialog({
                                     next as ChartPick | "none" | "default",
                                  );
                            }}
-                           // The builder's own segmented control, as the bar's
-                           // layout switch is, so it takes the host's tokens.
+                           // The builder's own segmented control, as the
+                           // filter window's is, so it takes the host's tokens.
                            sx={{
                               ...segmentedSx(edge, ui),
                               "& .MuiToggleButton-root": {

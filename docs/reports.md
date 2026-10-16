@@ -893,7 +893,7 @@ the file is written as `<slug>.malloy` at the **package root**, or at another lo
 in the builder. No directory is ever created for you.
 
 From there it is the classic loop. The builder's controls sit in the header, where Edit was: the save
-status, undo and redo, the layout switch, an **Add** menu (a tile, text or a filter) and **Done**. The page
+status, undo and redo, an **Add** menu (a tile, text or a filter) and **Done**. The page
 under them stays the report as it reads. On a grid, **drag a tile by its heading or padding to move it,
 drag the grip on its right edge to set its width, pick its chart and clickable cells from its ⋯
 menu, and add filters from Add or with + Filter on the filter row.** A press inside a tile's result (its
@@ -908,9 +908,9 @@ they stand, with a faint wash under the pointer: in a one-line field Enter keeps
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
 keeps it, Escape drops it, and Cmd/Ctrl+S saves from inside the field.
 
-**The layout switch** rewrites `layout=` and nothing else, so turning a linear report into a grid (or back)
-is one edit. A file's own `dashboard { columns=N }` and `autorun=false` are kept and still apply, but the
-builder does not set them. Adding a tile offers every source the package publishes, and when the file
+**The layout is the file's.** The builder draws the report in the layout its tag declares and never
+rewrites `layout=`; to turn a linear report into a grid (or back), edit the tag in the file. A file's own
+`dashboard { columns=N }` and `autorun=false` are kept and still apply, but the builder does not set them. Adding a tile offers every source the package publishes, and when the file
 cannot already see the chosen source the builder adds a named import for it, at the right relative path for
 the report's location.
 
@@ -1029,10 +1029,9 @@ the surface with the complete embedding story.
 ## Editing one in your own React app
 
 `<ReportEditor>` is the builder, from `@malloy-publisher/sdk/builder` (the main entry stays free of the
-Malloy parser): the same editor the Console's `?edit` route mounts, keyed by the report's `path`, with a
-layout switch (hidden with `allowLayoutChange={false}`, for a host that files reports by layout and so
-cannot let an author change it; the editor reads a file's layout by [Which layout](#which-layout), never by
-its folder), plus `onEvent` (the `report.*` events; see the SDK README's
+Malloy parser): the same editor the Console's `?edit` route mounts, keyed by the report's `path` (the
+editor reads a file's layout by [Which layout](#which-layout), never by its folder, and never changes
+it), plus `onEvent` (the `report.*` events; see the SDK README's
 [Telemetry](../packages/sdk/README.md#telemetry) section) and `onDirtyChange`. It needs the same `<ServerProvider>`, and a
 `<DocumentStorageProvider>` besides if the host wants a browser draft offered back when the package cannot
 be written (see the SDK README's [Document Storage](../packages/sdk/README.md#document-storage) section).
