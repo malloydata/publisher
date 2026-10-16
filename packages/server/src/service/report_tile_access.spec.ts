@@ -318,3 +318,47 @@ describe("a report's tiles over a source with an authorize gate", () => {
          );
    });
 });
+
+/**
+ * The other place a report could put a filter, on the tile's source:
+ * `flights extend { where: … } -> by_carrier`. Plain Malloy gives the same rows
+ * as the refinement, but Publisher cannot attach a source's `#(access_filter)`
+ * to a query whose source is extended, and refuses the tile outright, for every
+ * caller. That is fail-closed (no row is ever widened), and it is why the
+ * builder writes a report's filters as `+ { where: … }` on the named view. A
+ * gate (`#(authorize)`) is unaffected.
+ */
+describe("a filter on the tile's source, the form the builder does not write", () => {
+   const SCOPED = (source: string) => `##! experimental.givens
+## artifact { title="T" tiles=["scoped_tile"] }
+import "model.malloy"
+
+given: CARRIER :: filter<string> is f''
+
+query: scoped_tile is ${source} extend { where: carrier_code ~ $CARRIER } -> by_carrier
+`;
+
+   it("is refused over an access filter, whatever the caller, and admitted through a gate", async () => {
+      await fs.writeFile(
+         path.join(PKG_DIR, "af_scoped.malloy"),
+         SCOPED("flights_af"),
+      );
+      await fs.writeFile(
+         path.join(PKG_DIR, "gate_scoped.malloy"),
+         SCOPED("flights_gate"),
+      );
+      for (const givens of [
+         { CARRIER_SCOPE: "WN", CARRIER: "WN" },
+         { CARRIER_SCOPE: "WN" },
+      ])
+         expect(
+            await run("af_scoped.malloy", "run: scoped_tile", givens),
+         ).toEqual({ refused: "AccessDeniedError" });
+      expect(
+         await run("gate_scoped.malloy", "run: scoped_tile", {
+            ROLE: "analyst",
+            CARRIER: "WN",
+         }),
+      ).toEqual({ rows: WN });
+   });
+});
