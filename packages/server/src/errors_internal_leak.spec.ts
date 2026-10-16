@@ -22,6 +22,7 @@ import {
    BadRequestError,
    ConnectionError,
    internalErrorToHttpError,
+   StorageCatalogNotFoundError,
 } from "./errors";
 import { getInternalError } from "./mcp/error_messages";
 import { logger } from "./logger";
@@ -258,6 +259,34 @@ describe("logged detail keeps a stable summary and real frames", () => {
       expect(detail.stack).toContain(" at ");
    });
 
+   it("redacts the catalog password a failed DuckLake attach echoes", () => {
+      // DuckDB's own wording for a read-only attach of a catalog that does not
+      // exist: it names the whole metadata connection string.
+      const attachError = new Error(
+         'Invalid Input Error: Existing DuckLake at metadata catalog "postgres:host=10.0.0.5 ' +
+            'port=5432 dbname=ducklake user=ducklake password=hunter2-secret sslmode=require" ' +
+            "does not exist - and creating a new DuckLake is explicitly disabled",
+      );
+      const calls = capture(() => internalErrorToHttpError(attachError));
+      const detail = calls[0]![1].error as Record<string, string>;
+      expect(detail.message).toContain("password=***");
+      expect(detail.message).not.toContain("hunter2-secret");
+      expect(detail.stack).not.toContain("hunter2-secret");
+   });
+
+   it("redacts the password in a connection URI", () => {
+      const calls = capture(() =>
+         internalErrorToHttpError(
+            new Error(
+               "could not connect to postgresql://ducklake:hunter2-secret@10.0.0.5:5432/ducklake",
+            ),
+         ),
+      );
+      const detail = calls[0]![1].error as Record<string, string>;
+      expect(detail.message).not.toContain("hunter2-secret");
+      expect(detail.message).toContain("10.0.0.5");
+   });
+
    it("strips the separators JSON.stringify does not escape", () => {
       const nasty =
          "a" +
@@ -268,5 +297,17 @@ describe("logged detail keeps a stable summary and real frames", () => {
       for (const code of [0x0a, 0x85, 0x2028, 0x2029]) {
          expect(detail.message).not.toContain(String.fromCharCode(code));
       }
+   });
+});
+
+describe("a storage destination with no catalog yet", () => {
+   it("is a 404 carrying the server's own message", () => {
+      const { status, json } = internalErrorToHttpError(
+         new StorageCatalogNotFoundError(
+            "Storage destination 'lake' has no catalog yet: nothing has been built into it.",
+         ),
+      );
+      expect(status).toBe(404);
+      expect(json.message).toContain("has no catalog yet");
    });
 });

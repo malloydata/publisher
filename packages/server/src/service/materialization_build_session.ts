@@ -18,7 +18,11 @@ import {
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
-import { BadRequestError, MaterializationEligibilityError } from "../errors";
+import {
+   BadRequestError,
+   MaterializationEligibilityError,
+   StorageCatalogNotFoundError,
+} from "../errors";
 import { logger } from "../logger";
 import { getPartitionedWriteFlushThreshold } from "../config";
 import { errMessage } from "../utils";
@@ -1409,6 +1413,11 @@ export async function dropStorageTable(params: {
  * needs to write. A plain DuckDB destination whose database file does not exist
  * yet has, by construction, no tables — it is reported empty rather than created
  * by the act of looking.
+ *
+ * A DuckLake destination whose catalog does not exist yet is a 404
+ * ({@link StorageCatalogNotFoundError}) rather than empty. An empty listing
+ * invites the follow-up an orchestrator makes for a catalog it has seen, a drop
+ * or a file cleanup, and both attach read-write, which creates the catalog.
  */
 export async function listStorageTables(params: {
    destinationName: string;
@@ -1434,7 +1443,17 @@ export async function listStorageTables(params: {
             destinationName,
             destinationConnection,
          );
-         await attachDuckLakeReadOnly(session, destinationName, cfg);
+         try {
+            await attachDuckLakeReadOnly(session, destinationName, cfg);
+         } catch (error) {
+            if (isMissingDuckLakeCatalog(error)) {
+               throw new StorageCatalogNotFoundError(
+                  `Storage destination '${destinationName}' has no catalog ` +
+                     `yet: nothing has been built into it.`,
+               );
+            }
+            throw error;
+         }
       } else {
          // Existence is read off the destinations directory, which the
          // environment determines, rather than by stat-ing a path built from the
@@ -1465,6 +1484,19 @@ export async function listStorageTables(params: {
    } finally {
       await dispose();
    }
+}
+
+/**
+ * Whether `error` is DuckLake refusing a read-only attach because the catalog
+ * it names does not exist. Read-only attaches never create a catalog, and say
+ * so in the error, which also carries the metadata connection string — so the
+ * error is recognized here and never surfaced as is.
+ */
+export function isMissingDuckLakeCatalog(error: unknown): boolean {
+   return (
+      error instanceof Error &&
+      error.message.includes("creating a new DuckLake is explicitly disabled")
+   );
 }
 
 /** What one storage file cleanup reclaimed. */

@@ -12,6 +12,7 @@ import { storageDestinationRoot } from "./connection_config";
 import {
    cleanupStorageFiles,
    dropStorageTable,
+   isMissingDuckLakeCatalog,
    listStorageTables,
 } from "./materialization_build_session";
 
@@ -110,5 +111,29 @@ describe("storage destination tables (plain DuckDB destination)", () => {
       });
       await expect(cleanup).rejects.toBeInstanceOf(BadRequestError);
       await expect(cleanup).rejects.toThrow(/only to 'ducklake'/);
+   });
+});
+
+describe("isMissingDuckLakeCatalog", () => {
+   it("recognizes DuckLake refusing to create a catalog on a read-only attach", () => {
+      expect(
+         isMissingDuckLakeCatalog(
+            new Error(
+               'Invalid Input Error: Existing DuckLake at metadata catalog "postgres:host=db ' +
+                  'dbname=ducklake" does not exist - and creating a new DuckLake is explicitly disabled',
+            ),
+         ),
+      ).toBe(true);
+   });
+
+   it("leaves every other attach failure alone", () => {
+      for (const message of [
+         'IO Error: Unable to connect to Postgres at "host=db": Connection refused',
+         'Binder Error: Unique file handle conflict: Database "lake" is already attached',
+         'Catalog Error: Table with name "ducklake_metadata" does not exist!',
+      ]) {
+         expect(isMissingDuckLakeCatalog(new Error(message))).toBe(false);
+      }
+      expect(isMissingDuckLakeCatalog("not an error")).toBe(false);
    });
 });
