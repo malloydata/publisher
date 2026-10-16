@@ -24,7 +24,7 @@ import {
    ViewPicker,
    type PickerGroup,
 } from "./ViewPicker";
-import type { ChartPick } from "./chartLine";
+import { chartResetFor, type ChartPick } from "./chartLine";
 import { writtenSpan } from "../Report/layoutRules";
 import type { DashboardDocument } from "./document";
 
@@ -54,6 +54,8 @@ export interface NewTile {
    label?: string;
    /** A chart for the tile; absent keeps the view's own. */
    chart?: ChartPick | "none";
+   /** What its line takes off the view's chart; see `chartResetFor`. */
+   chartReset?: string[];
    /** Columns the tile spans; absent writes none, where that draws the same (`writtenSpan`). */
    colspan?: number;
 }
@@ -68,6 +70,7 @@ export interface ViewPreview {
    label: string;
    /** A chart for the preview; absent keeps the view's own. */
    chart?: ChartPick | "none";
+   chartReset?: string[];
    /** The givens the source is scoped by, the ones the preview sends. */
    givens: string[];
 }
@@ -202,7 +205,13 @@ export function AddTileDialog({
       : undefined;
    const canAdd = picked !== undefined && unwritable === undefined;
    const title = picked ? viewTitle(picked.view) : "";
-   const chartPart = chart !== "default" && picked ? { chart } : {};
+   const chartPart =
+      chart !== "default" && picked
+         ? (() => {
+              const chartReset = chartResetFor(chart, picked.view.chart);
+              return chartReset.length > 0 ? { chart, chartReset } : { chart };
+           })()
+         : {};
    const add = (entry: Entry | undefined = picked) => {
       if (!entry) return;
       if (![entry.source.name, entry.view.name].every(isBareName)) return;

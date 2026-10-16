@@ -940,10 +940,14 @@ does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and
 tile with the reason shown; so is a tile naming a query the builder only reads.
 
 A pick is written as `# viz=bar`, `# viz=line`, `# viz=combo` or `# viz=table`, which replaces whatever chart
-the view sets, or as `# big_value`, `# scatter_chart`, `# shape_map` or `# segment_map`. Nothing is ever taken
-off with a `# -bar_chart` line. Because big value, scatter and the maps draw whatever `viz` says, a pick that
-the view's own chart would override is listed greyed with that reason: a big-value or map view cannot be
-made a table from a report, and a line, bar or bar-and-line view cannot be made a scatter chart.
+the view sets, or as `# big_value`, `# scatter_chart`, `# shape_map` or `# segment_map`. Big value, scatter and
+the maps draw whatever `viz` says, and the renderer tries line, bar and bar and line first. So where the
+view's own chart would still win, the line takes it off ahead of the pick, and only there:
+
+- a big-value, scatter or map view made a table: `# -big_value viz=table`
+- a line, bar or bar-and-line view made a scatter chart, big value or map: `# -bar_chart -viz scatter_chart`
+
+Setting the tile back to From the view removes the whole line, reset included.
 
 **Color** sets a bar, line, scatter or bar-and-line chart's color: the theme's own (the default), one of
 the theme's series colors, or any other through the platform's color picker. It is written above the tile

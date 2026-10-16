@@ -607,7 +607,10 @@ export function EditorSurface({
                   tile={`${view.base} -> ${view.view}`}
                   {...(view.chart
                      ? {
-                          annotation: chartLineText(view.chart),
+                          annotation: chartLineText(
+                             view.chart,
+                             view.chartReset,
+                          ),
                        }
                      : {})}
                   label={view.label}

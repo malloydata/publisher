@@ -71,6 +71,18 @@ describe("resolvedChart agrees with the renderer", () => {
       ["# bar_chart", "# line_chart"],
       ["", "# viz=scatter"],
       ["# bar_chart", "# viz=scatter scatter_chart"],
+      // Where a viz alone cannot win, and the reset line a report tile writes.
+      ["# shape_map", "# viz=table"],
+      ["# scatter_chart", "# viz=table"],
+      ["# big_value", "# -big_value viz=table"],
+      ["# big_value", "# -big_value scatter_chart"],
+      ["# scatter_chart", "# -scatter_chart viz=table"],
+      ["# shape_map", "# -shape_map viz=table"],
+      ["# segment_map", "# -segment_map viz=table"],
+      ["# bar_chart", "# -bar_chart -viz scatter_chart"],
+      ["# viz=bar", "# -bar_chart -viz scatter_chart"],
+      ["# viz=line", "# -line_chart -viz big_value"],
+      ["# combo_chart", "# -combo_chart -viz shape_map"],
    ];
    for (const [viewTag, queryTag] of cases)
       it(`${JSON.stringify(viewTag)} under ${JSON.stringify(queryTag)}`, async () => {
@@ -78,4 +90,17 @@ describe("resolvedChart agrees with the renderer", () => {
          const resolved = resolvedChart([viewTag, queryTag]) ?? "table";
          expect(resolved).toBe(drawn ?? "table");
       });
+   // Not only agreeing: each reset line draws what the tile picked.
+   it("draws the pick under a reset line", async () => {
+      expect(await drawnBy("# big_value", "# -big_value viz=table")).toBe(
+         "table",
+      );
+      expect(await drawnBy("# shape_map", "# viz=table")).toBe("shape_map");
+      expect(await drawnBy("# shape_map", "# -shape_map viz=table")).toBe(
+         "table",
+      );
+      expect(
+         await drawnBy("# viz=bar", "# -bar_chart -viz scatter_chart"),
+      ).toBe("scatter_chart");
+   });
 });

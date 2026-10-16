@@ -56,29 +56,27 @@ const VIZ_OF: Partial<Record<ChartPick | "none", string>> = {
    none: "table",
 };
 
-/** `# viz=bar`, alone on its line: the builder's own chart line. */
-const VIZ_LINE = /^#[ \t]*viz[ \t]*=[ \t]*(line|bar|combo|table)[ \t]*$/;
+const VIZ_VALUES = new Set(["line", "bar", "combo", "table"]);
+
+/** The pick a `viz=` value stands for: `table` for a table, else its chart tag. */
+const pickOfViz = (viz: string): string =>
+   viz === "table"
+      ? "table"
+      : (Object.keys(VIZ_OF).find(
+           (pick) => VIZ_OF[pick as ChartPick] === viz,
+        ) as string);
 
 /**
- * A chart line the builder can rewrite: its own `# viz=<line|bar|combo|table>`,
- * or `#` with any `-name`s and at most one `name`, every name a chart tag or
- * `viz`, no `{` and no `=` (a bare `# big_value`, and the lines earlier
- * builders wrote). Anything else is not ours to rewrite.
+ * A chart line the builder can rewrite: `#`, any `-name`s, then at most one
+ * pick, which is a chart tag (`big_value`) or `viz=<line|bar|combo|table>`;
+ * every name a chart tag or `viz`, and no `{`. That covers the builder's own
+ * lines (`# viz=bar`, `# -big_value viz=table`) and the ones earlier builders
+ * wrote (`# -bar_chart -viz line_chart`). Anything else is not ours to
+ * rewrite.
  */
 export function parseChartLine(line: string): ChartLineParts | undefined {
    const trimmed = line.trim();
-   const viz = VIZ_LINE.exec(trimmed)?.[1];
-   if (viz !== undefined)
-      return {
-         negated: [],
-         pick:
-            viz === "table"
-               ? "table"
-               : (Object.keys(VIZ_OF).find(
-                    (pick) => VIZ_OF[pick as ChartPick] === viz,
-                 ) as string),
-      };
-   if (!/^#[ \t]/.test(trimmed) || /[{=]/.test(trimmed)) return undefined;
+   if (!/^#[ \t]/.test(trimmed) || trimmed.includes("{")) return undefined;
    const words = trimmed
       .slice(1)
       .trim()
@@ -86,16 +84,23 @@ export function parseChartLine(line: string): ChartLineParts | undefined {
    const negated: string[] = [];
    let pick: string | undefined;
    for (const word of words) {
+      if (pick !== undefined) return undefined;
       if (word.startsWith("-")) {
-         if (pick !== undefined) return undefined;
          const name = word.slice(1);
          if (!LINE_NAMES.has(name)) return undefined;
          negated.push(name);
-      } else {
-         if (pick !== undefined || !LINE_NAMES.has(word)) return undefined;
-         pick = word;
+         continue;
       }
+      const viz = /^viz=(.*)$/.exec(word)?.[1];
+      if (viz !== undefined) {
+         if (!VIZ_VALUES.has(viz)) return undefined;
+         pick = pickOfViz(viz);
+         continue;
+      }
+      if (!LINE_NAMES.has(word) || word === "viz") return undefined;
+      pick = word;
    }
+   if (negated.length === 0 && pick === undefined) return undefined;
    return { negated, ...(pick !== undefined && { pick }) };
 }
 
@@ -132,33 +137,69 @@ export function chartResetLine(): string {
 }
 
 /**
- * The line for a pick, which takes nothing off: a tile's tags merge over its
- * view's, and the renderer picks the chart from the merged tag
- * ({@link resolvedChart}). Line, bar, bar and line and a table are a `viz=`,
- * which replaces any of those the view sets. Big value, scatter and the maps
- * are their own key, which draws only where nothing earlier in the renderer's
- * order matches; {@link drawsAs} says whether a pick does over a given view.
+ * The line for a pick, taking off the view's own chart only where it must.
+ *
+ * A tile's tags merge over its view's, and the renderer picks the chart from
+ * the merged tag ({@link resolvedChart}). Line, bar, bar and line and a table
+ * are a `viz=`, which replaces any of those the view sets, so they need
+ * nothing taken off. Big value, scatter and the maps are their own key, drawn
+ * whatever `viz` says and tried after line, bar and bar and line. So a pick
+ * over a view whose chart would still win takes that chart off first: `reset`,
+ * from {@link chartResetFor}, as `# -big_value viz=table` or
+ * `# -bar_chart -viz scatter_chart`.
  */
-export function chartLineText(chart: ChartPick | "none"): string {
+export function chartLineText(
+   chart: ChartPick | "none",
+   reset: readonly string[] = [],
+): string {
    const viz = VIZ_OF[chart];
-   return viz !== undefined ? `# viz=${viz}` : `# ${chart}`;
+   return [
+      "#",
+      ...reset.map((key) => `-${key}`),
+      viz !== undefined ? `viz=${viz}` : chart,
+   ].join(" ");
 }
 
+/** What the renderer draws `pick`'s line, with `reset`, over a view drawn as `viewChart`. */
+const drawnOver = (
+   pick: ChartPick | "none",
+   viewChart: string | undefined,
+   reset: readonly string[],
+) =>
+   resolvedChart([
+      ...(viewChart ? [`# ${viewChart}`] : []),
+      chartLineText(pick, reset),
+   ]);
+
+const draws = (pick: ChartPick | "none", drawn: string | undefined) =>
+   pick === "none" ? drawn === "table" : drawn === pick;
+
 /**
- * Whether `pick`'s line, written over a view that draws as `viewChart` (the
- * catalog's {@link chartOf}), draws as `pick`. A bar over a big value view
- * does; a table over one does not, since big value matches whatever `viz`
- * says, and the builder writes no line that takes the view's chart off.
+ * What `pick`'s line has to take off a view drawn as `viewChart` (the
+ * catalog's {@link chartOf}) for the pick to draw: nothing where the line alone
+ * wins, which is most picks; else the view's chart key, and `viz` too when that
+ * chart is one a `viz=` may have set (line, bar, bar and line), since the
+ * catalog reports `viz=bar` as `bar_chart`.
  */
+export function chartResetFor(
+   pick: ChartPick | "none",
+   viewChart: string | undefined,
+): string[] {
+   if (!viewChart || draws(pick, drawnOver(pick, viewChart, []))) return [];
+   return ["line_chart", "bar_chart", "combo_chart"].includes(viewChart)
+      ? [viewChart, "viz"]
+      : [viewChart];
+}
+
+/** Whether `pick` draws over a view drawn as `viewChart`, with the reset {@link chartResetFor} writes. */
 export function drawsAs(
    pick: ChartPick | "none",
    viewChart: string | undefined,
 ): boolean {
-   const drawn = resolvedChart([
-      ...(viewChart ? [`# ${viewChart}`] : []),
-      chartLineText(pick),
-   ]);
-   return pick === "none" ? drawn === "table" : drawn === pick;
+   return draws(
+      pick,
+      drawnOver(pick, viewChart, chartResetFor(pick, viewChart)),
+   );
 }
 
 /** What a recognized line says: its pick, a table when it negates `viz` and picks nothing, otherwise a line the picker cannot show. */

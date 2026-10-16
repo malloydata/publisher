@@ -86,24 +86,65 @@ describe("ReportBuilder: charts", () => {
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       const names = enabledCharts();
       // The wrapper's view `by_category` carries a shape map, so it is
-      // enabled; the rest are listed disabled. A table is too: a shape map
-      // draws whatever `viz` says, and the builder writes no line that takes
-      // the view's chart off.
+      // enabled; the rest are listed disabled. A table is enabled too: a
+      // shape map draws whatever `viz` says, so its line takes the map off.
       expect(names).toEqual([
          "From the view",
+         "Table",
          "Line",
          "Bar",
          "Scatter",
          "Shape map",
       ]);
-      pickChart("Line");
+      pickChart("Table");
       closeMenu();
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `  ${chartLineText("line_chart")}\n  view: by_cat is by_category`,
+         "  # -shape_map viz=table\n  view: by_cat is by_category",
+      );
+   });
+
+   it("drops the reset line with the pick: Table and back to the view's map is no edit", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Table");
+      pickChart("From the view");
+      closeMenu();
+      const save = screen.queryByRole("button", {
+         name: "Save",
+         hidden: true,
+      });
+      expect(save === null || (save as HTMLButtonElement).disabled).toBe(true);
+      expect(written).toBeUndefined();
+   });
+
+   it("writes the reset line for a table on a new tile over a map view", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(
+         screen.getByRole("button", { name: "Add tile", hidden: true }),
+      );
+      fireEvent.click(viewOption("by_category"));
+      fireEvent.click(
+         within(
+            screen.getByRole("group", { name: "Chart", hidden: true }),
+         ).getByRole("button", { name: "Table", hidden: true }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(
+         "\n# -shape_map viz=table\nquery: by_category_tile is scoped_orders -> by_category\n",
       );
    });
 

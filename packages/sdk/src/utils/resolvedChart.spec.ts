@@ -55,6 +55,16 @@ describe("resolvedChart", () => {
       expect(resolvedChart(['#(doc) "a line_chart"\n'])).toBeUndefined();
       expect(resolvedChart(["# dashboard { bar_chart }\n"])).toBeUndefined();
       expect(resolvedChart(["# viz=bar { stack }\n"])).toBe("bar_chart");
+      // A report tile's reset line: the view's key off, then the pick.
+      expect(resolvedChart(["# big_value\n", "# -big_value viz=table\n"])).toBe(
+         "table",
+      );
+      expect(
+         resolvedChart(["# viz=bar\n", "# -bar_chart -viz scatter_chart\n"]),
+      ).toBe("scatter_chart");
+      expect(resolvedChart(["# shape_map\n", "# -shape_map viz=table\n"])).toBe(
+         "table",
+      );
       // viz=scatter selects no plugin: scatter matches only on its own key.
       expect(resolvedChart(["# viz=scatter\n"])).toBeUndefined();
    });

@@ -52,6 +52,9 @@ export function addTileToDocument(
          : {}),
       ...(tile.label ? { label: tile.label } : {}),
       ...(tile.chart ? { chart: tile.chart } : {}),
+      ...(tile.chart && tile.chartReset?.length
+         ? { chartReset: tile.chartReset }
+         : {}),
    });
    normalizeTileForms(draft, before);
 }

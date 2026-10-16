@@ -4,6 +4,7 @@
 import {
    chartLinesOf,
    chartStateOfTagLines,
+   parseChartLine,
    seriesColorOf,
    type ChartState,
 } from "./chartLine";
@@ -155,6 +156,7 @@ const tagText = (tags: Array<{ text: string }>) => tags.map((t) => t.text);
 function chartField(tags: Array<{ text: string }>): {
    chart?: ChartState;
    chartLines?: string[];
+   chartReset?: string[];
    color?: string;
 } {
    const lines = tagText(tags);
@@ -163,9 +165,17 @@ function chartField(tags: Array<{ text: string }>): {
    const color = lines.map(seriesColorOf).filter(Boolean).at(-1);
    const colored = color ? { color } : {};
    if (chart === undefined) return colored;
-   return chart === "custom"
-      ? { chart, chartLines: chartLinesOf(lines), ...colored }
-      : { chart, ...colored };
+   if (chart === "custom")
+      return { chart, chartLines: chartLinesOf(lines), ...colored };
+   // What the pick's line takes off the view's chart, as written.
+   const reset = lines
+      .map(parseChartLine)
+      .find((parts) => parts !== undefined)?.negated;
+   return {
+      chart,
+      ...(reset?.length ? { chartReset: reset } : {}),
+      ...colored,
+   };
 }
 
 /**

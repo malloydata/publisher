@@ -26,7 +26,7 @@ import {
    type QueryTile,
 } from "./document";
 import { chartChoices, type ViewStatus } from "./ChartPicker";
-import { isSeriesColor, type ChartState } from "./chartLine";
+import { chartResetFor, isSeriesColor, type ChartState } from "./chartLine";
 
 /**
  * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
@@ -118,13 +118,17 @@ export function TileMenu({
    // The chart as the menu opened on it: each pick commits, so the tile prop
    // moves with them, and "back to where it started" means where the menu
    // started.
-   const openedChart = useRef<QueryTile["chart"]>(undefined);
+   const openedChart = useRef<
+      Pick<QueryTile, "chart" | "chartReset"> | undefined
+   >(undefined);
    const otherColor = useRef<HTMLInputElement>(null);
    const opened = anchor !== null;
    useEffect(() => {
       if (opened)
          openedChart.current =
-            tile && isQueryTile(tile) ? tile.chart : undefined;
+            tile && isQueryTile(tile)
+               ? { chart: tile.chart, chartReset: tile.chartReset }
+               : undefined;
       else setSub(undefined);
       // Only on opening: the tile changes under every pick.
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -143,12 +147,21 @@ export function TileMenu({
       applyQuery((t) => {
          const was = openedChart.current;
          // Back to where it started is no edit, so the draft must not differ from the tile.
-         if (next === (was ?? "default")) {
-            if (was === undefined) delete t.chart;
-            else t.chart = was;
-         } else {
-            t.chart = next;
+         if (next === (was?.chart ?? "default")) {
+            if (was?.chart === undefined) delete t.chart;
+            else t.chart = was.chart;
+            if (was?.chartReset === undefined) delete t.chartReset;
+            else t.chartReset = was.chartReset;
+            return;
          }
+         t.chart = next;
+         // Only what the view's chart would otherwise still draw over.
+         const reset =
+            next === "default" || next === "custom"
+               ? []
+               : chartResetFor(next, view?.chart);
+         if (reset.length > 0) t.chartReset = reset;
+         else delete t.chartReset;
       });
 
    const drillBlocked = !editable

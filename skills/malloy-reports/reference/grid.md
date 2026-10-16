@@ -31,7 +31,7 @@ The entry in `tiles=[…]` then names `"revenue_trend"`. `# subtitle="..."` and 
 
 ## The traps
 
-- **A KPI row is a view of only measures.** A tile is one whole result, so a tile that comes back as one row of measures renders as big-value cards on its own (`# big_value` says so explicitly). A report's tile cannot turn a view the model tags `# big_value` into a table: `big_value` is drawn whatever `viz` says, so change it in the model.
+- **A KPI row is a view of only measures.** A tile is one whole result, so a tile that comes back as one row of measures renders as big-value cards on its own (`# big_value` says so explicitly). To show a view the model tags `# big_value` as a table in one tile, write `# -big_value viz=table` on the tile's query: `big_value` is drawn whatever `viz` says, so the line takes it off first.
 - **No `# size=fill` on a grid tile.** It measures against the container the whole grid was handed, not the tile, so it yields a chart thousands of pixels tall. Tiles already size to their colspan.
 - **A table tile sitting in the left part of a wide card with the rest blank** is not filled by the grid. `# table { size=fill }` on the tile's query forces it. That is the table's own tag, not the chart `# size=fill` above.
 - **A KPI card's label is one line that ellipses** rather than wrapping. Widen the card or shorten the label.

@@ -101,7 +101,7 @@ The same file with `layout=linear` and no `dashboard { … }` or `colspan` is a 
 - **File order:** header, imports and givens, the prose blocks in tile order, then the tiles' queries. That is the order the builder writes.
 - **A `run:` in a report that lists `tiles` is never shown** (`notebook-layout-run`). Define a view, list it, delete the `run:`.
 - **A tile expression is a string, so the compiler never checks it.** Rename a view and the file still compiles; the tile fails at package load, where the lint names it.
-- **A tile's chart is its query's `# viz=bar`, `# viz=line`, `# viz=combo` or `# viz=table`**, which replaces whatever chart the view sets: the renderer reads `viz` before any `*_chart` tag. Never write a `# -bar_chart` reset line; it is not needed. Big value, scatter and the maps have no `viz` value: `# big_value` (or `# scatter_chart`, …) on the query draws them only over a view that sets no line, bar or bar-and-line chart, and nothing turns a big-value or map view into a table from a report. `skill:malloy-charts` covers choosing them.
+- **A tile's chart is its query's `# viz=bar`, `# viz=line`, `# viz=combo` or `# viz=table`**, which replaces whatever chart the view sets: the renderer reads `viz` before any `*_chart` tag. Over a line, bar or bar-and-line view no reset line is needed. Big value, scatter and the maps have no `viz` value and draw whatever `viz` says, so where the view's chart would still win, the line takes it off first: `# -big_value viz=table` makes a big-value view a table, and `# -bar_chart -viz scatter_chart` makes a bar view a scatter chart. Write a reset only there. `skill:malloy-charts` covers choosing them.
 
 ## Filter controls
 

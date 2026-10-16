@@ -58,8 +58,12 @@ A view's chart tag says how it draws everywhere. A report tile, or any query ove
 query: trend_tile is orders -> sales_by_month
 ```
 
-- **`viz` wins over a chart key.** `viz=bar`, `viz=line`, `viz=combo` and `viz=table` replace any `# bar_chart`, `# line_chart` or `# combo_chart` the view carries, wherever it was written. Never write `# -bar_chart` to take the view's chart off first; it is not needed.
-- **Big value, scatter and the maps have no `viz`.** `# big_value`, `# scatter_chart`, `# shape_map` and `# segment_map` draw whatever `viz` says, and the renderer tries line, bar and bar-and-line first. So on a query, `# scatter_chart` draws only over a view with no line, bar or bar-and-line chart, and a view tagged `# big_value` or a map stays one: no query over it can make it a table. Change those in the model.
+- **`viz` wins over a chart key.** `viz=bar`, `viz=line`, `viz=combo` and `viz=table` replace any `# bar_chart`, `# line_chart` or `# combo_chart` the view carries, wherever it was written. Over those views, write no `# -bar_chart` to take the view's chart off first; it is not needed.
+- **Big value, scatter and the maps have no `viz`.** `# big_value`, `# scatter_chart`, `# shape_map` and `# segment_map` draw whatever `viz` says, and the renderer tries line, bar and bar-and-line first. So where the view's chart would still win, take it off on the same line, ahead of the pick:
+  - a view tagged `# big_value`, `# scatter_chart` or a map, made a table: `# -big_value viz=table` (or `-scatter_chart`, `-shape_map`, `-segment_map`)
+  - a line, bar or bar-and-line view made a scatter chart, big value or map: `# -bar_chart -viz scatter_chart` (the view's key and `viz`, since the view may say it either way)
+
+  Write a reset only in those cases. Everywhere else the `viz` or chart key alone is the line.
 - **Properties go with the pick**: `# viz=bar { stack }` on the query, not on a `# bar_chart` line the `viz` already replaces.
 
 

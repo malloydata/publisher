@@ -179,6 +179,12 @@ export interface QueryTile {
    chart?: ChartState;
    /** The chart lines behind a `"custom"` chart, as written; read-only, so a picker can say what it will not change. */
    chartLines?: string[];
+   /**
+    * What the chart line takes off the view's own chart before its pick
+    * (`# -big_value viz=table`): set only where the view's chart would
+    * otherwise still draw ({@link chartResetFor}), and read back from the line.
+    */
+   chartReset?: string[];
    colspan?: number;
    break?: boolean;
    borderless?: boolean;

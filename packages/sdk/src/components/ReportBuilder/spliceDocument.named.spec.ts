@@ -255,8 +255,16 @@ describe("a report the builder writes", () => {
             "  view: by_carrier_tile is by_carrier\n\n" +
             "  view: kpis_tile is kpis\n}\n",
       );
+      // The legacy line's negations read as the tile's reset; a chart edit
+      // sets the reset with the pick, as the tile menu does.
+      expect(queryTile(await openDocument(legacy), 0).chartReset).toEqual([
+         "line_chart",
+         "big_value",
+         "viz",
+      ]);
       const out = await edited(legacy, (d) => {
          queryTile(d, 0).chart = "line_chart";
+         delete queryTile(d, 0).chartReset;
       });
       expect(out).toBe(
          legacy.replace(

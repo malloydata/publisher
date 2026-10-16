@@ -58,9 +58,10 @@ export function chartChoices(
              ? "Not a view the catalog lists, so its shape is unknown"
              : undefined;
    const shape = view?.shape;
-   // A pick is a line merged over the view's own tags, never one that takes
-   // the view's chart off, so it draws only where the renderer would pick it
-   // from the merged tag ({@link drawsAs}).
+   // A pick is a line merged over the view's own tags, taking the view's
+   // chart off first only where the renderer would still draw it
+   // ({@link chartResetFor}), so every pick draws ({@link drawsAs}). This is
+   // kept as a check against the renderer's rule, not a rule of its own.
    const overridden = (pick: ChartPick | "none"): string | undefined =>
       view === undefined || current === pick || drawsAs(pick, view.chart)
          ? undefined

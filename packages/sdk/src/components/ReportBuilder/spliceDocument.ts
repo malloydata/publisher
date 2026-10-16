@@ -193,7 +193,7 @@ function tagsFor(tile: QueryTile, withChart = true): string[] {
    if (tile.subtitle !== undefined)
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    const chart = withChart ? writableChart(tile.chart) : undefined;
-   if (chart !== undefined) tags.push(chartLineText(chart));
+   if (chart !== undefined) tags.push(chartLineText(chart, tile.chartReset));
    if (tile.color !== undefined) tags.push(seriesColorLine(tile.color));
    return tags;
 }
@@ -1396,7 +1396,9 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
 
       // Only a changed chart touches a chart line, so a bare `# bar_chart` survives every other edit.
       const wantChart = writableChart(tile.chart);
-      const chartChanged = chartOf(was) !== chartOf(tile);
+      const chartChanged =
+         chartOf(was) !== chartOf(tile) ||
+         canonical(was.chartReset ?? []) !== canonical(tile.chartReset ?? []);
       if (chartChanged) {
          const blockers = tags.filter((tag) => mentionsChartTag(tag.text));
          const ours = tags.filter((tag) => parseChartLine(tag.text));
@@ -1429,10 +1431,10 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          if (chartChanged && parseChartLine(tag.text)) {
             if (wantChart === undefined)
                edits.push({ ...wholeLine(tag.line), text: "" });
-            else if (tag.text !== chartLineText(wantChart))
+            else if (tag.text !== chartLineText(wantChart, tile.chartReset))
                edits.push({
                   ...wholeLine(tag.line),
-                  text: `${indent}${chartLineText(wantChart)}\n`,
+                  text: `${indent}${chartLineText(wantChart, tile.chartReset)}\n`,
                });
             chartPlaced = true;
             continue;
@@ -1455,7 +1457,7 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
       // looks for them and where `blockAbove` will find them again.
       const added = wanted.filter((text) => !seen.has(tagKey(text) ?? text));
       if (chartChanged && wantChart !== undefined && !chartPlaced)
-         added.push(chartLineText(wantChart));
+         added.push(chartLineText(wantChart, tile.chartReset));
       if (added.length > 0) {
          const at = starts[declLine];
          edits.push({
@@ -1509,7 +1511,11 @@ const chartOf = (tile: QueryTile) =>
 
 /** The tile as the writer compares it: "default" is no line, and `chartLines` is not part of what is asked for. */
 const withoutDefaultChart = (tile: QueryTile): QueryTile => {
-   const { chartLines: _lines, ...rest } = tile;
+   const { chartLines: _lines, ...withReset } = tile;
+   const rest =
+      withReset.chart === "default" || withReset.chart === undefined
+         ? (({ chartReset: _reset, ...bare }) => bare)(withReset)
+         : withReset;
    if (rest.chart !== "default") return rest;
    const { chart: _chart, ...bare } = rest;
    return bare;
@@ -1530,7 +1536,13 @@ function keepUnstatedCharts(
             before &&
             isQueryTile(before) &&
             before.chart !== undefined
-            ? { ...tile, chart: before.chart }
+            ? {
+                 ...tile,
+                 chart: before.chart,
+                 ...(before.chartReset
+                    ? { chartReset: before.chartReset }
+                    : {}),
+              }
             : tile;
       }),
    };

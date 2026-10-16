@@ -6,6 +6,7 @@ import { describe, expect, it } from "bun:test";
 import {
    CHART_TAGS,
    chartLineText,
+   chartResetFor,
    chartStateOf,
    drawsAs,
    isChartPick,
@@ -82,7 +83,7 @@ describe("chartLineText", () => {
       expect(chartLineText("scatter_chart")).toBe("# scatter_chart");
    });
 
-   it("takes nothing off: no line it writes negates a tag", () => {
+   it("takes nothing off without a reset: no such line negates a tag", () => {
       for (const pick of [...CHART_TAGS.filter(isChartPick), "none" as const])
          expect(chartLineText(pick)).not.toContain("-");
    });
@@ -115,7 +116,14 @@ describe("chartLineText over a view's own chart", () => {
 
    // What `drawsAs` promises is the renderer's rule (resolvedChart, which a
    // spec checks against the renderer itself).
-   it("draws a viz pick over any view without a big value or map key, and says where a pick cannot", () => {
+   it("draws every pick over every view, with the reset chartResetFor writes", () => {
+      for (const view of [undefined, ...PLUGINS])
+         for (const pick of [...PLUGINS, "none" as const])
+            expect(drawsAs(pick, view)).toBe(true);
+   });
+
+   it("resets only where a viz alone cannot win", () => {
+      // A viz replaces line, bar and bar and line, and those come first.
       for (const view of [undefined, "bar_chart", "line_chart", "combo_chart"])
          for (const pick of [
             "line_chart",
@@ -123,13 +131,41 @@ describe("chartLineText over a view's own chart", () => {
             "combo_chart",
             "none",
          ] as const)
-            expect(drawsAs(pick, view)).toBe(true);
-      expect(drawsAs("none", "big_value")).toBe(false);
-      expect(drawsAs("bar_chart", "big_value")).toBe(true);
-      expect(drawsAs("scatter_chart", undefined)).toBe(true);
-      expect(drawsAs("scatter_chart", "bar_chart")).toBe(false);
-      expect(drawsAs("big_value", "shape_map")).toBe(true);
-      expect(drawsAs("shape_map", "big_value")).toBe(false);
+            expect(chartResetFor(pick, view)).toEqual([]);
+      expect(chartResetFor("bar_chart", "big_value")).toEqual([]);
+      expect(chartResetFor("big_value", "shape_map")).toEqual([]);
+      expect(chartResetFor("scatter_chart", undefined)).toEqual([]);
+      // Big value, scatter and the maps draw on their own key.
+      expect(chartLineText("none", chartResetFor("none", "big_value"))).toBe(
+         "# -big_value viz=table",
+      );
+      expect(chartLineText("none", chartResetFor("none", "shape_map"))).toBe(
+         "# -shape_map viz=table",
+      );
+      expect(
+         chartLineText(
+            "scatter_chart",
+            chartResetFor("scatter_chart", "big_value"),
+         ),
+      ).toBe("# -big_value scatter_chart");
+      // Over line, bar or bar and line the view may have said it as a viz.
+      expect(
+         chartLineText(
+            "scatter_chart",
+            chartResetFor("scatter_chart", "bar_chart"),
+         ),
+      ).toBe("# -bar_chart -viz scatter_chart");
+      expect(
+         chartLineText("big_value", chartResetFor("big_value", "line_chart")),
+      ).toBe("# -line_chart -viz big_value");
+      // The reset line parses back to its pick and what it takes off.
+      expect(parseChartLine("# -big_value viz=table")).toEqual({
+         negated: ["big_value"],
+         pick: "table",
+      });
+      expect(chartStateOf(["# -bar_chart -viz scatter_chart"])).toBe(
+         "scatter_chart",
+      );
    });
 });
 
