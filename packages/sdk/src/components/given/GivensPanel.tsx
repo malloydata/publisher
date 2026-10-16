@@ -30,6 +30,12 @@ export interface GivensPanelProps {
    values: Map<string, GivenValue>;
    onChange: (name: string, value: GivenValue) => void;
    onReset: () => void;
+   /**
+    * Whether Reset would change anything: the controls differ from where the
+    * document starts them (`useGivensState`'s `atStart`). Absent, Reset is
+    * offered whenever a value is set, as before.
+    */
+   canReset?: boolean;
    layout?: GivensLayout;
    /** Resolved `suggest` options per given name. */
    options?: Map<string, string[]>;
@@ -64,6 +70,7 @@ export function GivensPanel({
    values,
    onChange,
    onReset,
+   canReset,
    layout = "panel",
    options,
    optionsLoading,
@@ -80,6 +87,10 @@ export function GivensPanel({
    // control that is unset, and pressing it changed nothing and left the empty
    // parameter in the URL.
    const hasValues = Array.from(values.values()).some((v) => v !== null);
+   // Only when pressing it would change something. A value the document starts
+   // with is set but is already the reset state, and Reset beside it did
+   // nothing when pressed.
+   const offerReset = canReset ?? hasValues;
 
    const inputs = givens.map((given) => (
       <Box key={given.name}>
@@ -109,7 +120,7 @@ export function GivensPanel({
                Apply
             </Button>
          )}
-         {hasValues && (
+         {offerReset && (
             <Button variant="text" size="small" onClick={onReset}>
                Reset
             </Button>

@@ -290,6 +290,60 @@ describe("useGivensState: Reset", () => {
    });
 });
 
+describe("useGivensState: atStart, whether Reset would change anything", () => {
+   it("is true on a document's own starting value, so Reset is not offered for it", () => {
+      // Was: Reset was offered whenever a value was set, so a report saving
+      // REGION="West" showed Reset beside West, and pressing it set West.
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      expect(entries(host.current.applied)).toEqual({ REGION: "West" });
+      expect(host.current.atStart).toBe(true);
+   });
+
+   it("is false once a control moves off the start, and true again after Reset", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      act(() => host.current.setGiven("REGION", "Northeast"));
+      host.settle();
+      expect(host.current.atStart).toBe(false);
+
+      act(() => host.current.reset());
+      host.settle();
+      expect(host.current.atStart).toBe(true);
+   });
+
+   it("is false when a cleared starting value leaves the control empty", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+      });
+      act(() => host.current.setGiven("REGION", null));
+      host.settle();
+      expect(host.current.atStart).toBe(false);
+   });
+
+   it("is false for a value a link carries over the start", () => {
+      const host = renderWithUrlHost({
+         autorun: true,
+         startingValues: { REGION: "West" },
+         initialUrl: { REGION: "Northeast" },
+      });
+      expect(host.current.atStart).toBe(false);
+   });
+
+   it("is false while a change waits on Apply, since Reset would drop it", () => {
+      const host = renderWithUrlHost({ autorun: false });
+      expect(host.current.atStart).toBe(true);
+      act(() => host.current.setGiven("REGION", "Northeast"));
+      host.settle();
+      expect(host.current.atStart).toBe(false);
+   });
+});
+
 describe("useGivensState: settling", () => {
    it("stops reporting once the host echoes the values back", () => {
       // The hook reports applied values out for the host to put in the URL,
