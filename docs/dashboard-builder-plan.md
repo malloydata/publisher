@@ -2,7 +2,7 @@
 
 > **Superseded in part by [reports-design.md](reports-design.md) (2026-10-10).** Dashboards and
 > notebooks are now one document type, the **report**, with `layout=grid` or `layout=linear`, anywhere
-> in a package; one builder edits both with a layout switch, and New report writes at the package root.
+> in a package; one builder edits both, and New report writes at the package root.
 > The `dashboards/` and `notebooks/` paths below are the history of how the builder was built, not the
 > current rule; [reports.md](reports.md) is the current reference.
 
@@ -336,7 +336,7 @@ builder 97%, writer 92%, reader 96%, editor host 93%.
 
 **Telemetry**: the surfaces emit `ReportEvent`s (`report.opened`,
 `report.load_failed`, `report.saved`, `report.save_refused`,
-`report.rows_shown`, `report.layout_changed` and the rest; the SDK README's
+`report.rows_shown` and the rest; the SDK README's
 Telemetry section lists them), each carrying the report's path and layout;
 the Console adds environment and package and logs one structured line per
 event under `[publisher.report]`, `warn` on a refusal or a failure. A deployment that wants metrics forwards from there; nothing server-side

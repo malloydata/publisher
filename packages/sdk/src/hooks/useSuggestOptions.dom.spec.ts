@@ -8,7 +8,7 @@
  * run before the hook is imported, and a static import there would hoist above
  * it.
  */
-import { beforeEach, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 import { renderHook, waitFor } from "@testing-library/react";
 import {
    cacheKeys,
@@ -30,9 +30,8 @@ const executeQueryModel = mock(
 
 mockServerProvider({ models: { executeQueryModel } });
 
-const { buildSuggestQuery, useSuggestOptions } = await import(
-   "./useSuggestOptions"
-);
+const { buildSuggestQuery, SUGGEST_OPTION_LIMIT, useSuggestOptions } =
+   await import("./useSuggestOptions");
 
 const SPECS: Given[] = [
    {
@@ -186,4 +185,126 @@ it("runs a suggest as the document's definitions plus one run:, by name or by di
       `source: a is orders\n\n${buildSuggestQuery("a", "region")}`,
       "source: a is orders\n\nrun: brands",
    ]);
+});
+
+describe("a list cut off at the limit", () => {
+   /** `n` distinct values for one column, `Value 0001` … in order. */
+   const rows = (column: string, n: number) =>
+      JSON.stringify(
+         Array.from({ length: n }, (_, i) => ({
+            [column]: `Value ${String(i).padStart(4, "0")}`,
+         })),
+      );
+   const answer = (result: string) =>
+      Promise.resolve({ data: { result } }) as never;
+   const MANUFACTURER: Given[] = [
+      {
+         name: "MAKER",
+         control: "select",
+         suggest: { source: "recalls", dimension: "manufacturer" },
+      },
+   ];
+   const render = (specs: Given[], preamble?: string) =>
+      renderHook(
+         () =>
+            useSuggestOptions(
+               "env",
+               "pkg",
+               "README.malloy",
+               specs,
+               undefined,
+               undefined,
+               preamble,
+            ),
+         { wrapper: serverWrapper },
+      );
+
+   it("is flagged, and its search finds a value past the cutoff on the server", async () => {
+      executeQueryModel.mockImplementation((_e, _p, _m, request) => {
+         const query = (request as { query?: string }).query ?? "";
+         return answer(
+            query.includes("where:")
+               ? JSON.stringify([{ manufacturer: "General Motors, LLC" }])
+               : rows("manufacturer", SUGGEST_OPTION_LIMIT + 1),
+         );
+      });
+      const { result } = render(MANUFACTURER);
+      await waitFor(() =>
+         expect(result.current.truncated.has("MAKER")).toBe(true),
+      );
+      // The page holds the limit, not the extra row that proved it was cut off.
+      expect(result.current.options.get("MAKER")).toHaveLength(
+         SUGGEST_OPTION_LIMIT,
+      );
+      const search = result.current.search.get("MAKER");
+      expect(search).toBeDefined();
+
+      const page = await search!.run("General Motors");
+      expect(page.values).toEqual(["General Motors, LLC"]);
+      const sent = (
+         executeQueryModel.mock.calls.at(-1)?.[3] as { query: string }
+      ).query;
+      expect(sent).toBe(
+         buildSuggestQuery("recalls", "manufacturer", "General Motors"),
+      );
+      expect(sent).toContain(
+         "where: strpos(lower(manufacturer::string), 'general motors') > 0",
+      );
+      expect(search!.key[0]).toBe("givenSuggestSearch");
+      executeQueryModel.mockImplementation(() => pending());
+   });
+
+   it("is not, when the list fits: no search, and no request past the first", async () => {
+      executeQueryModel.mockImplementation(() =>
+         answer(rows("manufacturer", 3)),
+      );
+      const { result } = render(MANUFACTURER);
+      await waitFor(() =>
+         expect(result.current.options.get("MAKER")).toHaveLength(3),
+      );
+      expect(result.current.truncated.size).toBe(0);
+      expect(result.current.search.size).toBe(0);
+      expect(executeQueryModel).toHaveBeenCalledTimes(1);
+      executeQueryModel.mockImplementation(() => pending());
+   });
+
+   it("is flagged for a named query at the server's cap, with no search to offer", async () => {
+      executeQueryModel.mockImplementation(() =>
+         answer(rows("brand", SUGGEST_OPTION_LIMIT)),
+      );
+      const { result } = render([
+         { name: "BRAND", control: "select", suggest: { query: "brands" } },
+      ]);
+      await waitFor(() =>
+         expect(result.current.truncated.has("BRAND")).toBe(true),
+      );
+      expect(result.current.search.has("BRAND")).toBe(false);
+      executeQueryModel.mockImplementation(() => pending());
+   });
+
+   it("searches a text-held document as its definitions plus the search", async () => {
+      executeQueryModel.mockImplementation((_e, _p, _m, request) => {
+         const query = (request as { query?: string }).query ?? "";
+         return answer(
+            query.includes("where:")
+               ? JSON.stringify([{ manufacturer: "General Motors, LLC" }])
+               : rows("manufacturer", SUGGEST_OPTION_LIMIT + 1),
+         );
+      });
+      const { result } = render(MANUFACTURER, "source: recalls is t");
+      await waitFor(() =>
+         expect(result.current.search.has("MAKER")).toBe(true),
+      );
+      await result.current.search.get("MAKER")!.run("general");
+      expect(
+         (executeQueryModel.mock.calls.at(-1)?.[3] as { query: string }).query,
+      ).toBe(
+         `source: recalls is t\n\n${buildSuggestQuery("recalls", "manufacturer", "general")}`,
+      );
+      // The definitions are part of what a search is cached under.
+      expect(result.current.search.get("MAKER")!.key).toContain(
+         "source: recalls is t",
+      );
+      executeQueryModel.mockImplementation(() => pending());
+   });
 });

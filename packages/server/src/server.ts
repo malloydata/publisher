@@ -74,6 +74,7 @@ import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
 import { queryConcurrency } from "./query_concurrency";
 import { MaterializationController } from "./controller/materialization.controller";
+import { StorageDestinationController } from "./controller/storage_destination.controller";
 import { ThemeController } from "./controller/theme.controller";
 import { initializeMcpServer } from "./mcp/server";
 import { setMaxEmbeddedEntities } from "./mcp/tools/embedding_index";
@@ -446,6 +447,9 @@ const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
 const versionController = new VersionController(environmentStore);
 const materializationService = new MaterializationService(environmentStore);
+const storageDestinationController = new StorageDestinationController(
+   environmentStore,
+);
 const materializationController = new MaterializationController(
    materializationService,
 );
@@ -2242,6 +2246,66 @@ app.delete(
             { dropTables, versionId: req.query.versionId },
          );
          res.status(204).send();
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+// ── Storage destination tables ──────────────────────────────────────
+// Table lifecycle inside an environment's storage destinations, for an
+// orchestrator that assigns its own physical table names. Destinations are never
+// reachable through the connection routes above, so these are the only way to
+// drop, enumerate, or reclaim the storage behind a table in one.
+
+app.get(
+   `${API_PREFIX}/environments/:environmentName/storageDestinations/:destinationName/schemas/:schemaName/tables`,
+   async (req, res) => {
+      try {
+         res.status(200).json(
+            await storageDestinationController.listTables(
+               req.params.environmentName,
+               req.params.destinationName,
+               req.params.schemaName,
+            ),
+         );
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.delete(
+   `${API_PREFIX}/environments/:environmentName/storageDestinations/:destinationName/schemas/:schemaName/tables/:tableName`,
+   async (req, res) => {
+      try {
+         await storageDestinationController.dropTable(
+            req.params.environmentName,
+            req.params.destinationName,
+            req.params.schemaName,
+            req.params.tableName,
+         );
+         res.status(204).send();
+      } catch (error) {
+         const { json, status } = internalErrorToHttpError(error as Error);
+         res.status(status).json(json);
+      }
+   },
+);
+
+app.post(
+   `${API_PREFIX}/environments/:environmentName/storageDestinations/:destinationName/fileCleanups`,
+   async (req, res) => {
+      try {
+         res.status(201).json(
+            await storageDestinationController.createFileCleanup(
+               req.params.environmentName,
+               req.params.destinationName,
+               req.body ?? {},
+            ),
+         );
       } catch (error) {
          const { json, status } = internalErrorToHttpError(error as Error);
          res.status(status).json(json);

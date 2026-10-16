@@ -280,17 +280,27 @@ test.describe("notebook tiles", () => {
    test("starting givens and autorun=false in the artifact tag reach the reader and the editor", async ({
       page,
    }) => {
+      // The starting value is in the control. Reset is not offered beside it:
+      // the controls are already where Reset would put them.
+      const startsAtUS = async () => {
+         await expect(
+            page.getByRole("button", { name: "Region: US" }),
+         ).toBeVisible();
+         await expect(page.getByRole("button", { name: "Reset" })).toHaveCount(
+            0,
+         );
+      };
       await page.goto(`/${pe.env}/${pe.pkg}/notebooks/autorun_off`);
       await expect(page.getByRole("button", { name: "Apply" })).toBeVisible({
          timeout: 60_000,
       });
-      await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
+      await startsAtUS();
       await open(page, "autorun_off");
       await expect(
          page.getByRole("button", { name: "Apply", exact: true }),
       ).toBeVisible({
          timeout: 60_000,
       });
-      await expect(page.getByRole("button", { name: "Reset" })).toBeVisible();
+      await startsAtUS();
    });
 });

@@ -143,7 +143,11 @@ export function StickyControls({ children }: { children: ReactNode }) {
             position: "sticky",
             top: `${STUCK_TOP_PX}px`,
             zIndex: STICKY_CONTROLS_Z,
-            bgcolor: "background.default",
+            // Filled only while pinned, when the tiles pass under it. Unpinned
+            // nothing does, and the fill, reaching up over the gap by the room
+            // below, painted over what stands into that gap from above: the
+            // halo of the description's selection ring.
+            bgcolor: stuck ? "background.default" : "transparent",
             // Room under the bar for the edge, so the line never sits on the
             // controls themselves.
             pb: 1,

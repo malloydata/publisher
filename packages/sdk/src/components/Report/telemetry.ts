@@ -131,12 +131,6 @@ export type ReportEvent =
              }
            | { type: "report.create_refused"; reason: string }
            | {
-                /** The author switched the report between Linear and Grid; `layout` is `to`. */
-                type: "report.layout_changed";
-                from: ReportLayout;
-                to: ReportLayout;
-             }
-           | {
                 type: "report.drill";
                 /** `self` filtered this report; `report` went to another. */
                 to: "self" | "report";

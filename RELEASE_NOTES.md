@@ -51,7 +51,35 @@ A package loaded from `publisher.config.json`, registered from a directory with 
 
 **Downgrading.** An earlier release starts on an upgraded `publisher.db` and serves every package that has no versions as before. A package with published versions does not load there: its files sit in one directory per version, `<pkg>/<version>/`, and earlier releases read only `<pkg>/`. Delete such a package before you downgrade, and publish it again on the earlier release. An earlier release's `--init` resets the store as before, leaving the `versions` table behind; this release's `--init` removes it.
 
-## [Unreleased] — A SQL statement Postgres rejects answers 400 with the database's message, not 502
+## [0.9.14] — ReportEditor can run its queries at a pinned version while the document stays unversioned
+
+`ReportEditor` takes a new optional `queryVersionId`. The `?versionId=` on `resourceUri` decided two things at once: the package version the builder queries, and the identity of the document being edited (its kept-draft key, its save target, the "pinned version" caption, and the pinned-package save path). A host whose package republishes on every change needs those apart. When it pinned the version, every republish orphaned the kept edits and Save went down the pinned path. When it didn't, Edit missed every result the reader had just cached at that version and re-ran every tile.
+
+With `queryVersionId` set, every query the builder runs uses that version: tiles, the report's manifest, filter options and suggestions, the report listing, and the field catalog. Everything about the document still follows `resourceUri` alone. So a host passing an unversioned `resourceUri` plus `queryVersionId` gets the reader's cached results on Edit, with no second request, while drafts and saving behave as for any unversioned report. A text-held document's compile takes no version, so with `textSource` only its tiles and options follow the prop. When the prop is unset, behaviour is unchanged.
+
+## [0.9.13] — A filter's dropdown can find values past its first 1,000
+
+A `select` or `multiselect` control over a dimension with more than 1,000 distinct values could only ever offer the first 1,000 in order: its options were fetched once, and typing filtered them in the browser, so a value past the cutoff (say "General Motors, LLC" among 2,901 manufacturers) could not be found and no request was sent. Now the suggest asks for one row past its limit, so a cut-off list is known to be one. Typing in such a control searches the whole dimension on the server after a 250ms pause, with a case-insensitive "contains" that every dialect compiles, and offers up to 200 matches. The dropdown says when a list is partial. Lists of 1,000 or fewer behave exactly as before and send no extra requests. This applies to both a package report and a text-held document (`textSource`), since both fill their controls the same way.
+
+A named suggest (`suggest { query=… }`) cannot be searched, because there is nowhere to add the condition to a whole query. Its list is still filtered in the browser; when it comes back at the server's 1,000-row cap, the dropdown says the list is partial and that a value not listed can still be typed.
+
+For an SDK host: `useSuggestOptions` also returns `truncated` (the givens whose list was cut off) and `search` (a server search per searchable given), and `GivensPanel` and `GivenInput` take them as `optionsTruncated` and `optionSearch`. `buildSuggestQuery`'s query now asks for `limit: 1001`, and it takes an optional search text. Hosts that draw controls through `useDocumentControls` get all of this with no change.
+
+## [0.9.13] — Edits put back on opening are said in the save status, not in a banner
+
+A builder that keeps drafts (`ReportEditor` with `keepDraft`, or `ReportBuilder` with `draftKey`) no longer draws a full-width "Restored your unsaved edits from 5:26 PM." banner above the report when it opens on edits kept in this browser. Edits stay kept until Done, so a host that always keeps drafts showed it on nearly every Edit, and it pushed the page down. Now the save status says it: it reads "Draft saved" as before, its dot takes the accent colour, and the first line of its menu reads "Restored your unsaved edits from 5:26 PM" above Discard edits. Once the menu has been opened, or after the next edit, the dot goes back to normal and the line goes back to "Kept in this browser at …". `BuilderBar` and the in-page toolbar both draw it, so a host that draws `BuilderBar` in its own header gets it with no change. The in-page toolbar draws the status only when a draft is kept, so a builder without `draftKey` looks as it did.
+
+A draft kept before the report changed is still asked about on the page, with Restore them and Discard. That warning no longer has a close button: putting the draft back would replace the newer version and dropping it loses the edits, so it stays until the author picks one. An edit counts as picking: the edits replace the offered draft and the warning goes. Before, an edit dropped the draft but left the warning up, and Restore them then did nothing.
+
+`BuilderControls` gains three optional fields for a host that draws its own status: `restored` (`{ savedAt, stale, pending }`, the new `RestoredDraft` type, exported), `restore` (present while `restored.pending`; applies the stale draft) and `dismissRestored` (present while restored edits are news; call it once the author has seen them). `discard` is now also present while a stale draft is pending, as its other answer. Nothing was removed.
+
+## [0.9.13] — The builder's Linear / Grid switch is gone
+
+The report builder no longer offers a switch between `layout=linear` and `layout=grid`, in the Console's bar or in the SDK's `BuilderToolbar`. The builder draws a report in the layout its `## artifact` tag declares and never rewrites `layout=`; to change a report's layout, edit the tag in the file. The switch turned a dashboard into a story (or back) in one click, and the page it left behind was more often a mess than the report anyone meant.
+
+For a host on the SDK: `ReportEditor` and `ReportBuilder` drop the `allowLayoutChange` prop, `BuilderControls` drops its `layout` entry (so a host drawing the controls itself has nothing to draw for it), and the `report.layout_changed` event is no longer emitted or in the `ReportEvent` union. `readReportTagOfText` still reads the layout from any text.
+
+## [0.9.12] — A SQL statement Postgres rejects answers 400 with the database's message, not 502
 
 On a Postgres connection, `sqlSource`, `sqlQuery` and `sqlTemporaryTable` (and their per-package forms) now answer **400** when the database refuses the statement itself: a column, table, function or type that does not exist, a syntax error, an ambiguous name, a type mismatch. The body carries Postgres's own sentence, for example `column "sundance_name" does not exist`. They answered 502 `Upstream connection error.` before, with that sentence logged only on the server.
 
@@ -59,7 +87,7 @@ One case answers **404** instead: a statement naming a table the database does n
 
 If you branch on 502 to mean "the warehouse is unreachable", that is now what it means on these routes for Postgres; a rejected statement is a 4xx. Unchanged: an unreachable database (502, `reason: CONNECTION_FAILED`), rejected credentials (424), a role without `CONNECT` or a table the connection's user may not read (still 502), and every other dialect.
 
-## [Unreleased] — SQL Server connections
+## [0.9.12] — SQL Server connections
 
 A connection of `type: "sqlserver"` reaches Microsoft SQL Server through `@malloydata/db-sqlserver` (Malloy 0.0.435): a SQL login over TCP with `server`, `port`, `database`, `user`, `password`, `encrypt` (on by default), `trustServerCertificate`, `hostNameInCertificate` and `instanceName`, the connector's own field names. The Console's connection dialogs offer it, the schema browser lists the schemas that own a table or a view (`dbo` the default) and a table is addressed `schema.table`. Schema and table names are matched as Unicode, so a non-ASCII name lists under any collation. The password is write-only, as for every other type, and a port that is not an integer from 1 to 65535 fails the config at load, naming the value.
 
