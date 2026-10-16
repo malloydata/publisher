@@ -17,8 +17,6 @@ import {
    Menu,
    MenuItem,
    Stack,
-   ToggleButton,
-   ToggleButtonGroup,
    Tooltip,
    useMediaQuery,
 } from "@mui/material";
@@ -28,12 +26,7 @@ import type { ReportUi } from "../../theme/ui";
 import { usePublisherTheme } from "../../theme/ThemeContext";
 import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import type { BuilderControls } from "./builderControls";
-import {
-   controlSx,
-   dividerSx,
-   iconControlSx,
-   segmentedSx,
-} from "./BuilderToolbar";
+import { controlSx, dividerSx, iconControlSx } from "./BuilderToolbar";
 import { SaveStatus } from "./SaveStatus";
 import { MOD } from "./useBuilderShortcuts";
 
@@ -46,7 +39,7 @@ export interface BuilderBarProps {
 
 /**
  * The builder's controls as one bar, for a host's header: the save status,
- * undo and redo, the layout switch, an Add menu, then Done and, while there
+ * undo and redo, an Add menu, then Done and, while there
  * are unsaved edits, Save. The page under it stays the reader's page, with the
  * tile and filter controls on the things they change.
  *
@@ -125,39 +118,8 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                            </IconButton>
                         </span>
                      </Tooltip>
-                     {(controls.layout || canAdd) && (
+                     {canAdd && (
                         <Divider orientation="vertical" sx={dividerSx} />
-                     )}
-                     {controls.layout && (
-                        <Tooltip title="Layout: tiles side by side, or one after another">
-                           <ToggleButtonGroup
-                              size="small"
-                              exclusive
-                              value={controls.layout.value}
-                              aria-label="Layout"
-                              onChange={(
-                                 _event,
-                                 next: "grid" | "linear" | null,
-                              ) => {
-                                 if (next && next !== controls.layout?.value)
-                                    controls.layout?.set(next);
-                              }}
-                              sx={segmentedSx(edge, theme.ui)}
-                           >
-                              <ToggleButton
-                                 value="linear"
-                                 aria-label="Linear layout"
-                              >
-                                 Linear
-                              </ToggleButton>
-                              <ToggleButton
-                                 value="grid"
-                                 aria-label="Grid layout"
-                              >
-                                 Grid
-                              </ToggleButton>
-                           </ToggleButtonGroup>
-                        </Tooltip>
                      )}
                      {canAdd && (
                         <>

@@ -199,39 +199,3 @@ describe("ReportEditor, when the server takes writes", () => {
       ).toBe(false);
    });
 });
-
-describe("ReportEditor's layout switch", () => {
-   const mountWith = (allowLayoutChange?: boolean) =>
-      render(
-         <DocumentStorageProvider
-            documentStorage={new BrowserDocumentStorage()}
-         >
-            <ReportEditor
-               environmentName="env"
-               packageName="pkg"
-               dashboardName="overview"
-               {...(allowLayoutChange !== undefined
-                  ? { allowLayoutChange }
-                  : {})}
-            />
-         </DocumentStorageProvider>,
-         { wrapper: serverWrapper },
-      );
-
-   it("is offered for a file by default", async () => {
-      mountWith();
-      await screen.findByText("Storefront");
-      expect(button("Grid layout")).toBeDefined();
-   });
-
-   it("is hidden when the host passes allowLayoutChange={false}", async () => {
-      mountWith(false);
-      await screen.findByText("Storefront");
-      expect(
-         screen.queryByRole("button", { name: "Grid layout", hidden: true }),
-      ).toBeNull();
-      expect(
-         screen.queryByRole("button", { name: "Linear layout", hidden: true }),
-      ).toBeNull();
-   });
-});
