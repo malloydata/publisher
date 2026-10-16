@@ -150,3 +150,122 @@ describe("a report in the new form", () => {
       }
    });
 });
+
+/**
+ * The shapes from malloydata/publisher#723, each filtered on a field it does
+ * not output and bound to a given, in both places a report can put a filter:
+ * refining the query (`+ { where: … }`, what the builder writes, always over a
+ * NAMED view) and on its source (`source extend { where: … } -> …`, which the
+ * builder reads and edits where an author wrote it). Every run is asserted
+ * row for row. Plain Malloy gives the same rows both ways; Publisher does not
+ * (see report_tile_access.spec.ts in the server).
+ */
+describe("where a report's filter goes, by the shape it filters", () => {
+   const REPORT = `##! experimental.givens
+## artifact { title="T" tiles=[] }
+import { flights } from "m.malloy"
+
+given: ORIGIN :: filter<string> is f''
+
+query: named_refined is flights -> by_carrier + { where: origin_code ~ $ORIGIN }
+query: named_scoped is flights extend { where: origin_code ~ $ORIGIN } -> by_carrier
+
+query: two_stage_refined is flights -> by_route + { where: origin_code ~ $ORIGIN }
+query: two_stage_scoped is flights extend { where: origin_code ~ $ORIGIN } -> by_route
+
+query: inline_scoped is flights extend { where: origin_code ~ $ORIGIN } -> {
+  group_by: carrier_code, origin_code
+  aggregate: flight_count
+} -> {
+  select: carrier_code, flight_count
+  order_by: carrier_code
+}
+
+query: ranked_scoped is flights extend { where: origin_code ~ $ORIGIN } -> {
+  group_by: carrier_code, origin_code
+  aggregate: flight_count
+} -> {
+  group_by: carrier_code
+  aggregate: n is flight_count.sum()
+  calculate: rk is rank()
+  order_by: carrier_code
+}
+`;
+   const INLINE_REFINED = `query: inline_refined is flights -> {
+  group_by: carrier_code, origin_code
+  aggregate: flight_count
+} -> {
+  select: carrier_code, flight_count
+  order_by: carrier_code
+} + { where: origin_code ~ $ORIGIN }
+`;
+   const SFO = { ORIGIN: "SFO" };
+
+   it("filters the rows every stage reads, for a named view of one or two stages, either way", async () => {
+      const run = await runner();
+      try {
+         expect(
+            await run.rows(
+               REPORT,
+               [
+                  "named_refined",
+                  "named_scoped",
+                  "two_stage_refined",
+                  "two_stage_scoped",
+               ],
+               SFO,
+            ),
+         ).toEqual([
+            [
+               { carrier_code: "AA", flight_count: 2 },
+               { carrier_code: "UA", flight_count: 2 },
+            ],
+            [
+               { carrier_code: "AA", flight_count: 2 },
+               { carrier_code: "UA", flight_count: 2 },
+            ],
+            [
+               { carrier_code: "AA", routes: 1, flights: 2 },
+               { carrier_code: "UA", routes: 1, flights: 2 },
+            ],
+            [
+               { carrier_code: "AA", routes: 1, flights: 2 },
+               { carrier_code: "UA", routes: 1, flights: 2 },
+            ],
+         ]);
+      } finally {
+         await run.close();
+      }
+   });
+
+   it("filters an inline pipeline and a ranked one, on the source or refined", async () => {
+      const run = await runner();
+      try {
+         expect(
+            await run.rows(REPORT, ["inline_scoped", "ranked_scoped"], SFO),
+         ).toEqual([
+            [
+               { carrier_code: "AA", flight_count: 2 },
+               { carrier_code: "UA", flight_count: 2 },
+            ],
+            [
+               { carrier_code: "AA", n: 2, rk: 1 },
+               { carrier_code: "UA", n: 2, rk: 2 },
+            ],
+         ]);
+         // #723 reported a trailing refinement of an inline pipeline failing on
+         // a field its last stage dropped. On the Malloy this package pins it
+         // does not: the filter lands on the rows read, as the scoped form's.
+         expect(
+            await run.rows(REPORT + INLINE_REFINED, ["inline_refined"], SFO),
+         ).toEqual([
+            [
+               { carrier_code: "AA", flight_count: 2 },
+               { carrier_code: "UA", flight_count: 2 },
+            ],
+         ]);
+      } finally {
+         await run.close();
+      }
+   });
+});

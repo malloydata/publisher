@@ -229,20 +229,29 @@ function namedTile(query: TreeQuery, parse: ParseTags): QueryTile | undefined {
       return undefined;
    const t = parse(tagText(query.tags)).tag;
    const refinement = body.refinement;
-   const ownStatements =
-      refinement !== undefined &&
-      (refinement.statements.some(
-         (st) => !refinement.wheres.some((w) => w.span.start === st.span.start),
+   const scope = query.scope?.block;
+   // Anything in a block that is not a `where:` of bindings is the author's.
+   const ownContent = (stage: TreeStage | undefined) =>
+      stage !== undefined &&
+      (stage.statements.some(
+         (st) => !stage.wheres.some((w) => w.span.start === st.span.start),
       ) ||
-         refinement.wheres.some((w) => w.clauses.some((c) => !c.binding)));
+         stage.wheres.some((w) => w.clauses.some((c) => !c.binding)));
    const unmodelled =
-      ownStatements || query.tags.some((tag) => !isBuilderTag(tag.text));
-   const filters = filtersOf(refinement);
+      ownContent(refinement) ||
+      ownContent(scope) ||
+      query.tags.some((tag) => !isBuilderTag(tag.text));
+   // The report's filters on the source (`flights extend { where: … } -> v`,
+   // what the builder writes), and an earlier `v + { where: … }` refinement.
+   const filters = [
+      ...(filtersOf(scope) ?? []),
+      ...(filtersOf(refinement) ?? []),
+   ];
    return {
       name: query.name,
       source,
       declaration: { kind: "named", from: body.from },
-      ...(filters ? { filters } : {}),
+      ...(filters.length > 0 ? { filters } : {}),
       ...(t?.text("label") ? { label: t.text("label") as string } : {}),
       ...(t?.text("subtitle")
          ? { subtitle: t.text("subtitle") as string }

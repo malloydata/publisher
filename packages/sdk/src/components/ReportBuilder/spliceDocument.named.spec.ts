@@ -189,6 +189,54 @@ describe("a report the builder writes", () => {
       expect(back).toBe(authored);
    });
 
+   // An author may filter the source rather than refine the view, the form an
+   // inline multi-stage query needs (malloydata/publisher#723). The builder
+   // reads it as the same tile and edits the filters where they are.
+   it("reads filters on the query's source, and edits them there", async () => {
+      const scoped = file(
+         '"carrier_tile"',
+         "\nquery: carrier_tile is flights extend { where: carrier_code ~ $CARRIER } -> by_carrier\n",
+      );
+      expect(queryTile(await openDocument(scoped), 0)).toEqual({
+         name: "carrier_tile",
+         source: "flights",
+         declaration: { kind: "named", from: "by_carrier" },
+         filters: [{ field: "carrier_code", given: "CARRIER" }],
+      });
+      const two = await edited(scoped, (d) => {
+         queryTile(d, 0).filters?.push({
+            field: "origin_code",
+            given: "ORIGIN",
+         });
+      });
+      expect(two).toBe(
+         scoped.replace(
+            "{ where: carrier_code ~ $CARRIER }",
+            "{ where: carrier_code ~ $CARRIER, origin_code ~ $ORIGIN }",
+         ),
+      );
+      const none = await edited(two, (d) => {
+         delete queryTile(d, 0).filters;
+      });
+      expect(none).toBe(
+         file(
+            '"carrier_tile"',
+            "\nquery: carrier_tile is flights -> by_carrier\n",
+         ),
+      );
+      // A block with more in it than filters is the author's.
+      const own = scoped.replace(
+         "{ where: carrier_code ~ $CARRIER }",
+         "{ where: carrier_code ~ $CARRIER; dimension: one is 1 }",
+      );
+      expect(queryTile(await openDocument(own), 0).unmodelled).toBe(true);
+      await expect(
+         edited(own, (d) => {
+            delete queryTile(d, 0).filters;
+         }),
+      ).rejects.toThrow("extended with more than the builder writes");
+   });
+
    it("reads a query of another shape as one it only shows", async () => {
       const other = file(
          '"by_month"',

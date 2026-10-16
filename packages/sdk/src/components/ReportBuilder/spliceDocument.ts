@@ -44,6 +44,7 @@ import {
    type ParsedMalloy,
    type Span,
    type TreeGiven,
+   type TreeQuery,
    type TreeStage,
    type TreeView,
 } from "./malloyTree";
@@ -1184,6 +1185,22 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
 }
 
 /** `query: name is source -> view [+ { bindings }]`, with the tile's tags above it. */
+/**
+ * `query: name is source -> view [+ { where: … }]`, with the tile's tags above it.
+ *
+ * The filters are a refinement of the NAMED view, which Malloy applies to the
+ * view's first stage, so a field the view does not output, a joined field, or
+ * one a second stage drops still filters (measured, with exact rows, in
+ * reportForms.compile.spec.ts). Not `source extend { where: … } -> view`,
+ * though that also gives those rows in plain Malloy: Publisher cannot attach a
+ * source's `#(access_filter)` to a query whose source is extended, and refuses
+ * every such tile (report_tile_access.spec.ts in the server). The failure
+ * malloydata/publisher#723 reported for a trailing refinement of an inline
+ * multi-stage query does not reproduce on the Malloy this package pins
+ * (reportForms.compile.spec.ts), and the builder writes only named views. A
+ * query an author filtered on its source is read, and its filters edited where
+ * they are ({@link planNamedFilters}).
+ */
 function queryStatement(tile: QueryTile & { declaration: { from: string } }) {
    const bindings = (tile.filters ?? []).map(bindingText).join(", ");
    return [
@@ -1192,6 +1209,70 @@ function queryStatement(tile: QueryTile & { declaration: { from: string } }) {
          bindings ? ` + { ${bindings} }` : ""
       }`,
    ].join("\n");
+}
+
+/**
+ * Filters on a query's source, ` extend { where: a ~ $A, b ~ $B }`, or nothing
+ * when it has none: one `where:` holding every clause, since an `extend { … }`
+ * block takes no comma between statements.
+ */
+function scopeText(filters: QueryTile["filters"]): string {
+   const clauses = (filters ?? []).map((f) =>
+      bindingText(f).replace(/^where:\s*/, ""),
+   );
+   return clauses.length > 0 ? ` extend { where: ${clauses.join(", ")} }` : "";
+}
+
+/**
+ * A `named` tile's filters. Written as a `+ { where: … }` refinement of its
+ * view ({@link queryStatement}). A query whose author filters its source
+ * instead, `source extend { where: … } -> view`, keeps them there: the block
+ * is rewritten or taken away whole. A block holding anything but bindings is
+ * the author's, so a filter edit there is refused rather than risk it; so is a
+ * query that binds in both places.
+ */
+function planNamedFilters(
+   ctx: SpliceContext,
+   tile: QueryTile,
+   query: TreeQuery,
+): SpliceFailure | undefined {
+   const { parsed, edits } = ctx;
+   const refinement =
+      query.body.kind === "reference" ? query.body.refinement : undefined;
+   const binds = (stage: TreeStage | undefined) =>
+      stage?.wheres.some((w) => w.clauses.some((c) => c.binding)) ?? false;
+   const block = query.scope?.block;
+   if (binds(refinement) && binds(block)) {
+      return {
+         ok: false,
+         reason: `\`${tile.name}\` binds its filters in two places, so they cannot be changed here. Edit them in the file.`,
+      };
+   }
+   if (!binds(block)) return planReferenceFilters(ctx, tile, query);
+   if (
+      block &&
+      (block.statements.some(
+         (st) => !block.wheres.some((w) => w.span.start === st.span.start),
+      ) ||
+         block.wheres.some((w) => w.clauses.some((c) => !c.binding)))
+   ) {
+      return {
+         ok: false,
+         reason: `\`${tile.name}\`'s source is extended with more than the builder writes, so its filters cannot be changed here. Edit them in the file.`,
+      };
+   }
+   const start = query.scope?.sourceEnd ?? query.sourceEnd;
+   if (start === undefined) {
+      return {
+         ok: false,
+         reason: `Could not find \`${tile.name}\`'s source to filter it.`,
+      };
+   }
+   const cut = { start, end: query.scope?.end ?? start };
+   const comment = parsed.commentIn(cut);
+   if (comment) return commentRefusal(tile.name, parsed, comment);
+   edits.push({ ...cut, text: scopeText(tile.filters) });
+   return undefined;
 }
 
 function planAddedTiles(ctx: SpliceContext): SpliceFailure | undefined {
@@ -1395,6 +1476,11 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
             ok: false,
             reason: `Could not find \`${tile.name}\`'s declaration to filter it.`,
          };
+      }
+      if (tile.declaration.kind === "named") {
+         const failure = planNamedFilters(ctx, tile, view as TreeQuery);
+         if (failure) return failure;
+         continue;
       }
       if (view.body.kind === "reference") {
          const failure = planReferenceFilters(ctx, tile, view);

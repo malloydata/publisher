@@ -118,6 +118,15 @@ export interface TreeView extends Positioned {
  */
 export interface TreeQuery extends TreeView {
    source?: string;
+   /** Just after the source's name, where an `extend { … }` goes. Set with `source`. */
+   sourceEnd?: number;
+   /**
+    * `flights extend { where: … } -> v`: the `extend { … }` the query puts on
+    * its source, where a report's filters go. `sourceEnd` is just after the
+    * source's name and `end` just after the block's `}`, so the whole of it is
+    * `[sourceEnd, end)`.
+    */
+   scope?: { sourceEnd: number; end: number; block: TreeStage };
 }
 
 export interface TreeDimension extends Positioned {
@@ -275,6 +284,8 @@ const IS = {
    topLevelQueryDef: (c: Ctx) => has(c, "queryName", "isDefine", "sqExpr"),
    /** `lhs -> segment`, at the level of a query rather than a view. */
    sqArrow: (c: Ctx) => has(c, "sqExpr", "ARROW", "segExpr"),
+   /** `source extend { … }`, at the level of a query. */
+   sqExtend: (c: Ctx) => has(c, "sqExpr", "EXTEND", "exploreProperties"),
    /** A source by name, `flights`, or `flights(…)` with arguments. */
    sqID: (c: Ctx) => has(c, "id", "sourceArguments"),
    importStatement: (c: Ctx) => has(c, "IMPORT", "importURL"),
@@ -673,15 +684,20 @@ function readQueries(r: Reader, root: Ctx): TreeQuery[] {
          if (!span || !name || !sq) continue;
          const lhs = IS.sqArrow(sq) ? call(sq, "sqExpr") : undefined;
          const seg = IS.sqArrow(sq) ? call(sq, "segExpr") : undefined;
+         // `flights extend { … } -> v`: the report's filters on the source.
+         const extended = lhs && IS.sqExtend(lhs) ? lhs : undefined;
+         const named = extended ? call(extended, "sqExpr") : lhs;
          // A source by name and nothing else: `flights(x=1)` reads another
          // source than `flights` does, so it is not one the builder can name.
          const source =
-            lhs &&
+            named &&
             seg &&
-            IS.sqID(lhs) &&
-            r.text_(call(lhs, "sourceArguments")) === undefined
-               ? r.text_(call(lhs, "id"))?.trim()
+            IS.sqID(named) &&
+            r.text_(call(named, "sourceArguments")) === undefined
+               ? r.text_(call(named, "id"))?.trim()
                : undefined;
+         const scope =
+            source && extended ? readScope(r, extended, named) : undefined;
          out.push({
             name,
             span,
@@ -690,14 +706,62 @@ function readQueries(r: Reader, root: Ctx): TreeQuery[] {
             tags: readTags(r, statement, keyword?.start ?? span.start),
             siblings: defs.length,
             body:
-               source && seg
+               source && seg && (!extended || scope)
                   ? readSegment(r, seg, false)
                   : { kind: "unsupported", why: "not a source and a view" },
             ...(source ? { source } : {}),
+            ...(source && r.span(named)
+               ? { sourceEnd: (r.span(named) as Span).end }
+               : {}),
+            ...(scope ? { scope } : {}),
          });
       }
    }
    return out;
+}
+
+/** The `extend { … }` a query puts on its source, as {@link TreeQuery.scope}. */
+function readScope(
+   r: Reader,
+   extended: Ctx,
+   named: Ctx | undefined,
+): TreeQuery["scope"] | undefined {
+   const whole = r.span(extended);
+   const sourceSpan = r.span(named);
+   const props = call(extended, "exploreProperties");
+   const span = r.span(props);
+   if (!whole || !sourceSpan || !props || !span) return undefined;
+   // An `include { … }` is not a filter, and nothing the builder writes.
+   if (r.text_(call(extended, "includeBlock")) !== undefined) return undefined;
+   const statements: Positioned[] = [];
+   const wheres: TreeWhere[] = [];
+   for (let i = 0; i < (props.childCount ?? 0); i++) {
+      const child = props.getChild(i);
+      if (!isRule(child)) continue;
+      const at = r.positioned(child);
+      if (at) statements.push(at);
+      const w = call(child, "whereStatement");
+      if (w && IS.whereStatement(w)) {
+         const read = readWhere(r, w);
+         if (read) wheres.push(read);
+      }
+   }
+   const oneLine = !r.text.slice(span.start, span.end).includes("\n");
+   return {
+      sourceEnd: sourceSpan.end,
+      end: whole.end,
+      block: {
+         span,
+         openEnd: span.start + 1,
+         closeStart: span.end - 1,
+         statements,
+         wheres,
+         indent: statements.length
+            ? r.indentAt(statements[0].span.start)
+            : r.indentAt(span.start) + "   ",
+         oneLine,
+      },
+   };
 }
 
 function readDimensions(r: Reader, props: Ctx): TreeDimension[] {
