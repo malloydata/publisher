@@ -49,7 +49,19 @@ SPDX-License-Identifier: MIT
 - Define measures in source, not in views
 
 
-## Chart Types
+## Changing a view's chart where it is used
+
+A view's chart tag says how it draws everywhere. A report tile, or any query over the view, changes it for that one use with `viz` on the query, which merges over the view's tags:
+
+```malloy
+# viz=line
+query: trend_tile is orders -> sales_by_month
+```
+
+- **`viz` wins over a chart key.** `viz=bar`, `viz=line`, `viz=combo` and `viz=table` replace any `# bar_chart`, `# line_chart` or `# combo_chart` the view carries, wherever it was written. Never write `# -bar_chart` to take the view's chart off first; it is not needed.
+- **Big value, scatter and the maps have no `viz`.** `# big_value`, `# scatter_chart`, `# shape_map` and `# segment_map` draw whatever `viz` says, and the renderer tries line, bar and bar-and-line first. So on a query, `# scatter_chart` draws only over a view with no line, bar or bar-and-line chart, and a view tagged `# big_value` or a map stays one: no query over it can make it a table. Change those in the model.
+- **Properties go with the pick**: `# viz=bar { stack }` on the query, not on a `# bar_chart` line the `viz` already replaces.
+
 
 ### `# bar_chart`
 

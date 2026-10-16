@@ -15,8 +15,8 @@ A report with `layout=linear` renders its tiles one column wide, top to bottom, 
 ##| artifact { layout=linear title="Category review"
   tiles=[
     intro { kind=text },
-    "category_tiles -> revenue_trend",
-    "category_tiles -> brand_ranking"
+    "revenue_trend",
+    "brand_ranking"
   ]
 }
 |##
@@ -32,16 +32,16 @@ given: CATEGORY :: filter<string> is f''
 Pick a **Category** in the controls above and every chart below re-runs for it.
 |##
 
-source: category_tiles is order_items extend {
-  # line_chart
-  # label="Revenue by month"
-  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY }
+# viz=line
+# label="Revenue by month"
+query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY }
 
-  # bar_chart
-  # label="Top brands"
-  view: brand_ranking is top_brands + { where: category ~ $CATEGORY }
-}
+# viz=bar
+# label="Top brands"
+query: brand_ranking is order_items -> top_brands + { where: category ~ $CATEGORY }
 ```
+
+A tile that needs nothing of its own (no title, chart or filter) is just its entry, `"order_items -> sales_by_brand"`, with no query. The report declares no source: its tiles are served views and queries over them.
 
 - **`layout=linear` is required** when the tag lists tiles; without it the file is read as a grid.
 - `dashboard { columns }` has no effect, and a `colspan` or `break` on a tile entry is ignored with a warning (`notebook-tile-layout-ignored`).
@@ -52,14 +52,14 @@ source: category_tiles is order_items extend {
 An older linear form was a file of `run:` statements with `(markdown)` notes between them, under a tag with no `tiles`. Publisher no longer reads it: such a file is not a report, and the package warnings name it (`report-cells-removed`). Never write one. To bring one back, rewrite it as tiles:
 
 1. Each floating `##(markdown)` note or `##|(markdown)` block becomes a named `##|(markdown) name` block, listed as `name { kind=text }`.
-2. Each `run: <source> -> <query>` becomes a `view:` on a `<source>_tiles` extension the report declares, listed as `"<source>_tiles -> <view>"`. The render tags above the `run:` move to the view; a `#"` caption becomes `# label="…"`. A `run:` of a named `query:` is listed by the query's name.
+2. Each `run: <source> -> <view>` becomes a tile. With no render tags, list it as `"<source> -> <view>"`. With tags, make it `query: <name> is <source> -> <view>` with the tags above it, and list it by name; a `#"` caption becomes `# label="…"`, and a chart tag becomes `# viz=…` (`skill:malloy-charts`). A `run:` of a named `query:` is listed by the query's name.
 3. List the entries in `tiles=[…]` in reading order, keep `layout=linear`, and delete every `run:`.
 
 ## Multiple models and cross-model joins
 
 A report compiles with **all** its `import`s in scope, so it can import several `.malloy` models, and a tile's source can reference, and **join**, sources from different imported files. Import each model you need at the top; no re-export wrapper is required.
 
-**When the package root holds an `index.malloy`, tiles read only what it exports.** A tile over a source `index.malloy` does not export answers 404, even when the report imports that source's file. A source the report derives from an exported one (`source: mine is customers extend { ... }`) still works. A tile's own source over a raw table (`duckdb.table(...)`) is refused. To use a source, add it to the `export { ... }` in `index.malloy`.
+**When the package root holds an `index.malloy`, tiles read only what it exports.** A tile over a source `index.malloy` does not export answers 404, even when the report imports that source's file. A source a report derives from an exported one (`source: mine is customers extend { ... }`) still works, though a report should not need one: refine the tile's query instead. A tile's own source over a raw table (`duckdb.table(...)`) is refused. To use a source, add it to the `export { ... }` in `index.malloy`.
 
 ## Style
 
@@ -79,7 +79,7 @@ RIGHT: frames the question and lets the query answer it. How is revenue trending
 
 Each is a text tile, listed in `tiles=[…]` by name, for example `trend_q { kind=text }`.
 
-To add `limit`, `where`, or other options to an existing view, refine it with `+`: `my_view + { limit: 15 }`.
+To add `limit`, `where`, or other options to an existing view, refine it with `+` in the tile's query: `query: top is orders -> my_view + { limit: 15 }`.
 
 One query per tile, and remember a chart renders only the **first** aggregate in its result.
 
@@ -98,8 +98,8 @@ A `.malloynb` (cells delimited by `>>>markdown` and `>>>malloy`) is a deprecated
 | `## Heading` for a section title                                           | That line is model tags, not prose. Write the heading inside a `##\|(markdown) name` text tile. |
 | `##\| markdown` or `##\|markdown` (no parentheses)                         | Write `##\|(markdown) name`.                                                                    |
 | Text on the opener line after `##\|(markdown)`                             | Only the tile's name may follow it. Put the text on the next line.                              |
-| `run:` in a report that lists `tiles=[…]`                                  | Never shown. Define a `view:`, list `"source -> view"` in `tiles`, delete the `run:`.           |
-| `tiles=[intro { kind=text }, orders_tiles -> headline]` (entry not quoted) | Every `source -> view` entry is a quoted string. Unquoted, the tag does not parse.              |
+| `run:` in a report that lists `tiles=[…]`                                  | Never shown. List `"source -> view"` in `tiles` (or a `query:` by name), delete the `run:`.     |
+| `tiles=[intro { kind=text }, orders -> headline]` (entry not quoted)       | Every `source -> view` entry is a quoted string. Unquoted, the tag does not parse.              |
 | A bare `intro` in `tiles` for a `##\|(markdown) intro` block               | A bare name is the query-tile form for a `query:`. Write `intro { kind=text }`.                 |
 | `colspan` or `break` on a linear report's tile entry                       | Ignored and reported (`notebook-tile-layout-ignored`). Remove them, or switch to `layout=grid`. |
 | `#(filter)` in any form                                                    | Deprecated. Declare a `given:` on the model's source instead.                                   |

@@ -105,6 +105,9 @@ is a Console convenience.
   tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map,
   Segment map and Bar and line; a choice the view cannot render stays in the list, greyed, with its reason under it.
   **Color** sets a chart's color from the theme's series, or any other, as a `# theme.palette.series` line.
+  A tile names a served view until it is given a title, width, chart, color or filter of its own; then it
+  is a `query:` in the report carrying those settings (a chart as `# viz=…`), and it names the view again
+  when they are all back to the view's. The builder declares no source and never writes a model file.
   The layout is the file's: the builder draws the report as its `layout=` says and never rewrites
   it. Adding a tile
   offers every source the package publishes; when the file cannot already see the chosen source,
