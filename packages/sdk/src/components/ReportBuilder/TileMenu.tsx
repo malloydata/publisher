@@ -295,7 +295,7 @@ export function TileMenu({
                      colorBlocked,
                   )}
                   {!colorBlocked && (
-                     <Swatch color={query.color ?? theme.series[0]} />
+                     <Swatch color={query.color ?? theme.series[0]} trailing />
                   )}
                   <ChevronRightIcon
                      fontSize="small"
@@ -522,17 +522,28 @@ const COLORED_CHARTS = new Set<string>([
 const toHex = (color: string | undefined) =>
    color && isSeriesColor(color) ? color.toLowerCase() : "#000000";
 
-function Swatch({ color }: { color: string | undefined }) {
+/**
+ * A colour square. Leading, it sits before a choice's name; trailing, it
+ * follows a row's value, spaced from it as the row's chevron is.
+ */
+function Swatch({
+   color,
+   trailing = false,
+}: {
+   color: string | undefined;
+   trailing?: boolean;
+}) {
    return (
       <Box
          aria-hidden
+         data-swatch={trailing ? "trailing" : "leading"}
          sx={{
             width: 14,
             height: 14,
             borderRadius: "3px",
             bgcolor: color,
             border: "1px solid rgba(0,0,0,0.15)",
-            mr: 1.5,
+            ...(trailing ? { ml: 1 } : { mr: 1.5 }),
             flex: "none",
          }}
       />

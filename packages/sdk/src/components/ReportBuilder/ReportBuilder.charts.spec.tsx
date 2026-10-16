@@ -314,6 +314,19 @@ describe("ReportBuilder: a chart's color", () => {
       expect(opened).toBe(2);
    });
 
+   // The row's swatch follows its value ("Theme", "#7f9862"); spaced like the
+   // swatches in the Color menu it read as "Theme▢", touching the text.
+   it("spaces the Color row's swatch from its value", async () => {
+      await mount();
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const swatch = colorItem().querySelector("[data-swatch]") as HTMLElement;
+      expect(swatch.dataset.swatch).toBe("trailing");
+      const style = getComputedStyle(swatch);
+      expect(parseFloat(style.marginLeft)).toBeGreaterThan(0);
+      expect(parseFloat(style.marginRight) || 0).toBe(0);
+   });
+
    it("offers no color on a table, which draws no series", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
