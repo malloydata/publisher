@@ -4,6 +4,7 @@
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { Given } from "../../client";
 import { GivenValue } from "../../hooks/givenValue";
+import type { OptionSearch } from "../../hooks/useSuggestOptions";
 import { useFilterEditing } from "./filterEditing";
 import {
    AddFilterButton,
@@ -36,6 +37,10 @@ export interface GivensPanelProps {
    optionsLoading?: boolean;
    /** Givens whose `suggest` query failed, from `useSuggestOptions.failed`. */
    optionsFailed?: ReadonlySet<string>;
+   /** Givens whose option list was cut off, from `useSuggestOptions.truncated`. */
+   optionsTruncated?: ReadonlySet<string>;
+   /** Server search for a cut-off list, per given, from `useSuggestOptions.search`. */
+   optionSearch?: ReadonlyMap<string, OptionSearch>;
    /**
     * Set to render an Apply button, for `autorun=false`. Absent means controls
     * take effect as they change, which is the default everywhere.
@@ -68,6 +73,8 @@ export function GivensPanel({
    options,
    optionsLoading,
    optionsFailed,
+   optionsTruncated,
+   optionSearch,
    apply,
    title,
 }: GivensPanelProps) {
@@ -81,6 +88,16 @@ export function GivensPanel({
    // parameter in the URL.
    const hasValues = Array.from(values.values()).some((v) => v !== null);
 
+   // A cut-off list, and the search that finds past it, for one control.
+   const searchProps = (name: string | undefined) => {
+      if (name === undefined) return {};
+      const search = optionSearch?.get(name);
+      return {
+         ...(optionsTruncated?.has(name) ? { optionsTruncated: true } : {}),
+         ...(search ? { optionSearch: search } : {}),
+      };
+   };
+
    const inputs = givens.map((given) => (
       <Box key={given.name}>
          <GivenInput
@@ -92,6 +109,7 @@ export function GivensPanel({
             optionsFailed={
                given.name ? optionsFailed?.has(given.name) : undefined
             }
+            {...searchProps(given.name)}
          />
       </Box>
    ));
@@ -140,6 +158,7 @@ export function GivensPanel({
                   optionsFailed={
                      given.name ? optionsFailed?.has(given.name) : undefined
                   }
+                  {...searchProps(given.name)}
                />
             ))}
             {editing?.unrendered.map((filter) => (
