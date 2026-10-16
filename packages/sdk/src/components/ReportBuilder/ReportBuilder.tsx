@@ -28,6 +28,7 @@ import {
    type QueryTile,
 } from "./document";
 import { FilterStrip, type FixedFilter } from "./FilterStrip";
+import { clockTime, type SaveStatusProps } from "./SaveStatus";
 import { SELECTION_RING_PX } from "./TileFrame";
 import { useBuilderSelection } from "./useBuilderSelection";
 import { useBuilderSession } from "./useBuilderSession";
@@ -154,7 +155,7 @@ export interface ReportBuilderProps {
     */
    dashboards?: string[];
    /**
-    * Saves, refusals and layout switches, for the host to log; see
+    * Opens, saves and refusals, for the host to log; see
     * `ReportEvent`. Each is stamped with `modelPath` (empty when the builder
     * was given none) and the document's layout as it stands.
     */
@@ -223,7 +224,7 @@ export interface ReportBuilderProps {
    onExit?: () => void;
    /**
     * Take over the page-level controls (save status and Save, undo and redo,
-    * the layout switch, and adding a tile, text or filter): the builder hands
+    * and adding a tile, text or filter): the builder hands
     * them over as `BuilderControls` whenever they change, and draws no
     * toolbar of its own. Draw them with `BuilderBar`, or place each in
     * the host's own chrome. `undefined` is handed over when the builder goes.
@@ -426,13 +427,29 @@ export function ReportBuilder({
 
    const empty = editor.document.tiles.length === 0;
    const { toolbarProps } = session;
-   useReportControls(onControlsChange, {
+   const restored = draft.restored;
+   // Where the edits stand, for the status on either surface: the host's bar
+   // or the page's own toolbar.
+   const saveStatus: SaveStatusProps = {
       status: session.saving
          ? "saving"
          : toolbarProps.dirty
            ? "unsaved"
            : "saved",
       saveTarget: saveLabel ?? SAVE_TARGET[savesTo],
+      ...(draft.keptAt !== undefined ? { draftKeptAt: draft.keptAt } : {}),
+      // An offered draft is discarded without being applied, so Discard is
+      // an answer before there is anything unsaved.
+      ...((toolbarProps.dirty || restored?.pending) && draftKey !== undefined
+         ? { discard: draft.discard }
+         : {}),
+      ...(restored ? { restored } : {}),
+      ...(restored && !restored.pending
+         ? { dismissRestored: draft.dismissRestored }
+         : {}),
+   };
+   useReportControls(onControlsChange, {
+      ...saveStatus,
       ...(toolbarProps.onSave ? { save: toolbarProps.onSave } : {}),
       canUndo: toolbarProps.canUndo,
       undo: toolbarProps.onUndo,
@@ -450,10 +467,7 @@ export function ReportBuilder({
       },
       ...(toolbarProps.onExit ? { exit: toolbarProps.onExit } : {}),
       ...(session.done ? { done: session.done } : {}),
-      ...(draft.keptAt !== undefined ? { draftKeptAt: draft.keptAt } : {}),
-      ...(toolbarProps.dirty && draftKey !== undefined
-         ? { discard: draft.discard }
-         : {}),
+      ...(restored?.pending ? { restore: draft.restoreOffered } : {}),
    });
    // The builder's actions: on the title's line, at the right, above the
    // description.
@@ -464,6 +478,9 @@ export function ReportBuilder({
          {...(catalog ? { onAddTile: () => openAdd() } : {})}
          savesTo={savesTo}
          {...(saveLabel ? { saveLabel } : {})}
+         {...(draftKey !== undefined && toolbarProps.onSave
+            ? { saveStatus }
+            : {})}
       />
    );
    return (
@@ -564,42 +581,34 @@ export function ReportBuilder({
                   </Stack>
                )}
 
-               {draft.restored && (
+               {/* Edits put back on opening are said in the save status, so
+                the page does not move. A stale draft is a choice: put back,
+                it replaces the newer version; dropped, the edits are gone.
+                So it is asked here, with no close, until it is answered (or
+                an edit answers it). */}
+               {restored?.pending && (
                   <Alert
-                     severity={draft.restored.pending ? "warning" : "info"}
-                     onClose={draft.dismissRestored}
+                     severity="warning"
                      action={
-                        draft.restored.pending ? (
-                           <>
-                              <Button
-                                 color="inherit"
-                                 size="small"
-                                 onClick={draft.restoreOffered}
-                              >
-                                 Restore them
-                              </Button>
-                              <Button
-                                 color="inherit"
-                                 size="small"
-                                 onClick={draft.discard}
-                              >
-                                 Discard
-                              </Button>
-                           </>
-                        ) : (
+                        <>
+                           <Button
+                              color="inherit"
+                              size="small"
+                              onClick={draft.restoreOffered}
+                           >
+                              Restore them
+                           </Button>
                            <Button
                               color="inherit"
                               size="small"
                               onClick={draft.discard}
                            >
-                              Discard edits
+                              Discard
                            </Button>
-                        )
+                        </>
                      }
                   >
-                     {draft.restored.pending
-                        ? `You have unsaved edits from ${clockTime(draft.restored.savedAt)}, made before this report changed. Restoring them replaces the current version.`
-                        : `Restored your unsaved edits from ${clockTime(draft.restored.savedAt)}.`}
+                     {`You have unsaved edits from ${clockTime(restored.savedAt)}, made before this report changed. Restoring them replaces the current version.`}
                   </Alert>
                )}
 
@@ -654,18 +663,4 @@ export function ReportBuilder({
          </Stack>
       </OpenDraftContext.Provider>
    );
-}
-
-/** A time of day, or a date and time when not today: when a draft was kept. */
-function clockTime(at: number): string {
-   const when = new Date(at);
-   const today = new Date().toDateString() === when.toDateString();
-   return today
-      ? when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-      : when.toLocaleString([], {
-           month: "short",
-           day: "numeric",
-           hour: "numeric",
-           minute: "2-digit",
-        });
 }

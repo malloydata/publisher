@@ -16,6 +16,7 @@ import {
 import type { ReactNode, Ref } from "react";
 import type { SavesTo } from "./documentSession";
 import { SecondaryButton } from "../buttons";
+import { SaveStatus, type SaveStatusProps } from "./SaveStatus";
 import { MOD } from "./useBuilderShortcuts";
 import { edgeColor, hoverEdgeColor } from "../controlTokens";
 import { DEFAULT_UI, type ReportUi } from "../../theme/ui";
@@ -139,6 +140,12 @@ export interface BuilderToolbarProps {
     * Console leaves from its own header and passes nothing.
     */
    onExit?: () => void;
+   /**
+    * Where the edits stand, drawn before Save, for a builder that keeps a
+    * draft: the same status a host's {@link BuilderBar} draws, with its
+    * Discard edits menu and the word that edits were put back on opening.
+    */
+   saveStatus?: SaveStatusProps;
 }
 
 export function BuilderToolbar({
@@ -155,6 +162,7 @@ export function BuilderToolbar({
    actions,
    onAddTile,
    onExit,
+   saveStatus,
 }: BuilderToolbarProps) {
    const { theme } = usePublisherTheme();
    const edge = edgeColor(theme.cardBorder);
@@ -219,6 +227,7 @@ export function BuilderToolbar({
             <Divider orientation="vertical" sx={dividerSx} />
          )}
          {actions}
+         {onSave && saveStatus && <SaveStatus {...saveStatus} />}
          {onSave ? (
             <Tooltip
                title={

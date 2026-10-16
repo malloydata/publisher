@@ -7,12 +7,13 @@ import {
    render,
    screen,
    waitFor,
+   within,
 } from "@testing-library/react";
 import { describe, expect, it, mock } from "bun:test";
 import { BuilderBar } from "./BuilderBar";
 import type { BuilderControls } from "./builderControls";
 import { ReportBuilder } from "./ReportBuilder";
-import { draftStore } from "./useReportDraft";
+import { draftStore, textFingerprint } from "./useReportDraft";
 import { openDocument } from "./testing/fixtures";
 
 /**
@@ -266,9 +267,13 @@ describe("a draft kept in this browser, and Done", () => {
       const second = await mountWithDraft();
       await waitFor(() => expect(textTileShown()).toBe(true));
       expect(second.last()?.status).toBe("unsaved");
-      expect(
-         screen.getByText(/Restored your unsaved edits from/),
-      ).toBeDefined();
+      // Said in the status, not in a banner over the page.
+      expect(second.last()?.restored).toMatchObject({
+         stale: false,
+         pending: false,
+      });
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText(/Restored your unsaved edits/)).toBeNull();
       // Undo takes the restore back.
       act(() => second.last()?.undo());
       await waitFor(() => expect(textTileShown()).toBe(false));
@@ -363,8 +368,43 @@ describe("a draft made before the report changed", () => {
       expect(textTileShown()).toBe(false);
       expect(last()?.status).toBe("saved");
       expect(window.localStorage.getItem(slot)).not.toBeNull();
+      // A choice the author has to make: no close, and both answers handed
+      // to a host drawing its own status.
+      expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
+      expect(last()?.restored?.pending).toBe(true);
+      expect(last()?.restore).toBeDefined();
+      expect(last()?.discard).toBeDefined();
+      expect(last()?.dismissRestored).toBeUndefined();
       fireEvent.click(screen.getByRole("button", { name: "Restore them" }));
       await waitFor(() => expect(textTileShown()).toBe(true));
+      expect(screen.queryByText(/made before this report changed/)).toBeNull();
+   });
+
+   it("is answered by a host's restore as well as the page's button", async () => {
+      await keepStale();
+      const last = await mountIt();
+      await screen.findByText(/made before this report changed/);
+      act(() => last()?.restore?.());
+      await waitFor(() => expect(textTileShown()).toBe(true));
+      expect(last()?.restored?.pending).toBe(false);
+      expect(last()?.restore).toBeUndefined();
+   });
+
+   it("goes when the author edits over it instead, since the edits replace it", async () => {
+      await keepStale();
+      const last = await mountIt();
+      await screen.findByText(/made before this report changed/);
+      act(() => last()?.add.text?.());
+      await waitFor(() =>
+         expect(
+            screen.queryByText(/made before this report changed/),
+         ).toBeNull(),
+      );
+      expect(last()?.restored).toBeUndefined();
+      // What is kept now is the edit, made over the current file.
+      expect(window.localStorage.getItem(slot)).not.toContain(
+         '"base":"0:other"',
+      );
    });
 
    it("Discard drops it without touching the report", async () => {
@@ -374,6 +414,99 @@ describe("a draft made before the report changed", () => {
       fireEvent.click(screen.getByRole("button", { name: "Discard" }));
       expect(window.localStorage.getItem(slot)).toBeNull();
       expect(textTileShown()).toBe(false);
+   });
+});
+
+describe("edits put back on opening", () => {
+   const KEY = "examples/storefront/spec-restored";
+   const slot = `malloy-publisher.report-draft:${KEY}`;
+   /** A draft kept over this very file, so it is put back, not offered. */
+   const keepFresh = async () => {
+      const opened = await openDocument(GRID);
+      window.localStorage.setItem(
+         slot,
+         JSON.stringify({
+            v: 1,
+            base: textFingerprint(GRID),
+            savedAt: Date.now(),
+            document: { ...opened, title: "Kept title" },
+         }),
+      );
+   };
+
+   it("in a host's bar: no banner, Draft saved, and the menu says they were restored until it is seen", async () => {
+      await keepFresh();
+      const handed = mock((_controls: BuilderControls | undefined) => {});
+      const page = render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={() => {}}
+            onExit={() => {}}
+            draftKey={KEY}
+            onControlsChange={handed}
+         />,
+      );
+      const last = () => handed.mock.calls.at(-1)?.[0];
+      await waitFor(() => expect(last()?.draftKeptAt).toBeNumber());
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(last()?.restored?.pending).toBe(false);
+      expect(last()?.dismissRestored).toBeDefined();
+      expect(last()?.restore).toBeUndefined();
+
+      // The host draws the SDK's bar with what it was handed.
+      const bar = render(<BuilderBar controls={last()} />);
+      const chip = bar.getByRole("button", { name: "Draft saved" });
+      expect(chip.querySelector('[data-restored="true"]')).not.toBeNull();
+      fireEvent.click(chip);
+      within(await bar.findByRole("menu")).getByText(
+         /Restored your unsaved edits from/,
+      );
+      bar.getByRole("menuitem", { name: /Discard edits/ });
+      fireEvent.keyDown(bar.getByRole("menu"), { key: "Escape" });
+      await waitFor(() => expect(last()?.restored).toBeUndefined());
+      bar.unmount();
+      page.unmount();
+   });
+
+   it("in the page's own toolbar: no banner, and the status says it", async () => {
+      await keepFresh();
+      render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={() => {}}
+            draftKey={KEY}
+         />,
+      );
+      const chip = await screen.findByRole("button", { name: "Draft saved" });
+      expect(screen.queryByRole("alert")).toBeNull();
+      fireEvent.click(chip);
+      within(await screen.findByRole("menu")).getByText(
+         /Restored your unsaved edits from/,
+      );
+      fireEvent.click(screen.getByRole("menuitem", { name: /Discard edits/ }));
+      await waitFor(() => expect(window.localStorage.getItem(slot)).toBeNull());
+   });
+
+   it("is old news after the next edit", async () => {
+      await keepFresh();
+      const handed = mock((_controls: BuilderControls | undefined) => {});
+      render(
+         <ReportBuilder
+            source={GRID}
+            document={await openDocument(GRID)}
+            onSave={() => {}}
+            onExit={() => {}}
+            draftKey={KEY}
+            onControlsChange={handed}
+         />,
+      );
+      const last = () => handed.mock.calls.at(-1)?.[0];
+      await waitFor(() => expect(last()?.restored).toBeDefined());
+      act(() => last()?.add.text?.());
+      await waitFor(() => expect(last()?.restored).toBeUndefined());
+      expect(last()?.status).toBe("unsaved");
    });
 });
 
@@ -457,6 +590,50 @@ describe("BuilderBar with Done that saves", () => {
       );
       screen.getByRole("menuitem", { name: /Discard edits/ }).click();
       expect(discard).toHaveBeenCalledTimes(1);
+   });
+
+   it("says edits were restored in its menu, and hands back that they were seen", async () => {
+      const dismissRestored = mock(() => {});
+      render(
+         <BuilderBar
+            controls={{
+               ...base,
+               done: () => {},
+               draftKeptAt: Date.now(),
+               discard: () => {},
+               restored: { savedAt: Date.now(), stale: false, pending: false },
+               dismissRestored,
+            }}
+         />,
+      );
+      expect(screen.queryByRole("alert")).toBeNull();
+      screen.getByRole("button", { name: "Draft saved" }).click();
+      const menu = await screen.findByRole("menu");
+      within(menu).getByText(/Restored your unsaved edits from/);
+      expect(within(menu).queryByText(/Kept in this browser/)).toBeNull();
+      // Said aloud too, as the banner was.
+      // (The open menu hides the rest of the page from the tree.)
+      expect(screen.getByRole("status", { hidden: true }).textContent).toMatch(
+         /^Draft saved\. Restored your unsaved edits from/,
+      );
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+      await waitFor(() => expect(dismissRestored).toHaveBeenCalledTimes(1));
+   });
+
+   it("says only that the draft is kept once there is no news", async () => {
+      render(
+         <BuilderBar
+            controls={{
+               ...base,
+               done: () => {},
+               draftKeptAt: Date.now(),
+               discard: () => {},
+            }}
+         />,
+      );
+      screen.getByRole("button", { name: "Draft saved" }).click();
+      expect(await screen.findByText(/Kept in this browser at/)).toBeDefined();
+      expect(screen.queryByText(/Restored your unsaved edits/)).toBeNull();
    });
 });
 
