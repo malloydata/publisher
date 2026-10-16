@@ -292,7 +292,7 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
 def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
                mcp_port: int, seed: bool) -> list[str]:
     """The argv for one Publisher, with `--init` only when seeding."""
-    cmd = ["bun", "run", str(server), "--server_root", str(root),
+    cmd = ["node", str(server), "--server_root", str(root),
            "--port", str(port), "--mcp_port", str(mcp_port)]
     return [*cmd, "--init"] if seed else cmd
 

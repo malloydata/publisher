@@ -98,13 +98,14 @@ declaring a field to quiet a checker changes the thing being measured.
 
 ## Run it
 
-You need a clone of this repository with Publisher built (Node 20+, Bun, and
-a Java runtime for the SDK build), and Python 3.11+ for the eval scripts. Bun
-builds and runs Publisher; everything else here is Python. Every command reads
-`eval.toml`, so none of them takes a server flag. From the repository root:
+You need a clone of this repository with Publisher built (Node 20+, Bun for the
+build only, and a Java runtime for the SDK build), and Python 3.11+ for the
+eval scripts. The scripts run Publisher with Node; everything else here is
+Python. Every command reads `eval.toml`, so none of them takes a server flag.
+From the repository root:
 
 ```bash
-bun install && bun run build          # once: builds Publisher
+bun install && bun run build          # once: the repo's build: builds Publisher
 EVAL=skills/eval-loop/scripts/eval.py
 SET=examples/storefront/evals/storefront-tour
 
