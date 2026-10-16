@@ -246,21 +246,82 @@ const PUBLISHER_OWNED_TAGS = ["artifact", "drill", "theme"];
  * tile is a standalone query, so without this every tile of every dashboard
  * answers `Unknown render tag 'colspan'` for a tag Publisher did consume.
  *
- * Dropped only ON THE TOP-LEVEL RESULT of a REPORT file, which is the shape a
- * tile has and the only place a tile runs. A `# colspan` on a nest that is not a
- * dashboard child is still a real mistake nothing else reads, and it reports
- * against that nest's field name, so it survives. Nor is the renderer's own
- * `Invalid # colspan` / `Ignored # colspan` touched: this matches only the
- * unknown-tag line.
+ * Dropped only ON THE TOP-LEVEL RESULT, which is the shape a tile has. A
+ * `# colspan` on a nest that is not a dashboard child is still a real mistake
+ * nothing else reads, and it reports against that nest's field name, so it
+ * survives. Nor is the renderer's own `Invalid # colspan` / `Ignored # colspan`
+ * touched: this matches only the unknown-tag line.
  *
- * The model scope matters because this filter runs on EVERY query the server
- * answers, not only on tiles. Suppressing by shape alone would have taken the
- * warning away from an ordinary query that puts one of these at top level, where
+ * Two scopes, one per route. A query is dropped when it ran against a report
+ * file ({@link filterPublisherOwnedRenderLogs}), since that is where a tile
+ * runs. The load-time check knows more, so it drops the finding only on a view
+ * or query a grid report names as a tile ({@link dropGridTileLayoutFindings}),
+ * wherever that view is defined. Suppressing by shape alone would take the
+ * warning away from an ordinary view that puts one of these at top level, where
  * there is no grid and the tag really does nothing.
  */
 const RENDERER_CHILD_TAGS = ["colspan", "break", "subtitle", "borderless"];
 
 const UNKNOWN_RENDER_TAG = /^Unknown render tag '([^']+)' on field '([^']*)'/;
+
+/** The renderer calling a tile layout tag (`# colspan`, `# break`, …) unknown on a result's top level. */
+function isTileLayoutTagOnRoot(message: string | undefined): boolean {
+   const match = UNKNOWN_RENDER_TAG.exec(message ?? "");
+   if (!match) return false;
+   const [, tag, field] = match;
+   return RENDERER_CHILD_TAGS.includes(tag.split(".")[0]) && field === "root";
+}
+
+/**
+ * Where the view or query a run expression names is defined (`source -> view`,
+ * or a query's name, resolved in `modelDef`), as a key: one definition has
+ * one key in every model that can see it, an inherited copy of a view
+ * included. Undefined when the expression names nothing with a location.
+ */
+export function definitionKey(
+   modelDef: ModelDef | undefined,
+   expression: string,
+): string | undefined {
+   const parts = normalizeTileExpression(expression).split(" -> ");
+   const named = modelDef?.contents[parts[0]];
+   let location;
+   if (parts.length === 1 && named?.type === "query") {
+      location = named.location;
+   } else if (parts.length === 2 && named && isSourceDef(named)) {
+      location = named.fields.find(
+         (field) => field.type === "turtle" && field.name === parts[1],
+      )?.location;
+   }
+   if (!location) return undefined;
+   const { line, character } = location.range.start;
+   return `${location.url}:${line}:${character}`;
+}
+
+/**
+ * Drop the renderer's "unknown tag" finding for a tile layout tag on a view or
+ * query a grid report names as a tile, and keep it everywhere else.
+ *
+ * A grid report reads `# colspan`, `# break`, `# subtitle` and `# borderless`
+ * off the view each tile names ({@link ReportTileLayout}), with or without a
+ * `dashboard { columns=N }` (without one the report lint says the tile is
+ * clamped to the viewer's default). The renderer validates the view on its own
+ * and calls the tag unknown, so without this the load reports a tag the grid
+ * reads. A view no grid report names keeps the finding, including one in a
+ * report file and a tile of a linear report, which is one column.
+ *
+ * `isGridTile` says whether a finding's subject is defined where a grid tile
+ * is ({@link definitionKey}), so a view a report imports from another file
+ * counts, and so does a copy of it inherited by an extending source.
+ */
+export function dropGridTileLayoutFindings<T extends { message?: string }>(
+   warnings: T[],
+   isGridTile: (warning: T) => boolean,
+): T[] {
+   return warnings.filter(
+      (warning) =>
+         !(isTileLayoutTagOnRoot(warning.message) && isGridTile(warning)),
+   );
+}
 
 /**
  * Drop "unknown render tag" complaints about tags Publisher owns, leaving every
@@ -280,14 +341,8 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
-      const [, tag, field] = match;
-      const root = tag.split(".")[0];
-      if (PUBLISHER_OWNED_TAGS.includes(root)) return false;
-      return !(
-         couldBeATile &&
-         RENDERER_CHILD_TAGS.includes(root) &&
-         field === "root"
-      );
+      if (PUBLISHER_OWNED_TAGS.includes(match[1].split(".")[0])) return false;
+      return !(couldBeATile && isTileLayoutTagOnRoot(log.message));
    });
 }
 

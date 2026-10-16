@@ -6261,11 +6261,11 @@ export class Model {
     * annotated source view (`run: <source> -> <view>`) compile-only -- no
     * execution -- to get a stable result schema, then runs the renderer's
     * headless `validateRenderTags`. Targets with no annotations carry no render
-    * tags, so they are skipped without compiling. Every finding the renderer
-    * reports is logged as a warning naming the offending target; none of them
-    * fail the package load. The findings are returned so the owning Package can
-    * surface them as non-fatal `warnings` on its response, tagged with the
-    * renderer's own severity:
+    * tags, so they are skipped without compiling. None of the findings fail
+    * the package load. They are returned, each naming its target, so the
+    * owning Package can drop the ones a grid report's tiles explain and
+    * surface (and log) the rest as non-fatal `warnings` on its response,
+    * tagged with the renderer's own severity:
     *
     *   - `error`: the tag is malformed for the field it sits on (e.g. a
     *     child-only `# big_value { sparkline=... }` on a view with no activating
@@ -6314,10 +6314,6 @@ export class Model {
       ];
 
       const findings: RenderTagWarning[] = [];
-      // Once per model: it reads the whole model, and the loop below runs
-      // without an await, so a call per result held the event loop for the
-      // number of results times the model's size.
-      const carriesReportTag = this.carriesReportTag();
       // Nothing below does I/O, so without this the whole loop is one
       // macrotask: a large model's validation held the event loop for ~1 s.
       const yielder = createEventLoopYielder();
@@ -6345,25 +6341,24 @@ export class Model {
          // unrecognized third vanish -- this same bug again, a finding the
          // author cannot see any other way, dropped on the way out. The
          // narrowing below surfaces anything unexpected as `warn` instead.
+         //
+         // Tile layout tags (`# colspan` and the rest) are kept here, whatever
+         // this file is: whether one is read depends on whether a grid report
+         // names this view as a tile, which may be another file, so the
+         // package decides once its reports are known
+         // (dropGridTileLayoutFindings).
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            carriesReportTag,
+            false,
          );
-         if (logs.length > 0) {
-            // An inert tag is not an invalid one, so don't call it "Invalid";
-            // the per-finding messages already say which kind each is.
-            logger.warn(
-               `Render tag findings on '${label}': ${logs
-                  .map((e) => `[${e.severity}] ${e.message}`)
-                  .join("; ")}`,
-            );
-            for (const e of logs) {
-               findings.push({
-                  subject: label,
-                  message: e.message,
-                  severity: e.severity === "error" ? "error" : "warn",
-               });
-            }
+         // Not logged here: the package logs what survives its tile filter,
+         // so a tile's layout tag does not log a warning on every load.
+         for (const e of logs) {
+            findings.push({
+               subject: label,
+               message: e.message,
+               severity: e.severity === "error" ? "error" : "warn",
+            });
          }
       }
       return findings;
