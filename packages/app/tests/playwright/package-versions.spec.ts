@@ -94,6 +94,11 @@ test.describe("package versions — the version switch", () => {
    test.beforeAll(async ({}, testInfo) => {
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
       const status = await (await api(baseURL, "GET", "/status")).json();
+      // CI runs this spec against a server it started with versioning on, and
+      // says so: there a server reporting it off is a failure, not a skip.
+      if (process.env.EXPECT_PACKAGE_VERSIONING === "on") {
+         expect(status.packageVersioning).toBe("on");
+      }
       test.skip(
          status.packageVersioning !== "on",
          "the server does not publish versions (PUBLISHER_PACKAGE_VERSIONING is off)",
