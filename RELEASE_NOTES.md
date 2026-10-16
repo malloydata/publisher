@@ -27,7 +27,7 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 With `queryVersionId` set, every query the builder runs uses that version: tiles, the report's manifest, filter options and suggestions, the report listing, and the field catalog. Everything about the document still follows `resourceUri` alone. So a host passing an unversioned `resourceUri` plus `queryVersionId` gets the reader's cached results on Edit, with no second request, while drafts and saving behave as for any unversioned report. A text-held document's compile takes no version, so with `textSource` only its tiles and options follow the prop. When the prop is unset, behaviour is unchanged.
 
-## [Unreleased] — A filter's dropdown can find values past its first 1,000
+## [0.9.13] — A filter's dropdown can find values past its first 1,000
 
 A `select` or `multiselect` control over a dimension with more than 1,000 distinct values could only ever offer the first 1,000 in order: its options were fetched once, and typing filtered them in the browser, so a value past the cutoff (say "General Motors, LLC" among 2,901 manufacturers) could not be found and no request was sent. Now the suggest asks for one row past its limit, so a cut-off list is known to be one. Typing in such a control searches the whole dimension on the server after a 250ms pause, with a case-insensitive "contains" that every dialect compiles, and offers up to 200 matches. The dropdown says when a list is partial. Lists of 1,000 or fewer behave exactly as before and send no extra requests. This applies to both a package report and a text-held document (`textSource`), since both fill their controls the same way.
 
@@ -35,7 +35,7 @@ A named suggest (`suggest { query=… }`) cannot be searched, because there is n
 
 For an SDK host: `useSuggestOptions` also returns `truncated` (the givens whose list was cut off) and `search` (a server search per searchable given), and `GivensPanel` and `GivenInput` take them as `optionsTruncated` and `optionSearch`. `buildSuggestQuery`'s query now asks for `limit: 1001`, and it takes an optional search text. Hosts that draw controls through `useDocumentControls` get all of this with no change.
 
-## [Unreleased] — Edits put back on opening are said in the save status, not in a banner
+## [0.9.13] — Edits put back on opening are said in the save status, not in a banner
 
 A builder that keeps drafts (`ReportEditor` with `keepDraft`, or `ReportBuilder` with `draftKey`) no longer draws a full-width "Restored your unsaved edits from 5:26 PM." banner above the report when it opens on edits kept in this browser. Edits stay kept until Done, so a host that always keeps drafts showed it on nearly every Edit, and it pushed the page down. Now the save status says it: it reads "Draft saved" as before, its dot takes the accent colour, and the first line of its menu reads "Restored your unsaved edits from 5:26 PM" above Discard edits. Once the menu has been opened, or after the next edit, the dot goes back to normal and the line goes back to "Kept in this browser at …". `BuilderBar` and the in-page toolbar both draw it, so a host that draws `BuilderBar` in its own header gets it with no change. The in-page toolbar draws the status only when a draft is kept, so a builder without `draftKey` looks as it did.
 
@@ -43,7 +43,7 @@ A draft kept before the report changed is still asked about on the page, with Re
 
 `BuilderControls` gains three optional fields for a host that draws its own status: `restored` (`{ savedAt, stale, pending }`, the new `RestoredDraft` type, exported), `restore` (present while `restored.pending`; applies the stale draft) and `dismissRestored` (present while restored edits are news; call it once the author has seen them). `discard` is now also present while a stale draft is pending, as its other answer. Nothing was removed.
 
-## [Unreleased] — The builder's Linear / Grid switch is gone
+## [0.9.13] — The builder's Linear / Grid switch is gone
 
 The report builder no longer offers a switch between `layout=linear` and `layout=grid`, in the Console's bar or in the SDK's `BuilderToolbar`. The builder draws a report in the layout its `## artifact` tag declares and never rewrites `layout=`; to change a report's layout, edit the tag in the file. The switch turned a dashboard into a story (or back) in one click, and the page it left behind was more often a mess than the report anyone meant.
 
