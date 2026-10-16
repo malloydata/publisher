@@ -295,6 +295,19 @@ the UI sends the current values of exactly those with the option query: enough
 for a gated source's options to load, and no more, so the list still does not
 depend on the page's other filters and is cached across them.
 
+A generated suggest (`suggest { source=… dimension=… }`) fetches the first
+1,000 values in order. When the dimension has more, the dropdown says so, and
+typing searches the whole dimension on the server instead of filtering those
+1,000: after a 250ms pause it runs the same suggest with a case-insensitive
+"contains" on the dimension (`strpos(lower(dim::string), '…') > 0`, which every
+dialect compiles), returning up to 200 matches. The typed text is a plain string
+literal, so quotes, backslashes and pattern characters are matched as written.
+A list of 1,000 or fewer is filtered in the browser and sends nothing more. A
+named suggest (`suggest { query=… }`) is a whole query with nowhere to add a
+condition, so its list is filtered in the browser; when it comes back at the
+server's 1,000-row cap, the dropdown says the list is partial and that a value
+not listed can still be typed.
+
 `#(description="...")` annotations render as MUI helper text beneath the input. A
 **Reset** button appears next to the "Filters" heading whenever any given has a
 value set, whether it was typed, picked, or carried in by the URL. A given left

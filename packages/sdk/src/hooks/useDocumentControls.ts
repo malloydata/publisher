@@ -7,7 +7,7 @@ import type { HostGivenValue } from "./givenValue";
 import { useDrillSelf } from "../components/drill/useDrillSelf";
 import type { GivensPanelProps } from "../components/given/GivensPanel";
 import { useGivensState, type UseGivensStateResult } from "./useGivensState";
-import { useSuggestOptions } from "./useSuggestOptions";
+import { type OptionSearch, useSuggestOptions } from "./useSuggestOptions";
 
 /**
  * Everything a document's control row needs, from what the document declares.
@@ -76,6 +76,10 @@ export interface DocumentControls extends UseGivensStateResult {
    options: Map<string, string[]>;
    optionsLoading: boolean;
    optionsFailed: ReadonlySet<string>;
+   /** Givens whose option list was cut off; see `useSuggestOptions`. */
+   optionsTruncated: ReadonlySet<string>;
+   /** Server search for a truncated list, per given. */
+   optionSearch: ReadonlyMap<string, OptionSearch>;
    /** For `useDrill`: whether a `to=self` on this given can be honoured. */
    canSelf: (given: string) => boolean;
    /** For `useDrill`: set the given to the clicked value, encoded for its type. */
@@ -136,6 +140,8 @@ export function useDocumentControls({
       options,
       isLoading: optionsLoading,
       failed: optionsFailed,
+      truncated: optionsTruncated,
+      search: optionSearch,
    } = useSuggestOptions(
       environmentName,
       packageName,
@@ -163,6 +169,8 @@ export function useDocumentControls({
       options,
       optionsLoading,
       optionsFailed,
+      optionsTruncated,
+      optionSearch,
       canSelf,
       onSelf,
       panel: {
@@ -173,6 +181,8 @@ export function useDocumentControls({
          options,
          optionsLoading,
          optionsFailed,
+         optionsTruncated,
+         optionSearch,
          // Absent means autorun; only an explicit `false` batches behind Apply.
          apply: autorun
             ? undefined

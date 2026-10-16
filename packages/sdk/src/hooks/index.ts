@@ -42,7 +42,11 @@ export {
    type UseGivensStateOptions,
    type UseGivensStateResult,
 } from "./useGivensState";
-export { useSuggestOptions } from "./useSuggestOptions";
+export {
+   type OptionPage,
+   type OptionSearch,
+   useSuggestOptions,
+} from "./useSuggestOptions";
 export {
    useCompiledDocument,
    type CompiledDocumentSpec,
