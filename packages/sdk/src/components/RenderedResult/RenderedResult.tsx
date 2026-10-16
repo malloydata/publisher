@@ -100,9 +100,10 @@ interface RenderedResultProps {
    /**
     * Which sizing rule the rendered root follows, as soon as the renderer's
     * metadata says. Lets a caller stop treating its cap as a height for a
-    * result that will never report one.
+    * result that will never report one. `renderAs` is the root's render type,
+    * which tells a caller with a table-only cap whether it applies.
     */
-   onSizing?: (sizing: ResultSizing) => void;
+   onSizing?: (sizing: ResultSizing, renderAs: string | undefined) => void;
    /**
     * Makes `# drill` cells clickable, and makes them look it. From `useDrill`
     * on the host surface, which decides where a click may go; omitted where
@@ -686,7 +687,7 @@ function RenderedResultInner({
                renderAs = undefined;
                strategy = undefined;
             }
-            onSizing?.(resultSizing(renderAs, strategy));
+            onSizing?.(resultSizing(renderAs, strategy), renderAs);
             // Published on the stage because every sizing decision keys off it
             // and nothing else in the DOM says what it was. A panel at an
             // unexpected height is otherwise a guessing game about which rule

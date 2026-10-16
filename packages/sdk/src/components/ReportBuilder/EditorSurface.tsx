@@ -515,6 +515,7 @@ export function EditorSurface({
                     servedReadsOf,
                     unsaved,
                  );
+            const rules = layoutRules(doc.layout, doc.columns);
             return (
                <DashboardTile
                   environmentName={environmentName}
@@ -552,7 +553,8 @@ export function EditorSurface({
                         : {};
                   })()}
                   ignoredFilters={tileIgnoredFilterLabels(query.reads, specs)}
-                  height={layoutRules(doc.layout, doc.columns).tileMaxHeight}
+                  height={rules.tileMaxHeight}
+                  tableMaxHeight={rules.tableMaxHeight}
                />
             );
          },

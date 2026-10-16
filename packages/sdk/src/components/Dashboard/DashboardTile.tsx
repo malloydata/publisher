@@ -70,6 +70,8 @@ export interface DashboardTileProps {
    givenNames?: string[];
    /** Cap on the result's height, past which it scrolls. Undefined is no cap: the tile grows to fit. */
    height: number | undefined;
+   /** A further cap when the result is a table, past which it scrolls under its pinned header. */
+   tableMaxHeight?: number;
    maxResultSize?: number;
    /** Cell clicks and their affordance, for the dashboard's `# drill`. */
    drill?: DrillBinding;
@@ -142,6 +144,7 @@ export function DashboardTile({
    declaredTypes,
    givenNames,
    height,
+   tableMaxHeight,
    maxResultSize,
    drill,
    onExplore,
@@ -267,6 +270,7 @@ export function DashboardTile({
                state={state}
                context={tile ?? queryName ?? modelPath}
                maxHeight={height}
+               tableMaxHeight={tableMaxHeight}
                maxResultSize={maxResultSize}
                drill={drill}
                // A composite tile that is one row of measures draws as KPI cards,

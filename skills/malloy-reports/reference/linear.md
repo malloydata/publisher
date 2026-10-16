@@ -46,6 +46,7 @@ source: category_tiles is order_items extend {
 - **`layout=linear` is required** when the tag lists tiles; without it the file is read as a grid.
 - `dashboard { columns }` has no effect, and a `colspan` or `break` on a tile entry is ignored with a warning (`notebook-tile-layout-ignored`).
 - **Tiles run through the model query endpoint**, against the report's own path, like a grid's.
+- **A tile grows to fit what it holds, except a table.** KPI cards and lists show in full and a chart draws at its default height. A table stops at 700px and scrolls inside its tile with its header row pinned. No tag changes that for a table tile.
 
 ## Files written as `run:` cells (retired)
 

@@ -4,14 +4,25 @@
 import { Warning } from "@mui/icons-material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { Box, Button, Tooltip, Typography } from "@mui/material";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+   lazy,
+   Suspense,
+   useCallback,
+   useEffect,
+   useRef,
+   useState,
+} from "react";
 import { LogMessage } from "../../client";
 import type { DrillBinding } from "../drill/useDrill";
 import { FloatingIconButton } from "../FloatingIconButton";
 import { Loading, LOADING_COPY } from "../Loading";
 import { warmMalloyRenderer } from "./loadRenderer";
 import { summarizeRenderLogs } from "./renderLogs";
-import { resolveResultHeight, type ResultSizing } from "./resultSizing";
+import {
+   resolveResultHeight,
+   resultCap,
+   type ResultSizing,
+} from "./resultSizing";
 
 /** The box a dashboard tile's result scrolls in when it is taller than its cap. */
 export const RESULT_SCROLLER_CLASS = "publisher-result-scroller";
@@ -27,6 +38,12 @@ interface ResultContainerProps {
     * not be clipped to tidy it.
     */
    maxHeight?: number;
+   /**
+    * A further cap for a result whose root is a table, and only then. A
+    * linear report sets it: its tiles grow to fit, except a long table, which
+    * stops here and scrolls inside itself under its pinned header row.
+    */
+   tableMaxHeight?: number;
    // if Results are larger than this size, show a warning and a button to proceed
    // this is to prevent performance issues with large results.
    // the default is 0, which means no warning will be shown.
@@ -54,6 +71,7 @@ interface ResultContainerProps {
 export default function ResultContainer({
    result,
    maxHeight,
+   tableMaxHeight,
    maxResultSize = 0,
    renderLogs,
    drill,
@@ -68,6 +86,15 @@ export default function ResultContainer({
    const [sizing, setSizing] = useState<ResultSizing | undefined>(undefined);
    const [contentHeight, setContentHeight] = useState<number | undefined>(
       undefined,
+   );
+   // The root's render type, which decides whether `tableMaxHeight` applies.
+   const [renderAs, setRenderAs] = useState<string | undefined>(undefined);
+   const onSizing = useCallback(
+      (next: ResultSizing, root: string | undefined) => {
+         setSizing(next);
+         setRenderAs(root);
+      },
+      [],
    );
    const [userAcknowledged, setUserAcknowledged] = useState(false);
    const [cellHeight, setCellHeight] = useState<number | undefined>(undefined);
@@ -126,10 +153,11 @@ export default function ResultContainer({
    const loading = (
       <Loading text={LOADING_COPY.loading} centered={true} size={32} />
    );
+   const cap = resultCap({ renderAs, maxHeight, tableMaxHeight });
    const renderedHeight = resolveResultHeight({
       sizing,
       contentHeight,
-      maxHeight,
+      maxHeight: cap,
       fillHeight: fill ? cellHeight : undefined,
    });
    const renderedResult = (
@@ -138,7 +166,7 @@ export default function ResultContainer({
             result={result}
             height={renderedHeight}
             onSizeChange={setContentHeight}
-            onSizing={setSizing}
+            onSizing={onSizing}
             drill={drill}
             fill={fill}
          />
@@ -160,7 +188,7 @@ export default function ResultContainer({
             // Grows from the unfloored height, so a result that gets shorter
             // lets its row shrink; the result is out of flow for the same reason.
             ...(fill && {
-               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight })}px`,
+               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight: cap })}px`,
                minHeight: 0,
             }),
          }}

@@ -7,9 +7,11 @@ import {
    contentNodeDepth,
    INITIAL_RENDER_HEIGHT,
    initialResultHeight,
+   LINEAR_TABLE_MAX_HEIGHT,
    measureContentHeight,
    remeasuresAfterReady,
    resolveResultHeight,
+   resultCap,
    resultSizing,
    UNCAPPED_CONTAINER_HEIGHT,
 } from "./resultSizing";
@@ -313,5 +315,47 @@ describe("resolveResultHeight with a cell to fill", () => {
          fill("content", content, 400, undefined);
       expect(basis(308)).toBe(308);
       expect(basis(100)).toBe(100);
+   });
+});
+
+describe("resultCap", () => {
+   const cap = (
+      renderAs: string | undefined,
+      maxHeight: number | undefined,
+      tableMaxHeight: number | undefined,
+   ) => resultCap({ renderAs, maxHeight, tableMaxHeight });
+
+   // A linear report: tiles are uncapped, and a table stops at 700 and scrolls.
+   it("holds a table root to the table cap when nothing else caps it", () => {
+      expect(cap("table", undefined, LINEAR_TABLE_MAX_HEIGHT)).toBe(700);
+   });
+
+   it("takes the lower of the two caps for a table", () => {
+      expect(cap("table", 400, 700)).toBe(400);
+      expect(cap("table", 900, 700)).toBe(700);
+   });
+
+   // KPI cards, lists, maps and charts keep growing to fit in a linear report.
+   it.each(["big_value", "list", "shape_map", "bar", "line"])(
+      "leaves a %s root at the tile cap",
+      (renderAs) => {
+         expect(cap(renderAs, undefined, 700)).toBeUndefined();
+         expect(cap(renderAs, 400, 700)).toBe(400);
+      },
+   );
+
+   // The renderer caps the tables inside a `# dashboard` itself, at its own
+   // default or the author's `table.max_height`, `none` included.
+   it("leaves a # dashboard root to the renderer's own table cap", () => {
+      expect(cap("dashboard", undefined, 700)).toBeUndefined();
+   });
+
+   it("does not apply the table cap before the root is known", () => {
+      expect(cap(undefined, undefined, 700)).toBeUndefined();
+   });
+
+   it("adds nothing without a table cap", () => {
+      expect(cap("table", 400, undefined)).toBe(400);
+      expect(cap("table", undefined, undefined)).toBeUndefined();
    });
 });

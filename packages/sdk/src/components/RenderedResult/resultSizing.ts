@@ -242,6 +242,39 @@ export const TILE_MAX_HEIGHT = 400;
  */
 export const NOTEBOOK_CELL_MAX_HEIGHT = 700;
 
+/**
+ * Cap for a table in a linear report, whose tiles otherwise grow to fit. A
+ * long table drawn at full length pushes everything after it a screen or more
+ * down, so it stops here and scrolls inside its tile under its own pinned
+ * header row. The same number as a notebook cell, the linear report's
+ * predecessor.
+ */
+export const LINEAR_TABLE_MAX_HEIGHT = 700;
+
+/**
+ * The cap a rendered root is held to: `maxHeight`, and for a table root also
+ * `tableMaxHeight`, whichever is lower. Undefined is no cap.
+ *
+ * Only a root that IS a table. A `# dashboard` root is not one: the renderer
+ * caps the tables inside it itself, at its own default or the author's
+ * `# dashboard { table.max_height=N | none }`. A KPI row, a list or a map keeps
+ * `maxHeight` alone, so a linear report still grows to show every card.
+ */
+export function resultCap({
+   renderAs,
+   maxHeight,
+   tableMaxHeight,
+}: {
+   renderAs: string | undefined;
+   maxHeight: number | undefined;
+   tableMaxHeight: number | undefined;
+}): number | undefined {
+   if (renderAs !== "table" || tableMaxHeight === undefined) return maxHeight;
+   return maxHeight === undefined
+      ? tableMaxHeight
+      : Math.min(maxHeight, tableMaxHeight);
+}
+
 /** Cap for a query result shown inside a model page's cell. */
 export const MODEL_CELL_MAX_HEIGHT = 600;
 
