@@ -43,7 +43,9 @@ export function addTileToDocument(
       name,
       source: extension.name,
       declaration: { kind: "reference", from: tile.view },
-      ...(widths ? { colspan: tile.colspan } : {}),
+      ...(widths && tile.colspan !== undefined
+         ? { colspan: tile.colspan }
+         : {}),
       ...(tile.label ? { label: tile.label } : {}),
       ...(tile.chart ? { chart: tile.chart } : {}),
       ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),

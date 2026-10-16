@@ -7,7 +7,7 @@ import { Box, Button } from "@mui/material";
 import type { ReactNode, RefObject } from "react";
 import { DashboardGrid, GRID_GAP_PX } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
-import type { LayoutRules } from "../Report/layoutRules";
+import { setSpan, type LayoutRules } from "../Report/layoutRules";
 import {
    isQueryTile,
    isReadOnlyTile,
@@ -160,7 +160,13 @@ export function BuilderGrid({
                                          if (to === (each.colspan ?? 1)) return;
                                          editor.update((draft) => {
                                             const tile = draft.tiles[index];
-                                            if (tile) tile.colspan = to;
+                                            if (tile)
+                                               setSpan(
+                                                  tile,
+                                                  to,
+                                                  columns,
+                                                  defaultSpan,
+                                               );
                                          });
                                       },
                                    },

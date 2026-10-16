@@ -45,6 +45,41 @@ export interface LayoutRules {
    tileMaxHeight: number | undefined;
 }
 
+/**
+ * The `# colspan` to write for a tile `span` columns wide, or undefined to
+ * write none because the tile draws the same without one.
+ *
+ * A tile with no colspan is one column, except that the reader widens it until
+ * it is at least `MIN_TILE_PX` wide (`defaultTileSpan`). In a grid of one or two
+ * columns, one column is already that wide wherever the grid is laid out in
+ * columns (two columns of 240px need a box of 496px). So there a written
+ * `colspan=1` only repeats the default. In a wider grid an unset tile can be
+ * drawn wider than one column, and an explicit 1 is the author's choice to keep.
+ *
+ * `drawnWithout` is the span the caller draws an unset tile at now, when it
+ * measures one (the builder does): a width the author just set to 1 is still
+ * written while the tile would draw wider without it.
+ */
+export function writtenSpan(
+   span: number,
+   columns: number,
+   drawnWithout = 1,
+): number | undefined {
+   return span === 1 && columns <= 2 && drawnWithout === 1 ? undefined : span;
+}
+
+/** Set a tile's width as {@link writtenSpan} would write it: a `colspan`, or none. */
+export function setSpan(
+   tile: { colspan?: number },
+   span: number,
+   columns: number,
+   drawnWithout = 1,
+): void {
+   const colspan = writtenSpan(span, columns, drawnWithout);
+   if (colspan === undefined) delete tile.colspan;
+   else tile.colspan = colspan;
+}
+
 export function layoutRules(
    layout: ReportLayout | undefined,
    /** `# dashboard { columns=N }` as the file has it. */

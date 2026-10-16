@@ -41,7 +41,7 @@ import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
-import { layoutRules } from "../Report/layoutRules";
+import { layoutRules, setSpan } from "../Report/layoutRules";
 import { ReportPage } from "../Report/ReportPage";
 
 export type { BuilderGiven } from "./controls";
@@ -329,7 +329,7 @@ export function ReportBuilder({
       commit: (index, span) =>
          editor.update((draft) => {
             const tile = draft.tiles[index];
-            if (tile) tile.colspan = span;
+            if (tile) setSpan(tile, span, columns, defaultSpan);
          }),
    });
    const tiles = useTileEditing({
@@ -382,7 +382,7 @@ export function ReportBuilder({
             );
             if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
-               draft.tiles[selected].colspan = span;
+               setSpan(draft.tiles[selected], span, columns, defaultSpan);
             });
          },
       }),
