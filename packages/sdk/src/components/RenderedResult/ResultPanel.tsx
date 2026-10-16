@@ -18,6 +18,8 @@ export interface ResultPanelProps {
    context: string;
    loadingText?: string;
    maxHeight?: number;
+   /** See `ResultContainer`: a further cap for a table root only. */
+   tableMaxHeight?: number;
    maxResultSize?: number;
    drill?: DrillBinding;
    /** See `ResultContainer`: stretch the result to its cell. */
@@ -46,6 +48,7 @@ export function ResultPanel({
    context,
    loadingText = LOADING_COPY.running,
    maxHeight,
+   tableMaxHeight,
    maxResultSize,
    drill,
    fill,
@@ -96,6 +99,7 @@ export function ResultPanel({
       <ResultContainer
          result={result}
          maxHeight={maxHeight}
+         tableMaxHeight={tableMaxHeight}
          maxResultSize={maxResultSize}
          renderLogs={data.data.renderLogs}
          drill={drill}

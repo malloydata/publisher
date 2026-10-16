@@ -257,7 +257,7 @@ export function DashboardView({
    );
 
    // The layout decides the arrangement only, as it does in the builder.
-   const { columns, layout, tileMaxHeight } = layoutRules(
+   const { columns, layout, tileMaxHeight, tableMaxHeight } = layoutRules(
       manifest.layout,
       manifest.dashboardColumns,
    );
@@ -361,6 +361,7 @@ export function DashboardView({
                               ? (height ?? tileMaxHeight)
                               : tileMaxHeight
                         }
+                        tableMaxHeight={tableMaxHeight}
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
                         ignoredFilters={tileIgnoredFilterLabels(

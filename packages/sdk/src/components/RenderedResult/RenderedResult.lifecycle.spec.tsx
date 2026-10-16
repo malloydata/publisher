@@ -98,6 +98,9 @@ mock.module("@malloydata/render", () => ({
 }));
 
 const RenderedResult = (await import("./RenderedResult")).default;
+const { INITIAL_RENDER_HEIGHT, LINEAR_TABLE_MAX_HEIGHT } = await import(
+   "./resultSizing"
+);
 
 /** A minimal result payload; the fake renderer never reads it. */
 const RESULT = JSON.stringify({ tag: "a" });
@@ -317,5 +320,44 @@ describe("RenderedResult: a chart's own colour", () => {
          rendererOptions[0].vegaConfigOverride?.("combo_chart")?.range
             ?.category;
       expect(category).toEqual(resolveTheme([], "light").series);
+   });
+});
+
+// Through `ResultContainer`, which lazy-loads this same faked module. The box
+// the renderer paints into is what a long table scrolls inside, under its
+// pinned header row, so its height is the cap a reader sees.
+describe("ResultContainer: a linear report's table cap", () => {
+   const paintedHeight = async (renderAs: string) => {
+      rootRenderAs = renderAs;
+      const ResultContainer = (await import("./ResultContainer")).default;
+      const view = render(
+         <ResultContainer
+            result={RESULT}
+            fill
+            tableMaxHeight={LINEAR_TABLE_MAX_HEIGHT}
+         />,
+      );
+      // The cap applies once the renderer has said what the root is, which
+      // it publishes on the stage.
+      const stage = () =>
+         view.container.querySelector(
+            `[data-malloy-render-as="${renderAs}"]`,
+         ) as HTMLElement | null;
+      await waitFor(() => expect(stage()).not.toBeNull());
+      await act(async () => vizzes.at(-1)!.paint());
+      const height = (stage()!.parentElement as HTMLElement).style.height;
+      view.unmount();
+      return height;
+   };
+
+   it("holds a table to the cap", async () => {
+      expect(await paintedHeight("table")).toBe(`${LINEAR_TABLE_MAX_HEIGHT}px`);
+   });
+
+   // A KPI row that wraps one card per line must still show every card.
+   it("lets a KPI row grow past it", async () => {
+      expect(await paintedHeight("big_value")).toBe(
+         `${INITIAL_RENDER_HEIGHT}px`,
+      );
    });
 });

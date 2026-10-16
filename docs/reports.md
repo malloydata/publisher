@@ -393,9 +393,13 @@ Two places read a field's **name** rather than its `# label`, so a labelled mode
 
 Both are upstream renderer behavior, not Publisher's, and both are cheap to work around in the model.
 
-Height is the one thing the surface decides rather than the tags: a grid caps each tile so one long table
-cannot set its row's height, and a linear report caps a chart tile and lets a table tile hug its rows so
-one long result cannot push the prose off the page.
+Height is the one thing the surface decides rather than the tags. A grid caps each tile at 400px, so one
+long table cannot set its row's height, and a result taller than that scrolls inside the tile. A linear
+report lets a tile grow to fit what it holds, so a row of KPI cards shows every card, and a chart draws
+at its default height. A table in a linear report stops at 700px and scrolls inside its tile, with its
+header row pinned, so one long table cannot push the rest of the report off the page. No tag changes
+that cap for a table tile; the `table.max_height` option belongs to a `# dashboard` query, where it caps
+the tables inside it.
 
 <a id="linear-layout"></a>
 

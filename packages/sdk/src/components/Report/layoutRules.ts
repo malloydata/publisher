@@ -3,7 +3,10 @@
 
 import type { ReportLayout } from "../Package/documentLocation";
 import { DEFAULT_COLUMNS } from "../Dashboard/DashboardGrid";
-import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
+import {
+   LINEAR_TABLE_MAX_HEIGHT,
+   TILE_MAX_HEIGHT,
+} from "../RenderedResult/resultSizing";
 
 /**
  * What a report's layout decides, and nothing else.
@@ -39,10 +42,20 @@ export interface LayoutRules {
     * to bottom and nothing beside a tile sets its height, so a tile grows to
     * fit what it holds, the way the single-query form already does: a row of
     * KPI cards that wraps one per line in a narrow column shows every card. A
+    * table is the exception, held by {@link tableMaxHeight}. A
     * chart, which has no height of its own, still draws at the uncapped
     * default (see `resolveResultHeight`).
     */
    tileMaxHeight: number | undefined;
+   /**
+    * A further cap on a tile whose result is a table, or undefined for none
+    * beyond {@link tileMaxHeight}. A linear report's tiles grow to fit, but a
+    * long table at full length pushes the rest of the report a screen or more
+    * down, so a table stops at {@link LINEAR_TABLE_MAX_HEIGHT} and scrolls
+    * inside its tile under its pinned header row. A grid needs none: its tile
+    * cap is lower. See `resultCap`.
+    */
+   tableMaxHeight: number | undefined;
 }
 
 /**
@@ -92,6 +105,7 @@ export function layoutRules(
          widths: false,
          insertBetween: true,
          tileMaxHeight: undefined,
+         tableMaxHeight: LINEAR_TABLE_MAX_HEIGHT,
       };
    const columns = declaredColumns ?? DEFAULT_COLUMNS;
    return {
@@ -100,5 +114,6 @@ export function layoutRules(
       widths: columns > 1,
       insertBetween: false,
       tileMaxHeight: TILE_MAX_HEIGHT,
+      tableMaxHeight: undefined,
    };
 }

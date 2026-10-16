@@ -8,18 +8,23 @@ import {
    MIN_TILE_PX,
    defaultTileSpan,
 } from "../Dashboard/DashboardGrid";
-import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
+import {
+   LINEAR_TABLE_MAX_HEIGHT,
+   TILE_MAX_HEIGHT,
+} from "../RenderedResult/resultSizing";
 import { layoutRules, writtenSpan } from "./layoutRules";
 
 describe("layoutRules", () => {
-   it("lays a linear report in one column of full-width tiles that grow to fit, added between others", () => {
+   it("lays a linear report in one column of full-width tiles that grow to fit, a table capped, added between others", () => {
       expect(layoutRules("linear", 12)).toEqual({
          layout: "linear",
          columns: 1,
          widths: false,
          insertBetween: true,
          tileMaxHeight: undefined,
+         tableMaxHeight: LINEAR_TABLE_MAX_HEIGHT,
       });
+      expect(LINEAR_TABLE_MAX_HEIGHT).toBe(700);
    });
 
    it("lays a grid across its declared columns, with widths, added at the end", () => {
@@ -29,6 +34,7 @@ describe("layoutRules", () => {
          widths: true,
          insertBetween: false,
          tileMaxHeight: TILE_MAX_HEIGHT,
+         tableMaxHeight: undefined,
       });
    });
 
