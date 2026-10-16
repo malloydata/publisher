@@ -88,6 +88,8 @@ test.describe("package versions — the version switch", () => {
    test.describe.configure({ mode: "serial" });
    let env = "";
 
+   // Playwright needs the fixtures argument to pass testInfo second.
+   // eslint-disable-next-line no-empty-pattern
    test.beforeAll(async ({}, testInfo) => {
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
       const status = await (await api(baseURL, "GET", "/status")).json();
@@ -104,10 +106,7 @@ test.describe("package versions — the version switch", () => {
       expect(created.ok, await created.text()).toBe(true);
       for (const [version, files] of [
          ["1.0.0", { "orders.malloy": ORDERS }],
-         [
-            "1.1.0",
-            { "orders.malloy": ORDERS, "customers.malloy": CUSTOMERS },
-         ],
+         ["1.1.0", { "orders.malloy": ORDERS, "customers.malloy": CUSTOMERS }],
       ] as const) {
          const published = await api(
             baseURL,
@@ -119,6 +118,8 @@ test.describe("package versions — the version switch", () => {
       }
    });
 
+   // Playwright needs the fixtures argument to pass testInfo second.
+   // eslint-disable-next-line no-empty-pattern
    test.afterAll(async ({}, testInfo) => {
       if (!env) return;
       const baseURL = testInfo.project.use.baseURL ?? "http://localhost:4000";
@@ -140,12 +141,10 @@ test.describe("package versions — the version switch", () => {
       await expect(
          page.getByRole("button", { name: "Materialization" }),
       ).toBeVisible();
-      await expect(page.getByRole("button", { name: /^Scope/ })).toHaveCount(
+      await expect(page.getByRole("button", { name: /^Scope/ })).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /^Schedule/ })).toHaveCount(
          0,
       );
-      await expect(
-         page.getByRole("button", { name: /^Schedule/ }),
-      ).toHaveCount(0);
       await shot(page, "01-latest-package-page");
    });
 

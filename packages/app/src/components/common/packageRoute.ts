@@ -14,9 +14,13 @@
  * named `latest` or `1.2.0` in one still opens by its path.
  */
 
-/** `latest`, or a semantic version with its pre-release and build suffixes. */
+/**
+ * `latest`, or a version as the server's `VersionIdPattern` takes it: a
+ * semantic version with its pre-release and build suffixes, leading zeros
+ * allowed (`01.2.0`), so every version a package can hold has a route.
+ */
 const VERSION_SEGMENT =
-   /^(latest|(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?)$/;
+   /^(latest|[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?)$/;
 
 export const LATEST_SEGMENT = "latest";
 

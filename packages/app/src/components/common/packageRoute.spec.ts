@@ -19,6 +19,9 @@ describe("package routes with a version segment", () => {
          "1.0.0-rc.1",
          "1.0.0+build.7",
          "2.0.0-alpha.1+20261015",
+         // The server's VersionIdPattern takes leading zeros, so a package can
+         // hold such a version, and it needs a route.
+         "01.2.0",
       ]) {
          expect(isVersionSegment(segment)).toBe(true);
       }
@@ -31,7 +34,7 @@ describe("package routes with a version segment", () => {
          "data-apps",
          "1.2",
          "v1.2.0",
-         "01.2.0",
+         "1.2.0.4",
          "Latest",
          "",
       ]) {
