@@ -58,7 +58,12 @@ You'll see two path styles, and they're not interchangeable:
   whose own path ends in `edit` (`sales/edit.malloy`, at `/{environment}/{package}/sales/edit`) opens as
   itself. An older `…/sales/q3/edit` link still opens the builder, by redirecting to `?edit`, unless a
   report is at `sales/q3/edit.malloy`. A report under `data-apps/` opens as a report; any other path
-  there opens the package's data app of that name.
+  there opens the package's data app of that name. A package with published versions (see
+  [package-versions.md](package-versions.md)) carries the version as the first segment after the
+  package, `latest` spelled out: `/{environment}/{package}/latest/sales/q3`, or
+  `/{environment}/{package}/1.2.0/sales/q3` pinned to 1.2.0, and a bare `/{environment}/{package}`
+  opens `/latest`. A package with no versions keeps the routes above, so a folder of its own named
+  `latest` or `1.2.0` still opens by its path.
 - **Resource paths** are fully qualified — `/environments/{environment}/packages/{package}/...`.
   This is the canonical form the [REST and MCP APIs](api-overview.md) use, and it's also how an
   in-package HTML data app is served, e.g.
@@ -82,6 +87,14 @@ is a Console convenience.
   none; the path appears beside it only to tell apart two reports with the same name, and a
   `.malloynb` keeps its path. Without a `title=` in the artifact tag, a report's title comes from its
   `"` description or its opening markdown heading.
+- **Switch between a package's versions** — a package with published versions shows its version
+  beside its title (`v1.2.0 ▾`). The switch lists every version, highest first, with `latest`
+  marked; archived ones are listed but do not open. Picking one pins the page, and everything opened
+  from it (models, reports, data apps, materialization runs) stays on that version. Each row's
+  **⋯** menu makes the version `latest` (after a confirmation), archives it or unarchives it; the
+  actions `latest` cannot take are disabled, with why. A published version is immutable, so its
+  pages offer no **+ Report** or **Edit**, and its Materializations section has no **Scope** or
+  **Schedule**.
 - **Build a report by dragging** — every report page has an **Edit** button in the header, beside the
   breadcrumbs, that opens it in the builder. In the builder that spot holds the builder's bar: the save
   status, undo and redo, an **Add** menu (a tile, text or a filter), and
