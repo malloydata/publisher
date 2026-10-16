@@ -80,7 +80,7 @@ Write down that you did this and why. A reader who later sees hand-built drill q
 
 ## Drill-down: the panel side
 
-An entity drawer has six parts. Skipping any one produces a bug that only shows up in use, not in a screenshot.
+An entity drawer has six parts, and four more decide whether it feels finished. Skipping any one produces a bug that only shows up in use, not in a screenshot.
 
 ```js
 const drill = { entity: null, charts: [], returnFocus: null };
@@ -110,7 +110,7 @@ function closeDrill() {
   document.removeEventListener("keydown", onTab);
   drill.charts.forEach((c) => c.destroy());     // 4. tear charts down
   drill.charts = [];
-  drill.returnFocus?.focus();                   // 5. give focus back
+  drill.returnFocus?.focus({ preventScroll: true }); // 5. give focus back, without scrolling
 }
 ```
 
@@ -122,6 +122,13 @@ What each part prevents:
 4. **A closed panel that still takes clicks.** If the drawer's own CSS sets `display` (a `grid` or `flex` layout on the panel itself), that wins over the `hidden` attribute, so the panel stays in the layout at zero opacity and swallows every click aimed at the page behind it. Nothing looks wrong; the app simply stops responding in that region. Guard it once, globally: `[hidden] { display: none !important }`.
 5. **Chart teardown** - most chart libraries keep a registry and attach resize listeners; reopening a drawer twenty times without destroying leaks memory and can leave ghost tooltips from the old instance.
 6. Also re-render the drawer when the global filter changes underneath it, or it silently shows numbers for a period the rest of the page has moved off.
+
+The four that separate a working drawer from a polished one:
+
+7. **Open on the click, resolve inside.** When the drawer needs a lookup before it can query (a name resolved to an id), open it at once with the name as its title and a skeleton, and swap the content in when the id arrives, under the stale-response guard. Waiting for the lookup before opening anything makes the click look dead for as long as the query takes.
+8. **Drilling from a drawer replaces it in place.** A product opened from inside a market drawer swaps the drawer's title and body without a second slide-in, and the new subject reads from its top: reset the body's `scrollTop` to 0, or it opens wherever the reader had scrolled the previous one.
+9. **The panel body is its only scroller, and its scroll stays in it.** Wheel and touch inside the drawer scroll the drawer; nothing scrolls the page behind it, over the scrim either, and closing returns the reader to exactly where they were. On a real build the wheel inside an open drawer scrolled the page behind it by 2,000 to 3,000px, and closing left the reader that far from the row they had clicked.
+10. **It lands on the reader's screen when embedded.** Inside an auto-sized frame `position: fixed` means the top of the whole document, so a drawer built the standalone way opens far above the reader and drags the host page up to meet it. `reference/overlays.md` is the recipe for 9 and 10: finding the visible band, one clipped layer over it, scroll containment, and focus that does not scroll.
 
 ## Cross-filtering (shared scope)
 
