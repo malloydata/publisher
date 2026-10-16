@@ -1957,6 +1957,104 @@ source: mine is orders extend {
          }
       });
 
+      it("holds a report query on an inline extend of an #(access_filter) base to the caller's rows", async () => {
+         // `query: t is orders extend { where: … } -> …` stores its source as
+         // a new struct with no identity of its own; the base's row filter
+         // must still reach it, by name and as text.
+         writeManifest();
+         fs.writeFileSync(
+            path.join(tempDir, "orders.malloy"),
+            `##! experimental.givens
+given: GROUPS :: number[]
+
+#(access_filter) org_id in $GROUPS
+source: orders is duckdb.sql("""
+  select 1 as id, 1 as org_id, 10 as amt
+  union all select 2, 1, 20
+  union all select 3, 2, 30
+  union all select 4, 2, 40
+""") extend {
+  measure: c is count()
+  view: by_org is { group_by: org_id; aggregate: c; order_by: org_id }
+}`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "hidden.malloy"),
+            `source: orders_raw is duckdb.sql("select 1 as org_id")`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `##! experimental.givens\nimport "orders.malloy"\nexport { orders }`,
+         );
+         const TILE =
+            "orders extend { where: org_id = 2 or org_id = 1 } -> by_org";
+         const RAW =
+            "orders_raw extend { where: true } -> { aggregate: n is count() }";
+         fs.mkdirSync(path.join(tempDir, "models"));
+         fs.writeFileSync(
+            path.join(tempDir, "models/orders_report.malloy"),
+            `##! experimental.givens
+## artifact { layout=grid title="Orders" tiles=["t"] }
+import '../orders.malloy'
+import { orders_raw } from '../hidden.malloy'
+query: t is ${TILE}
+query: raw_t is ${RAW}`,
+         );
+         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const report = pkg.getModel("models/orders_report.malloy")!;
+            const run = async (
+               queryName: string | undefined,
+               query: string | undefined,
+               givens?: Record<string, number[]>,
+            ) =>
+               (
+                  await report.getQueryResults(
+                     undefined,
+                     queryName,
+                     query,
+                     undefined,
+                     undefined,
+                     givens,
+                  )
+               ).compactResult;
+            const org1 = { GROUPS: [1] };
+            for (const [queryName, query] of [
+               ["t", undefined],
+               [undefined, "run: t"],
+               [undefined, `run: ${TILE}`],
+            ]) {
+               expect(await run(queryName, query, org1)).toEqual([
+                  { org_id: 1, c: 2 },
+               ]);
+               expect(await run(queryName, query, { GROUPS: [1, 2] })).toEqual([
+                  { org_id: 1, c: 2 },
+                  { org_id: 2, c: 2 },
+               ]);
+               await expect(run(queryName, query)).rejects.toBeInstanceOf(
+                  AccessDeniedError,
+               );
+            }
+            // An inline extend of a source the surface does not serve is
+            // refused, by name and as text.
+            for (const [queryName, query] of [
+               ["raw_t", undefined],
+               [undefined, `run: ${RAW}`],
+            ])
+               await expect(run(queryName, query, org1)).rejects.toBeInstanceOf(
+                  NotQueryableError,
+               );
+         } finally {
+            await duckdb.close();
+         }
+      });
+
       it("widens nothing outside the report", async () => {
          writeReportPackage();
          const { malloyConfig, duckdb } = await makeMalloyConfig();
