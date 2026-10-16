@@ -5479,20 +5479,71 @@ export class Model {
     * lands on the generic side.
     *
     * `refused` says what the fix has to move: this whole file, or one source or
-    * query this file can already see.
+    * query this file can already see. `name` is the refused source, when the
+    * caller knows it: a source a served report declares itself gets a fix
+    * aimed at its base rather than at the source.
     */
    private notQueryable(
       refusal: string,
       explainable: boolean,
       refused: "model" | "source" | "query",
+      name?: string,
    ): NotQueryableError {
       const surface = this.queryBoundary.offSurface;
       if (explainable && surface && !this.hasAnyAuthorizeNote()) {
-         return new OffSurfaceError(
-            `${refusal} ${this.offSurfaceReason(surface, refused)}`,
-         );
+         const reason =
+            (refused === "source" &&
+               name !== undefined &&
+               this.reportSourceReason(surface, name)) ||
+            this.offSurfaceReason(surface, refused);
+         return new OffSurfaceError(`${refusal} ${reason}`);
       }
       return new NotQueryableError(refusal);
+   }
+
+   /**
+    * The explanation for a source a served report declares in its own file
+    * and that is refused, or undefined when `name` is not one. Exporting a
+    * report's own source from index.malloy is impossible (index.malloy cannot
+    * import a report), so the fix names the base the source is built on: that
+    * base is what is missing from the surface. A source built straight on a
+    * table has no base to publish, so it is told to build on a served source.
+    */
+   private reportSourceReason(
+      surface: OffSurfaceContext,
+      name: string,
+   ): string | undefined {
+      if (!this.queryBoundary.layout || !this.fileDerivationBases?.has(name)) {
+         return undefined;
+      }
+      const exporter = surface.indexModel
+         ? `"${INDEX_MODEL_NAME}"`
+         : `a listed model`;
+      const surfaceIs = surface.indexModel
+         ? `this package's published surface, "${INDEX_MODEL_NAME}"`
+         : `this package's published surface, the models publisher.json ` +
+           `"explores" lists (${JSON.stringify(surface.files)})`;
+      const base = this.offSurfaceBase(name);
+      // offSurfaceBase stops at the first name with no declared base in this
+      // file. When that is a source this model can see (one it imports), it is
+      // the unserved base. Otherwise the chain ends at a table or connection.
+      if (base !== name && this.declaresSource(base)) {
+         return (
+            `"${name}" is declared in this report on "${base}", which is not ` +
+            `on ${surfaceIs}. A report's own source is queryable only when ` +
+            `it is built on a source the surface serves. Fix: name "${base}" ` +
+            `in the export { ... } of ${exporter}, importing the file that ` +
+            `declares it if needed.`
+         );
+      }
+      const served = surface.indexModel
+         ? `a source "${INDEX_MODEL_NAME}" exports`
+         : `a source exported by a model publisher.json "explores" lists ` +
+           `(${JSON.stringify(surface.files)})`;
+      return (
+         `"${name}" is declared in this report and is not built on ${served}. ` +
+         `Fix: build it with extend on ${served}.`
+      );
    }
 
    /** The sentence an explained refusal appends: which files are the surface,
@@ -5523,9 +5574,10 @@ export class Model {
          // edit is to export it here.
          fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
       } else {
-         // A notebook or dashboard admits nothing of its own: the name has to
-         // be exported by a surface file, which may first need to import where
-         // it is declared. A dashboard's tiles keep running against the
+         // A notebook or dashboard admits nothing of its own beyond sources it
+         // builds on the surface (a refused one is explained by
+         // reportSourceReason instead): the name has to be exported by a
+         // surface file, which may first need to import where it is declared. A dashboard's tiles keep running against the
          // dashboard file, so only a notebook caller is told to re-address.
          const exporter = surface.indexModel
             ? `"${INDEX_MODEL_NAME}"`
@@ -5681,6 +5733,9 @@ export class Model {
          // gates the request.
          if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
          if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
+         if (sourceName && this.isReportSourceOnSurface(sourceName)) {
+            return "deferred";
+         }
          // A dashboard's own named query (a single-query dashboard, or a
          // control's `suggest { query= }`, both sent by name alone) is neither
          // admitted nor refused here: the compiled check decides by the source
@@ -5700,6 +5755,7 @@ export class Model {
                `No queryable source "${sourceName}".`,
                this.declaresSource(sourceName),
                "source",
+               sourceName,
             );
          }
          throw this.notQueryable(
@@ -5709,13 +5765,16 @@ export class Model {
          );
       }
 
-      // An explicitly-named source: admit iff curated.
+      // An explicitly-named source: admit iff curated, or a served report's
+      // own source over the surface (settled again by the compiled check).
       if (sourceName) {
          if (this.isCuratedSource(sourceName)) return "cleared";
+         if (this.isReportSourceOnSurface(sourceName)) return "deferred";
          throw this.notQueryable(
             `No queryable source "${sourceName}".`,
             this.declaresSource(sourceName),
             "source",
+            sourceName,
          );
       }
 
@@ -5739,10 +5798,31 @@ export class Model {
                "Query target is not queryable.",
                true,
                "source",
+               target,
             );
          }
       }
       return "deferred";
+   }
+
+   /**
+    * True when `name` is a source this served report (grid or linear) declares
+    * in its own file, built through its own `extend` declarations, possibly
+    * chained, on sources the package surface serves. Such a source is
+    * queryable by name when the query is addressed to this report: its tiles
+    * and cells already run against it, and ad-hoc text over it is admitted by
+    * {@link derivesFromCurated}, so naming it is the same read. It inherits
+    * its base's `#(authorize)` and access filters, which the authorize gate
+    * applies after the boundary. False for every other file: an ordinary model
+    * curates by its export closure, and a `.malloynb` has no report text.
+    */
+   private isReportSourceOnSurface(name: string): boolean {
+      return (
+         this.queryBoundary.layout !== undefined &&
+         this.fileDerivationBases?.has(name) === true &&
+         this.declaresSource(name) &&
+         this.derivesFromCurated(name)
+      );
    }
 
    /**
@@ -5848,6 +5928,7 @@ export class Model {
          "Query target is not queryable.",
          compiledSource !== undefined,
          "source",
+         compiledSource,
       );
    }
 
@@ -8091,7 +8172,7 @@ export class Model {
                // help #1228 gives `run: hidden` without a typo. A name that is
                // not a declared source, or a hidden source reached only through
                // a caller alias, keeps the plain form.
-               const explainable = extractRunTargetSourceNames(query).some(
+               const offSurface = extractRunTargetSourceNames(query).find(
                   (t) =>
                      this.declaresSource(t) &&
                      !this.isCuratedSource(t) &&
@@ -8099,8 +8180,9 @@ export class Model {
                );
                throw this.notQueryable(
                   "Query target is not queryable.",
-                  explainable,
+                  offSurface !== undefined,
                   "source",
+                  offSurface,
                );
             }
             this.queryExecutionHistogram.record(
