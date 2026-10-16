@@ -36,7 +36,11 @@ interface StoredDraft {
    savedAt: number;
 }
 
-/** What the builder found on opening, for the notice that says so. */
+/**
+ * What the builder found on opening. A draft put back is said in the save
+ * status (its menu names when the edits are from) until the author has seen it
+ * or edits again; a stale one is a choice the page asks for.
+ */
 export interface RestoredDraft {
    savedAt: number;
    /**
@@ -187,7 +191,7 @@ export function useReportDraft(
 ): {
    /** When unsaved edits were last kept in this browser; undefined when none are. */
    keptAt: number | undefined;
-   /** The draft the builder opened with, until the notice is dismissed. */
+   /** The draft the builder opened with: until it is seen, or edited over; a stale one until the author chooses. */
    restored: RestoredDraft | undefined;
    dismissRestored: () => void;
    /** Put the document back to the file's, as one undoable edit; the draft goes with the edits. */
@@ -205,6 +209,12 @@ export function useReportDraft(
    // A stale draft waiting on the author: kept as it is, not overwritten or
    // removed by the clean document the builder opened on.
    const offered = useRef<StoredDraft | undefined>(undefined);
+   // The document a draft was put back as, until the next edit: that edit
+   // ends the "restored" news, since the draft is now just the edits.
+   const restoredAs = useRef<string | undefined>(undefined);
+   // Set until the put-back document has rendered: the pass in between still
+   // sees the document from before, which is not an edit.
+   const restoring = useRef(false);
    const base = textFingerprint(opened);
    const editorRef = useRef(editor);
    editorRef.current = editor;
@@ -227,6 +237,8 @@ export function useReportDraft(
          return;
       }
       current.update((document) => replaceContents(document, draft.document));
+      restoredAs.current = JSON.stringify(draft.document);
+      restoring.current = true;
       setRestored({ savedAt: draft.savedAt, stale: false, pending: false });
       // Only on opening: the key and the file it opened on are fixed for a mount.
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -239,7 +251,21 @@ export function useReportDraft(
       // The offered draft stands until the author chooses; an edit before
       // they do is a choice too, and replaces it.
       if (offered.current && !dirty) return;
-      offered.current = undefined;
+      if (offered.current) {
+         // Edited over instead of chosen: the edits are the choice, and the
+         // offer goes, so nothing goes on asking about a draft no longer kept.
+         offered.current = undefined;
+         setRestored(undefined);
+      }
+      if (restoredAs.current !== undefined) {
+         const now = JSON.stringify(document);
+         if (restoring.current) {
+            if (now === restoredAs.current) restoring.current = false;
+         } else if (now !== restoredAs.current) {
+            restoredAs.current = undefined;
+            setRestored(undefined);
+         }
+      }
       if (!dirty) {
          remove(key);
          setKeptAt(undefined);
@@ -264,10 +290,17 @@ export function useReportDraft(
       editorRef.current.update((document) =>
          replaceContents(document, draft.document),
       );
+      restoredAs.current = JSON.stringify(draft.document);
+      restoring.current = true;
       setRestored((was) => was && { ...was, pending: false });
    }, []);
 
-   const dismissRestored = useCallback(() => setRestored(undefined), []);
+   const dismissRestored = useCallback(() => {
+      // A stale draft is a choice still to make, not news to dismiss.
+      if (offered.current) return;
+      restoredAs.current = undefined;
+      setRestored(undefined);
+   }, []);
    const discard = useCallback(() => {
       if (offered.current && key !== undefined) {
          // An offered draft was never applied: dropping it is all there is.
@@ -278,6 +311,7 @@ export function useReportDraft(
       }
       const current = editorRef.current;
       current.update((document) => replaceContents(document, current.saved));
+      restoredAs.current = undefined;
       setRestored(undefined);
    }, [key]);
 

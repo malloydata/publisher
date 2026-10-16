@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import type { ReportLayout } from "../Package/documentLocation";
+import type { RestoredDraft } from "./useReportDraft";
 
 /**
  * The builder's page-level controls, as state and actions rather than as a
@@ -53,6 +54,19 @@ export interface BuilderControls {
    draftKeptAt?: number;
    /** Put the report back to the file's, as one undoable edit, and drop the draft. Absent with nothing to discard. */
    discard?: () => void;
+   /**
+    * Edits kept in this browser that the builder found on opening. Not
+    * `pending`: they were put back, which is news for the save status (the
+    * SDK's says when they are from in its menu) until `dismissRestored`, or
+    * the next edit. `pending`: the report changed since they were kept, so
+    * they are offered, not applied; the page asks the author to choose, and
+    * `restore` and `discard` are the two answers.
+    */
+   restored?: RestoredDraft;
+   /** Apply an offered (stale) draft, replacing the current version. Present while `restored.pending`. */
+   restore?: () => void;
+   /** The author has seen the restored edits: `restored` goes. Present while `restored` is, and not pending. */
+   dismissRestored?: () => void;
 }
 
 /** What a host passes to take over the builder's page-level controls. */
@@ -89,6 +103,8 @@ export function useReportControls(
          exit: () => latest.current.exit?.(),
          done: () => latest.current.done?.(),
          discard: () => latest.current.discard?.(),
+         restore: () => latest.current.restore?.(),
+         dismissRestored: () => latest.current.dismissRestored?.(),
       }),
       [],
    );
@@ -109,6 +125,11 @@ export function useReportControls(
    const hasDone = controls.done !== undefined;
    const hasDiscard = controls.discard !== undefined;
    const { draftKeptAt } = controls;
+   const restoredAt = controls.restored?.savedAt;
+   const restoredStale = controls.restored?.stale ?? false;
+   const restoredPending = controls.restored?.pending ?? false;
+   const hasRestore = controls.restore !== undefined;
+   const hasDismissRestored = controls.dismissRestored !== undefined;
 
    const shown = useMemo<BuilderControls>(
       () => ({
@@ -132,6 +153,19 @@ export function useReportControls(
          ...(hasDone ? { done: actions.done } : {}),
          ...(draftKeptAt !== undefined ? { draftKeptAt } : {}),
          ...(hasDiscard ? { discard: actions.discard } : {}),
+         ...(restoredAt !== undefined
+            ? {
+                 restored: {
+                    savedAt: restoredAt,
+                    stale: restoredStale,
+                    pending: restoredPending,
+                 },
+              }
+            : {}),
+         ...(hasRestore ? { restore: actions.restore } : {}),
+         ...(hasDismissRestored
+            ? { dismissRestored: actions.dismissRestored }
+            : {}),
       }),
       [
          actions,
@@ -149,6 +183,11 @@ export function useReportControls(
          hasDone,
          draftKeptAt,
          hasDiscard,
+         restoredAt,
+         restoredStale,
+         restoredPending,
+         hasRestore,
+         hasDismissRestored,
       ],
    );
 
