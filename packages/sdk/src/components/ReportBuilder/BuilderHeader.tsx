@@ -10,8 +10,14 @@ import { InlineText } from "./InlineText";
 import { selectionSx } from "./TileFrame";
 import type { ReportEditorHandle } from "./useReportEditor";
 
-/** How far the description's selection ring stands off its text. */
-const DESCRIPTION_RING_OFFSET_PX = 12;
+/**
+ * How far the description's selection ring stands off its text: wide across,
+ * where the page has room, and close above and below, where it has only the
+ * header's gap to the title (12px) and the page's gap to the filter row
+ * (16px). The ring (2px) and its halo (4px) have to fit inside those too: at
+ * 12px all round, the halo ran into the filters.
+ */
+const DESCRIPTION_RING_OFFSET = { x: 12, y: 6 };
 
 /**
  * The reader's {@link ReportHeader}, with its title and description edited
@@ -72,7 +78,7 @@ export function BuilderHeader({
                      ...selectionSx(theme, {
                         selected: descriptionSelected,
                         bare: true,
-                        ringOffset: DESCRIPTION_RING_OFFSET_PX,
+                        ringOffset: DESCRIPTION_RING_OFFSET,
                      }),
                   }}
                >
