@@ -104,7 +104,8 @@ source: mine is orders extend {
   where: org_id = 2 or org_id = 1
   view: by_org is { group_by: org_id; aggregate: c, total; order_by: org_id }
   view: wide is { where: org_id = 2 or org_id > 0; group_by: org_id; aggregate: c; order_by: org_id }
-}`,
+}
+query: inline_t is orders extend { where: org_id = 2 or true } -> { group_by: org_id; aggregate: c, total; order_by: org_id }`,
       );
 
       const { MalloyConfig, FixedConnectionMap } = await import(
@@ -228,5 +229,31 @@ source: mine is orders extend {
       expect(payload(viaReport).error).toContain(
          'Access denied for source "mine"',
       );
+   });
+
+   it("holds a report query on an inline extend of an #(access_filter) base to the caller's rows", async () => {
+      // The query's own `where:` reaches every org; the base's filter must
+      // still apply, by name and as text.
+      for (const args of [
+         { queryName: "inline_t" },
+         {
+            query: "run: orders extend { where: org_id = 2 or true } -> { group_by: org_id; aggregate: c, total; order_by: org_id }",
+         },
+      ]) {
+         const admitted = await call({
+            modelPath: ORDERS_REPORT,
+            givens: { GROUPS: [1] },
+            ...args,
+         });
+         expect(admitted.isError).not.toBe(true);
+         expect(payload(admitted).rows).toEqual([
+            { org_id: 1, c: 2, total: 30 },
+         ]);
+         const anonymous = await call({ modelPath: ORDERS_REPORT, ...args });
+         expect(anonymous.isError).toBe(true);
+         expect(payload(anonymous).error).toContain(
+            'Access denied for source "orders"',
+         );
+      }
    });
 });

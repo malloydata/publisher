@@ -3826,7 +3826,10 @@ export class Model {
     * Deliberately narrow, and each limit is load-bearing rather than caution:
     *  - `sourceID` ONLY, never `referenceID` — a join copy carries the base's
     *    `referenceID` (named-source.js), so matching that would graft the gate
-    *    onto joins and leak it into unrelated queries.
+    *    onto joins and leak it into unrelated queries. The one exception is a
+    *    snapshot with no `sourceID` at all, an inline `gated extend { … }`:
+    *    it is matched by {@link resolveGraftTarget}, the same resolution the
+    *    request path used to choose `graftTarget` for that struct.
     *  - APPEND to the snapshot; never repoint `structRef` at the name, which
     *    would drop the reference site's own `sourceArguments`
     *    (query_model_impl.js) and silently run a parameterized source on its
@@ -3864,6 +3867,22 @@ export class Model {
          const snapshot = named.structRef;
          if (!snapshot || typeof snapshot !== "object") continue;
          const struct = snapshot as SourceDef;
+         // An inline extension (`query: q is gated extend { … } -> v`) stores
+         // a new struct with NO `sourceID` of its own, so the identity match
+         // above never reaches it. Match it the way the request path chose
+         // this graft target for that same struct (`resolveGraftTarget`),
+         // so the two decisions cannot disagree. The bind guards that run
+         // after the graft still prove the condition reads `graftTarget`'s
+         // own column on this struct.
+         if (struct.sourceID === undefined) {
+            if (resolveGraftTargetImpl(struct, copy, copy) !== graftTarget)
+               continue;
+            // Identity, not `code`: a `where:` the query's author wrote with
+            // the same text must not stand in for the gate's own condition.
+            if (struct.filterList?.includes(condition)) continue;
+            struct.filterList = [...(struct.filterList ?? []), condition];
+            continue;
+         }
          if (struct.sourceID !== sourceID) continue;
          if (struct.filterList?.some((f) => f.code === condition.code))
             continue;
