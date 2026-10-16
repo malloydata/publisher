@@ -21,7 +21,7 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
-## [Unreleased] — ReportEditor can run its queries at a pinned version while the document stays unversioned
+## [0.9.14] — ReportEditor can run its queries at a pinned version while the document stays unversioned
 
 `ReportEditor` takes a new optional `queryVersionId`. The `?versionId=` on `resourceUri` decided two things at once: the package version the builder queries, and the identity of the document being edited (its kept-draft key, its save target, the "pinned version" caption, and the pinned-package save path). A host whose package republishes on every change needs those apart. When it pinned the version, every republish orphaned the kept edits and Save went down the pinned path. When it didn't, Edit missed every result the reader had just cached at that version and re-ran every tile.
 
