@@ -1495,6 +1495,65 @@ export function lintReport(
       }
    }
 
+   findings.push(...lintMissingSharedFilter(facts, manifest));
+   return findings;
+}
+
+/**
+ * A filter most of a report's tiles apply, missing from one of them.
+ *
+ * A report's filter is a given its tiles bind one by one, each in its own
+ * `+ { where: … }`. A tile that leaves it out is not filtered by the control
+ * while the rest of the page is, and nothing on the page says so. Narrow on
+ * purpose: tiles are compared only with tiles reading the same source (a tile
+ * over another source may have no field the filter could compare), only for a
+ * given the report can bind, read by at least two of them and by more than
+ * half, and only where every tile's reads are known.
+ */
+export function lintMissingSharedFilter(
+   facts: ReportModelFacts,
+   manifest: ServedReportManifest,
+): ReportLintFinding[] {
+   const sourceOf = (query: string) => {
+      const [left, right] = normalizeTileExpression(query).split(" -> ");
+      return right !== undefined
+         ? left
+         : facts.queries.find((q) => q.name === left)?.sourceName;
+   };
+   const bySource = new Map<
+      string,
+      Array<{ query: string; reads: string[] }>
+   >();
+   for (const { query } of queryTiles(manifest.tiles)) {
+      const source = sourceOf(query);
+      const reads = referencedTileGivens(query, facts);
+      if (source === undefined || reads === undefined) continue;
+      bySource.set(source, [...(bySource.get(source) ?? []), { query, reads }]);
+   }
+   const findings: ReportLintFinding[] = [];
+   for (const [source, tiles] of bySource) {
+      const counts = new Map<string, number>();
+      for (const { reads } of tiles)
+         for (const name of new Set(reads))
+            if (facts.givens.has(name))
+               counts.set(name, (counts.get(name) ?? 0) + 1);
+      for (const [given, count] of counts) {
+         if (count < 2 || count * 2 <= tiles.length) continue;
+         for (const { query, reads } of tiles) {
+            if (reads.includes(given)) continue;
+            findings.push({
+               subject: manifest.name,
+               severity: "warn",
+               message:
+                  `"${query}" does not filter on $${given}, which ${count} of ` +
+                  `this report's ${tiles.length} tiles over "${source}" do, so ` +
+                  `that control leaves it unfiltered. If it should follow the ` +
+                  `control, bind it in its query: ` +
+                  `\`+ { where: <field> ~ $${given} }\`.`,
+            });
+         }
+      }
+   }
    return findings;
 }
 
