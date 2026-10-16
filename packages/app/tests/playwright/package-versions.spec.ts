@@ -14,8 +14,9 @@ import { DEFAULT_ENV, PACKAGES, tmpName } from "./helpers/fixtures";
  * one model, then 1.1.0, which adds a second, so each version's page is told
  * apart by what it lists. Skipped on a server with versioning off.
  *
- * Routes follow the Credible app: `/<env>/<pkg>/<version>/…`, `latest`
- * spelled out, and a bare package route canonicalized onto `latest`.
+ * Routes carry the version as a path segment, `/<env>/<pkg>/<version>/…`,
+ * `latest` spelled out, and a bare package route is canonicalized onto
+ * `latest`.
  */
 
 const PKG = "sales";

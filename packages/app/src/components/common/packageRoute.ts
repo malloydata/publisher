@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A package's Console routes carry the version as a path segment, the way the
- * Credible app does: `/<env>/<pkg>/<version>/…`, with `latest` spelled out.
+ * A package's Console routes carry the version as a path segment:
+ * `/<env>/<pkg>/<version>/…`, with `latest` spelled out.
  *
  *  - `/<env>/<pkg>/latest`          the package page, at its latest version
  *  - `/<env>/<pkg>/1.2.0`           the package page, pinned to 1.2.0
