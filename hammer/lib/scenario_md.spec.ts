@@ -99,6 +99,55 @@ Expect:
       ]);
    });
 
+   it("parses a refused listing, and a destination's metadata schema", () => {
+      const parsed = parseMarkdownForTest(
+         `${FRONT}
+## Connection fresh (type=ducklake, metadataSchema=tenant_fresh)
+
+## Destination tables (dest=fresh)
+
+status: 404
+`,
+         "t",
+      );
+      expect(parsed.connectionDecls).toEqual([
+         {
+            env: "default",
+            name: "fresh",
+            kind: "ducklake",
+            metadataSchema: "tenant_fresh",
+         },
+      ]);
+      const step = parsed.steps[0]!;
+      expect(step.kind === "destination" && [step.action, step.status]).toEqual(
+         ["tables", 404],
+      );
+   });
+
+   it("rejects status: anywhere it would not be compared", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination files\n\nstatus: 404\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to ## Destination tables/);
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Destination tables\n\nstatus: 404\n\nExpect:\n\n| name |\n| ---- |\n| a    |\n`,
+            "t",
+         ),
+      ).toThrow(/not both/);
+   });
+
+   it("rejects a metadataSchema on anything but a ducklake connection", () => {
+      expect(() =>
+         parseMarkdownForTest(
+            `${FRONT}\n## Connection pg2 (type=postgres, metadataSchema=s)\n`,
+            "t",
+         ),
+      ).toThrow(/applies only to type=ducklake/);
+   });
+
    it("requires a stated window on ## Destination cleanup", () => {
       expect(() =>
          parseMarkdownForTest(
