@@ -37,7 +37,6 @@ malloy-samples/
 docs/
 scripts/*
 !scripts/add-license-headers.mjs
-!scripts/prepare-prod-deps.mjs
 !scripts/set-version.mjs
 .github/
 
