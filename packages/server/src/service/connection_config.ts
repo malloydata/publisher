@@ -7,6 +7,7 @@ import path from "path";
 import { components } from "../api";
 import {
    ALLOW_DUCKDB_SETUP_SQL_ENV,
+   ConnectionOrigin,
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
 } from "../config";
@@ -495,7 +496,10 @@ function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
    }
 }
 
-function validateConnectionShape(connection: ApiConnection): void {
+function validateConnectionShape(
+   connection: ApiConnection,
+   origin: ConnectionOrigin = "connection",
+): void {
    if (connection.proxy) {
       // A connection proxy makes THIS server open an outbound SSH tunnel to a
       // tenant-configured bastion. It's a normal connection capability,
@@ -813,7 +817,11 @@ function validateConnectionShape(connection: ApiConnection): void {
          {
             const storage = connection.ducklakeConnection.storage;
             if (storage.s3Connection) {
-               validateS3ProviderShape(storage.s3Connection, connection.name);
+               validateS3ProviderShape(
+                  storage.s3Connection,
+                  connection.name,
+                  origin,
+               );
             }
          }
          // metadataSchema is optional, but when present it reaches the ATTACH as a
@@ -1086,7 +1094,7 @@ export function validateStorageDestinations(
       }
 
       try {
-         validateConnectionShape(destination);
+         validateConnectionShape(destination, "storage-destination");
          // Stricter than validateConnectionShape is allowed to be. It stops at the
          // credential SHAPE because its throw fails a whole environment; here a bad
          // entry is rejected on its own, so the full check is affordable — and it is
@@ -1252,6 +1260,7 @@ function blankAsUnset(value: string | undefined): string | undefined {
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
+   origin: ConnectionOrigin = "connection",
 ): AssembledEnvironmentConnections {
    const pojo: CoreConnectionsPojo = { connections: {} };
    const metadata = new Map<string, EnvironmentConnectionMetadata>();
@@ -1275,7 +1284,7 @@ export function assembleEnvironmentConnections(
 
       processedConnections.add(connection.name);
       validateDuckdbApiSurface(connection);
-      validateConnectionShape(connection);
+      validateConnectionShape(connection, origin);
       warnOnConnectionQueryMetadata(connection);
 
       const apiConnection = cloneApiConnection(connection);
