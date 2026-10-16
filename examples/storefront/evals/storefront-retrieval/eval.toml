@@ -1,0 +1,9 @@
+# Where retrieval_replay.py finds its server. Read through
+# skills/eval-answer/scripts/config.py; a flag still overrides any of it.
+
+[model]                  # the Publisher get_context is replayed against
+environment = "examples"
+package     = "storefront"
+repo        = "../.."    # examples/storefront
+port        = 4811       # not 4000/4040, which a Publisher started the usual way holds
+mcp_port    = 4812

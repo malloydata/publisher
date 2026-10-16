@@ -56,7 +56,7 @@ class Help(unittest.TestCase):
         # It once needed --set first, so no script's flags were reachable.
         import contextlib
         import io
-        for verb in (["run"], ["serve"], ["serve", "truth"], ["check"]):
+        for verb in (["run"], ["replay"], ["serve"], ["serve", "truth"], ["check"]):
             with self.subTest(verb=verb):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
