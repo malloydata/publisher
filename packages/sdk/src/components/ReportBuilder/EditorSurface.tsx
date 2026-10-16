@@ -51,6 +51,7 @@ import {
    previewGivens,
    previewTileQuery,
    tileExpressionKey,
+   unsavedSources,
    type PreviewTileQuery,
 } from "./preview";
 import type { TextSourceOptions } from "./ReportEditor";
@@ -444,6 +445,12 @@ export function EditorSurface({
          ),
       [opened.document],
    );
+   // Extensions this session added, which the model the tiles run on does not
+   // have until the file is saved and served: a tile on one runs on its base.
+   const unsaved = useMemo(
+      () => unsavedSources(doc, opened.document, modelPath, !!textSource),
+      [doc, opened.document, modelPath, textSource],
+   );
    const renderTile = useMemo(
       () =>
          function LiveTile(
@@ -500,14 +507,23 @@ export function EditorSurface({
                     givenNames: [...servedReadsOf],
                     reads: [...servedReadsOf],
                  }
-               : previewTileQuery(doc, tile, runnable, applied, servedReadsOf);
+               : previewTileQuery(
+                    doc,
+                    tile,
+                    runnable,
+                    applied,
+                    servedReadsOf,
+                    unsaved,
+                 );
             return (
                <DashboardTile
                   environmentName={environmentName}
                   packageName={packageName}
                   versionId={queryVersionId}
-                  modelPath={runModelPath}
-                  {...(preamble !== undefined ? { preamble } : {})}
+                  modelPath={query.modelPath ?? runModelPath}
+                  {...(preamble !== undefined && query.modelPath === undefined
+                     ? { preamble }
+                     : {})}
                   {...(restrictedTiles.has(
                      tileExpressionKey(tileExpression(tile)),
                   )
@@ -554,6 +570,7 @@ export function EditorSurface({
          queryVersionId,
          runModelPath,
          preamble,
+         unsaved,
          restrictedTiles,
          applied,
          tileHostGivens,
