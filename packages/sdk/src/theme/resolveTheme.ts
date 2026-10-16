@@ -164,8 +164,12 @@ export function resolveTheme(
  * A one-colour `series` on a chart sets the chart's FIRST series colour (it is
  * what the builder's Color item writes). Taken as the whole list, every series
  * would cycle through that one colour, so a bar and line chart, or any chart
- * with more than one series, would draw them all alike. So the other series
- * keep the colours `layers` give them, in order, less the one picked. A list of
+ * with more than one series, would draw them all alike.
+ *
+ * So only the first slot changes: every other series keeps the colour it has
+ * with no pick, which is what makes a pick change the bars and not the line.
+ * The one exception is a later slot that holds the picked colour. It takes the
+ * colour the first slot gave up, so no two series are drawn alike. A list of
  * two or more colours is the author's whole palette and is used as written.
  */
 export function chartThemeLayer(
@@ -182,9 +186,15 @@ export function chartThemeLayer(
             : series,
       (DEFAULT_THEME.palette?.series as string[]) ?? [],
    );
-   const rest = inherited.filter(
-      (color) => color.toLowerCase() !== first.toLowerCase(),
-   );
+   const same = (color: string) => color.toLowerCase() === first.toLowerCase();
+   const [displaced, ...later] = inherited;
+   const rest =
+      later.length > 0
+         ? later.map((color) => (same(color) ? displaced : color))
+         : // A one-colour host palette has no second slot, so its one colour is the second series.
+           [displaced].filter(
+              (color): color is string => color !== undefined && !same(color),
+           );
    return {
       ...chart,
       palette: { ...chart.palette, series: [first, ...rest] },

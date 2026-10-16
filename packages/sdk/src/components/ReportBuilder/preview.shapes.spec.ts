@@ -34,12 +34,15 @@ describe("the Default chart preview, for the shapes a real dashboard reads", () 
             ).annotation,
          ]),
       );
+      // No tile here has a colour, so each one that runs its own saved view
+      // also takes off any colour that view was saved with.
+      const RESET = "# -theme.palette.series";
       expect(annotations).toEqual({
-         inl: NONE,
-         comp: NONE,
-         pipe: NONE,
-         chain: undefined,
-         paren: undefined,
+         inl: `${NONE}\n${RESET}`,
+         comp: `${NONE}\n${RESET}`,
+         pipe: `${NONE}\n${RESET}`,
+         chain: RESET,
+         paren: RESET,
          ref: undefined,
       });
    });

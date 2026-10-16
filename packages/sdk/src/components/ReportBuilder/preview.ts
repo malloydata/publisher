@@ -9,6 +9,7 @@ import {
    chartResetLine,
    isChartPick,
    seriesColorLine,
+   seriesColorResetLine,
 } from "./chartLine";
 import {
    isQueryTile,
@@ -286,14 +287,18 @@ export function previewTileQuery(
              ? chartResetLine()
              : undefined;
    // The tile's colour, under its chart line: the base view never saw the
-   // wrapper's line, so the preview carries it as it carries the chart.
+   // wrapper's line, so the preview carries it as it carries the chart. With
+   // no colour (Theme), an inline or opaque tile runs its own SAVED view, whose
+   // last-saved colour line would still apply, so the preview takes it off.
+   const colorAnnotation =
+      tile.color !== undefined
+         ? seriesColorLine(tile.color)
+         : tile.declaration.kind !== "reference"
+           ? seriesColorResetLine
+           : undefined;
    const annotation =
-      [
-         chartAnnotation,
-         tile.color !== undefined ? seriesColorLine(tile.color) : undefined,
-      ]
-         .filter(Boolean)
-         .join("\n") || undefined;
+      [chartAnnotation, colorAnnotation].filter(Boolean).join("\n") ||
+      undefined;
    return {
       ...(annotation ? { annotation } : {}),
       expression:

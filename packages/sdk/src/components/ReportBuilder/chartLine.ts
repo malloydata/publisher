@@ -161,6 +161,13 @@ export function seriesColorOf(line: string): string | undefined {
 export const seriesColorLine = (color: string): string =>
    `# theme.palette.series=["${color.toLowerCase()}"]`;
 
+/**
+ * The line that takes a saved colour line off, for a preview of a tile set
+ * back to the theme's colours. The tag parser deletes just that path, so any
+ * other `theme.*` setting on the view stays.
+ */
+export const seriesColorResetLine = "# -theme.palette.series";
+
 /** Whether a colour is one the builder writes: `#rrggbb`. */
 export const isSeriesColor = (value: string): boolean =>
    /^#[0-9A-Fa-f]{6}$/.test(value);

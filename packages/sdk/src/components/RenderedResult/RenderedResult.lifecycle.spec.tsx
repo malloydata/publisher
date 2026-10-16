@@ -3,6 +3,7 @@
 
 import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { resolveTheme } from "../../theme/resolveTheme";
 
 /**
  * The renderer's STAGE LIFECYCLE, which is the part of this component that has
@@ -295,5 +296,26 @@ describe("RenderedResult: a chart's own colour", () => {
       expect(category?.[0]).toBe("#7f9862");
       expect(category?.[1]).toBeDefined();
       expect(category?.[1]).not.toBe("#7f9862");
+   });
+
+   // The builder previews a tile set back to Theme by running its saved view,
+   // which still carries the colour it was saved with, under a line that takes
+   // that colour off. The chart must draw the theme's own series.
+   it("draws the theme's series when a later line takes a saved colour off", async () => {
+      const combo = JSON.stringify({
+         annotations: [
+            { value: '# theme.palette.series=["#7f9862"]\n' },
+            { value: "# combo_chart\n" },
+            { value: "# -theme.palette.series\n" },
+         ],
+         schema: { fields: [] },
+         data: { kind: "array_cell", array_value: [] },
+      });
+      render(<RenderedResult result={combo} />);
+      await waitFor(() => expect(rendererOptions).toHaveLength(1));
+      const category =
+         rendererOptions[0].vegaConfigOverride?.("combo_chart")?.range
+            ?.category;
+      expect(category).toEqual(resolveTheme([], "light").series);
    });
 });
