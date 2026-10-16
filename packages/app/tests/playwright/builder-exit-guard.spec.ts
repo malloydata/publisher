@@ -144,10 +144,23 @@ test.describe("notebook exit guard", () => {
 
       await page.getByRole("button", { name: "Edit", exact: true }).click();
       await editorOpen(page);
-      await expect(
-         page.getByText(/Restored your unsaved edits from/),
-      ).toBeVisible();
       await expect(page.getByText("Edited first.")).toBeVisible();
+      // Said in the bar's status, not in a banner that pushes the page down.
+      await expect(
+         page.getByRole("alert").filter({ hasText: /unsaved edits/ }),
+      ).toHaveCount(0);
+      await expect(status(page)).toHaveText(
+         /^Draft saved\. Restored your unsaved edits from/,
+      );
+      await page
+         .getByRole("toolbar", { name: "Report builder" })
+         .getByRole("button", { name: "Draft saved" })
+         .click();
+      await expect(
+         page.getByRole("menu").getByText(/Restored your unsaved edits from/),
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
+      // Seen once, it is just the draft again.
       await expect(status(page)).toHaveText("Draft saved");
    });
 

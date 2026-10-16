@@ -31,6 +31,7 @@ export type {
    BuilderControls,
    BuilderControlsHandler,
 } from "./components/ReportBuilder/builderControls";
+export type { RestoredDraft } from "./components/ReportBuilder/useReportDraft";
 export type {
    BuilderGiven,
    ReportBuilderProps,
