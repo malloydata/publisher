@@ -18,7 +18,11 @@ import {
 import os from "node:os";
 import path from "node:path";
 import type { components } from "../api";
-import { BadRequestError, MaterializationEligibilityError } from "../errors";
+import {
+   BadRequestError,
+   MaterializationEligibilityError,
+   StorageCatalogNotFoundError,
+} from "../errors";
 import { logger } from "../logger";
 import { getPartitionedWriteFlushThreshold } from "../config";
 import { errMessage } from "../utils";
@@ -41,7 +45,7 @@ import { recordAttributionSkipped } from "../materialization_metrics";
 import type { QueryMetadata } from "./query_metadata";
 import {
    applySessionResourceLimits,
-   attachDuckLakeReadOnly,
+   attachDuckLakeReadOnlyIfPresent,
    attachDuckLakeReadWrite,
    escapeSQL,
    federateSourceForPassthrough,
@@ -1409,6 +1413,13 @@ export async function dropStorageTable(params: {
  * needs to write. A plain DuckDB destination whose database file does not exist
  * yet has, by construction, no tables — it is reported empty rather than created
  * by the act of looking.
+ *
+ * A DuckLake destination whose catalog does not exist yet is a 404
+ * ({@link StorageCatalogNotFoundError}) rather than empty, found by looking the
+ * catalog up before attaching (see `attachDuckLakeReadOnlyIfPresent`). An empty
+ * listing invites the follow-up an orchestrator makes for a catalog it has seen,
+ * a drop or a file cleanup, and both attach read-write, which creates the
+ * catalog.
  */
 export async function listStorageTables(params: {
    destinationName: string;
@@ -1434,7 +1445,18 @@ export async function listStorageTables(params: {
             destinationName,
             destinationConnection,
          );
-         await attachDuckLakeReadOnly(session, destinationName, cfg);
+         if (
+            !(await attachDuckLakeReadOnlyIfPresent(
+               session,
+               destinationName,
+               cfg,
+            ))
+         ) {
+            throw new StorageCatalogNotFoundError(
+               `Storage destination '${destinationName}' has no catalog ` +
+                  `yet: nothing has been built into it.`,
+            );
+         }
       } else {
          // Existence is read off the destinations directory, which the
          // environment determines, rather than by stat-ing a path built from the
