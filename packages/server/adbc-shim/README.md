@@ -81,9 +81,9 @@ Checklist:
    and the `RUN gcc … selftest` lines; change the `mv` so the downloaded driver keeps
    its real name (`/out/libadbc_driver_snowflake.so`). The stage itself stays: the
    pinned-digest download and fail-the-build posture predate the shim.
-2. **`Dockerfile`, final stage** — `COPY --from=adbc-driver` only
-   `libadbc_driver_snowflake.so`; drop `.real.so` from the `cp` and from the
-   count-match (`shim` becomes the only count); delete the operator note block
+2. **`Dockerfile`, final stage** — the `RUN --mount=type=bind,from=adbc-driver`
+   step: copy only `libadbc_driver_snowflake.so`, drop `.real.so` from the `cp`
+   and from the count-match (`shim` becomes the only count); delete the operator note block
    that documents `ADBC_RESULT_QUEUE_SIZE` / `ADBC_PREFETCH_CONCURRENCY`.
 3. **`.github/workflows/build.yml`, docker smoke test 4a** — delete the
    `.real.so` assertion line and the `ADBC-SHIM` note above it; restore the ✓
