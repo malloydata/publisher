@@ -178,6 +178,7 @@ export function useDocumentControls({
          values: state.draft,
          onChange: state.setGiven,
          onReset: state.reset,
+         canReset: !state.atStart,
          options,
          optionsLoading,
          optionsFailed,

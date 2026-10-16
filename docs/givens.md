@@ -309,12 +309,14 @@ server's 1,000-row cap, the dropdown says the list is partial and that a value
 not listed can still be typed.
 
 `#(description="...")` annotations render as MUI helper text beneath the input. A
-**Reset** button appears next to the "Filters" heading whenever any given has a
-value set, whether it was typed, picked, or carried in by the URL. A given left
-unset does not count. Whether an empty parameter (`?REGION=`) counts depends on
-the type: for a `string` or a `filter<…>` the empty string is a real value (the
-empty filter, i.e. "All"), so it counts; for a `number`, `boolean` or date type
-there is no empty value to mean, so it reads as unset and does not.
+**Reset** button appears next to the "Filters" heading whenever the controls
+differ from where the document starts them: a value typed, picked, or carried in
+by the URL, or a starting value cleared. A value the document itself starts with
+(`## artifact { givens { … } }`) is already the reset state, so it shows no
+Reset on its own. Whether an empty parameter (`?REGION=`) counts as a value
+depends on the type: for a `string` or a `filter<…>` the empty string is a real
+value (the empty filter, i.e. "All"), so it does; for a `number`, `boolean` or
+date type there is no empty value to mean, so it reads as unset.
 
 Reset clears every control, and a cleared given is left out of the request
 entirely rather than sent as an empty value. A given declared with a default
