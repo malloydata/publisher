@@ -3325,8 +3325,15 @@ export class Package {
       });
       // Forward slashes work on Windows DuckDB and avoid escaping.
       const normalizedPath = fullPath.replace(/\\/g, "/");
+      // DuckDB's table-path check refuses a bare path holding a space or a
+      // quote, which left such a file listed as unreadable. So the path goes
+      // in as a single-quoted literal ('' for a quote), which the check
+      // accepts and canonicalizes to the same SQL a bare path gets. The
+      // literal sits in a Malloy double-quoted string, so `\` and `"` are
+      // escaped for that string.
+      const literal = `'${normalizedPath.replace(/'/g, "''")}'`;
       const model = runtime.loadModel(
-         `source: temp is duckdb.table('${normalizedPath}')`,
+         `source: temp is duckdb.table("${literal.replace(/[\\"]/g, (c) => `\\${c}`)}")`,
       );
       const modelDef = await model.getModel();
       const fields = (modelDef._modelDef.contents["temp"] as SourceDef).fields;

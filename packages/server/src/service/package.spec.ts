@@ -415,6 +415,44 @@ describe("service/package", () => {
             });
          });
 
+         it("should probe a data file whose name has a space or a quote", async () => {
+            // A bare path with a space is refused by DuckDB's table-path
+            // check, so these files used to list with `error` and no `info`.
+            await fs.mkdir(join(testPackageDirectory, "data"), {
+               recursive: true,
+            });
+            const csv = "Name,Value\nJohn,10\nJane,20\nJim,30";
+            await fs.writeFile(
+               join(testPackageDirectory, "data", "Revenue by month.csv"),
+               csv,
+            );
+            await fs.writeFile(
+               join(testPackageDirectory, "data", "Bob's sales.csv"),
+               csv,
+            );
+            const conn = new DuckDBConnection("duckdb");
+
+            for (const name of [
+               "data/Revenue by month.csv",
+               "data/Bob's sales.csv",
+            ]) {
+               // @ts-expect-error Accessing private static method for testing
+               const info = await Package.getDatabaseInfo(
+                  testPackageDirectory,
+                  name,
+                  conn,
+               );
+               expect(info).toEqual({
+                  name,
+                  columns: [
+                     { name: "Name", type: "string" },
+                     { name: "Value", type: "number" },
+                  ],
+                  rowCount: 3,
+               });
+            }
+         });
+
          it("should probe an xlsx database file", async () => {
             // Real committed fixture: DuckDB's excel extension reads it via the
             // same duckdb.table() replacement scan the csv path uses.
