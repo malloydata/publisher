@@ -1229,7 +1229,7 @@ export interface RollupShapeGroup {
  *
  * `compose()` even for a single member, deliberately. A one-member composite
  * compiles and routes identically to a direct rebind (pinned in
- * preaggregation_virtual_compose_spike.spec.ts), so treating one grain and several
+ * preaggregation_virtual_compose_contract.spec.ts), so treating one grain and several
  * as one code path removes a branch that would otherwise be the only difference
  * between the common case and the general one — and a branch there is exactly
  * where a "works with one grain, silently stops with two" bug would live.
