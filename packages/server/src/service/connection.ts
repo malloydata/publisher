@@ -442,22 +442,21 @@ function handleAlreadyAttachedError(error: unknown, dbName: string): void {
    }
 }
 
-// Database-specific attachment handlers
-async function attachBigQuery(
-   connection: DuckDBConnection,
-   attachedDb: AttachedDatabase,
-): Promise<void> {
-   if (!attachedDb.bigqueryConnection) {
-      throw new Error(
-         `BigQuery connection configuration missing for: ${attachedDb.name}`,
-      );
-   }
+interface BigQueryServiceAccount {
+   projectId: string;
+   serviceAccountJson: string;
+   clientEmail: string;
+}
 
-   const config = attachedDb.bigqueryConnection;
-   let projectId = config.defaultProjectId;
-   let serviceAccountJson: string | undefined;
-
-   // Parse and validate service account key
+/**
+ * Validate a BigQuery connection's service account key and resolve its
+ * project. The DuckDB BIGQUERY secret authenticates only with a key, so the
+ * read-only attach and the build-time federation both require one.
+ */
+function parseBigQueryServiceAccount(
+   name: string | undefined,
+   config: components["schemas"]["BigqueryConnection"],
+): BigQueryServiceAccount {
    if (config.serviceAccountKeyJson) {
       const keyData = JSON.parse(config.serviceAccountKeyJson as string);
 
@@ -479,31 +478,85 @@ async function attachBigQuery(
          throw new Error('Invalid service account key: incorrect "type" field');
       }
 
-      projectId = keyData.project_id || config.defaultProjectId;
-      serviceAccountJson = config.serviceAccountKeyJson as string;
-      logger.info(`Using service account: ${keyData.client_email}`);
+      return {
+         projectId: keyData.project_id || config.defaultProjectId,
+         serviceAccountJson: config.serviceAccountKeyJson as string,
+         clientEmail: keyData.client_email,
+      };
    }
+   throw new Error(
+      `BigQuery project_id and service account key required for: ${name}`,
+   );
+}
 
-   if (!projectId || !serviceAccountJson) {
-      throw new Error(
-         `BigQuery project_id and service account key required for: ${attachedDb.name}`,
-      );
-   }
-
+/** Load the bigquery extension and create the secret scoped to the project. */
+async function createBigQuerySecret(
+   connection: DuckDBConnection,
+   name: string | undefined,
+   { projectId, serviceAccountJson }: BigQueryServiceAccount,
+): Promise<string> {
    await installAndLoadExtension(connection, "bigquery", true);
 
-   const secretName = sanitizeSecretName(`bigquery_${attachedDb.name}`);
+   const secretName = sanitizeSecretName(`bigquery_${name}`);
    const escapedJson = escapeSQL(serviceAccountJson);
-
-   const createSecretCommand = `
+   await connection.runSQL(`
       CREATE OR REPLACE SECRET ${secretName} (
          TYPE BIGQUERY,
          SCOPE 'bq://${projectId}',
          SERVICE_ACCOUNT_JSON '${escapedJson}'
       );
-   `;
+   `);
+   return secretName;
+}
 
-   await connection.runSQL(createSecretCommand);
+/** Each named Snowflake field must be non-empty. */
+function assertSnowflakeFieldsPresent(
+   name: string | undefined,
+   fields: Record<string, string | null | undefined>,
+): void {
+   for (const [field, value] of Object.entries(fields)) {
+      if (!value) {
+         throw new Error(`Snowflake ${field} is required for: ${name}`);
+      }
+   }
+}
+
+/** The SQL-escaped identity fields every Snowflake secret is built from. */
+function escapeSnowflakeIdentity(
+   config: components["schemas"]["SnowflakeConnection"],
+) {
+   return {
+      account: escapeSQL(config.account || ""),
+      user: escapeSQL(config.username || ""),
+      database: config.database ? escapeSQL(config.database) : undefined,
+      warehouse: config.warehouse ? escapeSQL(config.warehouse) : undefined,
+      schema: config.schema ? escapeSQL(config.schema) : undefined,
+      role: config.role ? escapeSQL(config.role) : undefined,
+   };
+}
+
+// Database-specific attachment handlers
+async function attachBigQuery(
+   connection: DuckDBConnection,
+   attachedDb: AttachedDatabase,
+): Promise<void> {
+   if (!attachedDb.bigqueryConnection) {
+      throw new Error(
+         `BigQuery connection configuration missing for: ${attachedDb.name}`,
+      );
+   }
+
+   const key = parseBigQueryServiceAccount(
+      attachedDb.name,
+      attachedDb.bigqueryConnection,
+   );
+   logger.info(`Using service account: ${key.clientEmail}`);
+   const { projectId } = key;
+   const secretName = await createBigQuerySecret(
+      connection,
+      attachedDb.name,
+      key,
+   );
    logger.info(
       `Created BigQuery secret: ${secretName} for project: ${projectId}`,
    );
@@ -526,18 +579,11 @@ async function attachSnowflake(
    const config = attachedDb.snowflakeConnection;
 
    // Validate required fields
-   const requiredFields = {
+   assertSnowflakeFieldsPresent(attachedDb.name, {
       account: config.account,
       username: config.username,
       password: config.password,
-   };
-   for (const [field, value] of Object.entries(requiredFields)) {
-      if (!value) {
-         throw new Error(
-            `Snowflake ${field} is required for: ${attachedDb.name}`,
-         );
-      }
-   }
+   });
 
    await installAndLoadExtension(connection, "snowflake", true);
 
@@ -553,24 +599,9 @@ async function attachSnowflake(
 
    // Build connection parameters
    const params = {
-      account: escapeSQL(config.account || ""),
-      user: escapeSQL(config.username || ""),
+      ...escapeSnowflakeIdentity(config),
       password: escapeSQL(config.password || ""),
-      database: config.database ? escapeSQL(config.database) : undefined,
-      warehouse: config.warehouse ? escapeSQL(config.warehouse) : undefined,
-      schema: config.schema ? escapeSQL(config.schema) : undefined,
-      role: config.role ? escapeSQL(config.role) : undefined,
    };
-
-   // Create attach string
-   const attachParts = [
-      `account=${params.account}`,
-      `user=${params.user}`,
-      `password=${params.password}`,
-   ];
-
-   if (params.database) attachParts.push(`database=${params.database}`);
-   if (params.warehouse) attachParts.push(`warehouse=${params.warehouse}`);
 
    const secretString = `CREATE OR REPLACE SECRET ${attachedDb.name}_secret (
       TYPE snowflake,
@@ -1421,47 +1452,9 @@ async function federateBigQuery(
             `builds from this source require serviceAccountKeyJson.`,
       );
    }
-   let projectId = bq.defaultProjectId;
-   let serviceAccountJson: string | undefined;
-   if (bq.serviceAccountKeyJson) {
-      const keyData = JSON.parse(bq.serviceAccountKeyJson as string);
-      const requiredFields = [
-         "type",
-         "project_id",
-         "private_key",
-         "client_email",
-      ];
-      for (const field of requiredFields) {
-         if (!keyData[field]) {
-            throw new Error(
-               `Invalid service account key: missing "${field}" field`,
-            );
-         }
-      }
-      if (keyData.type !== "service_account") {
-         throw new Error('Invalid service account key: incorrect "type" field');
-      }
-      projectId = keyData.project_id || bq.defaultProjectId;
-      serviceAccountJson = bq.serviceAccountKeyJson as string;
-   }
-
-   if (!projectId || !serviceAccountJson) {
-      throw new Error(
-         `BigQuery project_id and service account key required for: ${config.name}`,
-      );
-   }
-
-   await installAndLoadExtension(connection, "bigquery", true);
-
-   const secretName = sanitizeSecretName(`bigquery_${config.name}`);
-   const escapedJson = escapeSQL(serviceAccountJson);
-   await connection.runSQL(`
-      CREATE OR REPLACE SECRET ${secretName} (
-         TYPE BIGQUERY,
-         SCOPE 'bq://${projectId}',
-         SERVICE_ACCOUNT_JSON '${escapedJson}'
-      );
-   `);
+   const key = parseBigQueryServiceAccount(config.name, bq);
+   const { projectId } = key;
+   await createBigQuerySecret(connection, config.name, key);
    logger.info(
       `Federated BigQuery source for passthrough: project ${projectId}`,
    );
@@ -1480,14 +1473,10 @@ async function federateSnowflake(
          `Snowflake connection configuration missing for: ${config.name}`,
       );
    }
-   for (const [field, value] of Object.entries({
+   assertSnowflakeFieldsPresent(config.name, {
       account: sf.account,
       username: sf.username,
-   })) {
-      if (!value) {
-         throw new Error(`Snowflake ${field} is required for: ${config.name}`);
-      }
-   }
+   });
    // Key pair OR password, matching what a Snowflake connection may actually be
    // configured with. Requiring a password made every key-pair connection
    // unbuildable into a storage destination even though it queries fine live —
@@ -1503,8 +1492,7 @@ async function federateSnowflake(
    await installAndLoadExtension(connection, "snowflake", true);
 
    const params = {
-      account: escapeSQL(sf.account || ""),
-      user: escapeSQL(sf.username || ""),
+      ...escapeSnowflakeIdentity(sf),
       password: sf.password ? escapeSQL(sf.password) : undefined,
       // Normalized rather than passed through. The config federated here is an
       // UNnormalized clone of the API connection, and the live path normalizes at
@@ -1519,10 +1507,6 @@ async function federateSnowflake(
       privateKeyPass: sf.privateKeyPass
          ? escapeSQL(sf.privateKeyPass)
          : undefined,
-      database: sf.database ? escapeSQL(sf.database) : undefined,
-      warehouse: sf.warehouse ? escapeSQL(sf.warehouse) : undefined,
-      schema: sf.schema ? escapeSQL(sf.schema) : undefined,
-      role: sf.role ? escapeSQL(sf.role) : undefined,
    };
    const secretName = sanitizeSecretName(`snowflake_${config.name}`);
    // Every field below the credential is optional — emit only what was supplied,
