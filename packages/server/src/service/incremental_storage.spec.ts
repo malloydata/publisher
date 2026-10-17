@@ -12,7 +12,7 @@ import {
 } from "./incremental_apply";
 import { pinSessionToUTC } from "./materialization_build_session";
 import { storageDeltaTarget } from "./incremental_storage";
-import { fakeSource } from "./materialization_test_fixtures";
+import { fakeSource } from "../test_helpers/materialization_test_fixtures";
 
 /**
  * The delta a `storage=` source gets, where the refresh spans two engines: the

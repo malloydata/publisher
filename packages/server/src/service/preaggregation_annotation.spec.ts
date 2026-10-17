@@ -23,7 +23,7 @@ import {
 import {
    duckdbTestConnections,
    loadTestModel,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 const MODEL = `##! experimental.persistence
 source: s is duckdb.sql("""

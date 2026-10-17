@@ -17,7 +17,7 @@ import { computeSourceEntityId } from "./build_plan";
 import {
    duckdbTestConnections,
    loadTestModel,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 import { readPreaggregateAnnotation } from "./preaggregation_annotation";
 import {
    baseAlias,

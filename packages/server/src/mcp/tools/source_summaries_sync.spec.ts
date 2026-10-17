@@ -50,6 +50,7 @@ import {
 } from "./embedding_index";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { KEY_SEPARATOR } from "./embedding_index";
+import { notIndexing, pollFor } from "../../test_helpers/poll";
 import { indexSettingsOf } from "./index_settings";
 import {
    SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS,
@@ -203,23 +204,22 @@ async function search(
    pkg: Package,
    ents: readonly EmbeddableEntity[] = entities(),
 ) {
-   for (let i = 0; i < 400; i++) {
-      const result = await trySemanticSearch({
-         db,
-         provider,
-         pkg,
-         environmentName: "env",
-         packageName: "sync",
-         entities: ents,
-         queries: [{ targetIndex: 0, text: "find it", kinds: ["dimension"] }],
-         perSourceWindow: 10,
-      });
-      if (!("unavailable" in result) || result.unavailable !== "indexing") {
-         return result;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("sync never completed");
+   return pollFor(
+      () =>
+         trySemanticSearch({
+            db,
+            provider,
+            pkg,
+            environmentName: "env",
+            packageName: "sync",
+            entities: ents,
+            queries: [
+               { targetIndex: 0, text: "find it", kinds: ["dimension"] },
+            ],
+            perSourceWindow: 10,
+         }),
+      notIndexing,
+   );
 }
 
 const status = (
@@ -388,7 +388,7 @@ describe("source summaries in the sync", () => {
       _setChatModelForTests(chat.model, { concurrency: 1 });
       const { provider, sent } = recordingEmbedder();
       const pkg = pkgWith();
-      let outcome = await trySemanticSearch({
+      const outcome = await trySemanticSearch({
          db,
          provider,
          pkg,
@@ -399,23 +399,7 @@ describe("source summaries in the sync", () => {
          perSourceWindow: 10,
       });
       expect("unavailable" in outcome && outcome.unavailable).toBe("indexing");
-      for (let i = 0; i < 200; i++) {
-         outcome = await trySemanticSearch({
-            db,
-            provider,
-            pkg,
-            environmentName: "env",
-            packageName: "sync",
-            entities: entities(),
-            queries: [
-               { targetIndex: 0, text: "find it", kinds: ["dimension"] },
-            ],
-            perSourceWindow: 10,
-         });
-         if ("unavailable" in outcome && outcome.unavailable === "cooldown")
-            break;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      expect(await search(provider, pkg)).toEqual({ unavailable: "cooldown" });
       const s = await status(provider, pkg);
       expect(s.status).toBe("error");
       expect(s.stage).toBe("source_summary");

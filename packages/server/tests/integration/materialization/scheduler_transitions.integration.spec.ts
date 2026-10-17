@@ -10,6 +10,7 @@ import { MaterializationScheduler } from "../../../src/service/materialization_s
 import { MaterializationService } from "../../../src/service/materialization_service";
 import { environmentStore } from "../../../src/server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { allTerminal, pollFor, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,8 +25,6 @@ const T0 = Date.parse("2026-01-01T00:00:00.000Z");
 const MIN = 60_000;
 const H = 60 * MIN;
 const D = 24 * H;
-
-const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
 // Integration coverage for the scheduler's state-machine transitions against the
 // real store (#895): the unit spec covers the per-tick guards; these drive the
@@ -95,15 +94,10 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
    }
 
    async function waitForPackage(env: string, pkg: string): Promise<void> {
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${env}/packages/${pkg}`,
-         );
-         if (res.ok) return;
-         await new Promise((r) => setTimeout(r, 500));
-      }
-      throw new Error(`package ${env}/${pkg} did not load in time`);
+      await waitUntilOk(
+         `${baseUrl}/api/v0/environments/${env}/packages/${pkg}`,
+         `package ${env}/${pkg}`,
+      );
    }
 
    // Set scope: version + a cron schedule on a package (makes persist-test
@@ -161,13 +155,12 @@ describe("MaterializationScheduler transitions (integration, real store)", () =>
 
    // Let every fired build settle so env teardown doesn't race an in-flight one.
    async function waitAllTerminal(env: string): Promise<void> {
-      const deadline = Date.now() + 90_000;
-      while (Date.now() < deadline) {
-         const rows = await envMaterializations(env);
-         if (rows.every((m) => TERMINAL.includes(m.status as string))) return;
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      throw new Error(`materializations in ${env} did not all settle`);
+      await pollFor(
+         () => envMaterializations(env),
+         allTerminal,
+         `materializations in ${env} did not all settle`,
+         90_000,
+      );
    }
 
    // ── transitions ─────────────────────────────────────────────────────

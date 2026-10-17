@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,7 +33,7 @@ const ADVISORY_PACKAGE = "persist-advisory-test";
 //
 // The delta DML's own behavior is executed against a real engine in
 // incremental_dml_semantics.spec.ts, and the SEED/DELTA/SKIP decisions are
-// covered in incremental_apply.spec.ts and materialization_service.spec.ts.
+// covered in incremental_apply.spec.ts and materialization_service_*.spec.ts.
 describe("Incremental refresh over REST", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;
@@ -69,14 +70,10 @@ describe("Incremental refresh over REST", () => {
          );
       }
 
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(
-            `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${ADVISORY_PACKAGE}`,
-         );
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 500));
-      }
+      await waitUntilOk(
+         `${baseUrl}/api/v0/environments/${PROJECT_NAME}/packages/${ADVISORY_PACKAGE}`,
+         "Test package",
+      );
    });
 
    afterAll(async () => {

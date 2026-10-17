@@ -2,31 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Publish-time validation of `#@ preaggregate` declarations (handoff Work item 4).
+ * Publish-time validation of `#@ preaggregate` declarations.
  *
- * ## Why this is strict, and why it scans places the feature never reads
+ * Pre-aggregation is invisible when it works, so a declaration that quietly
+ * does nothing is the worst outcome: the author sees correct numbers, assumes
+ * the rollup serves them, and finds out from a bill. Every `#@ preaggregate`
+ * must take effect or be refused with a message naming the fix. That is why
+ * this scans places the synthesizer never reads: on a dimension, join, view or
+ * source the annotation compiles silently.
  *
- * Pre-aggregation is invisible when it works: a query never names a rollup and
- * gets the same answer whether one is used or not. That is the point, and it is
- * also why a declaration that quietly does nothing is the worst outcome — the
- * author sees correct numbers, assumes the rollup is serving them, and finds out
- * from a bill. So every `#@ preaggregate` must either take effect or be refused
- * with a message naming the thing and the fix.
- *
- * That is why this module scans for annotations in places the synthesizer would
- * never look. `#@ preaggregate` on a dimension, a join, a view, or a source all
- * compile silently today and are all visible in the IR — verified against the
- * pinned compiler. A synthesizer that only reads measures would skip them
- * without a word, which is exactly the failure above. Finding a misplaced
- * annotation is therefore a rejection, not a shrug.
- *
- * ## Where this runs
- *
- * Same gate pattern as the rest of persistence: strict at publish/PATCH, and —
- * per the settled deviation from the design doc's "warn" — strict at load too,
- * so a package that would be refused at publish cannot serve by having been
- * published earlier. Callers turn a non-empty result into a 400 (publish) or a
- * load failure.
+ * Strict at publish/PATCH and at load, so a package refused at publish cannot
+ * serve by having been published earlier. Callers turn a non-empty result
+ * into a 400 or a load failure.
  *
  * Pure: takes compiled IR, returns findings, throws nothing, touches no I/O.
  */
@@ -72,7 +59,7 @@ export type PreaggregateViolationCode =
    | "grain_path_through_join"
    | "grain_truncation_expression"
    | "truncation_on_non_temporal"
-   // v1 scope restrictions.
+   // Scope restrictions.
    | "base_source_has_fanout_join";
 
 export interface PreaggregateViolation {
@@ -100,20 +87,12 @@ interface FieldLike {
  * A field the source does not publicly expose — `include { private: … }` or
  * `internal:`.
  *
- * Pre-aggregation must refuse these, and the reason is an access-control leak
- * rather than tidiness. A rollup is a table of its own: the grain's dimensions and
- * each measure's partial are STORED, and the serve path rebinds that table under
- * the base's name with the stored columns declared. Nothing in that path consults
- * the author's model, so a field hidden on the source is not hidden on the rollup
- * — a query refused live ("`total` is private") is answered from the table.
- *
- * The colocated tier does not have the hole, but only by accident: its companion
- * imports the author's model, so a private reference fails to compile across the
- * file boundary and no table is ever built. The storage tier plans from the
- * compiled contents directly (so a companion that will not compile cannot disable
- * it), which removed the only thing enforcing access modifiers. Hence a rule here,
- * at the front, where it is a message rather than a silent difference between the
- * two tiers.
+ * Refused to prevent an access-control leak: a rollup STORES the grain's
+ * dimensions and each measure's partial, and the serve path rebinds that table
+ * under the base's name without consulting the author's model, so a field
+ * hidden on the source would be answered from the table. (The colocated tier
+ * happens to fail compiling such a reference; the storage tier plans from
+ * compiled contents and would not, so the rule lives here for both.)
  *
  * Mirrors `isAccessRestricted` in materialization_serve_transform.ts, which drops
  * hidden fields, joins and views from the serve shape for the same reason.
@@ -226,15 +205,11 @@ function validateGrainDimension(
       );
    }
 
-   // `a.b` where `a` is not a join: a time truncation, and it must be refused.
-   // preaggregation_grain_semantics.spec.ts is the evidence. A rollup storing a
-   // truncated value can name that column one of two ways, and both are broken:
-   // under the base's own name it satisfies an UNTRUNCATED query and answers it
-   // from truncated rows — a silent wrong number — and under any other name no
-   // query an author writes will reference it, so it never serves anything and
-   // stops compiling when the rollup expires. Naming a dimension the source
-   // already declares has neither problem, and a coarser truncation of it still
-   // routes, so nothing is lost but the annotation's shorthand.
+   // `a.b` where `a` is not a join: an inline time truncation, refused (see
+   // preaggregation_grain_semantics.spec.ts). Under the base's column name the
+   // rollup would answer an UNTRUNCATED query from truncated rows; under any
+   // other name nothing would ever reference it. A declared dimension has
+   // neither problem, and coarser truncations of it still route.
    if (parts.length > 1) {
       const type = field.type ?? "";
       if (!isTemporalType(type)) {
@@ -307,13 +282,11 @@ export function validateSourcePreaggregation(
    }
 
    const declaredFields: FieldLike[] = [];
-   // Canonical grain -> each namespace named at it, and the first measure that
-   // named it. Joined on the same NUL separator `planSourcePreaggregation` keys
-   // `byGrain` with, so "one grain" cannot mean two things across the two modules.
+   // Canonical grain -> each namespace named at it -> first measure naming it.
+   // Keyed with the same NUL separator as `planSourcePreaggregation`'s
+   // `byGrain`, so "one grain" means the same thing in both modules.
    const namespacesByGrain = new Map<string, Map<string, string>>();
-   // The same, for `storage=`. A grain is one table, so it can be built in one
-   // store; two measures at one grain naming different destinations is
-   // unsatisfiable in exactly the way two namespaces are.
+   // The same, for `storage=`.
    const storagesByGrain = new Map<string, Map<string, string>>();
    const grainTextByKey = new Map<string, string>();
    for (const field of fields) {
@@ -354,11 +327,8 @@ export function validateSourcePreaggregation(
          continue;
       }
 
-      // Hidden measures first: a rollup stores each measure's partial and serves
-      // it back under the measure's own name, with none of the source's field
-      // visibility applying to the stored table. So a private measure that is
-      // pre-aggregated is readable through its rollup while the live path refuses
-      // it. Refused rather than skipped, per this module's rule.
+      // A private measure's stored partial would be readable through its rollup
+      // while the live path refuses it (see isAccessRestricted).
       if (isAccessRestricted(field)) {
          violations.push({
             code: "non_public_measure",
@@ -408,9 +378,8 @@ export function validateSourcePreaggregation(
             );
             if (violation) violations.push(violation);
          }
-         // Only an additive measure reaches a rollup, so only one can put a
-         // namespace on it — mirroring the same skip in `planSourcePreaggregation`
-         // so the two never disagree about which grains exist.
+         // Only an additive measure reaches a rollup; mirrors the same skip in
+         // `planSourcePreaggregation` so the two agree on which grains exist.
          if (grain.namespace !== undefined && additivity.additive) {
             const key = grain.dimensions.join("\u0000");
             const named = namespacesByGrain.get(key) ?? new Map();
@@ -428,10 +397,9 @@ export function validateSourcePreaggregation(
       }
    }
 
-   // One grain is one table, so it can be created in exactly one place. Measures
-   // sharing a grain but naming different namespaces is therefore unsatisfiable —
-   // refused rather than resolved by field order, which would put a rollup
-   // somewhere an author never chose and give no sign it happened.
+   // One grain is one table, created in exactly one place. Different namespaces
+   // at one grain are refused rather than resolved by field order, which would
+   // silently place a rollup where its author never chose.
    for (const [key, named] of namespacesByGrain) {
       if (named.size < 2) continue;
       const choices = [...named.entries()]
@@ -444,9 +412,7 @@ export function validateSourcePreaggregation(
       });
    }
 
-   // One grain is one table, so it can be built in exactly one store. Same shape
-   // and same reasoning as `conflicting_namespace` above: unsatisfiable, so it is
-   // refused rather than resolved by field order.
+   // Same for storage destinations.
    for (const [key, placed] of storagesByGrain) {
       if (placed.size < 2) continue;
       const choices = [...placed.entries()]
@@ -459,22 +425,15 @@ export function validateSourcePreaggregation(
       });
    }
 
-   // `namespace=` and `storage=` together, which is refused rather than ranked.
+   // `namespace=` with `storage=` is refused. Placement inside a destination is
+   // derived: the resolver refuses a dotted `name=` because a fresh catalog has
+   // no schema and the build emits no `CREATE SCHEMA`. Honouring the namespace
+   // would target a schema that may not exist; ignoring it would silently move
+   // the rollup. Refusing keeps the option of giving it a meaning later.
    //
-   // Placement inside a storage destination is DERIVED, not authored: the
-   // destination resolver refuses a dotted `name=` outright, because a
-   // freshly-provisioned catalog has no schema and the build emits a bare
-   // `CREATE OR REPLACE TABLE` with no `CREATE SCHEMA`. Honouring the namespace
-   // would aim the CREATE at a schema that need not exist; ignoring it would place
-   // the rollup somewhere the author did not choose and say nothing. Neither is
-   // acceptable, so the combination is refused while it means nothing — which
-   // keeps the option of giving it a meaning later without a data migration.
-   //
-   // Both keys were written on the same `#@ preaggregate` line, necessarily: a
-   // destination is never inherited from the base's `#@ persist storage=`, so the
-   // only `storage=` in play here is one the author typed beside the `namespace=`.
-   // The message can therefore name both flatly rather than hedging about where
-   // each came from.
+   // A destination is never inherited from the base's `#@ persist storage=`,
+   // so both keys were typed by the author, and a `namespace=` beside a
+   // `storage=` base is not a conflict.
    for (const [key, named] of namespacesByGrain) {
       const ownStorage = storagesByGrain.get(key);
       const [namespace, namespaceMeasure] = [...named.entries()][0];
@@ -488,26 +447,13 @@ export function validateSourcePreaggregation(
          });
          continue;
       }
-      // Only a pair written on ONE `#@ preaggregate` line is refused, and there is
-      // no other pair to consider: a destination is never inherited from the
-      // base's `#@ persist storage=`, so a `namespace=` beside such a base is the
-      // configuration the shipped docs already describe and still means what it
-      // always did.
    }
 
-   // A v1 scope restriction rather than a mistake, so it is reported once for the
-   // source instead of once per measure, and only when something asked for it.
-   //
-   // Scoped to FAN-OUT joins, not to joins at all. The reason the design doc gives
-   // for the restriction is row multiplicity: a rollup summing a measure computed
-   // against duplicated rows returns a wrong total. A `join_one` cannot duplicate
-   // rows, so it does not have that problem, and refusing it excluded every
-   // candidate in `examples/storefront` — where the measures worth rolling up sit
-   // on the one source with joins, all of them `join_one`.
-   //
-   // Nothing extra is needed in synthesis to support them: the rollup computes the
-   // base's own measure by name, so whatever joins that measure reaches through are
-   // reproduced by the base itself.
+   // A scope restriction, reported once per source and only when something
+   // declared `#@ preaggregate`. Scoped to FAN-OUT joins: a rollup over
+   // duplicated rows returns a wrong total, but a `join_one` cannot duplicate
+   // rows, and the rollup computes the base's measure by name so the base
+   // reproduces whatever joins it reaches through.
    const fanout = declaredFields.length > 0 ? fields.filter(isFanoutJoin) : [];
    if (fanout.length > 0) {
       const joins = fanout.map((f) => `\`${fieldName(f)}\``).join(", ");

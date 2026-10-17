@@ -9,7 +9,7 @@
  * worker path (`Package.create`) and the in-process path (`Model.create`).
  *
  * One `PackageLoadPool` is shared across the cases for the reason given in
- * `package_worker_path.spec.ts`.
+ * `tests/component/package_worker_path.component.spec.ts`.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {

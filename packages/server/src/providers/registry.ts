@@ -132,8 +132,7 @@ export function createChatModel(
 
 /**
  * Build the embedding model for resolved `retrieval.embedding` settings. The
- * OpenAI-style providers are the existing {@link EmbeddingProvider}, so its
- * behaviour and test seam are unchanged.
+ * OpenAI-style providers are served by {@link EmbeddingProvider}.
  */
 export function createEmbeddingModel(
    settings: EmbeddingSettings,

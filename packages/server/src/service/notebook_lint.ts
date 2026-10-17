@@ -156,7 +156,6 @@ export function lintNotebookText(
          message: `Line ${line}: ${message}`,
       });
 
-   // The statements, in file order.
    const children: ParseNode[] = [];
    for (let i = 0; i < (root.childCount ?? 0); i++)
       children.push(root.getChild(i));

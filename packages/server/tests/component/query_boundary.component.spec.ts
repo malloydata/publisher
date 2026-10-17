@@ -1,0 +1,2270 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Integration test: Query Boundary.
+ *
+ * Drives `Package.create` through the package-load worker pool and verifies the
+ * rule "queryable == discoverable": only the discovery surface (the root
+ * `index.malloy` + its `export {}` closure) is a valid top-level query target.
+ * Everything else still compiles, imports, joins, and extends, but is denied a
+ * direct query with a generic 404 (`NotQueryableError`). A package with no
+ * `index.malloy` is unaffected. The deprecated `explores` / `queryableSources`
+ * keys are pinned in the labelled block at the end.
+ *
+ * Enforcement is two-step (mirroring the authorize gate): an early
+ * pre-compilation gate that positively denies what it can resolve (schema-
+ * oracle defense), and a compiled backstop that settles everything else
+ * against the run target Malloy actually executes (read off the prepared
+ * query's structRef — inspecting compiler output, never altering compilation).
+ * Ad-hoc derivation over a curated source is admitted via the same alias walk
+ * filters use; an unresolvable target fails closed.
+ *
+ * This is the *what* axis; `#(authorize)` (the *who* axis) is orthogonal and
+ * tested in tests/component/explore_visibility.component.spec.ts / the authorize specs. Reports are
+ * always public and never gated.
+ */
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import {
+   BadRequestError,
+   NotQueryableError,
+   OffSurfaceError,
+   QueryCompileError,
+} from "../../src/errors";
+import type { Model } from "../../src/service/model";
+import { Package } from "../../src/service/package";
+import {
+   duckdbMalloyConfig,
+   usePackageLoadPool,
+} from "../../src/test_helpers/temp_package";
+import {
+   getDashboard,
+   listDashboards,
+} from "../../src/service/legacy_report_views";
+
+describe("Query Boundary via worker pool", () => {
+   let tempDir: string;
+   usePackageLoadPool();
+
+   beforeEach(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-qbound-"));
+   });
+
+   afterEach(() => {
+      if (tempDir) {
+         try {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+         } catch {
+            /* already gone */
+         }
+         tempDir = "";
+      }
+   });
+
+   function writeManifest(extra: Record<string, unknown> = {}): void {
+      fs.writeFileSync(
+         path.join(tempDir, "publisher.json"),
+         JSON.stringify({ name: "pkg", description: "test package", ...extra }),
+      );
+   }
+
+   // base.malloy (a building block, never an explore) + a curated surface file
+   // which imports/joins it, exports only `customers`, and keeps a local
+   // `helper` source it does NOT export. Each runnable source carries a view so
+   // it can actually be queried.
+   //
+   // The surface file's NAME is a parameter because a root "index.malloy" IS
+   // the discovery surface when the manifest declares no `explores` — and the
+   // surface is the boundary. A test whose subject is the inert, uncurated
+   // default must name the file something else, or the convention arms the
+   // boundary underneath it and the test measures the opposite of its title.
+   function writeLayeredModels(curatedFile = "index.malloy"): void {
+      fs.writeFileSync(
+         path.join(tempDir, "base.malloy"),
+         `source: base_source is duckdb.sql("select 1 as id, 5 as n") extend {
+  measure: total_n is n.sum()
+  view: v is { aggregate: total_n }
+}`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, curatedFile),
+         `import "base.malloy"
+source: helper is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: hv is { aggregate: c }
+}
+source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
+  join_one: b is base_source on id = b.id
+  measure: total is amt.sum()
+  view: v is { aggregate: total }
+}
+export { customers }`,
+      );
+   }
+
+   /**
+    * Assert a named (`sourceName`/`queryName`) request is refused and returns
+    * nothing. Deliberately does NOT pin the error class: these fields are
+    * quoted as identifiers, so an injected statement is refused at the lexer as
+    * an unresolvable/unlexable NAME (a Malloy compile error) rather than by the
+    * boundary (`NotQueryableError`) — and which one fires depends only on which
+    * gate the shape happens to reach first. What must hold is that it threw and
+    * no rows came back. Reports the leaked row count on failure, since a
+    * success here IS the leak.
+    */
+   async function expectNamedRejected(
+      model: Model,
+      sourceName: string | undefined,
+      queryName: string | undefined,
+   ): Promise<void> {
+      let leakedRows: number | undefined;
+      try {
+         const { compactResult } = await model.getQueryResults(
+            sourceName,
+            queryName,
+         );
+         leakedRows = (compactResult as unknown[] | undefined)?.length ?? 0;
+      } catch {
+         return;
+      }
+      throw new Error(
+         `Expected the named request { sourceName: ${JSON.stringify(sourceName)}, ` +
+            `queryName: ${JSON.stringify(queryName)} } to be rejected, but it ` +
+            `succeeded and returned ${leakedRows} rows (INJECTION / LEAK).`,
+      );
+   }
+
+   // -- default mode ("declared") -----------------------------------------
+
+   it("declared: a compile error over the queryable surface is a 400 located in the submitted text", async () => {
+      // A failed compile leaves the compiled backstop no run target, and it
+      // refuses an unresolved target as not queryable. For text whose every run
+      // target is curated (or derived from curated), that refusal hid the
+      // caller's own typo behind a 404; the problems are the answer a package
+      // with no surface already gives.
+      const query =
+         "source: x is customers extend {\n" +
+         "  where: id = 1\n" +
+         "}\n" +
+         "run: x -> { aggregate: n is coutn() }";
+      const compileError = async (model: Model): Promise<QueryCompileError> => {
+         try {
+            await model.getQueryResults(undefined, undefined, query);
+         } catch (error) {
+            expect(error).toBeInstanceOf(QueryCompileError);
+            return error as QueryCompileError;
+         }
+         throw new Error("the query compiled");
+      };
+
+      writeManifest();
+      writeLayeredModels();
+      let armed: QueryCompileError;
+      {
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            armed = await compileError(pkg.getModel("index.malloy")!);
+         } finally {
+            await duckdb.close();
+         }
+      }
+      // Located in the text as sent: `coutn` starts at line 3, column 28
+      // (0-based), not where the server's own prefix moved it to.
+      expect(armed.problems).toHaveLength(1);
+      expect(armed.problems[0].code).toBe("function-not-found");
+      expect(armed.problems[0].at?.range.start).toEqual({
+         line: 3,
+         character: 28,
+      });
+      expect(armed.message).toStartWith("line 4:29 Unknown function 'coutn'");
+
+      // The same text on a package with no surface gets the same answer.
+      fs.rmSync(path.join(tempDir, "index.malloy"));
+      writeManifest();
+      writeLayeredModels("surface.malloy");
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const inert = await compileError(pkg.getModel("surface.malloy")!);
+         expect(inert.message).toBe(armed.message);
+         expect(inert.problems.map((pr) => pr.at?.range)).toEqual(
+            armed.problems.map((pr) => pr.at?.range),
+         );
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a compile error in text that reaches a hidden source stays the generic 404", async () => {
+      // Each of these fails to compile, and returning its problems would
+      // describe a source off the surface. Each keeps the plain 404 a missing
+      // source gets: text that does not compile names no target the boundary
+      // could explain.
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      const refusedNotCompiled = async (model: Model, query: string) => {
+         try {
+            await model.getQueryResults(undefined, undefined, query);
+         } catch (error) {
+            // A boundary 404, never the compiler's problems: returning those
+            // would describe a source off the surface.
+            expect(error).toBeInstanceOf(NotQueryableError);
+            expect(error).not.toBeInstanceOf(QueryCompileError);
+            return;
+         }
+         throw new Error(`"${query}" was admitted`);
+      };
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         for (const query of [
+            // A caller alias over a source that does not exist.
+            "source: x is no_such_source extend {}\nrun: x -> { group_by: nope }",
+            // A derivation over the hidden source.
+            "source: x is helper extend { where: id = 1 }\nrun: x -> { group_by: nope }",
+            // A curated decoy first; Malloy runs the LAST statement, which
+            // reads the hidden source.
+            "run: customers -> { aggregate: total }\nrun: helper -> { group_by: nope }",
+            // The run target is curated, but a NON-RUN declaration names the
+            // hidden source; its field errors would describe helper. A source
+            // that does not exist must answer the same, so a caller cannot tell
+            // the hidden name from a missing one.
+            "source: h is helper extend { dimension: d is nope }\n" +
+               "run: customers -> { aggregate: total }",
+            "source: h is no_such extend { dimension: d is nope }\n" +
+               "run: customers -> { aggregate: total }",
+         ]) {
+            await refusedNotCompiled(model, query);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   // Text where Malloy stops at the grammar: the run statement is misspelled,
+   // missing, or not Malloy at all, so no run target can be read off it. These
+   // used to come back as the boundary's 404 because the 400 above needs a
+   // readable target to prove every source the text names is queryable.
+   const unreadableTargetTexts = [
+      // `run` without its colon.
+      "run customers -> { aggregate: total }",
+      // SQL, which is what a model that has not read the docs tries first.
+      "SELECT total FROM customers",
+      // A statement that stops after the keyword.
+      "run:",
+      // Prose in front of a good statement.
+      "Here is my query:\nrun: customers -> { aggregate: total }",
+   ];
+
+   async function problemsOrRefusal(
+      model: Model,
+      query: string,
+   ): Promise<QueryCompileError | NotQueryableError> {
+      try {
+         await model.getQueryResults(undefined, undefined, query);
+      } catch (error) {
+         if (
+            error instanceof QueryCompileError ||
+            error instanceof NotQueryableError
+         ) {
+            return error;
+         }
+         throw error;
+      }
+      throw new Error(`"${query}" ran`);
+   }
+
+   it("declared: a syntax error in text with no readable run target is a 400, as on a package with no surface", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const answers = async (file: string): Promise<string[]> => {
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const model = pkg.getModel(file)!;
+            const out: string[] = [];
+            for (const query of unreadableTargetTexts) {
+               const answer = await problemsOrRefusal(model, query);
+               expect(answer).toBeInstanceOf(QueryCompileError);
+               const problems = (answer as QueryCompileError).problems;
+               expect(problems.length).toBeGreaterThan(0);
+               expect(problems.every((p) => p.code === "syntax-error")).toBe(
+                  true,
+               );
+               out.push(answer.message);
+            }
+            return out;
+         } finally {
+            await duckdb.close();
+         }
+      };
+      const armed = await answers("index.malloy");
+
+      fs.rmSync(path.join(tempDir, "index.malloy"));
+      writeManifest();
+      writeLayeredModels("surface.malloy");
+      expect(await answers("surface.malloy")).toEqual(armed);
+   });
+
+   it("declared: a syntax error does not tell a hidden name from a missing one", async () => {
+      // Each text differs only in the name. The grammar failure cannot depend
+      // on what the name is, and nothing before the compile reads it, so the
+      // three answers are the same words.
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const texts = (name: string) => [
+            `run ${name} -> { group_by: nope }`,
+            `source: x is ${name} extend {}\nrun x -> { group_by: nope }`,
+            `SELECT * FROM ${name}`,
+         ];
+         const hidden = texts("helper");
+         const missing = texts("no_such_source");
+         const exported = texts("customers");
+         for (let i = 0; i < hidden.length; i++) {
+            const a = await problemsOrRefusal(model, hidden[i]);
+            const b = await problemsOrRefusal(model, missing[i]);
+            const c = await problemsOrRefusal(model, exported[i]);
+            expect(a).toBeInstanceOf(QueryCompileError);
+            expect(b).toBeInstanceOf(QueryCompileError);
+            expect(c).toBeInstanceOf(QueryCompileError);
+            expect(a.message).toBe(b.message);
+            expect(a.message).toBe(c.message);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a semantic error over a hidden source in text with no run target does not tell a real column from a missing one", async () => {
+      // Nothing can be run, so the boundary cannot vouch for the text; only a
+      // pure grammar failure is shown. A field error on a hidden source would
+      // otherwise answer 400 for a missing column and 404 for a real one.
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const real = await problemsOrRefusal(
+            model,
+            `source: x is helper extend { dimension: dd is id }`,
+         );
+         const fake = await problemsOrRefusal(
+            model,
+            `source: x is helper extend { dimension: dd is nosuchfield }`,
+         );
+         expect(real).toBeInstanceOf(NotQueryableError);
+         expect(fake).toBeInstanceOf(NotQueryableError);
+         expect(fake.message).toBe(real.message);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: `~` against a date literal on an exported source returns the compiler's message, and a hidden or missing source still gets the same 404", async () => {
+      // Malloy throws a plain Error for this (not a MalloyError with
+      // problems), so it used to fall through to the boundary's 404.
+      writeManifest();
+      writeLayeredModels();
+      const index = path.join(tempDir, "index.malloy");
+      fs.writeFileSync(
+         index,
+         fs.readFileSync(index, "utf8").replace(
+            "export { customers }",
+            `source: dated is duckdb.sql("select 1 as id, DATE '2025-03-01' as d") extend {
+  measure: c is count()
+}
+export { customers, dated }`,
+         ),
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const filter = (name: string, col: string) =>
+            `run: ${name} -> { where: ${col} ~ @2025 aggregate: n is count() }`;
+
+         const exported = await problemsOrRefusal(model, filter("dated", "d"));
+         expect(exported).toBeInstanceOf(QueryCompileError);
+         expect(exported.message).toContain(
+            "mysterious error in range computation",
+         );
+         expect((exported as QueryCompileError).problems.length).toBe(1);
+
+         // Decoys: a hidden source, a missing one and an alias of each get a
+         // refusal that does not depend on the filter. (Where nothing is gated
+         // the boundary explains a real hidden source, so hidden and missing
+         // may differ from each other; they must answer a `~` the way they answer any other compile error.)
+         for (const text of [
+            (f: string) =>
+               `run: helper -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `run: no_such_source -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `source: x is helper extend {}\nrun: x -> { where: ${f} aggregate: n is count() }`,
+            (f: string) =>
+               `source: x is no_such_source extend {}\nrun: x -> { where: ${f} aggregate: n is count() }`,
+         ]) {
+            const tilde = await problemsOrRefusal(model, text("id ~ @2025"));
+            const plain = await problemsOrRefusal(model, text("nosuch = 1"));
+            expect(tilde).toBeInstanceOf(NotQueryableError);
+            expect(tilde).not.toBeInstanceOf(QueryCompileError);
+            expect(tilde.message).toBe(plain.message);
+         }
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a syntax error stays the generic 404 where a name could change the answer", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         // A caller-written join is read before the compile, and refused when
+         // it reaches a hidden source. A missing name is not, so returning the
+         // grammar error for the missing one would tell the two apart.
+         for (const name of ["helper", "no_such_source"]) {
+            const answer = await problemsOrRefusal(
+               model,
+               `run customers extend { join_one: ${name} on id = ${name}.id } -> { aggregate: total }`,
+            );
+            expect(answer).toBeInstanceOf(NotQueryableError);
+            expect(answer).not.toBeInstanceOf(QueryCompileError);
+         }
+         // A join whose base is curated reads no hidden name, so its typo is
+         // shown like any other grammar failure.
+         const twin = await problemsOrRefusal(
+            model,
+            `run customers extend { join_one: c2 is customers on id = c2.id } -> { aggregate: total }`,
+         );
+         expect(twin).toBeInstanceOf(QueryCompileError);
+         expect(
+            (twin as QueryCompileError).problems.every(
+               (p) => p.code === "syntax-error",
+            ),
+         ).toBe(true);
+      } finally {
+         await duckdb.close();
+      }
+
+      // A model with a gate refuses by name before the compile (a locked name
+      // anywhere in the text), so every such text keeps the 404, whatever the
+      // name is.
+      const index = path.join(tempDir, "index.malloy");
+      fs.writeFileSync(
+         index,
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id") extend {
+  view: lv is { aggregate: c is count() }
+}
+` +
+            fs
+               .readFileSync(index, "utf8")
+               .replace("export { customers }", "export { customers, locked }"),
+      );
+      const gated = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            gated.malloyConfig,
+         );
+         const model = pkg.getModel("index.malloy")!;
+         const messages = new Set<string>();
+         for (const name of ["helper", "no_such_source"]) {
+            const answer = await problemsOrRefusal(
+               model,
+               `run ${name} -> { group_by: nope }`,
+            );
+            expect(answer).toBeInstanceOf(NotQueryableError);
+            expect(answer).not.toBeInstanceOf(QueryCompileError);
+            messages.add(answer.message);
+         }
+         expect(messages.size).toBe(1);
+      } finally {
+         await gated.duckdb.close();
+      }
+   });
+
+   it("declared: exported source in the surface file IS queryable (incl. join-through)", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const { result } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("customers", "v", undefined);
+         expect(result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a model file off the surface is not queryable (file-level, 404)", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // base.malloy is hidden (not an explore) → not a query entry point.
+         await expect(
+            pkg
+               .getModel("base.malloy")!
+               .getQueryResults("base_source", "v", undefined),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a non-exported source inside the surface file is not queryable", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         // `helper` compiles and is joinable, but is not in index's export{}.
+         await expect(
+            pkg.getModel("index.malloy")!.getQueryResults("helper", "hv"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: ad-hoc query is admitted for a curated source, denied for a hidden one", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         const { result } = await model.getQueryResults(
+            undefined,
+            undefined,
+            "run: customers -> { aggregate: total }",
+         );
+         expect(result.data).toBeDefined();
+
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: helper -> { aggregate: c }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: multi-statement is settled by the COMPILED run target (last statement wins)", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // Curated decoy first, hidden real target last. The early gate reads
+         // every `run:`, so it denies `helper` before compile. The compiled
+         // backstop, which resolves the LAST statement, would deny it too.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: customers -> { aggregate: total }\nrun: helper -> { aggregate: c }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // Hidden target FIRST is denied before compile too: Malloy runs only
+         // the last statement but compiles every one, so the hidden source's
+         // compile errors would otherwise answer.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: helper -> { aggregate: c }\nrun: customers -> { aggregate: total }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // Several `run:` statements must not change a denial: a hidden source
+         // and a missing one each give, with two statements, the same answer
+         // they give with one. So the count never reveals which it was.
+         const answerFor = async (text: string) => {
+            try {
+               await model.getQueryResults(undefined, undefined, text);
+            } catch (error) {
+               return error as Error;
+            }
+            throw new Error("expected the query to be refused");
+         };
+         // A direct name is denied before compile. An alias (`source: a is
+         // helper extend {}`) is denied only after compile, by the backstop,
+         // so it is the case that fails if the count check moves ahead of it.
+         for (const target of ["helper", "no_such_source"]) {
+            for (const last of [
+               `run: ${target} -> { aggregate: c }`,
+               `source: a is ${target} extend {}\nrun: a -> { aggregate: c }`,
+            ]) {
+               const once = await answerFor(last);
+               const twice = await answerFor(
+                  `run: customers -> { aggregate: total }\n${last}`,
+               );
+               expect(once).not.toBeInstanceOf(BadRequestError);
+               expect(twice).not.toBeInstanceOf(BadRequestError);
+               expect(twice.constructor).toBe(once.constructor);
+               expect(twice.message).toBe(once.message);
+            }
+         }
+         expect(
+            await answerFor("run: helper -> { aggregate: c }"),
+         ).toBeInstanceOf(NotQueryableError);
+         expect(
+            await answerFor(
+               "source: a is helper extend {}\nrun: a -> { aggregate: c }",
+            ),
+         ).toBeInstanceOf(OffSurfaceError);
+
+         // All-curated multi-statement passes the boundary, then is refused as
+         // more than one `run:`. The two denials above stay 404s rather than
+         // that 400: the count is checked only after every gate.
+         const allCurated = model.getQueryResults(
+            undefined,
+            undefined,
+            "run: customers -> { aggregate: total }\nrun: customers -> { group_by: id }",
+         );
+         await expect(allCurated).rejects.toBeInstanceOf(BadRequestError);
+         await expect(allCurated).rejects.toThrow(
+            "The query has 2 run: statements",
+         );
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a newline in queryName cannot smuggle a second run: statement (issue #964)", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // Positive control: the legitimate named request works.
+         const before = await model.getQueryResults("customers", "v");
+         expect(before.result.data).toBeDefined();
+
+         // The reported repro. `sourceName` is curated, so the early gate
+         // returns "cleared" and the compiled backstop is deliberately skipped
+         // — nothing ever re-checks the statement the newline opened, and
+         // Malloy runs the LAST `run:`. Quoting `queryName` is what stops it
+         // becoming a second statement at all.
+         await expectNamedRejected(
+            model,
+            "customers",
+            "v\nrun: helper -> { aggregate: c }",
+         );
+
+         // The reporter's verified variant table. Each of these is already
+         // blocked (an exact-string curated lookup that misses fails closed
+         // with a 404), so these pin the matrix against future drift.
+         //
+         // Injection through `sourceName`, swallowing `queryName` into the
+         // smuggled statement…
+         await expectNamedRejected(model, "customers -> v\nrun: helper", "hv");
+         // …and with the smuggled statement self-contained.
+         await expectNamedRejected(
+            model,
+            "customers\nrun: helper -> { aggregate: c }",
+            "v",
+         );
+         // `queryName` alone (no source prefix): misses the curated-QUERY set.
+         await expectNamedRejected(
+            model,
+            undefined,
+            "v\nrun: helper -> { aggregate: c }",
+         );
+         // The escape itself, which is what the whole fix rests on: a payload
+         // carrying its own BACKTICK, trying to close the quote we opened and
+         // resume as syntax. quoteMalloyIdentifier escapes `\` before `` ` ``
+         // (the same order, and the same function body, as malloy's internal
+         // escapeIdentifier), so the backtick becomes ``\` `` inside the
+         // identifier instead of terminating it. Escaping in the other order
+         // would let `\` + `` ` `` reopen the hole.
+         await expectNamedRejected(
+            model,
+            "customers",
+            "v` -> `hv`\nrun: `helper",
+         );
+         await expectNamedRejected(
+            model,
+            "customers` -> `v`\nrun: `helper",
+            "hv",
+         );
+         // A backslash-escape payload: ``` is a backtick in JSON-style
+         // unescaping, and malloy's decoder (ParseUtil.parseString) honors
+         // \uXXXX inside the quotes. Escaping the backslash FIRST is what keeps
+         // it a literal six-character name rather than a closing quote.
+         await expectNamedRejected(model, "customers", "v\\u0060 -> \\u0060hv");
+         // The ad-hoc equivalent: settled by the compiled backstop instead.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: customers -> v\nrun: helper -> { aggregate: c }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // The hidden source is still refused when named honestly, i.e. the
+         // boundary itself is intact and the rejections above are the injection
+         // being refused, not the boundary firing twice.
+         await expect(
+            model.getQueryResults("helper", "hv"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // …and the legitimate request still works after all of it.
+         const after = await model.getQueryResults("customers", "v");
+         expect(after.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a name that needs Malloy quoting is queryable on the named path", async () => {
+      // The named path composes `run: <source> -> <view>`; unquoted, a name
+      // that REQUIRES Malloy quoting (here a hyphen) does not even lex, so it
+      // was unreachable through `sourceName`/`queryName`. The caller sends the
+      // bare names the model's `sources` listing returns — quoting is the
+      // server's job.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: \`customer-orders\` is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+  view: \`by-total\` is { aggregate: total }
+}
+export { \`customer-orders\` }`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const { result } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("customer-orders", "by-total");
+         expect(result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: ad-hoc derivation over a curated source is queryable; over a hidden one is not", async () => {
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // Composing over a queryable source is itself queryable: the compiled
+         // structRef names the ad-hoc alias `x`, and the derivation walk maps
+         // x → customers (curated).
+         const { result } = await model.getQueryResults(
+            undefined,
+            undefined,
+            "source: x is customers extend { measure: m is count() }\nrun: x -> { aggregate: m }",
+         );
+         expect(result.data).toBeDefined();
+
+         // Laundering a hidden source through an ad-hoc alias is denied: the
+         // chain y → helper never reaches the curated surface.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: y is helper extend { measure: m is count() }\nrun: y -> { aggregate: m }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: an uppercase derivation of a curated source is admitted, and an uppercase or escaped alias of a hidden source is refused", async () => {
+      // Boundary is armed (index.malloy is the surface). Keywords are case-insensitive;
+      // the alias's own case is not a different name.
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+         const { result } = await model.getQueryResults(
+            undefined,
+            undefined,
+            "SOURCE: x IS customers EXTEND { measure: m is count() }\nRUN: x -> { aggregate: m }",
+         );
+         expect(result.data).toBeDefined();
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "SOURCE: y IS helper EXTEND { measure: m is count() }\nRUN: y -> { aggregate: m }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: y is `\\helper` extend { measure: m is count() }\nrun: y -> { aggregate: m }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: derivation THROUGH a named query is queryable over a curated source, not a hidden one", async () => {
+      // The pre-aggregate idiom composes through a `query:` hop:
+      //   query:  agg is <curated> -> { … }
+      //   source: blended is agg extend { … }
+      //   run:    blended -> { … }
+      // The walk has to follow `query:` declarations as well as `source:` ones
+      // or it dead-ends on `agg` — neither curated nor a `source:` alias — and
+      // fails closed on a query that only ever reads a source the caller may
+      // plainly read. Worse, `/compile` is exempt from this boundary, so the
+      // same text compiles clean first and the 404 explains nothing.
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         const { result } = await model.getQueryResults(
+            undefined,
+            undefined,
+            "query: agg is customers -> { group_by: id aggregate: t is total }\n" +
+               "source: blended is agg extend { primary_key: id }\n" +
+               "run: blended -> { group_by: id }",
+         );
+         expect(result.data).toBeDefined();
+
+         // Admission still turns on reaching a CURATED name, so the same shape
+         // over a hidden source launders nothing.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "query: agg is helper -> { group_by: id aggregate: n is c }\n" +
+                  "source: blended is agg extend { primary_key: id }\n" +
+                  "run: blended -> { group_by: id }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a forged or shadowing derivation edge cannot buy admission", async () => {
+      // Widening the walk to `query:` widens ADMISSION, so the two hardenings
+      // that make it safe are pinned here rather than assumed.
+      writeManifest();
+      writeLayeredModels();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // (a) A declaration forged inside a STRING LITERAL is blanked before
+         // the scan, so it never becomes an edge: `mine` stays ungrounded.
+         //
+         // The `source:` spelling is the load-bearing one. The scan this
+         // replaced read `source:` declarations out of RAW text and kept only
+         // the LAST base per name, so a literal spelling `source:` re-pointed
+         // `mine` from the hidden base it really derives from to the curated
+         // one, and the boundary admitted a read of the hidden source. Blanking
+         // literals means the forged text is never a declaration at all, and
+         // keeping every base per name means it could only add an obligation
+         // even if it were.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: mine is helper extend {\n" +
+                  "  dimension: note is 'source: mine is customers'\n" +
+                  "}\nrun: mine -> { group_by: note }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // The `query:` spelling of the same forgery, which the replaced scan
+         // did not read at all. Widening to `query:` is what makes it reachable,
+         // so it is pinned alongside rather than assumed to follow.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: mine is helper extend {\n" +
+                  "  dimension: note is 'query: mine is customers'\n" +
+                  "}\nrun: mine -> { group_by: note }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // (b) A second declaration for a name, in a form Malloy itself rejects
+         // as a redefinition. That compile error is what refuses this one, so it
+         // guards the shape rather than the boundary's verdict on it; (b2) below
+         // is what pins the every-base quantifier.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "query: mine is helper -> { group_by: id }\n" +
+                  "query: mine is customers -> { group_by: id }\n" +
+                  "source: alias is mine extend { primary_key: id }\n" +
+                  "run: alias -> { group_by: id }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // (b2) The same pairing, but spelled so that MALLOY accepts the text --
+         // the forged half rides inside a backtick-quoted FIELD NAME, which is
+         // a legal identifier and is deliberately preserved by the strip (a
+         // backticked span carries real names the scan must read). So the base
+         // map really does see `mine` -> { helper, customers }, and this query
+         // reaches the boundary on its own merits instead of dying at compile
+         // the way (b) does.
+         //
+         // This is the case that pins the QUANTIFIER. Admission requires EVERY
+         // base to prove curated, so the hidden `helper` denies it. Were the
+         // walk to admit on ANY base instead, the forged `customers` edge would
+         // discharge the obligation and this query would return rows from the
+         // hidden source -- and (b) would not catch that, because Malloy rejects
+         // (b) before the boundary ever rules.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: mine is helper extend {\n" +
+                  "  dimension: `source: mine is customers` is 1\n" +
+                  "}\nrun: mine -> { group_by: id }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // (c) A derivation cycle grounds nothing and must fail closed.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "source: a is b extend { measure: m is count() }\n" +
+                  "source: b is a extend { measure: m2 is count() }\n" +
+                  "run: a -> { aggregate: m }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: an exported named query reading a hidden source is admitted by name", async () => {
+      // Exporting a query is the author's deliberate exposure of a result,
+      // even when the source it reads stays hidden. The explicit queryName
+      // request is cleared by the early gate and the compiled backstop is
+      // skipped — re-deriving the underlying (hidden) source must not re-deny
+      // the author's chosen entry point.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: helper is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}
+source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+}
+query: helper_stats is helper -> { aggregate: c }
+export { customers, helper_stats }`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         const { result } = await model.getQueryResults(
+            undefined,
+            "helper_stats",
+            undefined,
+         );
+         expect(result.data).toBeDefined();
+
+         // …while the hidden source itself stays non-queryable directly.
+         await expect(
+            model.getQueryResults(
+               undefined,
+               undefined,
+               "run: helper -> { aggregate: c }",
+            ),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: a hidden source is not queryable via a view whose name collides with an exported query (regression)", async () => {
+      // Guards the early-gate fast-path. An exported top-level query named
+      // `stats` must admit the pure named query `run: stats`, but must NOT clear
+      // `run: helper->stats` where `helper` is hidden and `stats` is also a view
+      // on it. Clearing on the bare queryName (ignoring the source prefix) would
+      // skip the compiled backstop and let the hidden source be read through the
+      // name collision — so the source-prefixed form is gated on the *source*
+      // being curated, not on the query name.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: helper is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: stats is { aggregate: c }
+}
+source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+}
+query: stats is customers -> { aggregate: total }
+export { customers, stats }`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         // The exported top-level query is reachable on its own name.
+         const { result } = await model.getQueryResults(
+            undefined,
+            "stats",
+            undefined,
+         );
+         expect(result.data).toBeDefined();
+
+         // …but the hidden source is NOT reachable through the colliding view
+         // name when explicitly targeted as the run source.
+         await expect(
+            model.getQueryResults("helper", "stats", undefined),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: ad-hoc derivation over a backtick-quoted exported source is queryable", async () => {
+      // A source whose name needs backticks (a hyphen) must still be walkable
+      // by the derivation alias map — otherwise composing over it returns a
+      // false 404. Guards buildAliasMap's quoted-identifier handling.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: \`customer-orders\` is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+}
+export { \`customer-orders\` }`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("index.malloy")!;
+
+         const { result } = await model.getQueryResults(
+            undefined,
+            undefined,
+            "source: x is `customer-orders` extend { measure: m is count() }\nrun: x -> { aggregate: m }",
+         );
+         expect(result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   // DEPRECATED FEATURE COVERAGE — delete together with
+   // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
+   describe("deprecated: .malloynb notebooks", () => {
+      it("declared: text sent to a notebook path reaches only the package surface", async () => {
+         // A notebook is always listed, but it is not a way around the surface:
+         // query text a caller sends to its path, and its own saved cells, are
+         // held to the surface like any other file's.
+         writeManifest();
+         writeLayeredModels();
+         fs.writeFileSync(
+            path.join(tempDir, "report.malloynb"),
+            `>>>malloy\nimport "index.malloy"\nimport "base.malloy"\n` +
+               `>>>malloy\nrun: base_source -> v\n` +
+               `>>>malloy\nsource: mine is customers extend { where: id > 0 }\n` +
+               `>>>malloy\nrun: mine -> v\n` +
+               `>>>malloy\nrun: customers -> v`,
+         );
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const notebook = pkg.getModel("report.malloynb")!;
+
+            // base.malloy is not listed, and it exports everything, so the
+            // notebook's import can see base_source. Seeing it is not admission.
+            await expect(
+               notebook.getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: base_source -> v",
+               ),
+            ).rejects.toThrow(NotQueryableError);
+            await expect(
+               notebook.getQueryResults("base_source", "v", undefined),
+            ).rejects.toThrow(NotQueryableError);
+
+            // What the surface publishes answers through the notebook path too.
+            const published = await notebook.getQueryResults(
+               undefined,
+               undefined,
+               "run: customers -> v",
+            );
+            expect(published.result.data).toBeDefined();
+
+            // The author's own cell is held to the surface too: it reads
+            // base_source, which the surface does not publish.
+            await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
+               NotQueryableError,
+            );
+            // A cell over what the surface publishes runs, and so does one over a
+            // source an EARLIER cell derives from it.
+            expect(
+               (await notebook.executeNotebookCell(4)).result,
+            ).toBeDefined();
+            expect(
+               (await notebook.executeNotebookCell(3)).result,
+            ).toBeDefined();
+
+            // And the notebook does not show what it may not read: the import
+            // cell's newSources and the notebook's sources leave base_source out.
+            const raw = await notebook.getNotebook();
+            const shown = JSON.stringify(raw);
+            expect(shown).not.toContain('"base_source"');
+            expect(
+               (raw.sources ?? []).map((source) => source.name).sort(),
+            ).toEqual(["customers", "mine"]);
+            // Nor a refused cell's queryInfo, whose schema lists the columns its
+            // query returns. The cells that run keep theirs.
+            const queryInfo = (raw.notebookCells ?? []).map(
+               (cell) => cell.queryInfo !== undefined,
+            );
+            expect(queryInfo).toEqual([false, false, false, true, true]);
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("declared: a notebook cell over a hidden gated source answers 404, not 403", async () => {
+         // The surface check runs before the authorize gate, so a cell cannot
+         // learn that a hidden source exists from which refusal it gets. And a
+         // cell's own source over a raw table has no published base, so it is
+         // refused too.
+         writeManifest();
+         writeLayeredModels();
+         const base = path.join(tempDir, "base.malloy");
+         fs.writeFileSync(
+            base,
+            fs.readFileSync(base, "utf8") +
+               `\n#(authorize) false\nsource: base_locked is duckdb.sql("select 1 as id")\n`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "report.malloynb"),
+            `>>>malloy\nimport "base.malloy"\n` +
+               `>>>malloy\nrun: base_locked -> { aggregate: c is count() }\n` +
+               `>>>malloy\nsource: raw is duckdb.sql("select 1 as id")\n` +
+               `>>>malloy\nrun: raw -> { aggregate: c is count() }`,
+         );
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const notebook = pkg.getModel("report.malloynb")!;
+            await expect(notebook.executeNotebookCell(1)).rejects.toThrow(
+               NotQueryableError,
+            );
+            await expect(notebook.executeNotebookCell(3)).rejects.toThrow(
+               NotQueryableError,
+            );
+         } finally {
+            await duckdb.close();
+         }
+      });
+   });
+
+   // The pre-compile gate refuses ad-hoc text only for a name the model
+   // declares, while a name that does not exist reaches the compiled backstop.
+   // Where a gate exists the two must read identically, or the difference tells
+   // a caller which hidden names are real. Checked on a .malloy path (helper is
+   // declared in index.malloy, not exported) and on a report path
+   // (base_source is visible to it through an import).
+   const refusal = async (model: Model, query: string) => {
+      try {
+         await model.getQueryResults(undefined, undefined, query);
+      } catch (error) {
+         expect(error).toBeInstanceOf(NotQueryableError);
+         return error as Error;
+      }
+      throw new Error(`"${query}" was admitted`);
+   };
+   const adHocPaths = [
+      ["index.malloy", "helper"],
+      ["report.malloy", "base_source"],
+   ] as const;
+   const INDEX_SURFACE =
+      `It is not on this package's published surface, "index.malloy": only ` +
+      `what that file exports is queryable, and only through it.`;
+   // What the fix says depends on where the refused name is: a surface file
+   // that already sees it only has to export it; a report exports nothing,
+   // so the name has to be exported from index.malloy.
+   const adHocFix: Record<(typeof adHocPaths)[number][0], string> = {
+      "index.malloy": `Fix: name the source in the export { ... } of "index.malloy".`,
+      "report.malloy":
+         `Fix: name the source in the export { ... } of "index.malloy", ` +
+         `importing the file that declares it if needed, and address the ` +
+         `query to "index.malloy".`,
+   };
+   const refusedBy = (run: Promise<unknown>) =>
+      run.then(
+         () => {
+            throw new Error("the request was admitted");
+         },
+         (e: Error) => {
+            expect(e).toBeInstanceOf(NotQueryableError);
+            return e;
+         },
+      );
+
+   it("declared: in a model with a gate, no refusal tells a hidden name from a missing one", async () => {
+      writeManifest();
+      writeLayeredModels();
+      // Any #(authorize) in the model keeps every refusal generic, including
+      // for the ungated helper: the check is per model, and errs to generic.
+      const index = path.join(tempDir, "index.malloy");
+      fs.writeFileSync(
+         index,
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id") extend {
+  view: lv is { aggregate: c is count() }
+}
+` +
+            fs
+               .readFileSync(index, "utf8")
+               .replace("export { customers }", "export { customers, locked }"),
+      );
+      // The check is per model, so the hidden file needs its own gate for its
+      // whole-file refusal to have something to protect.
+      const base = path.join(tempDir, "base.malloy");
+      fs.writeFileSync(
+         base,
+         fs.readFileSync(base, "utf8") +
+            `\n#(authorize) false\nsource: base_locked is duckdb.sql("select 1 as id")\n`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "report.malloy"),
+         `## artifact { layout=linear tiles=[] }\nimport "index.malloy"\nimport "base.malloy"\n`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const [modelPath, hidden] of adHocPaths) {
+            const model = pkg.getModel(modelPath)!;
+            const hiddenRefusal = await refusal(model, `run: ${hidden} -> hv`);
+            expect(hiddenRefusal).not.toBeInstanceOf(OffSurfaceError);
+            expect(hiddenRefusal.message).toBe(
+               (await refusal(model, "run: no_such_source -> hv")).message,
+            );
+         }
+
+         // Every other refusal path keeps the generic words too: a named
+         // source, and an ad-hoc alias of a hidden source, which only the
+         // compiled backstop can refuse.
+         const model = pkg.getModel("index.malloy")!;
+         const named = await refusedBy(model.getQueryResults("helper", "hv"));
+         expect(named).not.toBeInstanceOf(OffSurfaceError);
+         expect(named.message).toBe('No queryable source "helper".');
+         const aliased = await refusal(
+            model,
+            "source: x is helper extend {}\nrun: x -> hv",
+         );
+         expect(aliased).not.toBeInstanceOf(OffSurfaceError);
+         expect(aliased.message).toBe("Query target is not queryable.");
+
+         // A whole hidden file that is gated gets the plain refusal, without
+         // the surface sentence that confirms the file is real.
+         const hiddenFile = await refusal(
+            pkg.getModel("base.malloy")!,
+            "run: base_source -> v",
+         );
+         expect(hiddenFile).not.toBeInstanceOf(OffSurfaceError);
+         expect(hiddenFile.message).toBe('No queryable model "base.malloy".');
+
+         // A hidden AND locked source (base_locked) reached by NAME, not as
+         // the run target, still gets the boundary's 404 — the pre-compile
+         // walk's own conversion (assertLocksOnAppearingNames), same as
+         // `helper`'s alias above.
+         const lockedAlias = await refusal(
+            model,
+            "source: y is base_locked extend {\n  measure: c is count()\n  view: hv is { aggregate: c }\n}\nrun: y -> hv",
+         );
+         expect(lockedAlias).not.toBeInstanceOf(OffSurfaceError);
+         // The generic sentence, the one `helper`'s alias gets: a sentence naming
+         // base_locked would tell it apart from an ungated hidden source.
+         expect(lockedAlias.message).toBe("Query target is not queryable.");
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: in a model with no gate, a refusal of a hidden name says it is off the surface and how to publish it", async () => {
+      // Nothing is gated, so there is nothing for the generic 404 to protect:
+      // /compile already answers a hidden name differently from a missing one.
+      // A modeler querying a source they just wrote needs the reason, not a
+      // message that reads as a typo.
+      writeManifest();
+      writeLayeredModels();
+      fs.writeFileSync(
+         path.join(tempDir, "report.malloy"),
+         `## artifact { layout=linear tiles=[] }\nimport "index.malloy"\nimport "base.malloy"\n`,
+      );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         for (const [modelPath, hidden] of adHocPaths) {
+            const model = pkg.getModel(modelPath)!;
+            const hiddenRefusal = await refusal(model, `run: ${hidden} -> hv`);
+            expect(hiddenRefusal).toBeInstanceOf(OffSurfaceError);
+            expect(hiddenRefusal.message).toBe(
+               `Query target is not queryable. ${INDEX_SURFACE} ${adHocFix[modelPath]}`,
+            );
+            // A name that does not exist is still just refused: there is no
+            // surface to point it at, and the advice would send a typo hunting.
+            const missing = await refusal(model, "run: no_such_source -> hv");
+            expect(missing).not.toBeInstanceOf(OffSurfaceError);
+            expect(missing.message).toBe("Query target is not queryable.");
+         }
+
+         // helper is declared in index.malloy itself, so there is nothing to
+         // import: the fix is only to export it.
+         const index = pkg.getModel("index.malloy")!;
+         const named = await refusedBy(index.getQueryResults("helper", "hv"));
+         expect(named).toBeInstanceOf(OffSurfaceError);
+         expect(named.message).toBe(
+            `No queryable source "helper". ${INDEX_SURFACE} ` +
+               `Fix: name the source in the export { ... } of "index.malloy".`,
+         );
+         const aliased = await refusal(
+            index,
+            "source: x is helper extend {}\nrun: x -> hv",
+         );
+         expect(aliased).toBeInstanceOf(OffSurfaceError);
+         const unknown = await refusedBy(index.getQueryResults("nope", "hv"));
+         expect(unknown).not.toBeInstanceOf(OffSurfaceError);
+         expect(unknown.message).toBe('No queryable source "nope".');
+
+         // A whole hidden file names the file, then the sources in it.
+         const hiddenFile = await refusal(
+            pkg.getModel("base.malloy")!,
+            "run: base_source -> v",
+         );
+         expect(hiddenFile).toBeInstanceOf(OffSurfaceError);
+         expect(hiddenFile.message).toBe(
+            `No queryable model "base.malloy". ${INDEX_SURFACE} Fix: import ` +
+               `"base.malloy" in "index.malloy", name the sources you want in ` +
+               `that file's export { ... }, and address the query to ` +
+               `"index.malloy".`,
+         );
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: warns at load when a dashboard's tile reads a source the surface does not publish", async () => {
+      // The dashboard is listed and compiles (/compile is exempt from the
+      // surface), so without this the author learns of the problem only when
+      // the tile 404s. The dashboard imports raw_data straight from raw.malloy,
+      // which is not on the surface.
+      fs.writeFileSync(
+         path.join(tempDir, "raw.malloy"),
+         `source: raw_data is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+export { raw_data }`,
+      );
+      const writeIndex = (exported: string) =>
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "raw.malloy"
+source: customers is duckdb.sql("select 1 as id") extend {
+  measure: k is count()
+  view: v is { aggregate: k }
+}
+export { ${exported} }`,
+         );
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      fs.writeFileSync(
+         path.join(tempDir, "dashboards", "dash.malloy"),
+         `## artifact { title="Dash" tiles=["raw_data -> v", "customers -> v"] }
+import { raw_data } from "../raw.malloy"
+import { customers } from "../index.malloy"`,
+      );
+      const tileWarnings = (pkg: Package) =>
+         (pkg.getPackageMetadata().warnings ?? []).filter((w) =>
+            (w.message ?? "").includes("won't load"),
+         );
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         // The recommended shape: no keys, index.malloy is the surface. The
+         // dashboard is listed, and only the tile over raw_data is refused.
+         writeManifest({});
+         writeIndex("customers");
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(await getDashboard(pkg, "env", "dash")).toBeDefined();
+         const dash = pkg.getModel("dashboards/dash.malloy")!;
+         const found = tileWarnings(pkg);
+         expect(found).toEqual([
+            {
+               model: "dashboards/dash.malloy",
+               subject: "dash",
+               severity: "error",
+               message:
+                  `Tile raw_data -> v on dashboard dash reads raw_data, which ` +
+                  `index.malloy doesn't export, so it won't load. Fix: add ` +
+                  `raw_data to the export { ... } in index.malloy.`,
+            },
+         ]);
+         // The lint agrees with the query route, both ways.
+         await expect(
+            dash.getQueryResults(undefined, undefined, "run: raw_data -> v"),
+         ).rejects.toThrow(NotQueryableError);
+         const customers = await dash.getQueryResults(
+            undefined,
+            undefined,
+            "run: customers -> v",
+         );
+         expect(customers.result.data).toBeDefined();
+         // A caller join is held to the boundary too, so the hidden import is
+         // no more reachable through a join than through `run:`.
+         await expect(
+            dash.getQueryResults(
+               undefined,
+               undefined,
+               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            ),
+         ).rejects.toThrow(NotQueryableError);
+
+         // The fix the warning names works.
+         writeIndex("customers, raw_data");
+         const fixed = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         expect(tileWarnings(fixed)).toEqual([]);
+         const ran = await fixed
+            .getModel("dashboards/dash.malloy")!
+            .getQueryResults(undefined, undefined, "run: raw_data -> v");
+         expect(ran.result.data).toBeDefined();
+         const joined = await fixed
+            .getModel("dashboards/dash.malloy")!
+            .getQueryResults(
+               undefined,
+               undefined,
+               "run: customers extend { join_one: s is raw_data on id = s.id } -> { group_by: s.id }",
+            );
+         expect(joined.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("declared: warns for a filter suggest over a hidden source, and never names a gated one", async () => {
+      fs.writeFileSync(
+         path.join(tempDir, "raw.malloy"),
+         `source: raw_data is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+}
+query: raw_ids is raw_data -> { group_by: id }
+export { raw_data, raw_ids }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "locked.malloy"),
+         `#(authorize) false
+source: locked is duckdb.sql("select 1 as id")
+query: locked_ids is locked -> { group_by: id }
+export { locked, locked_ids }`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `source: customers is duckdb.sql("select 1 as id") extend {
+  measure: k is count()
+  view: v is { aggregate: k }
+}
+export { customers }`,
+      );
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+      const writeDash = (body: string) =>
+         fs.writeFileSync(
+            path.join(tempDir, "dashboards", "dash.malloy"),
+            `##! experimental.givens
+import "../raw.malloy"
+import { customers } from "../index.malloy"
+${body}`,
+         );
+      const tileWarnings = (pkg: Package) =>
+         (pkg.getPackageMetadata().warnings ?? [])
+            .map((w) => w.message ?? "")
+            .filter((m) => m.includes("index.malloy doesn't export"));
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         writeManifest({});
+         writeDash(`# label="Id" control=select suggest { source=raw_data dimension=id }
+given: BY_SOURCE :: filter<number> is f''
+# label="Id" control=select suggest { query=raw_ids dimension=id }
+given: BY_QUERY :: filter<number> is f''
+## artifact { layout=grid title="Dash" tiles=["dash"] }
+query: dash is customers -> {
+  where: id ~ $BY_SOURCE and id ~ $BY_QUERY
+  group_by: id
+}`);
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(tileWarnings(pkg)).toEqual([
+            `Filter BY_SOURCE on dashboard dash suggests from raw_data, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add raw_data to the export { ... } in index.malloy.`,
+            `Filter BY_QUERY on dashboard dash suggests from raw_data, which ` +
+               `index.malloy doesn't export, so its list will be empty. Fix: ` +
+               `add raw_data to the export { ... } in index.malloy.`,
+         ]);
+         // The suggest the lint flags is refused the same way at run time.
+         await expect(
+            pkg
+               .getModel("dashboards/dash.malloy")!
+               .getQueryResults(
+                  undefined,
+                  undefined,
+                  "run: raw_data -> { group_by: id }",
+               ),
+         ).rejects.toThrow(NotQueryableError);
+
+         // A gated model's refusal never names the source, and nor does the
+         // warning. The dashboard's own text names only the query.
+         writeDash(`import "../locked.malloy"
+## artifact { title="Dash" tiles=["locked_ids"] }`);
+         const gated = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            malloyConfig,
+         );
+         const gatedWarnings = (gated.getPackageMetadata().warnings ?? [])
+            .map((w) => w.message ?? "")
+            .filter((m) => m.includes("won't load"));
+         expect(gatedWarnings).toEqual([
+            `Tile locked_ids on dashboard dash reads a source, which ` +
+               `index.malloy doesn't export, so it won't load. Fix: add the ` +
+               `source it reads to the export { ... } in index.malloy.`,
+         ]);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   // -- no surface declared (boundary inert) -----------------------------
+
+   it("no surface: everything stays queryable (backward compatible)", async () => {
+      writeManifest(); // no index.malloy → no curated surface to enforce
+      // ...and no index.malloy either, which is the other half of "nothing
+      // curates" now that the convention exists.
+      writeLayeredModels("surface.malloy");
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const base = await pkg
+            .getModel("base.malloy")!
+            .getQueryResults("base_source", "v", undefined);
+         expect(base.result.data).toBeDefined();
+         // `helper` is non-exported, but nothing curates so there is no boundary.
+         const helper = await pkg
+            .getModel("surface.malloy")!
+            .getQueryResults("helper", "hv", undefined);
+         expect(helper.result.data).toBeDefined();
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("no surface: a newline in queryName still cannot smuggle a statement", async () => {
+      // The default deployment shape: no surface, so the boundary is inert
+      // and quoting the caller's names is the only thing holding the line.
+      // Nothing here is about hiding `helper` — it is legitimately queryable in
+      // this mode — it is that a request naming ONE source must not run a
+      // statement naming another.
+      writeManifest(); // no surface → boundary inert
+      writeLayeredModels("surface.malloy"); // and no index.malloy to arm it
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const model = pkg.getModel("surface.malloy")!;
+
+         // Control: with nothing curating, `helper` really is queryable by name…
+         const helper = await model.getQueryResults("helper", "hv");
+         expect(helper.result.data).toBeDefined();
+
+         // …so these rejections are the injection being refused, not a boundary.
+         await expectNamedRejected(
+            model,
+            "customers",
+            "v\nrun: helper -> { aggregate: c }",
+         );
+         await expectNamedRejected(model, "customers -> v\nrun: helper", "hv");
+      } finally {
+         await duckdb.close();
+      }
+   });
+   it("a surface derived from index.malloy arms the boundary exactly like a declared one", async () => {
+      // The single most important assertion in the convention: a package that
+      // declares NOTHING gets the same enforcement as `explores:
+      // ["index.malloy"]`. If this ever weakens to listings-only, an author who
+      // curated their package still serves every hidden source by name.
+      writeManifest(); // no manifest keys
+      writeLayeredModels(); // writes index.malloy, exporting only `customers`
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+
+         // The exported source is queryable, join-through and all.
+         const { result } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("customers", "v", undefined);
+         expect(result.data).toBeDefined();
+
+         // A whole file off the surface is refused...
+         await expect(
+            pkg
+               .getModel("base.malloy")!
+               .getQueryResults("base_source", "v", undefined),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+
+         // ...and so is a source inside the surface file that it does not
+         // export, which is the within-file half of the same rule.
+         await expect(
+            pkg.getModel("index.malloy")!.getQueryResults("helper", "hv"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+   it("admits a source re-exported through a CHAIN of files, not just one hop", async () => {
+      // The package-wide union is keyed on definition identity -- the file and
+      // position that DECLARES a name. A re-export chain never moves the
+      // declaration, so admission has to survive any number of hops. One hop is
+      // what every other fixture here exercises; this is the shape a real
+      // package grows into, where index.malloy fronts a layer that fronts a
+      // layer.
+      writeManifest(); // the index.malloy convention drives this
+      fs.writeFileSync(
+         path.join(tempDir, "leaf.malloy"),
+         `source: leaf_orders is duckdb.sql("select 1 as id, 100 as amt") extend {
+  measure: total is amt.sum()
+  view: v is { aggregate: total }
+}
+source: leaf_hidden is duckdb.sql("select 1 as id, 5 as n") extend {
+  measure: hn is n.sum()
+  view: hv is { aggregate: hn }
+}`,
+      );
+      // Four hops, each re-exporting only leaf_orders.
+      for (const [file, from] of [
+         ["mid1.malloy", "leaf.malloy"],
+         ["mid2.malloy", "mid1.malloy"],
+         ["mid3.malloy", "mid2.malloy"],
+         ["index.malloy", "mid3.malloy"],
+      ]) {
+         fs.writeFileSync(
+            path.join(tempDir, file),
+            `import "${from}"\n\nexport { leaf_orders }`,
+         );
+      }
+
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         expect(
+            (await pkg.listModels()).map((m) => m.path as string).sort(),
+         ).toEqual(["index.malloy"]);
+
+         // Declared four files away, still queryable through the surface.
+         const { result } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("leaf_orders", "v", undefined);
+         expect(result.data).toBeDefined();
+
+         // Dropped at the first hop, so it never reaches the surface.
+         await expect(
+            pkg.getModel("index.malloy")!.getQueryResults("leaf_hidden", "hv"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   it("keeps a hidden source JOINABLE, and its fields readable through the join", async () => {
+      // The promise the docs and the scaffolded template both make: leaving a
+      // source off the surface hides it, it does not put it out of reach. A
+      // published source may still join it, and a query grouping by a joined
+      // field has to return that field's values -- otherwise "still joinable"
+      // is true only in the sense that the package compiles.
+      writeManifest();
+      fs.writeFileSync(
+         path.join(tempDir, "leaf.malloy"),
+         `source: orders is duckdb.sql("select 1 as id, 'acme' as cust, 100 as amt") extend {
+  measure: total is amt.sum()
+}
+source: customers is duckdb.sql("select 'acme' as cid, 'ent' as tier") extend {
+  measure: cn is count()
+  view: by_tier is { group_by: tier; aggregate: cn }
+}`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "leaf.malloy"
+
+source: enriched is orders extend {
+  join_one: c is customers on cust = c.cid
+  view: by_tier is { group_by: c.tier; aggregate: total }
+}
+
+export { enriched }`,
+      );
+
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const { compactResult } = await pkg
+            .getModel("index.malloy")!
+            .getQueryResults("enriched", "by_tier", undefined);
+         // The value comes from the source that is NOT on the surface.
+         expect(compactResult).toEqual([{ tier: "ent", total: 100 }]);
+
+         // And it is still not queryable in its own right.
+         await expect(
+            pkg
+               .getModel("index.malloy")!
+               .getQueryResults("customers", "by_tier"),
+         ).rejects.toBeInstanceOf(NotQueryableError);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
+   // DEPRECATED FEATURE COVERAGE — delete together with `explores` and
+   // `queryableSources` (see RELEASE_NOTES deprecations). Every test above
+   // curates with a root index.malloy; these pin what the two deprecated
+   // publisher.json keys still do until they are removed.
+   describe("deprecated: explores and queryableSources", () => {
+      // The package-wide union admits a name only when the requesting model
+      // resolves it to the same DECLARATION a listed model exported. Keying the
+      // union on bare names instead let a name curated anywhere clear the gate
+      // everywhere, while Malloy still resolved the declaration in the requested
+      // model's namespace — so a same-named hidden source was served through a
+      // model that never exported it. These pin both axes of that, plus the
+      // legitimate re-export the identity check must NOT break.
+      describe("declared: package-wide union admits by declaration, not by name", () => {
+         // a.malloy (listed) exports its OWN `customers` (1 row) and its own named
+         // query `top`. b.malloy (listed) imports a hidden file declaring a
+         // DIFFERENT `customers` (3 rows) plus its own private `top` over it, and
+         // exports neither. Nothing in b is curated but `safe`.
+         function writeCollidingModels(): void {
+            fs.writeFileSync(
+               path.join(tempDir, "hidden.malloy"),
+               `source: customers is duckdb.sql("select 1 as id union all select 2 union all select 3") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}`,
+            );
+            fs.writeFileSync(
+               path.join(tempDir, "a.malloy"),
+               `source: customers is duckdb.sql("select 99 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+query: top is customers -> { aggregate: c }
+export { customers, top }`,
+            );
+            fs.writeFileSync(
+               path.join(tempDir, "b.malloy"),
+               `import "hidden.malloy"
+source: safe is duckdb.sql("select 1 as id") extend { measure: c is count() }
+query: top is customers -> { aggregate: c }
+export { safe }`,
+            );
+         }
+
+         it("denies a hidden source that merely shares a name with a sibling explore's export", async () => {
+            writeManifest({
+               explores: ["a.malloy", "b.malloy"],
+            });
+            writeCollidingModels();
+            const { malloyConfig, duckdb } = duckdbMalloyConfig();
+            try {
+               const pkg = await Package.create(
+                  "env",
+                  "pkg",
+                  tempDir,
+                  malloyConfig,
+               );
+               const b = pkg.getModel("b.malloy")!;
+               // Ad-hoc, explicit sourceName, and the named-view form all resolve
+               // `customers` to hidden.malloy's declaration in b's namespace.
+               await expect(
+                  b.getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: customers -> { aggregate: c }",
+                  ),
+               ).rejects.toBeInstanceOf(NotQueryableError);
+               await expect(
+                  b.getQueryResults("customers", "v"),
+               ).rejects.toBeInstanceOf(NotQueryableError);
+               // a.malloy's own export is untouched, and returns ITS row count.
+               const viaOwner = await pkg
+                  .getModel("a.malloy")!
+                  .getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: customers -> { aggregate: c }",
+                  );
+               expect(
+                  (viaOwner.compactResult as { c: number }[] | undefined)?.[0]
+                     .c,
+               ).toBe(1);
+            } finally {
+               await duckdb.close();
+            }
+         });
+
+         it("denies a private named query that shares a name with a sibling explore's exported query", async () => {
+            // Worse than the source axis: the pure-queryName path clears without
+            // ever reaching the compiled backstop, so a name-keyed union ran
+            // b.malloy's unexported `top` against its hidden source.
+            writeManifest({
+               explores: ["a.malloy", "b.malloy"],
+            });
+            writeCollidingModels();
+            const { malloyConfig, duckdb } = duckdbMalloyConfig();
+            try {
+               const pkg = await Package.create(
+                  "env",
+                  "pkg",
+                  tempDir,
+                  malloyConfig,
+               );
+               await expect(
+                  pkg.getModel("b.malloy")!.getQueryResults(undefined, "top"),
+               ).rejects.toBeInstanceOf(NotQueryableError);
+               // The genuine export still runs, over a.malloy's 1-row source.
+               const owned = await pkg
+                  .getModel("a.malloy")!
+                  .getQueryResults(undefined, "top");
+               expect(
+                  (owned.compactResult as { c: number }[] | undefined)?.[0].c,
+               ).toBe(1);
+            } finally {
+               await duckdb.close();
+            }
+         });
+
+         it("still admits a source RE-EXPORTED by a listed file from a hidden one", async () => {
+            // The identity check keys on the declaration, which lives in the
+            // hidden file — so this must still pass, through the re-exporting
+            // model AND through a sibling explore that imports the same file.
+            writeManifest({
+               explores: ["reexport.malloy", "other.malloy"],
+            });
+            fs.writeFileSync(
+               path.join(tempDir, "hidden.malloy"),
+               `source: shared is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}`,
+            );
+            fs.writeFileSync(
+               path.join(tempDir, "reexport.malloy"),
+               `import "hidden.malloy"
+export { shared }`,
+            );
+            fs.writeFileSync(
+               path.join(tempDir, "other.malloy"),
+               `import "hidden.malloy"
+source: own is duckdb.sql("select 1 as id") extend { measure: c is count() }
+export { own }`,
+            );
+            const { malloyConfig, duckdb } = duckdbMalloyConfig();
+            try {
+               const pkg = await Package.create(
+                  "env",
+                  "pkg",
+                  tempDir,
+                  malloyConfig,
+               );
+               const viaExporter = await pkg
+                  .getModel("reexport.malloy")!
+                  .getQueryResults("shared", "v");
+               expect(viaExporter.result.data).toBeDefined();
+               // Same declaration reached through a sibling explore: the union's
+               // whole purpose (CR-5), and it survives the identity check.
+               const viaSibling = await pkg
+                  .getModel("other.malloy")!
+                  .getQueryResults(
+                     undefined,
+                     undefined,
+                     "run: shared -> { aggregate: c }",
+                  );
+               expect(viaSibling.result.data).toBeDefined();
+            } finally {
+               await duckdb.close();
+            }
+         });
+      });
+
+      it("declared: no-export files listed in explores keep every source queryable, including base files imported by a sibling explore", async () => {
+         // The exact shape a QA session shipped and watched break on
+         // server 0.0.243 (HANDOFF CR-5): four model files, every one listed in
+         // explores, queryableSources declared, and NO export{} statement
+         // anywhere. Three base files are imported by the fourth. Observed then:
+         // only the importing file stayed queryable; the three base files 404'd
+         // on query and compile while exploresWarnings said none. The documented
+         // rule ("a file with no export exposes all of its own top-level
+         // sources") requires all four to work.
+         writeManifest({
+            explores: [
+               "track_analysis.malloy",
+               "tracks.malloy",
+               "artists.malloy",
+               "decade_trends.malloy",
+            ],
+         });
+         const base = (name: string) =>
+            `source: ${name} is duckdb.sql("select 1 as id, 5 as n") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}`;
+         fs.writeFileSync(path.join(tempDir, "tracks.malloy"), base("tracks"));
+         fs.writeFileSync(
+            path.join(tempDir, "artists.malloy"),
+            base("artists"),
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "decade_trends.malloy"),
+            base("decade_trends"),
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "track_analysis.malloy"),
+            `import "tracks.malloy"
+import "artists.malloy"
+import "decade_trends.malloy"
+source: track_analysis is tracks extend {
+  join_one: a is artists on id = a.id
+  measure: total is n.sum()
+  view: tv is { aggregate: total }
+}`,
+         );
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const cases: Array<[string, string]> = [
+               ["tracks.malloy", "tracks"],
+               ["artists.malloy", "artists"],
+               ["decade_trends.malloy", "decade_trends"],
+               ["track_analysis.malloy", "track_analysis"],
+            ];
+            for (const [modelPath, sourceName] of cases) {
+               const model = pkg.getModel(modelPath);
+               expect(model).toBeDefined();
+               // Discoverable: the no-export file exposes its own sources.
+               expect(model!.getSources()?.map((s) => s.name)).toContain(
+                  sourceName,
+               );
+               // Queryable: named view and ad-hoc both clear the boundary.
+               const named = await model!.getQueryResults(
+                  sourceName,
+                  sourceName === "track_analysis" ? "tv" : "v",
+               );
+               expect(named.result.data).toBeDefined();
+               const adhoc = await model!.getQueryResults(
+                  undefined,
+                  undefined,
+                  `run: ${sourceName} -> { aggregate: c is count() }`,
+               );
+               expect(adhoc.result.data).toBeDefined();
+            }
+
+            // The shape that actually broke (root cause of the CR-5 404s): every
+            // query posted through ONE model path — the importer. `tracks` is
+            // declared queryable by its own listed file, so addressing it via
+            // track_analysis.malloy must clear too; the per-model closure used to
+            // deny it here with `No queryable source "tracks"`, which admitted
+            // nothing (it was queryable via tracks.malloy) and broke any client
+            // that pins one model path for all queries.
+            const importer = pkg.getModel("track_analysis.malloy")!;
+            const viaImporterAdhoc = await importer.getQueryResults(
+               undefined,
+               undefined,
+               "run: tracks -> { aggregate: c is count() }",
+            );
+            expect(viaImporterAdhoc.result.data).toBeDefined();
+            const viaImporterNamed = await importer.getQueryResults(
+               "tracks",
+               "v",
+            );
+            expect(viaImporterNamed.result.data).toBeDefined();
+            // Derivation over a package-curated source clears the backstop too.
+            const viaImporterDerived = await importer.getQueryResults(
+               undefined,
+               undefined,
+               "source: t2 is artists extend { measure: m is n.sum() }\nrun: t2 -> { aggregate: m }",
+            );
+            expect(viaImporterDerived.result.data).toBeDefined();
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("declared: under an explores list, a hidden file's refusal says to import it into a listed file", async () => {
+         // Curated by "explores" rather than index.malloy, so there is a list to
+         // add the file to.
+         writeLayeredModels("surface.malloy");
+         writeManifest({ explores: ["surface.malloy"] });
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            const surface =
+               `It is not on this package's published surface, the models ` +
+               `publisher.json "explores" lists (["surface.malloy"]): only what ` +
+               `those files export is queryable, and only through them.`;
+            const hiddenFile = await refusal(
+               pkg.getModel("base.malloy")!,
+               "run: base_source -> v",
+            );
+            expect(hiddenFile.message).toBe(
+               `No queryable model "base.malloy". ${surface} Fix: import ` +
+                  `"base.malloy" in a listed model, name the sources you want in ` +
+                  `that model's export { ... }, and address the query to that ` +
+                  `model.`,
+            );
+            const named = await refusedBy(
+               pkg.getModel("surface.malloy")!.getQueryResults("helper", "hv"),
+            );
+            expect(named.message).toBe(
+               `No queryable source "helper". ${surface} ` +
+                  `Fix: name the source in the export { ... } of "surface.malloy".`,
+            );
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("declared: a dashboards/ file with no artifact tag, listed in explores, is published like any other file", async () => {
+         // Only a tagged file is a dashboard. An untagged one that explores lists
+         // is an ordinary surface file, as it always was: listed, queryable, and
+         // its exports count toward the surface.
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `source: customers is duckdb.sql("select 1 as id")
+export { customers }`,
+         );
+         fs.mkdirSync(path.join(tempDir, "dashboards"));
+         fs.writeFileSync(
+            path.join(tempDir, "dashboards", "old.malloy"),
+            `source: listed is duckdb.sql("select 2 as id")
+export { listed }`,
+         );
+         writeManifest({ explores: ["index.malloy", "dashboards/old.malloy"] });
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            expect(listDashboards(pkg, "env")).toEqual([]);
+            const models = (await pkg.listModels()).map((m) => m.path).sort();
+            expect(models).toEqual(["dashboards/old.malloy", "index.malloy"]);
+            const old = pkg.getModel("dashboards/old.malloy")!;
+            expect(() => old.assertFileOnSurface()).not.toThrow();
+            const ran = await old.getQueryResults(
+               undefined,
+               undefined,
+               "run: listed -> { group_by: id }",
+            );
+            expect(ran.result.data).toBeDefined();
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("all: explores gates discovery only — hidden file/source stay queryable", async () => {
+         writeManifest({ explores: ["index.malloy"], queryableSources: "all" });
+         writeLayeredModels();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            const pkg = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+
+            // Listing is still curated to the explore.
+            const listed = (await pkg.listModels()).map((m) => m.path);
+            expect(listed).toEqual(["index.malloy"]);
+
+            // …but the non-explores file and the non-exported source are queryable.
+            const base = await pkg
+               .getModel("base.malloy")!
+               .getQueryResults("base_source", "v", undefined);
+            expect(base.result.data).toBeDefined();
+            const helper = await pkg
+               .getModel("index.malloy")!
+               .getQueryResults("helper", "hv", undefined);
+            expect(helper.result.data).toBeDefined();
+         } finally {
+            await duckdb.close();
+         }
+      });
+
+      it("warns under a written explores that a dashboard tile reads a source no listed file exports", async () => {
+         // Under a written explores, the fix names a file the key lists, and
+         // listing the dashboard itself adds nothing to the surface.
+         fs.writeFileSync(
+            path.join(tempDir, "raw.malloy"),
+            `source: raw_data is duckdb.sql("select 1 as id") extend {
+  measure: c is count()
+  view: v is { aggregate: c }
+}
+export { raw_data }`,
+         );
+         fs.writeFileSync(
+            path.join(tempDir, "index.malloy"),
+            `import "raw.malloy"
+source: customers is duckdb.sql("select 1 as id") extend {
+  measure: k is count()
+  view: v is { aggregate: k }
+}
+export { customers }`,
+         );
+         fs.mkdirSync(path.join(tempDir, "dashboards"));
+         fs.writeFileSync(
+            path.join(tempDir, "dashboards", "dash.malloy"),
+            `## artifact { layout=grid title="Dash" tiles=["raw_data -> v", "customers -> v"] }
+import { raw_data } from "../raw.malloy"
+import { customers } from "../index.malloy"`,
+         );
+         const tileWarnings = (pkg: Package) =>
+            (pkg.getPackageMetadata().warnings ?? [])
+               .map((w) => w.message ?? "")
+               .filter((m) => m.includes("won't load"));
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
+         try {
+            writeManifest({
+               explores: ["index.malloy", "dashboards/dash.malloy"],
+            });
+            const listed = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            expect(tileWarnings(listed)).toEqual([
+               `Tile raw_data -> v on dashboard dash reads raw_data, which no ` +
+                  `file "explores" lists exports, so it won't load. Fix: add ` +
+                  `raw_data to the export { ... } in index.malloy.`,
+            ]);
+
+            // Nothing is refused under "all", so there is nothing to warn about.
+            writeManifest({
+               explores: ["index.malloy", "dashboards/dash.malloy"],
+               queryableSources: "all",
+            });
+            const open = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            expect(tileWarnings(open)).toEqual([]);
+
+            // explores listing only the dashboard leaves no file that can export
+            // anything, so both tiles are refused and the fix is to let
+            // index.malloy be the surface.
+            writeManifest({ explores: ["dashboards/dash.malloy"] });
+            const onlyDash = await Package.create(
+               "env",
+               "pkg",
+               tempDir,
+               malloyConfig,
+            );
+            expect(tileWarnings(onlyDash)).toEqual([
+               `Tile raw_data -> v on dashboard dash reads raw_data, which no ` +
+                  `file "explores" lists exports, so it won't load. Fix: delete ` +
+                  `"explores" from publisher.json and add raw_data to the ` +
+                  `export { ... } in index.malloy.`,
+               `Tile customers -> v on dashboard dash reads customers, which no ` +
+                  `file "explores" lists exports, so it won't load. Fix: delete ` +
+                  `"explores" from publisher.json and add customers to the ` +
+                  `export { ... } in index.malloy.`,
+            ]);
+         } finally {
+            await duckdb.close();
+         }
+      });
+   });
+});

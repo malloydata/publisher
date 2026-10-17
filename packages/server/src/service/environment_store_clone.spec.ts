@@ -13,6 +13,10 @@ import {
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
+import {
+   emptyRepository,
+   stubStorageManager,
+} from "../test_helpers/storage_manager_stub";
 import { logger } from "../logger";
 
 /**
@@ -97,34 +101,12 @@ mock.module("simple-git", () => ({
    },
 }));
 
-mock.module("../storage/StorageManager", () => ({
-   StorageManager: class MockStorageManager {
-      async initialize(): Promise<void> {
-         if (storageInitFails) {
-            throw new Error(storageInitMessage);
-         }
-      }
-      getRepository() {
-         return {
-            listEnvironments: async () => [],
-            getEnvironmentByName: async () => null,
-            createEnvironment: async (data: Record<string, unknown>) => ({
-               id: "env-id",
-               name: data.name,
-               path: data.path,
-            }),
-            listPackages: async () => [],
-            getPackageByName: async () => null,
-            createPackage: async (data: Record<string, unknown>) => ({
-               id: "pkg-id",
-               name: data.name,
-            }),
-            listConnections: async () => [],
-         };
-      }
+stubStorageManager({
+   initialize: async () => {
+      if (storageInitFails) throw new Error(storageInitMessage);
    },
-   StorageConfig: {} as Record<string, unknown>,
-}));
+   getRepository: () => emptyRepository(),
+});
 
 const { EnvironmentStore, GIT_CLONE_OPTIONS } = await import(
    "./environment_store"

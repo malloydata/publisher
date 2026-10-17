@@ -24,37 +24,25 @@ import { errMessage } from "../utils";
 
 /**
  * The delta target for a source materialized into a `storage=` destination — the
- * one place where a refresh spans two engines.
+ * one place where a refresh spans two engines. Rows are computed by the SOURCE
+ * warehouse and DML runs in the DESTINATION engine; SQL on the wrong side still
+ * looks plausible, so:
  *
- * A stored table's rows are computed by the SOURCE warehouse and its DML is
- * issued in the DESTINATION engine, so every piece of SQL here belongs to one
- * side or the other and putting a piece on the wrong side fails in a way that
- * still looks plausible:
+ *  - The RANGE PREDICATE is source-dialect and pushed INSIDE the passthrough.
+ *    Filtering outside streams the whole source across egress, inverting the
+ *    cost case for incremental refresh.
+ *  - The DML (`DELETE`/`INSERT`, or `MERGE`) is DuckDB-dialect on the lake table.
+ *  - The TARGET PROBES read DuckDB catalog metadata (`duckdb_columns()`, since an
+ *    attached DuckLake catalog has no `information_schema`).
+ *  - The FRONTIER PROBE is source-dialect `MAX()` through the passthrough.
  *
- *  - The RANGE PREDICATE is source-dialect and is pushed INSIDE the passthrough,
- *    so the warehouse computes only the delta. Filtering outside it instead
- *    streams the whole source across the egress boundary and then discards most
- *    of it — correct rows, and the entire cost case for incremental refresh on
- *    this tier inverted.
- *  - The DML (`DELETE`/`INSERT`, or `MERGE`) is DuckDB-dialect and names the lake
- *    table, which is where the rows live.
- *  - The TARGET PROBES read DuckDB catalog metadata. `information_schema` does
- *    not exist on an attached DuckLake catalog at all, which is why
- *    `probeTargetColumns` reads `duckdb_columns()` for this dialect.
- *  - The FRONTIER PROBE is source-dialect `MAX()` sent through the passthrough,
- *    so the warehouse aggregates and one row crosses.
- *
- * Everything else — the order of the checks, seed vs skip vs delta, the reason
- * codes — is the shared planner's, which is the point of expressing this as a
- * target rather than as a second refresh path.
+ * Check order, seed/skip/delta and reason codes stay with the shared planner.
  */
-export interface StorageDeltaTarget {
+interface StorageDeltaTarget {
    target: DeltaTarget;
    /**
-    * What the warehouse charged for the delta's read, once one has been issued.
-    * A function rather than a value because the read happens inside the planner,
-    * only if every check passes: asked before then, the honest answer is "no read
-    * yet", not zero.
+    * What the warehouse charged for the delta's read; null until the planner has
+    * issued one (it reads only if every check passes).
     */
    readCost(): BuildReadCost | null;
 }
@@ -70,16 +58,14 @@ export function storageDeltaTarget(params: {
    physicalTableName: string;
    /**
     * The table's quoted path as the CREATE names it, passed in rather than
-    * re-derived: the delta's DML and the seed's CTAS have to name the same table,
-    * and one derivation is what makes that so rather than two that agree today.
+    * re-derived so the delta's DML and the seed's CTAS name the same table.
     */
    quotedTablePath: string;
    lineage: IncrementalLineage;
    persistSource: PersistSource;
    /**
-    * The source's manifest-resolved build SQL — `PersistSource.getSQL()`, the
-    * same string the seed's CTAS reads, and deliberately NOT its public-column
-    * projection: the projection is applied outermost here so the delta's output
+    * The manifest-resolved build SQL (`PersistSource.getSQL()`), deliberately NOT
+    * its public-column projection: that is applied outermost here so the delta's
     * columns are byte-identical to the seed's.
     */
    buildSQL: string;
@@ -109,11 +95,9 @@ export function storageDeltaTarget(params: {
          logicalTablePath,
 
          deltaRows: async (start, end) => {
-            // Filter INSIDE, project OUTSIDE — the same nesting order the seed
-            // uses, so the two write the same column list by construction. The
-            // watermark is always a public column (the publish gate resolves it
-            // against the source's public output schema), so the projection
-            // cannot hide the column the predicate names.
+            // Filter INSIDE, project OUTSIDE — the seed's nesting order, so both
+            // write the same columns. The watermark is always public (the
+            // publish gate checks it), so the projection cannot hide it.
             const bounded = projectToPublicColumns(
                persistSource,
                deltaSelect({
@@ -124,16 +108,10 @@ export function storageDeltaTarget(params: {
                   end,
                }),
             );
-            // The same call the seed's read goes through, so a delta is labelled,
-            // tagged and costed exactly as a full build is. Attribution is not
-            // optional here: this read is warehouse work a deployment would
-            // otherwise be unable to account for.
-            //
-            // On BigQuery's labelled shape the read is issued — and billed — as
-            // this returns, before the DML's transaction opens. A delta that then
-            // fails has paid for rows it discarded; the retry pays again. That is
-            // the same trade the full build already documents, one notch cheaper
-            // because a delta's read is bounded.
+            // The seed's read path, so a delta is labelled, tagged and costed
+            // like a full build. On BigQuery the read is billed before the DML's
+            // transaction opens, so a failed delta's retry pays again — the same
+            // trade as a full build, bounded by the delta.
             const read = await issuePassthroughRead(
                session,
                sourceType,
@@ -146,9 +124,8 @@ export function storageDeltaTarget(params: {
          },
 
          probeSourceFrontier: async () => {
-            // Composed in the SOURCE dialect and sent through the passthrough, so
-            // the warehouse computes the aggregate and one row crosses. Reading
-            // MAX() on this side instead would stream every row to compute it.
+            // Source-dialect through the passthrough, so the warehouse aggregates
+            // and one row crosses instead of streaming every row.
             const column = quoteIdentifier(
                lineage.watermarkName,
                sourceDialect,
@@ -157,18 +134,13 @@ export function storageDeltaTarget(params: {
             const inner =
                `SELECT MAX(${column}) AS ${alias} ` +
                `FROM (${buildSQL}) AS __w`;
-            // NOT probeSelect(): its `row_to_json` wrapper exists because Malloy's
-            // PostgresConnection rewrites `rows[i] = rows[i].row`, and this runner
-            // is a DuckDB session with no such rewrite. Wrapping would hand back
-            // one JSON column and every probe would read undefined — a source that
-            // seeds forever while reporting a readable table.
+            // NOT probeSelect(): its `row_to_json` wrapper is for Malloy's
+            // PostgresConnection row rewrite, which this DuckDB session lacks.
+            // Wrapping would make every probe read undefined and seed forever.
             try {
                const result = await session.runSQL(
                   wrapPassthrough(sourceType, handle, inner),
                );
-               // `result.rows`, matching the probes that run on this same
-               // session: db-duckdb types runSQL as MalloyQueryData, so an array
-               // branch here would only suggest the shape were in doubt.
                const rows = (result?.rows ?? []) as Record<string, unknown>[];
                const raw = rows[0]?.["watermark_max"];
                if (raw === null || raw === undefined) return {};

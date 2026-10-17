@@ -12,6 +12,7 @@ import { MaterializationScheduler } from "../../../src/service/materialization_s
 import { MaterializationService } from "../../../src/service/materialization_service";
 import { environmentStore } from "../../../src/server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,8 +20,6 @@ const __dirname = path.dirname(__filename);
 const PROJECT_NAME = "sched-project";
 const PACKAGE_NAME = "persist-schedule-test";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
-
-const TERMINAL = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
 // Deterministic clock for the scheduler: we call tick(nowMs) explicitly, so the
 // fixture's daily cron ("0 6 * * *") fires without waiting on a real minute.
@@ -57,12 +56,7 @@ describe("MaterializationScheduler (E2E, real build)", () => {
 
       // Wait for the package to load (so it's in the environmentStore the
       // scheduler sweeps).
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}`);
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 500));
-      }
+      await waitUntilOk(`${baseUrl}${API}`, "Test package");
 
       // Drive the real scheduler against the server's real environmentStore and
       // a real MaterializationService (shares the same repository). We call
@@ -101,15 +95,16 @@ describe("MaterializationScheduler (E2E, real build)", () => {
    }
 
    async function pollTerminal(id: string): Promise<Record<string, unknown>> {
-      const deadline = Date.now() + 60_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}/materializations/${id}`);
-         expect(res.status).toBe(200);
-         const m = (await res.json()) as Record<string, unknown>;
-         if (TERMINAL.includes(m.status as string)) return m;
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      throw new Error(`materialization ${id} did not reach a terminal state`);
+      return pollFor(
+         async () => {
+            const res = await fetch(`${baseUrl}${API}/materializations/${id}`);
+            expect(res.status).toBe(200);
+            return (await res.json()) as Record<string, unknown>;
+         },
+         (m) => TERMINAL_STATUSES.includes(m.status as string),
+         `materialization ${id} did not reach a terminal state`,
+         60_000,
+      );
    }
 
    it(
