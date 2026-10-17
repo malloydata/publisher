@@ -1,15 +1,16 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// E2.1 SPIKE — does manifest substitution fire for a persist source that is a
-// compose() member?
+// CONTRACT — manifest substitution fires for a persist source that is a
+// compose() member. This began as the E2.1 spike that first ran it and is now a
+// permanent pin on the compiler behaviour pre-aggregation depends on.
 //
-// The whole pre-aggregation v1 design rests on one unverified compiler behavior:
+// The whole pre-aggregation v1 design rests on one compiler behavior:
 // Publisher synthesizes an ordinary `#@ persist` rollup source, wraps the base in
 // `compose(rollup, base)`, and expects the STOCK composite resolver to route each
 // query while the STOCK colocated manifest substitution binds the winning member
-// to its built table. Nothing had run that. If it does not hold, the mechanism is
-// dead and the fallback is compiler work — a different project.
+// to its built table. If a compiler upgrade breaks it, the mechanism is dead
+// and the fallback is compiler work — a different project.
 //
 // So this file asserts on generated SQL, not on values. A correct number proves
 // nothing here: the live path returns the same number by design, which is the
@@ -179,7 +180,7 @@ const COVERED_COUNT =
 const UNCOVERED =
    "run: orders -> { group_by: category; aggregate: total_revenue; where: amount > 100 }";
 
-describe("E2.1 spike: a persist source as a compose() member", () => {
+describe("compiler contract: a persist source as a compose() member", () => {
    it("1. getBuildPlan() sees the rollup, and it builds", async () => {
       const rollup = await rollupSource(WITH_ROLLUP);
       // Reachable from modelDef.contents even though nothing outside compose()

@@ -1,17 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// SPIKE — does pre-aggregation work over VIRTUAL sources, the way it was shown
-// to work over ordinary persist sources?
+// CONTRACT — pre-aggregation works over VIRTUAL sources, the way it works over
+// ordinary persist sources. This began as a spike and is now a permanent pin on
+// the compiler behaviour stored rollups depend on.
 //
-// preaggregation_compose_spike.spec.ts proved the colocated mechanism: a
+// preaggregation_compose_contract.spec.ts pins the colocated mechanism: a
 // `#@ persist` rollup as a compose() member, bound to its built table by the
 // stock manifest substitution. Serving a rollup from the managed store is a
 // different substrate and re-opens every one of those questions, because a
 // stored rollup is reached as a VIRTUAL source — its fields come from a declared
 // `type:` block rather than from schema discovery, and its table is resolved
 // per call through `virtualMap` rather than through the build manifest. Neither
-// property held in the colocated spike, so nothing it proved carries over on its
+// property holds in the colocated contract, so nothing it pins carries over on its
 // own.
 //
 // Four things have to hold or part of the design has no mechanism:
@@ -30,7 +31,7 @@
 //  4. `virtualMap` resolution fires for the member the composite CHOSE, not
 //     merely for a virtual source queried directly.
 //
-// Method follows the colocated spike, for the same reason: ASSERT ON GENERATED
+// Method follows the colocated contract, for the same reason: ASSERT ON GENERATED
 // SQL, not on values. A correct number proves nothing about routing, because the
 // live path returns the same answer by design — that is the whole feature, and
 // also why a value assertion cannot tell routing from non-routing. Values are
@@ -79,7 +80,7 @@ const HANDLE_CAT_DAY = "h_cat_day";
 beforeAll(async () => {
    ({ duckdb, connections } = duckdbTestConnections());
    // Built by hand rather than by a build: this file is about the serve
-   // compile, and a real build is what the colocated spike already covers.
+   // compile, and a real build is what the colocated contract already covers.
    // Column names are synthesis's (`<measure>__partial`), because the merged
    // measure the shape declares has to reference exactly those.
    await duckdb.runSQL(
@@ -241,7 +242,7 @@ const COUNT_BY_CATEGORY =
 const byTruncation = (unit: string) =>
    `run: orders -> { group_by: p is order_date.${unit}; aggregate: total_revenue }`;
 
-describe("spike: pre-aggregation over virtual sources", () => {
+describe("compiler contract: pre-aggregation over virtual sources", () => {
    it("1. THE LOAD-BEARING ONE: a virtual source is a usable compose() member", async () => {
       // Compiling at all is the claim: the resolver has to read a member's
       // declared fields to decide coverage, and a virtual source declares rather
