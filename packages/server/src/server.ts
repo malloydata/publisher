@@ -1,43 +1,32 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Refuse to run on an unsupported Node. Imported first, and importing nothing
-// but node:fs itself, so the check pulls no application code into the graph.
-// It does not run before that graph: ESM evaluates every import ahead of this
-// module's body, and the bundler inlines this entry last, so the call below
-// runs after each dependency's top-level code. What it does precede is
-// everything this process chooses to do.
+// Imported first and importing only node:fs, so the Node version check pulls
+// no application code in. ESM still evaluates every dependency's top level
+// before the call below; it precedes everything this process chooses to do.
 import { assertSupportedNodeVersion } from "./node_version_check";
-// Pre-load the instrumentation module; the instrumentation module must be loaded before the other imports.
-import type { GivenValue } from "@malloydata/malloy";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { AddressInfo } from "net";
+import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
-import express from "express";
 import * as http from "http";
 import { createProxyMiddleware } from "http-proxy-middleware";
-import { AddressInfo } from "net";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { applyCliArgs } from "./cli_args";
 import { CompileController } from "./controller/compile.controller";
 import { ConnectionController } from "./controller/connection.controller";
-import { ReportController } from "./controller/report.controller";
-import { SkillController } from "./controller/skill.controller";
 import { DatabaseController } from "./controller/database.controller";
+import { MaterializationController } from "./controller/materialization.controller";
 import { ModelController } from "./controller/model.controller";
 import { PackageController } from "./controller/package.controller";
-import {
-   VersionController,
-   versionsRouter,
-} from "./controller/version.controller";
 import { QueryController } from "./controller/query.controller";
+import { ReportController } from "./controller/report.controller";
+import { SkillController } from "./controller/skill.controller";
+import { StorageDestinationController } from "./controller/storage_destination.controller";
+import { ThemeController } from "./controller/theme.controller";
+import { VersionController } from "./controller/version.controller";
 import { WatchModeController } from "./controller/watch-mode.controller";
-import {
-   BadRequestError,
-   internalErrorToHttpError,
-   PackageVersionError,
-   ServiceUnavailableError,
-} from "./errors";
 import {
    drainingGuard,
    registerHealthEndpoints,
@@ -48,8 +37,7 @@ import {
    getPrometheusMetricsHandler,
    httpMetricsMiddleware,
 } from "./instrumentation";
-import { logger, loggerMiddleware, redactSensitive } from "./logger";
-
+import { logger, loggerMiddleware } from "./logger";
 import {
    assertDuckDBResourceConfig,
    getDuckDBMemoryLimit,
@@ -59,7 +47,6 @@ import {
    getExtensionFetchPolicy,
    getLlmSettings,
    getMaterializationSchedulerConfig,
-   getMcpCorsOrigins,
    getMemoryGovernorConfig,
    isDuckDBMemoryLimitDisabled,
    getPersistCollisionEnforce,
@@ -69,14 +56,7 @@ import {
    getRetrievalConfig,
 } from "./config";
 import { setRetrievalConfig } from "./retrieval_config";
-import { readBypassAuthorize } from "./authorize_bypass_header";
-import { setFilterDeprecationHeaders } from "./filter_deprecation";
 import { checkHeapConfiguration } from "./heap_check";
-import { queryConcurrency } from "./query_concurrency";
-import { MaterializationController } from "./controller/materialization.controller";
-import { StorageDestinationController } from "./controller/storage_destination.controller";
-import { ThemeController } from "./controller/theme.controller";
-import { initializeMcpServer } from "./mcp/server";
 import { setMaxEmbeddedEntities } from "./mcp/tools/embedding_index";
 import { startPackageEmbeddingSync } from "./mcp/tools/get_context_tool";
 import {
@@ -89,29 +69,21 @@ import {
    resolveBoundPort,
    resolveClientHost,
 } from "./mcp_config";
+import { observePackageStates } from "./package_state_metrics";
 import { registerLegacyRoutes } from "./server-old";
-import { processStorageDestinationsOrThrow } from "./service/connection_config";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
 import { MaterializationService } from "./service/materialization_service";
-import {
-   normalizeQueryArray,
-   parseNonNegativeIntParam,
-} from "./query_param_utils";
-import { booleanParamOr400, setCollectionReloadError } from "./route_params";
 import { PackageMemoryGovernor } from "./service/package_memory_governor";
 import { ThemeStore } from "./service/theme_store";
-import { LATEST_VERSION_ALIAS } from "./service/versions/version_service";
-import { assertSafePackageName, safeJoinUnderRoot } from "./path_safety";
-import { resolveSpaFallback, type LoadedRoutes } from "./spa_fallback";
-import { timeReportRead } from "./report_metrics";
+import { registerApiRoutes } from "./routes/api";
+import { unhandledErrorMiddleware } from "./routes/json_route";
 import {
-   isLegacyReportAlias,
-   recordConsoleAliasUse,
-} from "./service/legacy_report_views";
-import { registerDeprecatedRoutes } from "./routes/deprecated";
-import { reportWriteRoute } from "./routes/report_write";
-import { jsonRoute, wildcardParam } from "./routes/json_route";
+   registerDataAppListRoute,
+   registerDataAppStaticRoutes,
+} from "./routes/data_apps";
+import { createMcpApp, resolveMcpHost } from "./routes/mcp";
+import { registerSpaFallback } from "./routes/spa";
 import {
    RATE_LIMIT_ENV,
    parseRateLimit,
@@ -123,147 +95,18 @@ import {
 } from "./frame_ancestors";
 import { acceptBundledExperimentalDialects } from "./service/experimental_dialects";
 
-// The first statement this module runs. On an unsupported Node this exits
-// non-zero here, before any argument parsing, any storage init, and any
-// listener. The floor is a support policy (see node_version_check.ts): the
-// failure that exposed it surfaced only on the first query, as a 500 naming
-// neither Node nor a version, on a server whose boot log read completely
-// healthy. Bun is exempt, or the Docker image and `start:dev` would refuse to
-// boot.
+// Exits non-zero on an unsupported Node before argument parsing, storage init
+// or any listener; otherwise the failure surfaces only as an unexplained 500
+// on the first query. See node_version_check.ts.
 assertSupportedNodeVersion();
 
-// Parse command line arguments
-function parseArgs() {
-   const args = process.argv.slice(2);
-   let sawServerRoot = false;
-   let sawConfig = false;
-   for (let i = 0; i < args.length; i++) {
-      const arg = args[i];
-      if (arg === "--port" && args[i + 1]) {
-         process.env.PUBLISHER_PORT = args[i + 1];
-         i++;
-      } else if (arg === "--host" && args[i + 1]) {
-         process.env.PUBLISHER_HOST = args[i + 1];
-         i++;
-      } else if (arg === "--server_root" && args[i + 1]) {
-         sawServerRoot = true;
-         process.env.SERVER_ROOT = args[i + 1];
-         i++;
-      } else if (arg === "--config" && args[i + 1]) {
-         sawConfig = true;
-         process.env.PUBLISHER_CONFIG_PATH = args[i + 1];
-         i++;
-      } else if (arg === "--mcp_port" && args[i + 1]) {
-         process.env.MCP_PORT = args[i + 1];
-         i++;
-      } else if (arg === "--mcp_host" && args[i + 1]) {
-         process.env.MCP_HOST = args[i + 1];
-         i++;
-      } else if (arg === "--shutdown_drain_duration_seconds" && args[i + 1]) {
-         process.env.SHUTDOWN_DRAIN_DURATION_SECONDS = args[i + 1];
-         i++;
-      } else if (
-         arg === "--shutdown_graceful_close_timeout_seconds" &&
-         args[i + 1]
-      ) {
-         process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = args[i + 1];
-         i++;
-      } else if (arg === "--init") {
-         process.env.INITIALIZE_STORAGE = "true";
-      } else if (arg === "--no-mcp-config") {
-         process.env.PUBLISHER_NO_MCP_CONFIG = "true";
-      } else if (arg === "--watch-env" && args[i + 1]) {
-         // Append (don't overwrite) so multiple --watch-env flags compose
-         // and so an explicit env var pre-set still wins.
-         const existing = process.env.PUBLISHER_WATCH || "";
-         process.env.PUBLISHER_WATCH = existing
-            ? `${existing},${args[i + 1]}`
-            : args[i + 1];
-         i++;
-      } else if (arg === "--help" || arg === "-h") {
-         console.log("Malloy Publisher Server");
-         console.log("");
-         console.log("Usage: malloy-publisher [options]");
-         console.log("");
-         console.log("Options:");
-         console.log(
-            "  --port <number>        Port to run the server on (default: 4000)",
-         );
-         console.log(
-            "  --host <string>        Host to bind the REST server to, and the MCP server unless --mcp_host is given (default: 0.0.0.0)",
-         );
-         console.log(
-            "  --mcp_host <string>    Host to bind the MCP server to (default: 127.0.0.1, or --host when that is set)",
-         );
-         console.log(
-            "  --server_root <path>   Root directory to serve files from (default: .)",
-         );
-         console.log(
-            "  --config <path>        Path to publisher.config.json (default: <server_root>/publisher.config.json; falls back to bundled DuckDB-only sample config if missing)",
-         );
-         console.log(
-            "  --mcp_port <number>    Port for MCP server (default: 4040)",
-         );
-         console.log(
-            "  --shutdown_drain_duration_seconds <number>  Time in seconds to keep service in draining state before closing servers (default: 0)",
-         );
-         console.log(
-            "  --shutdown_graceful_close_timeout_seconds <number>  Time in seconds to wait after closing servers before exit (default: 0)",
-         );
-         console.log(
-            "  --init                 Wipe persisted storage and re-sync it from the config (default: false)",
-         );
-         console.log(
-            "  --no-mcp-config        Do not write .mcp.json into the working directory (default: it is written, so an agent opened here finds this server; skipped when the directory already has one, is your home directory or the filesystem root, is inside a git working tree, or the MCP port bound is not the one requested)",
-         );
-         console.log(
-            "  --watch-env <name>     Enable dev-mode watch for the named environment.",
-         );
-         console.log(
-            "                         Mounts local-dir packages in-place (symlink, not",
-         );
-         console.log(
-            "                         copy) so source-edit live reload works. A comma-",
-         );
-         console.log(
-            "                         separated PUBLISHER_WATCH mounts all listed envs in",
-         );
-         console.log(
-            "                         place, but only the first one auto-reloads.",
-         );
-         console.log("  --help, -h             Show this help message");
-         process.exit(0);
-      }
-   }
-   // Zero-config invocation (`npx @malloy-publisher/server`) opts in to
-   // the bundled DuckDB-only sample config so the Quick Start works
-   // without any flags. Any explicit --server_root or --config disables
-   // this — the user told us where to look. Skip in NODE_ENV=test as a
-   // belt-and-suspenders so any spec that ends up evaluating this
-   // module doesn't accidentally pin the EnvironmentStore to the
-   // bundled examples config.
-   if (!sawServerRoot && !sawConfig && process.env.NODE_ENV !== "test") {
-      process.env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
-   }
-}
+applyCliArgs(process.argv.slice(2));
 
-// Parse CLI arguments before setting up constants
-parseArgs();
-
-// Fail fast at boot on a malformed PERSIST_STORAGE_MODE. The getter throws on an
-// invalid value; without this it would only throw lazily inside a per-request
-// package-metadata call (storageWarnings), on every deployment regardless of
-// whether the tier is used. Reading it once here surfaces a typo at startup.
+// These getters throw on an invalid value. Read once at boot so a typo fails
+// startup instead of later requests: package metadata, publishes, and (for the
+// query-metadata mode) every query and build.
 getPersistStorageMode();
-// Same for PERSIST_COLLISION_ENFORCE, whose only other caller is the publish
-// path — so a typo would otherwise surface as a failed publish request rather
-// than a failed boot.
 getPersistCollisionEnforce();
-
-// Same hazard, wider blast radius: getQueryMetadataMode() throws on an invalid
-// value and is read while resolving EVERY statement, so a typo'd off switch
-// ("false", "0", "disabled") would boot clean and then fail every query and
-// every build — the one thing the metadata path promises never to do.
 getQueryMetadataMode();
 
 // Before any compile on this thread: a connection-test, an MCP compile or a
@@ -273,28 +116,20 @@ acceptBundledExperimentalDialects();
 const PUBLISHER_PORT = Number(process.env.PUBLISHER_PORT || 4000);
 const PUBLISHER_HOST = process.env.PUBLISHER_HOST || "0.0.0.0";
 const MCP_PORT = Number(process.env.MCP_PORT || 4040);
-// The MCP endpoint is unauthenticated and exposes every MCP tool, so it binds
-// LOOPBACK by default while the REST port keeps its own PUBLISHER_HOST default.
-// Precedence: MCP_HOST, then an explicit PUBLISHER_HOST (so `--host` still moves
-// both listeners together for an operator who asked for a wider bind), then
-// loopback. Widening this is opt-in and belongs behind an authenticating
-// gateway.
-const MCP_HOST =
-   process.env.MCP_HOST || process.env.PUBLISHER_HOST || "127.0.0.1";
-// Resolved here rather than in the listen callback: parseBoolEnv throws on a
-// typo, which is the convention for flags in this server, but a throw inside a
-// listen callback is an uncaughtException that kills a server which has already
-// bound both ports. At module scope it is an ordinary startup failure.
+// The MCP endpoint is unauthenticated and exposes every tool, so it binds
+// loopback by default. Precedence: MCP_HOST, an explicit PUBLISHER_HOST (so
+// `--host` moves both listeners), then loopback.
+const MCP_HOST = resolveMcpHost(process.env);
+// Resolved at module scope, not in the listen callback: it throws on a typo,
+// and a throw there would be an uncaughtException after both ports are bound.
 const MCP_CONFIG_ENABLED = mcpConfigEnabled();
-const MCP_ENDPOINT = "/mcp";
 const SHUTDOWN_DRAIN_DURATION_SECONDS = Number(
    process.env.SHUTDOWN_DRAIN_DURATION_SECONDS || 0,
 );
 const SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS = Number(
    process.env.SHUTDOWN_GRACEFUL_CLOSE_TIMEOUT_SECONDS || 0,
 );
-// Find the app directory relative to this bundled server file.
-// Works under both ESM (import.meta.url) and when invoked via NPX.
+// The app directory sits next to this bundled file, under ESM and under npx.
 const __filename_esm = fileURLToPath(import.meta.url);
 const ROOT = path.join(path.dirname(__filename_esm), "app");
 const SERVER_ROOT = path.resolve(process.cwd(), process.env.SERVER_ROOT || ".");
@@ -304,56 +139,35 @@ const isDevelopment = process.env["NODE_ENV"] === "development";
 export const app = express();
 app.use(loggerMiddleware);
 app.use(httpMetricsMiddleware);
-// Opt-in per-client rate limiting (PUBLISHER_RATE_LIMIT). Mounted before any
-// route so the static-file, query, and SPA-fallback handlers are all behind
-// it; probes and /metrics are exempt inside the middleware.
-// Ahead of the rate limiter, so a 429 carries the policy too. That response is
-// JSON and nobody is tricked into clicking one, so this is not a live
-// clickjacking path -- but "every document" should be literally true rather than
-// true of everything except the responses one middleware happens to answer
-// early, and the next early-answering middleware may not be JSON.
+// Ahead of every early-answering middleware (the rate limiter's 429 included),
+// so the frame-ancestors policy is on every response.
 app.use(frameAncestorsMiddleware(process.env[FRAME_ANCESTORS_ENV]));
-// Health endpoints (Kubernetes liveness/readiness) before every middleware a
-// probe does not need: the rate limiter exempts them anyway, and static-file
-// serving would stat the filesystem first. A liveness probe that queues behind
-// a busy event loop should cost nothing more once it runs.
+// Health probes come before every middleware they do not need, such as
+// static-file serving, which would stat the filesystem first.
 registerHealthEndpoints(app);
+// Opt-in (PUBLISHER_RATE_LIMIT) and mounted before every route; probes and
+// /metrics are exempt inside the middleware.
 app.use(rateLimitMiddleware(parseRateLimit(process.env[RATE_LIMIT_ENV])));
-// Probe the V8 heap ceiling once at startup and warn if it's below
-// the recommended floor. The row/byte caps from Steps 1–3 still
-// bound per-request memory; this is a "your --max-old-space-size
-// looks low for the default caps" advisory so operators don't
-// chase OOMKills before checking the obvious config.
+// Advisory only: warns when --max-old-space-size looks low for the default
+// row/byte caps, so operators check that before chasing OOMKills.
 checkHeapConfiguration();
 export const environmentStore = new EnvironmentStore(SERVER_ROOT);
 const watchModeController = new WatchModeController(environmentStore);
 const connectionController = new ConnectionController(environmentStore);
 const modelController = new ModelController(environmentStore);
-// PackageMemoryGovernor is opt-in via PUBLISHER_MAX_MEMORY_BYTES.
-// When set, it polls process RSS and flips an `isBackpressured` flag
-// that Environment.getPackage / addPackage consult before allocating
-// any new package — the server responds with HTTP 503 instead of
-// OOM-killing the pod.
-// Validate the DuckDB extension-fetch policy at boot so an unrecognised value
-// (e.g. a k8s-manifest typo) fails the boot loudly here, rather than surfacing
-// on the first query that resolves a DuckDB connection — which matters most for
-// an operator relying on `local-only` for a no-network guarantee. Logging the
-// resolved policy also records the posture the server booted with.
+// Validated at boot so a typo fails startup rather than the first DuckDB
+// query, which matters most to an operator relying on `local-only` for a
+// no-network guarantee. The log records the posture the server booted with.
 logger.info(`DuckDB extension-fetch policy: ${getExtensionFetchPolicy()}`);
-// Validated and materialized here, not on the first session that opens one:
-// `/health` and `/health/readiness` never touch DuckDB, so a malformed limit or
-// an uncreatable spill directory would leave the pod reporting ready while every
-// query and package load failed. Also creates the directory, since
-// `SET temp_directory` accepts one that does not exist and only fails at the
-// first spill.
+// Validated (and the spill directory created) at boot: the health probes never
+// touch DuckDB, so a bad limit or directory would otherwise leave a pod
+// reporting ready while every query failed. `SET temp_directory` accepts a
+// missing directory and fails only at the first spill.
 assertDuckDBResourceConfig();
 const duckDBMemoryLimit = getDuckDBMemoryLimit();
 if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
-   // Warned rather than defaulted. A flat value that suits one container size
-   // badly constrains another, so the safe value is the operator's to pick — but
-   // an operator who never reads a release note would otherwise have no way to
-   // learn that this process runs several DuckDB instances which each size
-   // themselves against the whole container independently.
+   // Warned rather than defaulted: no flat value suits every container size,
+   // so the operator picks it.
    logger.warn(
       "PUBLISHER_DUCKDB_MEMORY_LIMIT is unset: every DuckDB instance in this " +
          "process sizes its memory_limit from the container independently, so " +
@@ -367,21 +181,13 @@ if (duckDBMemoryLimit === undefined && !isDuckDBMemoryLimitDisabled()) {
          `temp_directory=${getDuckDBTempDirectory() ?? "<duckdb default>"}`,
    );
 }
-// Resolve the embedding config at boot so a malformed EMBEDDING_API_BASE /
-// EMBEDDING_DIMENSIONS fails loudly at startup (getEmbeddingConfig throws),
-// matching the sibling getters above, rather than surfacing as a warn on the
-// first getContext call that reaches tier 4 — or never. Logs the posture the
-// server booted with; the host only, never the key.
+// Retrieval and embedding settings are resolved once at boot, so a bad value
+// fails loudly with its fix rather than on the first question. The provider
+// getters read them back from module state. Logs name the host, never the key.
 //
-// The `retrieval` block of publisher.config.json is read here, once, so an
-// invalid value is reported with its fix rather than surfacing on the first
-// question. The provider getters read it back from module state.
-//
-// A config the server cannot read or parse must not kill the process: the
-// environment store reads the same file when it initializes, records the cause
-// as `initError`, prints PUBLISHER_INIT_FAILED and keeps the server up so
-// /status can name it. This read therefore logs and carries on with no
-// retrieval settings; the store reports the same failure right after.
+// An unreadable config must not kill the process: the environment store reads
+// the same file, reports it as `initError` / PUBLISHER_INIT_FAILED and keeps
+// the server up so /status can name it. So this read logs and carries on.
 let retrievalConfig: ReturnType<typeof getRetrievalConfig>;
 try {
    retrievalConfig = getRetrievalConfig(SERVER_ROOT);
@@ -417,7 +223,6 @@ if (llmSettings) {
          `Fix: set LLM_API_KEY in the server's environment.`,
    );
 }
-// The entity cap for the semantic index.
 const semanticIndexMaxEntities =
    retrievalConfig?.indexing?.maxEntities ??
    DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES;
@@ -433,9 +238,9 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
-// Start the semantic index building as each package loads, rather than on the
-// first question. This only queues work (see startPackageEmbeddingSync); with
-// no embedding provider the queued job returns at once.
+observePackageStates(environmentStore);
+// Build the semantic index as each package loads, not on the first question.
+// This only queues work; with no embedding provider the job returns at once.
 environmentStore.setPackageLoadedHook((environmentName, pkg) =>
    startPackageEmbeddingSync(environmentStore, environmentName, pkg),
 );
@@ -445,7 +250,6 @@ const skillController = new SkillController(environmentStore);
 const databaseController = new DatabaseController(environmentStore);
 const queryController = new QueryController(environmentStore);
 const compileController = new CompileController(environmentStore);
-const versionController = new VersionController(environmentStore);
 const materializationService = new MaterializationService(environmentStore);
 const storageDestinationController = new StorageDestinationController(
    environmentStore,
@@ -453,6 +257,7 @@ const storageDestinationController = new StorageDestinationController(
 const materializationController = new MaterializationController(
    materializationService,
 );
+const versionController = new VersionController(environmentStore);
 // Archiving a version reclaims the tables it alone owns, in the background.
 environmentStore.setVersionArchivedHook(
    (environmentName, packageName, versionId) => {
@@ -470,14 +275,10 @@ void environmentStore.finishedInitialization.then(
    () => undefined,
 );
 /**
- * Construct and start the standalone materialization scheduler from environment
- * config, or return null when the feature is disabled
- * (`PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` unset/false — the default, so an
- * orchestrated deployment never runs it). Extracted from the module body so a
- * test can drive the real env-var → {@link getMaterializationSchedulerConfig} →
- * construct → `start()`/`unref()` → timer path an operator uses; the
- * module-level singleton below is armed once at import and can't be re-created
- * per test.
+ * Start the standalone materialization scheduler, or return null when
+ * `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` is off (the default, so an
+ * orchestrated deployment never runs it). A function so tests can drive the
+ * real env-var path; the module-level call below runs once at import.
  */
 export function startMaterializationSchedulerFromEnv(
    store: EnvironmentStore,
@@ -490,516 +291,27 @@ export function startMaterializationSchedulerFromEnv(
    return scheduler;
 }
 
-// Standalone materialization scheduler: opt-in via
-// PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER (default off, so an orchestrated
-// deployment — whose control plane drives materialization — never runs it). The
-// sweep timer is `unref`'d, so it never keeps the process alive on shutdown.
+// The sweep timer is unref'd, so it never keeps the process alive.
 startMaterializationSchedulerFromEnv(environmentStore, materializationService);
 const themeStore = new ThemeStore(environmentStore.storageManager, SERVER_ROOT);
 const themeController = new ThemeController(themeStore, SERVER_ROOT);
 
-export const mcpApp = express();
+export const mcpApp = createMcpApp(environmentStore);
 
-// Register health endpoints on mcpApp (for E2E tests)
-registerHealthEndpoints(mcpApp);
-
-mcpApp.use(MCP_ENDPOINT, express.json());
-// Cross-origin access is OPT-IN via MCP_CORS_ORIGINS (comma-separated origins,
-// or `*` to allow any). Default is no allowlist, which reflects no
-// `Access-Control-Allow-Origin` back, so a browser page on another origin cannot
-// read a response from this unauthenticated endpoint. A non-browser client (an
-// MCP agent over HTTP) sends no Origin and is unaffected either way: CORS
-// governs what a browser hands to script, not who may connect.
-// codeql[js/cors-permissive-configuration]: the permissive value this rule
-// looks for is reachable only when an operator sets MCP_CORS_ORIGINS=* on
-// purpose, which is the documented escape hatch; every other input, including
-// the default, resolves to an allowlist or to false. The line this replaced was
-// a bare `cors()` -- permissive unconditionally, and unflagged.
-mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));
-
-mcpApp.all(MCP_ENDPOINT, async (req, res) => {
-   logger.info(`[MCP Debug] Handling ${req.method} (Stateless)`);
-
-   try {
-      if (req.method === "POST") {
-         const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: undefined,
-         });
-
-         transport.onclose = () => {
-            logger.info(
-               `[MCP Transport Info] Stateless transport closed for a request.`,
-            );
-         };
-         transport.onerror = (err: Error) => {
-            logger.error(`[MCP Transport Error] Stateless transport error:`, {
-               error: err,
-            });
-         };
-
-         const requestMcpServer = initializeMcpServer(environmentStore);
-         await requestMcpServer.connect(transport);
-
-         res.on("close", () => {
-            logger.info(
-               "[MCP Transport Info] Response closed, cleaning up stateless transport.",
-            );
-            transport.close().catch((err) => {
-               logger.error(
-                  "[MCP Transport Error] Error closing stateless transport on response close:",
-                  { error: err },
-               );
-            });
-         });
-
-         await transport.handleRequest(req, res, req.body);
-      } else if (req.method === "GET" || req.method === "DELETE") {
-         logger.warn(
-            `[MCP Transport Warn] Method Not Allowed in Stateless Mode: ${req.method}`,
-         );
-         res.setHeader("Allow", "POST");
-         res.status(405).json({
-            jsonrpc: "2.0",
-            error: {
-               code: -32601,
-               message: "Method Not Allowed in Stateless Mode",
-            },
-            id: null,
-         });
-         return;
-      } else {
-         logger.warn(`[MCP Transport Warn] Method Not Allowed: ${req.method}`);
-         res.setHeader("Allow", "POST");
-         res.status(405).json({
-            jsonrpc: "2.0",
-            error: { code: -32601, message: "Method Not Allowed" },
-            id: null,
-         });
-         return;
-      }
-   } catch (error) {
-      logger.error(
-         `[MCP Transport Error] Unhandled error in ${req.method} handler (Stateless):`,
-         { error },
-      );
-      if (!res.headersSent) {
-         res.status(500).json({
-            jsonrpc: "2.0",
-            error: { code: -32603, message: "Internal server error" },
-            id:
-               typeof req.body === "object" &&
-               req.body !== null &&
-               "id" in req.body
-                  ? req.body.id
-                  : null,
-         });
-      }
-   }
-});
-
-// ---------------------------------------------------------------------------
-// In-package HTML data apps
-// ---------------------------------------------------------------------------
-// These routes must come before the SPA catch-all and (in dev) the Vite proxy
-// so that:
-//   - `/sdk/publisher.js`     → Publisher runtime helper
-//   - `/environments/<env>/packages/<pkg>/<file.ext>` → static file from
-//                                                       inside the package dir
-//   - `/api/v0/.../events`    → live-reload SSE (registered in API routes
-//                                below; this comment is the cross-reference)
-
-// Serve the runtime helper that in-package HTML data apps load via
-// <script src="/sdk/publisher.js">. Path resolved once at module load.
-const PUBLISHER_RUNTIME_PATH = path.join(
-   path.dirname(__filename_esm),
-   "runtime",
-   "publisher.js",
-);
-app.get("/sdk/publisher.js", (_req, res) => {
-   res.type("application/javascript");
-   // Short cache so live edits during local dev show up quickly. In
-   // production this file is content-stable per release.
-   res.setHeader("cache-control", "public, max-age=60");
-   res.setHeader("X-Content-Type-Options", "nosniff");
-   res.sendFile(PUBLISHER_RUNTIME_PATH, (err) => {
-      if (err) {
-         logger.error("Failed to send publisher.js runtime", { error: err });
-         if (!res.headersSent) res.status(500).end();
-      }
-   });
-});
-
-// Serve files from inside a package directory at
-//   /environments/<env>/packages/<pkg>/<relative-path>
-//
-// This route fully owns its prefix — it does NOT fall through to the SPA on
-// missing files, because doing so would mask 404s (and in dev mode the SPA
-// catch-all errors out before it can reply). Behavior:
-//   - `/environments/<env>/packages/<pkg>`      → 302 to `…/<pkg>/`
-//   - `/environments/<env>/packages/<pkg>/`     → serve `<pkgRoot>/public/index.html`
-//   - `/environments/<env>/packages/<pkg>/foo/` → serve `<pkgRoot>/public/foo/index.html`
-//   - `/environments/<env>/packages/<pkg>/<file>` → serve `<pkgRoot>/public/<file>`, or 404
-// Only the package's `public/` directory is web-served. Models, data files, and
-// the publisher.json manifest live outside it and are never reachable here, so
-// nothing can be downloaded around the per-model #(authorize) and query
-// controls. The data stays reachable through the permission-checked query path.
-
-// Body for this route's 404s. Static because this route is reached with a
-// resolved environment and package, so echoing the path back would confirm which
-// of them exists; the SPA fallback's own 404 does echo it (escaped), because it
-// is reached before anything has been resolved and the path is all it knows.
-// An empty 404 is honest but leaves a blank page, and someone arriving here has
-// usually guessed at the URL form, so it names the form.
-const PACKAGE_FILE_NOT_FOUND_HTML = `<!doctype html><meta charset="utf-8">
-<title>Not found</title>
-<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
-<h1>Not found</h1>
-<p>This package does not serve that file. Only files inside the package's
-<code>public/</code> directory are web-served, at
-<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is
-relative to <code>public/</code> and does not include it.</p>
-<p>Models and notebooks are not served here; they open in the web UI at
-<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code>. <a href="/">Publisher home</a> lists what
-this server has.</p>`;
-
-async function serveFromPackage(
-   req: express.Request,
-   res: express.Response,
-): Promise<void> {
-   const subPathRaw = (req.params as Record<string, string>)["0"] ?? "";
-   try {
-      const environment = await environmentStore.getEnvironment(
-         req.params.environmentName,
-         false,
-      );
-      // A page is served from the version its URL names (`?versionId=`), and
-      // from `latest` when it names none. Only a version the package has pins
-      // the page: a proxy may forward a page's query string unchanged, with a
-      // `versionId` of its own that is no version here, and that page still
-      // opens (from `latest`) rather than 404ing. The version comes from the
-      // URL only.
-      const staticVersionId = await environment
-         .getVersionService()
-         ?.pinnableVersion(req.params.packageName, req.query.versionId);
-      const pkg = await environment.getPackage(req.params.packageName, false, {
-         versionId: staticVersionId,
-      });
-      // Only the package's public/ directory is web-served. Models, data, and
-      // the publisher.json manifest live outside it and are never reachable
-      // through this route. This single directory boundary is the whole
-      // access-control story for static files.
-      const publicRoot = path.join(pkg.getPackagePath(), "public");
-
-      // Directory-style fallback: empty path or trailing slash → look for
-      // index.html within that directory.
-      let subPath = subPathRaw;
-      if (subPath === "" || subPath.endsWith("/")) {
-         subPath = subPath + "index.html";
-      }
-
-      // Resolve the requested file under public/ and reject anything that
-      // escapes it (`..`, encoded traversal) before touching the disk.
-      // safeJoinUnderRoot is the shared lexical-containment primitive (it throws
-      // BadRequestError on escape, surfaced as 400 by the outer catch); the
-      // realpath check below additionally catches symlinks inside public/ that
-      // point outward (403).
-      const fullPath = safeJoinUnderRoot(publicRoot, subPath);
-
-      // Containment check via realpath against the resolved public/ root.
-      // Catches symlinks inside public/ that point out (e.g. a malicious
-      // package shipping `public/leak -> /etc/passwd`), and tolerates the
-      // package root itself being a symlink (how watch-mode in-place mount
-      // works): realpath resolves it transparently and legitimate accesses
-      // inside public/ stay within realPublicRoot. Missing public/ dir or
-      // missing file: realpath throws ENOENT and we 404 cleanly instead of
-      // leaking via Express's default error handler.
-      const fsp = await import("fs/promises");
-      let realPublicRoot: string;
-      let realFullPath: string;
-      try {
-         realPublicRoot = await fsp.realpath(publicRoot);
-         realFullPath = await fsp.realpath(fullPath);
-      } catch {
-         if (!res.headersSent) {
-            // Generic 404 with no reflected request input (avoids reflecting
-            // user-controlled path/package name into the response body).
-            res.status(404).type("text/html").send(PACKAGE_FILE_NOT_FOUND_HTML);
-         }
-         return;
-      }
-      const rel = path.relative(realPublicRoot, realFullPath);
-      if (rel.startsWith("..") || path.isAbsolute(rel)) {
-         res.status(403).end();
-         return;
-      }
-
-      // The framing policy is set once for every document by
-      // `frameAncestorsMiddleware`, mounted ahead of all routes. It used to be
-      // set here, on this route alone, which is what left the Console catch-all
-      // with no framing header at all -- see the note in `frame_ancestors.ts`.
-      // Never let a served asset be MIME-sniffed into a different content type.
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      res.sendFile(realFullPath, (err) => {
-         if (err) {
-            // Own the 404 instead of letting Express fall through to a
-            // catch-all that may error.
-            if (!res.headersSent) {
-               // Generic 404, no reflected request input (see above).
-               res.status(404)
-                  .type("text/html")
-                  .send(PACKAGE_FILE_NOT_FOUND_HTML);
-            }
-         }
-      });
-   } catch (e) {
-      // Map service errors to their real status — a bad package name is a 400,
-      // memory back-pressure is a 503 — rather than flattening everything to
-      // 404. A genuine missing file is already handled by the realpath/sendFile
-      // 404 paths above; this catch only sees service-layer failures.
-      if (!res.headersSent) {
-         const { json, status } = internalErrorToHttpError(e as Error);
-         res.status(status).json(json);
-      }
-   }
-}
-
-// `/environments/<env>/packages/<pkg>` (no trailing slash, no path) redirect so
-// relative URLs in the served HTML resolve as expected. Express's default loose
-// matching also catches the trailing-slash form here, so only redirect URLs that
-// don't already end with `/`.
-//
-// Build the PATH from the validated route params, so it is always this same
-// canonical, same-origin path with a trailing slash, and place the slash before
-// any query string (e.g. ?embed_token=...). That is what removes the
-// open-redirect surface; the query itself is spliced verbatim and percent-encoded
-// by `res.redirect`, which is what removes the header-injection surface. See
-// withRequestQuery.
-/**
- * Re-attach the request's query string to a redirect target. Spliced verbatim off
- * the request target rather than rebuilt from the parsed query, because rebuilding
- * flattens anything the parser turned into a structure and silently corrupts it.
- *
- * What keeps this safe is not the rebuild: it is that the PATH is assembled from
- * validated segments and always starts `/environments/`, so the target cannot
- * change origin, and that `res.redirect` runs the value through `encodeurl` on the
- * way into the header, which percent-encodes CR, LF, space and quotes. Shared with
- * the SPA fallback's redirect, where dropping the query would strip an embedded
- * page's `?embed_token=...` on the way to the right path.
- */
-function withRequestQuery(req: express.Request, target: string): string {
-   // Taken verbatim off the request target rather than rebuilt from the parsed
-   // query. Rebuilding flattens anything the parser turned into a structure:
-   // Express's default `extended` parser reads `?filter[a]=1` as an object, and
-   // `String(value)` then emits `filter=[object Object]`, so a page arrives with
-   // a corrupted parameter rather than an intact one. The path is still built
-   // from validated segments, which is what keeps the Location same-origin;
-   // Express percent-encodes the result on the way into the header.
-   // Cut the fragment first: a non-browser client can send `#x?y=1`, and taking
-   // the first `?` in the whole target would promote fragment text into the
-   // redirect's query, handing the page a parameter the caller never put there.
-   const hash = req.originalUrl.indexOf("#");
-   const target_ =
-      hash === -1 ? req.originalUrl : req.originalUrl.slice(0, hash);
-   const marker = target_.indexOf("?");
-   return marker === -1 ? target : target + target_.slice(marker);
-}
-
-app.get(
-   "/environments/:environmentName/packages/:packageName",
-   (req, res, next) => {
-      if (req.path.endsWith("/")) return next();
-      const canonical =
-         `/environments/${encodeURIComponent(req.params.environmentName)}` +
-         `/packages/${encodeURIComponent(req.params.packageName)}/`;
-      res.redirect(308, withRequestQuery(req, canonical));
-   },
+// The data-app static routes come before the SPA catch-all and (in dev) the
+// Vite proxy.
+registerDataAppStaticRoutes(
+   app,
+   environmentStore,
+   path.join(path.dirname(__filename_esm), "runtime", "publisher.js"),
 );
 
-app.get(
-   "/environments/:environmentName/packages/:packageName/*",
-   serveFromPackage,
-);
-
-// List the in-package HTML data apps bundled inside a package. Used by the
-// SPA's package-detail view to surface a clickable list, and by anyone who
-// wants to discover them programmatically without scraping the directory.
-//
-// Returns a `DataApp[]` (see api-doc.yaml) — each item carries the relative
-// `path`, the `packageName`, the `title` (from its <title> tag), and a
-// `resource` URL. `resource` is the root-relative static-serve URL (NOT under
-// `${API_PREFIX}`) because a data app is a static asset served off the server
-// root, unlike API resources such as `Package.resource`.
-// Recursive depth is capped to keep this cheap for huge package directories.
-const DATA_APPS_DEPTH_CAP = 3;
-type DataAppItem = {
-   resource: string;
-   packageName: string;
-   versionId?: string;
-   path: string;
-   title: string;
-   fit?: "viewport";
-};
-
-// The spots in an HTML head where a "<meta ...>" literal would NOT be a live
-// tag: HTML comments (terminated or unterminated) and raw-text/RCDATA elements
-// (script/style/title/textarea). One alternation so a single .replace covers
-// them all (and so the fixpoint loop below applies one self-referential
-// replace, which is the complete-sanitization shape CodeQL recognizes).
-const NON_TAG_TEXT_PATTERN =
-   /<!--[\s\S]*?-->|<!--[\s\S]*$|<(script|style|title|textarea)\b[\s\S]*?<\/\1\s*>/gi;
-
-// Remove those matches until the string stops changing. A single pass is
-// incomplete because removing one match can splice the surrounding text into a
-// new one (CWE-116), so re-apply the same pattern to its own output until a
-// fixpoint. Each pass only deletes, so the string strictly shrinks and the loop
-// terminates, bounded by the input length (callers pass at most the first 4KB).
-function stripNonTagText(input: string): string {
-   let current = input;
-   let previous: string;
-   do {
-      previous = current;
-      current = current.replace(NON_TAG_TEXT_PATTERN, "");
-   } while (current !== previous);
-   return current;
-}
-
-async function listPackageDataApps(
-   environmentName: string,
-   packageName: string,
-   publicRoot: string,
-   /** The published version listed from; its pages are pinned to it. */
-   versionId?: string | null,
-): Promise<DataAppItem[]> {
-   const fs = await import("fs/promises");
-   const out: DataAppItem[] = [];
-
-   // Resolve the public/ root once and reject any entry whose realpath escapes
-   // it. Same containment defense as serveFromPackage: catches symlinks inside
-   // public/ pointing outside (e.g. `public/leak -> ../report.malloy`) before we
-   // open and read the target's first 4KB for title extraction. A package with
-   // no public/ dir fails realpath here and yields an empty list.
-   let realPublicRoot: string;
-   try {
-      realPublicRoot = await fs.realpath(publicRoot);
-   } catch {
-      return out;
-   }
-
-   async function walk(dir: string, depth: number) {
-      if (depth > DATA_APPS_DEPTH_CAP) return;
-      let entries: import("fs").Dirent[];
-      try {
-         entries = await fs.readdir(dir, { withFileTypes: true });
-      } catch {
-         return;
-      }
-      for (const entry of entries) {
-         if (entry.name.startsWith(".") || entry.name === "node_modules")
-            continue;
-         const full = path.join(dir, entry.name);
-         let realFull: string;
-         try {
-            realFull = await fs.realpath(full);
-         } catch {
-            continue;
-         }
-         const contained = path.relative(realPublicRoot, realFull);
-         if (contained.startsWith("..") || path.isAbsolute(contained)) continue;
-         if (entry.isDirectory()) {
-            await walk(full, depth + 1);
-         } else if (
-            entry.isFile() &&
-            (entry.name.endsWith(".html") || entry.name.endsWith(".htm"))
-         ) {
-            const rel = path.relative(publicRoot, full).replace(/\\/g, "/");
-            // Cheap metadata extraction: read first 4KB and grep the <head>.
-            let title = rel;
-            let fit: "viewport" | undefined;
-            try {
-               const fh = await fs.open(full, "r");
-               try {
-                  const buf = Buffer.alloc(4096);
-                  const { bytesRead } = await fh.read(buf, 0, 4096, 0);
-                  const head = buf.slice(0, bytesRead).toString("utf8");
-                  const m = head.match(/<title[^>]*>([^<]+)<\/title>/i);
-                  if (m) title = m[1].trim();
-                  // Full-screen apps (e.g. slide decks) opt into a viewport-fill
-                  // embed with <meta name="publisher:fit" content="viewport">.
-                  // FIRST strip the spots where the literal string is NOT a live
-                  // tag (comments, script/style/title/textarea), THEN look at the
-                  // <head> region only (up to </head> or <body>). Order matters:
-                  // stripping before locating the boundary keeps a literal
-                  // "<body>"/"</head>" inside a comment or <script> from
-                  // truncating the scan and hiding a real tag. What's left and
-                  // matches is a genuine <meta> the browser would honor too, so a
-                  // documented/commented example or a string in a code block
-                  // can't opt the page in. Match by name (attribute order/quoting
-                  // vary), then confirm content="viewport"; the [\s"'] before
-                  // `name` keeps `data-name="publisher:fit"` out. Like the title,
-                  // the tag must sit within the first 4KB.
-                  const cleaned = stripNonTagText(head);
-                  const headEnd = cleaned.search(/<\/head\s*>|<body[\s>]/i);
-                  const headTags =
-                     headEnd === -1 ? cleaned : cleaned.slice(0, headEnd);
-                  const fitMeta = headTags.match(
-                     /<meta\b[^>]*[\s"']name\s*=\s*["']publisher:fit["'][^>]*>/i,
-                  );
-                  if (
-                     fitMeta &&
-                     /\bcontent\s*=\s*["']\s*viewport\s*["']/i.test(fitMeta[0])
-                  ) {
-                     fit = "viewport";
-                  }
-               } finally {
-                  await fh.close();
-               }
-            } catch {
-               // ignore; fall back to relative path as title
-            }
-            out.push({
-               // A published version's page keeps opening that version after
-               // `latest` moves: the static route reads the version from the URL.
-               resource:
-                  `/environments/${environmentName}/packages/${packageName}/${rel}` +
-                  (versionId
-                     ? `?versionId=${encodeURIComponent(versionId)}`
-                     : ""),
-               packageName,
-               ...(versionId ? { versionId } : {}),
-               path: rel,
-               title,
-               fit,
-            });
-         }
-      }
-   }
-
-   await walk(publicRoot, 0);
-   out.sort((a, b) => {
-      // Surface index.html first, then alphabetical.
-      if (a.path === "index.html") return -1;
-      if (b.path === "index.html") return 1;
-      return a.path.localeCompare(b.path);
-   });
-   return out;
-}
-
-// NOTE: route registration for /data-apps moved below the CORS middleware so
-// cross-origin SDK consumers (e.g. a customer's React app pointing at
-// `<ServerProvider baseURL="https://publisher.example.com/api/v0">`) get
-// the proper CORS headers. See the registration after `app.use(cors(...))`.
-
-// Only serve static files in production mode
-// Otherwise we proxy to the React dev server
+// In development the Console is proxied to the Vite dev server instead.
 if (!isDevelopment) {
    app.use("/", express.static(ROOT));
    app.use("/api-doc.html", express.static(path.join(ROOT, "api-doc.html")));
 } else {
-   // In development mode, proxy requests to React dev server
-   // Handle API routes first
    app.use(`${API_PREFIX}`, loggerMiddleware);
-
-   // Proxy everything else to Vite
    app.use(
       createProxyMiddleware({
          target: "http://localhost:5173",
@@ -1013,24 +325,6 @@ if (!isDevelopment) {
    );
 }
 
-/**
- * The version a model query names: in the body, or in the URL as on every
- * other package route. Both may be given only if they agree.
- */
-const queryVersionIdOf = (req: express.Request): unknown => {
-   const fromBody = req.body?.versionId;
-   const fromUrl = req.query.versionId;
-   const named = (value: unknown) =>
-      value !== undefined && value !== null && value !== "";
-   if (named(fromBody) && named(fromUrl) && fromBody !== fromUrl) {
-      throw new PackageVersionError(
-         "VERSION_ID_INVALID",
-         "The body and the URL name different versions; name one, or the same one.",
-      );
-   }
-   return named(fromBody) ? fromBody : fromUrl;
-};
-
 app.use(
    cors({
       origin: "http://localhost:5173",
@@ -1038,10 +332,8 @@ app.use(
    }),
 );
 
-// Set body-parser JSON limit to 1Mb (default: 100kb)
 app.use(bodyParser.json({ limit: "1mb" }));
 
-// Register Prometheus metrics endpoint
 try {
    const metricsHandler = getPrometheusMetricsHandler();
    app.get("/metrics", metricsHandler);
@@ -1050,1272 +342,32 @@ try {
    logger.warn("Failed to register Prometheus metrics endpoint", { error });
 }
 
-// Register draining guard middleware - must be after health endpoints but before other routes
+// After the health endpoints, before every other route.
 app.use(drainingGuard);
 
-// /data-apps — registered here (post-CORS, post-body-parser, post-draining) so
+// Registered after CORS, the body parser and the draining guard, so
 // cross-origin SDK consumers and authenticated requests both work.
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/data-apps`,
-   async (req, res) => {
-      try {
-         const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
-            false,
-         );
-         const pkg = await environment.getPackage(
-            req.params.packageName,
-            false,
-            { versionId: req.query.versionId },
-         );
-         const dataApps = await listPackageDataApps(
-            req.params.environmentName,
-            req.params.packageName,
-            path.join(pkg.getPackagePath(), "public"),
-            pkg.getPackageMetadata().versionId,
-         );
-         res.json(dataApps);
-      } catch (error) {
-         logger.error("Failed to list package data apps", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
+registerDataAppListRoute(app, API_PREFIX, environmentStore);
 
-app.get(`${API_PREFIX}/status`, async (req, res) => {
-   try {
-      // Packages still loading for the first time are listed only on request:
-      // a listed package has always meant one that can serve here, and only a
-      // caller that reads `Package.status` can tell the two apart.
-      const status = await environmentStore.getStatus({
-         includeLoading: req.query.includeLoading === "true",
-      });
-      // Compose theme onto the status response so the SDK can read both
-      // in one round trip on app boot. ThemeStore is the source of truth;
-      // publisher.config.json is only a boot seed (see ThemeStore). The
-      // field is always present (an empty object means "no overrides
-      // yet"), so the OpenAPI shape and the runtime payload agree.
-      // The theme here is cosmetic, so during the brief window before storage
-      // initializes report no overrides rather than 500 an endpoint the
-      // control plane polls for serving state (themeStore.get() throws until
-      // storage is ready). GET /theme, the editor's authoritative load, is
-      // answered with 503 during that window instead.
-      const theme = environmentStore.storageManager.isInitialized()
-         ? await themeStore.get()
-         : undefined;
-      res.status(200).json({ ...status, theme: theme ?? {} });
-   } catch (error) {
-      logger.error("Error getting status", { error });
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
+registerApiRoutes(app, API_PREFIX, {
+   environmentStore,
+   themeStore,
+   themeController,
+   watchModeController,
+   connectionController,
+   packageController,
+   modelController,
+   skillController,
+   reportController,
+   databaseController,
+   queryController,
+   compileController,
+   materializationController,
+   storageDestinationController,
+   versionController,
 });
 
-app.get(`${API_PREFIX}/theme`, async (_req, res) => {
-   try {
-      if (!environmentStore.storageManager.isInitialized()) {
-         // Storage is still initializing. Answer 503 (not 200 with an empty
-         // theme) so the Theme Editor's load stays in an error state and
-         // never adopts {} as the authoritative saved baseline, which would
-         // let a subsequent edit auto-save {} over the real persisted theme.
-         throw new ServiceUnavailableError(
-            "Theme storage is still initializing. Retry shortly.",
-         );
-      }
-      res.status(200).json(await themeController.getTheme());
-   } catch (error) {
-      logger.error("Error getting theme", { error });
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.put(`${API_PREFIX}/theme`, async (req, res) => {
-   try {
-      res.status(200).json(await themeController.putTheme(req.body));
-   } catch (error) {
-      logger.error("Error saving theme", { error });
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.delete(`${API_PREFIX}/theme`, async (_req, res) => {
-   try {
-      res.status(200).json(await themeController.resetTheme());
-   } catch (error) {
-      logger.error("Error resetting theme", { error });
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.get(`${API_PREFIX}/watch-mode/status`, watchModeController.getWatchStatus);
-app.post(`${API_PREFIX}/watch-mode/start`, watchModeController.startWatching);
-app.post(`${API_PREFIX}/watch-mode/stop`, watchModeController.stopWatchMode);
-
-// Live-reload Server-Sent Events stream for in-package HTML dashboards.
-//
-// This endpoint does NOT start watch mode on its own — that's an explicit
-// opt-in (`--watch-env <name>` CLI flag, or `POST /api/v0/watch-mode/start`).
-// Instead it reports whether watch mode is currently active for the requested
-// env via a `mode` event and, if so, fans out file-change events to the
-// browser. This avoids two failure modes:
-//   - Auto-starting from the request handler would let arbitrary fetches
-//     reach in to mutate global watch-mode state.
-//   - Without the `mode` event the client cannot tell "watch mode isn't
-//     running, don't expect reloads"; with it the client can choose to
-//     surface a small dev indicator (today: silent).
-//
-// Inputs are validated before any state lookup. Names that don't pass the
-// canonical `assertSafePackageName` allowlist get 400 — preventing requests
-// like `/api/v0/environments/%2e%2e/packages/x/events` from reaching the
-// EnvironmentStore at all. We reuse the shared sanitizer rather than a local
-// regex so the rules stay in one place (see path_safety.ts).
-// Cap concurrent live-reload SSE connections so the endpoint can't be used to
-// exhaust server sockets/memory with unbounded long-lived streams. Generous,
-// since legitimate use is one stream per open dashboard tab.
-const MAX_SSE_CONNECTIONS = 1000;
-let sseConnectionCount = 0;
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/events`,
-   async (req, res) => {
-      const env = req.params.environmentName;
-      const pkg = req.params.packageName;
-      try {
-         assertSafePackageName(env);
-         assertSafePackageName(pkg);
-         const environment = await environmentStore.getEnvironment(env, false);
-         // 404 if missing; 404/410 for a version it does not serve.
-         await environment.getPackage(pkg, false, {
-            versionId: req.query.versionId,
-         });
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-         return;
-      }
-
-      if (sseConnectionCount >= MAX_SSE_CONNECTIONS) {
-         res.status(503).json({
-            code: 503,
-            message: "Too many live-reload connections; try again shortly.",
-         });
-         return;
-      }
-      sseConnectionCount++;
-
-      res.set({
-         "content-type": "text/event-stream",
-         "cache-control": "no-cache",
-         connection: "keep-alive",
-         // Disable proxy/CDN buffering so events flush immediately.
-         "x-accel-buffering": "no",
-      });
-      res.flushHeaders();
-
-      const watching = watchModeController.isWatching(env);
-      res.write("event: hello\ndata: connected\n\n");
-      res.write(`event: mode\ndata: ${watching ? "enabled" : "disabled"}\n\n`);
-
-      const key = `${env}/${pkg}`;
-      const send = () => {
-         res.write("event: changed\ndata: changed\n\n");
-      };
-      watchModeController.events.on(key, send);
-      // Keep the connection alive through idle proxies (heartbeat every 25s).
-      const heartbeat = setInterval(() => {
-         res.write(": heartbeat\n\n");
-      }, 25000);
-      const cleanup = () => {
-         clearInterval(heartbeat);
-         watchModeController.events.off(key, send);
-         sseConnectionCount--;
-      };
-      // "close" covers both clean and abrupt disconnects on Node >= 20.
-      req.on("close", cleanup);
-   },
-);
-
-app.get(`${API_PREFIX}/environments`, async (req, res) => {
-   if (req.query.reload !== undefined) {
-      setCollectionReloadError(
-         res,
-         `${API_PREFIX}/environments/{environmentName}`,
-      );
-      return;
-   }
-   try {
-      res.status(200).json(await environmentStore.listEnvironments());
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.post(`${API_PREFIX}/environments`, async (req, res) => {
-   try {
-      // Redacted like every other body-bearing log line (loggerMiddleware): the
-      // body carries connection and storage-destination configs, and a
-      // destination's catalog password would otherwise land in the log verbatim.
-      logger.info("Adding environment", { body: redactSensitive(req.body) });
-      // Strict where the author is waiting, lenient where a config is being
-      // loaded — the same split `validateAdminAuthoredConnection` draws for a
-      // connection. Here rather than in `addEnvironment`, which the boot and
-      // restore paths also call: a destination this body fails to describe must
-      // not come back as a 200 whose response quietly omits it, while a bad row
-      // or config entry must still leave an environment serving.
-      //
-      // A bare validation is enough on create, unlike the update path: there is
-      // no stored list yet, so every entry has to carry its own config and none
-      // can be a reference to keep.
-      processStorageDestinationsOrThrow(req.body?.storageDestinations ?? []);
-      const environment = await environmentStore.addEnvironment(req.body);
-      res.status(200).json(await environment.serialize());
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.get(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
-   const reload = booleanParamOr400(req, res, "reload");
-   if (reload === undefined) {
-      return;
-   }
-   try {
-      const environment = await environmentStore.getEnvironment(
-         req.params.environmentName,
-         reload,
-      );
-      res.status(200).json(await environment.serialize());
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.patch(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
-   try {
-      const environment = await environmentStore.updateEnvironment(req.body);
-      res.status(200).json(await environment.serialize());
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.delete(`${API_PREFIX}/environments/:environmentName`, async (req, res) => {
-   try {
-      const environment = await environmentStore.deleteEnvironment(
-         req.params.environmentName,
-      );
-      res.status(200).json(await environment?.serialize());
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.listConnections(
-               req.params.environmentName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnection(
-               req.params.environmentName,
-               req.params.connectionName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
-   async (req, res) => {
-      try {
-         const result = await connectionController.addConnection(
-            req.params.environmentName,
-            req.params.connectionName,
-            req.body,
-         );
-         res.status(201).json(result);
-      } catch (error) {
-         logger.error("Error creating connection", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.patch(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
-   async (req, res) => {
-      try {
-         const result = await connectionController.updateConnection(
-            req.params.environmentName,
-            req.params.connectionName,
-            req.body,
-         );
-         res.status(200).json(result);
-      } catch (error) {
-         logger.error("Error updating connection", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.delete(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName`,
-   async (req, res) => {
-      try {
-         const result = await connectionController.deleteConnection(
-            req.params.environmentName,
-            req.params.connectionName,
-         );
-         res.status(200).json(result);
-      } catch (error) {
-         logger.error("Error deleting connection", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(`${API_PREFIX}/connections/test`, async (req, res) => {
-   try {
-      const connectionStatus =
-         await connectionController.testConnectionConfiguration(req.body);
-      res.status(200).json(connectionStatus);
-   } catch (error) {
-      logger.error(error);
-      const { json, status } = internalErrorToHttpError(error as Error);
-      res.status(status).json(json);
-   }
-});
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/schemas`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.listSchemas(
-               req.params.environmentName,
-               req.params.connectionName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/schemas/:schemaName/tables`,
-   async (req, res) => {
-      logger.info("req.params", { params: req.params });
-      try {
-         const results = await connectionController.listTables(
-            req.params.environmentName,
-            req.params.connectionName,
-            req.params.schemaName,
-            normalizeQueryArray(req.query.tableNames),
-         );
-         res.status(200).json(results);
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
-   async (req, res) => {
-      logger.info("req.params", { params: req.params });
-      try {
-         const results = await connectionController.getTable(
-            req.params.environmentName,
-            req.params.connectionName,
-            req.params.schemaName,
-            req.params.tablePath,
-         );
-         res.status(200).json(results);
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// ── Per-package connection data routes ─────────────────────────────
-// `duckdb` is per-package; non-`duckdb` names fall through to the
-// project's connection registry via the package's MalloyConfig wrapper.
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.listSchemas(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.listTables(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.params.schemaName,
-               normalizeQueryArray(req.query.tableNames),
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/schemas/:schemaName/tables/:tablePath`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.params.schemaName,
-               req.params.tablePath,
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlSource`,
-   // sqlSource runs a live DB introspection (a DESCRIBE against the connection),
-   // so it is admission-controlled like a query rather than left unbounded.
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.body.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// Per-package versions
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlSource`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionSqlSource(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.body.sqlStatement as string,
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// NOTE: The deprecated `GET …/connections/:connectionName/queryData`
-// and `GET …/packages/:packageName/connections/:connectionName/queryData`
-// routes were removed in the operational-guards changeset.
-// They had been marked `@deprecated` for several releases; clients
-// must now use the POST `…/sqlQuery` endpoints below, which take the
-// SQL in the request body so the row/byte caps and query-timeout
-// signals introduced in the OOM-mitigation work apply uniformly.
-// The legacy `GET /projects/…/queryData` twins under `server-old.ts`
-// remain in place for now.
-app.post(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlQuery`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionQueryData(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.body.sqlStatement as string,
-               req.body?.options as string,
-               undefined,
-               {
-                  queryMetadata: req.body?.queryMetadata,
-                  queryClass: req.body?.queryClass,
-               },
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlQuery`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionQueryData(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.body.sqlStatement as string,
-               req.body?.options as string,
-               req.params.packageName,
-               {
-                  queryMetadata: req.body?.queryMetadata,
-                  queryClass: req.body?.queryClass,
-               },
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/connections/:connectionName/sqlTemporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.body.sqlStatement as string,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/connections/:connectionName/sqlTemporaryTable`,
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await connectionController.getConnectionTemporaryTable(
-               req.params.environmentName,
-               req.params.connectionName,
-               req.body.sqlStatement as string,
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages`,
-   async (req, res) => {
-      // Listing is not package-scoped and takes no version. An empty one is
-      // what a proxy forwarding a page's query string may send: no version.
-      // `latest` is what the listing answers with anyway.
-      if (req.query.versionId && req.query.versionId !== LATEST_VERSION_ALIAS) {
-         const { json, status } = internalErrorToHttpError(
-            new BadRequestError(
-               "A package listing takes no versionId: it lists every package, each as its latest version. Read one version with GET .../packages/{packageName}?versionId=.",
-            ),
-         );
-         res.status(status).json(json);
-         return;
-      }
-      if (req.query.reload !== undefined) {
-         setCollectionReloadError(
-            res,
-            `${API_PREFIX}/environments/${req.params.environmentName}/packages/{packageName}`,
-         );
-         return;
-      }
-
-      try {
-         res.status(200).json(
-            await packageController.listPackages(req.params.environmentName),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages`,
-   async (req, res) => {
-      try {
-         const _package = await packageController.addPackage(
-            req.params.environmentName,
-            req.body,
-         );
-         // The same metadata as before for a package with no versions; a
-         // published version also carries the package's current `latest`.
-         const environment = await environmentStore.getEnvironment(
-            req.params.environmentName,
-            false,
-         );
-         res.status(200).json(
-            _package ? await environment.describePackage(_package) : undefined,
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// A package's published versions, their lifecycle and its `latest`.
-app.use(versionsRouter(versionController));
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
-   async (req, res) => {
-      const reload = booleanParamOr400(req, res, "reload");
-      if (reload === undefined) {
-         return;
-      }
-      try {
-         res.status(200).json(
-            await packageController.getPackage(
-               req.params.environmentName,
-               req.params.packageName,
-               reload,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.patch(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await packageController.updatePackage(
-               req.params.environmentName,
-               req.params.packageName,
-               req.body,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.delete(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await packageController.deletePackage(
-               req.params.environmentName,
-               req.params.packageName,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models`,
-   async (req, res) => {
-      const includeHiddenFilesAndSources = booleanParamOr400(
-         req,
-         res,
-         "includeHiddenFilesAndSources",
-      );
-      if (includeHiddenFilesAndSources === undefined) return;
-
-      try {
-         res.status(200).json(
-            await modelController.listModels(
-               req.params.environmentName,
-               req.params.packageName,
-               {
-                  includeHiddenFilesAndSources,
-                  versionId: req.query.versionId,
-               },
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
-   async (req, res) => {
-      const includeHiddenFilesAndSources = booleanParamOr400(
-         req,
-         res,
-         "includeHiddenFilesAndSources",
-      );
-      if (includeHiddenFilesAndSources === undefined) return;
-
-      try {
-         // Express stores wildcard matches in params['0']
-         const modelPath = (req.params as Record<string, string>)["0"];
-         res.status(200).json(
-            await modelController.getModel(
-               req.params.environmentName,
-               req.params.packageName,
-               modelPath,
-               {
-                  includeHiddenFilesAndSources,
-                  versionId: req.query.versionId,
-               },
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// The skill name can carry a slash (`<skill>/<stem>` for a reference file), so
-// the parameter is a wildcard rather than :skillName. Express would otherwise
-// route `revenue-rules/margin` to nothing.
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await skillController.listSkills(
-               req.params.environmentName,
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/skills/*`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await skillController.getSkill(
-               req.params.environmentName,
-               req.params.packageName,
-               // Express has already decoded the wildcard; decoding again throws on a bare %.
-               (req.params as unknown as Record<string, string>)[0] ?? "",
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await skillController.listAgents(
-               req.params.environmentName,
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName`,
-   async (req, res) => {
-      try {
-         const skills = req.query.skills ?? "full";
-         if (skills !== "full" && skills !== "summary") {
-            res.status(400).json({
-               message: `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
-            });
-            return;
-         }
-         res.status(200).json(
-            await skillController.getAgent(
-               req.params.environmentName,
-               req.params.packageName,
-               req.params.agentName,
-               skills,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/agents/:agentName/skills/*`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await skillController.getAgentSkillFile(
-               req.params.environmentName,
-               req.params.packageName,
-               req.params.agentName,
-               // Express has already decoded the wildcard; decoding again throws on a bare %.
-               (req.params as unknown as Record<string, string>)[0] ?? "",
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.put(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?`,
-   // A dashboard save compiles the submitted text and then writes it under the
-   // package lock, across a full package reload and the rollback reload on
-   // failure -- strictly more of the work this cap exists to bound than one
-   // /compile does. Ungated it also convoys: the save holds the package mutex
-   // while holding no slot, so slot-holding compiles on that package pile up
-   // behind it.
-   queryConcurrency(),
-   reportWriteRoute(reportController),
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports`,
-   timeReportRead("list"),
-   jsonRoute((req) =>
-      reportController.listReports(
-         req.params.environmentName,
-         req.params.packageName,
-         req.query.versionId,
-      ),
-   ),
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/reports/*`,
-   timeReportRead("get"),
-   jsonRoute((req) =>
-      reportController.getReport(
-         req.params.environmentName,
-         req.params.packageName,
-         wildcardParam(req),
-         req.query.versionId,
-      ),
-   ),
-);
-
-registerDeprecatedRoutes(app, API_PREFIX, environmentStore);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/query`,
-   queryConcurrency(),
-   async (req, res) => {
-      const includeHiddenFilesAndSources = booleanParamOr400(
-         req,
-         res,
-         "includeHiddenFilesAndSources",
-      );
-      if (includeHiddenFilesAndSources === undefined) return;
-
-      // A client that goes away (a superseded dashboard tile, a closed tab)
-      // cancels its query: the concurrency slot is released on `close`, so the
-      // query must not keep running past it.
-      const disconnected = new AbortController();
-      res.on("close", () => {
-         if (!res.writableFinished)
-            disconnected.abort(new Error("client disconnected"));
-      });
-
-      try {
-         // Express stores wildcard matches in params['0']
-         const modelPath = (req.params as Record<string, string>)["0"];
-         const result = await queryController.getQuery(
-            req.params.environmentName,
-            req.params.packageName,
-            modelPath,
-            req.body.sourceName as string,
-            req.body.queryName as string,
-            req.body.query as string,
-            req.body.compactJson === true,
-            (req.body.filterParams ?? req.body.sourceFilters) as
-               | Record<string, string | string[]>
-               | undefined,
-            req.body.bypassFilters === true ? true : undefined,
-            req.body.givens as Record<string, GivenValue> | undefined,
-            {
-               queryMetadata: req.body?.queryMetadata,
-               queryClass: req.body?.queryClass,
-               versionId: queryVersionIdOf(req),
-            },
-            // Disables the author's `#(authorize)` gates. From a HEADER, never the
-            // body, and nothing in Publisher bounds who may send it — the
-            // deployment must strip it at its edge. See
-            // authorize_bypass_header.ts and docs/authorize-bypass-deployment.md.
-            readBypassAuthorize(req),
-            includeHiddenFilesAndSources,
-            disconnected.signal,
-         );
-         setFilterDeprecationHeaders(res, {
-            filterParams: req.body.filterParams ?? req.body.sourceFilters,
-            bypassFilters: req.body.bypassFilters === true ? true : undefined,
-         });
-         res.status(200).json(result);
-      } catch (error) {
-         // Nobody is waiting for the answer: not an error worth a log line.
-         if (disconnected.signal.aborted) return;
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/databases`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await databaseController.listDatabases(
-               req.params.environmentName,
-               req.params.packageName,
-               req.query.versionId,
-            ),
-         );
-      } catch (error) {
-         logger.error(error);
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/models/*?/compile`,
-   // Compile runs real Malloy compilation (and resolves source schemas against
-   // the connection), so it is admission-controlled like a query rather than
-   // left to pin the shared event loop unbounded.
-   queryConcurrency(),
-   async (req, res) => {
-      try {
-         // Express stores wildcard matches in params['0'], so nested model
-         // paths (models in subdirectories) compile just like they query.
-         const result = await compileController.compile(
-            req.params.environmentName,
-            req.params.packageName,
-            (req.params as Record<string, string>)["0"],
-            req.body.source,
-            req.body.includeSql === true,
-            req.body.givens as Record<string, GivenValue> | undefined,
-            // Scope defaults to "append" (the historical behavior); an
-            // invalid value is rejected by compileSource with a 400 naming
-            // the valid set, never silently consumed.
-            req.body.scope ?? "append",
-            req.query.versionId,
-         );
-         res.status(200).json(result);
-      } catch (error) {
-         logger.error("Compilation error", { error });
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// ==================== MATERIALIZATION ROUTES ====================
-// Every one of them is package-scoped, because a materialization is a run of
-// one package's persist sources and cannot exist without a package.
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
-   async (req, res) => {
-      try {
-         const build = await materializationController.createMaterialization(
-            req.params.environmentName,
-            req.params.packageName,
-            req.body || {},
-         );
-         res.status(201).json(build);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations`,
-   async (req, res) => {
-      try {
-         const limit = parseNonNegativeIntParam(req.query.limit);
-         const offset = parseNonNegativeIntParam(req.query.offset);
-         const builds = await materializationController.listMaterializations(
-            req.params.environmentName,
-            req.params.packageName,
-            { limit, offset, versionId: req.query.versionId },
-         );
-         res.status(200).json(builds);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
-   async (req, res) => {
-      try {
-         const build = await materializationController.getMaterialization(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.materializationId,
-            req.query.versionId,
-         );
-         res.status(200).json(build);
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
-   async (req, res) => {
-      try {
-         const action = req.query.action;
-         if (action === "stop") {
-            const build = await materializationController.stopMaterialization(
-               req.params.environmentName,
-               req.params.packageName,
-               req.params.materializationId,
-               req.query.versionId,
-            );
-            res.status(200).json(build);
-         } else {
-            throw new BadRequestError(
-               `Unsupported action '${String(action ?? "")}'. Expected 'stop'.`,
-            );
-         }
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.delete(
-   `${API_PREFIX}/environments/:environmentName/packages/:packageName/materializations/:materializationId`,
-   async (req, res) => {
-      const dropTables = booleanParamOr400(req, res, "dropTables");
-      if (dropTables === undefined) {
-         return;
-      }
-      try {
-         await materializationController.deleteMaterialization(
-            req.params.environmentName,
-            req.params.packageName,
-            req.params.materializationId,
-            { dropTables, versionId: req.query.versionId },
-         );
-         res.status(204).send();
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// ── Storage destination tables ──────────────────────────────────────
-// Table lifecycle inside an environment's storage destinations, for an
-// orchestrator that assigns its own physical table names. Destinations are never
-// reachable through the connection routes above, so these are the only way to
-// drop, enumerate, or reclaim the storage behind a table in one.
-
-app.get(
-   `${API_PREFIX}/environments/:environmentName/storageDestinations/:destinationName/schemas/:schemaName/tables`,
-   async (req, res) => {
-      try {
-         res.status(200).json(
-            await storageDestinationController.listTables(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.params.schemaName,
-            ),
-         );
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.delete(
-   `${API_PREFIX}/environments/:environmentName/storageDestinations/:destinationName/schemas/:schemaName/tables/:tableName`,
-   async (req, res) => {
-      try {
-         await storageDestinationController.dropTable(
-            req.params.environmentName,
-            req.params.destinationName,
-            req.params.schemaName,
-            req.params.tableName,
-         );
-         res.status(204).send();
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-app.post(
-   `${API_PREFIX}/environments/:environmentName/storageDestinations/:destinationName/fileCleanups`,
-   async (req, res) => {
-      try {
-         res.status(201).json(
-            await storageDestinationController.createFileCleanup(
-               req.params.environmentName,
-               req.params.destinationName,
-               req.body ?? {},
-            ),
-         );
-      } catch (error) {
-         const { json, status } = internalErrorToHttpError(error as Error);
-         res.status(status).json(json);
-      }
-   },
-);
-
-// Register legacy `/projects/...` routes for backwards compatibility with
-// clients that haven't migrated to `/environments/...` yet. Must be added
-// before the SPA catch-all below.
+// Legacy `/projects/...` aliases; must precede the SPA catch-all.
 registerLegacyRoutes(app, {
    environmentStore,
    connectionController,
@@ -2327,133 +379,14 @@ registerLegacyRoutes(app, {
    materializationController,
 });
 
-// Modify the catch-all route to only serve index.html in production
 if (!isDevelopment) {
-   const SPA_INDEX = path.resolve(ROOT, "index.html");
-   const escapeHtml = (value: string) =>
-      value.replace(
-         /[<>&]/g,
-         (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c,
-      );
-   // Deliberately the in-memory lists rather than `getEnvironment`, which
-   // resolves from storage (see `LoadedRoutes`). The cost: an environment or
-   // package not loaded yet (a cold start, a lazily loaded environment) gets
-   // the 404 page, which names the canonical URL that does load it.
-   // A versioned package is found by name through its loaded `latest`.
-   const loadedPackage = (environmentName: string, packageName: string) =>
-      environmentStore
-         .getLoadedEnvironments()
-         .find(
-            (environment) =>
-               environment.getEnvironmentName() === environmentName,
-         )
-         ?.peekPackage(packageName);
-   const loadedRoutes: LoadedRoutes = {
-      hasEnvironment: (environmentName) =>
-         environmentStore
-            .getLoadedEnvironments()
-            .some(
-               (environment) =>
-                  environment.getEnvironmentName() === environmentName,
-            ),
-      hasPackage: (environmentName, packageName) =>
-         loadedPackage(environmentName, packageName) !== undefined,
-      isReportRoute: (environmentName, packageName, routePath) => {
-         const pkg = loadedPackage(environmentName, packageName);
-         return (
-            pkg !== undefined &&
-            (pkg.isServedReport(`${routePath}.malloy`) ||
-               isLegacyReportAlias(pkg, routePath))
-         );
-      },
-   };
-   app.get("*", (req, res) => {
-      // Not everything unmatched is an app route. A request that names a file
-      // gets a real answer rather than the app shell with a 200, which reads as
-      // success and then leaves the app blaming the file for a wrong path. See
-      // classifySpaFallback for why the decision is by extension, and
-      // resolveSpaFallback for how its guesses are settled.
-      const fallback = resolveSpaFallback(req.path, API_PREFIX, loadedRoutes);
-      if (fallback.kind === "redirect") {
-         // 302, not a permanent redirect: this maps a mistaken URL onto the
-         // right one, and a path the app may later claim as a route of its own
-         // must not be cached against it in every browser that guessed once.
-         res.redirect(302, withRequestQuery(req, fallback.location));
-         return;
-      }
-      if (fallback.kind === "apiNotFound") {
-         // A caller that asked the API for something gets JSON when it is not
-         // there, not the HTML app shell it cannot parse.
-         res.status(404).json({
-            code: 404,
-            // No method in the message: this handler is registered on app.get, so
-            // it could only ever say GET. Other verbs already 404 through
-            // Express's own default, which is why the 200-plus-shell defect was
-            // GET-only in the first place.
-            message: `Unknown API endpoint: ${fallback.path}. See /api-doc.yaml for the endpoints this server serves.`,
-         });
-         return;
-      }
-      if (fallback.kind === "assetNotFound") {
-         res.status(404)
-            .type("text/html")
-            .send(
-               `<!doctype html><meta charset="utf-8">
-<title>Not found</title>
-<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}code{background:#f4f4f5;padding:1px 4px;border-radius:3px}</style>
-<h1>Not found</h1>
-<p>Nothing is served at <code>${escapeHtml(fallback.path)}</code>.</p>
-<p>A file inside a package is served from that package's <code>public/</code> directory at
-<code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code>, where <code>&lt;file&gt;</code> is relative to
-<code>public/</code> and does not include it. Models and notebooks open in the web UI at
-<code>/&lt;env&gt;/&lt;pkg&gt;/&lt;file&gt;.malloy</code> and <code>.malloynb</code>.</p>
-<p><a href="/">Publisher home</a> lists the environments and packages this server has.</p>`,
-            );
-         return;
-      }
-      recordConsoleAliasUse(req.path, loadedPackage);
-      res.sendFile(SPA_INDEX, (err) => {
-         if (!err) return;
-         // The SPA bundle isn't built. This happens when running directly
-         // from source (`bun run src/server.ts`) without first running
-         // `bun run build:app`. Return a friendly placeholder rather than
-         // a 500, and surface package URLs the user might be looking for.
-         if (res.headersSent) return;
-         res.status(404)
-            .type("text/html")
-            .send(
-               `<!doctype html><meta charset="utf-8">
-<title>Publisher</title>
-<style>body{font:14px/1.4 -apple-system,system-ui,sans-serif;margin:40px;max-width:720px;color:#222}</style>
-<h1>Publisher is running, but the SPA bundle isn't built.</h1>
-<p>You requested <code>${req.path.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c] ?? c)}</code>.
-The Publisher API is available at <a href="/api/v0/environments">/api/v0/environments</a>.</p>
-<p>To get the Publisher web UI, run <code>cd packages/app &amp;&amp; bunx vite build</code>
-or start the server with <code>NODE_ENV=development</code> after launching Vite on <code>:5173</code>.</p>
-<p>For in-package HTML data apps, browse to <code>/environments/&lt;env&gt;/packages/&lt;pkg&gt;/&lt;file&gt;</code> directly.</p>`,
-            );
-      });
-   });
+   registerSpaFallback(app, API_PREFIX, ROOT, environmentStore);
 }
 
-app.use(
-   (
-      err: Error,
-      _req: express.Request,
-      res: express.Response,
-      _next: express.NextFunction,
-   ) => {
-      logger.error("Unhandled error:", err);
-      const { json, status } = internalErrorToHttpError(err);
-      res.status(status).json(json);
-   },
-);
+app.use(unhandledErrorMiddleware);
 
-// Eagerly construct the package-load worker pool so we fail fast at
-// boot if PACKAGE_LOAD_WORKERS is misconfigured (e.g. set to 0, the
-// removed in-process fallback). Surfacing the bad config here is much
-// friendlier than surfacing it on the first package load, which could
-// be hours after start.
+// Constructed eagerly so a misconfigured PACKAGE_LOAD_WORKERS (e.g. 0) fails
+// the boot rather than the first package load, possibly hours later.
 {
    const { getPackageLoadPool } = await import(
       "./package_load/package_load_pool"
@@ -2467,10 +400,8 @@ mainServer.timeout = 600000;
 mainServer.keepAliveTimeout = 600000;
 mainServer.headersTimeout = 600000;
 
-// Resolved from the REST listen callback. The .mcp.json write below waits on
-// it, so a process whose REST port fails (the listener that dies is the one
-// bound SECOND to a busy port pair) can never leave a fresh .mcp.json behind
-// pointing at a server that is about to exit.
+// The .mcp.json write waits on this, so a process whose REST port fails to
+// bind never leaves a .mcp.json pointing at a server about to exit.
 let resolveRestBound: () => void = () => {};
 const restBound = new Promise<void>((resolve) => {
    resolveRestBound = resolve;
@@ -2487,21 +418,15 @@ mainServer.listen(PUBLISHER_PORT, PUBLISHER_HOST, async () => {
          "Running in development mode - proxying to React dev server at http://localhost:5173",
       );
    }
-   // If `--watch-env <name>` (or PUBLISHER_WATCH=name1,name2) was passed,
-   // wait for env initialization to settle, then start watch mode for each
-   // named env. Packages in those envs are already mounted in-place via the
-   // EnvironmentStore in-place path (see `loadEnvironmentIntoDisk`), so the
-   // chokidar watcher will see edits to your source repo and fan them out
-   // to any connected SSE clients.
+   // `--watch-env` / PUBLISHER_WATCH: those envs' packages are mounted in
+   // place (see `loadEnvironmentIntoDisk`), so the watcher sees source edits.
    const watchEnvList = (process.env.PUBLISHER_WATCH || "")
       .split(",")
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
    if (watchEnvList.length > 0) {
-      // The watcher tracks exactly one env at a time (`WatchModeController`
-      // holds a single chokidar instance). Every env in PUBLISHER_WATCH is
-      // still mounted in place (live source) by the EnvironmentStore, but only
-      // the first is watched, so the others do not auto-reload.
+      // WatchModeController holds one watcher, so only the first env
+      // auto-reloads; the rest are still mounted in place.
       if (watchEnvList.length > 1) {
          logger.warn(
             `Multiple watch environments requested (${watchEnvList.join(
@@ -2530,19 +455,12 @@ const mcpServer = mcpApp.listen(
    MCP_PORT,
    MCP_HOST,
    function (this: import("net").Server) {
-      // Read back rather than reusing MCP_PORT, which is only what was requested.
-      // `--mcp_port 0` asks for any free port, and under bun a non-numeric value
-      // binds an ephemeral one too, so the requested value can be 0 or NaN while
-      // a real port is listening. The listening line uses it as well, which is
-      // why it no longer reads `http://127.0.0.1:0`.
+      // Read back rather than reusing MCP_PORT: `--mcp_port 0` (or, under
+      // bun, a non-numeric value) binds an ephemeral port.
       const boundPort = resolveBoundPort(this.address(), MCP_PORT);
-      // The BIND address, bracketed when it is an IPv6 literal so the URL
-      // parses. Deliberately not resolveClientHost: create-malloy-package's
-      // README and AGENTS template both tell readers these two listening lines
-      // are "the addresses it really bound", and use them to catch a mistyped
-      // --hostt that silently falls back to 0.0.0.0. Mapping the wildcard to
-      // loopback here would confirm the mistake instead of revealing it. The
-      // dialable form belongs in .mcp.json and in the advice, not here.
+      // The bind address, deliberately not resolveClientHost: the docs tell
+      // readers this line is the address really bound, which is how they
+      // catch a mistyped host falling back to 0.0.0.0.
       const bound = this.address();
       const boundHost =
          typeof bound === "object" && bound ? bound.address : MCP_HOST;
@@ -2552,25 +470,17 @@ const mcpServer = mcpApp.listen(
       // Checked before process.cwd(), which can throw: someone who turned the
       // feature off should not get a warning about it.
       if (MCP_CONFIG_ENABLED) {
-         // Deferred until the REST listener has ALSO bound. Both listens are
-         // issued back-to-back, so this callback can run while the REST port is
-         // about to fail EADDRINUSE; writing here used to leave a .mcp.json
-         // pointing at a process that died moments later, and the next boot on
-         // fresh ports skips the rewrite (create-never-edit), so the stale file
-         // silently broke the NEXT agent session.
+         // Deferred until REST has also bound: the file is never rewritten
+         // once created, so one pointing at a process that then died on
+         // EADDRINUSE would break the next agent session.
          const boundAddress = this.address();
          void restBound.then(() => {
-            // ensureMcpConfig cannot throw, but its arguments can: process.cwd()
-            // raises ENOENT once the working directory has been removed. A throw
-            // here would be an unhandled rejection on a server that has already
-            // bound both ports. Everything the call needs is built inside the
-            // try for that reason, including the endpoint: it is the newest and
-            // least-exercised code in this block.
+            // ensureMcpConfig cannot throw, but its arguments can
+            // (process.cwd() raises ENOENT once the directory is removed), so
+            // they are built inside the try.
             try {
-               // The host an agent should dial, which is NOT `localhost`: that name
-               // resolves to both loopback families while the server binds only one,
-               // so another local process can hold the same port on the other family
-               // and receive the agent's traffic instead.
+               // Not `localhost`: it resolves to both loopback families while
+               // the server binds one, so another process could get the traffic.
                const endpoint = mcpEndpoint(
                   resolveClientHost(boundAddress, MCP_HOST),
                   boundPort,
@@ -2594,16 +504,9 @@ const mcpServer = mcpApp.listen(
    },
 );
 
-// One actionable line and a clean exit for a listener that cannot bind,
-// instead of the raw uncaught-'error' crash dump (a ~40-line stack trace with
-// os.loadavg and memoryUsage for what is usually just a busy port). Closing
-// the sibling listener matters beyond tidiness: the two listens race, so the
-// OTHER port may already be bound and half a server must not linger.
-// (Line comments, not a JSDoc, and no star-slash sequence anywhere in them:
-// authorize_bypass_header.spec.ts strips block comments from this file with a
-// regex that pairs a route string's slash-star with the next closer, so a
-// block comment after the route table swallows the getQuery call it asserts
-// on.)
+// One actionable line and a clean exit instead of an uncaught-'error' crash
+// dump. The sibling is closed because the listens race: the other port may
+// already be bound, and half a server must not linger.
 function fatalListenError(
    label: string,
    requestedPort: number,
@@ -2626,8 +529,7 @@ function fatalListenError(
       process.exit(1);
    };
 }
-// Attached after both servers exist (an 'error' event is emitted on a later
-// tick, never synchronously out of listen(), so nothing is missed).
+// Safe to attach now: 'error' is emitted on a later tick, never from listen().
 mainServer.on(
    "error",
    fatalListenError("REST", PUBLISHER_PORT, "--port", mcpServer),

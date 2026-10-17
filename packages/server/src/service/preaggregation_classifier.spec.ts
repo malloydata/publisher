@@ -23,7 +23,7 @@ import {
 import {
    duckdbTestConnections,
    loadTestModel,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 /**
  * Measures compiled once and looked up by name. A join is present so a

@@ -153,8 +153,14 @@ export function DrillDialog({
                      {tileLabel} ·{" "}
                   </Box>
                )}
-               A click on a cell sets a filter to its value, on this report or
-               on the one it opens.
+               {/* The renderer reports a click on a table cell and on nothing
+                   a chart draws, and the builder renders its tiles with no
+                   click handling at all, because a press there selects the
+                   tile. Both are said here, or the setting looks broken. */}
+               A click on a table cell sets a filter to its value, on this
+               report or on the one it opens. Bars, lines and points on a chart
+               do not respond to a click. Clicks work in the report, not while
+               you edit it.
             </>
          }
          actions={

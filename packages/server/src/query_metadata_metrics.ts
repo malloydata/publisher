@@ -4,28 +4,14 @@
 /**
  * Telemetry for per-query metadata (see `service/query_metadata.ts`).
  *
- * The resolve path never throws — it clamps a bag that would violate Malloy's
- * contract — so a drop is invisible without a metric: an operator would see
- * correct-looking queries whose warehouse-side attribution is quietly missing a
- * property. The counters make both halves observable: what was attached, and
- * what did not fit.
+ * Resolution never throws; it clamps what would violate Malloy's contract, so
+ * a dropped property is invisible without these counters.
  *
- * Instruments are created lazily for the same reason as {@link ./query_cap_metrics}:
- * one created before `setGlobalMeterProvider` binds to a NoOp meter
- * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
+ * Lazy: an instrument created before `setGlobalMeterProvider` binds to a NoOp
+ * meter (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { type Counter } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
-
-const resetHooks: (() => void)[] = [];
-
-function lazyCounter(name: string, description: string): () => Counter {
-   let instrument: Counter | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createCounter(name, { description }));
-}
+import { lazyCounter, resetInstrumentsForTesting } from "./telemetry";
 
 const appliedCounter = lazyCounter(
    "publisher_query_metadata_applied_total",
@@ -48,5 +34,5 @@ export function recordQueryMetadataDropped(reason: string): void {
 
 /** Drop memoized instruments so a test can install a fresh MeterProvider. */
 export function resetQueryMetadataMetricsForTest(): void {
-   for (const reset of resetHooks) reset();
+   resetInstrumentsForTesting();
 }

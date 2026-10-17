@@ -10,7 +10,25 @@ import {
    isChartPick,
    mentionsChartTag,
    parseChartLine,
+   seriesColorFrom,
+   seriesColorLine,
+   seriesColorOf,
 } from "./chartLine";
+
+describe("seriesColorFrom", () => {
+   // A host theme's series, as the swatches offer them: only what a colour
+   // line can hold and read back.
+   it("writes a theme colour as #rrggbb, widening #abc and refusing what it cannot write", () => {
+      expect(seriesColorFrom("#1F6AA8")).toBe("#1f6aa8");
+      expect(seriesColorFrom("#AbC")).toBe("#aabbcc");
+      expect(seriesColorFrom("rebeccapurple")).toBeUndefined();
+      expect(seriesColorFrom("rgb(1, 2, 3)")).toBeUndefined();
+      for (const color of ["#1F6AA8", "#AbC"])
+         expect(
+            seriesColorOf(seriesColorLine(seriesColorFrom(color) as string)),
+         ).toBe(seriesColorFrom(color));
+   });
+});
 
 describe("parseChartLine", () => {
    it("recognizes a bare pick, negations, and the writer's own lines", () => {
@@ -64,16 +82,25 @@ describe("mentionsChartTag", () => {
 describe("chartLineText", () => {
    it("negates every other chart tag and viz, in a fixed order", () => {
       expect(chartLineText("line_chart")).toBe(
-         "# -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz line_chart",
+         "# -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz line_chart",
       );
       expect(chartLineText("bar_chart")).toBe(
-         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -viz bar_chart",
+         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz bar_chart",
+      );
+   });
+
+   it("writes a combo chart, bars and a line on two axes, like any other pick", () => {
+      expect(chartLineText("combo_chart")).toBe(
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz combo_chart",
+      );
+      expect(chartLineText("combo_chart", ["bar_chart"])).toBe(
+         "# -bar_chart -viz combo_chart",
       );
    });
 
    it("writes -viz on the no-chart line, which keeps a viz= view from rendering a chart", () => {
       expect(chartLineText("none")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz",
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz",
       );
    });
 
@@ -81,12 +108,19 @@ describe("chartLineText", () => {
       expect(chartLineText("line_chart", ["bar_chart"])).toBe(
          "# -bar_chart -viz line_chart",
       );
-      expect(chartLineText("none", ["bar_chart"])).toBe("# -bar_chart -viz");
       expect(chartLineText("bar_chart", ["bar_chart"])).toBe(
          "# -viz bar_chart",
       );
       expect(chartLineText("line_chart", [])).toBe("# -viz line_chart");
-      expect(chartLineText("none", [])).toBe("# -viz");
+   });
+
+   // A view of totals draws as big numbers with no tag (the KPI promotion
+   // adds one), so Table takes `big_value` off whatever the view carries.
+   it("always takes big_value off for Table", () => {
+      expect(chartLineText("none", ["bar_chart"])).toBe(
+         "# -bar_chart -big_value -viz",
+      );
+      expect(chartLineText("none", [])).toBe("# -big_value -viz");
    });
 
    it("reads a narrowed line back as the same state", () => {
@@ -112,9 +146,11 @@ describe("chartLineText through the tag parser", () => {
       "scatter_chart",
       "shape_map",
       "segment_map",
+      "combo_chart",
    ] as const;
    const BASES = [
       "# bar_chart",
+      "# combo_chart",
       "# line_chart",
       "# viz=line",
       "# big_value",
@@ -167,6 +203,7 @@ describe("chartStateOf", () => {
       expect(chartStateOf(["# line_chart", "# -viz"])).toBe("custom");
       expect(chartStateOf(["# sparkline"])).toBe("custom");
       expect(chartStateOf(["# bar_chart"])).toBe("bar_chart");
+      expect(chartStateOf(["# combo_chart"])).toBe("combo_chart");
    });
 });
 

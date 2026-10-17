@@ -6,7 +6,7 @@
  * `docs/authorize.md`'s former "Known hole"): proves the guard runs on the
  * REAL request path — through the express route, `internalErrorToHttpError`,
  * and `Model.getQueryResults` — not just against the in-process `Model`
- * helpers `filter_binding_guard_integration.spec.ts` exercises.
+ * helpers `tests/component/filter_binding_guard.component.spec.ts` exercises.
  *
  * `gated_parent` is gated `org_id in $GROUPS`; `org_id`/`owner` are
  * deliberately different per row (see the fixture model) so a misbound query

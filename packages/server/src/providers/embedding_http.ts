@@ -1,27 +1,40 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { recordLlmCall, recordLlmRetry } from "../llm_metrics";
 import {
-   recordLlmCall,
-   recordLlmRetry,
-   type LlmFailureReason,
-} from "../llm_metrics";
-import {
-   EMBEDDING_BATCH_TIMEOUT_MS,
-   prepareEmbeddingInput,
-} from "../service/embedding_provider";
-import {
-   HttpRequestError,
    malformedReply,
    type RetryPolicy,
    withRetry,
 } from "../service/http_retry";
+import { httpFailureReason } from "./http";
 import type {
    EmbeddingModel,
    EmbedOptions,
    EmbeddingSettings,
    ProviderName,
 } from "./types";
+
+/** Timeout for bulk (index-build) embedding calls. */
+export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
+
+/** Per-input character cap (matches the hosted indexing pipeline). */
+export const MAX_EMBED_INPUT_CHARS = 1_024;
+
+/**
+ * Collapse whitespace (newlines confuse some embedding models) and cap the
+ * length, as the hosted indexing pipeline does. Never returns an empty string:
+ * providers 400 on an empty item, failing a whole package's batch. The index
+ * hashes this function's output, so the hash covers exactly the text sent.
+ */
+export function prepareEmbeddingInput(text: string): string {
+   const cleaned = text.replace(/\s+/g, " ").trim();
+   const capped =
+      cleaned.length > MAX_EMBED_INPUT_CHARS
+         ? cleaned.slice(0, MAX_EMBED_INPUT_CHARS)
+         : cleaned;
+   return capped || "-";
+}
 
 /**
  * Sends one chunk of already-prepared texts as one HTTP request and returns
@@ -32,6 +45,15 @@ export type EmbedChunkFn = (
    signal: AbortSignal,
    timeoutMs: number,
 ) => Promise<number[][]>;
+
+/** Whether `v` is a non-empty vector of finite numbers. */
+export function isVector(v: unknown): v is number[] {
+   return (
+      Array.isArray(v) &&
+      v.length > 0 &&
+      v.every((n) => typeof n === "number" && Number.isFinite(n))
+   );
+}
 
 /** Check a vector list is one finite, non-empty numeric vector per input. */
 export function checkVectors(
@@ -47,11 +69,7 @@ export function checkVectors(
       );
    }
    vectors.forEach((v, i) => {
-      if (
-         !Array.isArray(v) ||
-         v.length === 0 ||
-         !v.every((n) => typeof n === "number" && Number.isFinite(n))
-      ) {
+      if (!isVector(v)) {
          throw malformedReply("Embedding response", where, `bad item ${i}`);
       }
    });
@@ -59,9 +77,9 @@ export function checkVectors(
 }
 
 /**
- * The shared half of the Google and Vertex embedding models: input
- * preparation, splitting into requests of `maxBatch`, retry and metrics. The
- * vendor supplies only {@link EmbedChunkFn}.
+ * The shared half of every embedding model: input preparation, splitting into
+ * requests of `maxBatch`, retry and metrics. The vendor supplies only
+ * {@link EmbedChunkFn}.
  */
 export class BatchEmbeddingModel implements EmbeddingModel {
    constructor(
@@ -128,21 +146,9 @@ export class BatchEmbeddingModel implements EmbeddingModel {
             this.provider,
             "embedding",
             Date.now() - started,
-            embeddingFailureReason(error),
+            httpFailureReason(error),
          );
          throw error;
       }
    }
-}
-
-function embeddingFailureReason(error: unknown): LlmFailureReason {
-   if (error instanceof HttpRequestError) {
-      if (error.status === undefined)
-         return error.retryable ? "timeout" : "other";
-      if (error.status === 401 || error.status === 403) return "auth";
-      if (error.status === 429) return "rate_limited";
-      if (error.status >= 500) return "server_error";
-      return "client_error";
-   }
-   return "invalid_response";
 }

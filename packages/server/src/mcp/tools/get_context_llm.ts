@@ -17,10 +17,8 @@ import { DEFAULT_RETRY, type RetryPolicy } from "../../service/http_retry";
 
 /**
  * How a chat call made while a person waits retries: once, after at most a
- * second. The index sync keeps the model's own ladder (5 attempts, waits of up
- * to 30 seconds), which is right for work nobody is waiting on and wrong here,
- * where one 429 would hold a get_context request for minutes. A `Retry-After`
- * longer than this fails the call at once. The question can be asked again.
+ * second, so one 429 cannot hold a get_context request for minutes (the index
+ * sync keeps the model's longer ladder). A longer `Retry-After` fails at once.
  */
 export const REQUEST_RETRY: RetryPolicy = {
    ...DEFAULT_RETRY,
@@ -43,13 +41,10 @@ export class StageError extends Error {
 }
 
 /**
- * The array a model replied with. A root array is what the prompts ask for,
- * but a vendor's JSON mode only returns objects, so these shapes are accepted
- * as well, each seen from OpenAI's `json_object` mode:
- * - an object with exactly one array-valued key (`{"ratings": [...]}`);
- * - a single element returned bare (`{"index": 3, "score": "HIGH"}`), which
- *   is what a model does when it has one thing to say;
- * - an empty object, which is what it does when it has nothing to say.
+ * The array a model replied with. The prompts ask for a root array, but a
+ * vendor's JSON mode (e.g. OpenAI `json_object`) only returns objects, so also
+ * accept: one array-valued key (`{"ratings": [...]}`), a single bare element
+ * (`{"index": 3, ...}`), or `{}` for nothing.
  */
 export function replyArray(value: unknown): unknown[] {
    if (Array.isArray(value)) return value;
@@ -113,11 +108,9 @@ export class SyncBudgetReached extends Error {
 
 /**
  * The chat requests one index sync may still send, shared by its LLM steps
- * (keyphrases, then source summaries). It counts HTTP requests, the unit
- * `maxCallsPerSync` is documented in and the one `maxCallsPerRequest` counts:
- * a retry and the re-ask that repairs a JSON reply are each one, so a job
- * that needs a repair spends two. A model that reports no requests of its own
- * (a test double) is counted as one request per job.
+ * (keyphrases, then source summaries). Counts HTTP requests, so retries and
+ * JSON-repair re-asks each count. A model that reports no requests (a test
+ * double) counts one per job.
  */
 export class SyncRequestBudget {
    private used = 0;
@@ -179,13 +172,11 @@ export class LlmCallLimitError extends Error {
 }
 
 /**
- * Counts the chat requests and tokens of ONE get_context request, across every
- * stage, and refuses a request past `limit`. A "request" is one HTTP call to
- * the vendor: the provider layer reports each one before it is sent, so a
- * retry after a 429 and the re-ask that repairs a JSON reply count, and a
- * `completeJson` that retries five times is five requests, not one. The check
- * runs before the request, so the request that would pass the limit is never
- * sent. The chat model this wraps also gets {@link REQUEST_RETRY}.
+ * Counts the chat requests and tokens of one get_context request across every
+ * stage, and refuses a request past `limit`. A request is one HTTP call
+ * (retries and JSON repairs included), checked before it is sent so the one
+ * that would pass the limit never goes out. Wrapped models get
+ * {@link REQUEST_RETRY}.
  */
 export class LlmMeter {
    private used: LlmUsage = { calls: 0, inputTokens: 0, outputTokens: 0 };

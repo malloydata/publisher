@@ -6,7 +6,7 @@ import express from "express";
 import request from "supertest";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { Version } from "../storage/DatabaseInterface";
-import { VersionController, versionsRouter } from "./version.controller";
+import { registerVersionRoutes, VersionController } from "./version.controller";
 
 // A frozen config (`frozenConfig: true` in publisher.config.json) refuses
 // every write to a package's version lifecycle with 403, before the version
@@ -71,7 +71,11 @@ function serverWith(frozen: boolean) {
    } as unknown as EnvironmentStore;
    const app = express();
    app.use(express.json());
-   app.use(versionsRouter(new VersionController(environmentStore)));
+   registerVersionRoutes(
+      app,
+      "/api/v0/environments/:environmentName/packages/:packageName",
+      new VersionController(environmentStore),
+   );
    return { app, writes };
 }
 

@@ -9,12 +9,9 @@ import { ServerConfigurationError } from "../errors";
  * google-auth reads it.
  *
  * google-auth reports a directory as "does not exist, or it is not a file",
- * with no errno, which sends an operator looking for a file that is missing.
- * A directory is what a container runtime puts at a bind target whose host
- * path does not exist, so this is the usual shape of a mis-mounted key.
- *
- * Every other outcome is left to google-auth, which already names it: a
- * missing file, and one the server cannot read (EACCES).
+ * which misleads; a directory is what a container runtime creates at a bind
+ * target whose host path is missing, the usual mis-mounted key. Other
+ * failures (missing file, EACCES) are left to google-auth, which names them.
  */
 export function assertGoogleCredentialsIsNotADirectory(): void {
    const keyFile = process.env.GOOGLE_APPLICATION_CREDENTIALS;

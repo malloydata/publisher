@@ -1,10 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import * as path from "path";
 import { PUBLISHER_CONFIG_NAME, TEMP_DIR_PATH } from "../constants";
+import {
+   emptyRepository,
+   stubStorageManager,
+} from "../test_helpers/storage_manager_stub";
 
 /**
  * A relative package `location` must anchor at the directory holding the config
@@ -19,30 +23,7 @@ import { PUBLISHER_CONFIG_NAME, TEMP_DIR_PATH } from "../constants";
 const serverRootPath = path.join(TEMP_DIR_PATH, "anchoring-server-root");
 const configDirPath = path.join(TEMP_DIR_PATH, "anchoring-config-dir");
 
-mock.module("../storage/StorageManager", () => ({
-   StorageManager: class MockStorageManager {
-      async initialize(): Promise<void> {}
-      getRepository() {
-         return {
-            listEnvironments: async () => [],
-            getEnvironmentByName: async () => null,
-            createEnvironment: async (data: Record<string, unknown>) => ({
-               id: "env-id",
-               name: data.name,
-               path: data.path,
-            }),
-            listPackages: async () => [],
-            getPackageByName: async () => null,
-            createPackage: async (data: Record<string, unknown>) => ({
-               id: "pkg-id",
-               name: data.name,
-            }),
-            listConnections: async () => [],
-         };
-      }
-   },
-   StorageConfig: {} as Record<string, unknown>,
-}));
+stubStorageManager({ getRepository: () => emptyRepository() });
 
 const { EnvironmentStore } = await import("./environment_store");
 

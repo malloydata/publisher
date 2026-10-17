@@ -8,7 +8,7 @@
  * (join-depth exhaustion) or that a single alias mismatch would otherwise
  * bury in a large integration fixture. Every other shape this
  * module covers (grafted gates, plain inherited `where:`, `#(filter)`
- * injection) is exercised end to end in `filter_binding_guard_integration.spec.ts`.
+ * injection) is exercised end to end in `tests/component/filter_binding_guard.component.spec.ts`.
  */
 import { describe, expect, it } from "bun:test";
 import type {

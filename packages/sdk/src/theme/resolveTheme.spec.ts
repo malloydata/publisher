@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { resolveMode, resolveTheme } from "./resolveTheme";
+import { chartThemeLayer, resolveMode, resolveTheme } from "./resolveTheme";
 import type { Theme } from "./types";
 
 describe("resolveTheme cascade", () => {
@@ -241,5 +241,76 @@ describe("resolveTheme series in dark mode", () => {
       );
       expect(dark.series[0]).not.toBe("#1a1a1a");
       expect(dark.series[1]).toBe("#60a5fa");
+   });
+});
+
+describe("a chart's own theme layer", () => {
+   const host: Theme = {
+      palette: { series: ["#628698", "#8a6a50", "#6f6a8f", "#7f9862"] },
+   };
+   const drawn = (chart: Theme) =>
+      resolveTheme([host, chartThemeLayer([host], chart)], "light").series;
+
+   // The builder's Color item writes one colour. On a bar and line chart the
+   // line is the second series: drawn from a one-colour list it came out the
+   // same colour as the bars and vanished against them.
+   // A pick changes the bars and not the line: every later series keeps the
+   // colour it has with no pick. It used to drop the pick from the host's
+   // list and shift the rest up, so the line took the host's FIRST colour.
+   it("changes only the first series for a colour on the palette", () => {
+      const series = drawn({ palette: { series: ["#7F9862"] } });
+      // The slot that held the pick takes the colour the first slot gave up.
+      expect(series).toEqual(["#7F9862", "#8a6a50", "#6f6a8f", "#628698"]);
+   });
+
+   it("keeps the line's colour whichever colour is picked", () => {
+      const theme = resolveTheme([host], "light").series;
+      for (const pick of ["#628698", "#6f6a8f", "#7f9862", "#123456"]) {
+         const series = drawn({ palette: { series: [pick] } });
+         expect(series[0]).toBe(pick);
+         expect(series[1]).toBe(theme[1]);
+      }
+   });
+
+   it("gives the line the first colour when the pick is the line's own", () => {
+      const series = drawn({ palette: { series: ["#8a6a50"] } });
+      expect(series).toEqual(["#8a6a50", "#628698", "#6f6a8f", "#7f9862"]);
+   });
+
+   it("keeps the host's later slots after a colour that is not on its palette", () => {
+      const series = drawn({ palette: { series: ["#123456"] } });
+      expect(series).toEqual(["#123456", "#8a6a50", "#6f6a8f", "#7f9862"]);
+   });
+
+   it("draws a one-colour host palette as the second series", () => {
+      const one: Theme = { palette: { series: ["#628698"] } };
+      const series = resolveTheme(
+         [one, chartThemeLayer([one], { palette: { series: ["#123456"] } })],
+         "light",
+      ).series;
+      expect(series).toEqual(["#123456", "#628698"]);
+   });
+
+   it("falls back to the default series with no host palette", () => {
+      const series = resolveTheme(
+         [chartThemeLayer([], { palette: { series: ["#123456"] } })],
+         "light",
+      ).series;
+      expect(series[0]).toBe("#123456");
+      expect(series.slice(1)).toEqual(
+         resolveTheme([], "light").series.slice(1),
+      );
+   });
+
+   it("uses a list of two or more colours as written", () => {
+      expect(drawn({ palette: { series: ["#111111", "#222222"] } })).toEqual([
+         "#111111",
+         "#222222",
+      ]);
+   });
+
+   it("leaves a layer that sets no series alone", () => {
+      const chart: Theme = { font: { size: 14 } };
+      expect(chartThemeLayer([host], chart)).toBe(chart);
    });
 });

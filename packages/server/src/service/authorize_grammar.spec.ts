@@ -1,12 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// One test per `AuthorizeGrammarRejectionCause`, plus the shapes the
-// term-by-term rule alone does not settle (a mixed-scope body; `and` inside
-// a string literal, which must be ACCEPTED; the same column gated under two
-// different attributes), plus the fan-out refusal and the retired-route
-// refusal — both IR-level, so they compile a REAL model rather than parsing
-// bare text.
+// The authorize grammar as tables: body -> parsed terms, body -> rejection
+// cause, and a source's notes -> coherence verdict. Then the two IR-level
+// refusals (fan-out join paths, retired-route markers), which need a real
+// compiled model. That each refusal is reached from a real `Model.create` is
+// pinned in tests/component/authorize/load_validation.spec.ts.
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
@@ -15,12 +14,12 @@ import {
    type ModelDef,
    type SourceDef,
 } from "@malloydata/malloy";
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import {
    assertAuthorizeGrammarTermsCoherent,
    AuthorizeGrammarError,
    parseAuthorizeGrammarBody,
-   type AuthorizeGrammarRoutedTerm,
+   type AuthorizeGrammarRejectionCause,
 } from "./authorize_grammar";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
 import {
@@ -29,1212 +28,525 @@ import {
    collectRetiredRouteMarkers,
 } from "./gate_classification";
 
-const SCALAR_GIVENS = new Map([["REGION", "string"]]);
-const LIST_GIVENS = new Map([["GROUPS", "array"]]);
-const MIXED_GIVENS = new Map([
-   ["REGION", "string"],
-   ["GROUPS", "array"],
+type Givens = ReadonlyMap<string, string>;
+const NONE: Givens = new Map();
+const SCALAR: Givens = new Map([["REGION", "string"]]);
+const LIST: Givens = new Map([["GROUPS", "array"]]);
+const A_B: Givens = new Map([
+   ["A", "string"],
+   ["B", "string"],
 ]);
+const REGION_ROLE: Givens = new Map([
+   ["REGION", "string"],
+   ["ROLE", "string"],
+]);
+const ROLE: Givens = new Map([["ROLE", "string"]]);
+const AF = ACCESS_FILTER_ROUTE;
+const AUTH = AUTHORIZE_ROUTE;
 
-describe("parseAuthorizeGrammarBody — rejection causes", () => {
-   it("empty_body", () => {
-      expect(() =>
-         parseAuthorizeGrammarBody("X", "   ", new Map(), ACCESS_FILTER_ROUTE),
-      ).toThrow(AuthorizeGrammarError);
-      try {
-         parseAuthorizeGrammarBody("X", "", new Map(), ACCESS_FILTER_ROUTE);
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "empty_body",
-         );
-      }
-   });
-
-   function expectCause(
-      body: string,
-      givens: ReadonlyMap<string, string>,
-      cause: string,
-      route: string = ACCESS_FILTER_ROUTE,
-   ): void {
-      try {
-         parseAuthorizeGrammarBody("X", body, givens, route);
-         throw new Error(`expected a throw for \`${body}\``);
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            cause as never,
-         );
-      }
+/** The thrown error's cause, or a failure if nothing (or something else) threw. */
+function causeOf(fn: () => unknown): {
+   cause: AuthorizeGrammarRejectionCause;
+   message: string;
+} {
+   try {
+      fn();
+   } catch (err) {
+      expect(err).toBeInstanceOf(AuthorizeGrammarError);
+      const e = err as AuthorizeGrammarError;
+      return { cause: e.rejectionCause, message: e.message };
    }
+   throw new Error("expected an AuthorizeGrammarError");
+}
 
-   it("compound_boolean — `or`", () => {
-      expectCause(
-         "region = $REGION or org_id = $REGION",
-         SCALAR_GIVENS,
-         "compound_boolean",
-      );
-   });
-
-   it("compound_boolean — `not`", () => {
-      expectCause("not region = $REGION", SCALAR_GIVENS, "compound_boolean");
-   });
-
-   it("negated_operator", () => {
-      expectCause("region != $REGION", SCALAR_GIVENS, "negated_operator");
-   });
-
-   it("comparison_operator", () => {
-      expectCause("region > $REGION", SCALAR_GIVENS, "comparison_operator");
-   });
-
-   it("left_not_field_path — a function call", () => {
-      expectCause(
-         "upper(region) = $REGION",
-         SCALAR_GIVENS,
-         "left_not_field_path",
-      );
-   });
-
-   it("left_not_field_path — a bare literal on both sides", () => {
-      expectCause("1 = 1", new Map(), "left_not_field_path");
-   });
-
-   it("missing_given_reference — right side is not `$NAME`", () => {
-      expectCause("region = 'east'", SCALAR_GIVENS, "missing_given_reference");
-   });
-
-   it("malformed_body — no `=`/`in` operator", () => {
-      expectCause("region like $REGION", SCALAR_GIVENS, "malformed_body");
-   });
-
-   it("duplicate_given — the same given used by two terms", () => {
-      expectCause(
-         "org_id = $REGION and region = $REGION",
-         SCALAR_GIVENS,
-         "duplicate_given",
-      );
-   });
-
-   it("duplicate_field_path — the same column gated under two attributes", () => {
-      const givens = new Map([
-         ["A", "string"],
-         ["B", "string"],
-      ]);
-      expectCause(
-         "region = $A and region = $B",
-         givens,
-         "duplicate_field_path",
-      );
-   });
-
-   it("duplicate_field_path — a backtick-quoted spelling and a bare spelling of the same column", () => {
-      // `` `region` `` and `region` differ as authored strings but resolve to
-      // the identical `fieldPathSegments` — must be caught on the SEGMENTS,
-      // not the raw text.
-      const givens = new Map([
-         ["A", "string"],
-         ["B", "string"],
-      ]);
-      expectCause(
-         "`region` = $A and region = $B",
-         givens,
-         "duplicate_field_path",
-      );
-   });
-
-   it("a genuinely different dotted path is still accepted", () => {
-      const givens = new Map([
-         ["A", "string"],
-         ["B", "string"],
-      ]);
-      const terms = parseAuthorizeGrammarBody(
-         "X",
-         "region = $A and org.region = $B",
-         givens,
-         ACCESS_FILTER_ROUTE,
-      );
-      expect(terms.length).toBe(2);
-   });
-
-   // A mixed-scope body needs no cause of its own: each route admits exactly
-   // one scope, so whichever term is the wrong one for the route the author
-   // wrote is what gets named.
-   it("a mixed-scope body is refused by the scope its route does not admit", () => {
-      const givens = new Map([
-         ["REGION", "string"],
-         ["ROLE", "string"],
-      ]);
-      expectCause(
-         "region = $REGION and 'admin' = $ROLE",
-         givens,
-         "source_level_term_in_access_filter",
-      );
-      expectCause(
-         "region = $REGION and 'admin' = $ROLE",
-         givens,
-         "row_level_term_in_authorize",
-         AUTHORIZE_ROUTE,
-      );
-   });
-
-   it("operator_arity_mismatch — `=` against a list-typed given", () => {
-      expectCause("org_id = $GROUPS", LIST_GIVENS, "operator_arity_mismatch");
-   });
-
-   it("operator_arity_mismatch — `in` against a scalar given", () => {
-      expectCause(
-         "region in $REGION",
-         SCALAR_GIVENS,
-         "operator_arity_mismatch",
-      );
-   });
-
-   // `malloyGivenToApi` renders a list-typed given by its ELEMENT type
-   // (`number[]`, `string[]`) and falls back to a bare `array` only when the
-   // element type is missing. Both are lists here.
-   //
-   // This is pinned because the two halves live in different files and moved in
-   // different changes: when the rendering gained element types, this check
-   // still matched the bare `array` alone, so every set-valued given read as a
-   // scalar. A set-valued given is how each `#(secure)` attribute is declared,
-   // so that refused `in` on the gates that carry a row-level boundary and
-   // failed those models at load.
-   it("reads both list renderings as lists — the bare one and `<element>[]`", () => {
-      for (const rendering of ["array", "number[]", "string[]"]) {
-         const givens = new Map([["GROUPS", rendering]]);
-         expectCause("org_id = $GROUPS", givens, "operator_arity_mismatch");
-         expect(
-            parseAuthorizeGrammarBody(
-               "s",
-               "org_id in $GROUPS",
-               givens,
-               ACCESS_FILTER_ROUTE,
-            ),
-         ).toBeDefined();
-      }
-   });
-
-   it("a scalar rendering is still a scalar, so `in` is still refused", () => {
-      // The widening must not turn every type into a list: `=` has to keep
-      // working, or the check admits nothing.
-      const givens = new Map([["REGION", "string"]]);
-      expectCause("region in $REGION", givens, "operator_arity_mismatch");
-      expect(
-         parseAuthorizeGrammarBody(
-            "s",
-            "region = $REGION",
-            givens,
-            ACCESS_FILTER_ROUTE,
-         ),
-      ).toBeDefined();
-   });
+const row = (
+   fieldPath: string,
+   segments: string[],
+   given: string,
+   op: string,
+) => ({
+   scope: "row_level",
+   fieldPath,
+   fieldPathSegments: segments,
+   given,
+   operator: op,
+});
+const lit = (literal: string, given: string) => ({
+   scope: "source_level",
+   literal,
+   given,
 });
 
-describe("parseAuthorizeGrammarBody — #(authorize) route", () => {
-   it("row_level_term_in_authorize — a field-on-the-left term is refused", () => {
-      try {
-         parseAuthorizeGrammarBody(
-            "X",
-            "region = $REGION",
-            SCALAR_GIVENS,
-            AUTHORIZE_ROUTE,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "row_level_term_in_authorize" as never,
-         );
-      }
-   });
-
-   // The mirror, which did not exist before the flip: a source-level body on
-   // the filter route grafts as a constant predicate, so a caller it excludes
-   // is served zero rows instead of being refused.
-   it("source_level_term_in_access_filter — a literal-on-the-left term is refused", () => {
-      try {
-         parseAuthorizeGrammarBody(
-            "X",
-            "'finance' in $GROUPS",
-            LIST_GIVENS,
-            ACCESS_FILTER_ROUTE,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "source_level_term_in_access_filter" as never,
-         );
-      }
-   });
-
-   it("accepts a source-level term ('literal' in/= $GIVEN)", () => {
-      const [term] = parseAuthorizeGrammarBody(
-         "X",
-         "'admin' = $ROLE",
-         new Map([["ROLE", "string"]]),
-         AUTHORIZE_ROUTE,
-      );
-      expect(term).toEqual({
-         scope: "source_level",
-         literal: "'admin'",
-         given: "ROLE",
-      });
-   });
-
-   it("a bare `false` parses to the SAME deny_all sentinel as the authorize route", () => {
-      // `false` means the same thing on both routes — it names no row at all,
-      // so the row-level-only restriction has a carve-out for it.
-      const [onAuthorize] = parseAuthorizeGrammarBody(
-         "X",
-         "false",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      const [onSourceAuthorize] = parseAuthorizeGrammarBody(
-         "X",
-         "false",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      expect(onSourceAuthorize).toEqual(onAuthorize);
-      expect(onSourceAuthorize).toEqual({ scope: "deny_all" });
-   });
-
-   it("a row-level term alongside a sibling still refuses as row_level_term_in_authorize, not compound_boolean", () => {
-      try {
-         parseAuthorizeGrammarBody(
-            "X",
-            "region = $REGION and 'admin' = $ROLE",
-            new Map([
-               ["REGION", "string"],
-               ["ROLE", "string"],
-            ]),
-            AUTHORIZE_ROUTE,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "row_level_term_in_authorize" as never,
-         );
-      }
-   });
-});
-
-// `assertAuthorizeGrammarTermsCoherent` is what catches these four mistakes
-// once they're spread across NOTES rather than terms in one body — the
-// pure-parse cases above already pin the within-one-body forms via
-// `parseAuthorizeGrammarBody` itself.
-describe("assertAuthorizeGrammarTermsCoherent — cross-note", () => {
-   function routed(
-      terms: readonly AuthorizeGrammarRoutedTerm["term"][],
-   ): AuthorizeGrammarRoutedTerm[] {
-      return terms.map((term) => ({ term, route: ACCESS_FILTER_ROUTE }));
-   }
-
-   function expectCoherenceCause(
-      terms: readonly AuthorizeGrammarRoutedTerm["term"][],
-      cause: string,
-   ): void {
-      try {
-         assertAuthorizeGrammarTermsCoherent("X", routed(terms));
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            cause as never,
-         );
-      }
-   }
-
-   it("duplicate_given across two notes", () => {
-      const [a] = parseAuthorizeGrammarBody(
-         "X",
-         "a = $G",
-         SCALAR_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      const [b] = parseAuthorizeGrammarBody(
-         "X",
-         "b = $G",
-         SCALAR_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      expectCoherenceCause([a, b], "duplicate_given");
-   });
-
-   it("duplicate_field_path across two notes", () => {
-      const givens = new Map([
-         ["A", "string"],
-         ["B", "string"],
-      ]);
-      const [a] = parseAuthorizeGrammarBody(
-         "X",
-         "region = $A",
-         givens,
-         ACCESS_FILTER_ROUTE,
-      );
-      const [b] = parseAuthorizeGrammarBody(
-         "X",
-         "region = $B",
-         givens,
-         ACCESS_FILTER_ROUTE,
-      );
-      expectCoherenceCause([a, b], "duplicate_field_path");
-   });
-
-   it("duplicate_field_path across two notes, one backtick-quoted", () => {
-      const givens = new Map([
-         ["A", "string"],
-         ["B", "string"],
-      ]);
-      const [a] = parseAuthorizeGrammarBody(
-         "X",
-         "`region` = $A",
-         givens,
-         ACCESS_FILTER_ROUTE,
-      );
-      const [b] = parseAuthorizeGrammarBody(
-         "X",
-         "region = $B",
-         givens,
-         ACCESS_FILTER_ROUTE,
-      );
-      expectCoherenceCause([a, b], "duplicate_field_path");
-   });
-
-   it("deny_all_with_sibling — a bare `false` note plus any other note is refused", () => {
-      const [denyAll] = parseAuthorizeGrammarBody(
-         "X",
-         "false",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      const [sibling] = parseAuthorizeGrammarBody(
-         "X",
-         "region = $REGION",
-         SCALAR_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      expectCoherenceCause([denyAll, sibling], "deny_all_with_sibling");
-   });
-
-   it("a lone deny_all (no sibling) does not throw", () => {
-      const [denyAll] = parseAuthorizeGrammarBody(
-         "X",
-         "false",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      expect(() =>
-         assertAuthorizeGrammarTermsCoherent("X", routed([denyAll])),
-      ).not.toThrow();
-   });
-
-   it("the same given reused across TWO DIFFERENT routes is not a duplicate", () => {
-      // Pins the scoping rule the four checks depend on: a term declared
-      // under one route and a term declared under a different route are
-      // meant to AND, not agree on given or scope — see
-      // `assertAuthorizeGrammarTermsCoherent`'s doc. Exercises the actual
-      // second route this module implements, `#(authorize)`.
-      const [a] = parseAuthorizeGrammarBody(
-         "X",
-         "org_id in $G",
-         LIST_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      const [b] = parseAuthorizeGrammarBody(
-         "X",
-         "'finance' in $G",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(() =>
-         assertAuthorizeGrammarTermsCoherent("X", [
-            { term: a, route: ACCESS_FILTER_ROUTE },
-            { term: b, route: AUTHORIZE_ROUTE },
-         ]),
-      ).not.toThrow();
-   });
-});
-
-describe("parseAuthorizeGrammarBody — the `true` admit-all sentinel", () => {
-   it("`true`, `TRUE`, and a padded ` true ` all parse to the admit_all sentinel", () => {
-      for (const spelling of ["true", "TRUE", "  true  "]) {
-         expect(
-            parseAuthorizeGrammarBody(
-               "X",
-               spelling,
-               new Map(),
-               AUTHORIZE_ROUTE,
-            ),
-         ).toEqual([{ scope: "admit_all" }]);
-      }
-   });
-
-   it("both sentinels are refused on #(access_filter), naming the lock form", () => {
-      for (const spelling of ["true", "false"]) {
-         try {
-            parseAuthorizeGrammarBody(
-               "X",
-               spelling,
-               new Map(),
-               ACCESS_FILTER_ROUTE,
-            );
-            throw new Error(`expected a throw for \`${spelling}\``);
-         } catch (err) {
-            expect(err).toBeInstanceOf(AuthorizeGrammarError);
-            expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-               "sentinel_in_access_filter" as never,
-            );
-            expect((err as Error).message).toContain("#(authorize)");
-         }
-      }
-   });
-
-   it("`true and org_id = $A` is NOT the sentinel — it falls through to the ordinary per-term errors", () => {
-      // The whole-body check runs BEFORE `splitTerms`, so only an EXACT
-      // (trimmed) `true` takes the sentinel path — this is a two-term body
-      // whose first term (`true`, no `=`/`in`) is malformed, not an admit-all
-      // plus a dead conjunct.
-      try {
-         parseAuthorizeGrammarBody(
-            "X",
-            "true and org_id = $A",
-            new Map([["A", "string"]]),
-            ACCESS_FILTER_ROUTE,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "malformed_body",
-         );
-      }
-   });
-
-   it("admit_all plus a sibling term — same route — is refused as admit_all_with_sibling", () => {
-      const [admitAll] = parseAuthorizeGrammarBody(
-         "X",
-         "true",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      const [sibling] = parseAuthorizeGrammarBody(
-         "X",
-         "region = $REGION",
-         SCALAR_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      try {
-         assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ACCESS_FILTER_ROUTE },
-            { term: sibling, route: ACCESS_FILTER_ROUTE },
-         ]);
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "admit_all_with_sibling",
-         );
-      }
-   });
-
-   it("an own `#(authorize) true` plus a term on that same route is refused as admit_all_with_sibling", () => {
-      const [admitAll] = parseAuthorizeGrammarBody(
-         "X",
-         "true",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      const [sibling] = parseAuthorizeGrammarBody(
-         "X",
-         "'finance' in $G",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      try {
-         assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: AUTHORIZE_ROUTE },
-            { term: sibling, route: AUTHORIZE_ROUTE },
-         ]);
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "admit_all_with_sibling",
-         );
-      }
-   });
-
-   it("admit_all beside a term on the OTHER route is legal — `true` sheds only its own route's inherited gate, so the sibling is live rather than dead text", () => {
-      const [admitAll] = parseAuthorizeGrammarBody(
-         "X",
-         "true",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      const [callerTerm] = parseAuthorizeGrammarBody(
-         "X",
-         "'finance' in $G",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(() =>
-         assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ACCESS_FILTER_ROUTE },
-            { term: callerTerm, route: AUTHORIZE_ROUTE },
-         ]),
-      ).not.toThrow();
-
-      // The mirror: an own `#(authorize) true` beside an own
-      // `#(access_filter)` opens the lock while the row filter still runs.
-      const [rowTerm] = parseAuthorizeGrammarBody(
-         "X",
-         "region = $REGION",
-         SCALAR_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      const [callerAdmitAll] = parseAuthorizeGrammarBody(
-         "X",
-         "true",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      expect(() =>
-         assertAuthorizeGrammarTermsCoherent("X", [
-            { term: rowTerm, route: ACCESS_FILTER_ROUTE },
-            { term: callerAdmitAll, route: AUTHORIZE_ROUTE },
-         ]),
-      ).not.toThrow();
-   });
-
-   it("THE ORDER PIN — admit_all and deny_all on ONE route resolve to deny_all_with_sibling, the deliberate fail-closed reading of the contradiction", () => {
-      const [admitAll] = parseAuthorizeGrammarBody(
-         "X",
-         "true",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      const [denyAll] = parseAuthorizeGrammarBody(
-         "X",
-         "false",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      try {
-         assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ACCESS_FILTER_ROUTE },
-            { term: denyAll, route: ACCESS_FILTER_ROUTE },
-         ]);
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "deny_all_with_sibling",
-         );
-      }
-   });
-
-   it("a deny_all on the OTHER route still beats an admit_all — the deny check is the one that is not route-scoped", () => {
-      const [admitAll] = parseAuthorizeGrammarBody(
-         "X",
-         "true",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      const [denyAll] = parseAuthorizeGrammarBody(
-         "X",
-         "false",
-         new Map(),
-         AUTHORIZE_ROUTE,
-      );
-      try {
-         assertAuthorizeGrammarTermsCoherent("X", [
-            { term: admitAll, route: ACCESS_FILTER_ROUTE },
-            { term: denyAll, route: AUTHORIZE_ROUTE },
-         ]);
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "deny_all_with_sibling",
-         );
-      }
-   });
-});
-
-describe("parseAuthorizeGrammarBody — accepted shapes", () => {
-   it("`and` inside a string literal is not a compound boolean", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+describe("parseAuthorizeGrammarBody — accepted bodies", () => {
+   it.each([
+      // the sentinels: an exact (trimmed, case-insensitive) `true` / `false`
+      ["true", NONE, AUTH, [{ scope: "admit_all" }]],
+      ["TRUE", NONE, AUTH, [{ scope: "admit_all" }]],
+      ["  true  ", NONE, AUTH, [{ scope: "admit_all" }]],
+      ["false", NONE, AUTH, [{ scope: "deny_all" }]],
+      // source-level terms read either way round for `=`; `in` is literal-first
+      ["'admin' = $ROLE", ROLE, AUTH, [lit("'admin'", "ROLE")]],
+      ["$ROLE = 'admin'", ROLE, AUTH, [lit("'admin'", "ROLE")]],
+      ["$REGION = 'analyst'", SCALAR, AUTH, [lit("'analyst'", "REGION")]],
+      ["'finance' in $GROUPS", LIST, AUTH, [lit("'finance'", "GROUPS")]],
+      // tokens inside a string literal are not syntax
+      [
          "'research and development' in $GROUPS",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(terms).toEqual([
-         {
-            scope: "source_level",
-            literal: "'research and development'",
-            given: "GROUPS",
-         },
-      ]);
-   });
-
-   it("`or`/`not` inside a string literal are not refused", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+         LIST,
+         AUTH,
+         [lit("'research and development'", "GROUPS")],
+      ],
+      [
          "'rock or roll' in $GROUPS",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(terms).toEqual([
-         { scope: "source_level", literal: "'rock or roll'", given: "GROUPS" },
-      ]);
-   });
-
-   it("a row-level and a second row-level term joined by `and`", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+         LIST,
+         AUTH,
+         [lit("'rock or roll'", "GROUPS")],
+      ],
+      ["'a>b' in $GROUPS", LIST, AUTH, [lit("'a>b'", "GROUPS")]],
+      ["'a!=b' in $GROUPS", LIST, AUTH, [lit("'a!=b'", "GROUPS")]],
+      // row-level terms
+      [
          "region = $REGION and org_id in $GROUPS",
-         MIXED_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      expect(terms).toEqual([
-         {
-            scope: "row_level",
-            fieldPath: "region",
-            fieldPathSegments: ["region"],
-            given: "REGION",
-            operator: "=",
-         },
-         {
-            scope: "row_level",
-            fieldPath: "org_id",
-            fieldPathSegments: ["org_id"],
-            given: "GROUPS",
-            operator: "in",
-         },
-      ]);
-   });
-
-   it("a dotted join path on the left", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+         new Map([...SCALAR, ...LIST]),
+         AF,
+         [
+            row("region", ["region"], "REGION", "="),
+            row("org_id", ["org_id"], "GROUPS", "in"),
+         ],
+      ],
+      [
          "child.name in $GROUPS",
-         LIST_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      expect(terms).toEqual([
-         {
-            scope: "row_level",
-            fieldPath: "child.name",
-            fieldPathSegments: ["child", "name"],
-            given: "GROUPS",
-            operator: "in",
-         },
-      ]);
-   });
-
-   it("a source-level term reads either way round: given on the left", () => {
-      // The spelling publisher's own fixtures and docs used first. Same
-      // comparison as `'analyst' = $REGION`, so refusing it would break
-      // working models over operand order alone.
-      const terms = parseAuthorizeGrammarBody(
-         "X",
-         "$REGION = 'analyst'",
-         SCALAR_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(terms).toEqual([
-         { scope: "source_level", literal: "'analyst'", given: "REGION" },
-      ]);
-   });
-
-   it("a reversed `in` ($GIVEN in 'literal') is refused, not silently swapped, on #(authorize)", () => {
-      // Unlike `=`, `in` is not reversible: the graft compiles the author's
-      // ORIGINAL text unchanged, and Malloy rejects array-in-string
-      // membership, so silently swapping here would validate a body that
-      // then fails at model compilation.
-      try {
-         parseAuthorizeGrammarBody(
-            "X",
-            "$GROUPS in 'finance'",
-            LIST_GIVENS,
-            ACCESS_FILTER_ROUTE,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "reversed_in_operands" as never,
-         );
-         expect((err as AuthorizeGrammarError).message).toMatch(
-            /'finance' in \$GROUPS/,
-         );
-      }
-   });
-
-   it("a reversed `in` is refused the same way on #(authorize)", () => {
-      try {
-         parseAuthorizeGrammarBody(
-            "X",
-            "$GROUPS in 'finance'",
-            LIST_GIVENS,
-            ACCESS_FILTER_ROUTE,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "reversed_in_operands" as never,
-         );
-      }
-   });
-
-   it("literal-first `in` ('literal' in $GIVEN) still parses", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
-         "'finance' in $GROUPS",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(terms).toEqual([
-         { scope: "source_level", literal: "'finance'", given: "GROUPS" },
-      ]);
-   });
-
-   it("`=` still reverses either way round (unaffected by the `in` restriction)", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
-         "$ROLE = 'admin'",
-         new Map([["ROLE", "string"]]),
-         AUTHORIZE_ROUTE,
-      );
-      expect(terms).toEqual([
-         { scope: "source_level", literal: "'admin'", given: "ROLE" },
-      ]);
-   });
-
-   it("a row-level term is NOT reversible — the column stays on the left", () => {
-      // The field path is what the build scan groups by and what the graft
-      // filters on, so a flipped row-level term is a different statement.
-      try {
-         parseAuthorizeGrammarBody(
-            "X",
-            "$GROUPS = org_id",
-            LIST_GIVENS,
-            ACCESS_FILTER_ROUTE,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect(err).toBeInstanceOf(AuthorizeGrammarError);
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "left_not_field_path",
-         );
-      }
-   });
-
-   it("a comparison character inside a string literal is not a comparison", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
-         "'a>b' in $GROUPS",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(terms).toEqual([
-         { scope: "source_level", literal: "'a>b'", given: "GROUPS" },
-      ]);
-   });
-
-   it("`!=` inside a string literal is not a negated operator", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
-         "'a!=b' in $GROUPS",
-         LIST_GIVENS,
-         AUTHORIZE_ROUTE,
-      );
-      expect(terms).toEqual([
-         { scope: "source_level", literal: "'a!=b'", given: "GROUPS" },
-      ]);
-   });
-
-   it("a backtick-quoted column hides the tokens inside it", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+         LIST,
+         AF,
+         [row("child.name", ["child", "name"], "GROUPS", "in")],
+      ],
+      [
+         "region = $A and org.region = $B",
+         A_B,
+         AF,
+         [
+            row("region", ["region"], "A", "="),
+            row("org.region", ["org", "region"], "B", "="),
+         ],
+      ],
+      // a backtick-quoted column hides the tokens (and dots) inside it
+      [
          "`org in region` = $REGION",
-         SCALAR_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      expect(terms).toEqual([
-         {
-            scope: "row_level",
-            fieldPath: "`org in region`",
-            fieldPathSegments: ["org in region"],
-            given: "REGION",
-            operator: "=",
-         },
-      ]);
-   });
-
-   it("a backtick-quoted column containing `and` is one term, not two", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+         SCALAR,
+         AF,
+         [row("`org in region`", ["org in region"], "REGION", "=")],
+      ],
+      [
          "`research and development` in $GROUPS",
-         LIST_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      expect(terms).toEqual([
-         {
-            scope: "row_level",
-            fieldPath: "`research and development`",
-            fieldPathSegments: ["research and development"],
-            given: "GROUPS",
-            operator: "in",
-         },
-      ]);
-   });
-
-   it("a backtick-quoted column containing a literal dot is one segment, not two", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+         LIST,
+         AF,
+         [
+            row(
+               "`research and development`",
+               ["research and development"],
+               "GROUPS",
+               "in",
+            ),
+         ],
+      ],
+      [
          "`cost.center`.name in $GROUPS",
-         LIST_GIVENS,
-         ACCESS_FILTER_ROUTE,
-      );
-      expect(terms).toEqual([
-         {
-            scope: "row_level",
-            fieldPath: "`cost.center`.name",
-            fieldPathSegments: ["cost.center", "name"],
-            given: "GROUPS",
-            operator: "in",
-         },
-      ]);
-   });
-
-   it("a given absent from the declared-type map skips the arity check", () => {
-      const terms = parseAuthorizeGrammarBody(
-         "X",
+         LIST,
+         AF,
+         [row("`cost.center`.name", ["cost.center", "name"], "GROUPS", "in")],
+      ],
+      // a given absent from the declared-type map skips the arity check
+      [
          "region = $UNKNOWN",
-         new Map(),
-         ACCESS_FILTER_ROUTE,
+         NONE,
+         AF,
+         [row("region", ["region"], "UNKNOWN", "=")],
+      ],
+      // `malloyGivenToApi` renders a list given as `array` or `<element>[]`;
+      // all three are lists, and a scalar stays a scalar.
+      ...["array", "number[]", "string[]"].map((rendering) => [
+         "org_id in $GROUPS",
+         new Map([["GROUPS", rendering]]),
+         AF,
+         [row("org_id", ["org_id"], "GROUPS", "in")],
+      ]),
+      [
+         "region = $REGION",
+         SCALAR,
+         AF,
+         [row("region", ["region"], "REGION", "=")],
+      ],
+   ] as Array<[string, Givens, string, unknown[]]>)(
+      "%s",
+      (body, givens, route, expected) => {
+         expect(parseAuthorizeGrammarBody("X", body, givens, route)).toEqual(
+            expected as never,
+         );
+      },
+   );
+});
+
+describe("parseAuthorizeGrammarBody — refused bodies", () => {
+   it.each([
+      ["", NONE, AF, "empty_body"],
+      ["   ", NONE, AF, "empty_body"],
+      ["region = $REGION or org_id = $REGION", SCALAR, AF, "compound_boolean"],
+      ["not region = $REGION", SCALAR, AF, "compound_boolean"],
+      ["region != $REGION", SCALAR, AF, "negated_operator"],
+      ["region > $REGION", SCALAR, AF, "comparison_operator"],
+      ["upper(region) = $REGION", SCALAR, AF, "left_not_field_path"],
+      ["1 = 1", NONE, AF, "left_not_field_path"],
+      // a row-level term is not reversible: the column stays on the left
+      ["$GROUPS = org_id", LIST, AF, "left_not_field_path"],
+      ["region = 'east'", SCALAR, AF, "missing_given_reference"],
+      ["region like $REGION", SCALAR, AF, "malformed_body"],
+      // only an exact `true` is the sentinel; here it is a malformed term
+      ["true and org_id = $A", A_B, AF, "malformed_body"],
+      ["org_id = $REGION and region = $REGION", SCALAR, AF, "duplicate_given"],
+      ["region = $A and region = $B", A_B, AF, "duplicate_field_path"],
+      // caught on the unquoted SEGMENTS, not the authored text
+      ["`region` = $A and region = $B", A_B, AF, "duplicate_field_path"],
+      // arity: `=` is scalar, `in` is list, for every list rendering
+      ["org_id = $GROUPS", LIST, AF, "operator_arity_mismatch"],
+      ...["number[]", "string[]"].map((rendering) => [
+         "org_id = $GROUPS",
+         new Map([["GROUPS", rendering]]),
+         AF,
+         "operator_arity_mismatch",
+      ]),
+      ["region in $REGION", SCALAR, AF, "operator_arity_mismatch"],
+      // each route admits one scope; a mixed body is refused by the other one
+      ["region = $REGION", SCALAR, AUTH, "row_level_term_in_authorize"],
+      [
+         "region = $REGION and 'admin' = $ROLE",
+         REGION_ROLE,
+         AUTH,
+         "row_level_term_in_authorize",
+      ],
+      [
+         "region = $REGION and 'admin' = $ROLE",
+         REGION_ROLE,
+         AF,
+         "source_level_term_in_access_filter",
+      ],
+      ["'finance' in $GROUPS", LIST, AF, "source_level_term_in_access_filter"],
+   ] as Array<[string, Givens, string, AuthorizeGrammarRejectionCause]>)(
+      "%p on %s",
+      (body, givens, route, cause) => {
+         expect(
+            causeOf(() => parseAuthorizeGrammarBody("X", body, givens, route))
+               .cause,
+         ).toBe(cause);
+      },
+   );
+
+   it.each(["true", "false"])(
+      "the sentinel `%s` is refused on #(access_filter), naming the lock form",
+      (body) => {
+         const { cause, message } = causeOf(() =>
+            parseAuthorizeGrammarBody("X", body, NONE, AF),
+         );
+         expect(cause).toBe("sentinel_in_access_filter");
+         expect(message).toContain("#(authorize)");
+      },
+   );
+
+   it.each([AF, AUTH])(
+      "a reversed `in` ($GIVEN in 'literal') is refused on %s, never silently swapped",
+      (route) => {
+         // The graft compiles the author's original text and Malloy rejects
+         // array-in-string membership, so swapping would validate a body
+         // that then fails at model compilation.
+         const { cause, message } = causeOf(() =>
+            parseAuthorizeGrammarBody("X", "$GROUPS in 'finance'", LIST, route),
+         );
+         expect(cause).toBe("reversed_in_operands");
+         expect(message).toMatch(/'finance' in \$GROUPS/);
+      },
+   );
+});
+
+// Repeated notes are legal and AND, so the within-one-body checks must also
+// see a source's terms as one set across its notes. Each note is
+// [body, givens, parse route, the route it is declared on].
+describe("assertAuthorizeGrammarTermsCoherent — across notes", () => {
+   type Note = [string, Givens, string, string];
+   const check = (notes: Note[]) => () =>
+      assertAuthorizeGrammarTermsCoherent(
+         "X",
+         notes.map(([body, givens, parseRoute, route]) => ({
+            term: parseAuthorizeGrammarBody("X", body, givens, parseRoute)[0],
+            route,
+         })),
       );
-      expect(terms).toEqual([
-         {
-            scope: "row_level",
-            fieldPath: "region",
-            fieldPathSegments: ["region"],
-            given: "UNKNOWN",
-            operator: "=",
-         },
-      ]);
+
+   it.each([
+      [
+         "duplicate_given",
+         [
+            ["a = $G", SCALAR, AF, AF],
+            ["b = $G", SCALAR, AF, AF],
+         ],
+      ],
+      [
+         "duplicate_field_path",
+         [
+            ["region = $A", A_B, AF, AF],
+            ["region = $B", A_B, AF, AF],
+         ],
+      ],
+      [
+         "duplicate_field_path",
+         [
+            ["`region` = $A", A_B, AF, AF],
+            ["region = $B", A_B, AF, AF],
+         ],
+      ],
+      [
+         "deny_all_with_sibling",
+         [
+            ["false", NONE, AUTH, AF],
+            ["region = $REGION", SCALAR, AF, AF],
+         ],
+      ],
+      [
+         "admit_all_with_sibling",
+         [
+            ["true", NONE, AUTH, AF],
+            ["region = $REGION", SCALAR, AF, AF],
+         ],
+      ],
+      [
+         "admit_all_with_sibling",
+         [
+            ["true", NONE, AUTH, AUTH],
+            ["'finance' in $G", LIST, AUTH, AUTH],
+         ],
+      ],
+      // THE ORDER PIN: admit_all and deny_all together read fail-closed...
+      [
+         "deny_all_with_sibling",
+         [
+            ["true", NONE, AUTH, AF],
+            ["false", NONE, AUTH, AF],
+         ],
+      ],
+      // ...and the deny check is the one that is not route-scoped.
+      [
+         "deny_all_with_sibling",
+         [
+            ["true", NONE, AUTH, AF],
+            ["false", NONE, AUTH, AUTH],
+         ],
+      ],
+   ] as Array<[AuthorizeGrammarRejectionCause, Note[]]>)(
+      "refuses %s: %j",
+      (cause, notes) => {
+         expect(causeOf(check(notes)).cause).toBe(cause);
+      },
+   );
+
+   it.each([
+      ["a lone deny_all", [["false", NONE, AUTH, AF]]],
+      // coherence is per route: the two routes' terms AND
+      [
+         "the same given on two different routes",
+         [
+            ["org_id in $G", LIST, AF, AF],
+            ["'finance' in $G", LIST, AUTH, AUTH],
+         ],
+      ],
+      // `true` sheds only its own route's inherited gate, so a term on the
+      // other route is live, not dead text
+      [
+         "admit_all beside a term on the other route",
+         [
+            ["true", NONE, AUTH, AF],
+            ["'finance' in $G", LIST, AUTH, AUTH],
+         ],
+      ],
+      [
+         "a row filter beside the lock's own `true`",
+         [
+            ["region = $REGION", SCALAR, AF, AF],
+            ["true", NONE, AUTH, AUTH],
+         ],
+      ],
+   ] as Array<[string, Note[]]>)("admits %s", (_label, notes) => {
+      expect(check(notes)).not.toThrow();
    });
 });
 
 // ---------------------------------------------------------------------------
-// Fan-out and retired-route refusals — both IR-level, so real compiled
-// models rather than bare text.
+// Fan-out and retired-route refusals: IR-level, so real compiled models.
 // ---------------------------------------------------------------------------
 
 const ROOT = "file:///authorize-grammar/";
-let connections: FixedConnectionMap;
+const duckdb = new DuckDBConnection("duckdb", ":memory:");
+const connections = new FixedConnectionMap(
+   new Map([["duckdb", duckdb]]),
+   "duckdb",
+);
+afterAll(() => duckdb.close());
 
-beforeAll(() => {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   connections = new FixedConnectionMap(
-      new Map([["duckdb", duckdb]]),
-      "duckdb",
-   );
-});
-
-async function compileModel(model: string): Promise<ModelDef> {
-   const urlReader = new InMemoryURLReader(
-      new Map([[`${ROOT}m.malloy`, model]]),
-   );
-   const runtime = new Runtime({ urlReader, connections });
-   const materializer = runtime.loadModel(new URL(`${ROOT}m.malloy`), {
-      importBaseURL: new URL(ROOT),
-   });
-   const compiled = await materializer.getModel();
-   /* eslint-disable @typescript-eslint/no-explicit-any */
-   return (compiled as any)._modelDef as ModelDef;
-   /* eslint-enable @typescript-eslint/no-explicit-any */
-}
-
-function source(modelDef: ModelDef, name: string): SourceDef {
-   const found = modelDef.contents[name];
-   if (!found) throw new Error(`no source named ${name} in compiled model`);
-   return found as SourceDef;
-}
-
-/** Like {@link compileModel}, but for a multi-file import chain — needed to
- *  reach a marker that Malloy stores only in `annotations.inherits`, on a
- *  declaring base struct that never appears in the entry model's own
- *  `modelDef.contents`. */
-async function compileModelFiles(
-   files: Readonly<Record<string, string>>,
-   entry: string,
+async function compileModel(
+   files: string | Readonly<Record<string, string>>,
+   entry = "m.malloy",
 ): Promise<ModelDef> {
+   const fileMap = typeof files === "string" ? { [entry]: files } : files;
    const urlReader = new InMemoryURLReader(
       new Map(
-         Object.entries(files).map(([name, text]) => [`${ROOT}${name}`, text]),
+         Object.entries(fileMap).map(([name, text]) => [
+            `${ROOT}${name}`,
+            text,
+         ]),
       ),
    );
    const runtime = new Runtime({ urlReader, connections });
-   const materializer = runtime.loadModel(new URL(`${ROOT}${entry}`), {
-      importBaseURL: new URL(ROOT),
-   });
-   const compiled = await materializer.getModel();
-   /* eslint-disable @typescript-eslint/no-explicit-any */
-   return (compiled as any)._modelDef as ModelDef;
-   /* eslint-enable @typescript-eslint/no-explicit-any */
+   const compiled = await runtime
+      .loadModel(new URL(`${ROOT}${entry}`), { importBaseURL: new URL(ROOT) })
+      .getModel();
+   return (compiled as unknown as { _modelDef: ModelDef })._modelDef;
 }
 
 describe("assertNoFanoutFieldPath", () => {
-   it("refuses a path through a join_many", async () => {
-      const modelDef = await compileModel(`
-source: child is duckdb.sql("select 1 as parent_id, 'north' as name") extend {}
+   async function fanout(
+      model: string,
+      fieldPath: string,
+      segments: readonly string[],
+   ): Promise<() => void> {
+      const parent = (await compileModel(model)).contents[
+         "parent"
+      ] as SourceDef;
+      return () =>
+         assertNoFanoutFieldPath("parent", parent, fieldPath, segments);
+   }
 
+   it("refuses a path through a join_many", async () => {
+      const assertPath = await fanout(
+         `source: child is duckdb.sql("select 1 as parent_id, 'north' as name") extend {}
 source: parent is duckdb.sql("select 1 as id") extend {
    join_many: kids is child on id = kids.parent_id
-}
-`);
-      expect(() =>
-         assertNoFanoutFieldPath(
-            "parent",
-            source(modelDef, "parent"),
-            "kids.name",
-            ["kids", "name"],
-         ),
-      ).toThrow(AuthorizeGrammarError);
-      try {
-         assertNoFanoutFieldPath(
-            "parent",
-            source(modelDef, "parent"),
-            "kids.name",
-            ["kids", "name"],
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "fanout_path",
-         );
-      }
+}`,
+         "kids.name",
+         ["kids", "name"],
+      );
+      expect(causeOf(assertPath).cause).toBe("fanout_path");
    });
 
    it("admits a path through a join_one", async () => {
-      const modelDef = await compileModel(`
-source: child is duckdb.sql("select 1 as id, 'north' as name") extend {}
-
+      const assertPath = await fanout(
+         `source: child is duckdb.sql("select 1 as id, 'north' as name") extend {}
 source: parent is duckdb.sql("select 1 as child_id") extend {
    join_one: kid is child on child_id = kid.id
-}
-`);
-      expect(() =>
-         assertNoFanoutFieldPath(
-            "parent",
-            source(modelDef, "parent"),
-            "kid.name",
-            ["kid", "name"],
-         ),
-      ).not.toThrow();
+}`,
+         "kid.name",
+         ["kid", "name"],
+      );
+      expect(assertPath).not.toThrow();
    });
 
-   // Must-fix 1: a naive `fieldPath.split(".")` downstream would compare the
-   // RAW (still-backtick-quoted) segment "`cost center`" against the join's
-   // real name "cost center" and never match, reading a genuine fan-out join
-   // as fully resolved and silently admitting it. `parseAuthorizeGrammarBody`
-   // pre-splits and unquotes the segments precisely so this cannot happen;
-   // this test pins that against a real fan-out join through a backtick-
-   // quoted name, not just the segment splitter in isolation.
    it("refuses a path through a backtick-quoted join_many segment", async () => {
-      const modelDef = await compileModel(`
-source: child is duckdb.sql("select 1 as parent_id, 'north' as name") extend {}
-
-source: parent is duckdb.sql("select 1 as id") extend {
-   join_many: \`cost center\` is child on id = \`cost center\`.parent_id
-}
-`);
-      const terms = parseAuthorizeGrammarBody(
+      // A raw "`cost center`" segment would never match the join's real name
+      // and read a genuine fan-out as resolved; the parser's unquoted
+      // segments are what must reach this check.
+      const [term] = parseAuthorizeGrammarBody(
          "parent",
          "`cost center`.name in $GROUPS",
-         LIST_GIVENS,
-         ACCESS_FILTER_ROUTE,
+         LIST,
+         AF,
       );
-      const term = terms[0];
       if (term.scope !== "row_level") throw new Error("expected row_level");
-      expect(() =>
-         assertNoFanoutFieldPath(
-            "parent",
-            source(modelDef, "parent"),
-            term.fieldPath,
-            term.fieldPathSegments,
-         ),
-      ).toThrow(AuthorizeGrammarError);
-      try {
-         assertNoFanoutFieldPath(
-            "parent",
-            source(modelDef, "parent"),
-            term.fieldPath,
-            term.fieldPathSegments,
-         );
-         throw new Error("expected a throw");
-      } catch (err) {
-         expect((err as AuthorizeGrammarError).rejectionCause).toBe(
-            "fanout_path",
-         );
-      }
+      const assertPath = await fanout(
+         `source: child is duckdb.sql("select 1 as parent_id, 'north' as name") extend {}
+source: parent is duckdb.sql("select 1 as id") extend {
+   join_many: \`cost center\` is child on id = \`cost center\`.parent_id
+}`,
+         term.fieldPath,
+         term.fieldPathSegments,
+      );
+      expect(causeOf(assertPath).cause).toBe("fanout_path");
    });
 
-   // Must-fix 1's other half: a segment this walk cannot resolve against the
-   // struct at all must fail closed, not be read as "no fan-out here" —
-   // exactly the bug a stripped-quote mismatch would otherwise produce.
-   it("refuses a path whose segment does not resolve against the struct", async () => {
-      const modelDef = await compileModel(`
-source: parent is duckdb.sql("select 1 as id") extend {}
-`);
-      expect(() =>
-         assertNoFanoutFieldPath(
-            "parent",
-            source(modelDef, "parent"),
-            "nope.name",
-            ["nope", "name"],
-         ),
-      ).toThrow(AuthorizeGrammarError);
+   it("refuses a path whose segment does not resolve (fail closed, not 'no fan-out')", async () => {
+      const assertPath = await fanout(
+         `source: parent is duckdb.sql("select 1 as id") extend {}`,
+         "nope.name",
+         ["nope", "name"],
+      );
+      expect(assertPath).toThrow(AuthorizeGrammarError);
    });
 });
 
 describe("retired-route markers", () => {
-   it("a leftover #(partition) marker on the source line is caught", async () => {
-      const modelDef = await compileModel(`
-#(partition) org_id = $ORG
-source: X is duckdb.sql("select 1 as org_id") extend {
+   const X = `source: X is duckdb.sql("select 1 as org_id") extend {
    measure: c is count()
-}
-`);
-      const found = collectRetiredRouteMarkers(modelDef);
-      expect(found.length).toBeGreaterThan(0);
-      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
-   });
+}`;
 
-   it("a marker one level too low (on a field, not the source) is still caught", async () => {
-      const modelDef = await compileModel(`
-source: X is duckdb.sql("select 1 as org_id") extend {
+   it.each([
+      ["on the source line", `#(partition) org_id = $ORG\n${X}`, '"X"'],
+      [
+         "one level too low, on a field",
+         `source: X is duckdb.sql("select 1 as org_id") extend {
    #(partition) org_id = $ORG
    measure: c is count()
-}
-`);
-      const found = collectRetiredRouteMarkers(modelDef);
-      expect(found.length).toBeGreaterThan(0);
-      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
-   });
-
-   it("a marker on a joined source is caught through the join", async () => {
-      const modelDef = await compileModel(`
-source: Child is duckdb.sql("select 1 as org_id, 1 as k") extend {
+}`,
+         '"X"',
+      ],
+      [
+         "on a joined source, through the join",
+         `source: Child is duckdb.sql("select 1 as org_id, 1 as k") extend {
    #(partition) org_id = $ORG
    measure: c is count()
 }
 source: X is duckdb.sql("select 1 as k") extend {
    join_one: Child on k = Child.k
-   measure: c is count()
-}
-`);
-      const found = collectRetiredRouteMarkers(modelDef);
-      expect(found.some((f) => f.includes('"X"'))).toBe(true);
-      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
-   });
+}`,
+         '"X"',
+      ],
+      [
+         "on a top-level query:",
+         `${X}\n\n#(partition) org_id = $ORG\nquery: secret is X -> { aggregate: c is count() }`,
+         '"secret"',
+      ],
+      [
+         "at the file level",
+         `##(partition) org_id = $ORG\n${X}`,
+         "model itself",
+      ],
+      // the block form lands on blockNotes, which a `.notes` reader never sees
+      [
+         "as a file-level ##|(partition)|## block",
+         `##|(partition)\norg_id = $ORG\n|##\n${X}`,
+         "model itself",
+      ],
+   ])(
+      "catches a leftover #(partition) marker %s",
+      async (_label, model, names) => {
+         const found = collectRetiredRouteMarkers(await compileModel(model));
+         expect(found.some((f) => f.includes(names))).toBe(true);
+         expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+      },
+   );
 
-   it("a model with no retired marker is clean", async () => {
-      const modelDef = await compileModel(`
-source: X is duckdb.sql("select 1 as org_id") extend {
-   measure: c is count()
-}
-`);
-      expect(collectRetiredRouteMarkers(modelDef)).toEqual([]);
-   });
-
-   // Also fix 3: `#(authorize)`'s own misplaced-annotation check
-   // (`assertNoMisplacedAuthorizeAnnotations`) already covers a top-level
-   // `query:` and the file level; the retired-route sweep did not, so a
-   // leftover `#(partition)` in either position loaded clean.
-   it("a leftover #(partition) marker on a top-level query: is caught", async () => {
-      const modelDef = await compileModel(`
-source: X is duckdb.sql("select 1 as org_id") extend {
-   measure: c is count()
-}
-
-#(partition) org_id = $ORG
-query: secret is X -> { aggregate: c is count() }
-`);
-      const found = collectRetiredRouteMarkers(modelDef);
-      expect(found.some((f) => f.includes('"secret"'))).toBe(true);
-      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
-   });
-
-   it("a leftover file-level ##(partition) marker is caught", async () => {
-      const modelDef = await compileModel(`
-##(partition) org_id = $ORG
-source: X is duckdb.sql("select 1 as org_id") extend {
-   measure: c is count()
-}
-`);
-      const found = collectRetiredRouteMarkers(modelDef);
-      expect(found.some((f) => f.includes("model itself"))).toBe(true);
-      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
-   });
-
-   // Gap (a): the block-annotation form (`##|...|#`) lands on `blockNotes`,
-   // which a caller reading only `.notes` never sees — see `annotations.ts`'s
-   // own warning that reading one key "silently skips the latter two forms".
-   it("a leftover file-level ##|(partition)|# BLOCK marker is caught", async () => {
-      const modelDef = await compileModel(`
-##|(partition)
-org_id = $ORG
-|##
-source: X is duckdb.sql("select 1 as org_id") extend {
-   measure: c is count()
-}
-`);
-      const found = collectRetiredRouteMarkers(modelDef);
-      expect(found.some((f) => f.includes("model itself"))).toBe(true);
-      expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
-   });
-
-   // Gap (b): a model that reaches a partitioned source only through a
-   // transitive import, where the intermediate derivation carries its own
-   // annotation, stores the marker ONLY in `annotations.inherits` — and the
-   // declaring base (here, `Base`) never appears in the entry model's own
-   // `modelDef.contents` at all (confirmed below). A caller reading only the
-   // struct's own-level notes would see "mid own doc" and stop there.
-   it("a #(partition) marker reachable only through an inherited annotation chain is caught", async () => {
-      const modelDef = await compileModelFiles(
+   it("catches a marker reachable only through an inherited annotation chain", async () => {
+      // `Mid`'s own `#(doc)` demotes the marker to `annotations.inherits`, and
+      // the declaring `Base` never enters the entry model's contents.
+      const modelDef = await compileModel(
          {
-            "base.malloy": `
-#(partition) org_id = $ORG
-source: Base is duckdb.sql("select 1 as org_id") extend {
-   measure: c is count()
-}
-`,
-            "mid.malloy": `
-import "base.malloy"
-#(doc) mid own doc
-source: Mid is Base extend {
-   measure: c2 is count()
-}
-`,
-            "entry.malloy": `
-import "mid.malloy"
-source: Entry is Mid extend {}
-`,
+            "base.malloy": `#(partition) org_id = $ORG\n${X.replace("X is", "Base is")}`,
+            "mid.malloy": `import "base.malloy"\n#(doc) mid own doc\nsource: Mid is Base extend {\n   measure: c2 is count()\n}`,
+            "entry.malloy": `import "mid.malloy"\nsource: Entry is Mid extend {}`,
          },
          "entry.malloy",
       );
-      // The declaring base is reached only via the annotation chain, not as
-      // its own entry — pinning the shape this test exists to cover.
       expect(Object.keys(modelDef.contents)).not.toContain("Base");
       const found = collectRetiredRouteMarkers(modelDef);
       expect(found.some((f) => f.includes('"Entry"'))).toBe(true);
       expect(() => assertNoRetiredRouteMarkers(found)).toThrow();
+   });
+
+   it("finds nothing in a model with no retired marker", async () => {
+      expect(collectRetiredRouteMarkers(await compileModel(X))).toEqual([]);
    });
 });

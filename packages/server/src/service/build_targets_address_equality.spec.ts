@@ -39,7 +39,7 @@ import { computeSourceEntityId } from "./build_plan";
 import {
    duckdbTestConnections,
    loadTestRuntime,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 let connections: FixedConnectionMap;
 let duckdb: DuckDBConnection;

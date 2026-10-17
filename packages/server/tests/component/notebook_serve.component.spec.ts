@@ -1,0 +1,577 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+/**
+ * Identity, discovery and listing of served notebooks (`notebooks/*.malloy`
+ * with a model-level `## artifact` note), driven through `Package.create` on
+ * the package-load worker pool, the way a real load and reload run.
+ */
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { Model } from "../../src/service/model";
+import { Package } from "../../src/service/package";
+import {
+   artifactNoteLine,
+   docNotesAboveArtifact,
+   isArtifactNoteText,
+} from "../../src/service/notebook";
+import {
+   carriesArtifactTag,
+   isReportEligiblePath,
+   readReportTagOfText,
+} from "../../src/service/report";
+import {
+   getDashboard,
+   listDashboards,
+   listNotebooks,
+} from "../../src/service/legacy_report_views";
+import {
+   duckdbMalloyConfig,
+   usePackageLoadPool,
+} from "../../src/test_helpers/temp_package";
+
+/** The layout `readReportTagOfText` gives, or `null` for no report. */
+const layoutOfText = (source: string) => {
+   const tag = readReportTagOfText(source);
+   return tag.status === "report" ? tag.layout : null;
+};
+
+const note = (text: string, line: number) => ({
+   text,
+   at: {
+      url: "file:///x.malloy",
+      range: {
+         start: { line, character: 0 },
+         end: { line, character: text.length },
+      },
+   },
+});
+
+describe("notebook predicates", () => {
+   // Ported from the folder predicates: a report may live at any depth.
+   it("admits a report anywhere outside public/, and never the root index.malloy", () => {
+      expect(isReportEligiblePath("notebooks/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("notebooks/a.malloynb")).toBe(true);
+      expect(isReportEligiblePath("notebooks/sub/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("a/notebooks/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("dashboards/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("models/a.malloy")).toBe(true);
+      expect(isReportEligiblePath("public/a.malloy")).toBe(false);
+      expect(isReportEligiblePath("index.malloy")).toBe(false);
+   });
+
+   it("takes the layout from the tag, never from the folder", () => {
+      const tag = (props: string) => `## artifact { ${props} }\nrun: x`;
+      expect(layoutOfText(tag("layout=grid"))).toBe("grid");
+      expect(layoutOfText(tag('layout=linear tiles=["a -> b"]'))).toBe(
+         "linear",
+      );
+      expect(layoutOfText(tag('tiles=["a -> b"]'))).toBe("grid");
+      // Linear with no tiles is the retired cell format, so no report.
+      expect(layoutOfText(tag(""))).toBeNull();
+      expect(layoutOfText(tag("layout=linear"))).toBeNull();
+      expect(layoutOfText(tag("layout=linear tiles=[]"))).toBe("linear");
+      // `kind=` is no longer read, so a tag that sets it makes no report.
+      expect(layoutOfText(tag("kind=notebook"))).toBeNull();
+      expect(layoutOfText(tag("kind=text"))).toBeNull();
+   });
+
+   it("reads the artifact tag written as a ##| block", () => {
+      const block =
+         '##| artifact { layout=linear\n  tiles=[\n    a { kind=text },\n    "s -> v"\n  ]\n}\n|##\nrun: x';
+      expect(layoutOfText(block)).toBe("linear");
+      // The lexer takes the opener's whole line, so a same-line `|##` is tag text the tag cannot parse.
+      const sameLine = "##| artifact { layout=grid } |##\n}\n|##\nrun: x";
+      expect(carriesArtifactTag(sameLine)).toBe(true);
+      expect(layoutOfText(sameLine)).toBeNull();
+      expect(carriesArtifactTag("##| artifacts\nprose\n|##\nrun: x")).toBe(
+         false,
+      );
+      expect(isArtifactNoteText("##| artifact { layout=linear }")).toBe(true);
+   });
+
+   it("reads an artifact property anywhere among the tag's properties", () => {
+      const second =
+         "## dashboard { columns=2 } artifact { layout=linear tiles=[] }";
+      expect(isArtifactNoteText(second)).toBe(true);
+      expect(layoutOfText(`${second}\nrun: x`)).toBe("linear");
+      expect(
+         layoutOfText(
+            "##| dashboard { columns=2 }\n  artifact { layout=linear tiles=[] }\n|##\nrun: x",
+         ),
+      ).toBe("linear");
+      expect(
+         layoutOfText("## 2024_q1 {} artifact { layout=linear tiles=[] }"),
+      ).toBe("linear");
+      expect(isArtifactNoteText('## dashboard { title="artifact" }')).toBe(
+         false,
+      );
+      expect(isArtifactNoteText("## dashboard { artifact {} }")).toBe(false);
+      expect(isArtifactNoteText("## title=artifact")).toBe(false);
+   });
+
+   it("follows Malloy's route rule: a sigil glued to a word is a route, not a tag", () => {
+      expect(isArtifactNoteText("##artifact { layout=linear }")).toBe(false);
+      expect(isArtifactNoteText("##|artifact { layout=linear }")).toBe(false);
+      expect(
+         carriesArtifactTag("##|artifact { layout=grid }\n|##\nrun: x"),
+      ).toBe(false);
+      expect(carriesArtifactTag("##artifact { layout=grid }\nrun: x")).toBe(
+         false,
+      );
+   });
+
+   it("locates the artifact note by its line, and only the ## form", () => {
+      const notes = [
+         note('##" above\n', 0),
+         note("## artifact { layout=linear }\n", 1),
+         note('##" below\n', 3),
+      ];
+      expect(artifactNoteLine(notes)).toBe(1);
+      expect(artifactNoteLine([note("## artifactual\n", 0)])).toBeUndefined();
+      expect(artifactNoteLine([note("# artifact {}\n", 0)])).toBeUndefined();
+   });
+
+   it("keeps only the notes above the artifact line, and all when there is none", () => {
+      const notes = [
+         note('##" above\n', 0),
+         note("## artifact {}\n", 1),
+         note('##" below\n', 3),
+      ];
+      expect(docNotesAboveArtifact(notes)).toEqual(['##" above\n']);
+      expect(docNotesAboveArtifact([notes[0], notes[2]])).toEqual([
+         '##" above\n',
+         '##" below\n',
+      ]);
+   });
+
+   it('ignores an artifact line inside a ##|" block body', () => {
+      expect(carriesArtifactTag("## artifact {}\nrun: x")).toBe(true);
+      expect(carriesArtifactTag('##|"\n## artifact kinds\n|##\nrun: x')).toBe(
+         false,
+      );
+      expect(
+         carriesArtifactTag('##|"\nprose\n|##\n## artifact {}\nrun: x'),
+      ).toBe(true);
+   });
+});
+
+describe("the artifact tag read off text, as the lexer reads it", () => {
+   it("reads CRLF as well as LF", () => {
+      expect(
+         carriesArtifactTag("source: a is x\r\n## artifact {}\r\nrun: b"),
+      ).toBe(true);
+      expect(
+         carriesArtifactTag('##|"\r\n## artifact kinds\r\n|##\r\nrun: x'),
+      ).toBe(false);
+   });
+
+   it("does not let an unterminated block hide a later artifact line", () => {
+      expect(carriesArtifactTag('##|"\nprose\nmore')).toBe(false);
+   });
+
+   it("closes a block only where the lexer does: at the opener's column, and `|#` not as `|##`", () => {
+      // A `|##` body line does not close a `#|` block, so the tag-like line after it stays prose.
+      expect(
+         carriesArtifactTag("#|(markdown)\n|## x\n## artifact {}\n|#\nrun: x"),
+      ).toBe(false);
+      // Positive control: the closer at the opener's column ends the block.
+      expect(
+         carriesArtifactTag("#|(markdown)\nprose\n|#\n## artifact {}\nrun: x"),
+      ).toBe(true);
+   });
+});
+
+describe("served notebooks (worker path)", () => {
+   let tempDir: string;
+   usePackageLoadPool();
+
+   beforeEach(() => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-nb-serve-"));
+      fs.mkdirSync(path.join(tempDir, "notebooks"));
+      fs.mkdirSync(path.join(tempDir, "dashboards"));
+   });
+
+   afterEach(() => {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+   });
+
+   const write = (rel: string, text: string) =>
+      fs.writeFileSync(path.join(tempDir, rel), text);
+   const manifest = (extra: Record<string, unknown> = {}) =>
+      write("publisher.json", JSON.stringify({ name: "pkg", ...extra }));
+
+   const BASE = `source: base is duckdb.sql("select 1 as id, 'x' as label")\n`;
+
+   async function withPackage(
+      run: (
+         pkg: Package,
+         cfg: ReturnType<typeof duckdbMalloyConfig>,
+      ) => Promise<void>,
+   ) {
+      const cfg = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create(
+            "env",
+            "pkg",
+            tempDir,
+            cfg.malloyConfig,
+         );
+         await run(pkg, cfg);
+      } finally {
+         await cfg.duckdb.close();
+      }
+   }
+
+   it("is a served notebook only with an artifact note, and stays a model", async () => {
+      manifest();
+      write(
+         "notebooks/tagged.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      write("notebooks/untagged.malloy", BASE);
+      // The retired cell format: a linear tag with no tiles is no report.
+      write("notebooks/cells.malloy", `## artifact { layout=linear }\n${BASE}`);
+      await withPackage(async (pkg) => {
+         expect(pkg.isServedReport("notebooks/cells.malloy")).toBe(false);
+         expect(pkg.getModel("notebooks/cells.malloy")!.isNotebook()).toBe(
+            false,
+         );
+         expect(pkg.getReportLayout("notebooks/tagged.malloy")).toBe("linear");
+         expect(pkg.isServedReport("notebooks/untagged.malloy")).toBe(false);
+         const model = pkg.getModel("notebooks/tagged.malloy")!;
+         expect(model.isNotebook()).toBe(true);
+         expect(model.getType()).toBe("model");
+         expect(pkg.getModel("notebooks/untagged.malloy")!.isNotebook()).toBe(
+            false,
+         );
+      });
+   });
+
+   it("reads a CRLF .malloynb into the same cells as an LF one", async () => {
+      manifest();
+      const cells = [
+         ">>>markdown",
+         "## Totals",
+         ">>>malloy",
+         BASE.trim(),
+         "run: base -> { aggregate: n is count() }",
+      ];
+      write("lf.malloynb", cells.join("\n"));
+      write("crlf.malloynb", cells.join("\r\n"));
+      await withPackage(async (pkg) => {
+         const textOf = async (p: string) =>
+            (await pkg.getReport(p))?.notebook?.notebookCells?.map(
+               (c) => c.text,
+            );
+         const lf = await textOf("lf.malloynb");
+         expect(lf?.[0]).toBe("## Totals");
+         expect(await textOf("crlf.malloynb")).toEqual(lf);
+      });
+   });
+
+   it("serves a notebook whose artifact property follows another property", async () => {
+      manifest();
+      write(
+         "notebooks/second.malloy",
+         `## dashboard { columns=2 } artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      write(
+         "notebooks/titled.malloy",
+         `## dashboard { title="artifact" }\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         expect(pkg.getReportLayout("notebooks/second.malloy")).toBe("linear");
+         expect(pkg.getModel("notebooks/second.malloy")!.isNotebook()).toBe(
+            true,
+         );
+         expect(pkg.isServedReport("notebooks/titled.malloy")).toBe(false);
+      });
+   });
+
+   it("excludes a served notebook from listModels with and without a surface", async () => {
+      manifest();
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      write("notebooks/cells.malloy", `## artifact {}\n${BASE}`);
+      write("notebooks/plain.malloy", BASE);
+      write("other.malloy", BASE);
+      await withPackage(async (pkg) => {
+         // A file written as cells is no report, so it lists as the model it is.
+         expect((await pkg.listModels()).map((m) => m.path).sort()).toEqual([
+            "notebooks/cells.malloy",
+            "notebooks/plain.malloy",
+            "other.malloy",
+         ]);
+         write("index.malloy", `import "other.malloy"\nexport { base }\n`);
+         await pkg.reloadAllModels({});
+         expect((await pkg.listModels()).map((m) => m.path)).toEqual([
+            "index.malloy",
+         ]);
+      });
+   });
+
+   it("re-discovers on reload: gaining or losing the artifact note flips the flag", async () => {
+      manifest();
+      write("notebooks/gains.malloy", BASE);
+      write(
+         "notebooks/loses.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         expect(pkg.getModel("notebooks/gains.malloy")!.isNotebook()).toBe(
+            false,
+         );
+         expect(pkg.getModel("notebooks/loses.malloy")!.isNotebook()).toBe(
+            true,
+         );
+         write(
+            "notebooks/gains.malloy",
+            `## artifact { layout=linear tiles=[] }\n${BASE}`,
+         );
+         write("notebooks/loses.malloy", BASE);
+         await pkg.reloadAllModels({});
+         expect(pkg.getModel("notebooks/gains.malloy")!.isNotebook()).toBe(
+            true,
+         );
+         expect(pkg.getModel("notebooks/loses.malloy")!.isNotebook()).toBe(
+            false,
+         );
+      });
+   });
+
+   it("answers the notebook GET for a served notebook whose only statement is a definition", async () => {
+      manifest();
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         const raw = await pkg.getModel("notebooks/nb.malloy")!.getNotebook();
+         expect(raw).toMatchObject({
+            type: "notebook",
+            format: "malloy",
+            notebookCells: [
+               { type: "code", kind: "definition", text: BASE.trimEnd() },
+            ],
+         });
+      });
+   });
+
+   it("does not take an artifact line inside a block body for a dashboard", async () => {
+      manifest();
+      write(
+         "dashboards/x.malloy",
+         `## artifact { tiles=["base -> v"] }\n` +
+            `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
+      );
+      await withPackage(async (pkg) => {
+         expect(listDashboards(pkg, "env").map((d) => d.path)).toEqual([
+            "dashboards/x.malloy",
+         ]);
+         write(
+            "dashboards/x.malloy",
+            `##|"\n## artifact kinds\n|##\nsource: oops is\n`,
+         );
+         await pkg.reloadAllModels({});
+         expect(listDashboards(pkg, "env")).toEqual([]);
+      });
+   });
+
+   it("lists a notebook titled by each link of the chain, in order", async () => {
+      manifest();
+      write(
+         "notebooks/a_titled.malloy",
+         `##" Prose above\n## artifact { layout=linear tiles=[] title="Explicit" }\n${BASE}`,
+      );
+      write(
+         "notebooks/b_described.malloy",
+         `##" First line\n##" second line\n## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      write(
+         "notebooks/c_heading.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      write(
+         "notebooks/d_bare.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         pkg.getModel("notebooks/c_heading.malloy")!.setNotebookCells([
+            { type: "markdown", text: "# Heading title\nbody" },
+         ]);
+         const listed = await listNotebooks(pkg, "env");
+         const by = (p: string) => listed.find((n) => n.path === p)!;
+         expect(await by("notebooks/a_titled.malloy")).toMatchObject({
+            title: "Explicit",
+            description: "Prose above",
+         });
+         expect(await by("notebooks/b_described.malloy")).toMatchObject({
+            title: "First line",
+            description: "second line",
+         });
+         expect(await by("notebooks/c_heading.malloy").title).toBe(
+            "Heading title",
+         );
+         expect(await by("notebooks/d_bare.malloy").title).toBeUndefined();
+         expect(
+            await by("notebooks/d_bare.malloy").description,
+         ).toBeUndefined();
+      });
+   });
+
+   it("does not let prose below the artifact tag become the description", async () => {
+      manifest();
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] title="T" }\n##(markdown) a markdown cell, not a description\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         const [nb] = await listNotebooks(pkg, "env");
+         expect(nb.title).toBe("T");
+         expect(nb.description).toBeUndefined();
+      });
+   });
+
+   it("scopes a dashboard's description to the notes above its artifact tag", async () => {
+      manifest();
+      write(
+         "dashboards/d.malloy",
+         `##" Above the tag\n## artifact { tiles=["base -> v"] title="D" }\n##" Below the tag\n` +
+            `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`,
+      );
+      await withPackage(async (pkg) => {
+         const dashboards = await listDashboards(pkg, "env");
+         expect(dashboards.map((d) => d.description)).toEqual([
+            "Above the tag",
+         ]);
+      });
+   });
+
+   it("reads a dashboard's description from below the tag only when nothing is above it", async () => {
+      manifest();
+      const model = `source: base is duckdb.sql("select 1 as id") extend { view: v is { group_by: id } }\n`;
+      write(
+         "dashboards/legacy.malloy",
+         `## artifact { tiles=["base -> v"] }\n##" Legacy title\n##" Legacy body\n${model}`,
+      );
+      write(
+         "dashboards/blank_above.malloy",
+         `##"\n## artifact { tiles=["base -> v"] title="T" }\n##" Below body\n${model}`,
+      );
+      write(
+         "dashboards/current.malloy",
+         `##" Current title\n##" Current body\n## artifact { tiles=["base -> v"] }\n##" Ignored below\n${model}`,
+      );
+      await withPackage(async (pkg) => {
+         const by = async (name: string) =>
+            (await getDashboard(pkg, "env", name))!;
+         expect(await by("legacy")).toMatchObject({
+            title: "Legacy title",
+            description: "Legacy body",
+         });
+         expect(await by("blank_above")).toMatchObject({
+            title: "T",
+            description: "Below body",
+         });
+         expect(await by("current")).toMatchObject({
+            title: "Current title",
+            description: "Current body",
+         });
+      });
+   });
+
+   it("never reads a served notebook's description from below the tag, however little is above it", async () => {
+      manifest();
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] }\n##(markdown) a markdown cell\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         const [nb] = await listNotebooks(pkg, "env");
+         expect(nb.description).toBeUndefined();
+         expect(nb.title).toBeUndefined();
+      });
+   });
+
+   // DEPRECATED FEATURE COVERAGE — delete together with `explores` (see
+   // RELEASE_NOTES deprecations).
+   describe("deprecated: explores", () => {
+      it("flags a served notebook listed in explores, as it flags a .malloynb", async () => {
+         manifest({ explores: ["notebooks/nb.malloy"] });
+         write(
+            "notebooks/nb.malloy",
+            `## artifact { layout=linear tiles=[] }\n${BASE}`,
+         );
+         await withPackage(async (pkg) => {
+            expect(pkg.getInvalidExplores().map((p) => p.entry)).toEqual([
+               "notebooks/nb.malloy",
+            ]);
+         });
+      });
+   });
+
+   it("lists a notebook that failed to compile with its error, after a reload", async () => {
+      manifest();
+      write(
+         "notebooks/nb.malloy",
+         `## artifact { layout=linear tiles=[] }\n${BASE}`,
+      );
+      await withPackage(async (pkg) => {
+         write(
+            "notebooks/nb.malloy",
+            `## artifact { layout=linear tiles=[] }\n##|"\n## artifact kinds\n|##\nsource: oops is\n`,
+         );
+         await pkg.reloadAllModels({});
+         const listed = await listNotebooks(pkg, "env");
+         expect(listed.map((n) => n.path)).toEqual(["notebooks/nb.malloy"]);
+         expect(listed[0].error).toBeTruthy();
+         expect(pkg.getReportLayout("notebooks/nb.malloy")).toBe("linear");
+      });
+   });
+
+   it("does not take a broken file for a notebook on a block body's prose alone", async () => {
+      manifest();
+      write("notebooks/nb.malloy", BASE);
+      await withPackage(async (pkg) => {
+         write(
+            "notebooks/nb.malloy",
+            `##|"\n## artifact kinds\n|##\nsource: oops is\n`,
+         );
+         await pkg.reloadAllModels({});
+         expect(await listNotebooks(pkg, "env")).toEqual([]);
+      });
+   });
+
+   it("records the compiled text on the in-process load path", async () => {
+      manifest();
+      const text = `## artifact { layout=linear tiles=[] }\n${BASE}`;
+      write("notebooks/nb.malloy", text);
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const model = await Model.create(
+            "pkg",
+            tempDir,
+            "notebooks/nb.malloy",
+            malloyConfig,
+         );
+         expect(model.getCompiledSourceText()).toBe(text);
+         model.setQueryBoundary({
+            mode: "all",
+            exploresDeclared: false,
+            isQueryEntryPoint: true,
+            layout: "linear",
+         });
+         expect(await model.getNotebook()).toMatchObject({
+            format: "malloy",
+            notebookCells: [],
+         });
+      } finally {
+         await duckdb.close();
+      }
+   });
+});

@@ -2,15 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Health check endpoints and graceful shutdown handling.
- *
- * Provides Kubernetes-compatible health probes:
- * - /health - Overall health status
- * - /health/liveness - Always returns 200 (process is alive)
- * - /health/readiness - Returns 200 when ready, 503 when not ready
- *
- * On SIGTERM, the service enters draining state to allow in-flight requests
- * to complete before shutdown.
+ * Kubernetes health probes (`/health`, `/health/liveness`, `/health/readiness`)
+ * and SIGTERM draining.
  */
 
 import { Express, NextFunction, Request, Response } from "express";
@@ -24,16 +17,11 @@ export type OperationalState =
 let operationalState: OperationalState = "initializing" as OperationalState;
 let ready: boolean = false;
 let preGracefulShutdownCompleted: boolean = false;
-/**
- * Returns the current operational state of the service.
- */
+
 export function getOperationalState(): OperationalState {
    return operationalState;
 }
 
-/**
- * Marks the service as ready to serve traffic.
- */
 export function markReady(): void {
    if (operationalState !== "draining") {
       operationalState = "serving";
@@ -44,33 +32,16 @@ export function markReady(): void {
    }
 }
 
-/**
- * Marks the service as not ready (readiness probe will return 503).
- */
 export function markNotReady(): void {
    ready = false;
    logger.info("Service marked as not ready - readiness probe will fail");
 }
 
 /**
- * Registers SIGTERM handler for graceful shutdown.
- *
- * Shutdown sequence:
- * 1. Marks service as not ready (readiness probe returns 503) and enters draining state
- * 2. Waits shutdownDrainDurationSeconds to allow in-flight requests to complete
- * 3. Sets preGracefulShutdownCompleted flag (enables drainingGuard middleware to reject new requests)
- * 4. Closes main server and MCP server (stops accepting new connections)
- * 5. Waits shutdownGracefulCloseTimeoutSeconds (if > 0) for final cleanup
- * 6. Closes logger (last, so any logs emitted during cleanup are flushed)
- * 7. Exits process
- *
- * Note: drainingGuard only rejects requests after step 3 completes. During step 2,
- * the service is draining but still accepts requests (readiness probe returns 503).
- *
- * @param server - Main HTTP server instance
- * @param mcpServer - MCP server instance
- * @param shutdownDrainDurationSeconds - Duration in seconds to wait before closing servers
- * @param shutdownGracefulCloseTimeoutSeconds - Duration in seconds to wait after closing servers before exit
+ * On SIGTERM: fail readiness and drain for `shutdownDrainDurationSeconds`
+ * while still accepting requests, then let `drainingGuard` refuse new ones,
+ * close both servers, wait `shutdownGracefulCloseTimeoutSeconds`, close the
+ * logger and exit.
  */
 export function registerSignalHandlers(
    server: Server,
@@ -78,9 +49,7 @@ export function registerSignalHandlers(
    shutdownDrainDurationSeconds: number = 0,
    shutdownGracefulCloseTimeoutSeconds: number = 0,
 ): void {
-   // On SIGTERM, drain in-flight requests before closing the servers (see the
-   // shutdown sequence above). K8s will SIGKILL after terminationGracePeriodSeconds
-   // if this handler does not exit first.
+   // K8s sends SIGKILL after terminationGracePeriodSeconds if this has not exited.
    process.once("SIGTERM", async () => {
       logger.info("========== SIGTERM RECEIVED ==========");
       markNotReady();
@@ -105,14 +74,10 @@ export function registerSignalHandlers(
 }
 
 /**
- * Performs the post-drain shutdown work: closes both HTTP servers,
- * shuts down the OpenTelemetry SDK, waits the optional graceful-close
- * window so any in-flight cleanup can finish logging, closes the
- * winston logger, and exits the process.
- *
- * Exported so unit tests can exercise the close + log + exit ordering
- * without emitting SIGTERM (which would leave module-level
- * operationalState stuck in "draining" and leak into sibling specs).
+ * The post-drain shutdown: close both servers, the OTel SDK and the worker
+ * pool, wait the graceful-close window, close the logger, exit. Exported so
+ * tests can check the ordering without a SIGTERM, which would leave
+ * module-level state "draining" for sibling specs.
  */
 export async function performGracefulShutdownAfterDrain(
    server: Server,
@@ -148,11 +113,8 @@ export async function performGracefulShutdownAfterDrain(
    }
 
    try {
-      // Drain in-flight compiles and terminate worker_threads before
-      // we exit so a slow compile doesn't leave orphan worker
-      // processes. Lazy-imported to avoid pulling the pool module
-      // into the health.ts dep graph for tests that don't exercise
-      // the compile path.
+      // So a slow compile leaves no orphan workers. Lazy-imported to keep the
+      // pool out of this module's import graph in tests.
       const { getPackageLoadPool } = await import(
          "./package_load/package_load_pool"
       );
@@ -171,11 +133,8 @@ export async function performGracefulShutdownAfterDrain(
       );
    }
 
-   // Close the logger last so anything emitted during the wait window
-   // above (or by other shutdown paths still running) reaches its
-   // transports. Closing earlier triggers winston's
-   // "Attempt to write logs with no transports" warning on any
-   // subsequent logger call.
+   // Last, so logs from the wait window still reach a transport; a later
+   // logger call would warn "Attempt to write logs with no transports".
    try {
       logger.close();
    } catch (_error) {
@@ -185,7 +144,7 @@ export async function performGracefulShutdownAfterDrain(
    process.exit(0);
 }
 /**
- * Middleware that returns 503 for non-health and metrics requests when service is draining.
+ * 503 for every request but health and metrics once draining has finished.
  * Must be registered before application routes.
  */
 export function drainingGuard(
@@ -208,9 +167,6 @@ export function drainingGuard(
    next();
 }
 
-/**
- * Registers health check endpoints
- */
 export function registerHealthEndpoints(app: Express): void {
    app.get("/health", (_req: Request, res: Response) => {
       res.status(200).json({

@@ -196,9 +196,9 @@ describe("readDashboardDocument: text tiles and layout", () => {
       expect(result.reason).toContain("outro");
    });
 
-   it("refuses a quoted entry that is not source -> view", async () => {
+   it("refuses a quoted entry that is neither source -> view nor a query's name", async () => {
       const result = await readDashboardDocument(
-         NOTEBOOK.replace('"a_tiles -> cell_1"', '"a_tiles"'),
+         NOTEBOOK.replace('"a_tiles -> cell_1"', '"a_tiles -> cell_1 -> x"'),
       );
       if (!readFailed(result)) throw new Error("expected a refusal");
       expect(result.reason).toContain("source -> view");

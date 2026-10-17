@@ -257,6 +257,11 @@ class ServerCmd(unittest.TestCase):
                                seed=True)
         self.assertIn("--init", cmd)
 
+    def test_launches_with_node_not_bun(self):
+        cmd = serve.server_cmd(SERVER, pathlib.Path("/root"), 4811, 4040,
+                               seed=False)
+        self.assertEqual(cmd[:2], ["node", str(SERVER)])
+
     def test_preserving_does_not_pass_init(self):
         cmd = serve.server_cmd(SERVER, pathlib.Path("/root"), 4811, 4040,
                                seed=False)

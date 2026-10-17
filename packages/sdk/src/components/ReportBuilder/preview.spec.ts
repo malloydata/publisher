@@ -4,7 +4,9 @@
 import { describe, expect, it } from "bun:test";
 import type { GivenValue } from "../../hooks/givenValue";
 import type { DashboardDocument, QueryTile } from "./document";
-import { queryTile } from "./testing/fixtures";
+import fs from "node:fs";
+import path from "node:path";
+import { openDocument, queryTile } from "./testing/fixtures";
 import {
    givensReadThroughModel,
    previewGivens,
@@ -53,7 +55,7 @@ const document: DashboardDocument = {
 };
 
 describe("previewGivens", () => {
-   it("shows the givens some tile binds, this file's first, in declaration order", () => {
+   it("shows the givens some tile binds, tile by tile, in binding order", () => {
       const specs = previewGivens(document, [
          { name: "REGION", type: "filter<string>" },
          { name: "CATEGORY", type: "filter<string>", label: "From the model" },
@@ -144,6 +146,15 @@ describe("givens read through the model", () => {
       expect(
          previewGivens(recalls, MODEL, reads).map((spec) => spec.name),
       ).toEqual(MODEL.map((spec) => spec.name));
+      // With each tile's served reads, the reader's order: tile by tile.
+      expect(
+         previewGivens(recalls, MODEL, reads, served).map((spec) => spec.name),
+      ).toEqual([
+         "manufacturer_filter",
+         "recall_date_filter",
+         "major_recall_filter",
+         "subject_filter",
+      ]);
       // Without the reads, the row the builder drew before: empty.
       expect(previewGivens(recalls, MODEL)).toEqual([]);
    });
@@ -170,7 +181,7 @@ describe("givens read through the model", () => {
       expect([...reads]).toEqual(["manufacturer_filter"]);
    });
 
-   it("puts this file's bound declarations first, then the model's", () => {
+   it("puts a tile's model reads before its own bindings", () => {
       const mixed: DashboardDocument = {
          ...recalls,
          localGivens: [{ name: "SINCE", type: "date", default: "@2020-01-01" }],
@@ -185,12 +196,12 @@ describe("givens read through the model", () => {
       };
       const reads = givensReadThroughModel(mixed, mixed, served);
       expect(
-         previewGivens(mixed, MODEL, reads).map((spec) => spec.name),
+         previewGivens(mixed, MODEL, reads, served).map((spec) => spec.name),
       ).toEqual([
-         "SINCE",
          "manufacturer_filter",
-         "major_recall_filter",
          "recall_date_filter",
+         "major_recall_filter",
+         "SINCE",
       ]);
    });
 
@@ -244,10 +255,10 @@ describe("previewTileQuery", () => {
             runnable,
          ).annotation;
       expect(withChart("bar_chart")).toBe(
-         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -viz bar_chart",
+         "# -line_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz bar_chart",
       );
       expect(withChart("none")).toBe(
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz",
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -combo_chart -viz",
       );
       expect(withChart("custom")).toBe("# bar_chart { size=spark }");
       expect(withChart("default")).toBeUndefined();
@@ -255,17 +266,29 @@ describe("previewTileQuery", () => {
    });
 
    it("clears the saved view's own chart line for an inline or opaque tile on Default", () => {
+      // Every chart tag off and `viz` left alone: not Table's line, so a view
+      // of totals still draws as big numbers, as it does with no line at all.
       const NONE =
-         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz";
+         "# -line_chart -bar_chart -scatter_chart -shape_map -segment_map -combo_chart";
+      // A colour is set so this reads the chart line alone; Theme's line is pinned below.
       const annotationOf = (
          declaration: QueryTile["declaration"],
          chart: QueryTile["chart"],
       ) =>
          previewTileQuery(
             document,
-            { name: "x", source: "overview", declaration, chart },
+            {
+               name: "x",
+               source: "overview",
+               declaration,
+               chart,
+               color: "#123456",
+            },
             runnable,
-         ).annotation;
+         )
+            .annotation?.split("\n")
+            .filter((line) => line !== '# theme.palette.series=["#123456"]')
+            .join("\n") || undefined;
       expect(annotationOf({ kind: "inline" }, "default")).toBe(NONE);
       for (const why of [
          "a `{ … } + { … }` compound refinement",
@@ -285,6 +308,42 @@ describe("previewTileQuery", () => {
       expect(
          annotationOf({ kind: "reference", from: "v" }, "default"),
       ).toBeUndefined();
+   });
+
+   it("takes the saved view's colour off an inline or opaque tile set to Theme", () => {
+      // An inline tile runs its own saved view, which still carries the colour
+      // it was saved with: without this line, picking Theme kept drawing that
+      // colour while the menu showed the theme's. A reference tile runs its
+      // base view, which never had the wrapper's colour, so it needs none.
+      const RESET = "# -theme.palette.series";
+      const annotationOf = (
+         declaration: QueryTile["declaration"],
+         color?: string,
+      ) =>
+         previewTileQuery(
+            document,
+            {
+               name: "x",
+               source: "overview",
+               declaration,
+               chart: "combo_chart",
+               ...(color ? { color } : {}),
+            },
+            runnable,
+         ).annotation?.split("\n");
+      expect(annotationOf({ kind: "inline" })).toEqual([
+         "# -line_chart -bar_chart -big_value -scatter_chart -shape_map -segment_map -viz combo_chart",
+         RESET,
+      ]);
+      expect(
+         annotationOf({ kind: "opaque", why: "a chained refinement" })?.at(-1),
+      ).toBe(RESET);
+      expect(
+         annotationOf({ kind: "reference", from: "v" })?.includes(RESET),
+      ).toBe(false);
+      expect(annotationOf({ kind: "inline" }, "#7f9862")?.at(-1)).toBe(
+         '# theme.palette.series=["#7f9862"]',
+      );
    });
 
    it("sends a tile only the givens it binds", () => {
@@ -350,6 +409,18 @@ describe("previewTileQuery", () => {
          "overview -> kpis + { where: category ~ $CATEGORY }",
       );
       expect(q.givenNames).toEqual(["CATEGORY"]);
+   });
+
+   it("runs a named-query tile by its name, sending the whole row", () => {
+      const named: QueryTile = {
+         name: "by_carrier",
+         declaration: { kind: "query" },
+      };
+      expect(previewTileQuery(document, named, runnable)).toEqual({
+         expression: "by_carrier",
+         givenNames: undefined,
+         reads: undefined,
+      });
    });
 
    it("runs an inherited tile as the model has it, sending the whole row", () => {
@@ -452,5 +523,74 @@ describe("previewTileQuery: a filter on a reserved field name", () => {
       expect(q.expression).toBe(
          "overview -> v + { where: `date` ~ $CATEGORY }",
       );
+   });
+});
+
+/**
+ * The builder's row against the reader's, from one case table: the server's
+ * `report_given_order.spec.ts` compiles each report and pins the manifest's
+ * row and each tile's `givenNames`; here the same text is read into a
+ * document and the builder is handed what the server would hand it.
+ */
+describe("previewGivens orders the row as the reader does", () => {
+   const { cases } = JSON.parse(
+      fs.readFileSync(
+         path.join(import.meta.dir, "testing/reportGivenOrder.json"),
+         "utf8",
+      ),
+   ) as {
+      cases: {
+         name: string;
+         report: string;
+         tiles: Record<string, string[]>;
+         row: string[];
+      }[];
+   };
+
+   for (const { name, report, tiles, row } of cases)
+      it(name, async () => {
+         const doc = await openDocument(report);
+         const served = new Map(
+            Object.entries(tiles).map(([query, names]) => [
+               tileExpressionKey(query),
+               names,
+            ]),
+         );
+         // The manifest's specs, as the builder gets them: the whole row.
+         const specs = row.map((given) => ({
+            name: given,
+            type: "filter<string>",
+         }));
+         const reads = givensReadThroughModel(doc, doc, served);
+         expect(
+            previewGivens(doc, specs, reads, served).map((spec) => spec.name),
+         ).toEqual(row);
+      });
+
+   it("puts a new binding after its tile's existing ones, where the save writes it", async () => {
+      // The first tile binds SINCE on a source that reads nothing; the
+      // second reads the model's MANUFACTURER and binds SUBJECT.
+      const shape = cases[3];
+      const opened = await openDocument(shape.report);
+      const served = new Map(
+         Object.entries(shape.tiles).map(([query, names]) => [
+            tileExpressionKey(query),
+            names,
+         ]),
+      );
+      const doc = structuredClone(opened);
+      // The first tile now binds SUBJECT too, so it moves up with that tile.
+      queryTile(doc, 0).filters = [
+         ...(queryTile(doc, 0).filters ?? []),
+         { field: "subject", given: "SUBJECT" },
+      ];
+      const specs = shape.row.map((given) => ({
+         name: given,
+         type: "filter<string>",
+      }));
+      const reads = givensReadThroughModel(doc, opened, served);
+      expect(
+         previewGivens(doc, specs, reads, served).map((spec) => spec.name),
+      ).toEqual(["SINCE", "SUBJECT", "MANUFACTURER"]);
    });
 });

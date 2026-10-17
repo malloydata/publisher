@@ -4,14 +4,28 @@
 import { Warning } from "@mui/icons-material";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { Box, Button, Tooltip, Typography } from "@mui/material";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+   lazy,
+   Suspense,
+   useCallback,
+   useEffect,
+   useRef,
+   useState,
+} from "react";
 import { LogMessage } from "../../client";
 import type { DrillBinding } from "../drill/useDrill";
 import { FloatingIconButton } from "../FloatingIconButton";
 import { Loading, LOADING_COPY } from "../Loading";
 import { warmMalloyRenderer } from "./loadRenderer";
 import { summarizeRenderLogs } from "./renderLogs";
-import { resolveResultHeight, type ResultSizing } from "./resultSizing";
+import {
+   resolveResultHeight,
+   resultCap,
+   type ResultSizing,
+} from "./resultSizing";
+
+/** The box a dashboard tile's result scrolls in when it is taller than its cap. */
+export const RESULT_SCROLLER_CLASS = "publisher-result-scroller";
 
 const RenderedResult = lazy(() => import("../RenderedResult/RenderedResult"));
 
@@ -24,6 +38,14 @@ interface ResultContainerProps {
     * not be clipped to tidy it.
     */
    maxHeight?: number;
+   /**
+    * A further cap for a result whose root is a table, and only then. A
+    * linear report sets it: its tiles grow to fit, except a long table, which
+    * stops here and scrolls inside itself under its pinned header row.
+    */
+   tableMaxHeight?: number;
+   /** The height to paint at before the result is measured, in place of the default (see `initialResultHeight`). */
+   firstPaintHeight?: number;
    // if Results are larger than this size, show a warning and a button to proceed
    // this is to prevent performance issues with large results.
    // the default is 0, which means no warning will be shown.
@@ -51,6 +73,8 @@ interface ResultContainerProps {
 export default function ResultContainer({
    result,
    maxHeight,
+   tableMaxHeight,
+   firstPaintHeight,
    maxResultSize = 0,
    renderLogs,
    drill,
@@ -65,6 +89,15 @@ export default function ResultContainer({
    const [sizing, setSizing] = useState<ResultSizing | undefined>(undefined);
    const [contentHeight, setContentHeight] = useState<number | undefined>(
       undefined,
+   );
+   // The root's render type, which decides whether `tableMaxHeight` applies.
+   const [renderAs, setRenderAs] = useState<string | undefined>(undefined);
+   const onSizing = useCallback(
+      (next: ResultSizing, root: string | undefined) => {
+         setSizing(next);
+         setRenderAs(root);
+      },
+      [],
    );
    const [userAcknowledged, setUserAcknowledged] = useState(false);
    const [cellHeight, setCellHeight] = useState<number | undefined>(undefined);
@@ -123,11 +156,13 @@ export default function ResultContainer({
    const loading = (
       <Loading text={LOADING_COPY.loading} centered={true} size={32} />
    );
+   const cap = resultCap({ renderAs, maxHeight, tableMaxHeight });
    const renderedHeight = resolveResultHeight({
       sizing,
       contentHeight,
-      maxHeight,
+      maxHeight: cap,
       fillHeight: fill ? cellHeight : undefined,
+      firstPaintHeight,
    });
    const renderedResult = (
       <Suspense fallback={loading}>
@@ -135,7 +170,7 @@ export default function ResultContainer({
             result={result}
             height={renderedHeight}
             onSizeChange={setContentHeight}
-            onSizing={setSizing}
+            onSizing={onSizing}
             drill={drill}
             fill={fill}
          />
@@ -150,17 +185,35 @@ export default function ResultContainer({
             height: "auto",
             border: "0px",
             borderRadius: 0,
-            overflow: "hidden",
+            // Unfilled, the box is the result's own height, so a result that
+            // outgrows its cap scrolls here rather than being cut off.
+            overflowX: "hidden",
+            overflowY: fill ? "hidden" : "auto",
             // Grows from the unfloored height, so a result that gets shorter
             // lets its row shrink; the result is out of flow for the same reason.
             ...(fill && {
-               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight })}px`,
+               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight: cap, firstPaintHeight })}px`,
                minHeight: 0,
             }),
          }}
       >
          {fill ? (
-            <Box sx={{ position: "absolute", inset: 0 }}>{renderedResult}</Box>
+            // Scrolls rather than clips. A result taller than its cap (a row of
+            // KPI cards wrapped one per line in a narrow tile, say) draws past
+            // the box it was given; clipped, its last cards could not be reached
+            // at all. A table never overflows here: it is held to the box and
+            // scrolls inside itself, under its own pinned header.
+            <Box
+               className={RESULT_SCROLLER_CLASS}
+               sx={{
+                  position: "absolute",
+                  inset: 0,
+                  overflowX: "hidden",
+                  overflowY: "auto",
+               }}
+            >
+               {renderedResult}
+            </Box>
          ) : (
             renderedResult
          )}

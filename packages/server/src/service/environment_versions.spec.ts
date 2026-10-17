@@ -7,7 +7,8 @@ import * as os from "os";
 import * as path from "path";
 import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../storage/duckdb/DuckDBRepository";
+import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
+import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { Environment } from "./environment";
 import { Package } from "./package";
@@ -23,7 +24,7 @@ let root: string;
 let envPath: string;
 let sourcesPath: string;
 let db: DuckDBConnection;
-let repo: DuckDBRepository;
+let repo: ResourceRepository;
 /** How many times a version's files were fetched again from their location. */
 let restoreDownloads = 0;
 
@@ -131,7 +132,7 @@ beforeEach(async () => {
       "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'testEnv', ?, now(), now())",
       [ENV_ID, envPath],
    );
-   repo = new DuckDBRepository(db);
+   repo = createDuckDBRepository(db);
 });
 
 afterEach(async () => {

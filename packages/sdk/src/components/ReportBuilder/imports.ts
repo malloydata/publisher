@@ -15,7 +15,7 @@ const folderOf = (path: string) => path.slice(0, path.lastIndexOf("/") + 1);
  * alone would miss the second, and importing a source the file already
  * reaches declares it twice.
  */
-const resolvedOf = (from: string, documentPath: string) =>
+export const resolvedOf = (from: string, documentPath: string) =>
    new URL(
       from,
       `https://malloy.invalid/${folderOf(documentPath)}`,

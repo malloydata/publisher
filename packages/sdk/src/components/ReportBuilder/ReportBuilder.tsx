@@ -24,6 +24,7 @@ import { OpenDraftContext } from "./openDraft";
 import type { PackageCatalog } from "./catalog";
 import {
    isQueryTile,
+   isReadOnlyTile,
    type DashboardDocument,
    type QueryTile,
 } from "./document";
@@ -40,7 +41,7 @@ import { useOpenDraftCommit } from "./useOpenDraftCommit";
 import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
 import { useTileResize } from "./useTileResize";
-import { layoutRules } from "../Report/layoutRules";
+import { layoutRules, withSpan } from "../Report/layoutRules";
 import { ReportPage } from "../Report/ReportPage";
 
 export type { BuilderGiven } from "./controls";
@@ -328,7 +329,8 @@ export function ReportBuilder({
       commit: (index, span) =>
          editor.update((draft) => {
             const tile = draft.tiles[index];
-            if (tile) tile.colspan = span;
+            if (tile)
+               draft.tiles[index] = withSpan(tile, span, columns, defaultSpan);
          }),
    });
    const tiles = useTileEditing({
@@ -373,11 +375,7 @@ export function ReportBuilder({
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
             if (dragging || selected === undefined || !rules.widths) return;
             const tile = editor.document.tiles[selected];
-            if (
-               !tile ||
-               (isQueryTile(tile) && tile.declaration.kind === "inherited")
-            )
-               return;
+            if (!tile || (isQueryTile(tile) && isReadOnlyTile(tile))) return;
             const span = nudgedSpan(
                tile.colspan ?? defaultSpan,
                delta,
@@ -385,7 +383,12 @@ export function ReportBuilder({
             );
             if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
-               draft.tiles[selected].colspan = span;
+               draft.tiles[selected] = withSpan(
+                  draft.tiles[selected],
+                  span,
+                  columns,
+                  defaultSpan,
+               );
             });
          },
       }),

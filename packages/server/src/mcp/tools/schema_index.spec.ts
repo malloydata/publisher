@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { beforeEach, describe, expect, it } from "bun:test";
+import { sanitizeLunrQuery as sanitizeQuery } from "./retrieval_shared";
 import type { EmbeddingProvider } from "../../service/embedding_provider";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import {
@@ -12,7 +13,6 @@ import {
    _resetSchemaIndexStateForTests,
    rankLexically,
    rankTables,
-   sanitizeQuery,
    schemaFingerprint,
    tableIndexText,
 } from "./schema_index";

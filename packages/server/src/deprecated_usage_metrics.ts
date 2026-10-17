@@ -23,8 +23,7 @@
  * Lazily created for the same reason as {@link ./query_cap_metrics}.
  */
 
-import { type Counter } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import { lazyCounter, resetInstrumentsForTesting } from "./telemetry";
 
 export type DeprecatedFeature =
    | "dashboards_list"
@@ -40,7 +39,10 @@ export type DeprecatedFeature =
    | "filter_params"
    | "bypass_filters";
 
-let counter: Counter | null = null;
+const counter = lazyCounter(
+   "publisher_deprecated_usage_total",
+   "Uses of a deprecated feature: a request to a legacy route or carrying a legacy parameter, or a package load or reload that uses one. Labels: feature.",
+);
 
 /** `count` uses of a deprecated feature. */
 export function recordDeprecatedUsage(
@@ -48,17 +50,10 @@ export function recordDeprecatedUsage(
    count = 1,
 ): void {
    if (count <= 0) return;
-   counter ??= publisherMeter().createCounter(
-      "publisher_deprecated_usage_total",
-      {
-         description:
-            "Uses of a deprecated feature: a request to a legacy route or carrying a legacy parameter, or a package load or reload that uses one. Labels: feature.",
-      },
-   );
-   counter.add(count, { feature });
+   counter().add(count, { feature });
 }
 
 /** Drop the memoized instrument so a test can install a fresh MeterProvider. */
 export function resetDeprecatedUsageMetricsForTest(): void {
-   counter = null;
+   resetInstrumentsForTesting();
 }

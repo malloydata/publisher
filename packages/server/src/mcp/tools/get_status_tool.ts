@@ -23,17 +23,12 @@ A JSON object with:
 No loadErrors key means everything configured loaded and nothing is stale.`;
 
 /**
- * Registers the get_status MCP tool: the MCP analog of GET /api/v0/status,
- * reduced to what an agent needs to judge health (state, package names, load
- * errors, staleness). Without it an agent cannot distinguish "empty package"
- * from "package that failed to load", and a failed watch-mode recompile is
- * invisible over MCP entirely.
+ * Registers get_status: GET /api/v0/status reduced to what an agent needs to
+ * judge health. Without it an agent cannot tell an empty package from one that
+ * failed to load, and a failed watch-mode recompile is invisible over MCP.
  *
- * SECURITY: parity with the unauthenticated REST /status endpoint, minus
- * detail. Emits names, states, and (already-redacted) load-error messages;
- * never connection attributes or row data. The locations it carries, the
- * config path in emptyReason and any path named in initError or a loadErrors
- * message, are the same text REST /status returns.
+ * SECURITY: parity with the unauthenticated REST /status, minus detail: names,
+ * states and already-redacted load errors, never connection attributes or rows.
  */
 export function registerGetStatusTool(
    mcpServer: McpServer,
@@ -49,9 +44,8 @@ export function registerGetStatusTool(
             version: status.version,
             environments: status.environments.map((environment) => ({
                name: environment.name,
-               // Name is optional in the API schema but always set by
-               // listPackages; filtered rather than emitted as a null an agent
-               // would have to reason about.
+               // Optional in the schema but always set by listPackages; filtered
+               // rather than emitted as a null.
                packages: (environment.packages ?? [])
                   .map((pkg) => pkg.name)
                   .filter((name): name is string => name !== undefined),

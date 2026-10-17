@@ -9,6 +9,7 @@ import {
    MaterializationUpdate,
 } from "../DatabaseInterface";
 import { DuckDBConnection } from "./DuckDBConnection";
+import { newId, Row, rowTimestamps, updateRow } from "./rows";
 
 const TERMINAL_STATUSES: ReadonlySet<MaterializationStatus> = new Set([
    "MANIFEST_FILE_READY",
@@ -61,17 +62,8 @@ export class DuplicateActiveMaterializationError extends Error {
 export class MaterializationRepository {
    constructor(private db: DuckDBConnection) {}
 
-   private generateId(): string {
-      return `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-   }
-
-   private now(): Date {
-      return new Date();
-   }
-
-   // Intentionally UNBOUNDED when no limit is passed: callers may rely on the
-   // full history for a single package, which is bounded by how often that one
-   // package is built.
+   // Unbounded without a limit: callers may rely on one package's full history,
+   // which is bounded by how often that package is built.
    async list(
       environmentId: string,
       packageName: string,
@@ -95,18 +87,15 @@ export class MaterializationRepository {
          sql += " OFFSET ?";
          params.push(options.offset);
       }
-      const rows = await this.db.all<Record<string, unknown>>(sql, params);
-      return rows.map(this.mapRow);
+      const rows = await this.db.all<Row>(sql, params);
+      return rows.map(mapRow);
    }
 
    /**
     * `created_at` of the newest scheduler-fired (metadata.trigger=SCHEDULER)
     * materialization for (env, package), or null if none. The standalone
-    * scheduler uses this to recover a missed occurrence across a restart:
-    * re-anchoring `nextFireAt` to `nextAfter(lastScheduledFire)` fires exactly
-    * one catch-up after downtime (then jumps forward), rather than skipping the
-    * occurrence entirely. `metadata` is a JSON column, so the trigger is read
-    * with `json_extract_string`.
+    * scheduler re-anchors `nextFireAt` to `nextAfter(lastScheduledFire)` so a
+    * restart fires exactly one catch-up instead of skipping the occurrence.
     */
    async getLatestScheduledFireAt(
       environmentId: string,
@@ -129,11 +118,11 @@ export class MaterializationRepository {
    }
 
    async getById(id: string): Promise<Materialization | null> {
-      const row = await this.db.get<Record<string, unknown>>(
+      const row = await this.db.get<Row>(
          "SELECT * FROM materializations WHERE id = ?",
          [id],
       );
-      return row ? this.mapRow(row) : null;
+      return row ? mapRow(row) : null;
    }
 
    /**
@@ -146,14 +135,14 @@ export class MaterializationRepository {
       lockVersion?: string,
    ): Promise<Materialization | null> {
       const placeholders = ACTIVE_STATUSES.map(() => "?").join(", ");
-      const row = await this.db.get<Record<string, unknown>>(
+      const row = await this.db.get<Row>(
          `SELECT * FROM materializations WHERE active_key = ? AND status IN (${placeholders})`,
          [
             activeKeyFor(environmentId, packageName, lockVersion),
             ...ACTIVE_STATUSES,
          ],
       );
-      return row ? this.mapRow(row) : null;
+      return row ? mapRow(row) : null;
    }
 
    async create(
@@ -168,20 +157,18 @@ export class MaterializationRepository {
          lockVersion?: string;
       } = {},
    ): Promise<Materialization> {
-      const id = this.generateId();
-      const now = this.now();
-      const iso = now.toISOString();
-      // Set active_key iff the row is in a non-terminal state. The unique
-      // index on active_key makes the race-free conditional insert: a second
-      // concurrent create on the same (environment, package) fails here rather
-      // than in a check-then-write window.
+      const id = newId();
+      const iso = new Date().toISOString();
+      // active_key is set iff the row is non-terminal. Its unique index makes a
+      // concurrent second create on the same (environment, package) fail here
+      // rather than slip through a check-then-write window.
       const activeKey = TERMINAL_STATUSES.has(status)
          ? null
          : activeKeyFor(environmentId, packageName, options.lockVersion);
       const metadataJson = metadata ? JSON.stringify(metadata) : null;
 
       try {
-         const rows = await this.db.all<Record<string, unknown>>(
+         const rows = await this.db.all<Row>(
             `INSERT INTO materializations (id, environment_id, package_name, status, active_key, metadata, manifest, created_at, updated_at, version)
             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
             RETURNING *`,
@@ -197,7 +184,7 @@ export class MaterializationRepository {
                options.version ?? null,
             ],
          );
-         return this.mapRow(rows[0]);
+         return mapRow(rows[0]);
       } catch (err) {
          if (isUniqueViolation(err, "idx_materializations_active_key")) {
             throw new DuplicateActiveMaterializationError(
@@ -213,59 +200,34 @@ export class MaterializationRepository {
       id: string,
       updates: MaterializationUpdate,
    ): Promise<Materialization> {
-      const now = this.now();
-      const setClauses: string[] = [];
-      const params: unknown[] = [];
+      // Clear active_key on any transition to a terminal state; keep it on a
+      // transition between non-terminal states, so a run keeps the slot it
+      // was created holding (its package's or its version's). A terminal
+      // state has no way out, so a key is never set again; the fallback only
+      // covers a row written without one. The unique index guarantees no two
+      // active rows ever hold one slot.
+      const activeKey =
+         updates.status === undefined
+            ? []
+            : TERMINAL_STATUSES.has(updates.status)
+              ? ["active_key = NULL"]
+              : [
+                   "active_key = COALESCE(active_key, environment_id || '|' || package_name)",
+                ];
 
-      if (updates.status !== undefined) {
-         setClauses.push(`status = ?`);
-         params.push(updates.status);
-         // Clear active_key on any transition to a terminal state; keep it
-         // on a transition between non-terminal states, so a run keeps the
-         // slot it was created holding (its package's or its version's). A
-         // terminal state has no way out, so a key is never set again; the
-         // fallback only covers a row written without one. The unique index
-         // guarantees no two active rows ever hold one slot.
-         if (TERMINAL_STATUSES.has(updates.status)) {
-            setClauses.push(`active_key = NULL`);
-         } else {
-            setClauses.push(
-               `active_key = COALESCE(active_key, environment_id || '|' || package_name)`,
-            );
-         }
-      }
-      if (updates.startedAt !== undefined) {
-         setClauses.push(`started_at = ?`);
-         params.push(updates.startedAt.toISOString());
-      }
-      if (updates.completedAt !== undefined) {
-         setClauses.push(`completed_at = ?`);
-         params.push(updates.completedAt.toISOString());
-      }
-      if (updates.error !== undefined) {
-         setClauses.push(`error = ?`);
-         params.push(updates.error);
-      }
-      if (updates.metadata !== undefined) {
-         setClauses.push(`metadata = ?`);
-         params.push(
-            updates.metadata ? JSON.stringify(updates.metadata) : null,
-         );
-      }
-      if (updates.manifest !== undefined) {
-         setClauses.push(`manifest = ?`);
-         params.push(
-            updates.manifest ? JSON.stringify(updates.manifest) : null,
-         );
-      }
-
-      setClauses.push(`updated_at = ?`);
-      params.push(now.toISOString());
-      params.push(id);
-
-      await this.db.run(
-         `UPDATE materializations SET ${setClauses.join(", ")} WHERE id = ?`,
-         params,
+      await updateRow(
+         this.db,
+         "materializations",
+         id,
+         {
+            status: updates.status,
+            started_at: updates.startedAt?.toISOString(),
+            completed_at: updates.completedAt?.toISOString(),
+            error: updates.error,
+            metadata: jsonOrNull(updates.metadata),
+            manifest: jsonOrNull(updates.manifest),
+         },
+         activeKey,
       );
 
       const updated = await this.getById(id);
@@ -279,18 +241,13 @@ export class MaterializationRepository {
       await this.db.run("DELETE FROM materializations WHERE id = ?", [id]);
    }
 
-   // Cascade deletes remove the publisher's records only; they intentionally
-   // issue no DDL. Dropping the physical tables is opt-in
-   // (deleteMaterialization({ dropTables })) and otherwise the caller's
-   // responsibility, so a materialized table outlives its record when an
-   // environment or package is deleted. Adding a DROP here would also risk
-   // firing against a connection already torn down by the delete path.
+   // Cascade deletes remove records only and issue no DDL: dropping physical
+   // tables is opt-in (deleteMaterialization({ dropTables })), and a DROP here
+   // could fire against a connection the delete path already tore down.
    //
-   // Standalone caveat (#901): with no control plane owning physical GC,
-   // nothing drops those tables today, so they accumulate in the warehouse.
-   // That is an open follow-up, not a settled contract — its best-effort
-   // drop-before-teardown belongs ABOVE these methods, so it completes this
-   // design rather than moving DDL into the low-level record deletes.
+   // Limitation: standalone, with no control plane owning physical GC, nothing
+   // drops those tables, so they accumulate in the warehouse. A best-effort
+   // drop-before-teardown belongs above these methods, not in them.
    async deleteByEnvironmentId(environmentId: string): Promise<void> {
       await this.db.run(
          "DELETE FROM materializations WHERE environment_id = ?",
@@ -307,26 +264,33 @@ export class MaterializationRepository {
          [environmentId, packageName],
       );
    }
+}
 
-   private mapRow(row: Record<string, unknown>): Materialization {
-      const metadata = parseJsonColumn<Record<string, unknown>>(row.metadata);
-      return {
-         id: row.id as string,
-         environmentId: row.environment_id as string,
-         packageName: row.package_name as string,
-         status: row.status as MaterializationStatus,
-         manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
-         metadata,
-         startedAt: row.started_at ? new Date(row.started_at as string) : null,
-         completedAt: row.completed_at
-            ? new Date(row.completed_at as string)
-            : null,
-         error: row.error != null ? (row.error as string) : null,
-         version: row.version != null ? (row.version as string) : null,
-         createdAt: new Date(row.created_at as string),
-         updatedAt: new Date(row.updated_at as string),
-      };
-   }
+function mapRow(row: Row): Materialization {
+   const metadata = parseJsonColumn<Row>(row.metadata);
+   return {
+      id: row.id as string,
+      environmentId: row.environment_id as string,
+      packageName: row.package_name as string,
+      status: row.status as MaterializationStatus,
+      manifest: parseJsonColumn<BuildManifestResult>(row.manifest),
+      metadata,
+      startedAt: row.started_at ? new Date(row.started_at as string) : null,
+      completedAt: row.completed_at
+         ? new Date(row.completed_at as string)
+         : null,
+      error: row.error != null ? (row.error as string) : null,
+      version: row.version != null ? (row.version as string) : null,
+      ...rowTimestamps(row),
+   };
+}
+
+/** `undefined` stays unset; null and other falsy values are written as NULL. */
+function jsonOrNull(
+   value: object | null | undefined,
+): string | null | undefined {
+   if (value === undefined) return undefined;
+   return value ? JSON.stringify(value) : null;
 }
 
 /** Parse a nullable JSON text column, returning null on absence or parse error. */
@@ -340,9 +304,8 @@ function parseJsonColumn<T>(value: unknown): T | null {
 }
 
 /**
- * DuckDB surfaces unique-constraint violations as plain Errors whose message
- * mentions the violated index. We match on the index name rather than a
- * generic substring so we don't misclassify unrelated constraint errors.
+ * DuckDB surfaces unique-constraint violations as plain Errors. Matches the
+ * index name, or DuckDB's generic duplicate-key / unique-constraint wording.
  */
 function isUniqueViolation(err: unknown, indexName: string): boolean {
    if (!(err instanceof Error)) return false;

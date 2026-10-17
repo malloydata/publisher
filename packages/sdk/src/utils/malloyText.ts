@@ -124,7 +124,8 @@ export function closesBlock(
    column: number | undefined,
    closer: "|#" | "|##",
 ): boolean {
-   const indent = /^[ \t]*/.exec(line)[0].length;
+   // `[ \t]*` matches every string, so exec never returns null here.
+   const indent = /^[ \t]*/.exec(line)![0].length;
    if (column !== undefined && indent !== column) return false;
    const rest = line.slice(indent);
    return (

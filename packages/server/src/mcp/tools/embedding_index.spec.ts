@@ -47,6 +47,7 @@ import {
    humanizeName,
    trySemanticSearch,
 } from "./embedding_index";
+import { notIndexing, pollFor, pollUntil } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 
 let tempDir: string;
@@ -165,18 +166,15 @@ function instance(): Package {
 async function searchReady(
    args: Parameters<typeof trySemanticSearch>[0],
 ): Promise<SemanticSearchResult> {
-   for (let i = 0; i < 200; i++) {
-      const result = await trySemanticSearch(args);
-      if (!("unavailable" in result) || result.unavailable !== "indexing") {
-         return result;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("sync never completed");
+   return pollFor(() => trySemanticSearch(args), notIndexing);
 }
 
-function isCooldown(result: SemanticSearchResult): boolean {
-   return "unavailable" in result && result.unavailable === "cooldown";
+/** Rows stored for environment `env`. */
+async function envRowCount(): Promise<number> {
+   const rows = await db.all<{ n: number }>(
+      "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
+   );
+   return rows[0].n;
 }
 
 const QUERY_VECTORS = {
@@ -658,10 +656,7 @@ describe("trySemanticSearch", () => {
 
       // Three rows: alpha's name and doc, beta's name. One row per entity
       // still comes back from the search, because scoring groups by entity.
-      const rows = await db.all<{ n: number }>(
-         "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
-      );
-      expect(rows[0].n).toBe(3);
+      expect(await envRowCount()).toBe(3);
    });
 
    it("reports index readiness without taking locks or writing", async () => {
@@ -1372,22 +1367,15 @@ describe("trySemanticSearch", () => {
          "find alpha": [1, 0, 0, 0],
       });
       const pkgB = instance();
-      for (let i = 0; i < 200; i++) {
+      await pollUntil(async () => {
          await trySemanticSearch({
             ...base,
             provider: wide.provider,
             pkg: pkgB,
          });
-         const rows = await db.all<{ n: number }>(
-            "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
-         );
-         if (rows[0].n === 0) break;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      const purged = await db.all<{ n: number }>(
-         "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
-      );
-      expect(purged[0].n).toBe(0);
+         return (await envRowCount()) === 0;
+      });
+      expect(await envRowCount()).toBe(0);
 
       // A's memo says done, but the table is empty. Without generation
       // tracking, A would trust its memo, search zero rows, find no
@@ -1534,18 +1522,14 @@ describe("trySemanticSearch", () => {
          "find alpha": [1, 0, 0, 0],
       });
       const pkgB = instance();
-      for (let i = 0; i < 200; i++) {
+      await pollUntil(async () => {
          await trySemanticSearch({
             ...base,
             provider: wide.provider,
             pkg: pkgB,
          });
-         const rows = await db.all<{ n: number }>(
-            "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
-         );
-         if (rows[0].n === 0) break;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+         return (await envRowCount()) === 0;
+      });
 
       // Released, C searches an empty table with no stale rows left to
       // heal. Without the entry-generation re-check it would return
@@ -1613,35 +1597,19 @@ describe("trySemanticSearch", () => {
       });
       expect(first).toEqual({ unavailable: "indexing" });
 
-      // Settle phase 1: wait until the second insert has been attempted
-      // (it increments the counter before throwing).
-      for (let i = 0; i < 200 && inserts < 2; i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      // Let the failed sync settle: the second insert was attempted (it
+      // counts before throwing) and the failure started the cool-down. This
+      // holds with or without the finally bump, so it does not mask the pin
+      // below.
+      await embeddingSyncQueue.idle();
       expect(inserts).toBe(2);
-      // Settle phase 2: the rejection handler (which sets the cool-down)
-      // runs asynchronously after the throw; wait until a call observes
-      // the cool-down so the failed sync has fully settled. This
-      // converges with or without the finally bump, so it does not mask
-      // the pin below.
-      let settled: SemanticSearchResult = {
-         hits: [],
-         belowCutoffCount: 0,
-         totalEntities: 0,
-         cutBySource: new Map(),
-      };
-      for (let i = 0; i < 200; i++) {
-         settled = await trySemanticSearch({
+      expect(
+         await trySemanticSearch({
             ...base,
             pkg: pkgA,
             entities: [entity("alpha", "src")],
-         });
-         if ("unavailable" in settled && settled.unavailable === "cooldown") {
-            break;
-         }
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(settled).toEqual({ unavailable: "cooldown" });
+         }),
+      ).toEqual({ unavailable: "cooldown" });
 
       // The pin: with the cool-down cleared, pkgA's done memo must be
       // stale, because the failed sync changed a row before it died. A
@@ -1728,20 +1696,11 @@ describe("trySemanticSearch", () => {
       release();
       await Promise.all([s1, del, s2kick]);
 
-      // The orphaned sync runs as soon as the delete releases the mutex.
-      // Poll a failure-detection window: if the orphan guard were gone,
-      // sync 2 would re-insert alpha within milliseconds; with it, the
-      // table stays empty for the whole window.
-      let resurrected = 0;
-      for (let i = 0; i < 60; i++) {
-         const rows = await db.all<{ n: number }>(
-            "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
-         );
-         resurrected = rows[0].n;
-         if (resurrected > 0) break;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(resurrected).toBe(0);
+      // The orphaned sync runs as soon as the delete releases the mutex. Once
+      // the queue drains it has run: without the orphan guard it would have
+      // re-inserted alpha; with it, the table stays empty.
+      await embeddingSyncQueue.idle();
+      expect(await envRowCount()).toBe(0);
    });
 
    it("answers indexing when the heal finds the mutex held mid-flight (busy path)", async () => {
@@ -1802,10 +1761,7 @@ describe("trySemanticSearch", () => {
       // holder first would park the mutex before C's isLocked() check,
       // and C would exit through that pre-existing guard without ever
       // reaching the tryAcquire busy path this test exists to pin.
-      for (let i = 0; i < 200 && !gatedOnce; i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(gatedOnce).toBe(true);
+      expect(await pollUntil(() => gatedOnce)).toBe(true);
 
       // Now a sync with a changed entity takes and holds the package
       // mutex (its provider fetch is gated).
@@ -1840,17 +1796,14 @@ describe("trySemanticSearch", () => {
       ]);
       expect(raced).toEqual({ unavailable: "indexing" });
 
-      // Let the holder sync settle deterministically (its upsert changes
-      // alpha's content hash) so no write leaks past the next test's
-      // cleanup.
+      // Let the holder sync settle (its upsert changes alpha's content
+      // hash) so no write leaks past the next test's cleanup.
       releaseSync();
-      for (let i = 0; i < 200; i++) {
-         const rows = await db.all<{ content_hash: string }>(
-            "SELECT content_hash FROM entity_embeddings WHERE environment_name = 'env' AND entity_name = 'alpha'",
-         );
-         if (rows.length === 1 && rows[0].content_hash !== staleHash) break;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      await embeddingSyncQueue.idle();
+      const settled = await db.all<{ content_hash: string }>(
+         "SELECT content_hash FROM entity_embeddings WHERE environment_name = 'env' AND entity_name = 'alpha'",
+      );
+      expect(settled.map((r) => r.content_hash)).not.toEqual([staleHash]);
    });
 
    it("deletion helpers drop a package's and an environment's rows", async () => {
@@ -1889,10 +1842,7 @@ describe("trySemanticSearch", () => {
       // sweep would pass vacuously.
       _resetEmbeddingIndexStateForTests();
       await deleteEnvironmentEmbeddings(db, "env");
-      const afterEnv = await db.all<{ n: number }>(
-         "SELECT CAST(COUNT(*) AS INTEGER) AS n FROM entity_embeddings WHERE environment_name = 'env'",
-      );
-      expect(afterEnv[0].n).toBe(0);
+      expect(await envRowCount()).toBe(0);
    });
 
    it("backs off instead of purging twice within the cool-down window", async () => {
@@ -1927,26 +1877,11 @@ describe("trySemanticSearch", () => {
       // inconsistent; the heal must NOT purge again but cool down, and
       // the 4-dim rows must survive. One instance throughout, so the
       // poll passes its cold start and reaches the heal check.
-      const pkgC = instance();
-      let result = await trySemanticSearch({
+      const result = await searchReady({
          ...base,
          provider: narrow.provider,
-         pkg: pkgC,
+         pkg: instance(),
       });
-      for (
-         let i = 0;
-         i < 200 &&
-         "unavailable" in result &&
-         result.unavailable === "indexing";
-         i++
-      ) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-         result = await trySemanticSearch({
-            ...base,
-            provider: narrow.provider,
-            pkg: pkgC,
-         });
-      }
       expect(result).toEqual({ unavailable: "cooldown" });
       const rows = await db.all<{ dims: number }>(
          "SELECT CAST(dims AS INTEGER) AS dims FROM entity_embeddings WHERE environment_name = 'env'",
@@ -2010,13 +1945,8 @@ describe("trySemanticSearch", () => {
          });
          await embeddingSyncQueue.idle();
          _setTimingForTests({ cooldownMs: HELD_MS });
-         for (
-            let j = 0;
-            j < 200 && "unavailable" in r && r.unavailable === "indexing";
-            j++
-         ) {
-            await new Promise((resolve) => setTimeout(resolve, 3));
-            r = await trySemanticSearch({
+         if ("unavailable" in r && r.unavailable === "indexing") {
+            r = await searchReady({
                ...base,
                provider: narrow.provider,
                pkg: pkgQ,
@@ -2038,7 +1968,7 @@ describe("trySemanticSearch", () => {
       // Same setup but a short suppression window: after it elapses a
       // mismatch re-purges and re-adopts the current dims, so a provider
       // that stabilizes on a new dimensionality is not stranded lexical.
-      _setTimingForTests({ cooldownMs: 10, purgeSuppressionMs: 60 });
+      _setTimingForTests({ cooldownMs: 10, purgeSuppressionMs: 60_000 });
       const base = {
          db,
          environmentName: "env",
@@ -2065,9 +1995,11 @@ describe("trySemanticSearch", () => {
       if (!("hits" in healed)) throw new Error("expected hits");
       const purgeAt = _lastPurgeAtMsForTests("env", "pkg") ?? 0;
 
-      // Wait past the 60ms suppression window, then the provider is now
+      // End the suppression window (and let the clock tick past the purge,
+      // so the re-purge's timestamp is distinguishable); the provider is now
       // stably 3-dim: the next mismatch re-purges and re-adopts 3 dims.
-      await new Promise((resolve) => setTimeout(resolve, 90));
+      _setTimingForTests({ purgeSuppressionMs: 0 });
+      await pollUntil(() => Date.now() > purgeAt, 100, 1);
       const recovered = await searchReady({
          ...base,
          provider: narrow.provider,
@@ -2101,13 +2033,10 @@ describe("trySemanticSearch", () => {
          queries: [{ targetIndex: 0, text: "find alpha", kinds: ["measure"] }],
          perSourceWindow: 10,
       };
-      let a = await trySemanticSearch(argsA);
-      expect(a).toEqual({ unavailable: "indexing" });
-      for (let i = 0; i < 200 && !isCooldown(a); i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-         a = await trySemanticSearch(argsA);
-      }
-      expect(a).toEqual({ unavailable: "cooldown" });
+      expect(await trySemanticSearch(argsA)).toEqual({
+         unavailable: "indexing",
+      });
+      expect(await searchReady(argsA)).toEqual({ unavailable: "cooldown" });
 
       // pkg-b, healthy, same env: a per-package cool-down leaves it able
       // to reach semantic. A global cool-down (the old bug) would make
@@ -2145,14 +2074,8 @@ describe("trySemanticSearch", () => {
 
       const first = await trySemanticSearch(args);
       expect(first).toEqual({ unavailable: "indexing" });
-      // Poll until the background sync failure lands and starts the
-      // cool-down; a fixed sleep would race the rejection handler.
-      let second = await trySemanticSearch(args);
-      for (let i = 0; i < 200 && !isCooldown(second); i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-         second = await trySemanticSearch(args);
-      }
-      expect(second).toEqual({ unavailable: "cooldown" });
+      // Once the background sync failure lands it starts the cool-down.
+      expect(await searchReady(args)).toEqual({ unavailable: "cooldown" });
 
       // After the cool-down clears (test reset) the path recovers.
       failing = false;
@@ -2208,12 +2131,7 @@ describe("sync saves each batch and retries transient failures", () => {
       ).map((r) => r.entity_name);
 
    async function untilCooldown(args: ReturnType<typeof baseArgs>) {
-      let r = await trySemanticSearch(args);
-      for (let i = 0; i < 400 && !isCooldown(r); i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-         r = await trySemanticSearch(args);
-      }
-      expect(r).toEqual({ unavailable: "cooldown" });
+      expect(await searchReady(args)).toEqual({ unavailable: "cooldown" });
    }
 
    it("keeps batch 1 when batch 2 fails, and a later sync embeds only the rest", async () => {
@@ -2402,12 +2320,6 @@ describe("deleting a package stops its running sync", () => {
             "SELECT 1 FROM entity_embeddings WHERE package_name = 'doomed'",
          )
       ).length;
-   const until = async (done: () => boolean) => {
-      for (let i = 0; i < 400 && !done(); i++) {
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(done()).toBe(true);
-   };
 
    it("does not request the batches after the one in flight", async () => {
       _setSyncRetryForTests({ batchSize: 2 });
@@ -2422,13 +2334,14 @@ describe("deleting a package stops its running sync", () => {
          gate: { forText: "alpha", until: held },
       });
       await trySemanticSearch(args(provider));
-      await until(() => requests >= 1);
+      expect(await pollUntil(() => requests >= 1)).toBe(true);
 
       const deleted = deletePackageEmbeddings(db, "env", "doomed");
       release();
       await deleted;
-      // Time for a sync that ignored the delete to ask for its second batch.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The sync job has finished: one that ignored the delete would have
+      // asked for its second batch by now.
+      await embeddingSyncQueue.idle();
 
       expect(requests).toBe(1);
       expect(await rowsFor()).toBe(0);
@@ -2462,7 +2375,7 @@ describe("deleting a package stops its running sync", () => {
       const deleted = deletePackageEmbeddings(db, "env", "doomed");
       wake();
       await deleted;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await embeddingSyncQueue.idle();
 
       expect(requests).toBe(1);
       expect(await rowsFor()).toBe(0);

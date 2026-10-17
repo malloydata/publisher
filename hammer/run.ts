@@ -530,6 +530,7 @@ async function main(): Promise<void> {
                   pg,
                   r.catalogDbFor(c.name),
                   r.storageDirFor(c.name),
+                  c.metadataSchema,
                );
                if (!declaredDestinationsByEnv.has(cEnv))
                   declaredDestinationsByEnv.set(cEnv, []);

@@ -78,7 +78,8 @@ export function FilterStrip({
             if (fixed !== undefined) {
                const { modelPath } = fixed;
                return {
-                  origin: "model",
+                  // Declared here or in the model: a report's own source can fix one of its own.
+                  origin: byName.get(name)?.origin ?? "model",
                   fixed: fixed.reason,
                   ...(modelPath !== undefined && onOpenModel
                      ? { openModel: () => onOpenModel(modelPath) }

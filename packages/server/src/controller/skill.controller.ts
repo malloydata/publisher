@@ -15,16 +15,11 @@ type ApiSkill = components["schemas"]["Skill"];
 type ApiSkillSummary = components["schemas"]["SkillSummary"];
 
 /**
- * Read-only access to the agent skills in force for a package: the server's
- * bundled guides, with the package's own `skills/` shadowing any of the same
- * name. The REST half of the `get_skill` MCP tool, for callers running
- * unattended with no MCP client (see docs/ai-agents.md).
- *
- * Also serves the package's declared agents, the REST half of `get_agent`.
- *
- * Serves state the package read at load, so no route compiles or queries
- * anything. Every route takes the package's `versionId`, so a version's own
- * skills and agents are served, never `latest`'s.
+ * The REST half of the `get_skill` and `get_agent` MCP tools: the bundled
+ * guides, shadowed by the package's own `skills/` of the same name, and the
+ * package's declared agents. Serves state read at load; nothing compiles.
+ * Every route takes the package's `versionId`, so a version's own skills and
+ * agents are served, never `latest`'s.
  */
 export class SkillController {
    private environmentStore: EnvironmentStore;

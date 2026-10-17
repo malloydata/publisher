@@ -385,9 +385,13 @@ Two places read a field's **name** rather than its `# label`, so a labelled mode
 
 Both are upstream renderer behavior, not Publisher's, and both are cheap to work around in the model.
 
-Height is the one thing the surface decides rather than the tags: a grid caps each tile so one long table
-cannot set its row's height, and a linear report caps a chart tile and lets a table tile hug its rows so
-one long result cannot push the prose off the page.
+Height is the one thing the surface decides rather than the tags. A grid caps each tile at 400px, so one
+long table cannot set its row's height, and a result taller than that scrolls inside the tile. A linear
+report lets a tile grow to fit what it holds, so a row of KPI cards shows every card, and a chart draws
+at its default height. A table in a linear report stops at 700px and scrolls inside its tile, with its
+header row pinned, so one long table cannot push the rest of the report off the page. No tag changes
+that cap for a table tile; the `table.max_height` option belongs to a `# dashboard` query, where it caps
+the tables inside it.
 
 <a id="linear-layout"></a>
 
@@ -700,8 +704,9 @@ and numbers, and carries the tag.
 **What a reader sees.** Cells in a drillable **table** column take a pointer cursor, and turn blue and
 underlined under the pointer. They carry a button role and are reachable from the keyboard: one tab stop
 per drillable column, ArrowDown and ArrowUp to step a row, Home and End to jump to the ends, and Enter or
-Space to fire. Chart marks get no such affordance, so a report meant to be drilled wants at least one
-untagged (table) tile.
+Space to fire. A chart's bars, lines and points do not respond to a click at all, because the renderer
+reports clicks on table cells only, so a report meant to be drilled wants at least one untagged (table)
+tile.
 
 A destination the surface cannot honor is not marked and not offered, deliberately, since a dead link is
 worse than none; a `to=self` in a report that declares no control for its given is the usual case. Two
@@ -901,7 +906,7 @@ behind the tiles and a label saying the width during the drag; the edge is also 
 it, Left and Right step one column, Home and End go to one column and full width).
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Chart**, a submenu, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its
+The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its
 right edge (or focusing that edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
 they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
@@ -913,11 +918,26 @@ rewrites `layout=`; to turn a linear report into a grid (or back), edit the tag 
 cannot already see the chosen source the builder adds a named import for it, at the right relative path for
 the report's location.
 
-The **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment
-map. A choice the view cannot render stays in the list, greyed, with its reason under it: Big value needs a
-view with only totals, and a map needs a view that already carries a map chart. A chart line the builder
+The **Chart** choices are Default (as set in the model), Table, Line, Bar, Big value, Scatter, Shape map,
+Segment map and Bar and line. A choice the view cannot render stays in the list, greyed, with its reason under
+it: Big value needs results that are only totals, a map needs a map chart set in the model, and Bar and line
+(`# combo_chart`) needs a view with a group by and exactly two totals, drawing the first as bars on the left
+axis and the second as a line on the right. To pick which totals go where, write
+`# combo_chart { y=orders y2=revenue }` on the view by hand. A chart line the builder
 does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and Chart is disabled for that
 tile with the reason shown; so is a tile inherited from a declaration on the source.
+
+**Color** sets a bar, line, scatter or bar-and-line chart's color: the theme's own (the default), one of
+the theme's series colors, or any other through the platform's color picker. It is written above the tile
+as the per-chart theme line `# theme.palette.series=["#1f6aa8"]`, the same annotation a model can carry
+(see [Theming](theming.md)), so it reads back when the file is reopened. A line listing a whole
+palette is the author's, and the builder leaves it as written.
+
+A chart's axes are titled from each field's `# label`; a field with none is titled from its name written as
+a sentence (`total_revenue` reads "Total revenue"), on charts only, so a table keeps the column names its
+author chose. A plotted chart is drawn no narrower than 320px, and a bar chart no narrower than it takes to
+draw every bar, up to 4000px; in a narrower tile it scrolls sideways rather than dropping bars. A chart with
+more bars than fit in 4000px still has the rest dropped under "Showing limited results".
 
 A grid report with `tiles=[]` (only possible by hand-editing) opens in the builder but is not served until it
 has a tile, and the builder will not remove the last tile of a report saved with tiles. A filter on a

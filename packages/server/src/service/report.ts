@@ -9,9 +9,9 @@
  *
  * A report is a `.malloy` file in the package, outside `public/`, whose
  * model-level `## artifact` tag parses, does not set `kind=`, and lists its
- * tiles when it is linear, and which is not the package's root `index.malloy`. A legacy `.malloynb` is also a report
- * (linear, read-only). WHERE a file lives carries no meaning: `dashboards/` and
- * `notebooks/` are ordinary directory names.
+ * tiles when it is linear, and which is not the package's root `index.malloy`.
+ * A legacy `.malloynb` is also a report (linear, read-only). Where a file lives
+ * carries no meaning: `dashboards/` and `notebooks/` are ordinary directories.
  */
 
 import {
@@ -52,9 +52,8 @@ export function isRootIndexPath(modelPath: string): boolean {
 
 /**
  * True for a package-relative path that CAN be a report: a `.malloy` or a
- * `.malloynb`, outside `public/`, and not the root `index.malloy` in any case
- * (which is the surface, never a report). Whether it IS one depends on its
- * tags.
+ * `.malloynb`, outside `public/`, and not the root `index.malloy`. Whether it
+ * IS one depends on its tags.
  */
 export function isReportEligiblePath(modelPath: string): boolean {
    if (
@@ -121,14 +120,13 @@ export type ReportTag =
 /**
  * The one reader of a report's tag, over a file's model-level notes: its own
  * compiled `##` notes, or the same notes read off its text
- * ({@link readReportTagOfText}). Discovery, the lint, the compile check and the
- * write path all read a file through here, so they cannot disagree about it.
+ * ({@link readReportTagOfText}).
  *
  * The layout, first match wins: `layout=grid|linear`; else grid when the tag
  * lists `tiles` (an empty list counts) or a model-level `dashboard { … }` grid
- * tag is present; else linear. A linear tag with no `tiles` key (an empty list
- * counts as one) is the retired cell format, so no report. A `tiles` that is
- * not a list (`tiles=foo`) is a tag the reader cannot use: unparsed.
+ * tag is present; else linear. A linear tag with no `tiles` key is the retired
+ * cell format, so no report. A `tiles` that is not a list (`tiles=foo`) is
+ * unparsed.
  */
 export function readReportTag(modelNotes: readonly string[]): ReportTag {
    const tags = motlyTag(modelNotes);

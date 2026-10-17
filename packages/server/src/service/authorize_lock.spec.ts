@@ -8,7 +8,7 @@
  * `#(authorize)` probe (`@malloydata/malloy` 0.0.432) — `=` carries
  * `kids.left`/`kids.right` in the order the author wrote them, `inGiven`
  * carries `givenRef` plus a `stringLiteral` operand, and `stringLiteral.literal`
- * arrives already unquoted and unescaped. `authorize_syntax_conformance.spec.ts`
+ * arrives already unquoted and unescaped. `tests/component/authorize/gate_semantics.spec.ts`
  * exercises the same rules end to end through DuckDB; this file pins the
  * fail-closed edges a served query cannot easily reach.
  */

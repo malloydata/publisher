@@ -3,6 +3,7 @@
 
 import {
    isQueryTile,
+   isReadOnlyTile,
    type DashboardDocument,
    type DashboardTile,
    type LocalGiven,
@@ -320,13 +321,13 @@ export interface MappingRow {
  * `inline` tile's own first stage — `TreeStage.wheres` in `malloyTree`, which
  * is the parse tree's answer rather than a depth count. Both forms are
  * declarations this file owns and the reader reads back. An `inherited` tile is declared on the
- * model's source, which the builder never writes, so it is the one kind this
- * excludes, and so is an `opaque` one: its body has no single block a binding
+ * model's source, which the builder never writes, so it is excluded, as is a
+ * named `query` tile, and so is an `opaque` one: its body has no single block a binding
  * belongs in, which the reader can see before a save is ever attempted.
  */
 export const canBind = (tile: DashboardTile): tile is QueryTile =>
    isQueryTile(tile) &&
-   tile.declaration.kind !== "inherited" &&
+   !isReadOnlyTile(tile) &&
    tile.declaration.kind !== "opaque";
 
 /** The mapping a control has NOW, one row per tile, for the dialog to open on. */

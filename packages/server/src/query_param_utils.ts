@@ -2,15 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Express query-param normalization helpers.
- *
- * Kept in a standalone file (no transitive imports) so unit specs can
- * exercise them without dragging in `server.ts` — which transitively
- * constructs `EnvironmentStore` and kicks off an async storage init
- * (clone of `malloy-samples`, package downloads, ...). When that init
- * runs in a `bun test` process it races the test runner's exit and
- * leaves a partially-populated `publisher_data/` on disk, which the
- * next process (integration tests) then trips over.
+ * Express query-param parsing. Must stay import-free: anything that pulls in
+ * `server.ts` starts a storage init that, in a `bun test` process, races the
+ * runner's exit and leaves a half-populated `publisher_data/` behind.
  */
 
 /** Normalize an Express query param into a string[] or undefined. */
@@ -35,30 +29,14 @@ export function parseNonNegativeIntParam(value: unknown): number | undefined {
 export type BooleanParam = { ok: true; value: boolean } | { ok: false };
 
 /**
- * Parse a boolean query param on a route that honors one.
+ * Parse a boolean query param. Only lowercase `true`/`false` (how OpenAPI
+ * serializes a boolean) or absent are accepted; anything else, a repeated
+ * param included, is `{ ok: false }` for the caller to answer 400.
  *
- * `api-doc.yaml` types every one of these as a boolean, and OpenAPI serializes
- * a boolean as lowercase `true`/`false`, so those two spellings (plus absent)
- * are the whole accepted set. Anything else returns `{ ok: false }` for the
- * caller to answer 400 with.
- *
- * Reading a param as `=== "true"` instead treats every other spelling as
- * `false`, so `?reload=1`, `?reload=yes` and `?reload=TRUE` each answer 200
- * without recompiling. The caller edits a model, sees 200, and queries a model
- * the server never recompiled. An invalid value must not still drive behavior,
- * so it is refused rather than read as false.
- *
- * The same reading is why this is shared rather than written per param. It bit
- * `dropTables` hardest: `DELETE ...\/materializations\/{id}?dropTables=1` read as
- * `false`, so the materialization record went away, its tables stayed on disk,
- * and the response was `204 No Content` -- a destructive request that did half
- * its job and said nothing. `bypass_filters` failed closed rather than open,
- * but silently the same way.
- *
- * Coercing `1`/`yes`/`TRUE` would put the guessing back, and a caller that
- * meant it is better served by a loud 400 than by a silent no-op. A repeated
- * param (`?reload=true&reload=1`) arrives as an array and is refused for the
- * same reason: there is no single value to honor.
+ * Refused rather than read as `false`: `?reload=1` read as false answers 200
+ * without recompiling, and `?dropTables=1` read as false deletes the record
+ * but keeps the tables, both silently. Coercing `1`/`yes` would bring the
+ * guessing back.
  */
 export function parseBooleanParam(value: unknown): BooleanParam {
    if (value === undefined || value === null) return { ok: true, value: false };
@@ -68,13 +46,9 @@ export function parseBooleanParam(value: unknown): BooleanParam {
 }
 
 /**
- * The 400 message for a value {@link parseBooleanParam} refused.
- *
- * Lives here, next to the rule it explains, because every route pair that reads
- * a boolean param emits it -- modern (`/environments/...`) and legacy
- * (`/projects/...`) alike -- and a hand-copied second version would drift.
- * `method` and `routePath` are the caller's own, so the suggested fix is one
- * they can paste.
+ * The 400 message for a value {@link parseBooleanParam} refused, shared by the
+ * modern and legacy routes. Names the caller's own method and path so the
+ * suggested fix can be pasted.
  */
 export function invalidBooleanMessage(
    name: string,
