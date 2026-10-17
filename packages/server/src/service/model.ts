@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 import {
-   API,
    Connection,
    FixedConnectionMap,
    GivenValue,
@@ -38,7 +37,6 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { components } from "../api";
 import {
-   getDefaultQueryRowLimit,
    getMaxQueryRows,
    getMaxResponseBytes,
    getQueryMetadataMode,
@@ -53,7 +51,6 @@ import { HackyDataStylesAccumulator } from "../data_styles";
 import {
    AccessDeniedError,
    BadRequestError,
-   databaseAccessFailure,
    ConnectionError,
    InvalidArgumentError,
    ModelCompilationError,
@@ -176,14 +173,15 @@ import {
    tagText,
 } from "./motly";
 import {
-   assertWithinModelByteLimit,
    assertWithinModelRowLimit,
    type QueryRowLimitSource,
-   queryRowLimitSource,
-   resolveModelQueryRowLimit,
-   stringifyQueryResponse,
 } from "./model_limits";
-import { bigIntReplacer } from "../json_utils";
+import {
+   mapRunError,
+   prepareAndRun,
+   serializeWithinCaps,
+   type PreparedRun,
+} from "./query_execution";
 import { onlyParseFailures } from "./compile_restriction";
 import { createEventLoopYielder } from "./event_loop_yield";
 import {
@@ -8253,11 +8251,8 @@ export class Model {
       // a 500. `executionTime` is captured after run() returns, so it spans
       // prepare AND the warehouse round trip — which is the span the success
       // histogram has always described itself as recording.
-      let rowLimit = 0;
-      let rowLimitSource: QueryRowLimitSource = "server_default";
       let executionTime = 0;
-      let queryResults;
-      let appliedQueryMetadata: QueryMetadata | undefined;
+      let run: PreparedRun;
       // Passed through whether or not the query routes. The serve shape declares
       // this model's whole given surface (see `serveShapeGivens`), so a supplied
       // name resolves there exactly as it does live — and it MUST be passed,
@@ -8280,44 +8275,37 @@ export class Model {
          // The prepared result is also where the executing connection's name
          // comes from, which is what makes the connection's default metadata
          // layer resolvable BEFORE the statement is issued.
-         const preparedResult = await runnable.getPreparedResult({
-            givens: effectiveGivens,
-            buildManifest: effectiveBuildManifest,
-            virtualMap: serveVirtualMap,
-         });
-         const preparedLimit = preparedResult.resultExplore.limit;
-         rowLimitSource = queryRowLimitSource(preparedLimit);
-         rowLimit = resolveModelQueryRowLimit(preparedLimit, {
-            defaultLimit: getDefaultQueryRowLimit(),
-            maxRows,
-         });
-         appliedQueryMetadata = this.resolveQueryMetadata(
-            queryMetadataInput,
-            preparedResult.connectionName,
-            // The run-target source already resolved for the authorize gate, not
-            // the raw `sourceName` param: a `queryName` request names exactly one
-            // source and must not lose its declared layer for having named it
-            // indirectly, and ad-hoc text resolves through the same surface-syntax
-            // path. Reusing the gate's answer also keeps one definition of "which
-            // source is this query against" rather than a second, weaker one.
-            //
-            // The COMPILED target specifically, for the reason the authorize gate
-            // treats it as the source of truth: surface syntax cannot see a
-            // `query:` indirection or a derivation chain, so tagging off it alone
-            // could attribute the query to the wrong source's team and tier.
-            // Falls back to the surface-syntax answer when the compiled one is
-            // unresolved, the same degradation the gate accepts.
-            compiledSource ?? earlySource,
+         run = await prepareAndRun(
+            runnable,
+            {
+               givens: effectiveGivens,
+               buildManifest: effectiveBuildManifest,
+               virtualMap: serveVirtualMap,
+            },
+            {
+               abortSignal,
+               maxRows,
+               queryMetadata: (connectionName) =>
+                  this.resolveQueryMetadata(
+                     queryMetadataInput,
+                     connectionName,
+                     // The run-target source already resolved for the authorize gate, not
+                     // the raw `sourceName` param: a `queryName` request names exactly one
+                     // source and must not lose its declared layer for having named it
+                     // indirectly, and ad-hoc text resolves through the same surface-syntax
+                     // path. Reusing the gate's answer also keeps one definition of "which
+                     // source is this query against" rather than a second, weaker one.
+                     //
+                     // The COMPILED target specifically, for the reason the authorize gate
+                     // treats it as the source of truth: surface syntax cannot see a
+                     // `query:` indirection or a derivation chain, so tagging off it alone
+                     // could attribute the query to the wrong source's team and tier.
+                     // Falls back to the surface-syntax answer when the compiled one is
+                     // unresolved, the same degradation the gate accepts.
+                     compiledSource ?? earlySource,
+                  ),
+            },
          );
-
-         queryResults = await runnable.run({
-            rowLimit,
-            givens: effectiveGivens,
-            abortSignal,
-            buildManifest: effectiveBuildManifest,
-            virtualMap: serveVirtualMap,
-            queryMetadata: appliedQueryMetadata,
-         });
          // AFTER run(), not before it. Taken above, this stopped at
          // getPreparedResult and so measured compile + authorize + routing +
          // prepare while excluding the warehouse round trip entirely — the one
@@ -8420,55 +8408,26 @@ export class Model {
                throw gateDenial;
             }
 
-            const givenCode = (err as { code?: string })?.code;
-            if (
-               typeof givenCode === "string" &&
-               givenCode.startsWith("runtime-given-")
-            ) {
-               logger.debug("Rejected client-supplied given", {
-                  environmentName: this.packageName,
-                  modelPath: this.modelPath,
-                  error: err instanceof Error ? err.message : String(err),
-               });
-               throw new BadRequestError(
-                  err instanceof Error ? err.message : String(err),
-               );
-            }
-
-            // A connection-side failure the connection already classified
-            // (an exhausted pool) keeps its own status rather than becoming a
-            // 400 the caller would read as a problem with the query.
-            if (err instanceof ConnectionError) {
-               throw err;
-            }
-
-            // Re-throw Malloy errors as-is (they will be handled by error handler)
-            if (err instanceof MalloyError) {
-               throw err;
-            }
-
-            const errorMessage =
-               err instanceof Error ? err.message : String(err);
-            // The database could not be reached (502) or rejected the
-            // connection's credentials (424), so the query never ran. Logged
-            // once at warn by the error mapping. Not the 400 below, which
-            // would tell the caller to fix a query that is fine.
-            const accessFailure = databaseAccessFailure(err);
-            if (accessFailure) throw accessFailure;
-
-            // For other runtime errors (like divide by zero), throw as BadRequestError
-            logger.error("Query execution error", {
-               error: err,
-               errorMessage,
-               environmentName: this.packageName,
+            return mapRunError(err, {
+               packageName: this.packageName,
                modelPath: this.modelPath,
-               query,
-               queryName,
-               sourceName,
+               failurePrefix: "Query execution failed",
+               // A connection-side failure the connection already classified
+               // (an exhausted pool) keeps its own status rather than becoming a
+               // 400 the caller would read as a problem with the query.
+               passThrough: [ConnectionError],
+               // For other runtime errors (like divide by zero), throw as BadRequestError
+               logFailure: (errorMessage) =>
+                  logger.error("Query execution error", {
+                     error: err,
+                     errorMessage,
+                     environmentName: this.packageName,
+                     modelPath: this.modelPath,
+                     query,
+                     queryName,
+                     sourceName,
+                  }),
             });
-            throw new BadRequestError(
-               `Query execution failed: ${errorMessage}`,
-            );
          };
          if (!canDegradeToLive) failQuery(error);
          logger.warn(
@@ -8490,36 +8449,28 @@ export class Model {
             // `liveBuildManifest`, not `buildManifest`: this retry runs on the
             // AUTHOR's model, which can neither reference a synthesized rollup
             // nor be assumed to carry `##! experimental.persistence`.
-            const livePrepared = await liveRunnable!.getPreparedResult({
-               givens: querySurfaceGivens,
-               buildManifest: liveBuildManifest,
-            });
-            const livePreparedLimit = livePrepared.resultExplore.limit;
-            rowLimitSource = queryRowLimitSource(livePreparedLimit);
-            rowLimit = resolveModelQueryRowLimit(livePreparedLimit, {
-               defaultLimit: getDefaultQueryRowLimit(),
-               maxRows,
-            });
-            // Re-resolve rather than reuse: the bag above was resolved against
-            // the STORAGE connection, which on this tier is routinely not the
-            // one the live shape runs on, so reusing it would stamp another
-            // connection's default and enforced layers on this statement. The
-            // correlation id rides in the input, so the retry keeps the id the
-            // response returns — one API call, one join key, two statements.
-            appliedQueryMetadata = this.resolveQueryMetadata(
-               queryMetadataInput,
-               livePrepared.connectionName,
-               // Same compiled run target as the primary path — the retry runs
-               // the same query, so it must not tag a different source.
-               compiledSource ?? earlySource,
+            run = await prepareAndRun(
+               liveRunnable!,
+               { givens: querySurfaceGivens, buildManifest: liveBuildManifest },
+               {
+                  abortSignal,
+                  maxRows,
+                  // Re-resolve rather than reuse: the bag above was resolved against
+                  // the STORAGE connection, which on this tier is routinely not the
+                  // one the live shape runs on, so reusing it would stamp another
+                  // connection's default and enforced layers on this statement. The
+                  // correlation id rides in the input, so the retry keeps the id the
+                  // response returns — one API call, one join key, two statements.
+                  queryMetadata: (connectionName) =>
+                     this.resolveQueryMetadata(
+                        queryMetadataInput,
+                        connectionName,
+                        // Same compiled run target as the primary path — the retry runs
+                        // the same query, so it must not tag a different source.
+                        compiledSource ?? earlySource,
+                     ),
+               },
             );
-            queryResults = await liveRunnable!.run({
-               rowLimit,
-               givens: querySurfaceGivens,
-               abortSignal,
-               buildManifest: liveBuildManifest,
-               queryMetadata: appliedQueryMetadata,
-            });
          } catch (retryError) {
             failQuery(retryError);
          }
@@ -8530,6 +8481,12 @@ export class Model {
          // Fall through: `queryResults` is set, so the normal post-run path
          // wraps and returns it exactly as a live query would.
       }
+      const {
+         result: queryResults,
+         rowLimit,
+         rowLimitSource,
+         queryMetadata: appliedQueryMetadata,
+      } = run;
 
       // A row-level gate that applied cleanly and matched nothing is a normal
       // 200 with zero rows — the deliberate readable-but-empty posture, not an
@@ -8557,8 +8514,6 @@ export class Model {
       // process does neither for a response it is about to refuse, and the caller
       // is told it exceeded PUBLISHER_MAX_QUERY_ROWS rather than that the response
       // could not be serialized. The notebook path below has the same ordering.
-      assertWithinModelRowLimit(queryResults.totalRows, maxRows, "model_query");
-      const wrappedResult = API.util.wrapResult(queryResults);
       // Best-effort byte check: we've already buffered `queryResults` and
       // built `wrappedResult` by the time we get here, so this surfaces
       // oversize responses with a clean HTTP 413 instead of letting the
@@ -8589,14 +8544,13 @@ export class Model {
       // `JSON.stringify` at indent 2 and truncating to 90k characters. Compact
       // rows that serialize while that indented envelope does not still throw a
       // raw RangeError there. Guarding it belongs with that budget; follow-up.
-      const serializedResult = stringifyQueryResponse(
-         responseShape === "compact" ? queryResults.data.value : wrappedResult,
-         queryResults.totalRows,
-         maxBytes,
-         "model_query",
-         responseShape === "compact" ? bigIntReplacer : undefined,
-      );
-      assertWithinModelByteLimit(serializedResult, maxBytes, "model_query");
+      const { wrapped: wrappedResult, serialized: serializedResult } =
+         serializeWithinCaps(queryResults, {
+            maxRows,
+            maxBytes,
+            source: "model_query",
+            compact: responseShape === "compact",
+         });
       const metricAttributes = this.queryMetricAttributes({
          environment: queryMetadataInput?.environment,
          queryName,
@@ -9604,42 +9558,39 @@ export class Model {
                cellReadGivenNames,
                this.notebookCellDeclaredGivens[cellIndex],
             );
-            const preparedCell = await runnableToExecute.getPreparedResult({
-               givens: cellSurfaceGivens,
-               buildManifest,
-            });
-            const rowLimit = resolveModelQueryRowLimit(
-               preparedCell.resultExplore.limit,
-               {
-                  defaultLimit: getDefaultQueryRowLimit(),
-                  maxRows: cellMaxRows,
-               },
-            );
-            // The compiled run target, preferred over the cell's surface syntax
-            // for the reason getQueryResults prefers it: surface syntax cannot
-            // see a `query:` indirection or a derivation chain, so a cell
-            // reaching its target through either would tag the wrong source.
-            // The prepared query is read again below, so this costs nothing new.
-            const cellCompiledSource =
-               await this.resolveAuthorizeSourceFromRunnable(runnableToExecute);
             // A notebook cell never takes `getQueryResults`' constant-false
             // short circuit: it always runs, even for a gate proven to admit
             // no row. That is a cost (one zero-scan warehouse round trip),
             // never a correctness gap — the grafted `where: false` is what
             // produces the empty result either way.
-            const result = await runnableToExecute.run({
-               rowLimit,
-               givens: cellSurfaceGivens,
-               abortSignal,
-               buildManifest,
-               queryMetadata: this.resolveQueryMetadata(
-                  queryMetadataInput,
-                  preparedCell.connectionName,
-                  // Same resolution the cell's own filter lookup uses, so a
-                  // notebook cell carries the source's declared layer too.
-                  cellCompiledSource ?? extractRunTargetSourceName(cell.text),
-               ),
-            });
+            const cellRunnable = runnableToExecute;
+            const { result } = await prepareAndRun(
+               cellRunnable,
+               { givens: cellSurfaceGivens, buildManifest },
+               {
+                  abortSignal,
+                  maxRows: cellMaxRows,
+                  queryMetadata: async (connectionName) => {
+                     // The compiled run target, preferred over the cell's surface syntax
+                     // for the reason getQueryResults prefers it: surface syntax cannot
+                     // see a `query:` indirection or a derivation chain, so a cell
+                     // reaching its target through either would tag the wrong source.
+                     // The prepared query is read again below, so this costs nothing new.
+                     const cellCompiledSource =
+                        await this.resolveAuthorizeSourceFromRunnable(
+                           cellRunnable,
+                        );
+                     return this.resolveQueryMetadata(
+                        queryMetadataInput,
+                        connectionName,
+                        // Same resolution the cell's own filter lookup uses, so a
+                        // notebook cell carries the source's declared layer too.
+                        cellCompiledSource ??
+                           extractRunTargetSourceName(cell.text),
+                     );
+                  },
+               },
+            );
             const query = (await runnableToExecute.getPreparedQuery())._query;
             queryName = (query as NamedQueryDef).as || query.name;
             // Same reasoning as getQueryResults: a row-level gate that applied
@@ -9655,37 +9606,29 @@ export class Model {
             }
             // Same ordering as getQueryResults: rows first, so a row overflow is
             // not reported as an unserializable response.
-            if (result?._queryResult) {
-               assertWithinModelRowLimit(
-                  result.totalRows,
-                  cellMaxRows,
-                  "notebook_cell",
-               );
-            }
-            queryResult =
-               result?._queryResult &&
-               this.modelInfo &&
-               // Same guard as getQueryResults, and here too the string is the
-               // payload rather than a throwaway measurement: a cell whose
-               // result cannot be serialized would otherwise return the same
-               // bare 500.
-               stringifyQueryResponse(
-                  API.util.wrapResult(result),
-                  result.totalRows,
-                  cellMaxBytes,
-                  "notebook_cell",
-               );
+            // Same guard as getQueryResults, and here too the string is the
+            // payload rather than a throwaway measurement: a cell whose
+            // result cannot be serialized would otherwise return the same
+            // bare 500.
             // Same caveat as `getQueryResults`: by the time we measure
             // bytes the response has already been buffered and stringified,
             // so this is loud-failure detection (clean 413 instead of
             // partial transmission), not OOM prevention. The row cap above
             // is the primary defense.
-            if (result?._queryResult && queryResult) {
-               assertWithinModelByteLimit(
-                  queryResult,
-                  cellMaxBytes,
-                  "notebook_cell",
-               );
+            if (result?._queryResult) {
+               if (this.modelInfo) {
+                  queryResult = serializeWithinCaps(result, {
+                     maxRows: cellMaxRows,
+                     maxBytes: cellMaxBytes,
+                     source: "notebook_cell",
+                  }).serialized;
+               } else {
+                  assertWithinModelRowLimit(
+                     result.totalRows,
+                     cellMaxRows,
+                     "notebook_cell",
+                  );
+               }
             }
          } catch (error) {
             // The authorize gate above now runs INSIDE this try (it needs the
@@ -9702,50 +9645,29 @@ export class Model {
             // Bad client-supplied givens (unknown name, wrong-typed value,
             // finalized override, ...) surface as a Malloy `runtime-given-*`
             // error; see getQueryResults. Malloy validates, the publisher maps
-            // to 400. Duck-type on `.code` (not a MalloyError, not root-exported).
-            const givenCode = (error as { code?: string })?.code;
-            if (
-               typeof givenCode === "string" &&
-               givenCode.startsWith("runtime-given-")
-            ) {
-               logger.debug("Rejected client-supplied given", {
-                  environmentName: this.packageName,
-                  modelPath: this.modelPath,
-                  error: error instanceof Error ? error.message : String(error),
-               });
-               throw new BadRequestError(
-                  error instanceof Error ? error.message : String(error),
-               );
-            }
-            if (error instanceof MalloyError) {
-               throw error;
-            }
-            // Surface PayloadTooLargeError as-is so the error middleware
-            // maps it to HTTP 413; without this it would get swallowed
-            // into a generic 400 BadRequestError below.
-            if (error instanceof PayloadTooLargeError) {
-               throw error;
-            }
-            const errorMessage =
-               error instanceof Error ? error.message : String(error);
-            // Same split as a query's: an unreachable database is a 502, a
-            // rejected login a 424.
-            const accessFailure = databaseAccessFailure(error);
-            if (accessFailure) throw accessFailure;
-            if (errorMessage.trim() === "Model has no queries.") {
-               return {
-                  type: "code",
-                  kind: cell.kind,
-                  text: cell.text,
-                  markdown: cell.markdown,
-                  proseLines: cell.proseLines,
-                  codeLine: cell.codeLine,
-                  caption: cell.caption,
-               };
-            } else {
-               logger.error("Error message: ", errorMessage);
-            }
-            throw new BadRequestError(`Cell execution failed: ${errorMessage}`);
+            // to 400. Same split as a query's: an unreachable database is a
+            // 502, a rejected login a 424.
+            mapRunError(error, {
+               packageName: this.packageName,
+               modelPath: this.modelPath,
+               failurePrefix: "Cell execution failed",
+               // Surface PayloadTooLargeError as-is so the error middleware
+               // maps it to HTTP 413; without this it would get swallowed
+               // into a generic 400 BadRequestError below.
+               passThrough: [PayloadTooLargeError],
+               benignMessage: "Model has no queries.",
+               logFailure: (errorMessage) =>
+                  logger.error("Error message: ", errorMessage),
+            });
+            return {
+               type: "code",
+               kind: cell.kind,
+               text: cell.text,
+               markdown: cell.markdown,
+               proseLines: cell.proseLines,
+               codeLine: cell.codeLine,
+               caption: cell.caption,
+            };
          }
       }
 
