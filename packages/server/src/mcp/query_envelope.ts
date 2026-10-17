@@ -1,9 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { lazyCounter } from "../telemetry";
 import type * as Malloy from "@malloydata/malloy-interfaces";
 import { bigIntReplacer } from "../json_utils";
 import type { QueryRowLimitSource } from "../service/model_limits";
+
+const rowLimitHits = lazyCounter(
+   "publisher_mcp_row_limit_hits_total",
+   "execute_query answers that returned exactly the server's default row limit, so the agent saw a truncated sample.",
+);
 
 /**
  * The agent-facing shape for a query result, matched to what Credible's
@@ -182,6 +188,7 @@ export function buildQueryEnvelope(
    };
 
    if (limitHit) {
+      rowLimitHits().add(1);
       envelope.warning =
          `Returned exactly ${rowLimit} rows, the row limit applied to this query, so there are probably more. ` +
          `This is not a complete result: add an explicit limit, aggregate, or filter rather than reporting these rows as the whole set.`;

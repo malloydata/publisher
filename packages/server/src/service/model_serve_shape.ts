@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { lazyCounter } from "../telemetry";
 import {
    InMemoryURLReader,
    MalloyConfig,
@@ -38,6 +39,11 @@ import {
 } from "./materialization_serve_transform";
 import { rollupServeBindings } from "./preaggregation_serve_bindings";
 import { type RollupPlan } from "./preaggregation_synthesis";
+
+const staleBindingsWithheld = lazyCounter(
+   "publisher_storage_bindings_withheld_total",
+   "Storage serve bindings withheld from a routed query because the freshness gate found them stale; each one is read live instead. Until now staleness was visible only as a later live read.",
+);
 
 type ApiGiven = components["schemas"]["Given"];
 
@@ -188,6 +194,8 @@ export class StorageServeShape {
       // when a binding crosses its window (drops out) — the storage analogue of
       // the colocated path's memoized getFreshBuildManifest.
       const freshBindings = this.freshServeBindings(Date.now());
+      const withheld = this.serveBindings.length - freshBindings.length;
+      if (withheld > 0) staleBindingsWithheld().add(withheld);
       if (freshBindings.length === 0) {
          // Every bound source is stale past its window with a live/fail fallback —
          // nothing to serve from storage; fall through to live (caller's catch).
