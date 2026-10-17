@@ -6,15 +6,12 @@ import { DuckDBConnection } from "./DuckDBConnection";
 import { newId, Row, rowTimestamps } from "./rows";
 
 /**
- * Persistence for an environment's storage destinations, so the
- * warehouses a worker builds into and serves from survive a restart the same way
- * its connections do.
+ * Persists an environment's storage destinations so they survive a restart, as
+ * connections do.
  *
- * Deliberately a smaller surface than {@link ConnectionRepository}: destinations
- * are written as a whole list (the environment replaces its list, it does not
- * patch one entry), so an upsert keyed on `(environment_id, name)` and a delete
- * are all the store needs. There is no `getById` because no caller holds a
- * destination id.
+ * Smaller than {@link ConnectionRepository} on purpose: an environment replaces
+ * its whole destination list, so an upsert keyed on `(environment_id, name)` and
+ * a delete suffice. No `getById`, because no caller holds a destination id.
  */
 export class StorageDestinationRepository {
    constructor(private db: DuckDBConnection) {}
@@ -39,10 +36,9 @@ export class StorageDestinationRepository {
    }
 
    /**
-    * Writes a destination, replacing any row already holding that name in the
-    * environment. Keyed on `(environment_id, name)` rather than on the row id
-    * because the name is what the config and the API address a destination by;
-    * the id is an internal handle.
+    * Writes a destination, replacing any row with that name in the environment.
+    * Keyed on name, not id, because config and the API address destinations by
+    * name; the id is an internal handle.
     */
    async upsert(
       destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,

@@ -15,11 +15,9 @@ export interface StorageConfig {
 }
 
 /**
- * Manages the storage backend (DuckDB today) and exposes the resource
- * repository. The publisher persists only its own control records
- * (environments, packages, connections, materializations) here; build
- * manifests are returned inline on the materialization resource and persisted
- * by the control plane.
+ * Owns the storage backend (DuckDB) and exposes the resource repository. Only
+ * the publisher's own control records live here; build manifests are returned
+ * inline on the materialization resource and persisted by the control plane.
  */
 export class StorageManager {
    private connection: DuckDBConnection | null = null;
@@ -48,11 +46,8 @@ export class StorageManager {
    }
 
    /**
-    * Access the underlying DuckDB connection for callers that need raw
-    * SQL access (e.g. the ThemeStore singleton) and don't fit the
-    * structured `ResourceRepository` interface. Use sparingly; prefer
-    * `getRepository()` for anything that maps cleanly onto the existing
-    * repository methods.
+    * Raw SQL access for callers that don't fit `ResourceRepository` (e.g.
+    * ThemeStore). Prefer `getRepository()` where it fits.
     */
    getDuckDbConnection(): DuckDBConnection {
       if (!this.connection) {

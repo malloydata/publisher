@@ -13,8 +13,8 @@ import { getDuckDBMemoryLimit, getDuckDBTempDirectory } from "../../config";
 
 /**
  * The `memory_limit` / `temp_directory` instance options, when configured.
- * Empty when neither is set, so `DuckDBInstance.create` sees exactly what it saw
- * before and nothing changes for a deployment that has not opted in.
+ * Empty when neither is set, so a deployment that has not opted in gets
+ * DuckDB's defaults.
  */
 function duckDBInstanceResourceOptions(): Record<string, string> {
    const options: Record<string, string> = {};
@@ -51,25 +51,20 @@ export class DuckDBConnection {
    private mutex: Mutex = new Mutex();
 
    constructor(dbPath?: string) {
-      // Default to storing in the server root directory
       this.dbPath = dbPath || path.join(process.cwd(), "publisher.db");
    }
 
    async initialize(): Promise<void> {
       try {
-         // The metadata store is a real DuckDB instance held open for the whole
-         // server lifetime, and it sizes its memory from the container exactly
-         // like every other one — so it belongs in the same budget. It is a
-         // different class from Malloy's connection, so the session funnel that
-         // bounds those never sees it; passed as instance config here instead,
-         // which is the only hook this one has. Not idle, either: the embedding
-         // index runs real compute against it.
+         // This long-lived instance sizes its memory from the container like
+         // every other DuckDB, and the embedding index runs real compute on it,
+         // so it shares the same resource budget. Malloy's session funnel never
+         // sees this class, so instance config is the only hook.
          this.instance = await DuckDBInstance.create(
             this.dbPath,
             duckDBInstanceResourceOptions(),
          );
          this.connection = await this.instance.connect();
-         // Verify the connection works
          await this.connection.run("SELECT 42 as answer");
       } catch (err) {
          const message = err instanceof Error ? err.message : String(err);

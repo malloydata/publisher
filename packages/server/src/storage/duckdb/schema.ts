@@ -16,62 +16,43 @@ export async function initializeSchema(
       );
       await dropAllTables(db);
    } else if (!initialized) {
-      // TODO: Remove this during projects cleanup
-      // If a pre-rename `projects` schema is on disk, the new
-      // CREATE TABLE IF NOT EXISTS pass below would silently leave child
-      // tables on the old `project_id` column and the first query against
-      // `environment_id` would crash. Drop the legacy tables (with a loud
-      // warning) so the fresh schema can be created cleanly. This is
-      // destructive: operators upgrading should re-create their environments
-      // and packages via the API after the upgrade.
+      // A pre-rename `projects` schema would leave child tables on the old
+      // `project_id` column (CREATE TABLE IF NOT EXISTS does not alter them),
+      // and the first query against `environment_id` would crash. Dropping is
+      // destructive: operators re-create environments and packages via the API.
       await dropLegacyProjectSchema(db);
       logger.info("Creating database schema for the first time...");
    }
-   // Re-keying `incremental_ledger` has to happen on an ALREADY-initialized
-   // database — that is the only case where the old key is on disk — so it runs
-   // outside the branch above rather than beside the legacy-projects drop.
+   // The old ledger key only exists on an already-initialized database, so
+   // these run outside the branch above.
    await dropPackageKeyedIncrementalLedger(db);
    await dropStoreBlindIncrementalLedger(db);
 
-   // Always fall through to the CREATE TABLE IF NOT EXISTS pass below.
-   // The statements are idempotent and let an already-initialized DB pick
-   // up new tables added in later builds (e.g., the `themes` table for
-   // the in-app Theme Editor) without forcing operators to run --init
-   // and lose their existing environments / packages / materializations.
+   // Idempotent, so an existing store picks up tables added in later builds
+   // without operators running --init and losing their data.
    await createDeclaredTables(db);
 
-   // A CREATE TABLE IF NOT EXISTS is a no-op against an existing table no matter
-   // how its COLUMNS differ, so the pass above carries a new table but never a
-   // new column. Reconcile those separately, and only where the drift can exist:
-   // nothing is on disk to have drifted before this build created it.
+   // CREATE TABLE IF NOT EXISTS never adds a column to an existing table, so
+   // columns are reconciled separately wherever a table could predate this build.
    //
-   // `--init` is NOT exempt. It looks like it should be, since dropAllTables
-   // recreates everything from scratch — but that function's table list is a
-   // second, hand-maintained declaration of the table set, exactly the kind of
-   // parallel list this reconcile exists to avoid depending on. A table added to
-   // the DDL and forgotten there survives the drop, no-ops through CREATE TABLE
-   // IF NOT EXISTS, and would keep its drift through the one command the warning
-   // below tells operators to run. On a correctly recreated store the reconcile
-   // finds nothing, so the cost of not exempting it is one in-memory DDL run.
+   // `--init` is NOT exempt: dropAllTables' table list is hand-maintained, so a
+   // table missing from it survives the drop with its drift intact. On a
+   // correctly recreated store the reconcile finds nothing.
    if (initialized) {
       await reconcileDeclaredColumns(db);
    }
 
    // After the reconcile, so an index over a newly added column can be created
-   // in the same boot that adds it.
+   // in the same boot.
    await createDeclaredIndexes(db);
 }
 
 /**
- * The declared schema: every table this build expects `publisher.db` to hold.
- *
- * These statements are the single source of truth for the shape of the store —
- * `reconcileDeclaredColumns` derives the expected columns by running this same
- * function against a scratch database rather than from a second, hand-maintained
- * list, so there is no parallel declaration to drift out of sync with the DDL.
+ * The declared schema, and its single source of truth:
+ * `reconcileDeclaredColumns` runs this same function against a scratch database
+ * to derive the expected columns, so there is no parallel list to drift.
  */
 async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
-   // Environments table
    await db.run(`
     CREATE TABLE IF NOT EXISTS environments (
       id VARCHAR PRIMARY KEY,
@@ -84,7 +65,6 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
-   // Packages table
    await db.run(`
     CREATE TABLE IF NOT EXISTS packages (
       id VARCHAR PRIMARY KEY,
@@ -100,7 +80,6 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
-   // Connections table
    await db.run(`
     CREATE TABLE IF NOT EXISTS connections (
       id VARCHAR PRIMARY KEY,
@@ -115,13 +94,9 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
-   // Storage destinations table.
-   //
-   // Warehouses materialization builds write to and materialized queries are
-   // served from. A separate table from `connections`, mirroring the two
-   // separate in-memory lists: a destination is not a connection, and the two
-   // namespaces are independent, so `UNIQUE (environment_id, name)` here says
-   // nothing about a connection of the same name.
+   // Storage destinations: warehouses materialization builds write to and serve
+   // from. Separate from `connections` because the namespaces are independent;
+   // `UNIQUE (environment_id, name)` says nothing about a same-named connection.
    await db.run(`
     CREATE TABLE IF NOT EXISTS storage_destinations (
       id VARCHAR PRIMARY KEY,
@@ -136,17 +111,12 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
-   // Materializations table.
-   //
-   // `active_key` enforces at-most-one active (non-terminal) materialization
-   // per (environment, package) at the DB layer. It is set to
-   // `{environment_id}|{package_name}` while the row is active and cleared
-   // to NULL on transition to any terminal state. A unique index on
-   // `active_key` (see below) makes the insert-then-check race impossible —
-   // a second concurrent create fails with a constraint violation, which the
-   // service layer translates to `MaterializationConflictError`.
-   // `manifest` is a JSON blob holding the build output returned inline on the
-   // resource.
+   // Materializations. `active_key` enforces at most one active (non-terminal)
+   // materialization per (environment, package): it is
+   // `{environment_id}|{package_name}` while active and NULL once terminal, and
+   // its unique index makes a concurrent second create fail with a constraint
+   // violation (translated to `MaterializationConflictError`) instead of racing.
+   // `manifest` holds the build output returned inline on the resource.
    await db.run(`
     CREATE TABLE IF NOT EXISTS materializations (
       id VARCHAR PRIMARY KEY,
@@ -165,43 +135,27 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
-   // Incremental ledger.
+   // Incremental ledger: one row per incrementally refreshed TABLE, holding the
+   // durable `covered_through` boundary (exclusive upper end of the watermark
+   // range the table contains). It advances only after the DML commits, so a
+   // crash between the two is a repeat rather than a gap.
    //
-   // One row per TABLE that refreshes incrementally, holding the durable
-   // `covered_through` boundary: the exclusive upper end of the watermark range
-   // that table is known to contain. A delta run reads it as the range's start,
-   // and advances it only after the DML commits, which is what makes a crash
-   // between the two a repeat rather than a gap.
+   // Keyed on the physical table because that is what the boundary is a fact
+   // about. It must not be keyed on package: a host serving several versions of
+   // one package uses version-qualified package names (Credible sends
+   // `<package>|<versionId>`), so a package key would give a shared table a
+   // fresh row, and a full re-seed via DROP + RENAME over the live table, after
+   // every publish.
    //
-   // Keyed on (environment, connection, physical table) because that is what the
-   // boundary is a fact ABOUT. It was keyed on (environment, package, source
-   // address) and that was wrong in a way only an orchestrated host could see: a
-   // host that serves several versions of one package presents a version-
-   // qualified package name (Credible sends `<package>|<versionId>`, which is how
-   // one worker holds several versions at once), so a table shared across those
-   // versions got a fresh ledger row on the first refresh after every publish. No
-   // row means no boundary, and no boundary means a full re-seed — of a table
-   // whose whole purpose is not being rebuilt. Worse, the re-seed lands on the
-   // serving table's own name, so it goes DROP + RENAME over a live table instead
-   // of the atomic cutover a fresh generation gets.
+   // The declaration columns (watermark, merge keys, strategy, source content
+   // address) let the read REFUSE (ledgerLineageMismatch) a boundary measured
+   // under rules that no longer apply, so the build re-seeds instead. Each is
+   // needed: a table's name need not change when its definition does, and
+   // changing the watermark or merge keys changes the DML without moving the
+   // address (see incremental_compiler_contract.spec.ts).
    //
-   // The declaration columns — the watermark, the merge keys, the strategy, and
-   // the source's content address — are not bookkeeping. Each is recorded so the
-   // read can REFUSE (ledgerLineageMismatch): a change to any of them means the
-   // boundary was measured under rules that no longer apply, so the build path
-   // re-seeds rather than applying a delta whose semantics no longer match the
-   // table. The address needs comparing because it stopped being the key, and a
-   // table's name need not change when its definition does — a standalone
-   // publisher's names are `#@ persist name=` or the source name, with no content
-   // token. The watermark and merge keys need comparing because changing them
-   // changes the DML WITHOUT moving the address at all (proven in
-   // incremental_compiler_contract.spec.ts), so not even the address would be
-   // sufficient on its own.
-   //
-   // No claim/lease column: the single writer is already guaranteed by the
-   // `active_key` unique index on `materializations` (at most one active run per
-   // environment+package), so a second claim here would only add a way to
-   // disagree with it.
+   // No claim/lease column: the `active_key` unique index on `materializations`
+   // already guarantees a single writer; a second claim could only disagree.
    await db.run(`
     CREATE TABLE IF NOT EXISTS incremental_ledger (
       environment_id VARCHAR NOT NULL,
@@ -245,16 +199,10 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
     )
   `);
 
-   // Themes table.
-   //
-   // Singleton storage for the instance-wide theme edited by the in-app
-   // Theme Editor. At most one row (id = "default"); we use INSERT ON
-   // CONFLICT to keep the table effectively a key/value cell.
-   //
-   // publisher.config.json's optional `theme` block is a BOOT SEED only —
-   // on first run, if this table is empty, ThemeStore writes the seed
-   // here. Subsequent reads come from this table so the editor's saves
-   // win over the file.
+   // Themes: the instance-wide theme edited by the in-app Theme Editor, at
+   // most one row (id = "default", written with INSERT ON CONFLICT).
+   // publisher.config.json's `theme` block is only a boot seed written when
+   // this table is empty, so the editor's saves win over the file.
    await db.run(`
     CREATE TABLE IF NOT EXISTS themes (
       id VARCHAR PRIMARY KEY,
@@ -270,7 +218,6 @@ async function createDeclaredTables(db: DuckDBConnection): Promise<void> {
 }
 
 async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
-   // Create indexes for better query performance
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_packages_environment_id ON packages(environment_id)",
    );
@@ -286,8 +233,8 @@ async function createDeclaredIndexes(db: DuckDBConnection): Promise<void> {
    await db.run(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_materializations_active_key ON materializations(active_key)",
    );
-   // Not a key prefix any more, and so load-bearing rather than merely helpful:
-   // deleting a package's rows is now a scan of a non-key column.
+   // Load-bearing: package_name is not a key prefix, so deleting a package's
+   // rows would otherwise scan the table.
    await db.run(
       "CREATE INDEX IF NOT EXISTS idx_incremental_ledger_environment_package ON incremental_ledger(environment_id, package_name)",
    );
@@ -308,11 +255,10 @@ export interface ConstraintRow {
    constraint_column_names: string[];
 }
 
-// `database_name = current_database()` is load-bearing, not tidiness: filtering
-// on the schema alone also matches DuckDB's own `system.main` catalog (141 of the
-// 146 rows on an empty database) and anything in `temp.main`. Those cancel out
-// across a diff of two DuckDBs, but the keys here are `table.column`, so a
-// same-named table in a second attached database would collide last-wins.
+// `database_name = current_database()` is load-bearing: the schema filter alone
+// also matches DuckDB's `system.main` and `temp.main` catalogs, and since keys
+// are `table.column`, a same-named table in another attached database would
+// collide last-wins.
 const COLUMN_SHAPE_QUERY = `
    SELECT table_name, column_name, data_type, is_nullable, column_default
    FROM duckdb_columns()
@@ -332,51 +278,32 @@ function columnKey(column: ColumnShape): string {
 /**
  * Add columns this build declares that an existing `publisher.db` does not have.
  *
- * The expected shape is not written down anywhere: it is read back out of a
- * throwaway in-memory database that `createDeclaredTables` has just been run
- * against. A hand-maintained column list would be a second declaration of the
- * schema, and a column added to the DDL but forgotten there would reproduce this
- * bug exactly; executing the DDL makes the statements their own specification.
- * The disk is the other half of the comparison, so no schema-version marker is
- * needed and none is kept.
+ * The expected shape is read back from a throwaway in-memory database that
+ * `createDeclaredTables` has just run against, so the DDL is its own
+ * specification and no schema-version marker is kept.
  *
- * Strictly additive, and only for columns carrying no constraint, which is a
- * boundary DuckDB enforces rather than one this code chooses: `ALTER TABLE ...
- * ADD COLUMN` rejects a column carrying any constraint ("Adding columns with
- * constraints not yet supported") — NOT NULL, PRIMARY KEY, UNIQUE, CHECK and
- * FOREIGN KEY alike, with or without a DEFAULT. A bare DEFAULT is accepted and
- * backfills existing rows, so a declared default IS carried across; a constraint
- * never can be. Constraints are read from `duckdb_constraints()` rather than
- * inferred from `is_nullable`, because a UNIQUE or CHECK column reports as
- * nullable and would otherwise be added as a bare column: the store would then
- * hold the right column under the wrong rules, and two servers on the same build
- * would enforce differently depending on how their store was created.
+ * Strictly additive, and only for unconstrained columns: DuckDB's `ALTER TABLE
+ * ... ADD COLUMN` rejects any constraint (NOT NULL, PRIMARY KEY, UNIQUE, CHECK,
+ * FOREIGN KEY), though a bare DEFAULT is accepted and backfills. Constraints come
+ * from `duckdb_constraints()` rather than `is_nullable`, because a UNIQUE or
+ * CHECK column reports as nullable and would otherwise be added bare, leaving
+ * two servers on one build enforcing different rules.
  *
  * Everything else the diff finds is reported, not acted on:
  *
- * - A missing constrained column cannot be added at all. Adding an unconstrained
- *   stand-in would leave the store permanently disagreeing with its own
- *   declaration, so it warns and leaves the write to fail, which is at least
- *   traceable to a named column at boot.
- * - A column already present whose type, nullability, default or constraints
- *   have changed is not an ALTER we can infer the intent of.
+ * - A missing constrained column: an unconstrained stand-in would permanently
+ *   disagree with the declaration, so it warns and lets writes fail traceably.
+ * - A present column whose type, nullability, default or constraints changed:
+ *   the intent cannot be inferred. The hand-written fix should copy
+ *   `dropPackageKeyedIncrementalLedger`: a targeted pre-pass keyed off what is
+ *   on disk, run before the CREATE pass. (`--init` also works but destroys
+ *   environments, packages and materializations.)
+ * - A column or table no longer declared is left alone; dropping is a decision,
+ *   not a reconciliation, and such relics (e.g. `materializations.build_plan`,
+ *   `build_manifests`) are inert.
  *
- *   Where the hand-written step goes when one is needed:
- *   `dropPackageKeyedIncrementalLedger` below is exactly that shape — a
- *   targeted pre-pass, keyed off what it finds on disk rather than a version
- *   marker, running before the CREATE pass so the tables are recreated
- *   correctly. Copy it rather than rediscovering the pattern; the warning's
- *   other suggestion, `--init`, is destructive and takes environments,
- *   packages and materializations with it.
- * - A column or table on disk that this build no longer declares is left alone.
- *   Dropping is a decision, not a reconciliation, and the relics are inert:
- *   `materializations.build_plan` (added and removed within four days in June
- *   2026) and the `build_manifests` table both sit on stores in the wild,
- *   unreferenced by any query.
- *
- * A failure here is logged and swallowed. The server can serve an environment it
- * cannot materialize into, and refusing to boot over that would turn a partial
- * outage into a total one.
+ * A failure here is logged and swallowed: refusing to boot over an environment
+ * the server cannot materialize into would turn a partial outage into a total one.
  */
 async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
    let mirror: DuckDBConnection | null = null;
@@ -400,15 +327,13 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
       const added: string[] = [];
       const failed: string[] = [];
       for (const add of plan.adds) {
-         // Per column, so one column DuckDB refuses cannot abandon the rest of
-         // the reconcile — and so the summary below still reports what did land.
+         // Per column, so one refused column cannot abandon the rest.
          try {
             await db.run(add.sql);
             added.push(add.description);
          } catch (err) {
-            // First line only: DuckDBConnection.run appends the whole failing
-            // statement after a newline, which would turn a scannable boot
-            // warning into a multi-line SQL dump.
+            // First line only: DuckDBConnection.run appends the failing
+            // statement after a newline.
             const message = (
                err instanceof Error ? err.message : String(err)
             ).split("\n")[0];
@@ -444,8 +369,7 @@ async function reconcileDeclaredColumns(db: DuckDBConnection): Promise<void> {
       try {
          await mirror?.close();
       } catch {
-         // A scratch in-memory database that will not close is not worth failing
-         // a boot over.
+         // Not worth failing a boot over a scratch database.
       }
    }
 }
@@ -481,12 +405,8 @@ export function constrainedColumnsOf(
  * Decide what to do about each difference between the declared shape and the
  * store, without touching either.
  *
- * Split out from the IO so the cases that matter can be tested against synthetic
- * shapes: today's declared schema has no defaulted or UNIQUE column, so no test
- * driving the real DDL could reach the branches that handle them, and those are
- * exactly the branches a future column will land in.
- *
- * Exported for tests.
+ * Pure so tests can reach the defaulted/UNIQUE branches with synthetic shapes;
+ * today's DDL has no such column. Exported for tests.
  */
 export function planColumnReconcile(
    declared: ColumnShape[],
@@ -526,17 +446,11 @@ export function planColumnReconcile(
          const withDefault = column.column_default
             ? ` DEFAULT ${column.column_default}`
             : "";
-         // Deliberately NOT `IF NOT EXISTS`. The catalog read above is what
-         // establishes the column is absent, so the guard adds no safety — and
-         // on the DuckDB this pins (1.5.0–1.5.3, duckdb/duckdb#23209) `ADD
-         // COLUMN IF NOT EXISTS ... DEFAULT` against a column that DOES exist
-         // re-applies the default to every row instead of doing nothing,
-         // silently destroying the column's data. It hits fixed-width types —
-         // measured here on BOOLEAN and TIMESTAMP, while VARCHAR, INTEGER and
-         // JSON survive — and TIMESTAMP is most of this schema's non-VARCHAR
-         // columns. Without the guard, a disagreement between the plan and the
-         // catalog raises into the per-column catch and is reported, which is
-         // the outcome this whole path is built around.
+         // Deliberately NOT `IF NOT EXISTS`: the catalog read already proves the
+         // column absent, and on DuckDB 1.5.0–1.5.3 (duckdb/duckdb#23209) `ADD
+         // COLUMN IF NOT EXISTS ... DEFAULT` on an existing fixed-width column
+         // (BOOLEAN, TIMESTAMP) overwrites every row with the default. Without
+         // the guard, a plan/catalog disagreement raises and is reported.
          adds.push({
             sql: `ALTER TABLE "${column.table_name}" ADD COLUMN "${column.column_name}" ${column.data_type}${withDefault}`,
             description: `${key} ${column.data_type}${withDefault}`,
@@ -544,9 +458,8 @@ export function planColumnReconcile(
          continue;
       }
 
-      // Present, but not as declared. Reported per difference rather than as a
-      // bare "differs", because which of the three moved decides what the
-      // hand-written step has to do.
+      // Reported per difference, because which one moved decides what the
+      // hand-written migration has to do.
       const differences: string[] = [];
       if (existing.data_type !== column.data_type) {
          differences.push(
@@ -565,13 +478,9 @@ export function planColumnReconcile(
             `default on disk ${existing.column_default ?? "none"}, declared ${column.column_default ?? "none"}`,
          );
       }
-      // A constraint added to a table that already exists is as invisible to
-      // CREATE TABLE IF NOT EXISTS as a column is, and the consequence is worse
-      // than a missing column: the store keeps accepting rows a fresh store
-      // rejects, so two servers on one build enforce different rules with
-      // nothing failing. It has happened here once already — `incremental_ledger`
-      // was re-keyed, and needed the hand-written detector below to catch it.
-      // NOT NULL is excluded because `is_nullable` above says it better.
+      // A constraint change is as invisible to CREATE TABLE IF NOT EXISTS as a
+      // new column, and worse: the old store keeps accepting rows a fresh one
+      // rejects, silently. NOT NULL is excluded because `is_nullable` covers it.
       const declaredKinds = enforcedKinds(constrainedColumns.get(key));
       const diskKinds = enforcedKinds(diskConstrainedColumns.get(key));
       if (declaredKinds.join(",") !== diskKinds.join(",")) {
@@ -619,15 +528,11 @@ async function existingColumns(
 
 /**
  * Drop an `incremental_ledger` still keyed on (environment, package, source
- * address), so the pass above recreates it keyed on the table.
+ * address), so the CREATE pass recreates it keyed on the table.
  *
- * DuckDB cannot re-key a table in place and this schema has no migration
- * framework, so the choice is drop-and-recreate or leave the old key on disk
- * silently. Dropping is safe here in a way it would not be for any other table:
- * the ledger is a CACHE of a boundary the publisher can always re-derive, and its
- * miss path is a seed — the same fallback every unprovable fact takes. Losing it
- * costs one full rebuild per incremental source, which is exactly what the old key
- * was already costing on every publish.
+ * DuckDB cannot re-key in place and there is no migration framework. Dropping is
+ * safe for this table only: the ledger caches a boundary whose miss path is a
+ * seed, so losing it costs one full rebuild per incremental source.
  */
 async function dropPackageKeyedIncrementalLedger(
    db: DuckDBConnection,
@@ -636,10 +541,8 @@ async function dropPackageKeyedIncrementalLedger(
    if (columns.length === 0) {
       return;
    }
-   // `pk` is true for every column of a composite primary key, so the old key is
-   // identifiable by package_name being part of it. Reading the key rather than a
-   // schema version means this is self-limiting: once no database has the old key,
-   // it never fires again.
+   // `pk` is true for every column of a composite key. Reading the key rather
+   // than a schema version makes this self-limiting.
    const keyedOnPackage = columns.some(
       (column) => column.name === "package_name" && Boolean(column.pk),
    );
@@ -655,19 +558,12 @@ async function dropPackageKeyedIncrementalLedger(
 }
 
 /**
- * Drop an `incremental_ledger` whose primary key predates the storage destination.
+ * Drop an `incremental_ledger` whose primary key lacks the storage destination.
+ * Same reasoning and cost as {@link dropPackageKeyedIncrementalLedger}.
  *
- * Same shape, same reasoning and the same cost as
- * {@link dropPackageKeyedIncrementalLedger} above: the key is read rather than a
- * schema version, so this is self-limiting — once no database carries the old key
- * it never fires again — and the boundaries go with the table, which costs one
- * full rebuild per incremental source and then resumes advancing.
- *
- * A migration that preserved the rows is possible (rename, recreate, copy with ''
- * for the new column) and was deliberately not taken: it buys one avoided rebuild
- * of a feature that is not yet widely released, and pays for it with a
- * partial-failure state in schema initialization — a half-copied ledger and a
- * stranded `_old` table — which is a worse thing to own than a rebuild.
+ * A row-preserving migration (rename, recreate, copy) is deliberately not used:
+ * it saves one rebuild but risks a half-copied ledger and a stranded `_old`
+ * table during schema initialization.
  */
 async function dropStoreBlindIncrementalLedger(
    db: DuckDBConnection,
@@ -676,9 +572,8 @@ async function dropStoreBlindIncrementalLedger(
    if (columns.length === 0) {
       return;
    }
-   // Nothing to do for a table this build created; the old key is identifiable by
-   // the destination being absent from it — either the column does not exist at
-   // all, or it exists as the nullable non-key form that shipped before this.
+   // The old key lacks the destination: either no such column, or the earlier
+   // nullable non-key form.
    const destinationInKey = columns.some(
       (column) =>
          column.name === "storage_destination_name" && Boolean(column.pk),
@@ -696,15 +591,9 @@ async function dropStoreBlindIncrementalLedger(
 }
 
 /**
- * Drop a pre-`facet` embedding cache so the faceted key can be created.
- *
- * Same shape, and the same justification, as
- * dropPackageKeyedIncrementalLedger above: DuckDB cannot re-key in place and
- * this schema has no migration framework. It is safest of all here, because
- * this table is purely a vector cache whose own docstring notes that wiping
- * it only ever costs re-embedding. Reading the key rather than a schema
- * version makes it self-limiting: once no database carries the old key, it
- * never fires again.
+ * Drop a pre-`facet` embedding cache so the faceted key can be created. Same
+ * pattern as dropPackageKeyedIncrementalLedger; wiping this vector cache only
+ * costs re-embedding.
  */
 async function dropPreFacetEntityEmbeddings(
    db: DuckDBConnection,
@@ -732,14 +621,12 @@ async function dropPreFacetEntityEmbeddings(
  * facet rather than on one averaged vector. That is what stops a long doc
  * from burying the entity's own name — see embedding_index.entityFacets.
  *
- * Rows are content-addressed per facet: the index sync compares
- * `content_hash` (over that facet's embedded text) plus `embedding_model`
- * and re-embeds on mismatch, so editing a doc re-embeds only the doc
- * facets. A dimensionality change is detected at query time by the
- * stale-row heal, so staleness always self-corrects and wiping the table
- * only ever costs re-embedding. `embedding` is a LIST column searched with
- * list_cosine_similarity; at the entity counts a single Publisher serves, a
- * brute-force scan is faster and simpler than a vector-index extension.
+ * Rows are content-addressed per facet (`content_hash` plus
+ * `embedding_model`), so editing a doc re-embeds only the doc facets; a
+ * dimensionality change is healed at query time, and wiping the table only
+ * costs re-embedding. `embedding` is searched by brute-force
+ * list_cosine_similarity, which at one Publisher's entity counts beats a
+ * vector-index extension.
  */
 export async function createEntityEmbeddingsTable(
    db: DuckDBConnection,
@@ -772,9 +659,9 @@ export async function createEntityEmbeddingsTable(
  * the prompt or the model changed, and an unchanged entity costs no LLM call
  * on a restart, a reload or a republish.
  *
- * Additive: a new table, nothing existing is altered. `entity_key` is the
- * JSON array [kind, source, name], which cannot collide on an identifier
- * containing any character. Losing the table only costs regenerating.
+ * `entity_key` is the JSON array [kind, source, name], which cannot collide
+ * whatever characters an identifier contains. Losing the table only costs
+ * regenerating.
  */
 export async function createEntityKeyphrasesTable(
    db: DuckDBConnection,
@@ -799,10 +686,8 @@ export async function createEntityKeyphrasesTable(
  * (model path, source). `input_hash` covers everything the model was shown
  * (the rendered source and fields), the prompt text and the model, so a row is
  * reused only while none of those changed, and an unchanged source costs no LLM
- * call on a restart, a reload or a republish.
- *
- * Additive: a new table, nothing existing is altered. Losing the table only
- * costs regenerating.
+ * call on a restart, a reload or a republish. Losing the table only costs
+ * regenerating.
  */
 export async function createSourceSummariesTable(
    db: DuckDBConnection,
@@ -823,9 +708,8 @@ export async function createSourceSummariesTable(
   `);
 }
 
-// TODO: Remove this during projects cleanup
-// Tables in the pre-rename schema, listed children-first so DROP order
-// satisfies foreign-key dependencies on the legacy `projects` table.
+// Tables in the pre-rename `projects` schema, children first so DROP order
+// satisfies foreign keys. Removable once no store predates the rename.
 const LEGACY_TABLES_DROP_ORDER = [
    "build_manifests",
    "materializations",

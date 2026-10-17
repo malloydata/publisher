@@ -83,8 +83,7 @@ export type EligibilityRefusalReason =
  * under `strictUpstreams`, a persisted upstream was neither built in the run
  * nor referenced, or the downstream reads only stored upstreams yet could not be
  * built over them, so the build failed loudly rather than recomputing a table
- * the orchestrator meant to pin. This is the headline signal for how far the
- * parent-reuse path gets us in practice.
+ * the orchestrator meant to pin.
  */
 export type ChainedStorageBuildOutcome =
    | "parent_reuse"
@@ -542,12 +541,10 @@ export function recordServeShapeTypeFallback(
  * alone. `blocked_by_row_level_gate` = a row-level-gated entry point vetoed
  * BOTH the storage and pre-aggregation tiers before either was attempted — the
  * one outcome with no compile attempt behind it, so without this label a
- * blocked query recorded nothing at all rather than reading as a fallback.
- * This hit rate is the headline KPI of the storage tier; the fallback side also
- * logs its reason per query at INFO — the compile error, plus the sources the
- * shape offered and the ones the freshness gate withheld, which is what
- * separates "never materialized" from "materialized but stale". That is the only
- * per-query account of a miss there is.
+ * blocked query would record nothing. The fallback side also logs its reason
+ * per query at INFO (the compile error, the sources the shape offered, and the
+ * ones the freshness gate withheld), which separates "never materialized" from
+ * "materialized but stale".
  *
  * ⚠️ `live_fallback` here is NOT `QueryResult.servedFrom`'s `live_fallback`, and
  * joining a dashboard across the two on that token is wrong in both directions.
@@ -558,27 +555,16 @@ export function recordServeShapeTypeFallback(
  * failed.) Each surface is internally consistent and none means what the others
  * do.
  *
- * Scope worth knowing before reading the hit rate as "did materialization work":
- * this counter covers the `storage=` tier only. A COLOCATED `#@ persist` hit
- * never reaches the routing decision, so it is absent from the numerator AND the
- * denominator rather than counted as a miss — the rate is silent about that tier
- * rather than pessimistic about it, which the "headline KPI" framing otherwise
- * invites you to assume.
+ * This counter covers the `storage=` tier only: a COLOCATED `#@ persist` hit
+ * never reaches the routing decision, so it is absent from numerator AND
+ * denominator, not counted as a miss.
  *
- * `origin` separates the two kinds of storage hit. A lake-served pre-aggregation
- * rollup routes through the SAME serve shape as an authored `storage=` source, so
- * it is counted as a storage hit either way — the label makes the two SPLITTABLE,
- * it does not stop the total from including rollups. A consumer summing by
- * `outcome` alone therefore starts counting rollup hits in the headline rate
- * without changing anything; it has to group by `origin` to get what it had
- * before. `persist` is an authored source, `preaggregate` a
- * query answered by a rollup, and the label is absent for outcomes where the
- * distinction has no meaning (nothing routed, so nothing has an origin).
- *
- * An attribute rather than a new `outcome` value on purpose: an outcome enum is
- * mirrored into consumers that generate strict clients from it, where an
- * unexpected value throws on the consuming hop. An added attribute breaks no
- * consumer.
+ * `origin` splits storage hits: `persist` is an authored `storage=` source,
+ * `preaggregate` a query answered by a lake-served rollup (which routes through
+ * the same serve shape, so both count as storage hits in the total). Absent
+ * when nothing routed. An attribute rather than a new `outcome` value because
+ * consumers generate strict clients from the outcome enum, where an unexpected
+ * value throws; an added attribute breaks no consumer.
  */
 export function recordStorageServeRouting(
    outcome:
@@ -598,7 +584,8 @@ export function recordStorageServeRouting(
  * Record how a chained `storage=` source was built (see
  * {@link ChainedStorageBuildOutcome}). Only fired for a source that actually
  * reads a storage-materialized upstream — a single-source build emits nothing
- * here. The parent_reuse : inline_fallback ratio is the spike's key learning.
+ * here. The parent_reuse : inline_fallback ratio shows how often stacking on
+ * the parent works.
  */
 export function recordChainedStorageBuild(
    outcome: ChainedStorageBuildOutcome,

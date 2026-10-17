@@ -47,39 +47,23 @@ export function sqlInFilter(
 }
 
 /**
- * A catalog or database name safe to splice into an identifier position.
+ * A catalog or database name safe to splice into an identifier position
+ * (`FROM <catalog>.INFORMATION_SCHEMA.COLUMNS`). Quoting rules differ per
+ * dialect, so this REJECTS rather than escapes.
  *
- * Escaping cannot help here: these land where a table reference goes
- * (`FROM <catalog>.INFORMATION_SCHEMA.COLUMNS`), not inside a string, and the
- * quoting rules differ per dialect. So this REJECTS rather than encodes.
+ * The value that matters is the caller's `schemaName` split on its first dot,
+ * which `search_database_schema` takes straight from a model-controlled MCP
+ * argument. Left raw, `(SELECT c1 AS TABLE_NAME, ... FROM customers) x -- .public`
+ * comments out the rest of the query and returns ROW VALUES from a tool whose
+ * invariant is that it never returns one. Catalog names from config or SHOW
+ * CATALOGS are validated too, for consistency; in the SHOW CATALOGS loop a
+ * rejected name is warned and skipped. This shuts out hyphenated Trino catalogs
+ * (`hive-prod`); quoting identifiers per dialect would be the real fix.
  *
- * Two kinds of value reach it. The caller's `schemaName` split on its first dot
- * is the one that matters, because `search_database_schema` takes that
- * straight from a model-controlled MCP argument. Trino and Databricks catalog
- * names also pass through it; those come from config or from SHOW CATALOGS, so
- * they are not attacker-controlled, and validating them is for consistency
- * rather than safety. In the SHOW CATALOGS loop a rejected name is warned and
- * skipped, which is what an unquotable name did before anyway: spliced bare it
- * produced a SQL parse error the same catch swallowed. Hyphenated Trino
- * catalogs (`hive-prod`) are common and are the case this shuts out; quoting
- * identifiers per dialect is the real fix whenever someone gets to it.
- *
- * Left raw, a schemaName of
- * `(SELECT c1 AS TABLE_NAME, ... FROM customers) x -- .public` comments out the
- * rest of the query and returns real ROW VALUES in the response, from a tool
- * whose documented invariant is that it never returns one.
- *
- * The pattern is deliberately narrow: real catalog names are plain identifiers,
- * and a name needing more than this is better rejected than silently mangled.
- *
- * NO HYPHEN. It was in this class and looked harmless, but two of them are the
- * SQL line-comment token: `a--b.public` splices as `FROM a--b.information_schema
- * .columns WHERE ...`, which executes as `FROM a` with the WHERE and ORDER BY
- * commented away, and can return row values from whatever `a` resolves to. It
- * bought nothing either: Snowflake, Trino and Unity Catalog all require quoting
- * for a hyphenated name, so one spliced bare fails regardless, and BigQuery,
- * the one dialect whose names really do carry hyphens, never reaches this
- * function because it introspects through its client API.
+ * NO HYPHEN: `a--b.public` splices as `FROM a--b.information_schema...`, which
+ * runs as `FROM a` with the WHERE commented away. Snowflake, Trino and Unity
+ * Catalog need quoting for a hyphenated name anyway, and BigQuery (whose names
+ * do carry hyphens) introspects through its client API, never reaching this.
  */
 const SAFE_SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_$]*$/;
 
@@ -119,11 +103,9 @@ function groupColumnRowsIntoTables(
 
 /**
  * Whether a BadRequestError escapes an introspector untouched, and whether it
- * is logged first. A bad argument must stay a bad argument: rewrapping it as a
- * plain Error sends it to the internal-fault classifier, whose advice is "try
- * again later", so an agent retries a deterministically-invalid argument
- * forever. A rejected catalog name is the caller's/config's to fix, not an
- * internal fault, either. Introspectors that never raise one leave it "wrap".
+ * is logged first. Rewrapped as a plain Error it would classify as an internal
+ * fault ("try again later"), and an agent would retry an invalid argument
+ * forever. Introspectors that never raise one leave it "wrap".
  */
 type BadRequestPassThrough = "wrap" | "before-log" | "after-log";
 
@@ -169,11 +151,9 @@ async function createBigQueryClient(
       projectId: connection.bigqueryConnection.defaultProjectId || "",
    };
 
-   // Discovery must run as the same identity as query execution. For an
-   // impersonated connection that means the shared Impersonated client from
-   // gcp_impersonation.ts — falling through to ambient ADC here would silently
-   // read schemas as the publisher's own (broad) credential, the exact
-   // identity impersonation exists to stop using.
+   // Discovery must run as the same identity as query execution: falling
+   // through to ambient ADC would read schemas as the publisher's own broad
+   // credential, the identity impersonation exists to avoid.
    if (connection.bigqueryConnection.impersonateServiceAccount) {
       config.authClient = await getImpersonatedAuthClient(
          connection.bigqueryConnection.impersonateServiceAccount,
@@ -309,13 +289,11 @@ async function getSchemasForPostgres(
 }
 
 /**
- * A SQL Server database holds schemas (`dbo` by default), so the list is the
- * schemas that own at least one table or view, the way a modeler addresses
- * one: `connection.table('schema.table')`. Read from `information_schema.tables`
- * rather than `information_schema.schemata`, which also lists the fixed-role
- * schemas (`db_owner`, `db_datareader`, ...) that never hold a table; and from
- * that view rather than `sys.tables`, so a schema holding only views is listed,
- * as the column listing below (`information_schema.columns`) includes them.
+ * The SQL Server schemas owning at least one table or view, as a modeler
+ * addresses one (`connection.table('schema.table')`). Read from
+ * `information_schema.tables`: `schemata` also lists fixed-role schemas
+ * (`db_owner`, ...) that never hold a table, and `sys.tables` would miss
+ * view-only schemas, which the column listing includes.
  */
 async function getSchemasForSQLServer(
    connection: ApiConnection,
@@ -363,11 +341,9 @@ async function getSchemasForMySQL(
 }
 
 /**
- * Snowflake-managed databases, hidden from an account-wide schema listing.
- *
- * SNOWFLAKE is the account's metadata share and SNOWFLAKE_SAMPLE_DATA is the
- * sample share every account gets; neither is user data, and between them they
- * contribute the large majority of schemas on an otherwise-empty account.
+ * Snowflake-managed databases (the metadata share and the sample-data share),
+ * hidden from an account-wide schema listing: neither is user data, and
+ * together they contribute most schemas on an empty account.
  */
 const SNOWFLAKE_SYSTEM_DATABASES = new Set([
    "SNOWFLAKE",
@@ -399,10 +375,9 @@ async function listSnowflakeSchemasInDatabase(
    if (schema) {
       filters.push(`SCHEMA_NAME = '${sqlLiteral(schema, connection.type)}'`);
    }
-   // Identifier position, so this is validated rather than escaped. Previously
-   // spliced bare; a database name is operator-supplied config rather than
-   // caller input, so this is consistency with the Trino/Databricks catalog
-   // handling rather than a new trust boundary.
+   // Identifier position, so validated rather than escaped. The name is
+   // operator config, so this is consistency with the catalog handling rather
+   // than a trust boundary.
    assertSafeSqlIdentifier(database, "database name");
    const result = await runIntrospectionSQL(
       malloyConnection,
@@ -421,54 +396,31 @@ async function listSnowflakeSchemasInDatabase(
 }
 
 /**
- * Snowflake's maximum for the `LIMIT` clause of a SHOW command.
+ * Snowflake's maximum `LIMIT` for a SHOW command. Stated explicitly because
+ * without it SHOW SCHEMAS ERRORS above ten thousand rows and returns nothing;
+ * with it, a large account gets a partial list, and the caller warns on hitting
+ * the limit because a partial list looks complete.
  *
- * Stated explicitly rather than omitted, because the two behaviors differ and
- * only one of them is recoverable. Per Snowflake's SHOW SCHEMAS documentation,
- * omitting `LIMIT` makes the command ERROR when the result set exceeds ten
- * thousand rows, which fails the whole listing and returns no schemas at all.
- * Passing the limit instead caps the result, so a large account still gets a
- * usable (if partial) list rather than a 500.
- *
- * The cap in {@link runIntrospectionSQL} cannot substitute for this. That one is
- * a driver-side `RunSQLOptions.rowLimit`, which the Snowflake driver applies by
- * slicing the array it already fetched, so it never reaches the server and never
- * changes what SHOW itself decides to return or reject.
- *
- * Trading the error for a cap makes truncation possible, so the caller warns
- * when a result lands on the limit: a silently partial schema list is
- * indistinguishable from a complete one, and a table that exists would simply
- * never appear.
- *
- * 10,000 is Snowflake's own ceiling, not a number chosen here -- `LIMIT 10001`
- * is rejected -- so this cannot be raised to page further. An account above it
- * needs a different instrument: SHOW per database, the `FROM '<name>'` cursor
- * sub-clause, or SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA with its elevated grants and
- * ~2h lag.
+ * {@link runIntrospectionSQL}'s cap cannot substitute: the Snowflake driver
+ * applies `rowLimit` by slicing rows it already fetched, so it never reaches the
+ * server. 10,000 is Snowflake's ceiling (`LIMIT 10001` is rejected); an account
+ * above it needs SHOW per database, the `FROM '<name>'` cursor, or
+ * SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA.
  */
 const SNOWFLAKE_SHOW_ROW_LIMIT = 10_000;
 
 /**
  * Every role-visible schema in the account, for a connection with no configured
- * database.
+ * database. SHOW needs no current database.
  *
- * SHOW is a metadata command rather than a SELECT, so it needs no current
- * database. Its output columns are LOWER-case (`database_name`, `name`,
- * `owner`) where INFORMATION_SCHEMA's are upper-case; reading it with the
- * upper-case keys yields empty owners, which the caller's `isHidden` rule treats
- * as a system schema and would hide every row.
- *
- * The alternative source, SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA, is rejected on
- * purpose: it needs elevated grants and lags reality by up to ~2 hours, so a
- * just-created schema would be missing.
+ * Its output columns are LOWER-case, unlike INFORMATION_SCHEMA's; read with
+ * upper-case keys every owner is blank, and the caller's `isHidden` rule would
+ * hide every row. SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA is avoided on purpose: it
+ * needs elevated grants and lags by up to ~2 hours.
  */
 async function listSnowflakeSchemasInAccount(
    malloyConnection: Connection,
 ): Promise<SnowflakeSchemaRow[]> {
-   // The row cap in runIntrospectionSQL cannot cover this: it is passed to the
-   // driver as a RunSQLOptions.rowLimit, which the Snowflake driver applies by
-   // slicing the returned array, so it never reaches the server and never
-   // constrains what SHOW itself decides to return.
    const result = await runIntrospectionSQL(
       malloyConnection,
       `SHOW SCHEMAS IN ACCOUNT LIMIT ${SNOWFLAKE_SHOW_ROW_LIMIT}`,
@@ -491,17 +443,12 @@ async function listSnowflakeSchemasInAccount(
          owner: String(r.owner ?? r.OWNER ?? ""),
       };
    });
-   // A row missing either half cannot form a usable DATABASE.SCHEMA name, and
-   // listTablesForSnowflake would mis-parse it. Drop it rather than emit a name
-   // that fails later at the point of use.
+   // A row missing either half cannot form a DATABASE.SCHEMA name that
+   // listTablesForSnowflake can parse.
    const usable = parsed.filter((r) => r.catalogName && r.schemaName);
    if (usable.length < parsed.length) {
-      // Dropping silently would collapse two very different situations into the
-      // same empty list: an account with no schemas, and a SHOW output whose
-      // columns we no longer recognise (a renamed column, or a role that cannot
-      // see them). The second returns rows and still yields nothing, so without
-      // this the endpoint reports "no schemas" for what is really a parse or
-      // permissions failure.
+      // Warn, so unrecognized SHOW columns (a rename, or a role that cannot see
+      // them) are not mistaken for an account with no schemas.
       logger.warn(
          "Dropped Snowflake schema rows missing a database or schema name; the schema list is incomplete",
          { dropped: parsed.length - usable.length, returned: parsed.length },
@@ -522,32 +469,19 @@ async function getSchemasForSnowflake(
    if (!snowflake) {
       throw new Error("Snowflake connection is required");
    }
-   // A rejected database name is the config's to fix, not an internal fault.
-   // Flattened into a generic Error it classifies as "unexpected internal
-   // error, retry later", so a caller retries a deterministically-invalid
-   // value forever. Matches getSchemasForTrino, getSchemasForDatabricks and
-   // listTablesForSnowflake, which guard the same way for the same reason.
+   // "before-log": a rejected database name is the config's to fix and must
+   // stay a BadRequestError (see BadRequestPassThrough).
    return withIntrospectionFailure(
       `schemas for Snowflake connection ${connection.name}`,
       async () => {
          const database = snowflake.database;
          const schema = snowflake.schema;
 
-         // INFORMATION_SCHEMA.SCHEMATA is PER-DATABASE in Snowflake, and an
-         // unqualified reference to it resolves against the session's current
-         // database. A connection with no configured database has no current
-         // database, so the unqualified form does not merely return the wrong rows,
-         // it fails outright ("Cannot perform SELECT. This session does not have a
-         // current database"). There is also no qualified form that spans
-         // databases. So the two cases need different instruments:
-         //
-         //   database configured -> <db>.INFORMATION_SCHEMA.SCHEMATA, as before.
-         //   no database         -> SHOW SCHEMAS IN ACCOUNT, which needs no current
-         //                          database and reports every role-visible schema.
-         //
-         // Both branches emit the same `DATABASE.SCHEMA` name, which is the shape
-         // listTablesForSnowflake parses back apart, so the two-part contract holds
-         // either way.
+         // INFORMATION_SCHEMA.SCHEMATA is per-database: without a current
+         // database the unqualified form fails outright, and no qualified form
+         // spans databases. So with no configured database, use SHOW SCHEMAS IN
+         // ACCOUNT. Both branches emit `DATABASE.SCHEMA`, which
+         // listTablesForSnowflake parses back apart.
          const rows = database
             ? await listSnowflakeSchemasInDatabase(
                  connection,
@@ -561,30 +495,19 @@ async function getSchemasForSnowflake(
             name: `${catalogName}.${schemaName}`,
             isHidden:
                owner === "SNOWFLAKE" ||
-               // A BLANK owner counts as system-owned only within a configured
-               // database. Account-wide it does not: SHOW SCHEMAS reports a blank
-               // owner for any schema that is not local to the account, which
-               // includes every schema of an IMPORTED DATABASE -- a Marketplace or
-               // partner share the operator deliberately subscribed to. Treating
-               // those as system schemas drops them from the Connection Explorer
-               // picker by default and tells an agent its tables are elsewhere.
-               //
-               // Nothing is lost by scoping it: account-wide, every other
-               // blank-owner schema is either INFORMATION_SCHEMA (caught by name,
-               // one per database) or inside a Snowflake-managed database (caught
-               // by the set below, which is what actually carries the sample-data
-               // share -- itself blank-owner).
+               // A blank owner means system-owned only within a configured
+               // database. Account-wide, SHOW reports a blank owner for every
+               // schema of an IMPORTED DATABASE (a Marketplace or partner share
+               // the operator subscribed to), which must stay visible. The other
+               // account-wide blank-owner schemas are caught by the
+               // INFORMATION_SCHEMA and system-database rules below.
                (Boolean(database) && owner === "") ||
                schemaName === "INFORMATION_SCHEMA" ||
-               // Account-wide listing surfaces Snowflake's own databases, which are
-               // noise in a schema picker. They are only reachable in the
-               // no-database branch; a connection explicitly pointed at one still
-               // lists it, because there the operator asked for it by name.
+               // Snowflake's own databases are noise account-wide; a connection
+               // pointed at one by name still lists it.
                (!database && SNOWFLAKE_SYSTEM_DATABASES.has(catalogName)),
-            // Scoped to the configured database on purpose. Account-wide, a bare
-            // `schemaName === schema` marks a same-named schema in EVERY database
-            // as the default, so N databases with a `PUBLIC` schema would yield N
-            // defaults. Without a database there is no one default to point at.
+            // Only within a configured database: account-wide, a same-named
+            // schema in every database would be a default.
             isDefault:
                Boolean(database) && Boolean(schema) && schemaName === schema,
          }));
@@ -925,10 +848,9 @@ async function getSchemasForDuckLake(
 const PUBLISHER_INTROSPECTION_TIMEOUT_MS = 60_000;
 
 /**
- * Strip any userinfo (`user:pass@`) from a URL before it reaches a log or error
- * message. `connectionUri` comes from a config file and may legitimately carry
- * embedded credentials; the bearer token always travels in the header, never
- * the URL, but this keeps any URL-embedded secret out of thrown messages too.
+ * Strip userinfo (`user:pass@`) from a URL before it reaches a log or error
+ * message. `connectionUri` comes from config and may embed credentials; the
+ * bearer token travels only in the header.
  */
 function redactUrlCredentials(url: string): string {
    try {
@@ -937,36 +859,28 @@ function redactUrlCredentials(url: string): string {
       parsed.password = "";
       return parsed.toString();
    } catch {
-      // Non-absolute / unparseable: nothing to redact, return as-is.
+      // Unparseable: nothing to redact.
       return url;
    }
 }
 
 /**
  * Publisher proxy connections introspect against the remote dataplane, which
- * exposes the same connection API as this server. Schema/table discovery is a
- * GET passthrough — the remote owns the dialect-specific introspection and
- * returns the same Schema/Table shapes, so we forward the response verbatim
- * (no Malloy connection involved).
+ * serves the same connection API, so discovery is a GET passthrough returning
+ * the same Schema/Table shapes verbatim.
  *
- * URL contract: the request is the configured `connectionUri` with the
- * introspection `pathSuffix` appended verbatim. `connectionUri` must point at
- * the connection resource itself (`.../connections/<name>`), so this path and
- * the data path (db-publisher's `PublisherConnection`) resolve against the same
- * remote connection. Note the two halves derive their URL differently: the
- * db-publisher client re-parses `connectionUri` and rebuilds it through its
- * generated client, while this introspection path appends to it verbatim — the
- * remote must serve both forms for a given `connectionUri`. Keep them pointed at
- * the same connection resource so they stay in agreement.
+ * `connectionUri` must point at the connection resource itself
+ * (`.../connections/<name>`). This path appends `pathSuffix` to it verbatim,
+ * while db-publisher's `PublisherConnection` rebuilds it through its generated
+ * client, so the remote must serve both forms for the same connection.
  */
 async function fetchFromPublisherDataplane<T>(
    connection: ApiConnection,
    pathSuffix: string,
 ): Promise<T> {
    const publisher = connection.publisherConnection;
-   // Type-narrowing guard only — the user-facing validation (with the
-   // actionable `Fix:` message) lives in validateConnectionShape, which every
-   // connection passes before it can be assembled and introspected here.
+   // Type-narrowing guard only; the user-facing validation is
+   // validateConnectionShape, which every connection passes first.
    if (!publisher?.connectionUri) {
       throw new Error(
          `Publisher connection "${connection.name}" is missing connectionUri`,
@@ -985,9 +899,8 @@ async function fetchFromPublisherDataplane<T>(
          signal: AbortSignal.timeout(PUBLISHER_INTROSPECTION_TIMEOUT_MS),
       });
    } catch (error) {
-      // Network-level failure (DNS, connection refused, timeout) — no HTTP
-      // status. Surface it with the connection name, like the other
-      // introspectors, and never echo the token-bearing header.
+      // Network-level failure (no HTTP status). Never echo the token-bearing
+      // header.
       const reason =
          (error as Error)?.name === "TimeoutError"
             ? `timed out after ${PUBLISHER_INTROSPECTION_TIMEOUT_MS}ms`
@@ -1029,12 +942,9 @@ async function listTablesForPublisher(
    if (!tableNames) {
       return tables;
    }
-   // `tableNames` is a bare-table-name filter (see listTablesForBigQuery). The
-   // remote's `resource` is dotted and its qualification depends on the remote
-   // dialect ("<schema>.<table>" or "<catalog>.<schema>.<table>"), so match the
-   // bare name (last segment) as well as the schema-stripped and full forms. An
-   // unrecognized shape still matches on the full resource rather than being
-   // silently dropped.
+   // `tableNames` holds bare table names, but the remote qualifies `resource`
+   // per its dialect, so match the last segment, the schema-stripped form, and
+   // the full resource.
    const allowed = new Set(tableNames);
    const prefix = `${schemaName}.`;
    return tables.filter((table) => {
@@ -1137,7 +1047,6 @@ async function listAzureBlobs(
    const baseUrl = queryStart >= 0 ? fileUrl.substring(0, queryStart) : fileUrl;
    const sasToken = queryStart >= 0 ? fileUrl.substring(queryStart) : "";
 
-   // Parse the URL to extract account, container, and blob path
    let accountUrl: string;
    let container: string;
    let blobPath: string;
@@ -1181,11 +1090,9 @@ async function listAzureBlobs(
    let recursive = true; // for ** pattern
 
    if (blobPath.endsWith("**")) {
-      // Recursive listing: everything under this prefix
       prefix = blobPath.slice(0, -2);
       recursive = true;
    } else if (blobPath.includes("*")) {
-      // Single-level glob: path/*.ext — files directly in that dir only
       const starIndex = blobPath.indexOf("*");
       prefix = blobPath.substring(0, starIndex);
       extensionFilter = blobPath.substring(starIndex + 1); // e.g. ".parquet"
@@ -1196,7 +1103,6 @@ async function listAzureBlobs(
       recursive = true;
    }
 
-   // Create ContainerClient with appropriate authentication
    let containerClient: ContainerClient;
    if (
       azureConnection?.authType === "service_principal" &&
@@ -1257,11 +1163,9 @@ const DUCKDB_DIALECT = "duckdb";
  * DESCRIBE a single remote data file.
  *
  * `fileUri` is caller-controlled: `listTablesForDuckDB` routes any `schemaName`
- * beginning with `https://`, `abfss://` or `az://` here, and that argument comes
- * straight from an MCP tool argument on the bundled config, with no warehouse
- * credentials needed. It is escaped for the same reason the information_schema
- * literals are; it was missed when they were done. DuckDB follows the ANSI rule,
- * so quote-doubling is the correct escape here.
+ * beginning with `https://`, `abfss://` or `az://` here straight from an MCP
+ * tool argument, with no warehouse credentials needed, so it is escaped like any
+ * literal (DuckDB's ANSI quote-doubling).
  */
 async function describeRemoteFile(
    malloyConnection: Connection,
@@ -1379,13 +1283,10 @@ async function listTablesForBigQuery(
       `tables for BigQuery schema ${schemaName} in connection ${connection.name}`,
       async () => {
          const bigquery = await createBigQueryClient(connection);
-         // A 3-segment table reference ("project.dataset.table") reaches here with a
-         // project-qualified schema ("project.dataset"). bigquery.dataset() takes a
-         // BARE dataset id plus an optional projectId, so passing "project.dataset" as
-         // the id resolves to a non-existent dataset in the client's default project —
-         // the dataset's tables never list, so the orphan sweep can't see (and reclaim)
-         // those tables. Split the project off the last dot. (Domain-scoped project ids
-         // like "domain.com:project" keep their dots/colon since we split on the last.)
+         // bigquery.dataset() takes a BARE dataset id, so a project-qualified
+         // schema ("project.dataset") must be split, or it resolves to a missing
+         // dataset in the default project and the orphan sweep cannot see its
+         // tables. Split on the LAST dot so "domain.com:project" ids survive.
          const lastDot = schemaName.lastIndexOf(".");
          const dataset =
             lastDot === -1
@@ -1484,12 +1385,10 @@ async function listTablesForSQLServer(
    return withIntrospectionFailure(
       `tables for SQL Server schema ${schemaName} in connection ${connection.name}`,
       async () => {
-         // The SQL Server connector returns rows as plain objects keyed by column
-         // name, so no row_to_json wrapping as for Postgres. Every literal is
-         // N'…': a plain '…' is converted to the database's code page before it
-         // is compared, so under a Latin1 collation a schema named `Продажи`
-         // becomes question marks and matches nothing. The information_schema
-         // columns are nvarchar, so the Unicode literal compares as written.
+         // Rows come back as plain objects, so no row_to_json as for Postgres.
+         // Every literal is N'…': a plain '…' is converted to the database code
+         // page first, so under a Latin1 collation `Продажи` becomes question
+         // marks and matches nothing against the nvarchar catalog columns.
          const result = await runIntrospectionSQL(
             malloyConnection,
             `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = ${sqlserverNLiteral(schemaName)} ${sqlserverInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
@@ -1742,9 +1641,8 @@ async function listTablesForDuckDB(
    // Regular DuckDB schema — query information_schema.columns
    const dotIdx = schemaName.indexOf(".");
    if (dotIdx < 0) {
-      // InvalidArgumentError, not Error: this is a deterministic bad argument,
-      // and as a plain Error it was classified as an internal fault whose advice
-      // was "try the request again later", which an agent then does forever.
+      // InvalidArgumentError: a plain Error would classify as an internal fault
+      // ("try again later"), which an agent retries forever.
       throw new InvalidArgumentError(
          `DuckDB schema name must be qualified as "catalog.schema", got "${schemaName}". List this connection's schemas and use one of those names verbatim.`,
       );
