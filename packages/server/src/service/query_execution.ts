@@ -180,3 +180,22 @@ export function mapRunError(err: unknown, ctx: RunErrorContext): void {
    ctx.logFailure(errorMessage, err);
    throw new BadRequestError(`${ctx.failurePrefix}: ${errorMessage}`);
 }
+
+/**
+ * Whether `err` is Malloy refusing to BIND a given: the runtime form carries
+ * a `runtime-given-*` code on the error itself, while a prepare-time failure
+ * arrives as a `MalloyError` whose `problems` carry a `compiler-given-*` one.
+ * Duck-typed on `.code` for the same reason every other check here is —
+ * neither error class is root-exported.
+ */
+export function isGivenBindingFailure(err: unknown): boolean {
+   const isGivenCode = (code: unknown): boolean =>
+      typeof code === "string" &&
+      (code.startsWith("runtime-given-") || code.startsWith("compiler-given-"));
+   if (isGivenCode((err as { code?: unknown })?.code)) return true;
+   const problems = (err as { problems?: unknown })?.problems;
+   return (
+      Array.isArray(problems) &&
+      problems.some((p) => isGivenCode((p as { code?: unknown })?.code))
+   );
+}

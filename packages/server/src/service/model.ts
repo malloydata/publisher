@@ -15,7 +15,6 @@ import {
    QueryMaterializer,
    Runtime,
    type FilterCondition,
-   type LogMessage,
    type SourceDef,
    type VirtualMap,
 } from "@malloydata/malloy";
@@ -46,11 +45,9 @@ import {
    AccessDeniedError,
    BadRequestError,
    ConnectionError,
-   InvalidArgumentError,
    ModelCompilationError,
    ModelNotFoundError,
    NotQueryableError,
-   QueryCompileError,
    OffSurfaceError,
    PayloadTooLargeError,
 } from "../errors";
@@ -107,9 +104,6 @@ import {
    findLegacyStringGates,
    referencedGivenNames,
    validateAuthorizeProbes,
-   type AuthorizeMap,
-   type AuthorizeOwnNotesMap,
-   type MisplacedAuthorizeAnnotation,
    type RowLevelGateRejectionCause,
 } from "./authorize";
 import { ACCESS_FILTER_ROUTE, AUTHORIZE_ROUTE } from "./authorize_routes";
@@ -166,6 +160,7 @@ import {
    type QueryRowLimitSource,
 } from "./model_limits";
 import {
+   isGivenBindingFailure,
    mapRunError,
    prepareAndRun,
    serializeWithinCaps,
@@ -180,8 +175,6 @@ import {
    collectIdentifierNames,
    extractRunTargetSourceName,
    extractRunTargetSourceNames,
-   formatProblem,
-   locateProblemsInCallerText,
    malloyIdentifiers,
    stripMalloyCommentsAndLiterals,
 } from "./query_text";
@@ -237,11 +230,7 @@ import {
    type GraftScope,
    type RowLevelGraftEntry,
 } from "./gate_classification";
-import {
-   collectSourceInfos,
-   extractQueriesFromModelDef,
-   extractSourcesFromModelDef,
-} from "./source_extraction";
+import { collectSourceInfos } from "./source_extraction";
 import {
    recordAuthorizeAdmitAllGate,
    recordAuthorizeBypass,
@@ -273,6 +262,19 @@ import {
    type RunnableNotebookCell,
    type NotebookCellRunResult,
 } from "./model_notebook_cell";
+import {
+   compileErrorOf,
+   multipleRunStatementsError,
+   queryCompileError,
+   quoteMalloyIdentifier,
+   runStatementCount,
+} from "./model_query_compile";
+import {
+   extractApiQueries,
+   extractApiSources,
+   runReadsPublished,
+   scrubHiddenIds,
+} from "./model_projection";
 
 export type { ModelConnectionInput, ModelType } from "./model_runtime";
 export type {
@@ -379,18 +381,6 @@ export interface OffSurfaceContext {
 export type ServedFrom = "storage" | "live_fallback";
 
 /**
- * Backtick-quote a Malloy identifier for safe interpolation into a `run:`
- * query string. Escapes backslashes and backticks (in that order) so a name
- * that needs Malloy quoting (hyphen, space, reserved word, leading digit) or
- * contains an embedded backtick cannot break out of the quotes. Mirrors
- * malloy's internal `identifierCode` / `escapeIdentifier` (to_stable.ts), which
- * is not exported.
- */
-function quoteMalloyIdentifier(name: string | undefined): string {
-   return "`" + (name ?? "").replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
-}
-
-/**
  * A non-fatal render-tag finding from {@link Model.validateRenderTags}: an issue
  * that affects only how a field renders, never whether the model compiles or a
  * query runs. `subject` is the query or view it sits on (e.g. `by_carrier` or
@@ -402,25 +392,6 @@ export interface RenderTagWarning {
    subject: string;
    message: string;
    severity: "error" | "warn";
-}
-
-/**
- * Whether `err` is Malloy refusing to BIND a given: the runtime form carries
- * a `runtime-given-*` code on the error itself, while a prepare-time failure
- * arrives as a `MalloyError` whose `problems` carry a `compiler-given-*` one.
- * Duck-typed on `.code` for the same reason every other check here is —
- * neither error class is root-exported.
- */
-function isGivenBindingFailure(err: unknown): boolean {
-   const isGivenCode = (code: unknown): boolean =>
-      typeof code === "string" &&
-      (code.startsWith("runtime-given-") || code.startsWith("compiler-given-"));
-   if (isGivenCode((err as { code?: unknown })?.code)) return true;
-   const problems = (err as { problems?: unknown })?.problems;
-   return (
-      Array.isArray(problems) &&
-      problems.some((p) => isGivenCode((p as { code?: unknown })?.code))
-   );
 }
 
 /**
@@ -443,88 +414,6 @@ function isGivenBindingFailure(err: unknown): boolean {
  * false verdict costs one path rather than the product.
  */
 const REQUEST_CHAIN_MAX_NAMES = 64;
-
-/**
- * What ad-hoc query text is compiled behind. Compile problems are located in
- * the compiled document, so their line numbers are shifted back by this
- * prefix's line count before a caller sees them.
- */
-const AD_HOC_QUERY_PREFIX = "\n";
-
-/** A compile failure of ad-hoc text, as the caller's own text locates it. */
-function queryCompileError(
-   error: MalloyError,
-   callerText: string,
-): QueryCompileError {
-   const problems = locateProblemsInCallerText(
-      error.problems,
-      callerText,
-      AD_HOC_QUERY_PREFIX.split("\n").length - 1,
-   );
-   return new QueryCompileError(describeProblems(problems, error), problems);
-}
-
-/**
- * The error problems as one message, each led by its 1-based `line:column` in
- * the caller's text when it has one, so a client that reads only `message`
- * still learns where. Falls back to the compiler's own message when no problem
- * is an error.
- */
-function describeProblems(problems: LogMessage[], error: MalloyError): string {
-   const errors = problems.filter((p) => p.severity === "error");
-   if (errors.length === 0) return error.message;
-   return errors.map(formatProblem).join("; ");
-}
-
-/**
- * The compile failure of a runnable, or undefined when it compiles or fails for
- * a reason that is not a compile error (a connection failure while fetching a
- * schema, say, which keeps surfacing wherever it did before). Malloy memoizes
- * the compile per runnable, so this costs nothing when the same runnable is
- * compiled again later.
- */
-async function compileErrorOf(runnable: {
-   getPreparedQuery(): Promise<unknown>;
-}): Promise<MalloyError | undefined> {
-   try {
-      await runnable.getPreparedQuery();
-      return undefined;
-   } catch (error) {
-      if (error instanceof MalloyError) return error;
-      return translatorMalloyError(error);
-   }
-}
-
-/**
- * How many `run:` statements the compiled text holds, or undefined when it does
- * not compile (the run path then answers that failure itself). Malloy counts
- * only the text's own `run:` statements here: `source:` and `query:`
- * definitions add none, and the base model's statements are not carried into
- * an extension. Reads the memoized compile, so it costs nothing extra.
- */
-async function runStatementCount(runnable: {
-   getPreparedQuery(): Promise<unknown>;
-}): Promise<number | undefined> {
-   let prepared: { model?: { queries?(): { unnamed: number } } } | undefined;
-   try {
-      prepared = (await runnable.getPreparedQuery()) as typeof prepared;
-   } catch {
-      return undefined;
-   }
-   return prepared?.model?.queries?.().unnamed;
-}
-
-/**
- * Malloy runs only the LAST `run:` of a text and drops the rest without a word,
- * so a caller that sends several would silently lose every answer but one.
- */
-function multipleRunStatementsError(count: number): InvalidArgumentError {
-   return new InvalidArgumentError(
-      `The query has ${count} run: statements; only one runs per call, so the ` +
-         "others would be ignored. Send each as its own request. (source: and " +
-         "query: definitions before a single run: are fine.)",
-   );
-}
 
 /**
  * Whether a run-time store failure may be retried against the live warehouse,
@@ -4567,10 +4456,10 @@ export class Model {
                malloyGivens.length > 0
                   ? (malloyGivens.map(malloyGivenToApi) as ApiGiven[])
                   : undefined;
-            const sourceResult = Model.getSources(modelDef, givens);
+            const sourceResult = extractApiSources(modelDef, givens);
             sources = sourceResult.sources;
             filterMap = sourceResult.filterMap;
-            const queryResult = Model.getQueries(modelDef);
+            const queryResult = extractApiQueries(modelDef);
             queries = queryResult.queries;
 
             // A leftover marker from a retired annotation route (e.g.
@@ -9560,52 +9449,6 @@ export class Model {
       };
    }
 
-   private static getQueries(modelDef: ModelDef): {
-      queries: ApiQuery[];
-      misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-   } {
-      // Shared with the package-load worker — see service/source_extraction.ts.
-      const { queries, misplacedAuthorize } =
-         extractQueriesFromModelDef(modelDef);
-      return { queries: queries as unknown as ApiQuery[], misplacedAuthorize };
-   }
-
-   private static getSources(
-      modelDef: ModelDef,
-      givens?: ApiGiven[],
-   ): {
-      sources: ApiSource[];
-      filterMap: Map<string, FilterDefinition[]>;
-      authorizeMap: AuthorizeMap;
-      misplacedAuthorize: MisplacedAuthorizeAnnotation[];
-      authorizeOwnNotes: AuthorizeOwnNotesMap;
-      attributedAuthorizeOwnNotes: AuthorizeOwnNotesMap;
-   } {
-      // Shared with the package-load worker — see service/source_extraction.ts.
-      // The service path logs filter parse failures; the worker stays silent.
-      const {
-         sources,
-         filterMap,
-         authorizeMap,
-         misplacedAuthorize,
-         authorizeOwnNotes,
-         attributedAuthorizeOwnNotes,
-      } = extractSourcesFromModelDef(modelDef, givens, (sourceName, err) =>
-         logger.warn(
-            `Failed to parse filter annotations on source "${sourceName}"`,
-            { error: err },
-         ),
-      );
-      return {
-         sources: sources as unknown as ApiSource[],
-         filterMap,
-         authorizeMap,
-         misplacedAuthorize,
-         authorizeOwnNotes,
-         attributedAuthorizeOwnNotes,
-      };
-   }
-
    /** See {@link createModelRuntime}. */
    static getModelRuntime(
       ...args: Parameters<typeof createModelRuntime>
@@ -9630,76 +9473,4 @@ export class Model {
          );
       }
    }
-}
-
-/** Whether a top-level `run:` reads a source named in `published`. */
-function runReadsPublished(
-   query: unknown,
-   published: ReadonlySet<string>,
-): boolean {
-   const ref = (query as { structRef?: unknown }).structRef;
-   const name =
-      typeof ref === "string"
-         ? ref
-         : ((ref as { as?: string; name?: string } | undefined)?.as ??
-           (ref as { name?: string } | undefined)?.name);
-   return name !== undefined && published.has(name);
-}
-
-/** The keys of a compiled struct that hold a `name@file` identity of another
- *  source: what it extends, and what a join points at. */
-const SOURCE_IDENTITY_KEYS = new Set(["extends", "sourceID", "referenceID"]);
-
-/**
- * A copy of `def` without identities of sources outside `published`. A
- * published source built on a hidden one (`source: pub is hidden extend
- * {...}`) records `extends: "hidden@file"`, and a join records the joined
- * source's identity even when the join is renamed.
- *
- * A join to a hidden source also carries that source's whole compiled
- * definition: its table path or SQL, its connection, and its fields. It is cut
- * down to what the published source's field paths need, the join's own name
- * and the names and types of the fields reached through it.
- */
-function scrubHiddenIds<T>(def: T, published: ReadonlySet<string>): T {
-   const hidden = (id: unknown) =>
-      typeof id === "string" && !published.has(id.split("@")[0]);
-   const walk = (value: unknown): unknown => {
-      if (Array.isArray(value)) return value.map(walk);
-      if (!value || typeof value !== "object") return value;
-      const record = value as Record<string, unknown>;
-      if (
-         typeof record.join === "string" &&
-         (hidden(record.sourceID) || hidden(record.referenceID))
-      ) {
-         return joinOutline(record);
-      }
-      const out: Record<string, unknown> = {};
-      for (const [key, inner] of Object.entries(record)) {
-         if (SOURCE_IDENTITY_KEYS.has(key) && hidden(inner)) continue;
-         out[key] = walk(inner);
-      }
-      return out;
-   };
-   return walk(def) as T;
-}
-
-/** A field reached through a hidden join, as its name and type only, and a
- *  join nested inside one the same way. */
-function joinOutline(field: Record<string, unknown>): Record<string, unknown> {
-   const name = field.as ?? field.name;
-   if (typeof field.join !== "string") {
-      return { type: field.type, name };
-   }
-   const fields = Array.isArray(field.fields) ? field.fields : [];
-   return {
-      type: field.type,
-      join: field.join,
-      name,
-      fields: fields.map((inner) =>
-         inner && typeof inner === "object"
-            ? joinOutline(inner as Record<string, unknown>)
-            : inner,
-      ),
-   };
 }
