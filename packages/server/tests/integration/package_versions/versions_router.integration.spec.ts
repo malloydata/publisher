@@ -187,7 +187,8 @@ describe("versions routes", () => {
 
    it("takes versionId on every materialization route", async () => {
       const listed = await call("GET", "/materializations?versionId=1.1.0");
-      expect([listed.status, listed.json]).toEqual([200, []]);
+      expect(listed.status).toBe(200);
+      expect(listed.json as unknown).toEqual([]);
       for (const [versionId, status, reason] of [
          ["9.9.9", 404, "VERSION_NOT_FOUND"],
          ["not-a-version", 400, "VERSION_ID_INVALID"],
