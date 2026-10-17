@@ -30,35 +30,15 @@ import { round4 } from "./retrieval_shared";
 import type { StoredSourceSummary } from "./source_summaries";
 
 /**
- * A stable, package-scoped identity for one entity: `kind:source:name`.
+ * A stable, package-scoped identity for one entity: `kind:source:name`, so
+ * every consumer comparing entities across responses (e.g. a retrieval
+ * scorer) agrees on identity. `Entity.id` is a per-build sequence number and
+ * is not stable across reloads.
  *
- * The response already carries `kind`, `name` and `source` separately, so this
- * adds no information — it adds AGREEMENT. Every consumer that wants to say
- * "the same entity" across two responses was assembling this string itself,
- * and they did not assemble it the same way: a harness scoring retrieval
- * against a fixed list of expected entities is comparing identity, so a
- * one-character difference in how it joins the parts reads as a total miss on
- * a call that returned exactly the right thing.
- *
- * `Entity.id` cannot serve. It is a per-build sequence number, so it is not
- * stable across a reload, let alone across two deployments of the same model.
- *
- * Two invariants callers depend on:
- *
- * - ALWAYS three colon-separated segments. A form that drops the middle
- *   segment when there is no source produces two ids of different shape for
- *   one caller to parse, and the caller that splits on ":" and reads [1] as
- *   the source gets the name instead, silently. A colon inside a segment
- *   would break the same caller the same way, and a backtick-quoted Malloy
- *   identifier may contain one, so segments are percent-encoded. Ordinary
- *   names contain neither ":" nor "%", so their ids are unchanged.
- * - A container is its own source, so a source is `source:orders:orders`.
- *   Same reason: shape before brevity. A model-level named query with no
- *   declared source follows the same rule.
- *
- * Scoped to the package, not global: `environmentName` and `packageName` ride
- * on the result beside this, and entity results in one response never span
- * packages. Callers that need a global key join the three.
+ * Always exactly three segments, so a caller splitting on ":" can read [1] as
+ * the source: a source is its own container (`source:orders:orders`), and
+ * segments are percent-encoded because a backtick-quoted identifier may
+ * contain ":".
  */
 export function entityId(
    kind: string,
@@ -92,30 +72,15 @@ export const REASON_BY_UNAVAILABLE: Record<
 };
 
 /**
- * The response shape: source-centric, snake_case, identity in a structured
- * `resource_id`. It matches a hosted Malloy retrieval API's `get_context`, so
- * one parser serves both and a retrieval score computed here is comparable to
- * one computed there.
+ * The response shape: source-centric, snake_case, matching a hosted Malloy
+ * retrieval API's `get_context` so one parser serves both. Only serialization
+ * happens here; ranking runs upstream over the flat `ResultEntity[]`.
  *
- * ONLY SERIALIZATION HAPPENS HERE. Ranking, alias collapse and the relevance
- * floor all run over the flat `ResultEntity[]` upstream;
- * this converts that list at the boundary, so a ranking bug and a shape bug
- * stay separately reviewable.
- *
- * Three deliberate divergences from the published shape:
- *
- * 1. `entity_type` is a SUPERSET of its enum, adding `join` (an agent that
- *    cannot see a declared join concludes the model has none) and `query`
- *    (a model-level named query). A `source` never appears as an entity_type:
- *    a source is the container.
- * 2. Publisher-only fields ride along: `source_info.joins`, `entity_id`,
- *    `relationship`, `aliases`, `code` (only when the caller asks for it with
- *    `include_code`), and the response-level `retrieval`
- *    / `retrieval_reason` / `below_cutoff_count` / `total_entities`.
- * 3. Fields Publisher cannot honestly fill are OMITTED, not sent empty:
- *    `summary`, `prominence`, `values`, `values_indexed`. (`match_reason`
- *    rides on `matched_targets` only when refine ran and gave one.)
- *    That spec omits null fields, so absence is in-contract on both sides.
+ * Deliberate divergences: `entity_type` adds `join` and `query`;
+ * Publisher-only fields (`source_info.joins`, `entity_id`, `relationship`,
+ * `aliases`, `code`, the response-level retrieval fields) ride along; fields
+ * Publisher cannot honestly fill (`prominence`, `values`, `values_indexed`)
+ * are omitted rather than sent empty.
  */
 interface ResourceId {
    environment: string;
@@ -187,14 +152,9 @@ interface SourceCard {
 /**
  * Group a ranked entity list into the source-centric response shape.
  *
- * Source order is the order sources first appear in the ranked list, which
- * keeps the best-matching source first without re-sorting — the ranking is
- * already correct and re-deriving it here could disagree with it. Entities
- * keep their rank order within a source for the same reason.
- *
- * A `kind: "source"` hit becomes the CONTAINER carrying a relevance, not a row
- * in its own `entities`. That is what the shape means by a source, and
- * it is why the source's score has somewhere to live once entities nest.
+ * Sources and entities keep their first-appearance (rank) order rather than
+ * being re-sorted, so this cannot disagree with the ranking. A `kind: "source"`
+ * hit becomes the container's relevance, not a row in its `entities`.
  */
 export function toSourceResults(
    results: ResultEntity[],
@@ -216,13 +176,11 @@ export function toSourceResults(
       name: string | undefined,
       modelPathFallback: string,
    ): SourceCard | undefined => {
-      // Type narrowing only: collectEntities excludes the one entity kind
-      // that can lack a source, so no ranked row reaches here nameless.
+      // Type narrowing only: no ranked row reaches here without a source.
       if (!name) return undefined;
-      // Defense in depth: collectEntities already keeps every dropped source's
-      // name off every entity's `source` field, but this is the one place that
-      // can mint a card out of a bare name, so it is where a future path that
-      // forgets the drop gets caught instead of leaking the name and shape.
+      // Defense in depth: collectEntities already drops these, but this is the
+      // one place that can mint a card from a bare name, so a future path that
+      // forgets the drop cannot leak a deny-all source's name and shape.
       const key = sourceContextKey(modelPathFallback, name);
       if (droppedSources.has(key)) {
          return undefined;
@@ -290,8 +248,7 @@ export function toSourceResults(
 
 /**
  * The stored LLM summaries a response may use, and for which sources it may
- * carry the full text. Built by {@link summaryViewFor}; absent when the package
- * has no stored summary, which leaves every card as it always was.
+ * carry the full text. Built by {@link summaryViewFor}.
  */
 interface SummaryView {
    /** Every current stored summary of the package, by sourceContextKey. */
@@ -339,12 +296,8 @@ export function summaryViewFor(
 
 /**
  * Which of the caller's search targets matched this row, and how well.
- *
- * Only targets that carry text can match, so a listing produces none and the
- * key is omitted rather than sent empty -- the published shape omits null
- * fields, so absence is in-contract. Ordered by target index so the response
- * reads in the order the caller wrote its targets, not in score order, which
- * would make two responses to the same request look different.
+ * Omitted when none did (a listing). Ordered by target index, the order the
+ * caller wrote them, so the response reads in request order.
  */
 function matchedTargetsFor(
    r: ResultEntity,
@@ -369,22 +322,17 @@ function matchedTargetsFor(
 }
 
 /**
- * The most entities one source card carries per search target. A card is a
- * source to CHOOSE, not a schema dump: `flights` alone exposes 124 entities,
- * and returning all of them says less than returning the ten that answer the
- * question. Per TARGET rather than per card, so a broad target cannot fill a
- * card and hide a narrow one inside it -- the same failure the source window
- * below prevents between cards.
+ * The most entities one source card carries per search target: a card is a
+ * source to choose, not a schema dump. Per target rather than per card, so a
+ * broad target cannot fill a card and hide a narrow one inside it.
  */
 export const MAX_ENTITIES_PER_SOURCE_TARGET = 10;
 
 /**
  * The most dotted index rows (joined fields assembly cannot rebuild) one source
  * contributes per search target, on top of {@link MAX_ENTITIES_PER_SOURCE_TARGET}
- * own fields. On a benchmark package whose joins are all inline tables,
- * sharing one window let 625 such rows push the labelled fields from rank 4 to
- * 10 down to rank 13 to 33; an own window of 3 (or 1) recovered the loss and
- * left a joined field findable.
+ * own fields. A separate window, because sharing one let hundreds of joined
+ * rows push a source's own labelled fields out of the card.
  */
 export const MAX_JOINED_ROWS_PER_SOURCE_TARGET = 3;
 
@@ -398,19 +346,12 @@ export function bestTargetOf(scores: Map<number, number>): number | undefined {
 }
 
 /**
- * The fields every retrieval path carries from an indexed entity onto a ranked
- * one.
+ * The fields every retrieval path (browse, semantic, lexical) carries from an
+ * indexed entity onto a ranked one, shared so a new field reaches every path.
  *
- * Browse, semantic and lexical each wrote this projection out by hand, and a
- * field added to one was simply absent from the others: `matched_targets` never
- * reached the semantic path. That was not caught by a test, because a missing
- * field is a smaller response, not a failing one. One projection means
- * a new field arrives everywhere or nowhere.
- *
- * The ranking-specific fields stay at the call site on purpose: `score` and
- * `targetScores` are each honest on one path and not the other, and folding
- * them in here would invite exactly the mistake of publishing a lexical score
- * as a relevance.
+ * `score` and `targetScores` stay at the call site: each is honest on one path
+ * only, and folding them in here invites publishing a lexical score as a
+ * relevance.
  */
 export function projectEntity(
    e: Entity,
@@ -460,23 +401,13 @@ export function fitBudget(
 
 /**
  * The tail both ranked paths share: page the cards, serialize them, then fit
- * the byte budget. Semantic and lexical retrieval differ in how they SCORE,
- * not in what happens to the rows afterwards, so the ordering lives here once
- * instead of being restated at two call sites.
+ * the byte budget.
  *
- * `limit` counts SOURCE cards, because that is what the published contract
- * says it counts. Counting entities made targets compete for one pool: with
- * a budget of 4, asking for a measure alone returned 3 hits while asking for
- * it alongside a dimension and a view returned 2. Cards are paged in the
- * order sources first appear in the ranked rows, which is already best-first;
- * re-sorting here could disagree with the ranking that produced it.
- * `totalSources` counts the same unit, so `returned` and `total_available`
- * cannot disagree.
- *
- * The envelope stays with the caller: `retrieval`, `below_cutoff_count` and
- * `retrieval_reason` are each meaningful on one path only. Assembly
- * (get_context_assembly.ts) has already grouped rows by source and capped
- * each card per target; nothing is folded across sources.
+ * `limit` counts source cards, as the published contract says, so targets do
+ * not compete for one entity pool; `totalSources` counts the same unit so
+ * `returned` and `total_available` agree. The envelope (`retrieval`,
+ * `below_cutoff_count`, `retrieval_reason`) stays with the caller because each
+ * field is meaningful on one path only.
  */
 export function shapeCards(
    state: CardState,
@@ -497,8 +428,6 @@ export function shapeCards(
       pkgIndex.sourceContext,
       request.environmentName,
       request.packageName,
-      // One lookup from target index back to the text the caller wrote, so
-      // matched_targets can name a target without re-walking the request.
       new Map(
          request.searches.map((search) => [search.targetIndex, search.text]),
       ),
@@ -540,19 +469,9 @@ export function shapeCards(
 }
 
 /**
- * An error keeps the empty collection the tool would have answered with, so a
- * caller can read the payload unconditionally instead of branching on success
- * first: `sources: []` here, `environments: []` from listPackagesError. Each
- * tool has one success shape, so each error matches it -- an agent reading
- * `sources.length === 0` on an error payload and concluding the package models
- * nothing is the failure this prevents.
- *
- * Routed through classifyToolError for the same reason its three sibling tools
- * are: it homes each error class to real remediation, so an unknown package
- * says so instead of arriving as a bare message with no suggestions. It also
- * replaces a per-site `error instanceof Error ? error.message : "Unknown
- * error"`, which was the one path in this file that could produce exactly the
- * unhelpful string this tool's callers reported.
+ * An error payload keeps the success shape's empty `sources: []`, so a caller
+ * can read it unconditionally. Routed through classifyToolError so each error
+ * class carries real remediation (e.g. an unknown package says so).
  */
 export function contextError(uri: string, identifier: string, error: unknown) {
    return jsonToolError(
@@ -568,13 +487,9 @@ export function contextError(uri: string, identifier: string, error: unknown) {
  */
 export function makeWarningsFor(ctx: PipelineContext) {
    /**
-    * Spread into a payload to attach `warnings`. Returns {} when there is
-    * nothing to say, so a healthy package's payload carries no key at all
-    * rather than an empty array a caller has to test.
-    *
-    * A list rather than one joined string: staleness and truncation are
-    * separate facts with separate remedies, and joining them made the
-    * second read as a continuation of the first.
+    * Spread into a payload to attach `warnings`; {} when there is nothing to
+    * say. A list, not one joined string, because each warning has its own
+    * remedy.
     */
    return (...extra: (string | undefined)[]) => {
       const warnings = [...ctx.warnings, ...extra].filter(
@@ -588,15 +503,10 @@ export function makeWarningsFor(ctx: PipelineContext) {
 const SKILLS_DESCRIPTION_BUDGET = 4000;
 
 /**
- * Spread into a payload to attach `skills`: the guides this package ships about
- * itself, name and description only. Returns {} when it ships none, so most
- * payloads carry no key at all.
- *
- * Every description rather than a ranked subset: a one-line description is
- * cheap, and ranking could hide the guide that says the question is being asked
- * wrong. Bodies stay behind get_skill. Sits outside the response envelope,
- * beside `warnings`, because the envelope tracks the hosted retrieval API's
- * shape.
+ * Spread into a payload to attach `skills`: the package's own guides, name and
+ * description only ({} when it ships none). Every description rather than a
+ * ranked subset, because ranking could hide the guide that says the question
+ * is being asked wrong. Bodies stay behind get_skill.
  */
 export function skillsFor(ctx: PipelineContext) {
    // Descriptions are author-written and ride every response, so their total is bounded.
@@ -621,23 +531,15 @@ export function skillsFor(ctx: PipelineContext) {
 }
 
 /**
- * The warning for a capped result set, or undefined when nothing was
- * cut. It names the remedy that works here: raising the limit, or
- * narrowing the question. Telling an agent to "search more
- * specifically" when the cut was a flat cap sends it to re-query at
- * the one stage that cannot change the outcome.
+ * The warning for a capped result set, or undefined when nothing was cut.
+ * Each cut warning below names the remedy that works for that cut.
  */
 export const truncationWarning = (returned: number, matched: number) =>
    matched > returned
       ? `Returned ${returned} of ${matched} matching entities. Raise limit (max ${MAX_LIMIT}) or narrow the query to see the rest.`
       : undefined;
 
-/**
- * The two cuts a ranked response can make, each named in its own unit. They
- * have different remedies -- one is the page size, the other is per source
- * -- and the old single warning reported both as "entities" while the
- * envelope beside it counted sources.
- */
+/** Sources cut by the page size; counted in sources, like the envelope. */
 export const sourceCutWarning = (returned: number, matched: number) =>
    matched > returned
       ? `Returned ${returned} of ${matched} matching sources. Raise limit (max ${MAX_LIMIT}) or narrow with scopes to see the rest.`
@@ -652,19 +554,16 @@ export const rerankCutWarning = (dropped: number, top: number | undefined) =>
       ? `${dropped} further ${dropped === 1 ? "source" : "sources"} matched but ${dropped === 1 ? "was" : "were"} not ranked: only the best ${top ?? "few"} are scored (retrieval.rerank.topSources). Narrow with scopes or a more specific question to see ${dropped === 1 ? "it" : "them"}.`
       : undefined;
 /**
- * A browse that stopped early. Its remedy is NOT the ranked one: a listing
- * has a resumable order, so the rest is one `offset` away and raising the
- * limit is the wrong advice -- it caps at 150 either way, and paging is
- * what actually reaches source 151.
+ * A browse that stopped early. Its remedy is paging by `offset`, not raising
+ * the limit, which is capped either way.
  */
 export const listingPageWarning = (returned: number, matched: number) =>
    matched > returned
       ? `Returned ${returned} of ${matched} sources in scope. Pass next_offset back as offset for the next page, or narrow with search_text or more targeted scopes.`
       : undefined;
 /**
- * Whole cards left out because the response would pass the size budget. Its
- * remedy is not the page size: raising `limit` makes the answer bigger, and
- * the budget cuts it back.
+ * Whole cards left out to stay under the size budget; raising `limit` would
+ * not help, so the remedy is a narrower question.
  */
 export const budgetCutWarning = (dropped: number, maxChars: number | null) =>
    dropped > 0 && maxChars !== null
@@ -676,12 +575,10 @@ export const entityCutWarning = (dropped: number) =>
       : undefined;
 
 /**
- * The answer while a package's semantic index is still building: a normal
- * result with no sources, `retrieval: "indexing"` and how far the build has
- * got. It is not an error, because the condition clears by itself and the
- * right response is to ask again shortly. It is not a lexical answer either:
- * with an embedding provider configured, a keyword ranking would differ from
- * what the finished index returns, and an agent cannot tell the two apart.
+ * The answer while a package's semantic index is still building: no sources,
+ * `retrieval: "indexing"` and progress. Not an error, because it clears by
+ * itself; not a lexical fallback, because that ranking would differ from the
+ * finished index's and an agent could not tell them apart.
  */
 export function indexingResponse(
    uri: string,
@@ -712,19 +609,7 @@ export function indexingResponse(
    });
 }
 
-/**
- * The answer when an LLM stage (refine, rerank or source_match, or building
- * the LLM client for them) failed after the provider layer's retries. An error
- * result that names the stage and the reason, with `sources: []` like every
- * get_context error. It is never replaced by an unrefined or lexical answer: a
- * ranking that quietly differs from the one the working stages give is harder
- * to trust than an error.
- *
- * The advice names the package setting that turns the failing step off, and
- * the three that turn every request-time LLM step off. The index-time steps
- * (keyphrases, source summaries) fail a sync, not a request, and are reported
- * through the index status instead.
- */
+/** The package setting that turns each request-time LLM stage off. */
 const STAGE_SETTING: Readonly<Record<string, string>> = {
    refine: "retrieval.refine",
    rerank: "retrieval.rerank",
@@ -747,6 +632,11 @@ function callerReason(error: StageError): string {
    return error.reason;
 }
 
+/**
+ * The answer when an LLM stage (refine, rerank, source_match) failed after the
+ * provider's retries. Never replaced by an unrefined or lexical answer: a
+ * ranking that quietly differs is harder to trust than an error.
+ */
 export function stageFailureError(
    uri: string,
    error: StageError,
@@ -776,12 +666,7 @@ export function stageFailureError(
    );
 }
 
-/**
- * The answer when a configured server cannot rank a search at all: an error
- * result that names the reason and says what to do. Still carries
- * `sources: []` like every get_context error, so a caller can read the
- * payload without branching on success first.
- */
+/** The answer when a configured server cannot rank a search at all. */
 export function semanticUnavailableError(uri: string, result: Unavailable) {
    const reason = result.unavailable;
    const status = result.status;
@@ -839,11 +724,8 @@ export function semanticUnavailableError(uri: string, result: Unavailable) {
 }
 
 /**
- * A target type this server cannot search, said plainly with the remedy that
- * works. Publisher indexes the model, not the values inside it, so a
- * `dimensional_value` target has nothing to match -- and the answer is the one
- * the analysis skill already gives: target the dimension, then read its
- * distinct values with a query.
+ * A target type this server cannot search (`dimensional_value`: Publisher
+ * indexes the model, not its values), with the remedy that works.
  */
 export function unsupportedTargetWarnings(request: ResolvedRequest): string[] {
    if (request.unsupported.length === 0) return [];

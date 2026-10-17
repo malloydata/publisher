@@ -23,35 +23,27 @@ export interface Entity {
    // #(doc)-only text used as embedding input; never carries predicate
    // annotations (#(access_filter) etc.) that must not leave the machine.
    embedDoc: string;
-   // Join cardinality, on `kind: "join"` entities only. Tells an agent whether
-   // traversing the join fans out (many) before it writes a query against it.
+   // Join cardinality, on `kind: "join"` entities only: whether traversing
+   // the join fans out.
    relationship?: Relationship;
    // On `kind: "join"` entities: the source the join leads to, when the
-   // compiled model names one (the topology below has it; a model with no
-   // compiled IR does not). Read by the source summary to nest a joined
-   // source's fields; never serialized.
+   // compiled model names one. Read by the source summary; never serialized.
    joinTarget?: string;
-   // On `kind: "join"` entities: the package-relative path of the file that
-   // defines `joinTarget`. Together they identify the source; the name alone
-   // cannot when two files define a source of the same name.
+   // The file defining `joinTarget`; with it, identifies the source when two
+   // files define a source of the same name.
    joinTargetModelPath?: string;
-   // Other spellings of this same field in the same source that were
-   // collapsed into it (see collapseAliases). Present only when non-empty.
+   // Other spellings of this same field collapsed into it (see
+   // collapseAliases). Present only when non-empty.
    aliases?: string[];
-   // The authored expression text, from the compiled model. Absent on a
-   // physical column, which HAS no expression -- so absence is the fact that
-   // the field is raw, not a gap. Serialized only when the caller asks with
-   // `include_code`.
+   // The authored expression text. Absent on a physical column, so absence
+   // means the field is raw. Serialized only with `include_code`.
    code?: string;
-   // When this field's whole definition is a reference to another field of
-   // the SAME source (`dimension: site is SITE`), the name it refers to.
-   // This is what makes alias collapsing exact instead of a guess about
-   // names; see collapseAliases. A reference that traverses a join carries a
-   // multi-segment path and is deliberately NOT recorded here: that is a
-   // different column reached through a relationship, not another spelling.
+   // When this field's whole definition references another field of the SAME
+   // source (`dimension: site is SITE`), that name; it makes alias collapsing
+   // exact. A reference through a join is deliberately not recorded: it is a
+   // different column, not another spelling.
    aliasOf?: string;
    // Malloy type of a dimension or measure ("string", "number", "date", ...).
-   // What an agent needs to know before it filters or aggregates the field.
    dataType?: string;
    // For a field reached THROUGH a join, the traversal that reaches it
    // ("orders", or "order_items.inventory_items"), which is also the dotted
@@ -101,15 +93,13 @@ export interface ResultEntity {
    /**
     * Score per search target index that matched this row, for
     * matched_targets. Semantic only: a lunr score is relative to its own
-    * query, so the lexical path never sets this and nothing it could set
-    * would be safe to publish as a relevance.
+    * query and not safe to publish as a relevance.
     */
    targetScores?: Map<number, number>;
    /**
     * The target this row is budgeted under in windowBySource: the one that
-    * claimed it best. Set on BOTH ranked paths, because the per-target window
-    * is a budgeting rule, not a scoring one -- the lexical path knows which
-    * target found a row even though it withholds how well.
+    * claimed it best. Set on both ranked paths, since the per-target window is
+    * a budgeting rule, not a scoring one.
     */
    bestTarget?: number;
    /** Set by refine. LOW=1, MEDIUM=2, HIGH=3. */
@@ -129,7 +119,7 @@ export interface ResultEntity {
     * refine did not run or the model gave no reason.
     */
    targetReasons?: Map<number, string>;
-   /** Unused until assembly makes joined copies. Joins crossed to reach the field. */
+   /** Joins crossed to reach the field, set on assembly's joined copies. */
    joinHops?: number;
 }
 
@@ -141,14 +131,9 @@ export interface SourceContextJoin {
 }
 
 /**
- * The parent-source context for one source represented in `results`.
- *
- * A field hit alone tells an agent nothing about the grain, population rule,
- * or reporting convention its source carries, because a source's `#(doc)` only
- * reached the agent when the source itself independently cleared the relevance
- * floor for that query. That made whether guidance arrived a function of query
- * phrasing. Every source behind a result now reports its doc and its complete
- * join list exactly once per response.
+ * The parent-source context for one source represented in `results`, reported
+ * once per response for every source behind a result, so a field hit always
+ * arrives with its source's grain and join guidance regardless of phrasing.
  */
 export interface SourceContextEntry {
    name: string;
@@ -156,42 +141,29 @@ export interface SourceContextEntry {
    /** Truncated to SOURCE_DOC_MAX_CHARS; the model file has the full text. */
    doc: string;
    /**
-    * Every join the source declares, not just retrieved ones. An empty array
-    * is therefore an authoritative "this source declares no joins", which is
-    * what an agent needs to stop probing for one and write it inline.
+    * Every join the source declares, not just retrieved ones, so an empty
+    * array authoritatively means "declares no joins".
     */
    joins: SourceContextJoin[];
-   /**
-    * The source's doc reduced to its first line, capped, which is the short
-    * label a catalog view shows beside a source name. Absent when undocumented.
-    */
+   /** The source's doc reduced to its first line, capped. Absent when undocumented. */
    oneLineSummary?: string;
-   /**
-    * Model-level `given:` parameters in scope for this source. An agent spends
-    * them on execute_query, so knowing they exist is what stops it
-    * guessing at a value the model already defaults.
-    */
+   /** Model-level `given:` parameters in scope for this source. */
    givens?: SourceContextGiven[];
    /**
     * The `#(access_filter)` gates in force on this source, and the givens each
-    * one reads. Retrieval that offered a gated source without saying so spent
-    * a slot on an entity the caller could not query, and the agent learned
-    * that only from the denial.
+    * one reads.
     *
-    * Report-only, and never a predicate to evaluate caller-side: the list
-    * flattens gates carried in from elsewhere, they are AND-ed rather than
-    * OR-ed, and an unattributable gate reports the fail-closed placeholder
-    * "false" that no author wrote. Read it as "this source is gated, and these
-    * are the givens to supply". See docs/authorize.md.
+    * Report-only, never a predicate to evaluate caller-side: the list flattens
+    * gates carried in from elsewhere, they are AND-ed, and an unattributable
+    * gate reports the fail-closed placeholder "false". Read it as "this source
+    * is gated, and these are the givens to supply". See docs/authorize.md.
     */
    accessFilter?: SourceContextAuthorize[];
    /**
-    * The `#(authorize)` locks in force on this source, reported separately
-    * from `accessFilter` above — they decide whether the caller may reach the
-    * source at all, and answer 403 rather than an empty result. Same
-    * report-only caveats apply. A source gated ONLY by an unconditional deny
-    * on either route never reaches this card at all — see the collector's
-    * drop.
+    * The `#(authorize)` locks in force on this source: they decide whether the
+    * caller may reach the source at all (403, not an empty result). Same
+    * report-only caveats. A source gated only by an unconditional deny never
+    * reaches a card.
     */
    authorize?: SourceContextAuthorize[];
    /** Filters the source declares via `#(filter)`. */
@@ -207,11 +179,8 @@ export interface SourceContextGiven {
 }
 
 /**
- * A filter a source exposes via `#(filter)`, as the model declares it. A
- * REQUIRED one is the reason this is on the card at all: a caller that cannot
- * see it cannot supply it, and the query fails when they use the source. That
- * is the same argument that keeps `givens` on a card, and it is why this is
- * reported rather than left to a follow-up call the way a description is.
+ * A filter a source exposes via `#(filter)`. On the card because a caller that
+ * cannot see a required filter cannot supply it, and the query fails.
  */
 export interface SourceContextFilter {
    name: string;
@@ -227,9 +196,8 @@ export interface SourceContextAuthorize {
 }
 
 /**
- * Why a server that HAS an embedding provider could not rank a search. Reported
- * so an agent can act on it: "indexing" is an index still building, answered
- * with an empty result (retrieval: "indexing") that is worth asking again, while the rest are errors
+ * Why a server that has an embedding provider could not rank a search.
+ * "indexing" is an empty result worth asking again; the rest are errors
  * (retrieval_reason) an immediate retry cannot fix.
  */
 export type RetrievalReason =
@@ -250,16 +218,15 @@ export interface ResolvedSearch {
 }
 
 /**
- * The request reduced to what retrieval works in: one scope, the set of kinds
- * in play, and the searches to rank. Resolved ONCE here rather than re-derived
- * per tier, so the listing and ranked paths cannot disagree about what the
- * caller asked for.
+ * The request reduced to what retrieval works in: one scope, the kinds in
+ * play, and the searches to rank. Resolved once so the listing and ranked
+ * paths cannot disagree about what was asked.
  */
 export interface ResolvedRequest {
    /**
-    * Only `source` targets, none with text: the catalog browse. It is the one
-    * request with a deterministic order that can be resumed, so it is the only
-    * one `offset` means anything on, and the one whose cards go thin.
+    * Only `source` targets, none with text: the catalog browse. The one
+    * request with a resumable order, so the only one `offset` applies to, and
+    * the one whose cards go thin.
     */
    pureSourceListing: boolean;
    environmentName: string;
@@ -285,9 +252,8 @@ export interface JoinReach {
    /** Name of the source the fields live on. */
    targetSource: string;
    /**
-    * The package-relative path of the file that defines that source. Together
-    * with `targetSource` it is the source's identity: two files can each
-    * define a source of the same name, and a join reaches only one of them.
+    * The file defining that source; with `targetSource`, the source's identity,
+    * since two files can define a source of the same name.
     */
    targetModelPath: string;
    /** Join names from the root, root not included. Aliases, not source names. */
@@ -303,11 +269,9 @@ export interface PackageIndex {
    pkg: Package;
    byId: Map<string, Entity>;
    /**
-    * `byId`'s values as one frozen array, the entity set handed to the
-    * semantic index. Every call for this Package passes this same array, which
-    * is what lets the index cache its content fingerprint instead of hashing
-    * every facet on each question and each status read (see fingerprintFor
-    * in embedding_index).
+    * `byId`'s values as one frozen array handed to the semantic index. The
+    * same array on every call is what lets the index cache its content
+    * fingerprint (see fingerprintFor in embedding_index).
     */
    retrievalEntities: readonly Entity[];
    /**

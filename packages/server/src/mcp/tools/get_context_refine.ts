@@ -4,31 +4,15 @@
 /**
  * Refine: an LLM rates the candidates the semantic scan found, so a field that
  * is only near the phrase in embedding space is dropped and the ones that fit
- * are ordered by how well.
+ * are ordered by how well. Runs per entity-search target on the direct ranked
+ * rows, before assembly makes joined copies. A candidate rated below the
+ * package's `minLevel`, or not returned, is dropped; a survivor's raw score is
+ * `level + cosine`, published through the knots in get_context_scoring, and it
+ * keeps the model's optional reason as `matched_targets[].match_reason`.
+ * A failed batch fails the stage; there is no unrefined fallback.
  *
- * Runs once per entity-search target on the DIRECT ranked rows, before
- * assembly makes joined copies:
- *
- *   1. candidates are unique by (name, source), the best 10 per source by
- *      cosine, then the best 120 overall;
- *   2. they go to the model in batches of 15, `retrieval.llm.concurrency`
- *      batches at a time, each asking for
- *      {index, score: LOW|MEDIUM|HIGH, reason};
- *   3. a candidate rated below the package's `minLevel`, or not returned, is
- *      dropped from that target;
- *   4. a survivor's raw score is `level + cosine` (LOW 1, MEDIUM 2, HIGH 3),
- *      published through the knots in get_context_scoring.
- *
- * A survivor also keeps the model's one-sentence `reason` for each target it
- * was rated against (`targetReasons`), which the response publishes as
- * `matched_targets[].match_reason`. The reason is optional: a reply without
- * one is not an error, and it is trimmed and capped at
- * REFINE_REASON_MAX_CHARS. Only a candidate that survives carries one.
- *
- * A failed batch fails the stage (StageError); there is no unrefined fallback.
- *
- * What is sent: name, kind, data type, source and `#(doc)` text. The text goes
- * through scrubForEgress, so no access predicate can ride along.
+ * What is sent: name, kind, data type, source and `#(doc)` text, scrubbed by
+ * scrubForEgress so no access predicate can ride along.
  */
 
 import {
@@ -309,17 +293,11 @@ function mapTargets(raw: Map<number, number>): Map<number, number> {
 }
 
 /**
- * A source-target row that no stage rated (source matching is off) is scored as
- * MEDIUM plus its cosine, the same form as a rated row, so it is published on
- * the same scale as everything else once refine ran. It is not a rating: nobody
- * asked a model about it, and `level` stays unset.
- *
- * Its cosine alone is the wrong raw score. On the knots a raw score under 1
- * publishes at 0.4 or less, below even a LOW rating, and a source row sets its
- * card's relevance outright (see foldRelevance). A card whose fields rated
- * HIGH would then rank last, and could fall out of rerank's top cut without the
- * model seeing it. MEDIUM plus cosine puts the row in the MEDIUM band, 0.7 to
- * 0.9, ordered by cosine inside it.
+ * A source row no stage rated (source match off) is placed on the refine scale
+ * as MEDIUM plus its cosine; `level` stays unset because it is not a rating.
+ * Its bare cosine would publish below even LOW on the knots, and since a source
+ * row sets its card's relevance (see foldRelevance), a card whose fields rated
+ * HIGH would rank last and could miss rerank's cut.
  */
 function sourceRowOnKnots(row: ResultEntity): ResultEntity {
    // Source match already rated this row on the knots: its raw score is a level.

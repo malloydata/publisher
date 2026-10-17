@@ -6,24 +6,15 @@
  * and stored, so a long or missing description does not decide how an entity
  * is found.
  *
- * The rule, for `retrieval.keyphrases: "auto"` (and only with an LLM
- * configured):
+ * Under `auto` (LLM configured), a short description (see
+ * shortDescriptionLimit) is its own keyphrase; an empty or longer one gets an
+ * LLM-written keyphrase. `always` sends every entity; `never` none. Stored in
+ * `entity_keyphrases`, regenerated only when inputs, prompt or model change,
+ * and saved per batch so a restart resumes.
  *
- *   - a description of 1 to 8 words (1 to 12 for a view) IS the keyphrase, with
- *     no LLM call;
- *   - an empty description, or a longer one, gets an LLM-written keyphrase.
- *
- * `always` sends every entity to the LLM; `never` sends none.
- *
- * Generated keyphrases live in the `entity_keyphrases` table, keyed so that
- * one is regenerated only when the entity's inputs, the prompt text or the
- * model changed. Each batch is saved as it returns, so a failure part way
- * keeps the batches before it, and a restart resumes from there.
- *
- * What is sent to the LLM: name, kind, source, data type and `#(doc)` text,
- * and under the `full` egress preset also the field's code. Never an access
- * predicate: the doc text is `#(doc)`-only to begin with, and it is scrubbed
- * again here so a future change to that upstream filter cannot leak one.
+ * What is sent: name, kind, source, data type and `#(doc)` text, plus code
+ * under the `full` egress preset. Never an access predicate: doc text is
+ * `#(doc)`-only and scrubbed again here in case that upstream filter changes.
  */
 
 import { createHash } from "crypto";
@@ -183,10 +174,8 @@ export function keyphraseInputHash(
 }
 
 /**
- * Extra inputs the readiness fingerprint must see. The fingerprint is built
- * from row texts, which carry name and doc but not the data type or code; with
- * keyphrases on, those also decide the stored keyphrase, so they are folded
- * in. Empty string when keyphrases are off.
+ * Extra inputs the readiness fingerprint must see: row texts omit data type
+ * and code, which also decide a stored keyphrase. Empty when keyphrases are off.
  */
 export function keyphraseInputsDigest(
    entities: readonly EmbeddableEntity[],
@@ -393,15 +382,12 @@ function validateReply(ids: readonly string[]) {
 /**
  * Produce the keyphrase for every entity that gets one.
  *
- * Description keyphrases (the `auto` rule) are free. For the rest, a stored
- * keyphrase is reused when its input, prompt and model hashes all match;
- * anything else is generated in batches of {@link KEYPHRASE_BATCH_SIZE},
- * `concurrency` batches at a time, each saved as it returns. At most
- * `maxCallsPerSync` batches run; entities beyond that are left without a
- * keyphrase (they embed from their doc or name) and reported through
- * `progress.capped`. A batch that fails after the provider layer's retries
- * stops the step with a {@link KeyphraseStageError}: loud, never a silent
- * downgrade, and what was saved stays.
+ * Description keyphrases are free; a stored one is reused when its input,
+ * prompt and model hashes match; the rest are generated in batches. Entities
+ * the sync budget does not reach embed from their doc or name and are reported
+ * through `progress.capped`. A failed batch stops the step with a
+ * {@link KeyphraseStageError} (loud, never a silent downgrade); what was saved
+ * stays.
  */
 export async function resolveKeyphrases(args: {
    db: DuckDBConnection;

@@ -24,12 +24,9 @@ const MAX_LIMIT = 100;
 const MAX_COLUMNS_PER_TABLE = 80;
 
 /**
- * Length cap on the identifier-ish string arguments.
- *
- * These are echoed back into human-readable warning and error prose that an
- * agent reads as server-authored instruction, so an unbounded argument is an
- * unbounded injection surface into that prose. No real environment, connection,
- * package, schema or table name approaches this.
+ * Length cap on the identifier-ish string arguments. They are echoed into
+ * warning and error prose an agent reads as server-authored, so an unbounded
+ * argument is an unbounded injection surface.
  */
 const MAX_ARG_CHARS = 256;
 
@@ -97,42 +94,26 @@ type SearchDatabaseSchemaParams = z.infer<
 >;
 
 /**
- * The `source:` line an agent can paste to start modelling this table.
- *
- * This is the seam between "search a warehouse's schema" and "build a model
- * from it": the response carries the exact syntax rather than leaving the agent
- * to assemble a connection name, a dotted path, and quoting rules that differ
- * per dialect. `resource` keeps its qualification exactly as introspection
- * produced it; only the quoting around it is this function's business.
- *
- * Escaping matters here because the agent is told this line is ready to use, so
- * this function's output is what actually gets run. Malloy escapes string
- * literals with a BACKSLASH, not by doubling the quote as SQL does, so a
- * warehouse path like `s3://bucket/o'brien/orders.parquet` needs `\'`. Getting
- * that wrong produces a parse error the agent was promised would not happen.
+ * Escape a Malloy string literal. Malloy escapes with a backslash, not by
+ * doubling the quote as SQL does, so `o'brien` needs `\'`.
  */
 function escapeMalloyString(value: string): string {
    return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
 /**
- * Quote an identifier, escaping backslashes and any backtick it contains.
- *
- * ALWAYS quoted, never bare. A table named `table` or `source` is a Malloy
- * reserved word, and emitting it bare produces a line that does not compile
- * from a field the description calls "the ready-to-use source line". Quoting
- * only when the name looks unusual left exactly those cases broken. Verified
- * against the compiler: a backticked alias always compiles.
- *
- * Backslash FIRST, for the same reason as escapeMalloyString: escaping the
- * backtick first would then double the backslash that escape introduced. And a
- * name ending in a backslash, left unescaped, would consume the closing
- * backtick and swallow the rest of the line.
+ * Quote an identifier, always: a bare reserved word (`table`, `source`) does
+ * not compile. Backslash is escaped first so the backtick's escape is not
+ * doubled, and a trailing backslash cannot swallow the closing backtick.
  */
 function malloyIdentifier(name: string): string {
    return `\`${name.replace(/\\/g, "\\\\").replace(/`/g, "\\`")}\``;
 }
 
+/**
+ * The ready-to-paste `source:` line for a table. `resource` keeps its
+ * qualification exactly as introspection produced it; only quoting is added.
+ */
 export function malloySourceSnippet(
    connectionName: string,
    resource: string,
@@ -144,10 +125,8 @@ export function malloySourceSnippet(
 }
 
 /**
- * DuckDB's file-path grammar for a table path, from its dialect in
- * @malloydata/malloy. Deliberately NOT a guess: a space, an apostrophe or a
- * parenthesis is outside it, which is why an S3 key containing one produced a
- * line that did not compile.
+ * DuckDB's file-path grammar for a table path, copied from its dialect in
+ * @malloydata/malloy (a space, apostrophe or parenthesis is outside it).
  */
 const DUCKDB_FILE_PATH = /^[A-Za-z0-9._~:/?#@!$&*+,=%-]+$/;
 
@@ -162,43 +141,25 @@ const STRICT_BARE_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
  * Whether a table path can be pasted into `table('...')` as-is.
  *
- * Conservative by construction. Malloy validates this per dialect, with seven
- * distinct identifier rules plus DuckDB's separate file-path grammar, and it
- * does not export `getDialect` through any public entry point, so this cannot
- * delegate to the authority. Rather than approximate ten grammars with one
- * regex (an earlier attempt did exactly that and still emitted lines that did
- * not compile), this accepts only what every dialect accepts, and the caller
- * omits `malloySource` and says why for anything else.
- *
- * The two shapes: a dotted path, where every segment must satisfy the strictest
- * bare-identifier rule; or a file/URL path, which only DuckDB-family
- * connections ever produce, checked against DuckDB's own file-path charset.
- *
- * A false negative here costs a convenience field plus a warning explaining it.
- * A false positive costs an agent a line that does not run, from a field the
- * description calls ready to paste. The asymmetry is the whole design.
+ * Conservative by construction: Malloy validates per dialect and does not
+ * export `getDialect`, so this accepts only what every dialect accepts (a
+ * dotted path of strict bare identifiers, or a DuckDB file/URL path) and the
+ * caller omits `malloySource` with a warning otherwise. A false negative costs
+ * a convenience field; a false positive costs a line that does not run.
  */
 export function isPastableTablePath(resource: string): boolean {
    if (!resource) return false;
    if (resource.includes("/")) return DUCKDB_FILE_PATH.test(resource);
-   // A bare data-file name has no slash, so it would otherwise take the dotted
-   // branch and pass: `orders.parquet` looks like schema `orders`, table
-   // `parquet`, and that is exactly how DuckDB resolves it, because its
-   // validator tries the identifier grammar before the file grammar. There is
-   // no way to write this one as a bare path, so it is not pastable. The
-   // single-file Azure describe is the producer (db_utils describeRemoteFile
-   // returns the basename), and bareTableName already knew about this shape.
+   // A bare data-file name (`orders.parquet`, from describeRemoteFile) would
+   // pass the dotted check, but DuckDB reads it as schema `orders`, table
+   // `parquet`, so it cannot be written as a bare path.
    if (DATA_FILE_EXTENSION.test(resource)) return false;
    return resource.split(".").every((seg) => STRICT_BARE_IDENT.test(seg));
 }
 
 /**
- * Whether this table gets a `malloySource`.
- *
- * ONE predicate, shared by the field and by the warning that explains its
- * absence. They were separate, and the field was omitted for two reasons while
- * the warning counted only one, so a table with no usable name lost the field
- * in silence: the precise thing the omission exists to avoid.
+ * Whether this table gets a `malloySource`. Shared by the field and the
+ * warning explaining its absence, so the two cannot disagree.
  */
 export function canPasteSource(entity: {
    tableName: string;
@@ -211,15 +172,9 @@ export function canPasteSource(entity: {
 const DATA_FILE_EXTENSION = /\.(parquet|csv|tsv|json|jsonl|ndjson|xlsx)$/i;
 
 /**
- * The human-facing name of a table.
- *
- * Two resource shapes reach here. Most dialects produce a dotted path, where
- * the table is the last segment (`sales.orders` -> `orders`). DuckDB over
- * cloud or local files produces a file path instead
- * (`s3://bucket/data/customers.parquet`), where splitting on the last dot would
- * name every table after its file extension. Path form is detected first.
- *
- * Exported so a spec can pin both shapes.
+ * The human-facing name of a table: the last segment of a dotted path
+ * (`sales.orders` -> `orders`), or the file name without extension for a
+ * DuckDB file path, where splitting on the last dot would yield the extension.
  */
 export function bareTableName(resource: string): string {
    const lastSlash = resource.lastIndexOf("/");
@@ -244,18 +199,12 @@ interface ResponseConnection {
 }
 
 /**
- * The connections an agent can actually introspect in this environment.
+ * The connections an agent can introspect in this environment: the configured
+ * ones, plus the per-package `duckdb` sandbox (synthesized on demand, so in no
+ * listing) with the packages it can be used against.
  *
- * Environment-level connections come from config. The per-package `duckdb`
- * sandbox does not: `duckdb` is a reserved name that ConnectionController
- * synthesizes on demand for whichever package is named, so it appears in no
- * listing. Left out, the drill-down dead-ends at "no connections" on exactly
- * the setup the bundled examples ship with, which is the first thing a new user
- * runs. It is reported with the packages it can be used against.
- *
- * An ApiConnection carries the full config, including BigQuery service-account
- * JSON and Postgres passwords, so this projects down to name and type and the
- * object itself never reaches a response.
+ * Projected to name and type: an ApiConnection carries credentials
+ * (service-account JSON, passwords) that must never reach a response.
  */
 async function listConnectionsFor(environment: {
    listApiConnections: () => { name?: string; type?: string }[];
@@ -306,9 +255,6 @@ function toResponseTable(
       schemaName: entity.schemaName,
       tableName: entity.tableName,
       tablePath: entity.resource,
-      // A directory-shaped URL with no blobs yields no usable name; emitting
-      // `source: `` is ...` would be a line that cannot compile, from a field
-      // documented as ready to paste.
       ...(canPasteSource(entity)
          ? {
               malloySource: malloySourceSnippet(
@@ -350,11 +296,9 @@ Then paste that table's malloySource verbatim, e.g. source: \`orders\` is \`ware
  * Registers search_database_schema: natural-language search over a
  * configured connection's schema.
  *
- * Ranking is lexical (lunr/BM25) unless the operator has set BOTH
- * EMBEDDING_API_KEY and EMBEDDING_INDEX_CONNECTION_SCHEMA, because embedding a
- * schema sends the customer's table and column names to a third-party provider.
- * See config.schemaEmbeddingEnabled for why that is a second switch rather than
- * riding on the existing key.
+ * Ranking is lexical (lunr/BM25) unless both EMBEDDING_API_KEY and
+ * EMBEDDING_INDEX_CONNECTION_SCHEMA are set, because embedding sends table and
+ * column names to a third party (see config.schemaEmbeddingEnabled).
  */
 export function registerSearchDatabaseSchemaTool(
    mcpServer: McpServer,
@@ -497,12 +441,8 @@ function resolveTier(params: SearchDatabaseSchemaParams): Tier {
 
 /**
  * The warning naming the arguments the reached tier does not read, or [].
- *
- * An argument below the tier that was reached does nothing. Silently, the
- * response looks like a successful answer to the question actually asked: ask
- * for tableName without schemaName and you get the schema list back, from
- * which an agent reasonably concludes the table is not there. Naming what was
- * ignored makes each of those self-describing.
+ * Without it, tableName without schemaName silently returns the schema list
+ * and reads as "the table is not there".
  */
 function ignoredArgsWarning(
    params: SearchDatabaseSchemaParams,
@@ -520,11 +460,8 @@ function ignoredArgsWarning(
    const ignored: string[] = [];
    const noteIgnored = (entries: readonly (readonly [string, unknown])[]) => {
       for (const [name, value] of entries) {
-         // Deduped: two rules can name the same argument. Called with
-         // connectionName and packageName but no environmentName, the
-         // tier-1 rule and the sandbox rule below both fire on
-         // packageName, and the warning read "Ignored connectionName,
-         // packageName, ..., packageName".
+         // Deduped: two rules can name the same argument (e.g. packageName
+         // via the tier rule and the sandbox rule below).
          if (value !== undefined && value !== "" && !ignored.includes(name)) {
             ignored.push(name);
          }
@@ -568,16 +505,13 @@ function ignoredArgsWarning(
          noteIgnored([["searchQuery", searchQuery], ...pagingArgs]);
          break;
       case "tables":
-         // Ranked results cannot be paged, so offset does nothing here.
-         // Without this the tool silently returns the same top hits for
-         // every offset, and an agent paging a ranked result loops.
+         // Ranked results cannot be paged; unwarned, an agent paging them
+         // gets the same top hits forever.
          if (searchQuery !== undefined) noteIgnored([["offset", offset]]);
          break;
    }
-   // packageName only selects anything for the per-package sandbox.
-   // On any other connection the controller drops it, so an agent that
-   // passed it believes it scoped the search to that package and did
-   // not. This is the last ignored argument that went unreported.
+   // packageName only selects anything for the per-package sandbox; on any
+   // other connection the controller drops it.
    if (connectionName && connectionName !== SANDBOX_CONNECTION) {
       noteIgnored([["packageName", packageName]]);
    }
@@ -594,13 +528,9 @@ function withWarnings(warnings: string[]): { warnings?: string[] } {
 }
 
 /**
- * Shed load before querying the warehouse, the way getModelForQuery does for
- * the other MCP tools.
- *
- * Every tier that reaches the warehouse calls this, not just the ranked one:
- * introspection can pull 100k rows, and tier 5 waives the column cap and can
- * fan out one DESCRIBE per file, so it is the most expensive of the three.
- * Without it the memory governor cannot see any of this traffic.
+ * Shed load before querying the warehouse, as getModelForQuery does for the
+ * other MCP tools. Every warehouse-reaching tier calls this: introspection can
+ * pull 100k rows, and the memory governor otherwise cannot see this traffic.
  */
 async function assertCanAdmit(
    environmentStore: EnvironmentStore,
@@ -612,17 +542,12 @@ async function assertCanAdmit(
 }
 
 /**
- * The warning for tables whose path could not be pasted, or [] if all could.
- *
- * A helper rather than an inline push because it was previously built only
- * in the listing branch, so the single-table tier omitted `malloySource`
- * with no explanation at all: the same silence the omission exists to avoid.
+ * The warning for tables with no `malloySource`, or [] if all have one. Shared
+ * by both table tiers so neither omits the field unexplained.
  */
 function unpastableWarning(entities: SchemaTableEntity[]): string[] {
-   // canPasteSource, NOT isPastableTablePath: the field is withheld for two
-   // reasons and this must count both, or the narrower one goes unexplained.
-   // The predicate was extracted for exactly this and the filter was not
-   // switched over, so the silence it was meant to end survived.
+   // canPasteSource, not isPastableTablePath: it covers both reasons the field
+   // is withheld.
    const n = entities.filter((e) => !canPasteSource(e)).length;
    if (n === 0) return [];
    return [
@@ -763,21 +688,14 @@ async function describeTableTier(
          `List the schema's tables by calling this tool with schemaName "${schemaName}" and no tableName.`,
       );
    }
-   // Several dialects ignore the tableNames filter entirely: the
-   // DuckDB cloud and Azure branches list a whole directory. Without
-   // this, asking for one table on a 200-file prefix returns all 200,
-   // each with every column, because the branch below waives the
-   // column cap on the assumption that one table was requested.
+   // Some branches (DuckDB cloud, Azure) ignore the tableNames filter and
+   // list a whole directory; filter here, since this tier waives the column
+   // cap on the assumption that one table was returned.
    const exact = tables.filter(
       (t) => bareTableName(t.resource ?? "") === tableName,
    );
-   // Fall back to a case-insensitive match, but only when nothing
-   // matched exactly, so a warehouse holding both `Orders` and
-   // `orders` still resolves to the one that was asked for. Without
-   // the fallback, asking for `orders` against `Orders.parquet`
-   // returned not-found on exactly the dialects this filter exists
-   // to protect: the ones that ignore the tableNames filter and
-   // hand back a whole directory.
+   // Case-insensitive only when nothing matched exactly, so `Orders` and
+   // `orders` side by side still resolve to the one asked for.
    const matching =
       exact.length > 0
          ? exact
@@ -800,8 +718,7 @@ async function describeTableTier(
       environmentName,
       connectionName,
       schemaName,
-      // No column cap here: asking for one table is how you ask for
-      // all of its columns.
+      // No column cap: asking for one table is how you get all its columns.
       tables: entities.map((e) =>
          toResponseTable(e, {
             maxColumns: Number.MAX_SAFE_INTEGER,
@@ -841,12 +758,8 @@ async function listTablesTier(
    );
    const warnings: string[] = [...ignoredWarning];
 
-   // A schema with nothing registered in it is not necessarily an
-   // empty database. A DuckDB connection over local or cloud data
-   // files addresses those files by path, so information_schema is
-   // legitimately empty while the data is right there. Returning a
-   // bare [] reads as "no data", which sends an agent down the wrong
-   // path; say which of the two it is.
+   // An empty schema is not necessarily an empty database: DuckDB over data
+   // files addresses them by path, registering none. Say so.
    if (entities.length === 0) {
       warnings.push(
          `No tables are registered in schema "${schemaName}". If this connection reads data files directly (DuckDB over CSV or Parquet), those files are not listed in a schema; reference them by path instead, for example ${connectionName}.table('data/orders.parquet'). Otherwise check the schema name against the schema list for this connection.`,
@@ -865,14 +778,9 @@ async function listTablesTier(
          query: searchQuery,
          limit: max,
          provider,
-         // packageName is in the key ONLY for the per-package
-         // sandbox, because that is the only connection for which it
-         // changes what gets introspected: two packages each present
-         // a "duckdb" connection with a "memory.main" schema holding
-         // entirely different tables. For any other connection the
-         // controller ignores packageName, so including it would let
-         // a caller mint unlimited distinct keys for one schema, each
-         // costing a full re-embed and a retained entry.
+         // packageName is in the key only for the per-package sandbox, the
+         // one connection where it changes what is introspected. Elsewhere it
+         // would let a caller mint unlimited keys, each a full re-embed.
          cacheKey: [
             environmentName,
             connectionName === SANDBOX_CONNECTION ? (packageName ?? "") : "",
@@ -880,19 +788,15 @@ async function listTablesTier(
             schemaName,
          ].join("\x00"),
       });
-      // An empty query ran no ranking at all, so reporting a mode
-      // would contradict the warning that says none ran.
+      // An empty query ran no ranking, so no mode is reported.
       ranking = ranked.emptyQuery ? undefined : ranked.ranking;
       matched = ranked.emptyQuery ? undefined : ranked.matched;
       page = ranked.hits.map((hit) => ({
          entity: hit,
          score: hit.score,
       }));
-      // Only when there was something to match against; an empty
-      // schema already explained itself above.
       if (ranked.emptyQuery) {
-         // Not "nothing matched": nothing was asked. Telling an agent
-         // to broaden a query that was never run sends it in circles.
+         // Not "nothing matched": nothing was asked.
          warnings.push(
             `searchQuery carried no searchable content, so no ranking was run. Provide words to search for, or omit searchQuery to list the schema's tables.`,
          );
@@ -901,19 +805,11 @@ async function listTablesTier(
             `No table in "${schemaName}" matched "${searchQuery}". List the schema without a searchQuery to see everything in it.`,
          );
       }
-      // Ranked results cannot be paged, so a cut here is invisible
-      // unless it is stated: totalAvailable counts the whole schema,
-      // not the matches, and an agent reading "20 of 500" concludes
-      // nothing else matched and stops.
+      // Ranked results cannot be paged, so a cut must be stated
+      // (totalAvailable counts the whole schema, not the matches).
       if (ranked.matched > page.length) {
-         // Worded per mode, because the two count different things and
-         // one of them is nearly meaningless on its own. Lexical
-         // ranking is an OR over terms, so every table sharing one
-         // common column name (`customer_id`, `created_at`) counts as
-         // a match: on a real warehouse that number is routinely the
-         // whole schema, and telling an agent to raise `limit` on the
-         // strength of it just fills the response with noise. Narrow
-         // first is the advice that actually helps.
+         // Worded per mode: a lexical match count is an OR over terms and
+         // routinely the whole schema, so narrowing is the useful advice.
          warnings.push(
             ranked.ranking === "lexical"
                ? `${ranked.matched} tables share at least one term with "${searchQuery}"; the top ${page.length} by relevance are shown. Term-matching counts loosely, so a large number here is normal and does not mean that many tables are relevant. Ranked results cannot be paged: make searchQuery more specific, or raise limit (max ${MAX_LIMIT}) if you want more of this ranking.`
@@ -928,8 +824,7 @@ async function listTablesTier(
             `Showing ${page.length} of ${entities.length} tables. Pass offset ${nextOffset} for the next page, or add a searchQuery to narrow.`,
          );
       } else if (page.length === 0 && entities.length > 0) {
-         // Distinguishes "you paged past the end" from "this schema
-         // is empty", which otherwise return the identical shape.
+         // Distinguishes "paged past the end" from "empty schema".
          warnings.push(
             `offset ${skip} is past the end of this schema, which has ${entities.length} tables. Use an offset below ${entities.length}, or omit it to start from the beginning.`,
          );
@@ -967,16 +862,9 @@ async function listTablesTier(
 }
 
 /**
- * The embedding provider to rank with, or null to stay lexical.
- *
- * Null unless the operator set BOTH switches.
- *
- * BOTH lookups sit inside the try, because both throw on a malformed value:
- * getEmbeddingProvider on a bad companion variable, and schemaEmbeddingEnabled
- * on anything that is not a boolean (parseBoolEnv rejects rather than coercing).
- * With that second call outside, `EMBEDDING_INDEX_CONNECTION_SCHEMA=maybe` made
- * every search return an error instead of ranking lexically, which is the
- * opposite of what this comment and the docs promise.
+ * The embedding provider to rank with, or null to stay lexical (unless both
+ * switches are set). Both lookups sit inside the try because both throw on a
+ * malformed value, which must degrade to lexical ranking, not an error.
  */
 function resolveProvider() {
    try {

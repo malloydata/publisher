@@ -4,35 +4,14 @@
 /**
  * Source match: when an LLM is configured, a `source` search target with
  * search text is answered by asking the model which sources it means, instead
- * of ranking sources by embedding or keyword.
+ * of ranking sources by embedding or keyword. Candidates (every source in
+ * scope) go in batches of SOURCE_MATCH_BATCH_SIZE; each rated source becomes a
+ * source row with raw score HIGH=3 / MEDIUM=2. A failed batch fails the stage;
+ * there is no fallback. See docs/get-context-pipeline.md.
  *
- *   1. the candidates are every source in scope: a source the discovery
- *      surface hides is not an entity at all, and a source with an
- *      unconditional deny-all gate was dropped when the index was built, so
- *      neither can appear here (they are checked again below anyway);
- *   2. they go to the model in batches of 10, `retrieval.llm.concurrency`
- *      batches at a time, each asking for {index, score: HIGH|MEDIUM} and
- *      leaving out the sources that are not relevant;
- *   3. when more than 8 sources rate HIGH for a target, that target's MEDIUM
- *      ones are dropped;
- *   4. a rated source becomes a source row with raw score 3 (HIGH) or 2
- *      (MEDIUM), published through the knots as 0.9 and 0.7. Assembly, rerank,
- *      paging and the size budget treat it like any other source row.
- *
- * The number of sources a target sends is capped so this stage cannot spend a
- * request's whole call budget (see sourceCapPerTarget): past the cap, the
- * sources are ranked by how many of the target's words their name, doc and
- * summary share, the best are sent, and the response says how many were not.
- *
- * Entity targets are not touched: the retrievers never see the source targets
- * while this stage is on (see sourceMatchActive), and this stage only adds the
- * source rows. A failed batch fails the stage (StageError); there is no
- * embedding or keyword fallback.
- *
- * What is sent: the package, model path and source name, and the source's
- * `#(doc)` text (scrubbed by scrubForEgress, so no access predicate can ride
- * along), or a line built from the source's joins when it has no doc. A source
- * with a stored LLM summary also sends it, in full, after the documentation.
+ * What is sent: package, model path, source name, and the source's `#(doc)`
+ * scrubbed by scrubForEgress (so no access predicate rides along), or a line
+ * built from its joins; plus its stored LLM summary when there is one.
  */
 
 import {
@@ -84,10 +63,8 @@ export function sourceMatchActive(ctx: PipelineContext): boolean {
 
 /**
  * The candidates: every source entity in scope, each once per model path.
- * Sources that are not queryable never reach the index (the discovery surface
- * removes hidden ones, and an unconditional deny-all gate drops the source);
- * `droppedSources` is checked here too so that a future path that indexes one
- * cannot send it to the model.
+ * Unqueryable sources never reach the index; `droppedSources` is checked here
+ * too so a future path that indexes one cannot send it to the model.
  */
 export function selectSourceCandidates(ctx: PipelineContext): Entity[] {
    const { request, pkgIndex } = ctx;
@@ -99,12 +76,7 @@ export function selectSourceCandidates(ctx: PipelineContext): Entity[] {
    );
 }
 
-/**
- * The (model path, source) keys of the sources in the package's index. Built
- * once per index, not once per candidate: a package with hundreds of sources
- * and no docs on them would otherwise rebuild it for each one, on every
- * request.
- */
+/** The (model path, source) keys of the sources in the package's index, cached per index. */
 const indexedSourceKeysCache = new WeakMap<object, ReadonlySet<string>>();
 function indexedSourceKeys(pkgIndex: {
    directEntities: readonly Entity[];
@@ -123,11 +95,9 @@ function indexedSourceKeys(pkgIndex: {
 
 /**
  * Names of the sources `e` joins, from the topology, else from its join
- * entities. Only the names of sources in the package's index are kept: a
- * target that is not there (a deny-all source, which is dropped, or one the
- * package does not export) must not be named to the model by a source that
- * joins it. The topology is built before either is removed, so it can still
- * name one.
+ * entities. Only sources in the package's index are named: the topology is
+ * built before deny-all and unexported sources are removed, and those must not
+ * be named to the model.
  */
 function joinedSourceNames(ctx: PipelineContext, e: Entity): string[] {
    const key = sourceContextKey(e.modelPath, e.name);
@@ -151,13 +121,10 @@ function joinedSourceNames(ctx: PipelineContext, e: Entity): string[] {
 /**
  * How many sources one source target may send to the model, or null for no cap.
  *
- * Every source target costs ceil(sent / SOURCE_MATCH_BATCH_SIZE) calls, and the
- * request shares `maxCallsPerRequest` with the stages that run after this one.
- * Sending every source made the default settings fail on a package with more
- * than about 70 sources (3 targets, 20 calls). So the cap is sized from the
- * calls still available: what is left, minus one call for rerank and the
- * worst case for refine on each entity target, split evenly between the source
- * targets, at least one batch each. With no ceiling there is no cap.
+ * The request shares `maxCallsPerRequest` with later stages, so the cap is the
+ * calls left, minus one for rerank and refine's worst case per entity target,
+ * split evenly across source targets, at least one batch each. Past the cap the
+ * best word-overlap candidates are sent and the response says how many were not.
  */
 export function sourceCapPerTarget(ctx: PipelineContext): number | null {
    const remaining = ctx.meter?.remaining() ?? null;
@@ -252,13 +219,9 @@ function summaryOf(
 }
 
 /**
- * A summary may be up to 4,000 characters and a batch holds ten sources, so a
- * batch can reach 40,000 characters. A local model (Ollama) runs at a default
- * context of 2,048 to 4,096 tokens and cuts a longer prompt silently, which
- * would drop the later candidates from the ranking with no error. For it each
- * summary is cut to this many characters: ten candidates then fit the smaller
- * default, with the documentation (at most SOURCE_MATCH_DOC_MAX_CHARS) and the
- * instructions.
+ * Summary cap for Ollama: its default context (2–4K tokens) silently truncates
+ * a longer prompt, dropping later candidates with no error. At this size a
+ * full batch, with docs and instructions, fits.
  */
 export const SOURCE_MATCH_SMALL_CONTEXT_SUMMARY_CHARS = 300;
 

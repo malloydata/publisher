@@ -10,40 +10,26 @@ import type {
 } from "./get_context_types";
 
 /**
- * The most entities one call may return, and so also the ceiling on what the
- * semantic query may fetch: the ranked scan over-fetches to fill its source
- * window, and this bounds the scan it can ask for. Defined once because the
- * parameter schema, the truncation warning and that scan must agree.
+ * The most sources one call may return. Shared by the parameter schema, the
+ * truncation warnings and the scan, which must agree.
  */
 export const MAX_LIMIT = 150;
 
 /**
  * Sources a ranked search returns when the caller sets no limit. A listing
- * defaults to MAX_LIMIT instead: a browse that stops early is not a browse,
- * and its cards are cheap because they carry no entities. Both match the
- * published defaults.
+ * defaults to MAX_LIMIT: its cards are cheap. Both match the published
+ * defaults.
  */
 const DEFAULT_RANKED_LIMIT = 20;
 
 /**
  * The request shape, matching the hosted retrieval API's `GetContextRequest`
- * field for field, so one caller, one skill and one eval harness serve a local
- * server and a hosted one. See the response-shape note on SourceCard for the
- * other half.
+ * field for field so one caller and eval harness serve both.
  *
- * Two behavioural divergences, both stated rather than left to be discovered:
- *
- * 1. `scopes` is optional in the published schema; here exactly one entry is
- *    REQUIRED, and it must name an environment and a package. Publisher builds
- *    its retrieval indexes per package and lazily -- a package nothing has
- *    queried has no vectors at all -- so an unscoped search would answer from
- *    whatever happened to be warm and could not tell "not modelled" from "not
- *    indexed yet". Refusing is the honest answer; guessing is not. Relaxing
- *    this later is purely additive and changes no caller.
- * 2. `target_type` is a SUPERSET, adding `join`: a model's declared joins are
- *    retrievable entities here, and an agent that cannot see one concludes the
- *    model has none. `dimensional_value` is accepted and answered with a
- *    warning, because Publisher indexes no dimensional values.
+ * Divergences: `scopes` is required (exactly one environment + package),
+ * because indexes are built per package and lazily, so an unscoped search
+ * could not tell "not modelled" from "not indexed yet"; and `target_type` adds
+ * `join`. `dimensional_value` is accepted and answered with a warning.
  */
 export const SEARCH_TARGET_TYPES = [
    "source",
@@ -57,10 +43,8 @@ export const SEARCH_TARGET_TYPES = [
 export type SearchTargetType = (typeof SEARCH_TARGET_TYPES)[number];
 
 /**
- * Which indexed entity kinds a target selects. `view` covers named queries as
- * well, because the published shape defines that target as "pre-built analyses
- * or named queries" and a model-level named query is exactly that.
- * `dimensional_value` selects nothing: there is no value index to select from.
+ * Which indexed entity kinds a target selects. `view` covers named queries, as
+ * the published shape defines it; `dimensional_value` selects nothing.
  */
 const KINDS_BY_TARGET: Record<SearchTargetType, string[]> = {
    source: ["source"],
@@ -202,12 +186,8 @@ export function resolveRequest(params: GetContextParams): ResolvedRequest {
       kinds,
       searches,
       listingOnly,
-      // Pinning an entity by name turns code on, matching the hosted
-      // retrieval API: a caller who has narrowed to one entity is asking what
-      // it IS, and the definition is the answer. Deliberately overrides an
-      // explicit `include_code: false` rather than deferring to it, because
-      // parity is the point -- the same request must mean the same thing on
-      // both surfaces. The flag still decides every unpinned call.
+      // Pinning an entity by name turns code on, even over an explicit
+      // `include_code: false`, matching the hosted retrieval API.
       includeCode: (params.include_code ?? false) || Boolean(scope.entity_name),
       unsupported,
       limit: params.limit ?? (listingOnly ? MAX_LIMIT : DEFAULT_RANKED_LIMIT),
@@ -235,13 +215,9 @@ export function matchesScope(
 }
 
 /**
- * The distinct vector-cache row keys the request's scope admits, as the
- * triples that cache is keyed on.
- *
- * A row is one (kind, source, name); several live entities can share it, one
- * per model path. A row is in scope when ANY of them is, so a model_path scope
- * keeps the row and the fan-out then keeps only that path's entity — dropping
- * the row here would take the pinned card with it.
+ * The distinct vector-cache row keys (kind, source, name) the request's scope
+ * admits. A row is in scope when any entity sharing it is; the fan-out later
+ * keeps only the in-scope model path.
  */
 export function scopeKeysFor(
    entities: Iterable<Entity>,

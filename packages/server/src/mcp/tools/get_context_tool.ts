@@ -70,9 +70,8 @@ export {
 } from "./package_embedding";
 
 /**
- * The converged tool's description. Same budget and same ordering rule as the
- * one below it: contract rules first, reference last, because a tail-truncating
- * client drops whatever is last. See server.protocol.spec.ts.
+ * Contract rules first, reference last, because a tail-truncating client drops
+ * whatever is last. The length budget is pinned in server.protocol.spec.ts.
  */
 const GET_CONTEXT_DESCRIPTION = `Retrieve the entities in a Malloy package most relevant to a plain-English question.
 
@@ -102,17 +101,9 @@ async function staleNoteFor(
    environmentName: string,
    packageName: string,
 ): Promise<string | undefined> {
-   // A stale package answers every tier below exactly like a current one:
-   // the index is the last model that compiled, so the names are real and
-   // the queries succeed, and the numbers are from before the last save.
-   // Nothing else in this payload can say so, and telling the agent to go
-   // call get_status is weaker than saying it here, where it is
-   // already looking. Attached to tiers 3 and 4 alike, because tier 4 is
-   // the path that goes straight from a question to field names to a
-   // query.
-   //
-   // Best effort: this is a health annotation, so a lookup that fails
-   // must not take discovery down with it. Logged, never thrown.
+   // A stale package answers exactly like a current one, from the model
+   // compiled before the last save; nothing else in the payload can say so.
+   // Best effort: a failed lookup must not take discovery down with it.
    let staleNote: string | undefined;
    try {
       const environment = await environmentStore.getEnvironment(
@@ -142,31 +133,11 @@ function runListing(
    const { environmentName, packageName, sourceName } = request;
    const { byId, sourceContext, droppedSources } = pkgIndex;
    const warningsFor = makeWarningsFor(ctx);
-   // With sourceName set this is the drill-down, so it lists every
-   // entity the named source offers: the source row itself, then its
-   // views, dimensions, measures, and any named query built on it.
-   // Filtering to kind === "source" here as well returned exactly one
-   // row — the source — which the caller already had from the tier-3
-   // listing, and never the fields the tool description promises.
-   // collectEntities pushes a source ahead of its own fields, and
-   // Array.from preserves that insertion order, so the source's doc
-   // still leads the drill-down.
-   //
-   // Enumeration: return everything unless the caller sets an explicit
-   // limit. slice(0, undefined) keeps the whole list, so discovery is
-   // not silently capped the way ranked retrieval (tier 4) is.
-   // A drill-down (sourceName, no query) lists every entity the
-   // named source offers, so the card carries its views, dimensions,
-   // measures, joins and named queries. Listing only the source row
-   // there returned what the caller already had from the package
-   // listing and never the fields the tool description promises.
-   // collectEntities pushes a source ahead of its own fields, and
-   // Array.from preserves that insertion order, so toSourceResults
-   // sees the source before the entities that nest under it.
-   //
-   // Enumeration: return everything unless the caller sets an explicit
-   // limit. slice(0, undefined) keeps the whole list, so discovery is
-   // not silently capped the way ranked retrieval (tier 4) is.
+   // A drill-down (sourceName set) lists every entity the named source
+   // offers, not just the source row the caller already has.
+   // collectEntities pushes a source ahead of its own fields and Array.from
+   // keeps that order, so toSourceResults sees the source before the
+   // entities that nest under it.
    const inScope = Array.from(byId.values()).filter(
       (e) =>
          // A scoped source's own row always survives: it becomes the
@@ -175,13 +146,9 @@ function runListing(
             request.kinds.has(e.kind)) &&
          matchesScope(e, request),
    );
-   // The limit caps entities. A drill-down's source row becomes the
-   // card rather than an entity, so it does not spend a slot; a
-   // package listing has only source rows, so there the cap is on
-   // cards, which is what the listing is made of.
-   // A browse is the one listing with a stable order, so it is the one
-   // that can be resumed. Skipping into any other shape would silently
-   // drop rows whose position is not reproducible between two calls.
+   // The limit caps entities; a drill-down's source row becomes the card and
+   // does not spend a slot. Only a pure browse has a stable order, so only it
+   // honours `offset`.
    const paged = request.pureSourceListing
       ? inScope.slice(request.offset)
       : inScope;
@@ -193,22 +160,13 @@ function runListing(
       return true;
    });
    /**
-    * Rows the cap actually spends from, which is the unit both sides of the
-    * truncation warning have to be counted in.
-    *
-    * A scoped source's own row never spends a slot, so it is EXCLUDED from
-    * both counts rather than subtracted from one. Subtracting assumed the
-    * row was there: scope to a source that does not exist and `capped` is
-    * empty, so `capped.length - 1` was -1, and the warning fired claiming
-    * "Returned -1 of 0 matching entities" on a result that lost nothing.
+    * Rows the cap spends from: the unit both sides of the truncation warning
+    * are counted in. A scoped source's own row is excluded from both counts,
+    * not subtracted from one, because it may not exist.
     */
    const spendable = (rows: typeof inScope) =>
       sourceName ? rows.filter((e) => e.kind !== "source").length : rows.length;
    const cappable = spendable(inScope);
-   // The overview is where an agent decides how to combine sources,
-   // so each one states its relationships here rather than making
-   // that a second call. toSourceResults carries the complete joins
-   // list onto every entry, so empty means none declared.
    const sources = toSourceResults(
       capped.map((e) => projectEntity(e, environmentName, packageName)),
       sourceContext,
@@ -218,22 +176,12 @@ function runListing(
       request.includeCode,
       droppedSources,
    );
-   // A listing is deterministic catalog order, not a ranking, and
-   // Publisher has no query-usage signal to fill the hosted API's
-   // `prominence` with, so it names the ordering and omits the
-   // score rather than inventing a number nobody should rank on.
-   // Both counts are in CARDS, the unit the payload is made of, so the
-   // drill-down counts its source ROWS rather than the whole scope (which
-   // also holds the entities nesting inside them; the entity cap is
-   // reported separately). One row per model path resolving the source, so
-   // a drill-down is N-of-N, not the 1-of-1 it was when a source could only
-   // report one path.
-   // next_offset is present only while sources remain past this page, and
-   // only on the browse, matching where `offset` is honoured.
+   // A listing is catalog order, not a ranking: it names the ordering and
+   // omits a score rather than inventing one. Both counts are in cards (one
+   // per model path resolving a source), the unit the payload is made of.
    const consumed = request.offset + sources.length;
-   // Counted as distinct pairings rather than as source rows, so it stays
-   // right if a drill-down ever reaches an entity whose own source row was
-   // filtered out: toSourceResults would still raise a card for it.
+   // Distinct (model path, source) pairings, so the count stays right even
+   // for an entity whose own source row was filtered out.
    const cardsInScope = sourceName
       ? new Set(
            inScope.map((e) => sourceContextKey(e.modelPath, e.source ?? "")),
@@ -247,17 +195,10 @@ function runListing(
          ? { next_offset: consumed }
          : {}),
    };
-   // An empty enumeration is ambiguous to an agent: "no data here" and
-   // "the package exposes nothing" look identical. The package DID
-   // load (a failed load throws out of getPackageIndex above), so an
-   // empty result means its models expose no sources: a curation gap
-   // (index.malloy's export {}), not an empty database. Say so, only in the
-   // empty case, so the populated payload stays byte-identical.
-   // `kinds` is empty only when EVERY target named a type this server does
-   // not index, and unsupportedTargetWarnings has already said so exactly.
-   // Adding the curation line there contradicts it and misdiagnoses a
-   // healthy package: a `dimensional_value` search against storefront
-   // reported that its seven sources were a curation gap.
+   // The package loaded (a failed load throws from getPackageIndex), so an
+   // empty listing is a curation gap, not an empty database; say so. Not when
+   // `kinds` is empty: then every target named an unindexed type and
+   // unsupportedTargetWarnings has already explained it.
    if (sources.length === 0 && !sourceName && request.kinds.size > 0) {
       return jsonResource(uri, {
          sources,
@@ -273,8 +214,6 @@ function runListing(
       ...listingEnvelope,
       ...skillsFor(ctx),
       ...warningsFor(
-         // A pure browse pages; every other listing shape is capped in
-         // entities and says so.
          request.pureSourceListing
             ? listingPageWarning(sources.length, inScope.length)
             : truncationWarning(spendable(capped), cappable),
@@ -282,28 +221,18 @@ function runListing(
    });
 }
 
-// The stages and retrievers runContextQuery runs; a new stage is one file and
-// one line here.
 const RETRIEVERS: readonly Retriever[] = [semanticRetriever, lexicalRetriever];
 // Source match is listed only for a request it applies to, so a trace shows
-// no row for it otherwise (refine and rerank report "skipped" when off; this
-// one has nothing to say unless it has work).
+// no row for it otherwise.
 const rankStages = (ctx: PipelineContext): RankStage[] =>
    sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
 const CARD_STAGES: readonly CardStage[] = [rerankStage];
 
 /**
- * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
- * resolved request, so a ranking decision and a request-parsing decision stay
- * separately reviewable. Retrieval runs over the package's model entities
- * (sources, views, dimension/measure fields, joins, named queries), semantic
- * when an embedding provider is configured and lexical (lunr/BM25) otherwise.
- * The entity index is built once per Package and cached (see getPackageIndex),
- * rebuilding automatically when the package reloads.
- *
- * There is no progressive-discovery tier here any more: the catalog is
- * `list_packages`, and every request that reaches this names one package,
- * because `scopes` requires it.
+ * Tier 3 (enumerate) and tier 4 (rank) over one package, driven by an already
+ * resolved request. Ranking is semantic when an embedding provider is
+ * configured and lexical (lunr/BM25) otherwise, over the package's cached
+ * entity index (see getPackageIndex).
  */
 async function runContextQuery(
    resolved: ResolvedRequest,
@@ -368,10 +297,8 @@ async function runContextQuery(
       meter: new LlmMeter(activeLlmSettings()?.maxCallsPerRequest ?? null),
    };
    const warningsFor = makeWarningsFor(ctx);
-   // Spread into a ranked payload. Without the request header it is {}, so
-   // the payload is the one every caller already gets. With
-   // PUBLISHER_MCP_TRACE=retrieval the same summary is also written to the
-   // server log, which no caller sees.
+   // Spread into a ranked payload; {} without the trace header. With
+   // PUBLISHER_MCP_TRACE=retrieval the summary also goes to the server log.
    const traceFields = () => {
       const logTrace = traceToLog();
       if (!traceSummary && !logTrace) return {};
@@ -401,19 +328,12 @@ async function runContextQuery(
    // Tier 3: nothing to rank -> enumerate what the targets name.
    if (request.listingOnly) return runListing(ctx, uri);
 
-   // Tier 4: retrieval over the package's entities. With an
-   // embedding provider configured, ranking is semantic (DuckDB
-   // cosine over cached entity embeddings) and ONLY semantic: when the
-   // index is still building the answer says so (`retrieval:
-   // "indexing"`, no results), and when it cannot serve the answer is
-   // an error that names the reason. A configured server never answers
-   // a search lexically, because a ranking that quietly differs from
-   // the one the finished index gives makes results hard to trust.
-   // Lexical lunr is the mode only when no provider is configured, and
-   // then the payload carries no `retrieval` marker and no per-entity
-   // `score`, byte-identical to the lexical-only releases.
-   // The LLM stage settings are read before retrieval because source match
-   // takes the source targets away from the retrievers.
+   // Tier 4. With an embedding provider configured, ranking is ONLY semantic:
+   // a still-building index answers "indexing" and an unusable one an error,
+   // never a lexical fallback that quietly ranks differently. Lexical is the
+   // mode only when no provider is configured.
+   // LLM stage settings are read before retrieval because source match takes
+   // the source targets away from the retrievers.
    try {
       ctx.llmStages = resolveLlmStages(pkgIndex.pkg, ctx.meter as LlmMeter);
    } catch (error) {
@@ -422,8 +342,7 @@ async function runContextQuery(
       }
       throw error;
    }
-   // Stored source summaries, read once for the response and the source match
-   // prompt. Only when the package has them on; none stored means no change.
+   // Read once, for both the response and the source match prompt.
    ctx.sourceSummaries = await loadStoredSummaries(
       environmentStore,
       pkgIndex,
@@ -466,14 +385,11 @@ async function runContextQuery(
       break;
    }
    if (!ranked) throw new Error("No retriever produced a result");
-   // The LLM stages run only on a ranked search (a listing returned above).
-   // A failure in one is the answer: an error result naming the stage, never
-   // an unrefined ranking.
+   // A failed LLM stage is the answer (an error naming the stage), never an
+   // unrefined ranking.
    let cards: CardState;
    try {
       ranked = await runRankStages(rankStages(ctx), ranked, ctx);
-      // Grouping into cards, paging and serialization are shared by both
-      // retrievers so the two cannot drift.
       cards = await runCardStages(CARD_STAGES, assembleCards(ranked, ctx), ctx);
    } catch (error) {
       if (error instanceof StageError) {
@@ -489,9 +405,8 @@ async function runContextQuery(
    // warning counts them as returned and only the budget warning speaks of them.
    const pageReturned = sources.length + budgetDropped;
    const budgetWarning = budgetCutWarning(budgetDropped, ctx.settings.maxChars);
-   // Cards rerank kept out of its top N are in total_available but not in the
-   // page's reach, so raising `limit` would not show them: they get their own
-   // warning and are left out of the page-cut one.
+   // Cards rerank kept out of its top N are beyond any page's reach, so they
+   // get their own warning and are left out of the page-cut one.
    const rerankDropped = cards.discarded ?? 0;
    const rerankWarning = rerankCutWarning(
       rerankDropped,
@@ -504,21 +419,14 @@ async function runContextQuery(
          total_available: totalSources,
          returned: sources.length,
          retrieval: "semantic",
-         // Always present on a semantic response, including 0: the
-         // reading depends on being able to tell 0 from absent. Paired
-         // with total_entities, without which the count is a bare number
-         // an agent cannot scale -- see SemanticSearchResult for why
-         // the ratio, not the count, carries the signal.
+         // Always present, including 0, and paired with total_entities: the
+         // ratio carries the signal (see SemanticSearchResult).
          below_cutoff_count: ranked.belowCutoffCount,
          ...(ranked.totalEntities !== undefined
             ? { total_entities: ranked.totalEntities }
             : {}),
          ...skillsFor(ctx),
-         // Each cut in its own unit: `limit` drops whole sources, the
-         // per-source cap drops entities inside the ones it kept.
          ...warningsFor(
-            // Counted in CARDS, the same unit `returned` reports, so the
-            // two cannot disagree.
             sourceCutWarning(pageReturned, totalSources - rerankDropped),
             rerankWarning,
             budgetWarning,
@@ -527,8 +435,7 @@ async function runContextQuery(
          ...traceFields(),
       });
    }
-   // Lexical, which is only reached with no embedding provider: no
-   // `retrieval` marker, so the payload is what it has always been.
+   // Lexical (no embedding provider): no `retrieval` marker.
    return jsonResource(uri, {
       sources,
       ranking: "relevance" as const,
@@ -546,13 +453,10 @@ async function runContextQuery(
 
 /**
  * The package's stored source summaries that still describe its sources, or
- * undefined when summaries are off for it (the package turned them off, or no
- * LLM is configured) or none is current. A summary is served only if its input
- * hash is the hash of the source as it is now: a reload that changed a source
- * leaves the old summary in the table until the next sync rewrites it, and a
- * request with only source targets does not wait for that sync. A read failure
- * is logged and answered without them: a summary only adds to a card, and the
- * sync, not this read, is where a failure is loud.
+ * undefined when summaries are off or none is current. A summary is served
+ * only if its input hash matches the source as it is now, since a reload
+ * leaves the old one stored until the next sync. A read failure is logged and
+ * answered without them: the sync, not this read, is where failure is loud.
  */
 async function loadStoredSummaries(
    environmentStore: EnvironmentStore,
@@ -603,10 +507,9 @@ function wantsTrace(extra: RequestExtra | undefined): boolean {
 }
 
 /**
- * `PUBLISHER_MCP_TRACE=retrieval` in the server's environment writes the same
- * summary to the server log, one line per ranked call, and adds nothing to any
- * response. The eval loop's `serve.py --trace-retrieval` sets it. It is read on
- * each call so a test can change it.
+ * `PUBLISHER_MCP_TRACE=retrieval` writes the trace summary to the server log,
+ * one line per ranked call, and adds nothing to any response. Read on each
+ * call so a test can change it.
  */
 export const TRACE_ENV = "PUBLISHER_MCP_TRACE";
 
@@ -625,11 +528,9 @@ export function registerGetContextTool(
       async (params: GetContextParams, extra?: RequestExtra) => {
          const request = resolveRequest(params);
          if (request.offset > 0 && !request.pureSourceListing) {
-            // Refused rather than ignored. A ranked response has no
-            // reproducible order to resume from, so honouring the offset
-            // would drop rows the caller could never get back, and dropping
-            // the offset silently would hand them page 1 while they believed
-            // they were reading page 2.
+            // Refused rather than ignored: a ranked response has no
+            // reproducible order to resume from, and silently ignoring the
+            // offset would hand back page 1 as if it were page 2.
             return contextError(
                buildMalloyUri(
                   {
@@ -639,12 +540,8 @@ export function registerGetContextTool(
                   "get-context",
                ),
                `${request.environmentName}/${request.packageName}`,
-               // InvalidArgumentError, not a bare Error. This is a caller
-               // mistake with a stated fix, and an unclassified throw lands on
-               // classifyToolError's internal-fault branch -- so a deliberate
-               // refusal came back as "An unexpected internal error occurred
-               // during getContext.: Invalid offset: ...", which reads as a
-               // server bug to report and invites the retry that cannot work.
+               // InvalidArgumentError, not a bare Error: an unclassified throw
+               // is reported by classifyToolError as an internal fault.
                new InvalidArgumentError(
                   "Invalid offset: paging works only on a pure source listing (every search_target of type `source`, none with search_text), which is the one response with a resumable order. Fix: drop `offset`, and narrow with search_text or scopes instead.",
                ),

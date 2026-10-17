@@ -2,18 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The shape of a get_context query after it has been resolved: stages that run
- * before retrieval, retrievers that rank, and stages that run after. This file
- * holds only these types and the two loops that run stages; the stages
- * themselves live in their own files, and runContextQuery in
- * get_context_tool.ts decides the order.
- *
- * Registered today: refine as a RankStage and rerank as a CardStage. Expected
- * to plug in later: query rephrase as a QueryStage and value attach as a
- * RankStage. Card stages run on assembled source cards before paging.
- *
- * The loops here are also the one place that times a stage and records what it
- * did (see StageTrace), so a stage never has to.
+ * The types of a resolved get_context query (stages before retrieval,
+ * retrievers, stages after) and the loops that run stages. The loops are the
+ * one place that times a stage and records a StageTrace. runContextQuery in
+ * get_context_tool.ts decides the order; see docs/get-context-pipeline.md.
  */
 
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -50,13 +42,11 @@ export interface PipelineSettings {
       perSourcePerTarget: number;
       /**
        * Rows kept per source, per search target, for the dotted rows the index
-       * keeps because assembly cannot rebuild them (a field of an inline-table
-       * or SQL join, a field a join adds to its target, a field of a target
-       * that is not indexed). They are windowed on their own, so they cannot
-       * take slots from the source's own fields: on a package whose joins are
-       * inline tables, one source can have hundreds of such rows scoring above
-       * its own `order_year_month`. Assembly's card cap grows by this many.
-       * Undefined: no separate window, the dotted rows share `perSourcePerTarget`.
+       * keeps because assembly cannot rebuild them (fields of inline-table or
+       * SQL joins, fields a join adds, fields of unindexed targets). Windowed
+       * separately so hundreds of them cannot take the source's own fields'
+       * slots; assembly's card cap grows by this many. Undefined: they share
+       * `perSourcePerTarget`.
        */
       joinedPerSourcePerTarget?: number;
    };
@@ -106,9 +96,8 @@ export interface PipelineContext {
    embeddingConfigured: boolean;
    settings: PipelineSettings;
    /**
-    * What the stages ran and how long each took, in order. Always collected;
-    * it reaches the caller only when the request carries the trace header.
-    * Optional so a test that builds a bare context needs neither.
+    * What the stages ran and how long each took. Always collected; reaches the
+    * caller only with the trace header.
     */
    trace?: StageTrace[];
    /** Counts the chat calls and tokens of this request; see LlmMeter. */
@@ -116,9 +105,8 @@ export interface PipelineContext {
    /** Refine and rerank settings, resolved once per request. Absent: no LLM is configured. */
    llmStages?: LlmStageSettings;
    /**
-    * Stored LLM source summaries by source name, read once per ranked request.
-    * Absent when summaries are off for the package or none is stored; then no
-    * card or prompt carries one.
+    * Stored LLM source summaries, read once per ranked request. Absent when
+    * summaries are off for the package or none is stored.
     */
    sourceSummaries?: ReadonlyMap<string, StoredSourceSummary>;
 }
@@ -163,10 +151,9 @@ export interface RetrievalResult {
 }
 
 /**
- * A retriever that cannot answer says why. `unconfigured` means "no embedding
- * provider": the caller ranks lexically, which is the server's mode and not a
- * fallback. Any other reason is a configured server that cannot answer a
- * search right now, and the caller reports it instead of answering lexically.
+ * A retriever that cannot answer says why. `unconfigured` (no embedding
+ * provider) means rank lexically; any other reason is reported instead of
+ * answering lexically.
  */
 export interface Unavailable {
    unavailable: RetrievalReason | "unconfigured";
@@ -218,9 +205,8 @@ export interface CardState extends Omit<RankedState, "rows"> {
     */
    discarded?: number;
    /**
-    * Set by rerank: each card's `relevance` is now the reranker's score, which
-    * no row carries, so shapeCards publishes the card's own instead of the
-    * best of its rows.
+    * Set by rerank: each card's `relevance` is the reranker's score, which no
+    * row carries, so shapeCards publishes the card's own.
     */
    reranked?: boolean;
 }

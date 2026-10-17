@@ -8,40 +8,20 @@
  * request pins the source (or a source search matched only it), and the source
  * match stage shows the summary to the model that picks sources.
  *
- * What is sent to the LLM for one source: its name, its `#(doc)` text (or
- * "No source docs."), and a list of its fields grouped as Dimensions, Measures,
- * Views and Joins, each as `name (type): doc`, with each joined source nested
- * under it with its own fields. Never code, and never an access predicate: the
- * doc text is `#(doc)`-only to begin with and is scrubbed again here.
+ * What is sent for one source: its name, `#(doc)` text, and its fields grouped
+ * by kind as `name (type): doc`, with joined sources nested. Never code, never
+ * an access predicate: doc text is `#(doc)`-only and scrubbed again here.
  *
- * The inputs are a pure function of the entity list the sync already has, so
- * the readiness fingerprint can include them (see sourceSummaryInputsDigest)
- * and a change to any field the model would see moves a package back to
- * `indexing` until the summary is rewritten.
+ * Inputs are a pure function of the entity list, so the readiness fingerprint
+ * includes them (see sourceSummaryInputsDigest). A source is identified by file
+ * and name. A stored summary is reused only while its input hash (message,
+ * prompt, model) matches; after a sync, a row that no longer matches is deleted
+ * rather than served, and between a reload and the next sync a request serves
+ * only matching rows (see loadSourceSummaries).
  *
- * A source is identified by the file that defines it and its name: two model
- * files can each define `orders`, and each gets its own summary, its own row
- * and its own nested joins. A join names the file of its target, so it expands
- * the right one; a join with no file recorded expands only when exactly one
- * source has that name.
- *
- * A stored summary is reused only while its input hash still matches. The hash
- * covers the exact user message (source, docs, field list), the prompt text and
- * the model, so editing a doc, a field, the prompt file or the model rewrites
- * exactly the sources it touches, and an unchanged source costs no LLM call on
- * a restart, a reload or a republish. After a sync every stored row matches
- * the current inputs: a row that no longer does (and could not be rewritten
- * because the per-sync call limit was reached) is deleted rather than served.
- * Between a reload and the next sync a row can be stale, so a request reads
- * them against the current inputs (see loadSourceSummaries) and serves only
- * the ones that still match.
- *
- * The message has a size. One field's `#(doc)` is cut to
- * SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS, and the whole message to
- * SOURCE_SUMMARY_MAX_PROMPT_CHARS by showing fewer joined sources, then fewer
- * fields, with a line that says what was left out. Without a bound, a package
- * with long docs sent a message past the model's context window, which the
- * vendor refuses with a 400 that no retry can change.
+ * The message is bounded (SOURCE_SUMMARY_MAX_PROMPT_CHARS) by showing fewer
+ * joined sources, then fewer fields, because a message past the model's context
+ * window gets a 400 no retry can fix.
  */
 
 import { createHash } from "crypto";
@@ -70,19 +50,11 @@ export const SOURCE_SUMMARY_MAX_JOINED_SOURCES = 20;
 export const SOURCE_SUMMARY_JOIN_DEPTH = 3;
 /** One field's (or the source's own) `#(doc)` is cut to this many characters. */
 export const SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS = 500;
-/**
- * The message sent for one source is cut to at most this many characters (about
- * 15,000 tokens). That fits the hosted models' context windows, which are far
- * larger, and does NOT fit a local model run at its default window.
- */
+/** The longest message for one source (about 15,000 tokens; fits hosted models). */
 export const SOURCE_SUMMARY_MAX_PROMPT_CHARS = 60_000;
 /**
- * The cap for a local model (Ollama). Its default context is 2,048 to 4,096
- * tokens and a prompt past it is cut silently, so the summary would be written
- * from a partial field list with no error. 6,000 characters is about 1,500
- * tokens: room for the instructions and the reply inside the smaller default.
- * A source with more fields than that shows fewer of them, with the line that
- * says what was left out.
+ * The cap for Ollama, whose default 2–4K-token context silently truncates a
+ * longer prompt; about 1,500 tokens, leaving room for instructions and reply.
  */
 export const SOURCE_SUMMARY_SMALL_CONTEXT_PROMPT_CHARS = 6_000;
 /** A summary longer than this is refused; the prompt asks for far less. */
@@ -143,9 +115,8 @@ type SummaryEntity = Pick<
 >;
 
 /**
- * The key a source's summary is stored and read under: its file and its name.
- * The same form as sourceContextKey in get_context_tool, so a card finds its
- * own summary.
+ * The key a source's summary is stored under: its file and its name. Same form
+ * as sourceContextKey in package_entities, so a card finds its own summary.
  */
 export function summaryKey(modelPath: string, source: string): string {
    return [modelPath, source].join(KEY_SEPARATOR);
@@ -172,10 +143,8 @@ type ResolveJoin = (join: SummaryEntity) => SourceFields | undefined;
 
 /**
  * `name (type): description`, leaving out the parts a field does not have. A
- * join names its target source only when that source is one the package
- * indexes (`resolve` finds it): a target that is not an entity is hidden or
- * denied, and its name must not reach the model through the join that points at
- * it. A field's description is cut to SOURCE_SUMMARY_MAX_FIELD_DOC_CHARS.
+ * join names its target only when `resolve` finds it: an unindexed target is
+ * hidden or denied, and its name must not reach the model through the join.
  */
 function fieldLine(e: SummaryEntity, resolve: ResolveJoin): string {
    const doc = clipDoc(
@@ -380,9 +349,7 @@ export interface SourceSummaryInput {
 
 /**
  * The sources that get a summary, with the message each is sent. A source with
- * no fields of its own (nothing to summarize) is skipped; a source the
- * discovery surface hides or an access rule locks never became an entity, so it
- * is not here either.
+ * no fields of its own is skipped.
  */
 export function buildSourceSummaryInputs(
    entities: readonly SummaryEntity[],
@@ -409,11 +376,9 @@ export function buildSourceSummaryInputs(
 }
 
 /**
- * The message for one source, at most `maxPromptChars` long. When
- * the full rendering is longer, fewer joined sources are shown (halving down to
- * none), then fewer fields (halving, never under 5), until it fits. The lines
- * that say what is not shown stay in, so the model does not take a part for the
- * whole.
+ * The message for one source, at most `maxPromptChars` long: halve the joined
+ * sources down to none, then the fields (never under 5), until it fits. The
+ * "not shown" lines stay in so the model does not take a part for the whole.
  */
 function boundedPrompt(
    name: string,
@@ -439,9 +404,7 @@ function boundedPrompt(
       } else if (limits.maxFields > 5) {
          limits.maxFields = Math.max(5, Math.floor(limits.maxFields / 2));
       } else {
-         // Five fields of at most 500 characters each cannot reach the
-         // default cap, so this is unreachable unless the constants change (a
-         // small-context cap can reach it). Cut hard rather than loop.
+         // Only reachable under a small-context cap. Cut hard rather than loop.
          return prompt.slice(0, maxPromptChars);
       }
    }
@@ -488,11 +451,9 @@ const hashesCache = new WeakMap<
 >();
 
 /**
- * The input hash a stored summary must carry to be current, by summaryKey, for
- * each source that gets one. What a request checks stored rows against, so it
- * must be cheap: for a frozen entity list (get_context's package index hands
- * over the same one every call) it is computed once per prompt and model and
- * reused.
+ * The input hash a stored summary must carry to be current, by summaryKey.
+ * Read per request, so for a frozen entity list (the package index's) it is
+ * cached per prompt and model.
  */
 export function currentSummaryHashes(
    entities: readonly SummaryEntity[],
@@ -536,13 +497,10 @@ export interface GeneratedSummary {
 }
 
 /**
- * Validate a reply: `{summary, one_line_summary}`. Every problem is named in
- * one message, which the provider layer shows the model for its single re-ask.
- * A source with no documentation gets exactly "The `<name>` source." as its
- * one-liner, so the model cannot invent a purpose the inputs do not state. The
- * validator writes that line itself and ignores what the model sent for it:
- * the line is fixed and known, so rejecting a miss would only spend a re-ask,
- * and a second miss would fail the whole sync and put the package in cooldown.
+ * Validate a reply: `{summary, one_line_summary}`, naming every problem in one
+ * message for the provider's single re-ask. An undocumented source's one-liner
+ * is fixed (undocumentedOneLine) so the model cannot invent a purpose; the
+ * validator writes it itself rather than spend a re-ask on a miss.
  */
 export function validateSourceSummary(source: string, hasDoc: boolean) {
    return (value: unknown): GeneratedSummary => {
@@ -703,15 +661,10 @@ export interface StoredSourceSummary {
 }
 
 /**
- * Every stored summary of a package, by {@link summaryKey}. Read once per
- * request; the table holds one small row per source. A source with no row is
- * simply absent, and the response then has no summary fields for it.
- *
- * With `current` (see currentSummaryHashes), a row is kept only when its input
- * hash is the current one. A reload that changed a source leaves its old
- * summary in the table until the next sync rewrites it, and a request that
- * skips the readiness gate (source targets only) would otherwise show it, and
- * send it to source match, as if it described the source now.
+ * Every stored summary of a package, by {@link summaryKey}. With `current`
+ * (see currentSummaryHashes), only rows whose input hash is current are kept:
+ * a reload leaves old rows until the next sync, and a request that skips the
+ * readiness gate would otherwise serve them as current.
  */
 export async function loadSourceSummaries(
    db: DuckDBConnection,
@@ -751,25 +704,20 @@ export interface SourceSummaryOutcome {
 }
 
 /**
- * Bring the stored summaries in line with the package: keep the ones whose
- * input hash still matches, delete the rest (and those of sources that left),
- * and write one new summary per remaining source, one call each,
- * `concurrency` calls at a time, each saved as it returns. The calls draw on
- * the sync's request budget (`maxCallsPerSync` HTTP requests, shared with the
- * keyphrase step, a JSON repair counting as a second request); sources the
- * budget does not reach are left without a summary and reported through
- * `progress.capped`. A call that fails after the provider layer's retries
- * stops the step with a {@link SourceSummaryStageError}: loud, never a silent
- * downgrade, and what was saved stays.
+ * Bring the stored summaries in line with the package: keep rows whose input
+ * hash matches, delete the rest, and write one new summary per remaining
+ * source, saved as each returns. Calls draw on the sync's shared request
+ * budget; sources it does not reach are reported through `progress.capped`. A
+ * failed call stops the step with a {@link SourceSummaryStageError} (loud,
+ * never a silent downgrade); what was saved stays.
  */
 export async function resolveSourceSummaries(args: {
    db: DuckDBConnection;
    environmentName: string;
    packageName: string;
    /**
-    * Every entity of the package, one per model file. Not deduplicated by
-    * (kind, source, name): two files can each define `orders`, and each gets
-    * its own summary read from its own fields and joins.
+    * Every entity of the package, one per model file; not deduplicated, since
+    * two files defining `orders` each get their own summary.
     */
    entities: readonly EmbeddableEntity[];
    settings: SourceSummarySettings;
@@ -874,9 +822,8 @@ export async function resolveSourceSummaries(args: {
          `${after}: ${publicMessage(failure)}`,
       );
    }
-   // What the budget did not reach. Published through onProgress too: the
-   // sync set the progress before this step started, so a `capped` set only
-   // here would never be seen.
+   // Published through onProgress: the sync captured progress before this
+   // step, so a `capped` set only here would never be seen.
    if (progress.done < progress.total && !args.shouldStop?.()) {
       progress.capped = true;
       onProgress?.({ ...progress });
