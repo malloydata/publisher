@@ -10,6 +10,7 @@ import {
    describe,
    expect,
    it,
+   spyOn,
 } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
@@ -654,6 +655,68 @@ describe("createEnvironmentConnections - DuckDB", () => {
          await expect(
             createEnvironmentConnections(connections, PROJECT_TEST_DIR),
          ).rejects.toThrow("username is required");
+      });
+
+      it("writes only the Snowflake fields that are set, role and schema included", async () => {
+         // The Snowflake extension is not available here, so its statements
+         // are recorded and answered; everything else runs for real.
+         const statements: string[] = [];
+         const original = DuckDBConnection.prototype.runSQL;
+         const runSQL = spyOn(
+            DuckDBConnection.prototype,
+            "runSQL",
+         ).mockImplementation(async function (
+            this: DuckDBConnection,
+            sql: string,
+            ...rest: unknown[]
+         ) {
+            if (/snowflake/i.test(sql)) {
+               statements.push(sql);
+               return { rows: [], totalRows: 0 };
+            }
+            return (original as (...a: unknown[]) => unknown).call(
+               this,
+               sql,
+               ...rest,
+            );
+         } as typeof original);
+         try {
+            await createEnvironmentConnections(
+               [
+                  {
+                     name: "sf_partial",
+                     type: "duckdb",
+                     duckdbConnection: {
+                        attachedDatabases: [
+                           {
+                              name: "sf_partial_db",
+                              type: "snowflake",
+                              snowflakeConnection: {
+                                 account: "acct",
+                                 username: "user",
+                                 password: "pw",
+                                 role: "ANALYST",
+                                 schema: "PUBLIC",
+                              },
+                           },
+                        ],
+                     },
+                  },
+               ] as ApiConnection[],
+               PROJECT_TEST_DIR,
+            );
+            const secret = statements.find((sql) =>
+               sql.includes("CREATE OR REPLACE SECRET"),
+            );
+            expect(secret).toBeDefined();
+            expect(secret).not.toContain("undefined");
+            expect(secret).not.toContain("DATABASE");
+            expect(secret).not.toContain("WAREHOUSE");
+            expect(secret).toContain("ROLE 'ANALYST'");
+            expect(secret).toContain("SCHEMA 'PUBLIC'");
+         } finally {
+            runSQL.mockRestore();
+         }
       });
 
       it("should throw on Postgres attach without connection config", async () => {

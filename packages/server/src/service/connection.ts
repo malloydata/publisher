@@ -538,14 +538,21 @@ async function attachSnowflake(
       password: escapeSQL(config.password || ""),
    };
 
-   const secretString = `CREATE OR REPLACE SECRET ${attachedDb.name}_secret (
-      TYPE snowflake,
-      ACCOUNT '${params.account}',
-      USER '${params.user}',
-      PASSWORD '${params.password}',
-      DATABASE '${params.database}',
-      WAREHOUSE '${params.warehouse}'
-   );`;
+   // Optional fields are emitted only when set: an absent one would otherwise
+   // interpolate the literal 'undefined', which Snowflake reads as a real
+   // database or warehouse name. ROLE and SCHEMA are carried so the attached
+   // database queries under the configured role, as the passthrough build does.
+   const secretLines = [
+      `      TYPE snowflake`,
+      `      ACCOUNT '${params.account}'`,
+      `      USER '${params.user}'`,
+      `      PASSWORD '${params.password}'`,
+      ...(params.database ? [`      DATABASE '${params.database}'`] : []),
+      ...(params.warehouse ? [`      WAREHOUSE '${params.warehouse}'`] : []),
+      ...(params.schema ? [`      SCHEMA '${params.schema}'`] : []),
+      ...(params.role ? [`      ROLE '${params.role}'`] : []),
+   ];
+   const secretString = `CREATE OR REPLACE SECRET ${attachedDb.name}_secret (\n${secretLines.join(",\n")}\n   );`;
 
    await connection.runSQL(secretString);
 
