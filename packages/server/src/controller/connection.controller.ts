@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { lazyCounter } from "../telemetry";
 import { Connection, RunSQLOptions, TableSourceDef } from "@malloydata/malloy";
 import { PersistSQLResults } from "@malloydata/malloy/connection";
 import { components } from "../api";
@@ -279,6 +280,49 @@ async function withDatabaseAccessClassified<T>(
       return await list();
    } catch (error) {
       throw databaseAccessFailure(error) ?? error;
+   }
+}
+
+const CONNECTION_TYPES = new Set<string>([
+   "postgres",
+   "bigquery",
+   "snowflake",
+   "trino",
+   "databricks",
+   "mysql",
+   "sqlserver",
+   "duckdb",
+   "motherduck",
+   "ducklake",
+   "publisher",
+]);
+
+const connectionOperations = lazyCounter(
+   "publisher_connection_operations_total",
+   "Connection create/update/delete/test requests. Labels: operation ('create'|'update'|'delete'|'test'), type (the connection type, 'unknown' when absent or unrecognised), outcome ('success'|'failed'|'refused'). 'failed' is a test that ran and could not connect; 'refused' threw (a 4xx or 5xx).",
+);
+
+/** Run a connection operation and count it once, however it ends. */
+async function metered<T>(
+   operation: "create" | "update" | "delete" | "test",
+   type: unknown,
+   run: () => Promise<T>,
+   outcomeOf: (result: T) => string = () => "success",
+): Promise<T> {
+   const label = {
+      operation,
+      type:
+         typeof type === "string" && CONNECTION_TYPES.has(type)
+            ? type
+            : "unknown",
+   };
+   try {
+      const result = await run();
+      connectionOperations().add(1, { ...label, outcome: outcomeOf(result) });
+      return result;
+   } catch (error) {
+      connectionOperations().add(1, { ...label, outcome: "refused" });
+      throw error;
    }
 }
 
@@ -1016,6 +1060,18 @@ export class ConnectionController {
    public async testConnectionConfiguration(
       input: ApiConnection & { config?: ApiConnection },
    ): Promise<ApiConnectionStatus> {
+      const config = input?.config ?? input;
+      return metered(
+         "test",
+         config?.type,
+         () => this.testConfiguration(input),
+         (status) => (status.status === "ok" ? "success" : "failed"),
+      );
+   }
+
+   private async testConfiguration(
+      input: ApiConnection & { config?: ApiConnection },
+   ): Promise<ApiConnectionStatus> {
       // Some clients wrap the payload as { config: <connection> }; unwrap.
       const connectionConfig: ApiConnection =
          input.config && typeof input.config === "object"
@@ -1083,6 +1139,20 @@ export class ConnectionController {
       connectionName: string,
       connectionConfig: ApiConnection,
    ): Promise<{ message: string }> {
+      return metered("create", connectionConfig?.type, () =>
+         this.createConnection(
+            environmentName,
+            connectionName,
+            connectionConfig,
+         ),
+      );
+   }
+
+   private async createConnection(
+      environmentName: string,
+      connectionName: string,
+      connectionConfig: ApiConnection,
+   ): Promise<{ message: string }> {
       if (!connectionConfig || typeof connectionConfig !== "object") {
          throw new BadRequestError("Connection configuration is required");
       }
@@ -1114,6 +1184,20 @@ export class ConnectionController {
       connectionName: string,
       connection: Partial<ApiConnection>,
    ): Promise<{ message: string }> {
+      return metered("update", connection?.type, () =>
+         this.applyConnectionUpdate(
+            environmentName,
+            connectionName,
+            connection,
+         ),
+      );
+   }
+
+   private async applyConnectionUpdate(
+      environmentName: string,
+      connectionName: string,
+      connection: Partial<ApiConnection>,
+   ): Promise<{ message: string }> {
       if (!connection || typeof connection !== "object") {
          throw new BadRequestError("Connection payload is required");
       }
@@ -1137,6 +1221,15 @@ export class ConnectionController {
    }
 
    public async deleteConnection(
+      environmentName: string,
+      connectionName: string,
+   ): Promise<{ message: string }> {
+      return metered("delete", undefined, () =>
+         this.removeConnection(environmentName, connectionName),
+      );
+   }
+
+   private async removeConnection(
       environmentName: string,
       connectionName: string,
    ): Promise<{ message: string }> {
