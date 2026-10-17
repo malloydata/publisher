@@ -23,8 +23,7 @@
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
-import { type Histogram } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import { lazyHistogram, resetInstrumentsForTesting } from "./telemetry";
 
 /**
  * Explicit bucket boundaries (ms) for the load-duration histograms. OTel's
@@ -76,40 +75,21 @@ export interface PackageLoadPhaseTimings {
    schemaFetchCount: number;
 }
 
-let compileDuration: Histogram | null = null;
-let schemaFetchDuration: Histogram | null = null;
-let schemaFetches: Histogram | null = null;
-
-function ensureInstruments(): void {
-   if (compileDuration && schemaFetchDuration && schemaFetches) return;
-   const meter = publisherMeter();
-   compileDuration ??= meter.createHistogram(
-      "malloy_package_load_compile_duration",
-      {
-         description:
-            "Per-load Malloy compile time (compile region minus proxied schema-fetch wait; a ceiling on compile CPU), including the build plan, render-tag results and pre-aggregation companions the worker prepares for the main thread. Label: status.",
-         unit: "ms",
-         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
-      },
-   );
-   schemaFetchDuration ??= meter.createHistogram(
-      "malloy_package_load_schema_fetch_duration",
-      {
-         description:
-            "Per-load wall-clock awaiting proxied connection schema fetches. Label: status.",
-         unit: "ms",
-         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
-      },
-   );
-   schemaFetches ??= meter.createHistogram(
-      "malloy_package_load_schema_fetches",
-      {
-         description:
-            "Per-load count of proxied connection schema fetches. Label: status.",
-         advice: { explicitBucketBoundaries: SCHEMA_FETCH_COUNT_BUCKETS },
-      },
-   );
-}
+const compileDuration = lazyHistogram(
+   "malloy_package_load_compile_duration",
+   "Per-load Malloy compile time (compile region minus proxied schema-fetch wait; a ceiling on compile CPU), including the build plan, render-tag results and pre-aggregation companions the worker prepares for the main thread. Label: status.",
+   { buckets: LOAD_DURATION_BUCKETS_MS },
+);
+const schemaFetchDuration = lazyHistogram(
+   "malloy_package_load_schema_fetch_duration",
+   "Per-load wall-clock awaiting proxied connection schema fetches. Label: status.",
+   { buckets: LOAD_DURATION_BUCKETS_MS },
+);
+const schemaFetches = lazyHistogram(
+   "malloy_package_load_schema_fetches",
+   "Per-load count of proxied connection schema fetches. Label: status.",
+   { unit: "", buckets: SCHEMA_FETCH_COUNT_BUCKETS },
+);
 
 /**
  * Record one load's phase breakdown. Call once the worker has returned timings,
@@ -121,11 +101,10 @@ export function recordPackageLoadPhases(
    timings: PackageLoadPhaseTimings,
    status: PackageLoadStatus,
 ): void {
-   ensureInstruments();
    const attrs = { status };
-   compileDuration?.record(timings.compileDurationMs, attrs);
-   schemaFetchDuration?.record(timings.schemaFetchDurationMs, attrs);
-   schemaFetches?.record(timings.schemaFetchCount, attrs);
+   compileDuration().record(timings.compileDurationMs, attrs);
+   schemaFetchDuration().record(timings.schemaFetchDurationMs, attrs);
+   schemaFetches().record(timings.schemaFetchCount, attrs);
 }
 
 /**
@@ -159,7 +138,11 @@ export type PackageLoadPhase =
    | "build_plan"
    | "total";
 
-let phaseDuration: Histogram | null = null;
+const phaseDuration = lazyHistogram(
+   "publisher_package_load_phase_duration_ms",
+   "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, total).",
+   { buckets: LOAD_DURATION_BUCKETS_MS },
+);
 
 /**
  * Record the stage durations of one load that succeeded. Labels: `phase` only,
@@ -170,18 +153,9 @@ let phaseDuration: Histogram | null = null;
 export function recordPackageLoadPhaseDurations(
    durations: Partial<Record<PackageLoadPhase, number>>,
 ): void {
-   phaseDuration ??= publisherMeter().createHistogram(
-      "publisher_package_load_phase_duration_ms",
-      {
-         description:
-            "Per-load wall-clock time of each stage of a successful package load, main-thread stages included. Label: phase (worker, hydrate, render_validation, discovery, lint, build_plan, total).",
-         unit: "ms",
-         advice: { explicitBucketBoundaries: LOAD_DURATION_BUCKETS_MS },
-      },
-   );
    for (const [phase, ms] of Object.entries(durations)) {
       if (ms === undefined) continue;
-      phaseDuration.record(ms, { phase });
+      phaseDuration().record(ms, { phase });
    }
 }
 
@@ -191,8 +165,5 @@ export function recordPackageLoadPhaseDurations(
  * from production code.
  */
 export function resetPackageLoadMetricsForTesting(): void {
-   compileDuration = null;
-   schemaFetchDuration = null;
-   schemaFetches = null;
-   phaseDuration = null;
+   resetInstrumentsForTesting();
 }
