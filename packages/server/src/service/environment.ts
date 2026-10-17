@@ -957,7 +957,6 @@ export class Environment {
          );
       } catch (error) {
          logger.error("Error listing packages", { error });
-         console.error(error);
          throw error;
       }
    }

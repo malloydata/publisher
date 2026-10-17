@@ -926,7 +926,6 @@ export class Package {
          );
       } catch (error) {
          logger.error(`Error loading package ${packageName}`, { error });
-         console.error(error);
          const endTime = performance.now();
          const executionTime = endTime - startTime;
          this.packageLoadHistogram.record(executionTime, {
