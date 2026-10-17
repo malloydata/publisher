@@ -8,7 +8,7 @@ import {
    compilePersistSources,
    duckdbTestConnections,
 } from "./incremental_test_harness";
-import { strictMissSourceId } from "./materialization_service";
+import { strictMissSourceId } from "./materialization_run_support";
 
 /**
  * Pins the compiler's strict manifest miss as the publisher reads it: the

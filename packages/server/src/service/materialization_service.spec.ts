@@ -35,21 +35,21 @@ import {
    makeInstruction,
    makeMaterialization,
 } from "./materialization_test_fixtures";
+import { MaterializationService } from "./materialization_service";
 import {
    manifestExcludingStorage,
-   MaterializationService,
    redactConnectionSecrets,
    stagingSuffix,
    upstreamReuseFromManifest,
    strictMissSourceId,
    manifestForCompiler,
-} from "./materialization_service";
+} from "./materialization_run_support";
 import { logger } from "../logger";
 import { resetMaterializationTelemetryForTesting } from "../materialization_metrics";
 import {
    isReclaimableStorageTable,
    tallySources,
-} from "./materialization_service";
+} from "./materialization_run_support";
 import {
    startMetricsHarness,
    type MetricsHarness,
