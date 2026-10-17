@@ -8,34 +8,21 @@ import { collectGivenRefs } from "./given";
  * Where a persist source's givens sit, and whether that lets the source be
  * materialized into a storage destination and served per caller.
  *
- * The rule the whole module turns on, established by probing Malloy's own
- * persistence rather than by reading it:
+ * The rule this module turns on (established by probing Malloy): a persist
+ * source's build SQL is the persisted relation ALONE. Its own `filterList`
+ * (extend-block `where:`) and `fields` (`dimension:` / `measure:` / `join:`)
+ * are NOT in it; they refine the relation when it is READ. A given there is
+ * never frozen into the artifact and is re-applied per caller at read.
  *
- *   A persist source's build SQL is the persisted relation ALONE. Its own
- *   `filterList` (the extend-block `where:`) and its own `fields` (the
- *   extend-block `dimension:` / `measure:` / `join:`) are NOT in it. They refine
- *   the relation when it is READ.
+ * A given ANYWHERE ELSE is substituted at build time with the declaration
+ * default, so every caller is served one caller's slice:
+ * {@link buildSubstitutesAGiven}, a hard refusal on both tiers.
  *
- * So a given in one of those positions is never frozen into the artifact: the
- * artifact holds every caller's rows, and the term is re-applied at read with
- * the caller's own value — which is what the colocated tier has always done
- * (substitution swaps only the `FROM`, leaving the reading query its own
- * `WHERE`) and what the storage tier's serve shape does once it re-emits the
- * refinement and declares the given.
- *
- * A given ANYWHERE ELSE is substituted while the build runs, at the only value
- * available then — the declaration default — so the artifact holds one caller's
- * slice and every other caller is served it. That is {@link buildSubstitutesAGiven},
- * and it is a hard refusal on both tiers.
- *
- * Between those two lies the reason this module classifies by POSITION rather
- * than answering yes/no: of the read-time positions, two are admitted — an
- * extend-block `where:`, and a join to a given-scoped source that is itself
- * materialized into storage (see {@link JoinedDynamicTerms}). The others are not
- * refused because they are unsafe — they are not in the build either — but
- * because the serve shape has nothing that re-binds the given per caller in that
- * position. Each gets its own reason so the refusal names the position rather
- * than the mechanism.
+ * Of the read-time positions only two are admitted: an extend-block `where:`,
+ * and a join to a given-scoped source itself materialized into storage
+ * ({@link JoinedDynamicTerms}). The others are not in the build either, but
+ * the serve shape has nothing that re-binds the given there. Each gets its own
+ * reason so the refusal names the position.
  */
 type DynamicTermRefusal =
    | "given_in_persisted_query"
@@ -45,39 +32,28 @@ type DynamicTermRefusal =
 
 /**
  * One extend-block `where:` conjunct that references a given: absent from the
- * build, re-applied at read. `code` is the author's verbatim expression text,
- * which is what the serve shape re-emits; `givens` are the names it reads,
- * which is what the serve shape must declare for that text to compile.
+ * build, re-applied at read. `code` is the verbatim text the serve shape
+ * re-emits; `givens` are the names the shape must declare for it to compile.
  */
 export interface DynamicTerm {
    code: string;
    givens: string[];
    /**
-    * The source's OWN columns this term constrains — single-segment field paths
-    * only. A term reaching through a join contributes nothing here, which is
-    * what makes an empty list meaningful: it says the term cannot be expressed
-    * as a predicate over the stored table's columns.
-    *
-    * Read by the incremental apply, which must scope a `merge_key=` match by the
-    * columns the stripped terms constrain. Not on the wire.
+    * The source's OWN columns this term constrains (single-segment paths). An
+    * empty list means the term cannot be expressed over the stored table's
+    * columns. Read by the incremental apply to scope a `merge_key=` match; not
+    * on the wire.
     */
    columns: string[];
 }
 
 /**
- * A join, declared on the persisted source, to a source that is itself scoped by
- * a given — admitted because the per-caller filtering rides the JOINED source's
- * own artifact rather than this one.
- *
- * The build never reads it (a persist source's `fields` are not in its build
- * SQL), so this artifact is unaffected. At read, the serve shape re-emits the
- * join only when `source` is itself bound, and that binding re-applies `terms`
- * with the caller's values — so a field reading through `alias` answers per
- * caller. When `source` is not bound the join cannot be re-emitted, so the
- * joining source is withheld from the shape with it and serves live.
- *
- * `alias` is dotted for a join reached through another admitted join
- * (`grant.team`), since the same rule holds one level further down.
+ * A join on the persisted source to a source itself scoped by a given, admitted
+ * because per-caller filtering rides the JOINED source's artifact. The serve
+ * shape re-emits the join only when `source` is bound, and that binding
+ * re-applies `terms` with the caller's values; when it is not bound the joining
+ * source is withheld and serves live. `alias` is dotted for a nested admitted
+ * join (`grant.team`).
  */
 interface JoinedDynamicTerms {
    alias: string;
@@ -102,10 +78,9 @@ function givenNames(node: unknown): string[] {
 }
 
 /**
- * Whether a slice of IR reads a given, by EITHER of Malloy's two signals — a
- * `{node:'given'}` reference node, or a non-empty `refSummary.givenUsage` /
- * bare `givenUsage` summary. Both, because a future compiler keeping only the
- * summary and pruning the reference leaves would otherwise read clean.
+ * Whether a slice of IR reads a given, by EITHER a `{node:'given'}` reference
+ * or a non-empty `givenUsage` summary, so a compiler that prunes one of the two
+ * signals cannot make a given read clean.
  */
 function readsAGiven(node: unknown, seen: WeakSet<object>, depth = 0): boolean {
    if (depth > MAX_WALK_DEPTH) {
@@ -132,25 +107,12 @@ function readsAGiven(node: unknown, seen: WeakSet<object>, depth = 0): boolean {
 /**
  * Whether the BUILD substitutes a given's value into the relation it writes.
  *
- * The compiler answers this directly for a query-shaped source: a query's
- * `givenUsage` is the transitive summary of the givens its pipeline actually
- * reads, so a non-empty one means a value was substituted while producing the
- * persisted relation. Verified against `getSQL()` — `where:` inside the
- * persisted query, a given in a `group_by`, and the INPUT source's own `where:`
- * all carry the predicate into the build SQL and all report through this
- * marker; the persist source's own extend-block `where:`, `dimension:`,
- * `measure:` and `join:` carry none of it and report empty.
- *
- * A source that is not query-shaped (`base extend { where: … }`) has no `query`
- * at all, and its build SQL is the base relation unfiltered — so the structural
- * fallback answers instead, over everything BUT the two read-time keys.
- *
- * Fails closed: unreadable IR is a refusal.
- *
- * Mirrors the check publisher #1185 adds for the colocated tier. When that
- * lands the two become one function; the storage tier needs the same question
- * answered, and for a sharper reason — on colocated the baked shape builds and
- * lies, on storage it cannot be re-applied at read at all.
+ * For a query-shaped source, the query's transitive `givenUsage` answers it
+ * (verified against `getSQL()`: givens inside the persisted query or the input
+ * source's `where:` report there; the persist source's own extend block does
+ * not). A non-query source (`base extend { where: … }`) builds the base
+ * unfiltered, so a structural walk over everything but the two read-time keys
+ * answers instead. Fails closed: unreadable IR is a refusal.
  */
 export function buildSubstitutesAGiven(persistSource: PersistSource): boolean {
    let def: unknown;
@@ -191,33 +153,19 @@ function defSubstitutesAGiven(def: unknown): boolean {
 }
 
 /**
- * Whether a given is bound into the relation as a source ARGUMENT.
+ * Whether a given is bound into the relation as a source ARGUMENT
+ * (`pp(x is $ORG_ID) -> { … }`). That bakes the default into the build SQL
+ * but binds at `structRef` construction, so the `givenUsage` marker reads empty.
  *
- * `pp(x is $ORG_ID) -> { … }` substitutes the given while constructing the
- * source the query reads, so the predicate lands in the build SQL — byte
- * identical to writing the given inside the query. It binds at `structRef`
- * construction rather than by being referenced, so the `givenUsage` marker
- * reads empty while the build bakes the default.
+ * Every `arguments` holder under the query is searched, not just the query's
+ * own: a given binding a JOINED source on the input sits under
+ * `structRef.fields` and the marker misses it too (measured), as does a chain
+ * of parameterized sources. The cost, accepted: a parameterized given-filtered
+ * join the query does NOT read is refused as well. Over-refusal loses a tier;
+ * under-refusal loses tenant isolation.
  *
- * Any `arguments` holder anywhere under the query is searched, not just the
- * query's own. That descent is load-bearing rather than defensive: a given
- * binding a JOINED source declared on the input sits under `structRef.fields`,
- * and the marker reads empty for it even when the query reads the join and the
- * build SQL carries the predicate. Checking only the query's own holders admits
- * that shape — measured. A chain of parameterized sources nests one inside the
- * next for the same reason.
- *
- * It has a cost, accepted deliberately: the same base with a parameterized
- * given-filtered join the query does NOT read is refused too, though nothing
- * reaches the build. That is the over-refusal the marker approach exists to
- * avoid, reappearing in the one place the marker cannot see. Refusing a source
- * that does not bake loses a tier; admitting one that does loses a tenant's
- * isolation, so the descent stays until a signal precise enough to tell the two
- * apart exists.
- *
- * A CONSTANT argument bakes too and is left alone: that is a concrete
- * instantiation with no per-caller binding, which is the shape
- * `parameter-eligibility` admits.
+ * A CONSTANT argument bakes too but has no per-caller binding, so it is left
+ * alone (the shape `parameter-eligibility` admits).
  */
 function argumentBindsAGiven(node: unknown, depth = 0): boolean {
    if (depth > MAX_WALK_DEPTH) {
@@ -240,21 +188,14 @@ function argumentBindsAGiven(node: unknown, depth = 0): boolean {
 }
 
 /**
- * Classify every given a persist source reads by the POSITION it sits in, and
- * return the extend-block `where:` terms that may be stripped from the build
- * and re-applied at read — or the first position that cannot be.
+ * Classify every given a persist source reads by POSITION, returning the
+ * extend-block `where:` terms that may be stripped from the build and
+ * re-applied at read, or the first position that cannot be.
  *
- * Order matters and is not arbitrary. The baked check runs FIRST, because a
- * baked given is the one position where the artifact is already wrong and no
- * serve-shape work could rescue it; reporting a projection instead would send
- * an author to the wrong line. Everything after it concerns read-time positions
- * that are merely not admitted yet.
- *
- * Fail-closed at the end: any given left over — one this pass could not place
- * in a position it knows — is refused. New IR that carries a given somewhere
- * unanticipated therefore reads as a refusal rather than as an admission, which
- * is the only safe direction for a gate whose failure mode is serving one
- * tenant's rows to another.
+ * The baked check runs FIRST: a baked given is the one position no serve shape
+ * can rescue, so reporting anything else would send the author to the wrong
+ * line. Fails closed: a given in a position this pass does not know is
+ * refused, since the failure mode is serving one tenant's rows to another.
  */
 export function classifyDynamicTerms(
    persistSource: PersistSource,
@@ -303,10 +244,8 @@ function classifyDef(def: unknown, depth: number): DynamicTermClassification {
 
       const terms = collectDynamicTerms(record.filterList);
 
-      // Fail-closed sweep. `filterList` and `fields` were just accounted for
-      // above, one position at a time; `query` was cleared by the baked check.
-      // A given anywhere ELSE is one this pass has no placement for, so it is
-      // refused rather than assumed harmless.
+      // Fail-closed sweep: `filterList` and `fields` were classified above and
+      // `query` cleared by the baked check; a given anywhere else is refused.
       const {
          filterList: _accounted,
          fields: _alsoAccounted,
@@ -344,31 +283,19 @@ function unreadable(err: unknown, cannotProve: string): FieldRefusal {
 }
 
 /**
- * The first field position carrying a given that is not admitted, or undefined
- * when every given the source's fields read sits somewhere the serve shape
- * reproduces per caller. Admitted given-scoped joins are appended to
- * `joinedTerms`.
+ * The first field position carrying a given that is not admitted, or undefined.
+ * Admitted given-scoped joins are appended to `joinedTerms`.
  *
- * None of these positions is baked into the artifact — a persist source's
- * `fields` are absent from its build SQL — so none is a leak at build time. What
- * decides admission is the SERVE shape: a re-emitted field binds the given per
- * caller only if the shape reproduces everything it reads.
+ * No field is in the build SQL, so admission is decided by the SERVE shape. A
+ * join to a given-scoped source is admitted: the shape re-emits it only when
+ * its target is bound (`extractJoins`), and the target's binding re-applies
+ * its own `where:`; otherwise queries through it serve live. See
+ * {@link joinedSourceRefusal}.
  *
- * A join to a given-scoped source is the one field position that does. The
- * shape re-emits a join only when its target is itself bound
- * (`extractJoins`), and the target's binding re-emits the target's own
- * `where:` — so the join reaches a per-caller-filtered table, which is what the
- * live query joins. When the target is not bound the join is not re-emitted,
- * and anything reading through it fails the shape compile and serves live. Both
- * halves need the target to be a source this gate would itself admit to a
- * storage destination, JOINED BY NAME; see {@link joinedSourceRefusal}.
- *
- * Still refused: a given in a join's `on:` (`dynamic_join`), which decides per
- * caller which rows join and is re-emitted by nothing that binds it; and a
- * dimension or measure that reads a given itself (`dynamic_projection`). A field
- * that reads a given only THROUGH an admitted join carries no given of its own
- * — Malloy's summaries do not propagate one across a join path — and is
- * re-emitted like any other field.
+ * Refused: a given in a join's `on:` (`dynamic_join`), which nothing re-binds
+ * per caller, and a dimension or measure reading a given itself
+ * (`dynamic_projection`). A field reading a given only THROUGH an admitted join
+ * carries none of its own (Malloy's summaries do not cross a join path).
  */
 function classifyFields(
    fields: unknown,
@@ -422,10 +349,9 @@ function classifyFields(
 }
 
 /**
- * The compiled keys a join field carries beyond the joined source's own
- * definition. Stripped before the target is classified, so what is classified is
- * the target as it would be persisted: the `on:` was checked separately, and the
- * join's `refSummary` summarises that condition and the target together.
+ * Keys a join field carries beyond the joined source's own definition, stripped
+ * so the target is classified as it would be persisted (the `on:` is checked
+ * separately, and `refSummary` covers the condition and target together).
  */
 const JOIN_ONLY_KEYS = [
    "join",
@@ -437,12 +363,8 @@ const JOIN_ONLY_KEYS = [
 
 /**
  * Whether a join to a given-scoped source can be admitted, and the terms its
- * target re-applies when it can.
- *
- * Three conditions, each closing a way the serve shape would otherwise fail to
- * reproduce the join. All three failing modes are fail-closed at serve time —
- * the join is not re-emitted and queries through it serve live — so they are
- * refused here to name the reason, not to prevent a leak:
+ * target re-applies when it can. Each failing condition is already fail-closed
+ * at serve time (the query serves live); it is refused here to name the reason:
  *
  * 1. Joined BY NAME. A join target with any refinement of its own
  *    (`g extend { … }`) is compiled as an anonymous source with no `sourceID`,
@@ -508,8 +430,7 @@ function joinedSourceRefusal(
 
 /**
  * How many admitted given-scoped joins may nest. Real grant chains are one or
- * two deep; the bound keeps a pathological model from recursing through every
- * joined definition it embeds.
+ * two deep; the bound stops a pathological model recursing without limit.
  */
 const MAX_JOIN_DEPTH = 4;
 
@@ -533,13 +454,10 @@ function declaresStorage(annotations: unknown): boolean {
 }
 
 /**
- * The `sourceID`s of the given-scoped sources a field list joins — the targets
- * {@link joinedSourceRefusal} admits, and the ones whose absence from a serve
- * shape leaves a join that cannot be reproduced. A join that could never be
- * re-emitted is reported as `undefined`: one to an inline refinement, which has
- * no `sourceID` and so nothing to bind, and one with a non-public access
- * modifier, which the serve shape never re-emits (`extractJoins`) while a
- * public field may still read through it.
+ * The `sourceID`s of the given-scoped sources a field list joins. A join that
+ * can never be re-emitted is `undefined`: an inline refinement (no `sourceID`)
+ * or a non-public join, which `extractJoins` never re-emits while a public
+ * field may still read through it.
  */
 export function givenScopedJoinTargets(
    fields: unknown,
@@ -562,37 +480,9 @@ export function givenScopedJoinTargets(
 }
 
 /**
- * The extend-block `where:` conjuncts that reference a given — the terms left
- * out of the build and re-applied at read.
- *
- * `filterList` entries are conjunctive and each is re-emitted as its own
- * `where:` line, so a term is classified whole: an `or`-composition or a range
- * is a dynamic term like any other, and re-applies whole.
- *
- * That holds for the READ, which is what this classification is for. It does not
- * hold for {@link DynamicTerm.columns}, which the merge scope reads: the columns
- * are collected from the term's field usage without regard to how they compose,
- * so `a = $X or b = $Y` contributes BOTH. A merge then matches on
- * `key AND a AND b`, which is narrower than the disjunction the author wrote —
- * the error direction is a row that fails to match its stored copy and is
- * inserted beside it, never a row belonging to another caller. Safe, and a
- * duplicate; see the incremental section of `docs/materialization.md`.
- *
- * A term whose given references cannot be read is still returned, with no
- * names. That is deliberate and safe: the term is re-emitted onto the serve
- * shape either way (the shape carries every `filterList` entry), so an
- * under-named term compiles against a shape missing its `given:` declaration
- * and the binding is WITHHELD. The failure is a fallback to live, not an
- * unfiltered read.
- */
-/**
  * The single-segment field paths a filter entry reads, from its `refSummary`.
- *
- * Single-segment ONLY, and the omission is the point: `["vis","user_id"]` is a
- * joined field, which is not a column of the stored table and so cannot scope a
- * merge over it. Dropping it leaves the term with fewer columns than it reads,
- * which a caller must treat as "cannot scope this" rather than as a smaller
- * scope — scoping by a subset of a term's columns would match rows the term
+ * Any joined path (`["vis","user_id"]`, not a stored column) yields `[]`:
+ * scoping a merge by a subset of a term's columns would match rows the term
  * excludes. See {@link DynamicTerm.columns}.
  */
 function localFieldNames(entry: unknown): string[] {
@@ -610,11 +500,7 @@ function localFieldNames(entry: unknown): string[] {
          path.length !== 1 ||
          typeof path[0] !== "string"
       ) {
-         // A reference this cannot express as a column of THIS source — a joined
-         // path. Reporting the term's OTHER columns would scope by a subset of
-         // what the term constrains, giving a match narrower than the bare key
-         // and still wider than the author's relation. An empty list is how a
-         // term says it cannot be scoped by at all.
+         // A joined path: report nothing rather than a subset of columns.
          return [];
       }
       names.add(path[0]);
@@ -623,21 +509,12 @@ function localFieldNames(entry: unknown): string[] {
 }
 
 /**
- * The source's own read-time dynamic terms, INDEPENDENT of whether the positional
- * classification admits the source.
- *
- * {@link classifyDynamicTerms} answers "may this source be materialized", and
- * returns no terms when the answer is no. That is the right shape for a gate and
- * the wrong shape for anything that has to be correct about a source the gate
- * did not refuse — and the two gates refuse different sets. The colocated gate
- * does not refuse the positional cases (`dynamic_projection`, `dynamic_join`,
- * `dynamic_joined_where`), so reading terms off the classification there yields
- * an empty scope for a source that is nonetheless caller-scoped, and an empty
- * scope silently means "no scoping needed".
- *
- * Callers that must not fail open — the incremental merge scope — read this
- * instead, so their correctness does not depend on which gate ran or on what it
- * happened to refuse for an unrelated reason.
+ * The source's own read-time dynamic terms, INDEPENDENT of whether
+ * {@link classifyDynamicTerms} admits it. That classification returns no terms
+ * on a refusal, and the colocated gate does not refuse the positional cases, so
+ * reading terms off it would yield an empty ("no scoping needed") scope for a
+ * caller-scoped source. Callers that must not fail open (the incremental merge
+ * scope) read this instead.
  */
 export function readTimeDynamicTerms(
    persistSource: PersistSource,
@@ -654,6 +531,19 @@ export function readTimeDynamicTerms(
    }
 }
 
+/**
+ * The extend-block `where:` conjuncts that reference a given, each classified
+ * whole (an `or` or range re-applies whole at read).
+ *
+ * {@link DynamicTerm.columns} ignores composition, so `a = $X or b = $Y`
+ * contributes BOTH; a merge on `key AND a AND b` is narrower than the author's
+ * disjunction. The error direction is a duplicate row, never another caller's
+ * row; see the incremental section of `docs/materialization.md`.
+ *
+ * A term whose given names cannot be read is still returned, with none. Safe:
+ * the shape re-emits every `filterList` entry, so the missing `given:`
+ * declaration fails its compile and the binding is withheld (serves live).
+ */
 function collectDynamicTerms(filterList: unknown): DynamicTerm[] {
    if (!Array.isArray(filterList)) return [];
    const terms: DynamicTerm[] = [];

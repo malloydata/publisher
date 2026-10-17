@@ -16,14 +16,9 @@ import {
 import { resolvePartitionColumns } from "./persist_partition";
 
 /**
- * What an eligible source carries into the build and the serve shape: the
- * extend-block `where:` terms the build leaves out and the read must put back,
- * and the columns the destination table is laid out by.
- *
- * Returned rather than re-derived because the two travel together and are
- * decided by the same pass: a term is only strippable because the gate proved
- * where it sits, and a partition column is only usable because the gate
- * resolved it against the relation that same build will write.
+ * What an eligible source carries into the build and the serve shape. Returned
+ * by the gate rather than re-derived, because each is only valid because the
+ * gate proved it: where a term sits, and that a partition column resolves.
  */
 interface PersistDynamicPlan {
    /** Terms absent from the build, re-applied per caller at read. */
@@ -33,72 +28,37 @@ interface PersistDynamicPlan {
 }
 
 /**
- * Compile-time eligibility gate for materializing a persist source into a
- * *storage* destination (a DuckDB/DuckLake tier table), as opposed to the
- * default colocated path (no `storage=`). This is a HARD REFUSE: an
- * ineligible source never builds an artifact.
+ * Compile-time HARD REFUSE gate for materializing a persist source into a
+ * *storage* destination (a DuckDB/DuckLake table). Such a table is built once
+ * and served frozen, losing per-query recomputation and per-tenant filtering,
+ * so a source is eligible only when its relation is fixed at build time:
  *
- * It exists because a `storage=<duckdb>` table is built once and served frozen
- * to every subsequent query. Two properties that hold for a live query — the
- * relation is recomputed per query, and per-tenant access filters bind at query
- * time — are lost the moment the relation is frozen. So a source is only
- * materializable when its relation is fully determined at build time:
+ *  1. **No unbound parameters.** A free parameter makes the source a template
+ *     with no single relation. Constant-bound parameters are fine.
+ *  2. **No given in a position the build bakes in.** A frozen given is one
+ *     tenant's slice served to every tenant. An extend-block `where:` term is
+ *     left out of the build and re-applied per caller, so it is stripped and
+ *     returned; any other position is refused (fail closed). See
+ *     {@link classifyDynamicTerms}. The stripped terms are a promise: the
+ *     serve shape must declare their givens and re-emit their text, or the
+ *     query must not route.
+ *  3. **No `#(authorize)` / `#(access_filter)` gate.** Both are evaluated per
+ *     request and the served shape carries neither, so the table would bypass
+ *     them. Fails closed.
  *
- *  1. **No unbound (free) parameters.** A source declaring an unbound parameter
- *     is a *template* instantiated per query — there is no single relation to
- *     freeze. Parameters bound to a constant are fine (the relation is fixed,
- *     and the bound value already distinguishes the content address).
- *  2. **Every given in a position the build would bake in.** Givens bind at the
- *     runtime/query layer and are the documented mechanism for row-level access
- *     control (RLAC), so a value frozen into the artifact is one tenant's slice
- *     served to every tenant. What decides this is WHERE the given sits, not
- *     that there is one: a term in the source's extend-block `where:` is left
- *     out of the build by Malloy and re-applied when the artifact is read, with
- *     the caller's own value, so it is stripped and recorded here rather than
- *     refused; a given anywhere else is substituted while the build runs, at the
- *     declaration default, and is refused naming its position. See
- *     {@link classifyDynamicTerms}. Fails closed: a given this pass cannot place
- *     is a refusal.
+ *     Join reach is PARTIAL: the deep walk finds a gate on a plainly-joined
+ *     source and under `annotations.inherits`, but NOT through an ANNOTATED
+ *     join, where Malloy replaces the target's annotations and only a
+ *     `sourceID` into `ModelDef.sourceRegistry` survives (measured:
+ *     `join_one: base_locked` refuses, the same join under a `# render_tag` is
+ *     eligible). No exposure today, since the serve path gates only the entry
+ *     point; do not treat this scan as proof joined-in gated data is safe to
+ *     freeze.
  *
- *     The stripped terms are the gate's OUTPUT, not just its finding. A source
- *     is admitted on the promise that every one of them is put back at read, so
- *     the serve shape has to declare their givens and re-emit their text; a
- *     routed query that could not do both must not route.
- *  3. **No gate on either route — a security refusal.** An `#(authorize)` lock
- *     and an `#(access_filter)` row filter are both evaluated per request. The served
- *     virtual shape of a materialized source carries no gate to evaluate, so a
- *     materialized authorize-gated source would be served to everyone,
- *     bypassing the gate. Fails closed on anything it cannot read.
- *
- *     Its join reach is PARTIAL, and the limit is worth knowing before relying on
- *     it. The scan is a blind deep walk for an authorize annotation anywhere in
- *     the compiled source def, so it does find a gate on a plainly-joined source
- *     and one filed under `annotations.inherits`. It does NOT find a gate on a
- *     source reached through an ANNOTATED join: Malloy replaces an annotated
- *     `join_*`'s target annotations outright, leaving no `inherits` and no
- *     authorize byte in the subtree, and the only surviving link is a
- *     `sourceID` into `ModelDef.sourceRegistry` — which this pass has no modelDef
- *     to resolve. Measured: `join_one: base_locked` refuses, the same join under
- *     a `# render_tag` is eligible.
- *
- *     No exposure follows from that today: the serve path does not gate joins
- *     either (a gate is evaluated at the entry point only), so a frozen table
- *     grants nothing a live query would not. The gap matters if the serve path
- *     ever starts tracing joins again, or if this scan is treated as the reason
- *     joined-in gated data is safe to freeze. It is not that reason yet.
- *
- * One further eligibility property from the design — the served source must
- * compile in DuckDB (portability) — is enforced at *build* time against the
- * captured table schema (see the DuckDB-compile gate in the build path), not
- * here: it needs the post-build authoritative schema this compile-time pass
- * does not have. This pass covers the properties determinable from the compiled
- * source alone (free parameters, given references, authorize gates), so it can
- * fail fast before any warehouse work.
- *
- * The gate reads the *compiled* source (only the compiled `ModelDef` sees
- * effective annotations, parameters, and given usage through `extend`/imports —
- * a raw-source scan would miss inherited declarations), so it must run after
- * compilation and before the build.
+ * DuckDB portability of the served source is checked at build time against
+ * the captured schema, not here. This must run after compilation (only the
+ * compiled `ModelDef` sees inherited annotations, parameters and givens) and
+ * before the build, so it fails fast before warehouse work.
  *
  * @param annotationFields the source's `#@ persist` key=value fields, which is
  *   where `partition=` is read from.
@@ -112,8 +72,7 @@ export function assertMaterializationEligible(
 ): PersistDynamicPlan {
    const sourceName = persistSource.name;
 
-   // Fail closed, like the given classification / referencesAuthorize below: an unreadable
-   // parameter surface is a refusal, not an assumed absence of free parameters.
+   // Fail closed: an unreadable parameter surface is a refusal.
    let unbound: string[];
    try {
       unbound = unboundParameterNames(persistSource);
@@ -144,12 +103,6 @@ export function assertMaterializationEligible(
       });
    }
 
-   // Where the given sits, not whether there is one. A term in the source's
-   // extend-block `where:` is absent from the build and re-applied when the
-   // artifact is read, with the caller's own value — so it is stripped and
-   // recorded rather than refused. Every other position is refused, naming
-   // itself. See {@link classifyDynamicTerms} for the split and what establishes
-   // it.
    const classified = classifyDynamicTerms(persistSource);
    if (!classified.ok) {
       recordEligibilityRefused(classified.reason);
@@ -183,9 +136,8 @@ export function assertMaterializationEligible(
       });
    }
 
-   // Last, because it is the only check here that is not about isolation: a
-   // `partition=` names a file layout, and a source that fails one of the
-   // refusals above has a problem worth reporting ahead of a mistyped column.
+   // Last: the only check not about isolation, so the refusals above are
+   // reported ahead of a mistyped column.
    const partition = resolvePartitionColumns(persistSource, annotationFields);
    if (!partition.ok) {
       recordEligibilityRefused(partition.reason);
@@ -201,83 +153,14 @@ export function assertMaterializationEligible(
 }
 
 /**
- * Compile-time eligibility gate for the COLOCATED persist path (a plain
- * `#@ persist` with no `storage=`, which builds a CTAS into the source's own
- * warehouse). Deliberately narrow: it checks ONLY the `#(authorize)` condition
- * from {@link assertMaterializationEligible}, reusing the same `referencesAuthorize`
- * walk rather than duplicating it, and does NOT apply that function's other
- * rules (the given classification, unbound parameters). Those other rules exist
- * because a *storage destination* — a separate DuckDB/DuckLake table — is read
- * through a re-declared serve shape that has to carry a stripped term back, and
- * cannot represent a free parameter at all; a colocated build has no such
- * constraint (it is still one relation per source, computed once, in the
- * source's own warehouse), so applying them here would refuse a large set of
- * packages that build and serve correctly today.
- *
- * Unlike the storage tier, a colocated artifact is NOT served frozen with
- * respect to the gate: the entry point's own `#(authorize)` is re-evaluated on
- * every query, grafted onto the SAME entry point (`Model.buildGraftedMaterializer`
- * / `resolveGraftTarget`) whether that entry point resolves to a live
- * recompute or a same-connection substitution of the materialized table.
- * Persistence changes only where the rows are read FROM, never whether the
- * row filter is appended — so a `gateOutcome` of `{classification: "row_level",
- * attributed: true}` (the entry point's gate is PROVEN to compile to a row
- * filter, and PROVEN to be the only gate reachable beneath the source — see
- * `isAuthorizeAttributedToEntryPoint`) is admitted: the served artifact grants
- * nothing a live query would not, and the only thing lost is freshness (a row
- * whose access decision changed is served under the OLD decision until the
- * next rebuild, since the build itself never evaluates the gate).
- *
- * Refused with no `gateOutcome`, or one classifying `rejected` or unattributed,
- * for the ORIGINAL reason: this pass alone (`referencesAuthorize`'s deep walk)
- * cannot tell whether the entry point's own gate is even expressible as a row
- * filter, or whether a second gate hides behind a join outside the entry
- * point's own identity chain — either way there is nothing here to prove the
- * artifact matches what a live query enforces, so it fails closed.
- *
- * This gate carries a SECOND job that its own justification above does not
- * mention, and narrowing it on the strength of that justification alone would
- * open a hole. Pre-aggregation (`#@ preaggregate`) synthesizes each rollup as a
- * colocated `#@ persist` over an import of the annotated base, and none of the
- * `preaggregation_*` modules has any authorize awareness of its own — so this
- * refusal is also the only thing standing between an `#(authorize)`-gated source
- * and the pre-aggregation tier. `referencesAuthorize` finds the gate through the
- * import → rename → `query_source` chain, which is why it holds. A rollup
- * GROUPS across the gated column by construction, so the column is not even
- * present to filter on afterwards — the relaxation above therefore never
- * applies to `origin === "preaggregate"`, regardless of `gateOutcome`; that
- * refusal stays unconditional. See `docs/materialization.md`, and the
- * rollup-shaped test in this module's spec.
- *
- * `origin` names the annotation the AUTHOR wrote, so the refusal can be
- * actionable for a source they never typed. A rollup's name is synthesized
- * (`orders__preagg__category__<hash>`) and appears nowhere in their model, and
- * telling them to "drop `#@ persist`" when what they wrote is `#@ preaggregate`
- * sends them looking for a line that does not exist. Callers pass
- * `"preaggregate"` when `CompiledBuildPlan.preaggregatePlans` has an entry for
- * the source — the same signal `build_plan.ts` reports as `origin`.
- *
- * Applies unconditionally: any colocated persist source whose gate is proven
- * `row_level` and attributed to the entry point is admitted.
- *
- * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
- *   annotation to remove, and the alternative of moving the gate to a source
- *   that is not materialized.
- */
-/**
  * Refuse a `merge_key=` whose match cannot be scoped to the caller's rows.
  *
- * The author chose `merge_key=` against the source as WRITTEN, filtered to one
- * caller. The artifact is the unfiltered relation, so that key is ambiguous over
- * it and an unscoped MERGE reaches — and overwrites — other callers' rows. The
- * apply closes this by folding the stripped terms' own columns into the match.
- *
- * It can only do that when every stripped term contributes a column of this
- * source. A term reaching through a join names no column of the stored table, and
- * scoping by the REMAINING terms would narrow the match without closing it, which
- * is the worst of the three outcomes: it looks scoped and is not. So the source is
- * refused instead, and the refusal is here rather than in the apply because a
- * publish is where an author can still act on it.
+ * The key was chosen against the source filtered to one caller, but the
+ * artifact holds every caller's rows, so an unscoped MERGE overwrites others'
+ * rows. The apply folds the stripped terms' columns into the match, which only
+ * works when every term names stored columns of this source; scoping by the
+ * remaining terms would look scoped and not be. Refused at publish, where the
+ * author can still act.
  */
 function assertMergeKeyScopeResolvable(
    persistSource: PersistSource,
@@ -286,11 +169,9 @@ function assertMergeKeyScopeResolvable(
    what: string,
 ): void {
    if (!annotationFields.merge_key?.trim()) return;
-   // Resolved against the STORED columns, not taken as written. A term names a
-   // field as the author wrote it, and an extend-block `dimension:` is read-time
-   // — so `where: computed_org = $ORG` names something the build never
-   // materializes. Unresolved, that column reaches the merge's `ON` and every
-   // refresh fails against a table with no such column.
+   // Resolved against the STORED columns: an extend-block `dimension:` is
+   // read-time, so a term over it names a column the table lacks and every
+   // refresh's MERGE `ON` would fail.
    const stored = new Set(
       deriveColumns(persistSource)
          .map((column) => column.name)
@@ -319,22 +200,53 @@ function assertMergeKeyScopeResolvable(
 }
 
 /**
- * Dialects whose connection cannot create a table, so a colocated build —
- * which CTASes into the source warehouse — has nowhere to write. Matches the
- * `canPersist: false` the connection's static attributes report
- * (`getStaticConnectionAttributes` in connection_config.ts); the two must
- * agree, since that attribute is what a client reads to know whether to
- * offer persistence. Refused at load so the author learns it from the
- * package's warnings rather than from a build that fails on its first DDL.
+ * Dialects whose connection cannot create a table, so a colocated CTAS has
+ * nowhere to write. Must agree with `canPersist: false` in
+ * `getStaticConnectionAttributes` (connection_config.ts), which clients read
+ * to decide whether to offer persistence. Refused at load so the author sees a
+ * package warning rather than a failed first DDL.
  *
- * A `storage=` source is not gated here: it reads from the source and writes
- * elsewhere, and the storage build's own passthrough check names the source
- * types it can read. A rollup passes through this gate before the storage
- * one whether or not it declares a destination, so the check reads the
- * annotation rather than trusting the tier the caller is on.
+ * A `storage=` source writes elsewhere and is not gated here. A rollup reaches
+ * this gate whatever its destination, so the check reads the annotation rather
+ * than the caller's tier.
  */
 export const READ_ONLY_DIALECTS: ReadonlySet<string> = new Set(["sqlserver"]);
 
+/**
+ * Compile-time eligibility gate for the COLOCATED persist path (`#@ persist`
+ * with no `storage=`, a CTAS into the source's own warehouse). Deliberately
+ * narrower than {@link assertMaterializationEligible}: the storage tier's
+ * free-parameter and positional-given rules exist because its serve shape must
+ * re-declare everything, and applying them here would refuse many packages
+ * that build and serve correctly.
+ *
+ * A colocated artifact is not served frozen with respect to the gate: the
+ * entry point's `#(authorize)` is grafted onto every query
+ * (`Model.buildGraftedMaterializer` / `resolveGraftTarget`) whether it reads
+ * live or the materialized table. So a `gateOutcome` of
+ * `{classification: "row_level", attributed: true}` (proven to be a row filter
+ * and the only gate beneath the source; see
+ * {@link isAuthorizeAttributedToEntryPoint}) is admitted, losing only
+ * freshness: a changed access decision applies from the next rebuild. Anything
+ * else with a gate fails closed, since this pass cannot prove the artifact
+ * matches what a live query enforces.
+ *
+ * This gate is also the ONLY authorize check on pre-aggregation: rollups are
+ * synthesized as colocated `#@ persist` sources and no `preaggregation_*`
+ * module is authorize-aware. A rollup groups across the gated column, so the
+ * relaxation never applies to `origin === "preaggregate"` (pinned by the
+ * rollup-shaped test in this module's spec). Do not narrow this gate without
+ * accounting for that.
+ *
+ * `origin` names the annotation the author wrote: a rollup's name is
+ * synthesized, so the refusal must point at `#@ preaggregate`, not
+ * `#@ persist`. Callers pass `"preaggregate"` when
+ * `CompiledBuildPlan.preaggregatePlans` has an entry for the source.
+ *
+ * @throws {MaterializationEligibilityError} (HTTP 422) naming the source, the
+ *   annotation to remove, and the alternative of moving the gate to a source
+ *   that is not materialized.
+ */
 export function assertColocatedPersistNotAuthorizeGated(
    persistSource: PersistSource,
    sourceName: string = persistSource.name,
@@ -364,12 +276,9 @@ export function assertColocatedPersistNotAuthorizeGated(
       });
    }
 
-   // `partition=` is meaningless without `storage=`, and this is the only gate
-   // that sees a source declaring one — `assertMaterializationEligible` runs
-   // only once a storage destination has resolved, so a colocated source
-   // carrying the key would otherwise reach a build that silently ignores it.
-   // A colocated build CTASes into the customer's own warehouse, where the
-   // table layout is that warehouse's DDL.
+   // `partition=` is meaningless without `storage=`. Only this gate sees a
+   // colocated source declaring it, which would otherwise reach a build that
+   // silently ignores it.
    const partition = resolvePartitionColumns(persistSource, annotationFields);
    if (!partition.ok) {
       recordEligibilityRefused(partition.reason);
@@ -386,34 +295,18 @@ export function assertColocatedPersistNotAuthorizeGated(
    }
 
    // A given INSIDE the persisted query is frozen at its default and served to
-   // every caller; one in the source's `filterList` is applied at read with the
-   // caller's value and is the documented form (docs/row-level-access.md). Only
-   // the first is refused, so the safe shape stays available.
-   //
-   // Givens only: a parameter cannot appear in a persisted source's own query
-   // pipeline at all — the compiler answers `'<name>' is not defined` — so there
-   // is no parameter equivalent of this shape to refuse here. (A parameter IS
-   // frozen when a source is DERIVED from a parameterized one, which is a
-   // different shape with its own gate.)
+   // every caller; one in the source's `filterList` is applied per caller at
+   // read and is the documented form (docs/row-level-access.md). Only the first
+   // is refused. No parameter equivalent exists: the compiler rejects a
+   // parameter in a persisted source's own query.
    if (buildSubstitutesAGiven(persistSource)) {
-      // A rollup refuses here today, but for a reason aimed at something else,
-      // and the advice that reason carries leads nowhere: it tells the author to
-      // move the given into the source's extend block, where for a rollup it
-      // ALREADY is. A rollup is `source -> { group_by; aggregate }`, so it is the
-      // rollup READING the source that applies the extend-block `where:` and
-      // bakes the value.
-      //
-      // Named separately because nothing else would hold this if the reason it
-      // currently rides on stopped applying. A rollup binding deliberately
-      // bypasses `serveBindingsWithRefinements` — its synthesized name resolves
-      // to nothing in the author's model — so a rollup gets no filter
-      // re-emission, no given declarations, and therefore no fail-closed shape
-      // compile either. If the rollup build ever learned to strip its base's
-      // read-time terms, which reads as an optimization rather than a security
-      // change, a rollup over a caller-scoped source would aggregate across every
-      // caller and serve that to all of them with nothing in the path to notice.
-      // An aggregate over other callers' rows is exactly what a rollup is good at
-      // computing.
+      // A rollup gets its own reason: the generic advice (move the given to the
+      // extend block) is where a rollup's given already is, since the rollup
+      // READING the source bakes it. And nothing else guards rollups: their
+      // bindings bypass `serveBindingsWithRefinements`, so there is no filter
+      // re-emission and no fail-closed shape compile. If the rollup build ever
+      // stripped its base's read-time terms, it would aggregate across every
+      // caller and serve that to all of them.
       if (origin === "preaggregate") {
          recordEligibilityRefused("preaggregate_over_dynamic_source");
          throw new MaterializationEligibilityError({
@@ -446,20 +339,11 @@ export function assertColocatedPersistNotAuthorizeGated(
       });
    }
 
-   // The colocated artifact is widened exactly as the storage one is — the build
-   // persists the query alone, so an extend-block `where:` is not in it — and
-   // incremental runs on colocated tables. Same hazard, same rule. The only
-   // difference is that some target warehouses refuse the ambiguous MERGE
-   // themselves (Postgres does; DuckDB does not), which is a property of the
-   // customer's warehouse rather than a guarantee we can offer.
-   //
-   // Read off the source's own filters rather than off the classification. The
-   // classification answers whether this source may be materialized and returns
-   // no terms when the answer is no — but the two gates refuse different sets,
-   // and this one deliberately admits the positional cases the storage gate
-   // refuses. Taking terms from it here would hand back an empty scope for a
-   // source that is caller-scoped, and an empty scope reads as "nothing to
-   // scope".
+   // The colocated artifact also omits extend-block `where:` terms, so the
+   // same merge hazard applies (some warehouses, e.g. Postgres, refuse the
+   // ambiguous MERGE themselves; DuckDB does not). Terms come from
+   // `readTimeDynamicTerms`, not the classification, which returns none for
+   // positional cases this gate admits.
    assertMergeKeyScopeResolvable(
       persistSource,
       readTimeDynamicTerms(persistSource),
@@ -482,11 +366,8 @@ export function assertColocatedPersistNotAuthorizeGated(
       return;
    }
 
-   // Reuses the "authorize" reason: this is still an authorize-gate refusal,
-   // just for a DIFFERENT underlying reason than the storage-destination
-   // case above -- this pass cannot prove the gate compiles to the entry
-   // point's own row filter, not that the served artifact carries no gate
-   // at all.
+   // Same "authorize" reason as the storage gate, different cause: this pass
+   // cannot prove the gate is the entry point's own row filter.
    recordEligibilityRefused("authorize");
    const gated =
       origin === "preaggregate"
@@ -495,13 +376,9 @@ export function assertColocatedPersistNotAuthorizeGated(
            `from a source it derives from)`
          : `it is protected by an #(authorize) gate (its own, a joined ` +
            `source's, or inherited from a source it derives from)`;
-   // The relaxation's common refusal is now the join/inherited case: the gate
-   // is ALREADY on a source that is not materialized (a joined-in or
-   // derivation-base source), so "move the gate to a source that is not
-   // materialized" is not just unhelpful there, it describes what is already
-   // true. The only fix for that shape is making the gate provably the entry
-   // point's OWN row filter (see `isAuthorizeAttributedToEntryPoint`) rather
-   // than relying on something reachable underneath it.
+   // For a joined or inherited gate, "move the gate to a source that is not
+   // materialized" is already true; the fix there is making the gate the entry
+   // point's OWN row filter (see `isAuthorizeAttributedToEntryPoint`).
    const remedy =
       origin === "preaggregate"
          ? `If the gate is on the rolled-up source itself, remove the ` +
@@ -527,11 +404,8 @@ export function assertColocatedPersistNotAuthorizeGated(
          ? ` A rollup also groups ACROSS the gated column, so it could not ` +
            `be row-filtered afterwards even in principle.`
          : "";
-   // A plain `#@ persist` gate that is row-level but not (yet) proven
-   // attributed reads the same as an unclassifiable one here: this function
-   // has no visibility into WHY `gateOutcome` didn't clear the bar (missing,
-   // rejected, or a join-only gate outside its identity chain), so the
-   // message stays generic rather than guessing.
+   // Generic message: this function cannot see WHY `gateOutcome` did not
+   // clear the bar (missing, rejected, or a join-only gate).
    throw new MaterializationEligibilityError({
       reason: "authorize",
       message:
@@ -544,16 +418,11 @@ export function assertColocatedPersistNotAuthorizeGated(
 }
 
 /**
- * Names of the source's parameters that are declared but not bound to a value.
- * A Malloy `Parameter` carries `value: ConstantExpr | null`; `null` is an
- * unbound (free) parameter — bound-to-constant parameters have a non-null value.
- *
- * Fail-closed like the given/authorize walks (the caller turns a throw into a
- * refusal): a parameter counts as unbound unless demonstrably bound, so a
- * compiler shift to `value: undefined` can't let a template through. A MISSING
- * `parameters` field is not an error — most sources declare none — so a renamed
- * or relocated field is the one drift this can't catch; the real-compiler
- * eligibility spec is what pins that shape.
+ * Names of the source's declared parameters with no bound value (`value` null).
+ * Fail-closed: a parameter is unbound unless demonstrably bound, and an
+ * unexpected shape throws (the caller refuses). A missing `parameters` field is
+ * normal, so a renamed field is the one drift this misses; the real-compiler
+ * eligibility spec pins that shape.
  */
 function unboundParameterNames(persistSource: PersistSource): string[] {
    const def = persistSource._sourceDef as unknown;
@@ -584,47 +453,32 @@ function unboundParameterNames(persistSource: PersistSource): string[] {
 }
 
 /** Max IR depth to walk; deep enough for real sources, a hang backstop. */
-const MAX_GIVEN_WALK_DEPTH = 200;
+const MAX_AUTHORIZE_WALK_DEPTH = 200;
 
 /**
- * Whether the compiled source (transitively) carries an `#(authorize)` gate —
- * on the source itself or on any source reachable through a join. Fail-closed:
- * walks the compiled source definition for annotation notes (`blockNotes` /
- * `notes`) whose text is an authorize annotation. A join embeds the joined
- * SourceDef (with its own blockNotes), so a gate reached through a PLAIN join is
- * found, as is one filed under `annotations.inherits`. An ANNOTATED join is the
- * hole — Malloy replaces the joined struct's annotations outright, so there is no
- * authorize byte left in the subtree to find and no `inherits` to follow; see the
- * join-reach note in this file's header. Any introspection or parse failure is
- * treated as "carries a gate" (fail closed).
+ * Whether the compiled source carries an `#(authorize)` gate anywhere beneath
+ * it, including through plain joins and `annotations.inherits` (not annotated
+ * joins; see {@link assertMaterializationEligible}). Any failure counts as a
+ * gate (fail closed).
  *
- * Deliberately separate from `Model.collectEntryPointGates`, and the two now
- * answer questions with different SHAPES, not just different return types. That
- * one collects the gates to EVALUATE for one request, and follows identity edges
- * only (own annotations, the `inherits`/registry chain, a query-source's
- * derivation base) — it does not trace joins, because a gate states who may query
- * the source it is declared on. This one asks whether ANY gate exists anywhere
- * beneath the source at build time — reaching further than the entry point,
- * because the output is a frozen table rather than a per-request evaluation. They
- * are not two spellings of one rule and should not be merged; see the join-reach
- * note in this file's header for what this one does and does not actually cover.
+ * Deliberately separate from `Model.collectEntryPointGates`, which collects the
+ * gates to EVALUATE per request along identity edges only. This asks whether
+ * ANY gate exists beneath the source, because the output is a frozen table.
+ * They are different rules and should not be merged.
  */
 function referencesAuthorize(persistSource: PersistSource): boolean {
    try {
       return walkForAuthorize(persistSource._sourceDef, new WeakSet(), 0);
    } catch {
-      // Fail closed: if we cannot prove the source is authorize-free, refuse it.
       return true;
    }
 }
 
 /**
- * True if an annotation note is an authorize gate — by Malloy's own routing, via
- * {@link parseAuthorizeAnnotation}. Sharing the parser's classification is what
- * keeps this refusal in step with enforcement: a spelling the query path gates on
- * but this one does not is a gated source that can be frozen into an artifact and
- * served to everyone. The block form `#|(authorize)` was exactly that gap while
- * the classification was a prefix regex.
+ * True if an annotation note is an authorize gate, via
+ * {@link parseAuthorizeAnnotation}. Must share the enforcement path's parser: a
+ * spelling enforcement gates on but this misses (e.g. the block form
+ * `#|(authorize)` under a prefix regex) would be frozen and served to everyone.
  */
 function isAuthorizeAnnotation(text: string): boolean {
    try {
@@ -640,7 +494,7 @@ function walkForAuthorize(
    seen: WeakSet<object>,
    depth: number,
 ): boolean {
-   if (depth > MAX_GIVEN_WALK_DEPTH) {
+   if (depth > MAX_AUTHORIZE_WALK_DEPTH) {
       throw new Error("authorize-usage walk exceeded max depth");
    }
    if (node === null || typeof node !== "object") return false;
@@ -656,10 +510,8 @@ function walkForAuthorize(
 
    const record = node as Record<string, unknown>;
 
-   // Annotation notes live under `blockNotes` or `notes` — both are per-item
-   // slots at the same level, keyed by the author's syntax rather than by scope
-   // (see `ownLevelNoteTexts`), so both have to be read. Each entry is either a
-   // bare string or a `{ text }` object.
+   // `blockNotes` and `notes` are both per-item slots, keyed by the author's
+   // syntax rather than scope, so both are read. Entries are strings or `{ text }`.
    for (const key of ["blockNotes", "notes"]) {
       const arr = record[key];
       if (!Array.isArray(arr)) continue;
@@ -683,26 +535,16 @@ function walkForAuthorize(
 }
 
 /**
- * Whether every `#(authorize)` note reachable (transitively, INCLUDING
- * joins) beneath the compiled source is also reachable WITHOUT crossing a
- * join. The no-joins walk here is a superset of, and believed to cover, what
- * `collectEntryPointGates` (`./gate_classification`) actually reaches by
- * following only identity edges (own annotations -> `ancestorGateExprs`'s
- * `extend` chain -> a query-source's derivation base -> its
- * `compositeResolvedSourceDef`) — the two are not proven equivalent, so a gap
- * (a note off every identity edge but still reachable without crossing a
- * join) is not ruled out, only unobserved. `false` means the deep walk found
- * a note reachable ONLY through a join: `referencesAuthorize`'s refusal is
- * real for it today, but a row-level CLASSIFICATION of the entry point's own
- * gate would say nothing about it, so a caller deciding whether to relax the
- * colocated-persist refusal must require this to be `true`, not just a
- * `row_level` classification.
+ * Whether every `#(authorize)` note beneath the compiled source (crossing
+ * joins) is also reachable WITHOUT crossing a join. `false` means some gate is
+ * reachable only through a join, which a row-level classification of the entry
+ * point's gate says nothing about, so relaxing the colocated refusal requires
+ * `true` as well as `row_level`.
  *
- * Object identity (matching `ownLevelNotes`'s convention, and
- * `findSourceByOwnAnnotationIdentity`'s in `./gate_classification`), not text
- * — two independently authored gates can share text.
- *
- * Fail-closed: any introspection failure is treated as unattributed.
+ * The no-joins walk is believed to cover what `collectEntryPointGates`
+ * (`./gate_classification`) reaches along identity edges, but the two are not
+ * proven equivalent. Notes are compared by object identity, not text (two
+ * gates can share text). Fails closed: any failure is unattributed.
  */
 export function isAuthorizeAttributedToEntryPoint(
    persistSource: PersistSource,
@@ -734,18 +576,10 @@ export function isAuthorizeAttributedToEntryPoint(
 }
 
 /**
- * Deep walk collecting authorize annotation NOTE objects (by identity)
- * rather than {@link walkForAuthorize}'s boolean — a caller needs to know
- * WHICH notes were found, not just whether any were. Its own recursion,
- * independent of `walkForAuthorize`'s (rather than a shared core), so that
- * function's early-return-on-first-match stays untouched by this
- * collect-everything walk.
- *
- * `crossJoins=false` stops at a join field — matched the same way malloy's
- * own `isJoined` does (`'join' in sd`), duck-typed here rather than fighting
- * `TypedDef`'s union to call the exported predicate on a generic IR node
- * (same spirit as `gate_classification.ts`'s own duck-typed casts).
- * `crossJoins=true` reduces to `walkForAuthorize`'s full reach.
+ * Deep walk collecting authorize NOTE objects (by identity), unlike
+ * {@link walkForAuthorize}'s early-returning boolean. `crossJoins=false` stops
+ * at a join field, detected like Malloy's `isJoined` (`'join' in sd`);
+ * `crossJoins=true` matches `walkForAuthorize`'s reach.
  */
 function walkForAuthorizeNotes(
    node: unknown,
@@ -754,7 +588,7 @@ function walkForAuthorizeNotes(
    found: Set<AnnotationNote>,
    crossJoins: boolean,
 ): void {
-   if (depth > MAX_GIVEN_WALK_DEPTH) {
+   if (depth > MAX_AUTHORIZE_WALK_DEPTH) {
       throw new Error("authorize-usage walk exceeded max depth");
    }
    if (node === null || typeof node !== "object") return;
@@ -783,11 +617,8 @@ function walkForAuthorizeNotes(
                    typeof (n as { text?: unknown }).text === "string"
                  ? (n as { text: string }).text
                  : undefined;
-         // Malloy's Note is always `{text, at}`, never a bare string, but Set
-         // identity is value equality for a string — two independently
-         // authored gates sharing text would collapse into one entry and
-         // could read as attributed for a join-only gate. Guard rather than
-         // rely on that never happening.
+         // Strings are excluded: Set membership is by value for a string, so
+         // two gates sharing text could make a join-only gate read attributed.
          if (
             text !== undefined &&
             isAuthorizeAnnotation(text) &&

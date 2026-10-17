@@ -37,36 +37,30 @@ import { fileURLToPath } from "url";
 import { redactPgSecrets } from "../pg_helpers";
 
 /**
- * What a build needs to know from the plan about stored tables, to tell which
- * of the sources a downstream reaches are stored and whether their tables are
- * at hand. Both are the PLAN's facts, not a definition's: `#@ persist` is
- * inherited and `extend` never changes the SQL, so a plain extension or a rename
- * of a persisted source is a persist source too and shares the base's table,
- * and nothing on a definition says which name wrote the annotation (the
- * compiler copies the base's notes onto an extension). A stored table is a
- * content address, and every name whose SQL hashes to it is that table —
- * which is what `aliasesBySourceName` records.
+ * What a build needs from the plan about stored tables: which reached sources
+ * are stored and whether their tables are at hand. These are the PLAN's facts,
+ * not a definition's: `#@ persist` is inherited and `extend` keeps the SQL, so
+ * an extension or rename shares the base's table, and a definition does not
+ * say which name wrote the annotation. Every name whose SQL hashes to one
+ * content address is that table (`aliasesBySourceName`).
  */
 export interface ChainedPlanFacts {
    /**
-    * Every persist source's `sourceID`, inheritors and renames included. By id,
-    * not name: a name is not unique across a package's models (two files may
-    * each declare `daily`), and the walk has each definition's id.
+    * Every persist source's `sourceID`, inheritors and renames included. By id
+    * because a name is not unique across a package's models.
     */
    persistSourceIds: ReadonlySet<string>;
    /** The names sharing one table, keyed by each of them (groupAliasesByName). */
    aliasesBySourceName: Record<string, string[]>;
    /**
-    * Each source's content address by `sourceID` — the key the publisher files
-    * its manifest entry under. Absent for a source whose SQL could not be
-    * rendered.
+    * Each source's content address (its manifest key) by `sourceID`. Absent
+    * when the source's SQL could not be rendered.
     */
    addressBySourceId: Record<string, string | undefined>;
    /**
     * Each source's key as the compiler computes it (`compilerBuildId`): the
-    * address without the `partition=` layout the publisher folds in. Equal to
-    * the address for an unpartitioned source; different for a partitioned one,
-    * whose entry the compiler can then find only under this key.
+    * address without the publisher's `partition=` layout, so it differs only
+    * for a partitioned source, whose entry the compiler finds only under it.
     */
    compilerKeyBySourceId: Record<string, string | undefined>;
 }
@@ -80,12 +74,10 @@ export const NO_PLAN_FACTS: ChainedPlanFacts = {
 };
 
 /**
- * The run's manifest as the compiler must see it: every entry under the
- * publisher's address, and a partitioned source's entry under the compiler's
- * own key as well, since `persistedTableFor` looks a table up by that key and
- * would otherwise inline — or, strictly, miss — a stored partitioned upstream.
- * Only for the compare and strict renders over the full manifest; the ledger
- * and the manifest entries themselves stay keyed by address.
+ * The run's manifest as the compiler must see it: a partitioned source's entry
+ * also under the compiler's own key, since `persistedTableFor` looks it up by
+ * that key and would otherwise inline (or strictly miss) the upstream. Only for
+ * the compare and strict renders; the ledger stays keyed by address.
  */
 export function manifestForCompiler(
    full: Manifest["buildManifest"],
@@ -116,43 +108,28 @@ export function manifestForCompiler(
 
 /**
  * How a build read the stored tables its source depends on, decided from the
- * same lookup the compiler made: `getSQL` substitutes a manifest entry for a
- * persist source when the manifest holds the source's content address, and
- * inlines the source's definition otherwise. So an upstream was read from its
- * table exactly when its address is in `substituted` — the manifest this
- * build's SQL was rendered with — whatever the entry was called or where it
- * came from (an entry handed over by reference carries no `sourceName`, and a
- * lookup by name would call that a recompute).
+ * compiler's own lookup: an upstream was read from its table exactly when its
+ * address is in `substituted` (the manifest the build SQL was rendered with),
+ * whatever the entry is called (a by-reference entry has no `sourceName`).
  *
- * `inManifestOnly` are upstreams the full manifest holds but `substituted` does
- * not: entries a `storage=` destination holds, which `manifestExcludingStorage`
- * drops because a warehouse build cannot read them. For a `storage=` build they
- * are the parents to stack on; for a colocated build they are recomputed.
- * `missing` are upstreams the build SQL reads that no manifest holds — neither
- * built in this run nor supplied by reference — which only a recompute can
- * supply. They come from the compiler, not the walk (`compilerMissing`, see
- * {@link compilerMissingUpstream}): the walk follows every declared join and
- * stops at a persist source's own definition, so it both over-reaches (a join
- * the query never reads) and under-reaches (a join declared on the stop
- * itself). What the SQL reads is the compiler's to say, and a walk stop that
- * no manifest holds and the compiler did not miss is one the SQL does not
- * read — not a recompute, and not a reason. A stop whose address is the
- * root's own (`rootAddress`) is the table being built, not an upstream: a
- * persisted extension shares its base's address, and building it runs the
- * defining query. An upstream with no address (its SQL could not be rendered)
- * is reported as recomputed and never refused on that account — a build that
- * truly cannot render it fails on its own.
+ * - `inManifestOnly`: upstreams held only by a `storage=` destination, which
+ *   `manifestExcludingStorage` drops. Parents to stack on for a `storage=`
+ *   build; recomputed for a colocated one.
+ * - `missing`: upstreams the SQL reads that no manifest holds, from the
+ *   compiler (`compilerMissing`, {@link compilerMissingUpstream}) rather than
+ *   the walk, which both over-reaches (joins the query never reads) and
+ *   under-reaches (joins declared on a stop itself). A walk stop no manifest
+ *   holds and the compiler did not miss is not read at all.
  *
- * `sqlInlinesStored` is the compiler's own reach, as a floor under the walk.
- * The walk stops at a persist source and follows only an extension's added
- * joins, so a join declared on the stored stop itself — `daily` carrying
- * `join_one: c is daily_counts`, with `daily_counts` in a `storage=` destination
- * — is reached by the compiler (it inlines `daily_counts` into the build SQL)
- * and not by the walk. Rendering the source's SQL with every stored entry
- * available and comparing it with the SQL this build runs says whether some
- * stored table was inlined, whatever the walk named; when it was, the answer
- * is `recomputed` even if every upstream the walk names was read from its
- * table. That is also what gates a `storage=` build's stack-on-parent attempt.
+ * A stop at `rootAddress` is the table being built (an extension shares its
+ * base's address), not an upstream. An upstream with no address is skipped;
+ * a build that truly reads it fails on its own render.
+ *
+ * `sqlInlinesStored` is a floor under the walk: it compares the build SQL with
+ * one rendered with every stored entry available, catching a join declared on
+ * a stored stop itself (`daily` with `join_one: c is daily_counts`, the latter
+ * in storage) that only the compiler reaches. When set, the answer is
+ * `recomputed`; it also gates a `storage=` build's stack-on-parent attempt.
  */
 export function upstreamReuseFromManifest(params: {
    reached: readonly { name: string; sourceID: string }[];
@@ -182,17 +159,13 @@ export function upstreamReuseFromManifest(params: {
    for (const { name, sourceID } of params.reached) {
       const address = params.addressBySourceId[sourceID];
       if (address !== undefined && address === params.rootAddress) continue;
-      // No address: its SQL could not be rendered, so if this build read it the
-      // build's own render would have failed first. Reached but unread; not an
-      // upstream to report on.
+      // No address: had this build read it, its own render would have failed.
       if (address === undefined) continue;
       upstreams++;
       if (address in params.substituted) continue;
       if (address in params.full) {
-         // Held by a storage destination and excluded from the warehouse
-         // manifest. Read by this SQL only if the compare says a stored table
-         // was inlined; otherwise it is a declared join the query never uses,
-         // and neither a recompute nor a reason.
+         // Storage-held, excluded from the warehouse manifest. Read only if the
+         // compare says a stored table was inlined; otherwise an unused join.
          if (!params.sqlInlinesStored) continue;
          inManifestOnly.push(name);
          if (params.tier === "colocated") {
@@ -206,8 +179,8 @@ export function upstreamReuseFromManifest(params: {
          }
          continue;
       }
-      // In no manifest and not missed by the compiler: a declared join the
-      // query never reads. Not in the SQL, so neither recomputed nor a reason.
+      // In no manifest and not missed by the compiler: a join the query never
+      // reads.
    }
    for (const { name } of params.compilerMissing) {
       missing.push(name);
@@ -216,10 +189,8 @@ export function upstreamReuseFromManifest(params: {
             `(neither built in this run nor supplied by reference)`,
       );
    }
-   // The compare says a stored table was inlined and no stop accounts for it:
-   // a stored-tier parent the walk did name is what a storage build stacks on,
-   // not a reason; one it did not name is a join on a stored stop's own
-   // definition, which only the compiler reached.
+   // A stored table was inlined and no walk stop accounts for it: a join on a
+   // stored stop's own definition, which only the compiler reached.
    if (
       params.sqlInlinesStored &&
       reasons.length === 0 &&
@@ -250,14 +221,11 @@ export function upstreamReuseFromManifest(params: {
 }
 
 /**
- * A compiler strict manifest miss, recognized by its `code` — the contract —
- * with the `sourceID` it names read from the message when the message has the
- * shape core writes today. The code alone makes it a miss; a message core has
- * reworded yields a miss of an unnamed source rather than no miss at all, so
- * strict still refuses and non-strict still recomputes (with a generic
- * reason) instead of the build failing on an error nobody classified. The
- * real-compiler spec pins the current wording; the id belongs on the error
- * object, which is asked of core in malloydata/malloy#3133.
+ * A compiler strict manifest miss, recognized by its `code` (the contract),
+ * with the `sourceID` parsed from the message when it has today's shape. A
+ * reworded message yields a miss of an unnamed source, not no miss. The
+ * real-compiler spec pins the wording; the id belongs on the error object
+ * (malloydata/malloy#3133).
  */
 export function strictMissSourceId(
    err: unknown,
@@ -274,14 +242,10 @@ export function strictMissSourceId(
 }
 
 /**
- * The persisted source this build's SQL reads that no manifest holds, as the
- * compiler sees it: the source rendered once more with the run's whole
- * manifest and `strict: true`, so the only miss possible is a persist source
- * neither built in this run nor supplied by reference that the SQL actually
- * reads. Declared joins the query never uses are not rendered and so not
- * missed; a join declared on a stored stop's own definition is. The compiler
- * stops at the first miss, so this names at most one source per build — the
- * refusal or the reason names it, and the next build names the next.
+ * The persisted source this build's SQL reads that no manifest holds, found by
+ * rendering with the run's whole manifest and `strict: true`, so only sources
+ * the SQL actually reads can miss. The compiler stops at the first miss, so
+ * this names at most one source per build.
  */
 export function compilerMissingUpstream(
    persistSource: PersistSource,
@@ -312,31 +276,15 @@ export function compilerMissingUpstream(
 /**
  * Derive {@link ChainedPlanFacts} from the compiled plan.
  *
- * This is the table→names map `Runtime.getBuildTargets()` returns as
- * `target.sources` (malloydata/malloy#3029), derived here from the deprecated
- * per-source plan with the publisher's own address recipe —
- * `computeSourceEntityId` is pinned equal to `target.buildId` by
- * `build_targets_address_equality.spec.ts`, so the groups are the same ones.
- * Not a call to `getBuildTargets` yet, for one reason: `mkBuildTargets` renders
- * every target's SQL while it plans, with no guard, so one persist source that
- * cannot render — a free parameter, a given, refused on its own path — fails the
- * call for the whole model, where this skips just that source. (The same eager
- * render is why the chained build's transient model stays on `getBuildPlan`:
- * its rebound parents are virtual sources, which cannot render without the
- * `virtualMap` that call cannot take. See `buildDownstreamIntoStorage`.)
- *
- * When the builder moves to `getBuildTargets`, this is the one place the
- * chained build reads plan facts from: per model, `runtime.getBuildTargets`
- * → every `target.sources` id into `persistSourceIds` and its `buildId` into
- * `addressBySourceId`, each target's names as one alias group. That move
- * likely wants a core change first — a planning mode that reports an
- * unrenderable source instead of throwing, and takes a `virtualMap` — or a
- * pre-filter of the sources the eligibility gate refused. It also retires
- * `compilerKeyBySourceId` and `manifestForCompiler`: `computeSourceEntityId`
- * folds a `partition=` layout into the address and the compiler's own table
- * lookup (`mkBuildID` of digest and SQL) does not, so the renders that hand
- * the compiler the full manifest carry a partitioned entry under both keys.
- * With `target.buildId` as the address there is one key.
+ * Equivalent to `Runtime.getBuildTargets()`'s `target.sources`
+ * (malloydata/malloy#3029); `computeSourceEntityId` is pinned equal to
+ * `target.buildId` by `build_targets_address_equality.spec.ts`. Not built on
+ * `getBuildTargets` because it renders every target's SQL unguarded, so one
+ * unrenderable source (free parameter, given) fails the whole model, where
+ * this skips just that source; nor can it take the `virtualMap` the chained
+ * build's rebound parents need (see `buildDownstreamIntoStorage`). Moving to
+ * it would retire `compilerKeyBySourceId` and `manifestForCompiler`, since
+ * `target.buildId` is a single key.
  */
 export function chainedPlanFacts(
    sources: Record<string, PersistSource>,
@@ -354,9 +302,8 @@ export function chainedPlanFacts(
             connectionDigests,
          );
       } catch {
-         // A source whose SQL cannot be rendered (an unbound parameter, a
-         // given) has no address to group by; the eligibility gate refuses it
-         // on its own path, and here it is a name with no table-mates.
+         // Unrenderable (unbound parameter, given): no address to group by.
+         // The eligibility gate refuses it on its own path.
       }
       planSources.push({ name: source.name, sourceEntityId });
       addressBySourceId[sourceID] = sourceEntityId;
@@ -379,17 +326,13 @@ export function readAuthorFile(url: string): string | undefined {
 }
 
 /**
- * The narrow environment surface the build path needs to materialize into a
- * `storage=` destination, and the environment root (to derive a plain-DuckDB
- * destination's file path). Kept minimal to avoid coupling the materialization
- * service to the full Environment type.
+ * The narrow environment surface the build path needs, plus the environment
+ * root (for a plain-DuckDB destination's file path).
  *
- * The two lookups are separate on purpose, and which one a call site uses is the
- * whole security property: `getApiConnection` resolves the SOURCE the data is
- * read from, a warehouse the package's own model already names, while
- * `getStorageDestination` resolves where the table is WRITTEN. They read
- * disjoint lists, so a `storage=` build can never be steered into a connection
- * by naming it — including one whose name matches a destination.
+ * The two lookups are separate on purpose, and that is the security property:
+ * `getApiConnection` resolves the SOURCE read from, `getStorageDestination`
+ * where the table is WRITTEN. They read disjoint lists, so a `storage=` build
+ * can never be steered into a connection by naming it.
  */
 export interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
@@ -398,9 +341,8 @@ export interface BuildEnvironment {
 }
 
 /**
- * What a build needs to tag the statements it issues: the package-level layer of
- * per-query metadata, and the run's own context. Assembled once per run — every
- * field is constant for the run, so a source only adds its own name.
+ * What a build needs to tag its statements: the package-level metadata layer
+ * and the run's context. Constant for the run; a source adds only its name.
  */
 export interface BuildQueryMetadata {
    packageMaterialization:
@@ -410,12 +352,9 @@ export interface BuildQueryMetadata {
 }
 
 /**
- * A connection's two metadata layers: the overridable default and the properties
- * the deployment enforces.
- *
- * Fails open — a build must not fail because a connection's config could not be
- * read for its tags — so an unreadable connection costs the layers, never the
- * statement.
+ * A connection's two metadata layers: the overridable default and the
+ * deployment-enforced properties. Fails open: an unreadable connection costs
+ * the tags, never the statement.
  */
 export function connectionMetadataLayers(
    environment: BuildEnvironment,
@@ -428,8 +367,7 @@ export function connectionMetadataLayers(
          enforced: connection?.queryMetadataEnforced ?? null,
       };
    } catch (error) {
-      // Diagnosable rather than silent: the layer this costs is the enforced
-      // one, and it is the only drop with no metric behind it.
+      // Logged because the lost enforced layer has no metric behind it.
       logger.debug("No query-metadata layers for connection", {
          connectionName,
          error,
@@ -447,8 +385,7 @@ export const STAGING_ID_LEN = 12;
 
 /** Staging suffix appended to a table name while it is being built. */
 export function stagingSuffix(sourceEntityId: string): string {
-   // Drop hyphens so the suffix stays a bare identifier fragment when the id
-   // becomes a UUID5 (a no-op for the current hex ids).
+   // Drop hyphens so a UUID-shaped id still yields a bare identifier fragment.
    return `_${sourceEntityId.replace(/-/g, "").substring(0, STAGING_ID_LEN)}`;
 }
 
@@ -462,16 +399,12 @@ export function selfAssignTableName(persistSource: PersistSource): string {
 }
 
 /**
- * The build manifest for a `storage=` build, with storage-materialized entries
- * removed. A storage build runs in the source warehouse (passthrough), so it
- * cannot reference an upstream that landed in a DuckDB/DuckLake store — dropping
- * those entries makes the compiler INLINE the upstream (non-strict) or raise a
- * clean strict-miss (strict), instead of emitting a cross-engine table
- * reference. colocated entries are kept — the warehouse build can
- * reference them, carrying forward the DIALECT-QUOTED table path the seed loop
- * already stamped (publisher #904's quoteSeedTablePath), so the downstream FROM
- * resolves a case-preserved upstream on a case-folding engine. Preserves the
- * manifest's `strict` flag.
+ * The build manifest for a `storage=` build, with storage-held entries removed.
+ * The build runs in the source warehouse, so dropping them makes the compiler
+ * INLINE the upstream (or strictly miss) instead of emitting a cross-engine
+ * reference. Colocated entries keep their dialect-quoted table path so the
+ * downstream FROM resolves a case-preserved table on a case-folding engine.
+ * Preserves `strict`.
  */
 export function manifestExcludingStorage(
    manifest: Manifest,
@@ -479,9 +412,7 @@ export function manifestExcludingStorage(
 ): Manifest["buildManifest"] {
    const reduced = new Manifest();
    reduced.strict = manifest.strict;
-   // The source manifest's entries are already dialect-quoted (#904); reuse that
-   // quoting rather than the raw physical name so the kept colocated references
-   // stay canonical for the downstream FROM.
+   // Reuse the already dialect-quoted names, not the raw physical names.
    const quoted = manifest.buildManifest.entries;
    for (const [id, entry] of Object.entries(builtEntries)) {
       if (!entry.storageDestinationName && quoted[id]) {
@@ -492,10 +423,9 @@ export function manifestExcludingStorage(
 }
 
 /**
- * The `storage=` destination a source DECLARES (external-tier intent), or
- * undefined. Independent of `PERSIST_STORAGE_MODE` — reflects author intent, so
- * the build can tell a `storage=` source apart from a plain colocated
- * `#@ persist` even when the tier is off.
+ * The `storage=` destination a source DECLARES, or undefined. Independent of
+ * `PERSIST_STORAGE_MODE`, so a `storage=` source is recognizable even when the
+ * tier is off.
  */
 export function declaredStorage(
    persistSource: PersistSource,
@@ -504,25 +434,10 @@ export function declaredStorage(
 }
 
 /**
- * The columns this source's table is laid out by, for a build that is about to
- * run.
- *
- * Re-resolved here rather than carried from the eligibility gate because the
- * gate and the build are far apart in this flow, and a value threaded through
- * that distance is one that can go stale. The resolution is pure over the source
- * and its annotation, so the two cannot disagree — but that is a contract, not a
- * coincidence, so a refusal reaching here THROWS. The gate has already refused
- * every shape this can refuse; arriving at a build means it did not, and
- * quietly building unpartitioned would turn a broken `partition=` into a table
- * whose layout silently differs from what the author declared.
- */
-/**
- * The author model's given surface, for the chained build's transient model.
- * `Model.givens` has collapsed inheritance through imports, so this is the
- * surface the author's own files compile against. A given whose type cannot
- * be rendered is dropped rather than guessed: text that reads it then fails
- * to compile and the build reports a shape it could not carry, where a
- * guessed type would compile a predicate that silently coerces.
+ * The author model's given surface (inheritance through imports already
+ * collapsed), for the chained build's transient model. A given whose type
+ * cannot be rendered is dropped, not guessed: text reading it then fails to
+ * compile, where a guessed type could compile a silently coercing predicate.
  */
 export function chainedBuildGivens(
    persistSource: PersistSource,
@@ -540,6 +455,13 @@ export function chainedBuildGivens(
    return out;
 }
 
+/**
+ * The columns this source's table is laid out by, for a build about to run.
+ * Re-resolved (pure over the source and its annotation) rather than threaded
+ * from the eligibility gate, so the two agree by contract. A refusal here
+ * THROWS: the gate should already have refused it, and building unpartitioned
+ * would silently diverge from what the author declared.
+ */
 export function partitionColumnsForBuild(
    persistSource: PersistSource,
 ): string[] {
@@ -560,22 +482,15 @@ export function partitionColumnsForBuild(
 }
 
 /**
- * Resolve a persist source's `#@ persist storage=<ref>` to the EFFECTIVE
- * destination connection name for a build, or undefined for the default
- * colocated path (the source materializes into its own warehouse). Read
- * publisher-side from the compiled annotation (the same `annotationFields` map
- * the plan echoes); the reference resolves generically against registered
- * connections. Absent `storage=` ⇒ undefined (colocated); any value names a
- * registered connection to materialize into. Any managed-tier alias is resolved
- * by the host upstream and set on the wire instruction's `destination` — it
- * never reaches this publisher-side generic resolution.
+ * The EFFECTIVE `storage=` destination name for a build, or undefined for the
+ * colocated path. Managed-tier aliases are resolved by the host and arrive on
+ * the wire instruction's `destination`, never here.
  *
- * When `PERSIST_STORAGE_MODE=off` this returns undefined regardless of the
- * annotation, so the feature is a runtime kill switch that never fails a
- * package (the ignored `storage=` is surfaced as a package warning, not an
- * error). Undefined here does NOT mean "build it colocated" for a source that
- * declared `storage=` — `deriveSelfInstructions` skips such a source entirely so
- * it serves live; see {@link declaredStorage}.
+ * `PERSIST_STORAGE_MODE=off` returns undefined regardless, a kill switch that
+ * never fails a package (the ignored `storage=` is a package warning).
+ * Undefined does NOT mean "build colocated" for a source that declared
+ * `storage=`: `deriveSelfInstructions` skips it so it serves live; see
+ * {@link declaredStorage}.
  */
 export function resolveStorageDestination(
    persistSource: PersistSource,
@@ -595,12 +510,9 @@ function collectSensitiveValues(
    seen: WeakSet<object> = new WeakSet(),
 ): void {
    if (value === null || typeof value !== "object") return;
-   // The callers pass a LIVE connection, not its config, so this walks driver
-   // and pool internals whose graph can contain a back-reference. Without this
-   // guard such a cycle recurses until the stack is exhausted, and the
-   // RangeError replaces the build error being redacted -- turning any failure
-   // on a cyclic connection into "Maximum call stack size exceeded". Mirrors the
-   // guard in redactSensitive.
+   // Callers pass a LIVE connection whose driver/pool graph can be cyclic;
+   // without this guard the stack overflow would replace the error being
+   // redacted. Mirrors the guard in redactSensitive.
    if (seen.has(value)) return;
    seen.add(value);
    if (Array.isArray(value)) {
@@ -617,25 +529,11 @@ function collectSensitiveValues(
 }
 
 /**
- * Redact the actual credential values (from the given connection configs) out
- * of an error message, then surface the message. This keeps a build error
- * legible — a "schema not found" or "table does not exist" tells the operator
- * exactly what to fix — while never leaking the passwords / secrets / service
- * account JSON / connection strings a federation or attach error can echo. Only
- * the concrete secret values are removed, not the message structure.
- */
-/**
  * How many sources a run built, failed on, and reused, counted from what the
- * build returned rather than from what it was asked to do.
- *
- * The instruction list is the wrong denominator because an instruction can be
- * skipped without building (no matching compiled source), so counting
- * instructions would report a skip as built.
- *
- * `failures` is the authority on what failed, and an entry mirroring a failure
- * (the `ManifestEntry.error` deprecation window) is excluded from every other
- * count -- otherwise one lost source reports as built, or as both reused and
- * failed where it was also seeded.
+ * build returned (an instruction can be skipped without building).
+ * `failures` is the authority on what failed; a legacy entry mirroring a
+ * failure (`ManifestEntry.error`) is excluded from the other counts so one
+ * lost source is not also reported as built or reused.
  */
 export function tallySources(
    entries: Record<string, ManifestEntry>,
@@ -654,8 +552,7 @@ export function tallySources(
 
 /**
  * The record a run keeps for a source the eligibility gate refused, in the
- * build plan's `RefusedSource` shape so the plan and the run report one refusal
- * identically.
+ * plan's `RefusedSource` shape so both report it identically.
  */
 export function refusalRecord(
    persistSource: PersistSource,
@@ -674,10 +571,8 @@ export function refusalRecord(
 }
 
 /**
- * The run-level refusal for a run whose every targeted source was refused, so
- * there is nothing to build. One refusal is rethrown as it was raised; several
- * are joined so the run names every source it could not build, not only the
- * first in plan order.
+ * The run-level refusal when every targeted source was refused. Several
+ * refusals are joined so the run names every source, not only the first.
  */
 export function allSourcesRefusedError(
    errors: MaterializationEligibilityError[],
@@ -692,22 +587,25 @@ export function allSourcesRefusedError(
    });
 }
 
+/**
+ * Redact the concrete credential values found in the given connections out of
+ * an error message, keeping the rest legible ("schema not found" still tells
+ * the operator what to fix) while never leaking passwords, secrets, service
+ * account JSON or connection strings a federation or attach error can echo.
+ */
 export function redactConnectionSecrets(
    message: string,
    ...connections: unknown[]
 ): string {
    const secrets = new Set<string>();
-   // One `seen` across every argument: the multi-connection sites hand in a
-   // source and a destination that share a subgraph, and walking it twice
-   // collects nothing new.
+   // One `seen` across arguments: a source and destination may share a subgraph.
    const seen = new WeakSet<object>();
    for (const c of connections) collectSensitiveValues(c, secrets, seen);
    let redacted = redactPgSecrets(message);
    for (const s of secrets) {
       redacted = redacted.split(s).join("***");
-      // A DuckDB error often echoes the offending SQL statement, in which a
-      // secret containing a single quote appears single-quote-escaped (`''`) —
-      // so the raw value won't match. Also redact the escaped form.
+      // A DuckDB error may echo the SQL, where a secret with a single quote
+      // appears escaped (`''`), so redact the escaped form too.
       const escaped = escapeSQL(s);
       if (escaped !== s) redacted = redacted.split(escaped).join("***");
    }
@@ -723,10 +621,8 @@ export function outcomeFor(
 }
 
 /**
- * Allowed status transitions. The build runs without an intermediate
- * plan-ready pause: PENDING advances straight to MANIFEST_ROWS_READY once the
- * tables are built, then to MANIFEST_FILE_READY. MANIFEST_FILE_READY, FAILED,
- * and CANCELLED are terminal.
+ * Allowed status transitions: PENDING → MANIFEST_ROWS_READY (tables built) →
+ * MANIFEST_FILE_READY. MANIFEST_FILE_READY, FAILED and CANCELLED are terminal.
  */
 export const VALID_TRANSITIONS: Record<
    MaterializationStatus,
@@ -740,13 +636,10 @@ export const VALID_TRANSITIONS: Record<
 };
 
 /**
- * The key a ledger entry and the instruction that builds its table must agree on.
- *
- * Three parts, because where a table LIVES is not implied by the connection whose
- * SQL computes it: a stored table is read from its warehouse and written to a
- * destination, and those are separate namespaces that may share a name. The parts
- * are NUL-delimited rather than concatenated for that reason — a connection named
- * `lake` and a destination named `lake` must not produce one key.
+ * The key a ledger entry and the instruction that builds its table must agree
+ * on. The connection and destination are separate namespaces that may share a
+ * name, so the parts are NUL-delimited: connection `lake` and destination
+ * `lake` must not produce one key.
  */
 export function tableKeyOf(
    connectionName: string,
@@ -761,20 +654,15 @@ export function tableKeyOf(
 }
 
 /**
- * Name the stored tables a failed run wrote and did not reclaim.
+ * Name the stored tables a failed run wrote and did not reclaim. Otherwise
+ * there is no record at all (no manifest committed, and the host's orphan
+ * sweep does not cover storage destinations; see
+ * {@link isReclaimableStorageTable}).
  *
- * Without this there is no record at all: the run committed no manifest, the
- * reclaim was never handed these entries, and the only trace a table was written
- * is its absence from everything. That matters more here than it would elsewhere,
- * because the host's orphan sweep does not cover a storage destination (see
- * {@link isReclaimableStorageTable}), so nothing downstream will notice either.
- *
- * Deliberately does NOT claim these are orphans. Two different outcomes report
- * `refresh: "full"` and the entry cannot separate them: a host-initiated rebuild
- * at a FRESH generational name, which nothing references and nothing will build
- * again, and a publisher-side seed fallback on the stable name a previous manifest
- * still binds, which is live and correct. So it reports what is certain — this run
- * wrote here and left it — and leaves the classification to whoever reads it.
+ * Deliberately does NOT call them orphans: `refresh: "full"` covers both a
+ * rebuild at a fresh generational name (unreferenced) and a seed fallback on
+ * the stable name a previous manifest still binds (live). It reports only what
+ * is certain.
  */
 export function reportRetainedStorageTables(
    retained: ManifestEntry[],
@@ -801,72 +689,34 @@ export function reportRetainedStorageTables(
 /**
  * Whether a manifest entry names a stored table a failed run may reclaim.
  *
- * An INCREMENTALLY REFRESHED source is never reclaimed, whatever this run did to
- * its table. Its physical name has to be stable across runs or its boundary never
- * matches, so that name is not a fresh generation nobody else knows about — a
- * prior manifest may bind it, and a refresh writes it in place either way: a delta
- * as DML, a re-seed as `CREATE OR REPLACE`. Dropping it because a LATER source in
- * the run failed takes the source off its stored table until some rebuild puts it
- * back, and it is the same harm whether the run advanced the table or rebuilt it
- * correctly. `entry.refresh` is present exactly for such a source, so its presence
- * is the test.
+ * An INCREMENTALLY REFRESHED source (`entry.refresh` present) is never
+ * reclaimed: its physical name is stable across runs, a prior manifest may bind
+ * it, and a refresh writes it in place. Dropping it because a later source
+ * failed would take the source off its table until a rebuild. A source with a
+ * stored upstream is retained on the same terms, because the host sees its
+ * `refresh="incremental"` and hands it a stable serving name too.
  *
- * A source whose upstream is itself stored is retained on the same terms, even though
- * it can never be advanced by a delta and so has no boundary of its own to protect.
- * Which name it is built at is the HOST's choice, and the host cannot see that this
- * source is chained: what it reads is `refresh="incremental"`, which this source
- * carries. So it is handed a stable serving name like any other incremental source,
- * and reclaiming that name would take the source off its table for the reason above.
- *
- * That makes this test conservative rather than exact, in one direction. An
- * incremental source's FIRST build, or one an operator forced, is written at a fresh
- * name that no manifest binds, and `entry.refresh` cannot tell that from a refresh in
- * place — so such a table is retained and leaks. What does separate them is the
- * per-instruction reseed a host sets for any build it gave a fresh name; that is a
- * host convention this code cannot check, which is why the entry alone does not
- * decide it.
- *
- * The premise the retain rests on — that a source declaring an incremental refresh is
- * built at the name it is already served from — is likewise the host's to keep. A host
- * that mints a generation per SOURCE rather than per content address breaks it wherever
- * two sources compile to one address, and a retained table may then be one that was
- * never serving.
- *
- * The cost is a leaked table, and it is worth being exact about who does NOT clean
- * it up. A build at a FRESH name whose run then failed is recorded by no manifest,
- * so this reclaim was the only thing that could have dropped it — and the host's
- * orphan sweep does not cover the gap: it enumerates a CONNECTION's catalog and
- * skips any row that names a storage destination, because a physical name carries
- * no destination and generation counting is per destination, so one string can name
- * a table in either place. Reclaiming a destination is tracked separately.
- *
- * Accepted anyway, because a stored destination already accumulates superseded
- * generations for that same reason, so this adds a case to a known leak rather
- * than a new class of one — and the alternative is dropping a table that is
- * serving. Not reclaiming costs storage; reclaiming costs a source its data until
- * something rebuilds it.
- *
- * The reclaim's own `stillReferenced` check does not cover any of this. It spares
- * a table that some READY manifest of the SAME package name serves, and a host
- * that version-qualifies its package names sees none of its own earlier manifests.
+ * Conservative in one direction: an incremental source's FIRST (or forced)
+ * build is at a fresh, unbound name that `entry.refresh` cannot distinguish,
+ * so it leaks. The host's orphan sweep does not catch it (it enumerates a
+ * connection's catalog and skips storage-destination rows), and the reclaim's
+ * `stillReferenced` check only sees READY manifests of the SAME package name.
+ * Accepted: a destination already accumulates superseded generations, and
+ * leaking costs storage while reclaiming a serving table costs data. The
+ * premise (an incremental source is built at the name it serves from) is the
+ * host's to keep; minting generations per source rather than per address
+ * breaks it.
  */
 export function isReclaimableStorageTable(entry: ManifestEntry): boolean {
    return !!entry.storageDestinationName && entry.refresh === undefined;
 }
 
 /**
- * The physical table an instruction writes, as a comparable key.
- *
- * The counterpart to `sourceEntityId`: the address says what a table CONTAINS,
- * this says which table it IS, and only this answers "have I written that
- * already". Encoded rather than concatenated because a physical name can contain
- * a space (see the `quoted-persist-name` scenarios), so a plain separator could
- * make two different coordinates read as one.
- *
- * Exact-match, and so blind in the same place its load-time sibling is: `Foo`,
- * `foo` and `"foo"` land in different slots here but in ONE table on a
- * case-folding engine. See the note on Package.persistenceCollisionWarnings —
- * neither guard is stricter than the other.
+ * The physical table an instruction writes, as a comparable key: which table it
+ * IS, where `sourceEntityId` says what it CONTAINS. JSON-encoded because a
+ * physical name can contain a space. Exact-match, so `Foo`, `foo` and `"foo"`
+ * are distinct here though one table on a case-folding engine (the same
+ * blind spot as Package.persistenceCollisionWarnings).
  */
 export function physicalTargetKey(
    instruction: BuildInstruction,
