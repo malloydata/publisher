@@ -22,7 +22,7 @@ import {
 } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
-import { mintCorrelationId } from "../../service/query_metadata";
+import { buildQueryMetadataInput } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 import { recordDeprecatedFilterUsage } from "../../filter_deprecation";
@@ -210,33 +210,13 @@ export function registerExecuteQueryTool(
             // builds it: MCP is a query boundary like any other, and a
             // connection's enforced properties describe the deployment rather
             // than the protocol a query arrived over.
-            const queryMetadataInput = {
-               environment: environmentName,
-               // Minted here because the envelope below returns it.
-               correlationId: mintCorrelationId(),
-               // The package owns its manifest, so the least-specific
-               // author-declared layer is read here; the model knows only its
-               // own file and its package's NAME.
-               packageDeclaration: pkg.getDeclaredQueryMetadata(),
-               // The environment owns the connection configs, so the default
-               // and enforced layers are read here rather than from the model.
-               connectionMetadata: (connectionName: string) => {
-                  try {
-                     const connection =
-                        environment.getApiConnection(connectionName);
-                     return {
-                        default: connection.queryMetadata,
-                        enforced: connection.queryMetadataEnforced,
-                     };
-                  } catch (error) {
-                     logger.debug(
-                        "[MCP Tool executeQuery] No query-metadata layers for connection",
-                        { connectionName, error },
-                     );
-                     return null;
-                  }
-               },
-            };
+            const queryMetadataInput = buildQueryMetadataInput({
+               environmentName,
+               environment,
+               pkg,
+               noLayersLogMessage:
+                  "[MCP Tool executeQuery] No query-metadata layers for connection",
+            });
             // The two call modes differ only in which arguments carry the
             // query; everything after the run is identical, so they share one
             // path rather than two copies that can drift.

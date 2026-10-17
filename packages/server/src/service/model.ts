@@ -211,7 +211,7 @@ import {
 } from "./caller_joins";
 import {
    mergeQueryMetadata,
-   type QueryClass,
+   type ModelQueryMetadataInput,
    type QueryMetadata,
 } from "./query_metadata";
 import {
@@ -328,39 +328,7 @@ function denyUnlessAdmitted(
    throw new AccessDeniedError(`Access denied for source "${label}".`);
 }
 
-/**
- * What a request boundary contributes to a model query's per-query metadata: the
- * caller's own properties and class, the environment the query runs in, and a
- * reader for the executing connection's default (the controller owns the
- * environment, so it supplies the lookup rather than the model reaching for it).
- */
-export interface ModelQueryMetadataInput {
-   request?: QueryMetadata;
-   queryClass?: QueryClass;
-   environment?: string;
-   version?: string;
-   /**
-    * The id this query is correlated by, minted by the boundary that returns it
-    * (see `mintCorrelationId`). Omitted by callers with no response field to
-    * carry it, which is why it is not minted here.
-    */
-   correlationId?: string;
-   /**
-    * The executing connection's two metadata layers: its overridable default and
-    * the properties the deployment enforces. Supplied by the controller, which
-    * owns the environment; the model only knows the connection by name.
-    */
-   connectionMetadata?: (connectionName: string) => {
-      default?: QueryMetadata | null;
-      enforced?: QueryMetadata | null;
-   } | null;
-   /**
-    * The package's declared bag — the least specific author-declared layer.
-    * Supplied by the controller, which owns the package; the model knows only
-    * its own file and its package's NAME.
-    */
-   packageDeclaration?: QueryMetadata | null;
-}
+export type { ModelQueryMetadataInput } from "./query_metadata";
 
 type ApiCompiledModel = components["schemas"]["CompiledModel"];
 type ApiNotebookCell = components["schemas"]["NotebookCell"];

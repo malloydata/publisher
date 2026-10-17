@@ -6,9 +6,8 @@ import { components } from "../api";
 import { getQueryTimeoutMs } from "../config";
 import { API_PREFIX } from "../constants";
 import { BadRequestError, ModelNotFoundError } from "../errors";
-import { logger } from "../logger";
 import {
-   mintCorrelationId,
+   buildQueryMetadataInput,
    parseQueryClass,
    parseSuppliedQueryMetadata,
    type QueryClass,
@@ -110,45 +109,19 @@ export class QueryController {
                   bypassFilters,
                   givens,
                   abortSignal,
-                  {
+                  buildQueryMetadataInput({
+                     environmentName,
+                     environment,
+                     pkg: p,
                      request: requestMetadata,
                      queryClass,
-                     environment: environmentName,
                      // Always undefined today: the route 501s any versionId
                      // before this runs. Wired so that lifting that rejection
                      // is the whole change.
                      version: metadata?.versionId,
-                     // Minted here because this is the boundary that returns
-                     // it; a path with nowhere to put it does not mint one.
-                     correlationId: mintCorrelationId(),
-                     // The package owns its manifest, so the least-specific
-                     // author-declared layer is read here; the model knows only
-                     // its own file and its package's NAME.
-                     packageDeclaration: p.getDeclaredQueryMetadata(),
-                     // The environment owns the connection configs, so the
-                     // default and enforced layers are read here rather than
-                     // from the model.
-                     connectionMetadata: (connectionName) => {
-                        try {
-                           const connection =
-                              environment.getApiConnection(connectionName);
-                           return {
-                              default: connection.queryMetadata,
-                              enforced: connection.queryMetadataEnforced,
-                           };
-                        } catch (error) {
-                           // Failing open is right — a tag must not fail a
-                           // query — but this is the one drop with no metric
-                           // behind it, and what it costs is the ENFORCED
-                           // layer. Log it so it is diagnosable.
-                           logger.debug(
-                              "No query-metadata layers for connection",
-                              { connectionName, error },
-                           );
-                           return null;
-                        }
-                     },
-                  },
+                     noLayersLogMessage:
+                        "No query-metadata layers for connection",
+                  }),
                   // Tell the model which shape this request sends, so exactly
                   // that one is serialized and measured. Sending `compactJson`
                   // while the model built and capped the full result was how a

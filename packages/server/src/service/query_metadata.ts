@@ -31,6 +31,7 @@
 import type { QueryMetadata } from "@malloydata/malloy";
 import * as crypto from "node:crypto";
 import { getQueryMetadataMode } from "../config";
+import { logger } from "../logger";
 import {
    recordQueryMetadataApplied,
    recordQueryMetadataDropped,
@@ -547,4 +548,94 @@ export function parseQueryClass(raw: unknown): QueryClass | undefined {
    throw new Error(
       `queryClass must be one of ${QUERY_CLASSES.join(" | ")} (got ${JSON.stringify(raw)})`,
    );
+}
+
+/**
+ * What a request boundary contributes to a model query's per-query metadata: the
+ * caller's own properties and class, the environment the query runs in, and a
+ * reader for the executing connection's default (the controller owns the
+ * environment, so it supplies the lookup rather than the model reaching for it).
+ */
+export interface ModelQueryMetadataInput {
+   request?: QueryMetadata;
+   queryClass?: QueryClass;
+   environment?: string;
+   version?: string;
+   /**
+    * The id this query is correlated by, minted by the boundary that returns it
+    * (see `mintCorrelationId`). Omitted by callers with no response field to
+    * carry it, which is why it is not minted here.
+    */
+   correlationId?: string;
+   /**
+    * The executing connection's two metadata layers: its overridable default and
+    * the properties the deployment enforces. Supplied by the controller, which
+    * owns the environment; the model only knows the connection by name.
+    */
+   connectionMetadata?: (connectionName: string) => {
+      default?: QueryMetadata | null;
+      enforced?: QueryMetadata | null;
+   } | null;
+   /**
+    * The package's declared bag — the least specific author-declared layer.
+    * Supplied by the controller, which owns the package; the model knows only
+    * its own file and its package's NAME.
+    */
+   packageDeclaration?: QueryMetadata | null;
+}
+
+/**
+ * The {@link ModelQueryMetadataInput} a query boundary (REST or MCP) hands the
+ * model: the caller's own bag and class, the environment, a fresh correlation
+ * id, the package's declared layer, and a reader for the executing
+ * connection's default and enforced layers. Built the same way at every
+ * boundary, because a connection's enforced properties describe the
+ * deployment rather than the protocol a query arrived over.
+ */
+export function buildQueryMetadataInput(args: {
+   environmentName: string;
+   environment: {
+      getApiConnection(connectionName: string): {
+         queryMetadata?: QueryMetadata;
+         queryMetadataEnforced?: QueryMetadata;
+      };
+   };
+   pkg: { getDeclaredQueryMetadata(): QueryMetadata | null };
+   request?: QueryMetadata;
+   queryClass?: QueryClass;
+   version?: string;
+   /** Debug message logged when a connection's layers cannot be read. */
+   noLayersLogMessage: string;
+}): ModelQueryMetadataInput {
+   const { environment } = args;
+   return {
+      request: args.request,
+      queryClass: args.queryClass,
+      environment: args.environmentName,
+      version: args.version,
+      // Minted here because the boundary calling this returns it; a path with
+      // nowhere to put it does not call this.
+      correlationId: mintCorrelationId(),
+      // The package owns its manifest, so the least-specific author-declared
+      // layer is read here; the model knows only its own file and its
+      // package's NAME.
+      packageDeclaration: args.pkg.getDeclaredQueryMetadata(),
+      // The environment owns the connection configs, so the default and
+      // enforced layers are read here rather than from the model.
+      connectionMetadata: (connectionName) => {
+         try {
+            const connection = environment.getApiConnection(connectionName);
+            return {
+               default: connection.queryMetadata,
+               enforced: connection.queryMetadataEnforced,
+            };
+         } catch (error) {
+            // Failing open is right — a tag must not fail a query — but this
+            // is the one drop with no metric behind it, and what it costs is
+            // the ENFORCED layer. Log it so it is diagnosable.
+            logger.debug(args.noLayersLogMessage, { connectionName, error });
+            return null;
+         }
+      },
+   };
 }
