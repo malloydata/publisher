@@ -26,10 +26,8 @@ import {
    type LoadPackageOutcome,
 } from "../package_load/package_load_pool";
 import type { LoadPackageRequest } from "../package_load/protocol";
-import { llmConfigured } from "../providers/active";
 import {
    DEFAULT_PACKAGE_RETRIEVAL,
-   assertRequiredStagesAvailable,
    type PackageRetrievalSettings,
 } from "./package_retrieval";
 import {
@@ -169,6 +167,12 @@ import { filterFreshManifest } from "./freshness";
 import { isQuotedIdentifierPath, quoteManifestTablePath } from "./quoting";
 import { Model, type OffSurfaceContext } from "./model";
 import { assertPersistNamesQuoted } from "./persist_annotation_validation";
+import {
+   applyLoadGates,
+   assertOutcomeStagesAvailable,
+   loadOutcomeOrThrow,
+   warnInvalidExplores,
+} from "./package_load_gates";
 
 type ApiDatabase = components["schemas"]["Database"];
 type ApiModel = components["schemas"]["Model"];
@@ -1319,8 +1323,8 @@ export class Package {
       // a wrapper so we can map pool-infrastructure failures (worker
       // crash, RPC timeout, pool shutting down) to a 503 without
       // accidentally re-mapping `readDatabases`'s own errors.
-      const workerOutcome = pool
-         .loadPackage({
+      const workerOutcome = loadOutcomeOrThrow(
+         pool.loadPackage({
             packagePath,
             packageName,
             environmentName,
@@ -1328,49 +1332,13 @@ export class Package {
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withPreaggregateCompanions: true,
-         })
-         .catch((err: unknown) => {
-            // Compile errors surface in-band via
-            // `LoadPackageOutcome.models[i].compilationError`; if the
-            // pool itself rejects, it's an infra-side failure
-            // (shutting down, worker spawn failed, worker crashed,
-            // RPC timeout) and the client should retry. Real Malloy
-            // compile errors deserialised by the pool still carry
-            // their MalloyError / ModelCompilationError identity, and an
-            // unusable publisher.json its PackageManifestError identity —
-            // let those bubble untouched so they keep their 4xx
-            // mapping in `errors.ts`.
-            const realError =
-               err instanceof Error
-                  ? err
-                  : new Error(
-                       `Package-load worker pool failure: ${String(err)}`,
-                    );
-            if (
-               realError instanceof MalloyError ||
-               realError instanceof ModelCompilationError ||
-               realError instanceof PackageManifestError
-            ) {
-               throw realError;
-            }
-            throw new ServiceUnavailableError(
-               `Package-load worker pool unavailable: ${realError.message}`,
-               // The worker's failure may be a refused filesystem access on
-               // the package's own files, which the error mapper reads from
-               // the cause; a bare 503 would read as "retry".
-               { cause: realError },
-            );
-         });
+         }),
+      );
       const [outcome, databases] = await Promise.all([
          workerOutcome,
          Package.readDatabases(packagePath, malloyConfig),
       ]);
-      // A stage the package requires (`enabled: true`) needs the operator's
-      // LLM; without one the package does not load.
-      assertRequiredStagesAvailable(
-         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
-         llmConfigured(),
-      );
+      assertOutcomeStagesAvailable(outcome);
       const workerDoneTime = performance.now();
       logger.info("Package load via worker pool completed", {
          packageName,
@@ -1563,107 +1531,7 @@ export class Package {
          );
       }
 
-      // Fail-safe at load: a bad explores entry doesn't fail the package
-      // (its models still load and listModels hides the unmatched entry — it
-      // never falls back to listing everything). Warn so the misconfig is
-      // visible; the publish path rejects it outright (see package.controller).
-      const invalidMsg = pkg.formatInvalidExplores();
-      if (invalidMsg) {
-         logger.warn(`Package ${packageName} has invalid explores`, {
-            packageName,
-            detail: invalidMsg,
-         });
-      }
-      // Same fail-safe split for the persistence-policy gate: an existing
-      // package whose manifest violates the scope/schedule/freshness rules
-      // still loads (warn), but a publish of it is rejected (see
-      // package.controller).
-      const invalidPolicy = pkg.formatInvalidPersistencePolicy();
-      if (invalidPolicy) {
-         logger.warn(
-            `Package ${packageName} has an invalid persistence policy`,
-            {
-               packageName,
-               detail: invalidPolicy,
-            },
-         );
-      }
-      // The incremental-refresh gate does NOT get that fail-safe split: an
-      // invalid `#@ persist` declaration fails the load, the way a model that
-      // does not compile fails it.
-      //
-      // Publish cannot be the only strict point, because a package can arrive
-      // without one: uploaded to a control plane's storage and loaded by a
-      // worker, it never passes through POST/PATCH /packages. Warning here left
-      // the rejection in a worker log while the author — the only person who can
-      // fix the declaration — saw a clean publish and a source that quietly
-      // rebuilt in full forever.
-      //
-      // BadRequestError, for the 400: a control plane resolves the status off
-      // the error and otherwise defaults to 424, which would describe an
-      // authoring error as a dependency failure. The message carries EVERY
-      // rejection, so two broken declarations take one republish to fix.
-      //
-      // The accepted cost: `refresh=` was inert metadata before these rules, so
-      // a package published earlier saying refresh="incremental" and nothing
-      // else now stops serving until it is fixed. That is the one rule with any
-      // legacy exposure (watermark= and merge_key= did not exist as keys), the
-      // feature is gated behind `##! experimental.persistence`, and a bare
-      // refresh="incremental" is an authoring error worth surfacing rather than
-      // carrying — so every rule keeps the same severity, with no special cases.
-      const invalidIncremental = pkg.formatInvalidIncrementalPolicy();
-      if (invalidIncremental) {
-         // Logged as well as thrown: the throw is what the author reads, the log
-         // is the operator's copy.
-         logger.error(
-            `Package ${packageName} has an invalid incremental refresh policy`,
-            {
-               packageName,
-               detail: invalidIncremental,
-            },
-         );
-         throw new BadRequestError(invalidIncremental);
-      }
-      // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
-      // given on formatInvalidPreaggregatePolicy: a declaration that cannot take
-      // effect is invisible in the answers, so warning here would leave the
-      // author believing they had a rollup.
-      //
-      // Except the access-modifier pair, which warns at publish and at load —
-      // see formatInvalidPreaggregatePolicy for why, and why warning is safe
-      // there when it would not be for the others.
-      const accessWarnings = pkg.preaggregateAccessWarnings();
-      if (accessWarnings.length > 0) {
-         logger.warn(
-            `Package ${packageName} pre-aggregates a field the source hides`,
-            {
-               packageName,
-               detail: accessWarnings.map((w) => w.message).join("\n"),
-            },
-         );
-      }
-      const invalidPreaggregate = pkg.formatInvalidPreaggregatePolicy();
-      if (invalidPreaggregate) {
-         logger.error(
-            `Package ${packageName} has an invalid pre-aggregation declaration`,
-            {
-               packageName,
-               detail: invalidPreaggregate,
-            },
-         );
-         throw new BadRequestError(invalidPreaggregate);
-      }
-      // Persist-target collisions are ALWAYS warn-only at load (never fail an
-      // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
-      // the flag only governs whether they REJECT a publish (see
-      // package.controller). Surface them so an operator can remediate.
-      const collisions = pkg.persistenceCollisionWarnings();
-      if (collisions.length > 0) {
-         logger.warn(`Package ${packageName} has persist-target collisions`, {
-            packageName,
-            detail: collisions.join("\n"),
-         });
-      }
+      applyLoadGates(pkg);
       // After the gates, so a package with a bad declaration is rejected rather
       // than having a companion compiled for it. At create time no manifest is
       // bound yet, so the companion routes to a rollup that recomputes from the
@@ -3154,10 +3022,8 @@ export class Package {
          manifestEntryCount: Object.keys(buildManifest).length,
       });
 
-      const pool = getPackageLoadPool();
-      let outcome;
-      try {
-         outcome = await pool.loadPackage({
+      const outcome = await loadOutcomeOrThrow(
+         getPackageLoadPool().loadPackage({
             packagePath: this.packagePath,
             packageName: this.packageName,
             environmentName: this.environmentName,
@@ -3165,30 +3031,11 @@ export class Package {
             defaultConnectionName: "duckdb",
             buildManifest,
             withPreaggregateCompanions: true,
-         });
-      } catch (err) {
-         const realError =
-            err instanceof Error
-               ? err
-               : new Error(`Package-load worker pool failure: ${String(err)}`);
-         if (
-            realError instanceof MalloyError ||
-            realError instanceof ModelCompilationError ||
-            realError instanceof PackageManifestError
-         ) {
-            throw realError;
-         }
-         throw new ServiceUnavailableError(
-            `Package-load worker pool unavailable: ${realError.message}`,
-            { cause: realError },
-         );
-      }
+         }),
+      );
 
       // Same check as create, before anything is swapped.
-      assertRequiredStagesAvailable(
-         outcome.packageMetadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL,
-         llmConfigured(),
-      );
+      assertOutcomeStagesAvailable(outcome);
 
       const { models: nextModels, renderTagWarnings } =
          await Package.hydrateWorkerModels(
@@ -3263,13 +3110,7 @@ export class Package {
       // Re-run the fail-safe warning against the refreshed model set: an edit
       // to publisher.json that introduces a bad entry should surface in the
       // logs on reload too, not only at initial load (loadViaWorker).
-      const invalidMsg = this.formatInvalidExplores();
-      if (invalidMsg) {
-         logger.warn(`Package ${this.packageName} has invalid explores`, {
-            packageName: this.packageName,
-            detail: invalidMsg,
-         });
-      }
+      warnInvalidExplores(this);
       this.logEmptyDiscoveryWarnings();
    }
 
