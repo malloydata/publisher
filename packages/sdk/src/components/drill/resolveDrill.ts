@@ -27,6 +27,7 @@ import {
    filterInnerType,
    isFilterType,
 } from "../given/filterValue";
+import type { DrillClause } from "./drillClauses";
 
 /**
  * The parsed-tag surface this module reads, structurally typed.
@@ -79,6 +80,14 @@ export interface DrillClickPayload {
     * this value" runs against is read from here.
     */
    context?: string;
+   /**
+    * Every dimension of the clicked row, enclosing rows included, as the
+    * renderer's `onDrill` reports them. Set by `RenderedResult` for a table
+    * cell; absent for a click the renderer reports no row for.
+    */
+   drillClauses?: readonly DrillClause[];
+   /** The query timezone, which a truncated timestamp in a clause is read in. */
+   timezone?: string;
 }
 
 /**
@@ -93,6 +102,10 @@ export interface DrillRowsRequest {
    label: string;
    /** {@link DrillClickPayload.context}, when the host set one. */
    context?: string;
+   /** {@link DrillClickPayload.drillClauses}: the whole row, not just `field`. */
+   drillClauses?: readonly DrillClause[];
+   /** {@link DrillClickPayload.timezone}. */
+   timezone?: string;
 }
 
 /** The literal `to=self`: filter the current view instead of leaving it. */
