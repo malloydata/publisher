@@ -9,11 +9,35 @@
  */
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { FixedConnectionMap, MalloyConfig } from "@malloydata/malloy";
+import {
+   FixedConnectionMap,
+   MalloyConfig,
+   type Connection,
+} from "@malloydata/malloy";
+import { afterAll, beforeAll } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import {
+   PackageLoadPool,
+   __setPackageLoadPoolForTests,
+} from "../package_load/package_load_pool";
+import { Model } from "../service/model";
 import { Package } from "../service/package";
+
+/**
+ * An in-memory DuckDB named `duckdb`, with `seedSql` (`;`-separated
+ * statements) already run on it. Only this process sees the seeded tables: a
+ * package-load worker opens its own DuckDB, so a package loaded through the
+ * pool reads inline `duckdb.sql(...)` rows instead.
+ */
+export async function seededDuckdb(seedSql = ""): Promise<DuckDBConnection> {
+   const duckdb = new DuckDBConnection("duckdb", ":memory:");
+   for (const statement of seedSql.split(";")) {
+      if (statement.trim()) await duckdb.runSQL(statement.trim() + ";");
+   }
+   return duckdb;
+}
 
 /** An in-memory DuckDB as the `duckdb` connection of a MalloyConfig. */
 export function duckdbMalloyConfig(duckdb?: DuckDBConnection): {
@@ -72,7 +96,10 @@ export interface LoadedTempPackage {
    dir: string;
    malloyConfig: MalloyConfig;
    duckdb: DuckDBConnection;
-   /** Closes the DuckDB connection and removes the directory. */
+   /**
+    * Releases the package's connections, closes the DuckDB connection and
+    * removes the directory.
+    */
    cleanup: () => Promise<void>;
 }
 
@@ -97,9 +124,92 @@ export async function loadTempPackage(
          dir,
          malloyConfig,
       );
-      return { pkg, dir, malloyConfig, duckdb, cleanup };
+      return {
+         pkg,
+         dir,
+         malloyConfig,
+         duckdb,
+         cleanup: async () => {
+            await pkg.getMalloyConfig().releaseConnections();
+            await cleanup();
+         },
+      };
    } catch (error) {
       await cleanup();
       throw error;
    }
+}
+
+export interface TempModel {
+   model: Model;
+   dir: string;
+   duckdb: DuckDBConnection;
+   /** Closes the DuckDB connection and removes the directory. */
+   cleanup: () => Promise<void>;
+}
+
+/**
+ * {@link writeTempPackage}, then compile one model of it in process with
+ * `Model.create` over `duckdb` (default: a fresh in-memory one). For specs
+ * that drive a single `Model` rather than a whole served package.
+ */
+export async function createTempModel(
+   files: Record<string, string>,
+   entry: string,
+   options: TempPackageOptions & { duckdb?: DuckDBConnection } = {},
+): Promise<TempModel> {
+   const { dir, cleanup: removeDir } = writeTempPackage(files, options);
+   const duckdb = options.duckdb ?? (await seededDuckdb());
+   const cleanup = async () => {
+      await duckdb.close();
+      removeDir();
+   };
+   try {
+      const model = await Model.create(
+         options.name ?? "pkg",
+         dir,
+         entry,
+         new Map<string, Connection>([["duckdb", duckdb]]),
+      );
+      return { model, dir, duckdb, cleanup };
+   } catch (error) {
+      await cleanup();
+      throw error;
+   }
+}
+
+/**
+ * Route this file's `Package.create` calls through a one-worker
+ * {@link PackageLoadPool}, the production load path. Registers
+ * `beforeAll`/`afterAll` in the calling scope. One pool per file: a fresh
+ * worker per test crashes Bun, because DuckDB's native bindings do not
+ * tolerate being loaded into several worker isolates of one process at once.
+ */
+export function usePackageLoadPool(): {
+   /** The live pool (a new one after {@link restore}). */
+   readonly pool: PackageLoadPool;
+   /** Install a fresh live pool, e.g. after a test swapped in a dead one. */
+   restore: () => Promise<void>;
+} {
+   const original = process.env.PACKAGE_LOAD_WORKERS;
+   let pool: PackageLoadPool;
+   const restore = async () => {
+      pool = new PackageLoadPool(1);
+      await __setPackageLoadPoolForTests(pool);
+   };
+   beforeAll(async () => {
+      process.env.PACKAGE_LOAD_WORKERS = "1";
+      await restore();
+   });
+   afterAll(async () => {
+      await __setPackageLoadPoolForTests(null);
+      if (original === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
+      else process.env.PACKAGE_LOAD_WORKERS = original;
+   });
+   return {
+      get pool() {
+         return pool;
+      },
+      restore,
+   };
 }

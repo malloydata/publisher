@@ -6,14 +6,14 @@
 // this file is about that deprecated feature.
 
 // Harness pattern from authorize_import_hop.integration.spec.ts.
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { MalloyError, type Connection } from "@malloydata/malloy";
+import { MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { AccessDeniedError } from "../../src/errors";
-import { Model } from "../../src/service/model";
+import {
+   createTempModel,
+   seededDuckdb,
+   type TempModel,
+} from "../../src/test_helpers/temp_package";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER, owner INTEGER, val VARCHAR);
@@ -21,37 +21,14 @@ INSERT INTO orgtable VALUES
    (1, 1, 2, 'a'), (2, 1, 1, 'b'), (3, 2, 1, 'c'), (4, 2, 2, 'd');
 `;
 
-async function newDuckdb(): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   for (const stmt of SEED_SQL.trim()
-      .split(";")
-      .filter((s) => s.trim())) {
-      await duckdb.runSQL(stmt.trim() + ";");
-   }
-   return duckdb;
-}
-
 async function createModelWithFiles(
    files: Record<string, string>,
    entryFileName: string,
-): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
-   const duckdb = await newDuckdb();
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nb-given-scope-"));
-   for (const [fileName, text] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, fileName), text);
-   }
-   const model = await Model.create(
-      "test-pkg",
-      dir,
-      entryFileName,
-      new Map<string, Connection>([["duckdb", duckdb]]),
-   );
-   return { model, duckdb, dir };
-}
-
-async function cleanup(duckdb: DuckDBConnection, dir: string): Promise<void> {
-   await duckdb.close();
-   fs.rmSync(dir, { recursive: true, force: true });
+): Promise<TempModel> {
+   return createTempModel(files, entryFileName, {
+      name: "test-pkg",
+      duckdb: await seededDuckdb(SEED_SQL),
+   });
 }
 
 function cellCount(cell: unknown): number {
@@ -106,7 +83,7 @@ source: locked is duckdb.table('orgtable') extend {
 
 describe("notebook cells receive only the givens in their own scope", () => {
    it("(1) pre-import cell with GROUPS supplied runs — the given isn't declared yet, so the value is dropped rather than 400ing", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
             "gate.malloy": GROUPS_GATE,
@@ -127,12 +104,12 @@ run: gated -> { aggregate: c }
          });
          expect(cellCount(result)).toBe(4);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(2) a typo'd given 400s on both the pre-import and the post-import cell", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
             "gate.malloy": GROUPS_GATE,
@@ -159,14 +136,14 @@ run: gated -> { aggregate: c }
             await expect(rejection).rejects.toThrow(/NOtaGiven/);
          }
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(3) a gate-only given (never on the model's own surface) is still dropped, cellDeclared or not", async () => {
       // ROLE is gate-only (never on the surface); a lock two hops deep always
       // denies, so the point is that it 403s rather than 400ing on ROLE.
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "deep_base.malloy": `##! experimental.givens
 
@@ -196,12 +173,12 @@ run: deep_ext -> { aggregate: c }
             }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(4) post-import cell binds GROUPS: [1] filters, [] returns 0, and the lock admits/denies", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "gate.malloy": GROUPS_GATE,
             "lock.malloy": ROLE_LOCK,
@@ -235,12 +212,12 @@ run: locked -> { aggregate: c }
             model.executeNotebookCell(1, undefined, false, { ROLE: "guest" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(5) a cell between `import plain` and `import groups` runs without GROUPS; a later cell filters", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
             "gate.malloy": GROUPS_GATE,
@@ -268,7 +245,7 @@ run: gated -> { aggregate: c }
          });
          expect(cellCount(last)).toBe(2);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -277,7 +254,7 @@ run: gated -> { aggregate: c }
    // tenant_base two hops deep, so TENANT is in its declared set but not on its
    // surface. Dropping it there would bind the default; it must 400 instead.
    it("(6) a given declared deep in a cell but surfaced only by a later import 400s, never default-binds", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "tenant_base.malloy": `##! experimental.givens
 
@@ -326,7 +303,7 @@ run: gated_tenant -> { aggregate: c }
          });
          expect(cellCount(later)).toBe(2);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -344,7 +321,7 @@ source: rows is duckdb.table('orgtable') extend {
    // The surface and the runtime bind by the alias; the cell's registry keeps
    // the declaration name, so a name-only match would drop T and bind the default.
    it("(6a) a given imported under an alias binds the caller's value, not the default", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "tenant_base.malloy": TENANT_BASE,
             "nb.malloynb": `>>>malloy
@@ -365,12 +342,12 @@ run: rows -> { aggregate: c }
          });
          expect(cellCount(none)).toBe(0);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(6b) an alias surfaced only by a later cell still 400s on an earlier cell that reaches the given deep", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "tenant_base.malloy": TENANT_BASE,
             "tenant_hub.malloy": `import "tenant_base.malloy"
@@ -395,12 +372,12 @@ run: visible_rows -> { aggregate: c }
          await expect(rejection).rejects.toBeInstanceOf(MalloyError);
          await expect(rejection).rejects.toThrow(/'T'/);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(7) same-cell import+run still gates", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "gate.malloy": GROUPS_GATE,
             "nb.malloynb": `>>>malloy
@@ -417,12 +394,12 @@ run: gated -> { aggregate: c }
          });
          expect(cellCount(result)).toBe(2);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(8) a lock cell ahead of a later import still 403s, with the wrong role or none", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
             "lock.malloy": ROLE_LOCK,
@@ -447,12 +424,12 @@ run: plain -> { aggregate: c }
             AccessDeniedError,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(9) a leading markdown cell doesn't shift index alignment", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
             "gate.malloy": GROUPS_GATE,
@@ -489,12 +466,12 @@ run: gated -> { aggregate: c }
          );
          expect(cellCount(postImport)).toBe(2);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(10) a `#(secure)` given, the shape a host injects on every run, is dropped before its import and binds after it", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "plain.malloy": PLAIN,
             "gate.malloy": `##! experimental.givens
@@ -537,7 +514,7 @@ run: gated -> { aggregate: c }
          });
          expect(cellCount(none)).toBe(0);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -594,7 +571,7 @@ describe("a notebook cell that reads an off-surface gate given", () => {
    };
 
    it("400s instead of binding the where: given's default", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          files,
          "nb.malloynb",
       );
@@ -605,12 +582,12 @@ describe("a notebook cell that reads an off-surface gate given", () => {
          expect(err).toBeInstanceOf(MalloyError);
          expect((err as Error).message).toMatch(/unknown given 'HIDE'/);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("refuses a cell running a named query that reaches it by name", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          files,
          "nb.malloynb",
       );
@@ -619,12 +596,12 @@ describe("a notebook cell that reads an off-surface gate given", () => {
             model.executeNotebookCell(2, undefined, false, { HIDE: "a" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("still drops it for a cell that never reads it", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          files,
          "nb.malloynb",
       );
@@ -634,7 +611,7 @@ describe("a notebook cell that reads an off-surface gate given", () => {
          });
          expect(cellCount(result)).toBe(4);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });

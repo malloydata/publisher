@@ -10,13 +10,16 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection, GivenValue } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
-import os from "os";
 import path from "path";
 import { AccessDeniedError, NotQueryableError } from "../../src/errors";
 import { Model } from "../../src/service/model";
+import {
+   seededDuckdb,
+   writeTempPackage,
+} from "../../src/test_helpers/temp_package";
 
-const TEST_DIR = path.join(os.tmpdir(), "caller-joins-integration");
-const PKG_DIR = path.join(TEST_DIR, "pkg");
+let PKG_DIR: string;
+let removePkgDir: () => void;
 let duck: DuckDBConnection;
 
 const MODEL = `##! experimental { givens composite_sources }
@@ -170,23 +173,20 @@ async function expectNotQueryable(
 }
 
 beforeAll(async () => {
-   await fs.mkdir(PKG_DIR, { recursive: true });
-   duck = new DuckDBConnection(
-      "duckdb",
-      path.join(TEST_DIR, "t.duckdb"),
-      TEST_DIR,
-   );
-   await duck.runSQL(
+   duck = await seededDuckdb(
       "CREATE OR REPLACE TABLE t AS SELECT * FROM (VALUES (1,'a','US'),(2,'b','EU')) v(id,name,region)",
    );
-   await fs.writeFile(path.join(PKG_DIR, "m.malloy"), MODEL);
+   ({ dir: PKG_DIR, cleanup: removePkgDir } = writeTempPackage(
+      { "m.malloy": MODEL },
+      { prefix: "caller-joins-component-" },
+   ));
    plainModel = await loadModel(false);
    boundaryModel = await loadModel(true);
 });
 
 afterAll(async () => {
    await duck.close();
-   await fs.rm(TEST_DIR, { recursive: true, force: true }).catch(() => {});
+   removePkgDir();
 });
 
 // Every spelling of a caller join into the `gated` lock, keyed by the alias the

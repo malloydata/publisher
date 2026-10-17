@@ -6,16 +6,12 @@
  * which controls a tile ignores. Checked through `Package.create`, in process
  * and through the worker pool, because discovery reads the hydrated Model.
  */
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
-import {
-   PackageLoadPool,
-   __setPackageLoadPoolForTests,
-} from "../../src/package_load/package_load_pool";
-import { Package } from "../../src/service/package";
+import { describe, expect, it } from "bun:test";
 import { getDashboard } from "../../src/service/legacy_report_views";
+import {
+   loadTempPackage,
+   usePackageLoadPool,
+} from "../../src/test_helpers/temp_package";
 
 const DASHBOARD = `##! experimental.givens
 given:
@@ -65,41 +61,20 @@ const EXPECTED: Record<string, string[] | undefined> = {
    "open_orders -> nothing_here": undefined,
 };
 
-async function makeMalloyConfig() {
-   const { MalloyConfig, FixedConnectionMap } = await import(
-      "@malloydata/malloy"
-   );
-   const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   const connections = new FixedConnectionMap(
-      new Map([["duckdb", duckdb]]),
-      "duckdb",
-   );
-   const malloyConfig = new MalloyConfig({ connections: {} });
-   malloyConfig.wrapConnections(() => connections);
-   return { malloyConfig, duckdb };
-}
-
 type Tile = { kind?: string; query?: string; givenNames?: string[] };
 
 /** The same tiles as a dashboard, or as a notebook read through the notebook route. */
 async function tileGivens(
    kind: "dashboard" | "notebook",
 ): Promise<Record<string, string[] | undefined>> {
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-tile-givens-"));
-   const { malloyConfig, duckdb } = await makeMalloyConfig();
+   const folder = kind === "dashboard" ? "dashboards" : "notebooks";
+   const { pkg, cleanup } = await loadTempPackage({
+      [`${folder}/d.malloy`]: DASHBOARD.replace(
+         "LAYOUT",
+         kind === "dashboard" ? "grid" : "linear",
+      ),
+   });
    try {
-      fs.writeFileSync(
-         path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg" }),
-      );
-      const folder = kind === "dashboard" ? "dashboards" : "notebooks";
-      fs.mkdirSync(path.join(dir, folder));
-      fs.writeFileSync(
-         path.join(dir, folder, "d.malloy"),
-         DASHBOARD.replace("LAYOUT", kind === "dashboard" ? "grid" : "linear"),
-      );
-      const pkg = await Package.create("env", "pkg", dir, malloyConfig);
       const tiles: Tile[] | undefined =
          kind === "dashboard"
             ? (await getDashboard(pkg, "env", "d"))?.tiles
@@ -114,8 +89,7 @@ async function tileGivens(
          ),
       );
    } finally {
-      await duckdb.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanup();
    }
 }
 
@@ -129,16 +103,7 @@ describe("dashboard tile givenNames come from the compiled query", () => {
    });
 
    describe("through the worker pool", () => {
-      const original = process.env.PACKAGE_LOAD_WORKERS;
-      beforeAll(async () => {
-         process.env.PACKAGE_LOAD_WORKERS = "1";
-         await __setPackageLoadPoolForTests(new PackageLoadPool(1));
-      });
-      afterAll(async () => {
-         await __setPackageLoadPoolForTests(null);
-         if (original === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-         else process.env.PACKAGE_LOAD_WORKERS = original;
-      });
+      usePackageLoadPool();
 
       it("matches", async () => {
          expect(await tileGivens("dashboard")).toEqual(EXPECTED);

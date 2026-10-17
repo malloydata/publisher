@@ -5,16 +5,16 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection } from "@malloydata/malloy";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
-import os from "os";
 import path from "path";
 import { BadRequestError } from "../../src/errors";
 import { Model } from "../../src/service/model";
+import {
+   seededDuckdb,
+   writeTempPackage,
+} from "../../src/test_helpers/temp_package";
 
-const TEST_DIR = path.join(os.tmpdir(), "givens-integration-tests");
-const TEST_DB_DIR = path.join(TEST_DIR, "db");
-const TEST_DB_PATH = path.join(TEST_DB_DIR, "test.duckdb");
-const TEST_PKG_DIR = path.join(TEST_DIR, "pkg");
-
+let TEST_PKG_DIR: string;
+let removePkgDir: () => void;
 let duckdbConnection: DuckDBConnection;
 
 const SEED_SQL = `
@@ -81,56 +81,29 @@ source: orders is duckdb.table('orders') extend {
 `;
 
 beforeAll(async () => {
-   await fs.mkdir(TEST_DB_DIR, { recursive: true });
-   await fs.mkdir(TEST_PKG_DIR, { recursive: true });
-   duckdbConnection = new DuckDBConnection("duckdb", TEST_DB_PATH, TEST_DB_DIR);
-   for (const stmt of SEED_SQL.trim().split(";").filter(Boolean)) {
-      await duckdbConnection.runSQL(stmt.trim() + ";");
-   }
+   duckdbConnection = await seededDuckdb(SEED_SQL);
    // Each fixture lives in its own file. Tests share `beforeAll` for harness
    // setup but never edit these files at runtime, so no `beforeEach` /
    // `afterEach` cleanup is needed.
-   await fs.writeFile(
-      path.join(TEST_PKG_DIR, "orders.malloy"),
-      MODEL_WITH_GIVENS,
-      "utf-8",
-   );
-   await fs.writeFile(
-      path.join(TEST_PKG_DIR, "orders_no_givens.malloy"),
-      MODEL_WITHOUT_GIVENS,
-      "utf-8",
-   );
-   await fs.writeFile(
-      path.join(TEST_PKG_DIR, "orders_annotated.malloy"),
-      MODEL_WITH_ANNOTATED_GIVEN,
-      "utf-8",
-   );
-   await fs.writeFile(
-      path.join(TEST_PKG_DIR, "orders_filter_givens.malloy"),
-      MODEL_WITH_FILTER_GIVENS,
-      "utf-8",
-   );
-   await fs.writeFile(
-      path.join(TEST_PKG_DIR, "filter_givens.malloynb"),
-      `>>>malloy\nimport "orders_filter_givens.malloy"\n>>>malloy\nrun: orders -> filtered`,
-      "utf-8",
-   );
+   ({ dir: TEST_PKG_DIR, cleanup: removePkgDir } = writeTempPackage(
+      {
+         "orders.malloy": MODEL_WITH_GIVENS,
+         "orders_no_givens.malloy": MODEL_WITHOUT_GIVENS,
+         "orders_annotated.malloy": MODEL_WITH_ANNOTATED_GIVEN,
+         "orders_filter_givens.malloy": MODEL_WITH_FILTER_GIVENS,
+         "filter_givens.malloynb": `>>>malloy\nimport "orders_filter_givens.malloy"\n>>>malloy\nrun: orders -> filtered`,
+      },
+      { prefix: "givens-component-" },
+   ));
 });
 
 afterAll(async () => {
-   try {
-      await duckdbConnection.close();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      await fs.rm(TEST_DIR, { recursive: true, force: true });
-   } catch {
-      // Ignore cleanup errors
-   }
+   await duckdbConnection.close();
+   removePkgDir();
 });
 
 function getConnections(): Map<string, Connection> {
-   const map = new Map<string, Connection>();
-   map.set("duckdb", duckdbConnection);
-   return map;
+   return new Map<string, Connection>([["duckdb", duckdbConnection]]);
 }
 
 describe("givens introspection", () => {

@@ -19,43 +19,24 @@
  *
  * The deprecated `explores` key is pinned in the labelled block at the end.
  */
-import {
-   afterAll,
-   afterEach,
-   beforeAll,
-   beforeEach,
-   describe,
-   expect,
-   it,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import {
-   PackageLoadPool,
-   __setPackageLoadPoolForTests,
-} from "../../src/package_load/package_load_pool";
 import { AccessDeniedError, NotQueryableError } from "../../src/errors";
 import { Package } from "../../src/service/package";
-import { listDashboards, listNotebooks } from "../../src/service/legacy_report_views";
-
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+import {
+   duckdbMalloyConfig,
+   usePackageLoadPool,
+} from "../../src/test_helpers/temp_package";
+import {
+   listDashboards,
+   listNotebooks,
+} from "../../src/service/legacy_report_views";
 
 describe("Explore Visibility via worker pool", () => {
    let tempDir: string;
-   let pool: PackageLoadPool;
-
-   beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
-      pool = new PackageLoadPool(1);
-      await __setPackageLoadPoolForTests(pool);
-   });
-
-   afterAll(async () => {
-      await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
-   });
+   usePackageLoadPool();
 
    beforeEach(() => {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-explores-"));
@@ -71,24 +52,6 @@ describe("Explore Visibility via worker pool", () => {
          tempDir = "";
       }
    });
-
-   async function makeMalloyConfig(): Promise<{
-      malloyConfig: import("@malloydata/malloy").MalloyConfig;
-      duckdb: { close: () => Promise<void> };
-   }> {
-      const { MalloyConfig, FixedConnectionMap } = await import(
-         "@malloydata/malloy"
-      );
-      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      const connections = new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      );
-      const malloyConfig = new MalloyConfig({ connections: {} });
-      malloyConfig.wrapConnections(() => connections);
-      return { malloyConfig, duckdb };
-   }
 
    function writeManifest(extra: Record<string, unknown> = {}): void {
       fs.writeFileSync(
@@ -137,7 +100,7 @@ export { customers }`,
       writeManifest(); // no manifest keys: index.malloy is the surface
       writeLayeredModels();
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
 
@@ -197,7 +160,7 @@ source: customers is duckdb.sql("select 1 as id, 100 as amt") extend {
 export { customers }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("index.malloy")!;
@@ -223,7 +186,7 @@ export { customers }`,
       // no root index.malloy.
       writeLayeredModels("surface.malloy");
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(await listedModelPaths(pkg)).toEqual([
@@ -249,7 +212,7 @@ export { customers }`,
       writeManifest(); // the root index.malloy is the surface
       writeLayeredModels();
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const byPath = (models: { path?: string; isHidden?: boolean }[]) =>
@@ -290,7 +253,7 @@ source: locked is duckdb.sql("select 1 as id")
 source: open_src is duckdb.sql("select 1 as id")`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const run = (
@@ -366,7 +329,7 @@ run: y -> { group_by: l.id }`,
       writeManifest();
       writeLayeredModels("surface.malloy"); // not index.malloy: no surface
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          for (const includeHiddenFilesAndSources of [false, true]) {
@@ -390,7 +353,7 @@ source: internal_scratch is duckdb.sql("select 1 as id")
 export { public_orders }`;
       fs.writeFileSync(path.join(tempDir, "model.malloy"), text);
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const api = (await pkg.getModel("model.malloy")!.getModel()) as {
@@ -446,7 +409,7 @@ export { public_orders }`;
 run: base_source -> v`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const api = (await pkg.getModel("consumer.malloy")!.getModel()) as {
@@ -501,7 +464,7 @@ source: customers is duckdb.sql("select 1 as id")
 export { customers }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(await listedModelPaths(pkg)).toEqual(["index.malloy"]);
@@ -529,7 +492,7 @@ source: hidden is duckdb.sql("select 2 as id")`,
          // A top-level run over the hidden source puts it in queryList too.
          `import "base.malloy"\nrun: hidden -> { group_by: id }\nexport { pub }`,
       );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const index = pkg.getModel("index.malloy")!;
@@ -687,7 +650,7 @@ export { pub2, pub3 }`,
 
    it("the model GET and the query route treat named queries like sources", async () => {
       writeManifest({});
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          // Named queries follow the same rule. An exported one is listed and
          // runs, even when it reads a hidden source through a join; one the
@@ -762,7 +725,7 @@ export { pub2, pub3 }`,
          path.join(tempDir, "index.malloy"),
          `import "orders.malloy"\nexport { orders }`,
       );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          fs.writeFileSync(
@@ -802,7 +765,7 @@ export { pub2, pub3 }`,
          `import "orders.malloy"\nexport { orders }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.brokenSurfaceWarnings()).toEqual([]);
@@ -859,7 +822,7 @@ export { pub2, pub3 }`,
       writeManifest({});
       writeLayeredModels();
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const widened = () =>
@@ -894,7 +857,7 @@ export { pub2, pub3 }`,
          `import "base.malloy"\nrun: base_source -> { group_by: id }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const warnings = pkg.emptyDiscoveryWarnings();
@@ -917,7 +880,7 @@ export { pub2, pub3 }`,
          writeManifest({ explores: ["base.malloy"] });
          writeLayeredModels(); // index.malloy exists but is not declared
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -953,7 +916,7 @@ export { pub2, pub3 }`,
             `import "base.malloy"\nrun: base_source -> { group_by: id }`,
          );
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -1019,7 +982,7 @@ export { pub2, pub3 }`,
             `source: ab is duckdb.sql("select 1 as id")\nexport { ab }`,
          );
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -1074,7 +1037,7 @@ export { pub2, pub3 }`,
             `source: bad is duckdb.sql("select 1 as id")\nexport { bad }`,
          );
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -1097,7 +1060,7 @@ export { pub2, pub3 }`,
          writeManifest({ explores: ["does-not-exist.malloy"] });
          writeLayeredModels();
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",

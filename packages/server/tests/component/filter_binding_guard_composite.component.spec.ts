@@ -1,20 +1,15 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import {
-   FixedConnectionMap,
-   MalloyConfig,
-   type Connection,
-} from "@malloydata/malloy";
 import { describe, expect, it, spyOn } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { AccessDeniedError } from "../../src/errors";
 import { logger } from "../../src/logger";
-import { Model } from "../../src/service/model";
-import { Package } from "../../src/service/package";
+import type { Model } from "../../src/service/model";
+import {
+   createTempModel,
+   loadTempPackage,
+   seededDuckdb,
+} from "../../src/test_helpers/temp_package";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orders_daily (customer_id INTEGER, amount INTEGER);
@@ -135,34 +130,19 @@ source: pc is compose(
 source: pc_high is pc extend { where: is_high }
 `;
 
-async function newDuckdb(): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   for (const stmt of SEED_SQL.trim()
-      .split(";")
-      .filter((s) => s.trim())) {
-      await duckdb.runSQL(stmt.trim() + ";");
-   }
-   return duckdb;
-}
-
 async function withModel(run: (model: Model) => Promise<void>): Promise<void> {
-   const duckdb = await newDuckdb();
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbg-composite-"));
+   const { model, cleanup } = await createTempModel(
+      { "m.malloy": MODEL_TEXT },
+      "m.malloy",
+      { name: "test-pkg", duckdb: await seededDuckdb(SEED_SQL) },
+   );
    try {
-      fs.writeFileSync(path.join(dir, "m.malloy"), MODEL_TEXT);
-      const model = await Model.create(
-         "test-pkg",
-         dir,
-         "m.malloy",
-         new Map<string, Connection>([["duckdb", duckdb]]),
-      );
       expect(
          (model as unknown as { compilationError?: Error }).compilationError,
       ).toBeUndefined();
       await run(model);
    } finally {
-      await duckdb.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanup();
    }
 }
 
@@ -503,30 +483,15 @@ async function withPackage(
    run: (model: Model) => Promise<void>,
    modelPath = "m.malloy",
 ): Promise<void> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbg-composite-pkg-"));
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "test-pkg" }),
-   );
-   for (const [fileName, text] of Object.entries(PACKAGE_FILES)) {
-      fs.writeFileSync(path.join(dir, fileName), text);
-   }
-   const connections = new FixedConnectionMap(
-      new Map<string, Connection>([["duckdb", duckdb]]),
-      "duckdb",
-   );
-   const malloyConfig = new MalloyConfig({ connections: {} });
-   malloyConfig.wrapConnections(() => connections);
-   const pkg = await Package.create("env", "test-pkg", dir, malloyConfig);
+   const { pkg, cleanup } = await loadTempPackage(PACKAGE_FILES, {
+      name: "test-pkg",
+   });
    try {
       const model = pkg.getModel(modelPath);
       expect(model).toBeDefined();
       await run(model!);
    } finally {
-      await pkg.getMalloyConfig().releaseConnections();
-      await duckdb.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanup();
    }
 }
 

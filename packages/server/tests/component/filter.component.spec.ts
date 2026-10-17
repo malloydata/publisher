@@ -17,16 +17,16 @@ import {
    it,
 } from "bun:test";
 import fs from "fs/promises";
-import os from "os";
 import path from "path";
 import { BadRequestError } from "../../src/errors";
 import { Model } from "../../src/service/model";
+import {
+   seededDuckdb,
+   writeTempPackage,
+} from "../../src/test_helpers/temp_package";
 
-const TEST_DIR = path.join(os.tmpdir(), "filter-integration-tests");
-const TEST_DB_DIR = path.join(TEST_DIR, "db");
-const TEST_DB_PATH = path.join(TEST_DB_DIR, "test.duckdb");
-const TEST_PKG_DIR = path.join(TEST_DIR, "pkg");
-
+let TEST_PKG_DIR: string;
+let removePkgDir: () => void;
 let duckdbConnection: DuckDBConnection;
 
 const SEED_SQL = `
@@ -190,28 +190,20 @@ run: orders -> by_given_region
 `;
 
 beforeAll(async () => {
-   await fs.mkdir(TEST_DB_DIR, { recursive: true });
-   await fs.mkdir(TEST_PKG_DIR, { recursive: true });
-   duckdbConnection = new DuckDBConnection("duckdb", TEST_DB_PATH, TEST_DB_DIR);
-   for (const stmt of SEED_SQL.trim().split(";").filter(Boolean)) {
-      await duckdbConnection.runSQL(stmt.trim() + ";");
-   }
+   duckdbConnection = await seededDuckdb(SEED_SQL);
+   ({ dir: TEST_PKG_DIR, cleanup: removePkgDir } = writeTempPackage(
+      {},
+      { prefix: "filter-component-" },
+   ));
 });
 
 afterAll(async () => {
-   try {
-      await duckdbConnection.close();
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      await fs.rm(TEST_DIR, { recursive: true, force: true });
-   } catch {
-      // Ignore cleanup errors
-   }
+   await duckdbConnection.close();
+   removePkgDir();
 });
 
 function getConnections(): Map<string, Connection> {
-   const map = new Map<string, Connection>();
-   map.set("duckdb", duckdbConnection);
-   return map;
+   return new Map<string, Connection>([["duckdb", duckdbConnection]]);
 }
 
 async function writeFile(filename: string, content: string): Promise<void> {

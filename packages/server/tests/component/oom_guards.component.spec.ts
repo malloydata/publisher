@@ -32,7 +32,10 @@ import sinon from "sinon";
 import request from "supertest";
 
 import { ConnectionController } from "../../src/controller/connection.controller";
-import { internalErrorToHttpError, ServiceUnavailableError } from "../../src/errors";
+import {
+   internalErrorToHttpError,
+   ServiceUnavailableError,
+} from "../../src/errors";
 import {
    queryConcurrency,
    resetActiveQueryCountForTesting,

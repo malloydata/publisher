@@ -23,16 +23,7 @@
  * loaded concurrently into multiple worker isolates of the same Bun
  * process. Production uses one pool; this matches.
  */
-import {
-   afterAll,
-   afterEach,
-   beforeAll,
-   beforeEach,
-   describe,
-   expect,
-   it,
-   spyOn,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -44,29 +35,14 @@ import {
    __setPackageLoadPoolForTests,
 } from "../../src/package_load/package_load_pool";
 import { Package } from "../../src/service/package";
-
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+import {
+   duckdbMalloyConfig,
+   usePackageLoadPool,
+} from "../../src/test_helpers/temp_package";
 
 describe("Package.create via worker pool", () => {
    let tempDir: string;
-   let pool: PackageLoadPool;
-
-   beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
-      pool = new PackageLoadPool(1);
-      // Wire our pool into the module-level singleton so Package.create
-      // picks it up via getPackageLoadPool().
-      await __setPackageLoadPoolForTests(pool);
-   });
-
-   afterAll(async () => {
-      await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) {
-         delete process.env.PACKAGE_LOAD_WORKERS;
-      } else {
-         process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
-      }
-   });
+   const workers = usePackageLoadPool();
 
    beforeEach(() => {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-pkg-worker-"));
@@ -84,24 +60,6 @@ describe("Package.create via worker pool", () => {
          tempDir = "";
       }
    });
-
-   async function makeMalloyConfig(): Promise<{
-      malloyConfig: import("@malloydata/malloy").MalloyConfig;
-      duckdb: { close: () => Promise<void> };
-   }> {
-      const { MalloyConfig, FixedConnectionMap } = await import(
-         "@malloydata/malloy"
-      );
-      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      const connections = new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      );
-      const malloyConfig = new MalloyConfig({ connections: {} });
-      malloyConfig.wrapConnections(() => connections);
-      return { malloyConfig, duckdb };
-   }
 
    function writeManifest(): void {
       fs.writeFileSync(
@@ -124,7 +82,7 @@ describe("Package.create via worker pool", () => {
 }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg).toBeInstanceOf(Package);
@@ -164,7 +122,7 @@ describe("Package.create via worker pool", () => {
 }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          await expect(
             Package.create("env", "pkg", tempDir, malloyConfig),
@@ -188,7 +146,7 @@ run: s -> { where: d ~ @2025 aggregate: n }
 `,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const error = await Package.create(
             "env",
@@ -222,7 +180,7 @@ given:
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("gated.malloy");
@@ -252,7 +210,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
 source: gated is duckdb.sql("select 1 as id") extend {}`,
          );
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -288,7 +246,7 @@ given:
 source: gated is duckdb.sql("select 1 as id") extend {}`,
          );
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -321,7 +279,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
          );
 
          const { ModelCompilationError } = await import("../../src/errors");
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             await expect(
                Package.create("env", "pkg", tempDir, malloyConfig),
@@ -356,7 +314,7 @@ source: gated is duckdb.sql("select * from (values (1,1),(2,2),(3,2),(4,1)) as t
 run: gated -> { aggregate: c }`,
          );
 
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -408,7 +366,7 @@ run: gated -> { aggregate: c }`,
 
       it("400s a worker-hydrated notebook cell reading an off-surface gate given", async () => {
          writeOffSurfaceGivenPackage();
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -426,7 +384,7 @@ run: gated -> { aggregate: c }`,
          }
       });
 
-      it("logs a warning for a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
+      it("reports a warning for a .malloynb notebook whose source view carries an invalid renderer tag", async () => {
          writeManifest();
          fs.writeFileSync(
             path.join(tempDir, "bad_render.malloynb"),
@@ -443,8 +401,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
 }`,
          );
 
-         const warnSpy = spyOn(logger, "warn");
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -453,15 +410,7 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
                malloyConfig,
             );
             expect(pkg.getModelPaths()).toEqual(["bad_render.malloynb"]);
-            const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
-            expect(
-               warnings.some(
-                  (m) =>
-                     m.includes("Render tag findings on") &&
-                     m.includes("[error]"),
-               ),
-            ).toBe(true);
-            // The notebook finding also rides the package response (not just logs).
+            // The notebook finding rides the package response.
             const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
             expect(
                responseWarnings.some(
@@ -471,7 +420,6 @@ source: nums is duckdb.sql("select 1 as a, 2 as b") extend {
                ),
             ).toBe(true);
          } finally {
-            warnSpy.mockRestore();
             await duckdb.close();
          }
       });
@@ -492,7 +440,7 @@ given:
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("split.malloy");
@@ -531,7 +479,7 @@ source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
       const { ModelCompilationError } = await import("../../src/errors");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          // Must surface as a 424 ModelCompilationError across the worker
          // boundary, not a generic 500 — the worker serializes it with
@@ -599,7 +547,7 @@ run: mid_ungated -> { aggregate: c }`,
 
    it("400s a query reading an off-surface gate given instead of binding its default", async () => {
       writeOffSurfaceGivenPackage();
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const err = await pkg
@@ -619,7 +567,7 @@ run: mid_ungated -> { aggregate: c }`,
       }
    });
 
-   it("logs a warning for a package whose view carries an invalid renderer tag", async () => {
+   it("reports a warning for a package whose view carries an invalid renderer tag", async () => {
       writeManifest();
       // `# big_value { sparkline=... }` is a child-only renderer config placed on
       // the view itself, with no activating big_value. The renderer declines to
@@ -640,21 +588,11 @@ run: mid_ungated -> { aggregate: c }`,
 }`,
       );
 
-      const warnSpy = spyOn(logger, "warn");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.getModelPaths()).toEqual(["bad_render.malloy"]);
-         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
-         expect(
-            warnings.some(
-               (m) =>
-                  m.includes("Render tag findings on") &&
-                  m.includes("[error]") &&
-                  m.includes("nums -> card"),
-            ),
-         ).toBe(true);
-         // The same finding rides the package response (non-fatal) so the
+         // The finding rides the package response (non-fatal) so the
          // control plane / UI can surface it without scraping logs.
          const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
          expect(
@@ -666,7 +604,6 @@ run: mid_ungated -> { aggregate: c }`,
             ),
          ).toBe(true);
       } finally {
-         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
@@ -682,7 +619,7 @@ run: mid_ungated -> { aggregate: c }`,
 }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.getModelPaths()).toEqual(["good_render.malloy"]);
@@ -716,7 +653,7 @@ run: mid_ungated -> { aggregate: c }`,
          },
          "prepareRenderTagTargets",
       );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(
@@ -750,8 +687,8 @@ run: mid_ungated -> { aggregate: c }`,
       );
 
       // As when the worker's soft deadline passes after the first target.
-      const loadPackage = pool.loadPackage.bind(pool);
-      const spy = spyOn(pool, "loadPackage").mockImplementation(
+      const loadPackage = workers.pool.loadPackage.bind(workers.pool);
+      const spy = spyOn(workers.pool, "loadPackage").mockImplementation(
          async (request) => {
             const outcome = await loadPackage(request);
             return {
@@ -773,7 +710,7 @@ run: mid_ungated -> { aggregate: c }`,
          },
          "prepareRenderTagTargets",
       );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(
@@ -810,7 +747,7 @@ run: mid_ungated -> { aggregate: c }`,
          Model.prototype as unknown as { getReportModelFacts: () => unknown },
          "getReportModelFacts",
       );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          await Package.create("env", "pkg", tempDir, malloyConfig);
          // Each read walks the whole model. Once per target, the check held
@@ -822,7 +759,7 @@ run: mid_ungated -> { aggregate: c }`,
       }
    });
 
-   it("logs a warning for a backtick-quoted (hyphenated) source with a bad view render tag", async () => {
+   it("reports a warning for a backtick-quoted (hyphenated) source with a bad view render tag", async () => {
       writeManifest();
       // A source whose name needs Malloy backtick-quoting (here, a hyphen). The
       // validation target must quote the identifier; otherwise `run: bad-source
@@ -844,27 +781,23 @@ run: mid_ungated -> { aggregate: c }`,
 }`,
       );
 
-      const warnSpy = spyOn(logger, "warn");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.getModelPaths()).toEqual(["hyphen_render.malloy"]);
-         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
-         expect(
-            warnings.some(
-               (m) =>
-                  m.includes("Render tag findings on") &&
-                  m.includes("[error]") &&
-                  m.includes("bad-source -> card"),
-            ),
-         ).toBe(true);
+         expect(pkg.getPackageMetadata().warnings).toContainEqual(
+            expect.objectContaining({
+               model: "hyphen_render.malloy",
+               subject: "bad-source -> card",
+               severity: "error",
+            }),
+         );
       } finally {
-         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
 
-   it("logs a warning for a source name containing an escaped backtick with a bad view render tag", async () => {
+   it("reports a warning for a source name containing an escaped backtick with a bad view render tag", async () => {
       writeManifest();
       // Source name with a literal backtick (written escaped in Malloy as
       // `wei\`rd`). The validation target must re-escape it; a bare wrap would
@@ -885,27 +818,23 @@ run: mid_ungated -> { aggregate: c }`,
 }`,
       );
 
-      const warnSpy = spyOn(logger, "warn");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.getModelPaths()).toEqual(["backtick_render.malloy"]);
-         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
-         expect(
-            warnings.some(
-               (m) =>
-                  m.includes("Render tag findings on") &&
-                  m.includes("[error]") &&
-                  m.includes("card"),
-            ),
-         ).toBe(true);
+         expect(pkg.getPackageMetadata().warnings).toContainEqual(
+            expect.objectContaining({
+               model: "backtick_render.malloy",
+               subject: "wei`rd -> card",
+               severity: "error",
+            }),
+         );
       } finally {
-         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
 
-   it("re-validates renderer tags on reload, logging a warning for a model that develops a bad tag", async () => {
+   it("re-validates renderer tags on reload, reporting a warning for a model that develops a bad tag", async () => {
       writeManifest();
       // Start valid so Package.create succeeds.
       fs.writeFileSync(
@@ -917,12 +846,11 @@ run: mid_ungated -> { aggregate: c }`,
 }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
-      const warnSpy = spyOn(logger, "warn");
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(pkg.getModel("m.malloy")).toBeDefined();
-         warnSpy.mockClear();
+         expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
 
          // The model now develops a misconfigured render tag. Reload re-validates
          // (not just Package.create) and logs a warning for it, without aborting
@@ -945,13 +873,6 @@ run: mid_ungated -> { aggregate: c }`,
          const reloaded = pkg.getModel("m.malloy");
          expect(reloaded).toBeDefined();
          await expect(reloaded!.getModel()).resolves.toBeDefined();
-         const warnings = warnSpy.mock.calls.map((c) => String(c[0]));
-         expect(
-            warnings.some(
-               (m) =>
-                  m.includes("Render tag findings on") && m.includes("[error]"),
-            ),
-         ).toBe(true);
          // Reload refreshes the response-level warnings too. Assert `subject`
          // as well as `model`: the reload path builds the wire entry at its own
          // call site, so asserting only `model` would pass even if that site
@@ -966,7 +887,6 @@ run: mid_ungated -> { aggregate: c }`,
             ),
          ).toBe(true);
       } finally {
-         warnSpy.mockRestore();
          await duckdb.close();
       }
    });
@@ -988,7 +908,7 @@ run: mid_ungated -> { aggregate: c }`,
 }`,
       );
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(
@@ -1031,7 +951,7 @@ run: mid_ungated -> { aggregate: c }`,
       fs.writeFileSync(path.join(tempDir, "a.malloy"), badModel("card_a"));
       fs.writeFileSync(path.join(tempDir, "b.malloy"), badModel("card_b"));
 
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const responseWarnings = pkg.getPackageMetadata().warnings ?? [];
@@ -1123,7 +1043,7 @@ run: mid_ungated -> { aggregate: c }`,
 
          const { PackageManifestError, internalErrorToHttpError } =
             await import("../../src/errors");
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const error = await Package.create(
                "env",
@@ -1163,7 +1083,7 @@ run: mid_ungated -> { aggregate: c }`,
          path.join(tempDir, "trivial.malloy"),
          `source: nums is duckdb.sql("select 1 as a")`,
       );
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const settings = pkg.getRetrievalSettings();
@@ -1240,15 +1160,15 @@ source: orders is duckdb.sql("""
 
          const outcomes: Awaited<ReturnType<PackageLoadPool["loadPackage"]>>[] =
             [];
-         const loadPackage = pool.loadPackage.bind(pool);
-         const spy = spyOn(pool, "loadPackage").mockImplementation(
+         const loadPackage = workers.pool.loadPackage.bind(workers.pool);
+         const spy = spyOn(workers.pool, "loadPackage").mockImplementation(
             async (request) => {
                const outcome = await loadPackage(request);
                outcomes.push(outcome);
                return outcome;
             },
          );
-         const { malloyConfig, duckdb } = await makeMalloyConfig();
+         const { malloyConfig, duckdb } = duckdbMalloyConfig();
          try {
             const pkg = await Package.create(
                "env",
@@ -1291,7 +1211,7 @@ source: orders is duckdb.sql("""
             // A plan the worker left at its soft deadline is derived here, and
             // it is the same plan.
             const leftToMainThread = spyOn(
-               pool,
+               workers.pool,
                "loadPackage",
             ).mockImplementation(async (request) => ({
                ...(await loadPackage(request)),
@@ -1332,8 +1252,8 @@ source: orders is duckdb.sql("""
          path.join(tempDir, "plain.malloy"),
          `source: nums is duckdb.sql("select 1 as a")\n`,
       );
-      const loadPackage = pool.loadPackage.bind(pool);
-      const spy = spyOn(pool, "loadPackage").mockImplementation(
+      const loadPackage = workers.pool.loadPackage.bind(workers.pool);
+      const spy = spyOn(workers.pool, "loadPackage").mockImplementation(
          async (request) => ({
             ...(await loadPackage(request)),
             buildPlan: {
@@ -1346,7 +1266,7 @@ source: orders is duckdb.sql("""
          }),
       );
       const warnSpy = spyOn(logger, "warn");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(warnSpy.mock.calls as unknown[][]).toContainEqual([
@@ -1378,8 +1298,8 @@ source: from_sql is warehouse.sql("select 1 as ${token}")
             schemaFetchCount: number;
             schemaCacheHits?: number;
          }[] = [];
-         const loadPackage = pool.loadPackage.bind(pool);
-         const spy = spyOn(pool, "loadPackage").mockImplementation(
+         const loadPackage = workers.pool.loadPackage.bind(workers.pool);
+         const spy = spyOn(workers.pool, "loadPackage").mockImplementation(
             async (request) => {
                const outcome = await loadPackage(request);
                timings.push(outcome.timings);
@@ -1461,7 +1381,7 @@ source: t is base -> { group_by: a }
 `,
       );
       const logSpy = spyOn(logger, "log");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          await Package.create("env", "pkg", tempDir, malloyConfig);
          expect(
@@ -1500,7 +1420,7 @@ source: orders is duckdb.sql("""
       );
       const { Model } = await import("../../src/service/model");
       const runtimeSpy = spyOn(Model, "getModelRuntime");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
          const model = pkg.getModel("orders.malloy") as unknown as {
@@ -1514,11 +1434,9 @@ source: orders is duckdb.sql("""
       }
    });
 
-   // NB: kept last in this describe — swapping the singleton for a
-   // pre-shutdown pool also tears down the shared `pool` (the swap
-   // implementation shuts down the outgoing singleton). Subsequent
-   // tests in this describe would see a dead pool. afterAll only
-   // resets the singleton to null, so this is safe at the tail.
+   // Swapping the singleton for a pre-shutdown pool also shuts down the
+   // shared one (the swap shuts down the outgoing singleton), so the finally
+   // block installs a fresh live pool before anything else loads.
    it("rewraps pool-infrastructure failures as ServiceUnavailableError (HTTP 503)", async () => {
       writeManifest();
       fs.writeFileSync(
@@ -1531,7 +1449,7 @@ source: orders is duckdb.sql("""
       await __setPackageLoadPoolForTests(deadPool);
 
       const { ServiceUnavailableError } = await import("../../src/errors");
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          await expect(
             Package.create("env", "pkg", tempDir, malloyConfig),
@@ -1544,8 +1462,7 @@ source: orders is duckdb.sql("""
          // execution, a later spec file that lazily reuses the singleton via
          // getPackageLoadPool() could observe the dead pool before afterAll
          // runs and fail with "PackageLoadPool is shutting down".
-         pool = new PackageLoadPool(1);
-         await __setPackageLoadPoolForTests(pool);
+         await workers.restore();
       }
    });
 });

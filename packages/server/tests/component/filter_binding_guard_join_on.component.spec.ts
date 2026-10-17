@@ -17,23 +17,22 @@
  * so GROUPS [1] admits exactly parent ids 1,2. `active` is true only for
  * children 1,2.
  */
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
-   type Connection,
    type FilterCondition,
    type GivenValue,
    type SourceDef,
 } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { AccessDeniedError } from "../../src/errors";
 import {
    assertFilterConditionBindsToDeclaringSource,
    assertFilterDimensionBindsToDeclaringSource,
 } from "../../src/service/filter_binding_guard";
-import { Model } from "../../src/service/model";
+import type { Model } from "../../src/service/model";
+import {
+   createTempModel,
+   seededDuckdb,
+} from "../../src/test_helpers/temp_package";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER);
@@ -172,37 +171,28 @@ source: gated_recloc is duckdb.table('orgtable') extend {
 source: gated_recloc_ext is gated_recloc extend { dimension: unused is 1 }
 `;
 
-async function newDuckdb(): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   for (const stmt of SEED_SQL.trim()
-      .split(";")
-      .filter((s) => s.trim())) {
-      await duckdb.runSQL(stmt.trim() + ";");
-   }
-   return duckdb;
+async function seededModel(files: Record<string, string>, entry: string) {
+   return createTempModel(files, entry, {
+      name: "test-pkg",
+      duckdb: await seededDuckdb(SEED_SQL),
+   });
 }
 
 async function withModel(
    run: (model: Model) => Promise<void>,
    text = MODEL_TEXT,
 ): Promise<void> {
-   const duckdb = await newDuckdb();
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbg-join-on-"));
+   const { model, cleanup } = await seededModel(
+      { "m.malloy": text },
+      "m.malloy",
+   );
    try {
-      fs.writeFileSync(path.join(dir, "m.malloy"), text);
-      const model = await Model.create(
-         "test-pkg",
-         dir,
-         "m.malloy",
-         new Map<string, Connection>([["duckdb", duckdb]]),
-      );
       expect(
          (model as unknown as { compilationError?: Error }).compilationError,
       ).toBeUndefined();
       await run(model);
    } finally {
-      await duckdb.close();
-      fs.rmSync(dir, { recursive: true, force: true });
+      await cleanup();
    }
 }
 
@@ -598,12 +588,9 @@ source: gated_min is duckdb.table('orgtable') extend {
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
       it("a notebook cell over a gated source whose joined source has its own where:", async () => {
-         const duckdb = await newDuckdb();
-         const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fbg-join-on-nb-"));
-         try {
-            fs.writeFileSync(
-               path.join(dir, "nb.malloynb"),
-               `>>>malloy
+         const { model, cleanup } = await seededModel(
+            {
+               "nb.malloynb": `>>>malloy
 ##! experimental.givens
 
 given:
@@ -623,13 +610,10 @@ source: gated_active is duckdb.table('orgtable') extend {
 >>>malloy
 run: gated_active -> { group_by: id, child.org_id; order_by: id }
 `,
-            );
-            const model = await Model.create(
-               "test-pkg",
-               dir,
-               "nb.malloynb",
-               new Map<string, Connection>([["duckdb", duckdb]]),
-            );
+            },
+            "nb.malloynb",
+         );
+         try {
             const result = await model.executeNotebookCell(
                1,
                undefined,
@@ -645,8 +629,7 @@ run: gated_active -> { group_by: id, child.org_id; order_by: id }
             ).data?.array_value?.length;
             expect(served).toBe(2);
          } finally {
-            await duckdb.close();
-            fs.rmSync(dir, { recursive: true, force: true });
+            await cleanup();
          }
       });
    });

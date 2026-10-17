@@ -25,11 +25,10 @@
  * than mere denial, and also lets a genuinely-served (non-misbound) query be
  * told apart from an accidentally-passing one.
  */
-import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
-   MalloyConfig,
    MalloyError,
    modelDefToModelInfo,
    Runtime,
@@ -38,13 +37,17 @@ import {
    type ModelDef,
 } from "@malloydata/malloy";
 import { describe, expect, it, spyOn } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { AccessDeniedError } from "../../src/errors";
 import { malloyGivenToApi, type MalloyGiven } from "../../src/service/given";
 import { Model } from "../../src/service/model";
-import { Package } from "../../src/service/package";
+import type { Package } from "../../src/service/package";
+import {
+   createTempModel,
+   loadTempPackage,
+   seededDuckdb,
+   type LoadedTempPackage,
+   type TempModel,
+} from "../../src/test_helpers/temp_package";
 
 const ROOT = "file:///filter-binding-guard-tests/";
 
@@ -60,38 +63,20 @@ CREATE OR REPLACE TABLE decoytable (id INTEGER, org_id INTEGER);
 INSERT INTO decoytable VALUES (1, 1), (2, 1), (3, 1), (4, 1);
 `;
 
-async function newDuckdb(): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   for (const stmt of SEED_SQL.trim()
-      .split(";")
-      .filter((s) => s.trim())) {
-      await duckdb.runSQL(stmt.trim() + ";");
-   }
-   return duckdb;
-}
-
 async function createModelWithFiles(
    files: Record<string, string>,
    entryFileName: string,
-): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
-   const duckdb = await newDuckdb();
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "filter-binding-guard-"));
-   for (const [fileName, text] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, fileName), text);
-   }
-   const model = await Model.create(
-      "test-pkg",
-      dir,
-      entryFileName,
-      new Map<string, Connection>([["duckdb", duckdb]]),
-   );
-   return { model, duckdb, dir };
+): Promise<TempModel> {
+   return createTempModel(files, entryFileName, {
+      name: "test-pkg",
+      duckdb: await seededDuckdb(SEED_SQL),
+   });
 }
 
 async function createModel(
    text: string,
    fileName = "m.malloy",
-): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
+): Promise<TempModel> {
    return createModelWithFiles({ [fileName]: text }, fileName);
 }
 
@@ -114,26 +99,8 @@ async function createModel(
  */
 async function createPackageWithFiles(
    files: Record<string, string>,
-): Promise<{ pkg: Package; duckdb: DuckDBConnection; dir: string }> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   const dir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "filter-binding-guard-pkg-"),
-   );
-   fs.writeFileSync(
-      path.join(dir, "publisher.json"),
-      JSON.stringify({ name: "test-pkg" }),
-   );
-   for (const [fileName, text] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, fileName), text);
-   }
-   const connections = new FixedConnectionMap(
-      new Map<string, Connection>([["duckdb", duckdb]]),
-      "duckdb",
-   );
-   const malloyConfig = new MalloyConfig({ connections: {} });
-   malloyConfig.wrapConnections(() => connections);
-   const pkg = await Package.create("env", "test-pkg", dir, malloyConfig);
-   return { pkg, duckdb, dir };
+): Promise<LoadedTempPackage> {
+   return loadTempPackage(files, { name: "test-pkg" });
 }
 
 /** The `orgtable` fixture's rows, as an inline literal a package-load
@@ -189,25 +156,6 @@ async function expectServesWithCountViaPackage(
 
 function compilationErrorOf(model: Model): Error | undefined {
    return (model as unknown as { compilationError?: Error }).compilationError;
-}
-
-async function cleanup(duckdb: DuckDBConnection, dir?: string): Promise<void> {
-   await duckdb.close();
-   if (dir) fs.rmSync(dir, { recursive: true, force: true });
-}
-
-/** {@link cleanup}, for a `Package.create`d package — releases the
- *  package's OWN `MalloyConfig` connections (which the package-load worker
- *  pool opens independently of the raw `duckdb` connection the test handed
- *  it) before closing that raw connection, so a package test does not leak
- *  a worker-side connection every run. */
-async function cleanupPackage(
-   pkg: Package,
-   duckdb: DuckDBConnection,
-   dir?: string,
-): Promise<void> {
-   await pkg.getMalloyConfig().releaseConnections();
-   await cleanup(duckdb, dir);
 }
 
 /** A notebook cell's `result` is Malloy's own wire-format JSON, not the
@@ -269,7 +217,7 @@ async function expectServesWithCount(
 async function buildGatedModel(
    text: string,
 ): Promise<{ model: Model; duckdb: DuckDBConnection }> {
-   const duckdb = await newDuckdb();
+   const duckdb = await seededDuckdb(SEED_SQL);
    const modelPath = "m.malloy";
    const fullText = text.includes("experimental.givens")
       ? text
@@ -344,7 +292,7 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb);
+         await duckdb.close();
       }
    });
 
@@ -372,7 +320,7 @@ source: w_misbind is gated_parent extend { accept: id, val, n, owner } extend { 
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb);
+         await duckdb.close();
       }
    });
 
@@ -401,12 +349,12 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb);
+         await duckdb.close();
       }
    });
 
    it("a row filter stays bound when the caller declares a named derivation (except+rename, caller-text)", async () => {
-      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+      const { model, cleanup } = await createModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
@@ -432,7 +380,7 @@ run: mine -> { group_by: id; aggregate: n is count() }
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -452,7 +400,7 @@ import "base.malloy"
 
 source: w_misbind is gated_parent extend { except: org_id } extend { rename: org_id is owner }
 `;
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          { "base.malloy": base, "derived.malloy": derived },
          "derived.malloy",
       );
@@ -469,12 +417,12 @@ source: w_misbind is gated_parent extend { except: org_id } extend { rename: org
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("renaming a field that no filter reads still serves (negative)", async () => {
-      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+      const { model, cleanup } = await createModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
@@ -500,12 +448,12 @@ source: renamed_unrelated is gated_parent extend { rename: label is val }
             2,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a query_source entry point still serves (negative)", async () => {
-      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+      const { model, cleanup } = await createModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
@@ -531,12 +479,12 @@ source: qchild is gated_parent -> { group_by: id, org_id, val; aggregate: n is c
             2,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("`#(authorize)` lock, which reads no field, is unaffected by a rename on the entry point", async () => {
-      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+      const { model, cleanup } = await createModel(`##! experimental.givens
 
 given:
   ROLE :: string
@@ -571,14 +519,14 @@ source: locked_renamed is locked extend { rename: owner_id is owner }
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
 
 describe("filter binding guard — a joined source's own inherited filter stays bound to its original field", () => {
    it("a joined source's own where: filter stays bound when the join member is re-extended (except+rename)", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 source: base_filtered is duckdb.table('orgtable') extend {
    where: org_id = 1
    measure: n is count()
@@ -604,12 +552,12 @@ source: joiner is duckdb.table('orgtable') extend {
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a plain author where: filter with no rename still serves through a join (negative)", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 source: base_filtered is duckdb.table('orgtable') extend {
    where: org_id = 1
    measure: n is count()
@@ -634,7 +582,7 @@ source: joiner is duckdb.table('orgtable') extend {
             4,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -643,7 +591,7 @@ source: joiner is duckdb.table('orgtable') extend {
 // `#(filter)` (see RELEASE_NOTES deprecations).
 describe("deprecated: #(filter) — filter binding guard — #(filter) injection stays bound to its original field", () => {
    it("an injected #(filter) where: stays bound when the caller re-extends the dimension (except+rename)", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 #(filter) dimension=val type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    measure: n is count()
@@ -664,12 +612,12 @@ run: filtered_parent extend { except: val } extend { rename: val is note } -> { 
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("an unrenamed dimension still serves the injected where: (negative)", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 #(filter) dimension=val type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    measure: n is count()
@@ -689,7 +637,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
             1,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -701,7 +649,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
    // where `except: val; rename: val is note` has quietly rebound it to a
    // different physical column.
    it("a derived #(filter) dimension whose underlying column is rebound by the caller must deny", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 #(filter) dimension=safe_col type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    dimension: safe_col is val
@@ -721,12 +669,12 @@ source: filtered_parent is duckdb.table('orgtable') extend {
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("an unrenamed underlying column still serves the derived #(filter) dimension (negative)", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 #(filter) dimension=safe_col type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    dimension: safe_col is val
@@ -747,12 +695,12 @@ source: filtered_parent is duckdb.table('orgtable') extend {
             1,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("except:-ing an injected filter's own dimension, with nothing renamed onto it, surfaces Malloy's own compile error, not a 403", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 #(filter) dimension=val type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    measure: n is count()
@@ -771,7 +719,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
             ),
          ).rejects.toBeInstanceOf(MalloyError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -787,7 +735,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
    // declaring struct is re-resolved to the TRUE ancestor that wrote the
    // annotation.
    it("stays bound when the caller declares a NAMED derivation, not just an anonymous extend (except+rename)", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 #(filter) dimension=val type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    measure: n is count()
@@ -809,7 +757,7 @@ run: mine -> { group_by: id; aggregate: n is count() }
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -821,7 +769,7 @@ run: mine -> { group_by: id; aggregate: n is count() }
    // `declaringSourceName` becomes `mine`, comparing `mine`'s own (already
    // misbound, right there in the model file) field space to itself.
    it("stays bound when the MODEL declares the misbound derivation and it is queried directly (except+rename)", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 #(filter) dimension=val type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    measure: n is count()
@@ -842,12 +790,12 @@ source: mine is filtered_parent extend { except: val } extend { rename: val is n
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a notebook cell's injected #(filter) stays bound when the cell re-extends the dimension (except+rename)", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "nb.malloynb": `>>>malloy
 #(filter) dimension=val type=equal
@@ -867,7 +815,7 @@ run: filtered_parent extend { except: val } extend { rename: val is note } -> { 
             model.executeNotebookCell(1, { val: "a" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -953,7 +901,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
    ])(
       "a row filter (array given, direct column) stays bound when the entry point is re-extended (%s)",
       async (_label, extendBody) => {
-         const { model, duckdb, dir } = await createModel(MODEL_TEXT);
+         const { model, cleanup } = await createModel(MODEL_TEXT);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
             await expectDenied(
@@ -962,7 +910,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
                { GROUPS: [1] },
             );
          } finally {
-            await cleanup(duckdb, dir);
+            await cleanup();
          }
       },
    );
@@ -987,7 +935,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
    ])(
       "a row filter (scalar given, direct column) stays bound when the entry point is re-extended (%s)",
       async (_label, extendBody) => {
-         const { model, duckdb, dir } = await createModel(MODEL_TEXT);
+         const { model, cleanup } = await createModel(MODEL_TEXT);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
             await expectDenied(
@@ -996,7 +944,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
                { TENANT: "anything" },
             );
          } finally {
-            await cleanup(duckdb, dir);
+            await cleanup();
          }
       },
    );
@@ -1021,7 +969,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
    ])(
       "a plain where: filter with NO access_filter annotation stays bound when the entry point is re-extended (%s)",
       async (_label, extendBody) => {
-         const { model, duckdb, dir } = await createModel(MODEL_TEXT);
+         const { model, cleanup } = await createModel(MODEL_TEXT);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
             await expectDenied(
@@ -1029,7 +977,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
                `run: base_filtered extend { ${extendBody} } -> { aggregate: n is count() }`,
             );
          } finally {
-            await cleanup(duckdb, dir);
+            await cleanup();
          }
       },
    );
@@ -1046,7 +994,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
    ])(
       "a joined-field access_filter gate stays bound when the caller replaces the join (%s)",
       async (_label, extendBody) => {
-         const { model, duckdb, dir } = await createModel(MODEL_TEXT);
+         const { model, cleanup } = await createModel(MODEL_TEXT);
          try {
             expect(compilationErrorOf(model)).toBeUndefined();
             // `decoy_src` maps every id's `org_id` to 1 — a legit join would
@@ -1058,7 +1006,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
                { GROUPS: [1] },
             );
          } finally {
-            await cleanup(duckdb, dir);
+            await cleanup();
          }
       },
    );
@@ -1070,7 +1018,7 @@ source: gated_joiner is duckdb.table('orgtable') extend {
       // name to redeclare, and Malloy itself refuses with "Cannot redefine"
       // before this guard would ever get a chance to run. Confirms "include
       // only where Malloy accepts it" means never, for this exact attack.
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "m.malloy": `##! experimental.givens
 ##! experimental.access_modifiers
@@ -1098,12 +1046,12 @@ source: gated_parent is duckdb.table('orgtable') extend {
          );
          await expect(res).rejects.toThrow(/Cannot redefine/);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("renaming a field no filter reads still serves through an inline extend (negative)", async () => {
-      const { model, duckdb, dir } = await createModel(MODEL_TEXT);
+      const { model, cleanup } = await createModel(MODEL_TEXT);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expectServesWithCount(
@@ -1113,12 +1061,12 @@ source: gated_parent is duckdb.table('orgtable') extend {
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("an unmodified direct query still serves (negative)", async () => {
-      const { model, duckdb, dir } = await createModel(MODEL_TEXT);
+      const { model, cleanup } = await createModel(MODEL_TEXT);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expectServesWithCount(
@@ -1133,14 +1081,14 @@ source: gated_parent is duckdb.table('orgtable') extend {
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
 
 describe("filter binding guard — a caller's own fresh where: in an inline extend", () => {
    it("serves for an unannotated, unfiltered source", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 source: plain_src is duckdb.table('orgtable') extend {
    measure: n is count()
 }
@@ -1153,12 +1101,12 @@ source: plain_src is duckdb.table('orgtable') extend {
             1,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("serves for a source with its own plain where: filter", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 source: base_filtered is duckdb.table('orgtable') extend {
    where: org_id = 1
    measure: n is count()
@@ -1172,12 +1120,12 @@ source: base_filtered is duckdb.table('orgtable') extend {
             1,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("serves for a #(access_filter)-gated source", async () => {
-      const { model, duckdb, dir } = await createModel(`##! experimental.givens
+      const { model, cleanup } = await createModel(`##! experimental.givens
 
 given:
   GROUPS :: number[]
@@ -1196,7 +1144,7 @@ source: gated_parent is duckdb.table('orgtable') extend {
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -1204,7 +1152,7 @@ source: gated_parent is duckdb.table('orgtable') extend {
    // `#(filter)` (see RELEASE_NOTES deprecations).
    describe("deprecated: #(filter)", () => {
       it("serves for a #(filter)-injected source", async () => {
-         const { model, duckdb, dir } = await createModel(`
+         const { model, cleanup } = await createModel(`
 #(filter) dimension=note type=equal
 source: filtered_parent is duckdb.table('orgtable') extend {
    measure: n is count()
@@ -1224,7 +1172,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
                (result.compactResult as unknown as { n: number }[])[0].n,
             ).toBe(1);
          } finally {
-            await cleanup(duckdb, dir);
+            await cleanup();
          }
       });
    });
@@ -1233,7 +1181,7 @@ source: filtered_parent is duckdb.table('orgtable') extend {
    // `.malloynb` notebooks (see RELEASE_NOTES deprecations).
    describe("deprecated: .malloynb notebooks", () => {
       it("serves for the notebook-cell equivalent", async () => {
-         const { model, duckdb, dir } = await createModelWithFiles(
+         const { model, cleanup } = await createModelWithFiles(
             {
                "nb.malloynb": `>>>malloy
 ##! experimental.givens
@@ -1260,7 +1208,7 @@ run: gated_parent extend { where: id = 1 } -> { aggregate: n is count() }
             expect(result.result).toBeDefined();
             expect(firstCellResultValue(result.result!)).toBe(1);
          } finally {
-            await cleanup(duckdb, dir);
+            await cleanup();
          }
       });
    });
@@ -1268,7 +1216,7 @@ run: gated_parent extend { where: id = 1 } -> { aggregate: n is count() }
 
 describe("filter binding guard — the bypassAuthorize (trusted) path", () => {
    it("still denies a misbound plain where: filter even when #(authorize) gate evaluation is bypassed", async () => {
-      const { model, duckdb, dir } = await createModel(`
+      const { model, cleanup } = await createModel(`
 source: base_filtered is duckdb.table('orgtable') extend {
    where: org_id = 1
    measure: n is count()
@@ -1291,7 +1239,7 @@ source: base_filtered is duckdb.table('orgtable') extend {
             ),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -1355,7 +1303,7 @@ run: child_src -> { aggregate: n is count() }
    // the field-binding check that runs against the sibling's struct is what
    // still denies it.
    it("denies a misbound derivation declared across an import, run directly from a notebook cell", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(FILES);
+      const { pkg, cleanup } = await createPackageWithFiles(FILES);
       try {
          const model = pkg.getModel("nb.malloynb");
          expect(model).toBeDefined();
@@ -1363,12 +1311,12 @@ run: child_src -> { aggregate: n is count() }
             model!.executeNotebookCell(1, { org_id: "2" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("an unmodified cross-file inheritance still serves from a notebook cell (negative)", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(FILES);
+      const { pkg, cleanup } = await createPackageWithFiles(FILES);
       try {
          const model = pkg.getModel("nb_unmodified.malloynb");
          expect(model).toBeDefined();
@@ -1376,7 +1324,7 @@ run: child_src -> { aggregate: n is count() }
          expect(result.result).toBeDefined();
          expect(firstCellResultValue(result.result!)).toBe(2);
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -1388,7 +1336,7 @@ run: child_src -> { aggregate: n is count() }
    // catches it once the sibling lookup resolves the real declarer, by
    // comparing `child_src`'s own (redeclared) expression to `base.malloy`'s.
    it("denies a misbind that redeclares with dimension: instead of rename:, run from a notebook cell", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(FILES);
+      const { pkg, cleanup } = await createPackageWithFiles(FILES);
       try {
          const model = pkg.getModel("nb_dimension_misbind.malloynb");
          expect(model).toBeDefined();
@@ -1396,7 +1344,7 @@ run: child_src -> { aggregate: n is count() }
             model!.executeNotebookCell(1, { org_id: "2" }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -1414,7 +1362,7 @@ describe("filter binding guard — an inherited filter from a file not independe
    // CALLER's text positively, by comparing against the URL this specific
    // request actually compiled under.
    it("a plain where: inherited across a selectively-imported file still denies when the caller misbinds it", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "a.malloy": `
 source: base is duckdb.table('orgtable') extend {
@@ -1440,12 +1388,12 @@ import { derived } from "b.malloy"
             "run: derived extend { except: org_id } extend { rename: org_id is owner } -> { aggregate: n is count() }",
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a #(access_filter)-gated source inherited across a selectively-imported file still denies when the caller misbinds it", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "a.malloy": `##! experimental.givens
 
@@ -1477,7 +1425,7 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -1497,7 +1445,7 @@ import { GROUPS } from "a.malloy"
    // (loaded via `Package.create`) proves a harmless caller extend on this
    // exact shape now serves.
    it("an unmodified direct query against the selectively-imported derived source still serves (negative)", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "a.malloy": `
 source: base is duckdb.table('orgtable') extend {
@@ -1524,7 +1472,7 @@ import { derived } from "b.malloy"
             2,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -1539,7 +1487,7 @@ describe("filter binding guard — an unresolvable executed struct denies rather
    // `resolveRunTargetStruct` (which the real compile never actually fails
    // this way) return an unresolvable struct.
    it("denies a gated query when the executed struct cannot be resolved", async () => {
-      const { model, duckdb, dir } = await createModel(
+      const { model, cleanup } = await createModel(
          `##! experimental.givens
 
 given:
@@ -1580,7 +1528,7 @@ source: gated_parent is duckdb.table('orgtable') extend { measure: n is count() 
             spy.mockRestore();
          }
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -1634,7 +1582,7 @@ import { GROUPS } from "a.malloy"
    };
 
    it("an unmodified direct run against a selectively-imported gated source now serves", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_GATED);
+      const { pkg, cleanup } = await createPackageWithFiles(SEL_GATED);
       try {
          await expectServesWithCountViaPackage(
             pkg,
@@ -1644,12 +1592,12 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a caller extend renaming an UNRELATED field now serves", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_PLAIN);
+      const { pkg, cleanup } = await createPackageWithFiles(SEL_PLAIN);
       try {
          await expectServesWithCountViaPackage(
             pkg,
@@ -1658,12 +1606,12 @@ import { GROUPS } from "a.malloy"
             2,
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a caller extend adding an UNRELATED dimension now serves", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_PLAIN);
+      const { pkg, cleanup } = await createPackageWithFiles(SEL_PLAIN);
       try {
          await expectServesWithCountViaPackage(
             pkg,
@@ -1672,12 +1620,12 @@ import { GROUPS } from "a.malloy"
             2,
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a caller's own FRESH where: alongside the inherited filter now serves", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_PLAIN);
+      const { pkg, cleanup } = await createPackageWithFiles(SEL_PLAIN);
       try {
          await expectServesWithCountViaPackage(
             pkg,
@@ -1686,12 +1634,12 @@ import { GROUPS } from "a.malloy"
             1,
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a caller extend adding an UNRELATED dimension on a gated source now serves", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_GATED);
+      const { pkg, cleanup } = await createPackageWithFiles(SEL_GATED);
       try {
          await expectServesWithCountViaPackage(
             pkg,
@@ -1701,12 +1649,12 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a caller misbind on the same selectively-imported plain-where shape still denies", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_PLAIN);
+      const { pkg, cleanup } = await createPackageWithFiles(SEL_PLAIN);
       try {
          await expectDeniedViaPackage(
             pkg,
@@ -1714,12 +1662,12 @@ import { GROUPS } from "a.malloy"
             "run: derived extend { except: org_id } extend { rename: org_id is owner } -> { aggregate: n is count() }",
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a caller misbind on the same selectively-imported gated shape still denies", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles(SEL_GATED);
+      const { pkg, cleanup } = await createPackageWithFiles(SEL_GATED);
       try {
          await expectDeniedViaPackage(
             pkg,
@@ -1728,7 +1676,7 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -1743,7 +1691,7 @@ describe("filter binding guard — freshness never claimed for a named run", () 
    // URL, so a named run gets no freshness claim at all and falls through to
    // the ordinary (deny-by-default) path.
    it("a named query over a model-declared plain-where misbind still denies", async () => {
-      const { model, duckdb, dir } = await createModel(
+      const { model, cleanup } = await createModel(
          `
 source: base_filtered is duckdb.table('orgtable') extend {
    where: org_id = 1
@@ -1758,12 +1706,12 @@ query: q1 is base_filtered extend { except: org_id } extend { rename: org_id is 
             model.getQueryResults(undefined, "q1", undefined, {}, true, {}),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a named query over a model-declared #(access_filter) misbind still denies", async () => {
-      const { model, duckdb, dir } = await createModel(
+      const { model, cleanup } = await createModel(
          `##! experimental.givens
 
 given:
@@ -1782,12 +1730,12 @@ query: q1 is gated_parent extend { except: org_id } extend { rename: org_id is o
             }),
          ).rejects.toBeInstanceOf(AccessDeniedError);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("a model-declared query with its own fresh where: still serves as a named query", async () => {
-      const { model, duckdb, dir } = await createModel(
+      const { model, cleanup } = await createModel(
          `
 source: base_filtered is duckdb.table('orgtable') extend {
    where: org_id = 1
@@ -1810,7 +1758,7 @@ query: q2 is base_filtered extend { where: val = 'a' } -> { aggregate: n is coun
             1,
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -1860,7 +1808,7 @@ source: w is gated_parent extend { except: org_id } extend { rename: org_id is o
 `;
 
    it("denies in-process (Model.create) when the derived source's own tag sits at an EARLIER line than the gate note", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          { "a.malloy": GATE_FILE, "b.malloy": DERIVED_TAG_ABOVE },
          "b.malloy",
       );
@@ -1871,12 +1819,12 @@ source: w is gated_parent extend { except: org_id } extend { rename: org_id is o
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("denies in-process (Model.create) when the derived source's own tag sits at a LATER line than the gate note (control)", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          { "a.malloy": GATE_FILE, "b.malloy": DERIVED_TAG_BELOW },
          "b.malloy",
       );
@@ -1887,12 +1835,12 @@ source: w is gated_parent extend { except: org_id } extend { rename: org_id is o
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("denies via Package.create when the derived source's own tag sits at an EARLIER line than the gate note", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles({
+      const { pkg, cleanup } = await createPackageWithFiles({
          "a.malloy": GATE_FILE_SQL,
          "b.malloy": DERIVED_TAG_ABOVE,
       });
@@ -1904,7 +1852,7 @@ source: w is gated_parent extend { except: org_id } extend { rename: org_id is o
             { GROUPS: [1] },
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -1917,7 +1865,7 @@ source: w is gated_parent extend { except: org_id } extend { rename: org_id is o
       // mechanism this guard has genuinely fails here, which is exactly the
       // case an unfiltered fallback (a struct comparing its own unrelated
       // `# line_chart` tag to itself) would otherwise paper over.
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await createModelWithFiles(
          {
             "a.malloy": GATE_FILE,
             "b.malloy": DERIVED_TAG_ABOVE,
@@ -1934,7 +1882,7 @@ import { GROUPS } from "a.malloy"
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -1949,7 +1897,7 @@ describe("filter binding guard — an inline join's own where: is not denied for
    // condition) mistakes the parent for the declarer and denies a query
    // that never misbound anything.
    it("serves via Package.create for a single-file inline join with its own where:", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles({
+      const { pkg, cleanup } = await createPackageWithFiles({
          "m.malloy": `
 source: child_src is duckdb.sql("${CHILDROWS_SQL}") extend {
    join_one: j is duckdb.sql("${ORGROWS_SQL}") extend { where: val = 'a' } on id = j.id
@@ -1965,12 +1913,12 @@ source: child_src is duckdb.sql("${CHILDROWS_SQL}") extend {
             4,
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 
    it("serves via Package.create for the same shape declared in a second file, queried via import", async () => {
-      const { pkg, duckdb, dir } = await createPackageWithFiles({
+      const { pkg, cleanup } = await createPackageWithFiles({
          "a.malloy": `
 source: pj is duckdb.sql("${CHILDROWS_SQL}") extend {
    join_one: j is duckdb.sql("${ORGROWS_SQL}") extend { where: val = 'a' } on id = j.id
@@ -1987,7 +1935,7 @@ source: pj is duckdb.sql("${CHILDROWS_SQL}") extend {
             4,
          );
       } finally {
-         await cleanupPackage(pkg, duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -2021,7 +1969,7 @@ source: base is duckdb.table('orgtable') extend {
 `;
 
    it("(a) a caller join into the gated source serves, correctly filtered", async () => {
-      const { model, duckdb, dir } = await createModel(MODEL);
+      const { model, cleanup } = await createModel(MODEL);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
@@ -2039,12 +1987,12 @@ source: base is duckdb.table('orgtable') extend {
             { id: 4, gorg: null },
          ]);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(b) a caller join misbinding the gated field inside the join's own extend denies", async () => {
-      const { model, duckdb, dir } = await createModel(MODEL);
+      const { model, cleanup } = await createModel(MODEL);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expectDenied(
@@ -2053,12 +2001,12 @@ source: base is duckdb.table('orgtable') extend {
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(b2) a query-source caller join misbinding the gated field inside the inner query's base extend still denies", async () => {
-      const { model, duckdb, dir } = await createModel(MODEL);
+      const { model, cleanup } = await createModel(MODEL);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          await expectDenied(
@@ -2067,12 +2015,12 @@ source: base is duckdb.table('orgtable') extend {
             { GROUPS: [1] },
          );
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("(c) an ungated caller join still serves", async () => {
-      const { model, duckdb, dir } = await createModel(MODEL);
+      const { model, cleanup } = await createModel(MODEL);
       try {
          expect(compilationErrorOf(model)).toBeUndefined();
          const result = await model.getQueryResults(
@@ -2090,7 +2038,7 @@ source: base is duckdb.table('orgtable') extend {
             { id: 4, porg: 2 },
          ]);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });

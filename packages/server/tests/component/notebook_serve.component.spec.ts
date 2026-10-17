@@ -6,22 +6,10 @@
  * with a model-level `## artifact` note), driven through `Package.create` on
  * the package-load worker pool, the way a real load and reload run.
  */
-import {
-   afterAll,
-   afterEach,
-   beforeAll,
-   beforeEach,
-   describe,
-   expect,
-   it,
-} from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import {
-   PackageLoadPool,
-   __setPackageLoadPoolForTests,
-} from "../../src/package_load/package_load_pool";
 import { Model } from "../../src/service/model";
 import { Package } from "../../src/service/package";
 import {
@@ -39,8 +27,10 @@ import {
    listDashboards,
    listNotebooks,
 } from "../../src/service/legacy_report_views";
-
-const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
+import {
+   duckdbMalloyConfig,
+   usePackageLoadPool,
+} from "../../src/test_helpers/temp_package";
 
 /** The layout `readReportTagOfText` gives, or `null` for no report. */
 const layoutOfText = (source: string) => {
@@ -196,19 +186,7 @@ describe("the artifact tag read off text, as the lexer reads it", () => {
 
 describe("served notebooks (worker path)", () => {
    let tempDir: string;
-   let pool: PackageLoadPool;
-
-   beforeAll(async () => {
-      process.env.PACKAGE_LOAD_WORKERS = "1";
-      pool = new PackageLoadPool(1);
-      await __setPackageLoadPoolForTests(pool);
-   });
-
-   afterAll(async () => {
-      await __setPackageLoadPoolForTests(null);
-      if (ORIGINAL_ENV === undefined) delete process.env.PACKAGE_LOAD_WORKERS;
-      else process.env.PACKAGE_LOAD_WORKERS = ORIGINAL_ENV;
-   });
+   usePackageLoadPool();
 
    beforeEach(() => {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "publisher-nb-serve-"));
@@ -220,21 +198,6 @@ describe("served notebooks (worker path)", () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
    });
 
-   async function makeMalloyConfig() {
-      const { MalloyConfig, FixedConnectionMap } = await import(
-         "@malloydata/malloy"
-      );
-      const { DuckDBConnection } = await import("@malloydata/db-duckdb");
-      const duckdb = new DuckDBConnection("duckdb", ":memory:");
-      const connections = new FixedConnectionMap(
-         new Map([["duckdb", duckdb]]),
-         "duckdb",
-      );
-      const malloyConfig = new MalloyConfig({ connections: {} });
-      malloyConfig.wrapConnections(() => connections);
-      return { malloyConfig, duckdb };
-   }
-
    const write = (rel: string, text: string) =>
       fs.writeFileSync(path.join(tempDir, rel), text);
    const manifest = (extra: Record<string, unknown> = {}) =>
@@ -245,10 +208,10 @@ describe("served notebooks (worker path)", () => {
    async function withPackage(
       run: (
          pkg: Package,
-         cfg: Awaited<ReturnType<typeof makeMalloyConfig>>,
+         cfg: ReturnType<typeof duckdbMalloyConfig>,
       ) => Promise<void>,
    ) {
-      const cfg = await makeMalloyConfig();
+      const cfg = duckdbMalloyConfig();
       try {
          const pkg = await Package.create(
             "env",
@@ -588,7 +551,7 @@ describe("served notebooks (worker path)", () => {
       manifest();
       const text = `## artifact { layout=linear tiles=[] }\n${BASE}`;
       write("notebooks/nb.malloy", text);
-      const { malloyConfig, duckdb } = await makeMalloyConfig();
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
       try {
          const model = await Model.create(
             "pkg",
