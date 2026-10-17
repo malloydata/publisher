@@ -2,45 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Turning a storage manifest's ROLLUP entries into serve bindings the transform
- * can emit — the half of lake-served pre-aggregation that decides what may be
- * served, separately from how it is emitted.
+ * Turns a storage manifest's ROLLUP entries into serve bindings: what may be
+ * served, separately from how the transform emits it. Pure, no I/O.
  *
- * ## Why a rollup cannot go through the ordinary binding path
+ * A rollup cannot take the ordinary path (`Model.serveBindingsWithRefinements`),
+ * which looks up the binding's source in the AUTHOR model to lift fields and to
+ * narrow the schema to public columns. Both lookups fail silently for a rollup:
+ *  - Under its synthesized name there is no such source, the public schema is
+ *    empty, and the binding is dropped: the rollup never serves.
+ *  - Under the base's name, narrowing strips the `<measure>__partial` columns
+ *    and the base's measures reference columns the rollup lacks. The shape fails
+ *    to compile, and since it is built once per package, the escalation thins
+ *    every OTHER storage-bound source too.
  *
- * An ordinary `storage=` binding is finished by `Model.serveBindingsWithRefinements`,
- * which does two lookups into the AUTHOR's compiled model, both keyed by the
- * binding's source name: it reads that source's fields to lift its dimensions,
- * measures, joins and views, and it narrows the captured table schema to the
- * columns that source publicly exposes.
- *
- * A rollup fails both, in opposite directions depending on the name it is bound
- * under, and neither failure is loud:
- *
- *  - **Under its own synthesized name**, the author model has no such source. The
- *    field list is `undefined`, `narrowSchemaToPublic` intersects against an empty
- *    set and returns nothing, and the caller drops any binding whose public schema
- *    is empty. The rollup silently never serves.
- *  - **Under its base's author name**, the field list is the BASE's. The stored
- *    `<measure>__partial` columns are not public fields of the base, so narrowing
- *    strips exactly the columns the rollup's measures read; meanwhile the base's
- *    own measures are lifted and reference columns (`amount`) the rollup table
- *    does not have. The shape then fails to compile — and because the shape is
- *    built once for the whole package, `compileServeShape`'s escalation drops
- *    views and joins for every OTHER storage-bound source too, to accommodate a
- *    rollup it can never satisfy.
- *
- * The second is the one worth stating plainly: the blast radius of a bad rollup
- * binding is the whole package's storage serving, not the rollup's.
- *
- * So a rollup's refinements are derived from its {@link RollupPlan}, which already
- * holds exactly what is needed — the merged measure per stored partial — and its
- * captured schema is used as-is. That is not a relaxation of the narrowing rule:
- * a rollup's stored columns ARE its whole surface, because synthesis chose them.
- * There is no wider physical table to hide part of, which is the thing narrowing
- * exists to prevent.
- *
- * Pure: takes bindings and plans, returns bindings and conflicts, touches no I/O.
+ * So a rollup's refinements come from its {@link RollupPlan} and its captured
+ * schema is used as-is. That does not relax narrowing: synthesis chose the
+ * stored columns, so there is no wider physical table to hide.
  */
 
 import { logger } from "../logger";
@@ -55,17 +32,12 @@ import {
 
 /** One base source's rollups, in the order they should be offered. */
 interface RollupServeGroup {
-   /**
-    * The AUTHOR's source name — what a query names, and what the emitted shape
-    * must re-expose. Never a rollup's own name: nothing queries that.
-    */
+   /** The AUTHOR's source name, which queries use; never a rollup's own name. */
    baseSourceName: string;
    /**
-    * The rollup members, coarsest grain first, matching the order synthesis emits
-    * compose() members in. The resolver takes the first that covers, so this is
-    * what makes the cheapest covering rollup win; ordering them differently here
-    * than in the synthesized text would give the two legs different routing for
-    * the same query.
+    * Coarsest grain first, the order synthesis emits compose() members in. The
+    * resolver takes the first that covers, so the cheapest rollup wins; a
+    * different order here would route the two legs differently.
     */
    members: ServeBinding[];
 }
@@ -79,13 +51,9 @@ interface RollupServeConflict {
 /**
  * The merged measures a rollup's virtual source must declare.
  *
- * `total is total__partial.sum()` — the same text synthesis emits into the rollup
- * member's `extend {}`, for the same reason: the measure keeps the BASE's name so
- * a query asking for `total` finds it, and only the stored column is renamed.
- *
- * Emitted as {@link SourceRefinement}s so the existing `serveShapeFragment` path
- * renders them; the shape of a measure refinement (`name` plus `code`) is exactly
- * what a merge is.
+ * `total is total__partial.sum()`, matching what synthesis emits: the measure
+ * keeps the BASE's name so a query for `total` finds it. Returned as
+ * {@link SourceRefinement}s so `serveShapeFragment` renders them.
  */
 export function rollupServeRefinements(plan: RollupPlan): SourceRefinement[] {
    return plan.measures.map((m) => ({
@@ -99,18 +67,13 @@ export function rollupServeRefinements(plan: RollupPlan): SourceRefinement[] {
  * Group a package's rollup serve bindings by the base source they re-expose,
  * attaching each one's merged measures from its plan.
  *
- * Bindings whose origin is not `preaggregate` are ignored — they take the
- * ordinary path — but they ARE consulted, because a base that is itself
- * `storage=`-persisted has a binding of its own under the same author name, and
- * one name cannot rebind to two shapes.
+ * Non-`preaggregate` bindings take the ordinary path but are consulted: a base
+ * that is itself `storage=`-persisted already claims its name.
  *
- * A conflict DROPS that base's rollups rather than failing anything: its queries
- * serve from the base, which is always correct because the tier is a performance
- * tier. Dropping is also the only safe answer — emitting two `source: orders is …`
- * declarations would fail the whole package's serve shape, and the escalation
- * ladder cannot recover from a duplicate name: thinning refinements does not
- * remove a declaration, and the floor withholds only bindings whose own shape
- * will not compile, which a name collision is not.
+ * A conflict DROPS that base's rollups so its queries serve from the base. A
+ * duplicate `source:` declaration would fail the whole package's serve shape,
+ * and the escalation ladder cannot recover from it (thinning refinements does
+ * not remove a declaration).
  */
 export function rollupServeBindings(
    bindings: ServeBinding[],
@@ -119,8 +82,6 @@ export function rollupServeBindings(
    const planByRollupName = new Map(
       plans.map((plan) => [plan.rollupSourceName, plan]),
    );
-   // Author names already claimed by an ordinary binding. A rollup group cannot
-   // take a name one of these holds.
    const claimedByPersist = new Set(
       bindings
          .filter((b) => b.origin !== "preaggregate")
@@ -135,28 +96,19 @@ export function rollupServeBindings(
       if (binding.origin !== "preaggregate") continue;
       const plan = planByRollupName.get(binding.sourceName);
       if (!plan) {
-         // The manifest holds a rollup this model's declarations no longer
-         // produce — an annotation removed or a grain changed since the build.
-         // Its table is real but nothing can describe it, so it cannot be served.
-         // Not an error: the next build drops the table, and until then queries
-         // serve from the base.
+         // A rollup the declarations no longer produce (annotation removed or
+         // grain changed since the build). Not an error: the next build drops
+         // the table, and until then queries serve from the base.
          logger.debug(
             "Skipping a rollup serve binding with no matching plan; serving live",
             { sourceName: binding.sourceName },
          );
          continue;
       }
-      // The manifest entry was matched to this plan by NAME, and a rollup's name
-      // folds only its base and grain — not its measures. So a plan whose measure
-      // set has grown since the table was built matches an entry whose schema
-      // predates the new measure, and the member would declare
-      // `revenue is revenue__partial.sum()` over a table with no such column.
-      //
-      // That is worth catching here rather than at compile because of what it
-      // costs there: an uncompilable member fails the shape, and the shape is
-      // built once per package, so one stale entry takes every other base's
-      // rollups with it. Checked against the captured schema, which is the only
-      // description of the table that actually exists.
+      // A rollup's name folds only base and grain, not measures, so a plan that
+      // gained a measure since the build matches a table lacking its partial
+      // column. Caught here because an uncompilable member would fail the
+      // package-wide shape and take every other base's rollups with it.
       const columns = new Set(binding.schema.map((c) => c.name));
       const missing = [
          ...plan.grainDimensions,
@@ -182,14 +134,10 @@ export function rollupServeBindings(
    for (const [baseSourceName, entries] of [...byBase.entries()].sort(
       ([a], [b]) => a.localeCompare(b),
    )) {
-      // Every member of a composite must live on ONE connection — the compiler
-      // raises `composite-source-connection-mismatch` otherwise, which is the same
-      // constraint that made this a lake-ONLY composite in the first place. Two
-      // grains on one base CAN name different destinations (they are two tables,
-      // so validation has nothing to refuse), and that is unservable under one
-      // name. Refused rather than partially served: picking one destination's
-      // members would silently drop the others, and which ones survived would
-      // depend on nothing the author can see.
+      // Composite members must share one connection (else the compiler raises
+      // `composite-source-connection-mismatch`), but two grains on one base may
+      // name different destinations. Refused rather than partially served,
+      // which would drop members arbitrarily.
       const destinations = new Set(
          entries.map((e) => e.binding.destinationName),
       );
@@ -217,13 +165,10 @@ export function rollupServeBindings(
       groups.push({
          baseSourceName,
          members: entries
-            // Coarsest first, the same order synthesis emits compose() members in.
             .sort((a, b) => compareRollupBreadth(a.plan, b.plan))
             .map(({ plan, binding }) => ({
                ...binding,
-               // Derived from the plan, never from the author model: see this
-               // module's header for what each of the two lookups does to a
-               // rollup.
+               // From the plan, never the author model (see module header).
                refinements: rollupServeRefinements(plan),
             })),
       });
