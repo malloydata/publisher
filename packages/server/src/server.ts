@@ -71,6 +71,7 @@ import {
    resolveBoundPort,
    resolveClientHost,
 } from "./mcp_config";
+import { observePackageStates } from "./package_state_metrics";
 import { registerLegacyRoutes } from "./server-old";
 import { EnvironmentStore } from "./service/environment_store";
 import { MaterializationScheduler } from "./service/materialization_scheduler";
@@ -288,6 +289,7 @@ const memoryGovernor = memoryGovernorConfig
    : null;
 memoryGovernor?.start();
 environmentStore.setMemoryGovernor(memoryGovernor);
+observePackageStates(environmentStore);
 // Start the semantic index building as each package loads, rather than on the
 // first question. This only queues work (see startPackageEmbeddingSync); with
 // no embedding provider the queued job returns at once.

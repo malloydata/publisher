@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { recordPackageReload } from "../package_state_metrics";
 import chokidar, { FSWatcher } from "chokidar";
 import { EventEmitter } from "events";
 import { RequestHandler } from "express";
@@ -135,11 +136,13 @@ export class WatchModeController {
                false,
             );
             await environment.getPackage(pkgName, true);
+            recordPackageReload("watch", "success");
             logger.info(
                `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,
             );
             return true;
          } catch (error) {
+            recordPackageReload("watch", "failure");
             logger.error(
                `Watch: failed to recompile package "${pkgName}" in environment "${watchName}"`,
                { error },

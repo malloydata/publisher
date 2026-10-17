@@ -86,6 +86,7 @@ export function registerReloadPackageTool(
                await packageController.reloadPackage(
                   environmentName,
                   packageName,
+                  "mcp",
                );
 
             const payload = {

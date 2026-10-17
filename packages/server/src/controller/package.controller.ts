@@ -1,6 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import {
+   recordPackageReload,
+   type ReloadTrigger,
+} from "../package_state_metrics";
 import * as path from "path";
 import { components } from "../api";
 import { normalizeModelPath } from "../constants";
@@ -150,6 +154,24 @@ export class PackageController {
     * is unchanged.
     */
    public async reloadPackage(
+      environmentName: string,
+      packageName: string,
+      trigger: ReloadTrigger = "rest",
+   ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
+      try {
+         const reloaded = await this.reloadPackageFrom(
+            environmentName,
+            packageName,
+         );
+         recordPackageReload(trigger, "success");
+         return reloaded;
+      } catch (error) {
+         recordPackageReload(trigger, "failure");
+         throw error;
+      }
+   }
+
+   private async reloadPackageFrom(
       environmentName: string,
       packageName: string,
    ): Promise<{ metadata: ApiPackage; mode: PackageReloadMode }> {
