@@ -7,10 +7,6 @@ import {
    type LlmFailureReason,
 } from "../llm_metrics";
 import {
-   EMBEDDING_BATCH_TIMEOUT_MS,
-   prepareEmbeddingInput,
-} from "../service/embedding_provider";
-import {
    HttpRequestError,
    malformedReply,
    type RetryPolicy,
@@ -23,6 +19,33 @@ import type {
    ProviderName,
 } from "./types";
 
+/** Timeout for bulk (index-build) embedding calls. */
+export const EMBEDDING_BATCH_TIMEOUT_MS = 30_000;
+
+/** Per-input character cap (matches the hosted indexing pipeline). */
+export const MAX_EMBED_INPUT_CHARS = 1_024;
+
+/**
+ * Collapse whitespace (newlines confuse some embedding models) and cap
+ * the input length, mirroring the hosted indexing pipeline's input
+ * preparation. Never returns an empty string: providers reject empty
+ * input items with a 400, which would fail a whole package's batch, so
+ * text that collapses to nothing (a whitespace-only backtick identifier)
+ * becomes a placeholder token instead. This is the single choke point
+ * for that invariant; the index hashes this same function's output, so
+ * hash and sent text cannot drift. Exported for tests and for
+ * content-hashing: the hash must cover the text actually sent, so a
+ * truncation-boundary edit re-embeds.
+ */
+export function prepareEmbeddingInput(text: string): string {
+   const cleaned = text.replace(/\s+/g, " ").trim();
+   const capped =
+      cleaned.length > MAX_EMBED_INPUT_CHARS
+         ? cleaned.slice(0, MAX_EMBED_INPUT_CHARS)
+         : cleaned;
+   return capped || "-";
+}
+
 /**
  * Sends one chunk of already-prepared texts as one HTTP request and returns
  * one vector per text, in order. A single attempt: retry lives above it.
@@ -32,6 +55,15 @@ export type EmbedChunkFn = (
    signal: AbortSignal,
    timeoutMs: number,
 ) => Promise<number[][]>;
+
+/** Whether `v` is a non-empty vector of finite numbers. */
+export function isVector(v: unknown): v is number[] {
+   return (
+      Array.isArray(v) &&
+      v.length > 0 &&
+      v.every((n) => typeof n === "number" && Number.isFinite(n))
+   );
+}
 
 /** Check a vector list is one finite, non-empty numeric vector per input. */
 export function checkVectors(
@@ -47,11 +79,7 @@ export function checkVectors(
       );
    }
    vectors.forEach((v, i) => {
-      if (
-         !Array.isArray(v) ||
-         v.length === 0 ||
-         !v.every((n) => typeof n === "number" && Number.isFinite(n))
-      ) {
+      if (!isVector(v)) {
          throw malformedReply("Embedding response", where, `bad item ${i}`);
       }
    });
@@ -59,7 +87,7 @@ export function checkVectors(
 }
 
 /**
- * The shared half of the Google and Vertex embedding models: input
+ * The shared half of every embedding model: input
  * preparation, splitting into requests of `maxBatch`, retry and metrics. The
  * vendor supplies only {@link EmbedChunkFn}.
  */

@@ -4,6 +4,7 @@
 import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
 import type { RawChat, RawChatRequest } from "./chat_model";
+import { isVector, type EmbedChunkFn } from "./embedding_http";
 import type { ChatResult, FetchFn, ProviderName } from "./types";
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -122,4 +123,67 @@ export class OpenAiCompatibleChat implements RawChat {
          },
       };
    }
+}
+
+/**
+ * One request to an OpenAI-compatible `/embeddings` endpoint. The API key
+ * travels only in the Authorization header; postJson keeps it out of every
+ * error message.
+ */
+export function openAiEmbedChunk(args: {
+   baseUrl: string;
+   apiKey: string;
+   model: string;
+   dimensions?: number;
+   fetchFn: FetchFn;
+}): EmbedChunkFn {
+   const url = `${args.baseUrl}/embeddings`;
+   return async (inputs, signal, timeoutMs) => {
+      const json = (await postJson({
+         fetchFn: args.fetchFn,
+         url,
+         headers: { Authorization: `Bearer ${args.apiKey}` },
+         body: {
+            model: args.model,
+            input: inputs,
+            ...(args.dimensions !== undefined
+               ? { dimensions: args.dimensions }
+               : {}),
+         },
+         signal,
+         timeoutMs,
+         secrets: [args.apiKey],
+         authHint: "EMBEDDING_API_KEY",
+         what: "Embedding request",
+      })) as { data?: { index?: number; embedding?: unknown }[] } | null;
+      const data = json?.data;
+      if (!Array.isArray(data) || data.length !== inputs.length) {
+         throw malformedReply(
+            "Embedding response",
+            url,
+            `expected ${inputs.length} embeddings, got ${Array.isArray(data) ? data.length : "none"}`,
+         );
+      }
+
+      // The response documents per-item `index` fields; place by index
+      // defensively rather than assuming order.
+      const vectors = new Array<number[] | undefined>(inputs.length);
+      for (let i = 0; i < data.length; i++) {
+         const item = data[i];
+         const idx = typeof item?.index === "number" ? item.index : i;
+         if (
+            // Numeric contents, not just shape: a provider returning
+            // [1, null, "x"] would otherwise be stored and misbehave
+            // silently (NaN scores) at search time.
+            !isVector(item?.embedding) ||
+            idx < 0 ||
+            idx >= inputs.length ||
+            vectors[idx] !== undefined
+         ) {
+            throw malformedReply("Embedding response", url, `bad item ${i}`);
+         }
+         vectors[idx] = item.embedding;
+      }
+      return vectors as number[][];
+   };
 }
