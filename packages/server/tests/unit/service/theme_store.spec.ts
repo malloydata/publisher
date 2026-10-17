@@ -1,12 +1,18 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+// Lives under `tests/unit/` (not `src/`) on purpose: environment_store.spec.ts
+// replaces `../config` with `mock.module` (isPublisherConfigFrozen always
+// false), and Bun's module mocks persist process-wide across spec files. Under
+// `src/`, whether this spec saw the real config depended on file order, so the
+// frozenConfig cases passed on macOS and failed on Linux. The integration
+// runner gives it a clean module cache.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
-import { PUBLISHER_CONFIG_NAME } from "../constants";
-import { ThemeStore } from "./theme_store";
-import { StorageManager } from "../storage/StorageManager";
+import { PUBLISHER_CONFIG_NAME } from "../../../src/constants";
+import { ThemeStore } from "../../../src/service/theme_store";
+import { StorageManager } from "../../../src/storage/StorageManager";
 
 const TEST_ROOT = path.join(process.cwd(), "test-temp-theme-store");
 

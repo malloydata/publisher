@@ -634,16 +634,19 @@ source: orders is duckdb.table('shared_t') extend {
          path.join(tempDir, "late.malloy"),
          `source: late is duckdb.table('late_t')\n`,
       );
+      // The held fetch outlasts the timeout by a wide margin, and the timeout
+      // leaves the healthy load below room to start a fresh worker on a slow
+      // runner: at 250ms it timed out on Windows CI.
       const { duckdb, load, tearDown } = await setUp(
          (tables) =>
-            tables.includes("late_t") ? sleep(1000) : Promise.resolve(),
-         { jobTimeoutMs: 250 },
+            tables.includes("late_t") ? sleep(4000) : Promise.resolve(),
+         { jobTimeoutMs: 1500 },
       );
       try {
          await duckdb.runSQL("create or replace table late_t as select 1 as a");
          await expect(load(false)).rejects.toThrow(/timed out/);
          // Past the moment the held fetch answers.
-         await sleep(1000);
+         await sleep(4000);
          fs.rmSync(path.join(tempDir, "late.malloy"));
          fs.writeFileSync(
             path.join(tempDir, "fine.malloy"),

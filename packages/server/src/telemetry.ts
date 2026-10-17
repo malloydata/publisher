@@ -8,6 +8,7 @@ import {
    type Attributes,
    type Counter,
    type Span,
+   type Tracer,
    type Histogram,
    type Meter,
    type UpDownCounter,
@@ -106,8 +107,9 @@ export async function withSpan<T>(
    name: string,
    attributes: Attributes,
    fn: (span: Span) => Promise<T>,
+   spanTracer: Tracer = tracer(),
 ): Promise<T> {
-   return tracer().startActiveSpan(name, { attributes }, async (span) => {
+   return spanTracer.startActiveSpan(name, { attributes }, async (span) => {
       try {
          return await fn(span);
       } catch (error) {

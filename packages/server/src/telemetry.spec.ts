@@ -1,8 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import { afterAll, describe, expect, it } from "bun:test";
+import { SpanStatusCode } from "@opentelemetry/api";
 import {
    BasicTracerProvider,
    InMemorySpanExporter,
@@ -16,12 +16,11 @@ describe("withSpan", () => {
       spanProcessors: [new SimpleSpanProcessor(exporter)],
    });
 
-   beforeAll(() => {
-      trace.setGlobalTracerProvider(provider);
-   });
+   // The provider's own tracer, not the global one: another spec may have
+   // registered a global provider first, and a second registration is ignored.
+   const tracer = provider.getTracer("test");
    afterAll(async () => {
       await provider.shutdown();
-      trace.disable();
    });
 
    it("ends a span with the attributes and returns the value", async () => {
@@ -33,6 +32,7 @@ describe("withSpan", () => {
             span.setAttribute("extra", 1);
             return 42;
          },
+         tracer,
       );
       expect(value).toBe(42);
       const [span] = exporter.getFinishedSpans();
@@ -44,9 +44,14 @@ describe("withSpan", () => {
    it("marks a throw as an error, records it, and rethrows", async () => {
       exporter.reset();
       await expect(
-         withSpan("publisher.test", {}, async () => {
-            throw new Error("boom");
-         }),
+         withSpan(
+            "publisher.test",
+            {},
+            async () => {
+               throw new Error("boom");
+            },
+            tracer,
+         ),
       ).rejects.toThrow("boom");
       const [span] = exporter.getFinishedSpans();
       expect(span.status).toEqual({

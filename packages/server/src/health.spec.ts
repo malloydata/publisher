@@ -160,10 +160,12 @@ describe("SIGTERM: drain, then refuse, then shut down", () => {
          return process;
       }) as never);
       const closed: string[] = [];
+      // Long enough that the requests below land inside the drain window on a
+      // slow CI runner; 50ms was not.
       health.registerSignalHandlers(
          fakeServer("main", closed),
          fakeServer("mcp", closed),
-         0.05,
+         2,
          0,
       );
       expect(onSigterm).toBeDefined();
