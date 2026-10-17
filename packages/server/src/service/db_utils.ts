@@ -117,6 +117,42 @@ function groupColumnRowsIntoTables(
    return tables;
 }
 
+/**
+ * Whether a BadRequestError escapes an introspector untouched, and whether it
+ * is logged first. A bad argument must stay a bad argument: rewrapping it as a
+ * plain Error sends it to the internal-fault classifier, whose advice is "try
+ * again later", so an agent retries a deterministically-invalid argument
+ * forever. A rejected catalog name is the caller's/config's to fix, not an
+ * internal fault, either. Introspectors that never raise one leave it "wrap".
+ */
+type BadRequestPassThrough = "wrap" | "before-log" | "after-log";
+
+/**
+ * Run one introspection call, logging and rewrapping a failure with the
+ * connection named. `label` completes both "Error getting <label>" (the log)
+ * and "Failed to get <label>: <reason>" (the thrown error).
+ */
+async function withIntrospectionFailure<T>(
+   label: string,
+   fn: () => Promise<T>,
+   badRequest: BadRequestPassThrough = "wrap",
+): Promise<T> {
+   try {
+      return await fn();
+   } catch (error) {
+      if (badRequest === "before-log" && error instanceof BadRequestError) {
+         throw error;
+      }
+      logger.error(`Error getting ${label}`, { error });
+      if (badRequest === "after-log" && error instanceof BadRequestError) {
+         throw error;
+      }
+      throw new Error(`Failed to get ${label}: ${(error as Error).message}`, {
+         cause: error,
+      });
+   }
+}
+
 async function createBigQueryClient(
    connection: ApiConnection,
 ): Promise<BigQuery> {
@@ -214,31 +250,26 @@ async function getSchemasForBigQuery(
    if (!connection.bigqueryConnection) {
       throw new Error("BigQuery connection is required");
    }
-   try {
-      const bigquery = await createBigQueryClient(connection);
-      const [datasets] = await bigquery.getDatasets();
+   return withIntrospectionFailure(
+      `schemas for BigQuery connection ${connection.name}`,
+      async () => {
+         const bigquery = await createBigQueryClient(connection);
+         const [datasets] = await bigquery.getDatasets();
 
-      return await Promise.all(
-         datasets.map(async (dataset) => {
-            const [metadata] = await dataset.getMetadata();
-            return {
-               name: dataset.id,
-               isHidden: false,
-               isDefault: false,
-               description: (metadata as { description?: string })?.description,
-            };
-         }),
-      );
-   } catch (error) {
-      logger.error(
-         `Error getting schemas for BigQuery connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for BigQuery connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         return await Promise.all(
+            datasets.map(async (dataset) => {
+               const [metadata] = await dataset.getMetadata();
+               return {
+                  name: dataset.id,
+                  isHidden: false,
+                  isDefault: false,
+                  description: (metadata as { description?: string })
+                     ?.description,
+               };
+            }),
+         );
+      },
+   );
 }
 
 async function getSchemasForPostgres(
@@ -248,37 +279,33 @@ async function getSchemasForPostgres(
    if (!connection.postgresConnection) {
       throw new Error("Postgres connection is required");
    }
-   try {
-      // Wrap in row_to_json because the Malloy Postgres driver's runSQL
-      // de-JSONs each row via row.row (matching Malloy-generated queries).
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t",
-      );
-      const rows = standardizeRunSQLResult(result);
-      return rows.map((row: unknown) => {
-         const typedRow = row as Record<string, unknown>;
-         const schemaName = String(
-            typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+   return withIntrospectionFailure(
+      `schemas for Postgres connection ${connection.name}`,
+      async () => {
+         // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+         // de-JSONs each row via row.row (matching Malloy-generated queries).
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            "SELECT row_to_json(t) as row FROM (SELECT schema_name FROM information_schema.schemata ORDER BY schema_name) t",
          );
-         return {
-            name: schemaName,
-            isHidden: ["information_schema", "pg_catalog", "pg_toast"].includes(
-               schemaName,
-            ),
-            isDefault: schemaName === "public",
-         };
-      });
-   } catch (error) {
-      logger.error(
-         `Error getting schemas for Postgres connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for Postgres connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = String(
+               typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+            );
+            return {
+               name: schemaName,
+               isHidden: [
+                  "information_schema",
+                  "pg_catalog",
+                  "pg_toast",
+               ].includes(schemaName),
+               isDefault: schemaName === "public",
+            };
+         });
+      },
+   );
 }
 
 /**
@@ -297,33 +324,27 @@ async function getSchemasForSQLServer(
    if (!connection.sqlserverConnection) {
       throw new Error("SQL Server connection is required");
    }
-   try {
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         "SELECT DISTINCT table_schema AS schema_name FROM information_schema.tables ORDER BY table_schema",
-      );
-      const rows = standardizeRunSQLResult(result);
-      return rows.map((row: unknown) => {
-         const typedRow = row as Record<string, unknown>;
-         const schemaName = String(
-            typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+   return withIntrospectionFailure(
+      `schemas for SQL Server connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            "SELECT DISTINCT table_schema AS schema_name FROM information_schema.tables ORDER BY table_schema",
          );
-         return {
-            name: schemaName,
-            isHidden: false,
-            isDefault: schemaName === "dbo",
-         };
-      });
-   } catch (error) {
-      logger.error(
-         `Error getting schemas for SQL Server connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for SQL Server connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = String(
+               typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+            );
+            return {
+               name: schemaName,
+               isHidden: false,
+               isDefault: schemaName === "dbo",
+            };
+         });
+      },
+   );
 }
 
 async function getSchemasForMySQL(
@@ -497,443 +518,407 @@ async function getSchemasForSnowflake(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   if (!connection.snowflakeConnection) {
+   const snowflake = connection.snowflakeConnection;
+   if (!snowflake) {
       throw new Error("Snowflake connection is required");
    }
-   try {
-      const database = connection.snowflakeConnection.database;
-      const schema = connection.snowflakeConnection.schema;
+   // A rejected database name is the config's to fix, not an internal fault.
+   // Flattened into a generic Error it classifies as "unexpected internal
+   // error, retry later", so a caller retries a deterministically-invalid
+   // value forever. Matches getSchemasForTrino, getSchemasForDatabricks and
+   // listTablesForSnowflake, which guard the same way for the same reason.
+   return withIntrospectionFailure(
+      `schemas for Snowflake connection ${connection.name}`,
+      async () => {
+         const database = snowflake.database;
+         const schema = snowflake.schema;
 
-      // INFORMATION_SCHEMA.SCHEMATA is PER-DATABASE in Snowflake, and an
-      // unqualified reference to it resolves against the session's current
-      // database. A connection with no configured database has no current
-      // database, so the unqualified form does not merely return the wrong rows,
-      // it fails outright ("Cannot perform SELECT. This session does not have a
-      // current database"). There is also no qualified form that spans
-      // databases. So the two cases need different instruments:
-      //
-      //   database configured -> <db>.INFORMATION_SCHEMA.SCHEMATA, as before.
-      //   no database         -> SHOW SCHEMAS IN ACCOUNT, which needs no current
-      //                          database and reports every role-visible schema.
-      //
-      // Both branches emit the same `DATABASE.SCHEMA` name, which is the shape
-      // listTablesForSnowflake parses back apart, so the two-part contract holds
-      // either way.
-      const rows = database
-         ? await listSnowflakeSchemasInDatabase(
-              connection,
-              malloyConnection,
-              database,
-              schema,
-           )
-         : await listSnowflakeSchemasInAccount(malloyConnection);
+         // INFORMATION_SCHEMA.SCHEMATA is PER-DATABASE in Snowflake, and an
+         // unqualified reference to it resolves against the session's current
+         // database. A connection with no configured database has no current
+         // database, so the unqualified form does not merely return the wrong rows,
+         // it fails outright ("Cannot perform SELECT. This session does not have a
+         // current database"). There is also no qualified form that spans
+         // databases. So the two cases need different instruments:
+         //
+         //   database configured -> <db>.INFORMATION_SCHEMA.SCHEMATA, as before.
+         //   no database         -> SHOW SCHEMAS IN ACCOUNT, which needs no current
+         //                          database and reports every role-visible schema.
+         //
+         // Both branches emit the same `DATABASE.SCHEMA` name, which is the shape
+         // listTablesForSnowflake parses back apart, so the two-part contract holds
+         // either way.
+         const rows = database
+            ? await listSnowflakeSchemasInDatabase(
+                 connection,
+                 malloyConnection,
+                 database,
+                 schema,
+              )
+            : await listSnowflakeSchemasInAccount(malloyConnection);
 
-      return rows.map(({ catalogName, schemaName, owner }) => ({
-         name: `${catalogName}.${schemaName}`,
-         isHidden:
-            owner === "SNOWFLAKE" ||
-            // A BLANK owner counts as system-owned only within a configured
-            // database. Account-wide it does not: SHOW SCHEMAS reports a blank
-            // owner for any schema that is not local to the account, which
-            // includes every schema of an IMPORTED DATABASE -- a Marketplace or
-            // partner share the operator deliberately subscribed to. Treating
-            // those as system schemas drops them from the Connection Explorer
-            // picker by default and tells an agent its tables are elsewhere.
-            //
-            // Nothing is lost by scoping it: account-wide, every other
-            // blank-owner schema is either INFORMATION_SCHEMA (caught by name,
-            // one per database) or inside a Snowflake-managed database (caught
-            // by the set below, which is what actually carries the sample-data
-            // share -- itself blank-owner).
-            (Boolean(database) && owner === "") ||
-            schemaName === "INFORMATION_SCHEMA" ||
-            // Account-wide listing surfaces Snowflake's own databases, which are
-            // noise in a schema picker. They are only reachable in the
-            // no-database branch; a connection explicitly pointed at one still
-            // lists it, because there the operator asked for it by name.
-            (!database && SNOWFLAKE_SYSTEM_DATABASES.has(catalogName)),
-         // Scoped to the configured database on purpose. Account-wide, a bare
-         // `schemaName === schema` marks a same-named schema in EVERY database
-         // as the default, so N databases with a `PUBLIC` schema would yield N
-         // defaults. Without a database there is no one default to point at.
-         isDefault:
-            Boolean(database) && Boolean(schema) && schemaName === schema,
-      }));
-   } catch (error) {
-      // A rejected database name is the config's to fix, not an internal fault.
-      // Flattened into a generic Error it classifies as "unexpected internal
-      // error, retry later", so a caller retries a deterministically-invalid
-      // value forever. Matches getSchemasForTrino, getSchemasForDatabricks and
-      // listTablesForSnowflake, which guard the same way for the same reason.
-      if (error instanceof BadRequestError) throw error;
-      logger.error(
-         `Error getting schemas for Snowflake connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for Snowflake connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         return rows.map(({ catalogName, schemaName, owner }) => ({
+            name: `${catalogName}.${schemaName}`,
+            isHidden:
+               owner === "SNOWFLAKE" ||
+               // A BLANK owner counts as system-owned only within a configured
+               // database. Account-wide it does not: SHOW SCHEMAS reports a blank
+               // owner for any schema that is not local to the account, which
+               // includes every schema of an IMPORTED DATABASE -- a Marketplace or
+               // partner share the operator deliberately subscribed to. Treating
+               // those as system schemas drops them from the Connection Explorer
+               // picker by default and tells an agent its tables are elsewhere.
+               //
+               // Nothing is lost by scoping it: account-wide, every other
+               // blank-owner schema is either INFORMATION_SCHEMA (caught by name,
+               // one per database) or inside a Snowflake-managed database (caught
+               // by the set below, which is what actually carries the sample-data
+               // share -- itself blank-owner).
+               (Boolean(database) && owner === "") ||
+               schemaName === "INFORMATION_SCHEMA" ||
+               // Account-wide listing surfaces Snowflake's own databases, which are
+               // noise in a schema picker. They are only reachable in the
+               // no-database branch; a connection explicitly pointed at one still
+               // lists it, because there the operator asked for it by name.
+               (!database && SNOWFLAKE_SYSTEM_DATABASES.has(catalogName)),
+            // Scoped to the configured database on purpose. Account-wide, a bare
+            // `schemaName === schema` marks a same-named schema in EVERY database
+            // as the default, so N databases with a `PUBLIC` schema would yield N
+            // defaults. Without a database there is no one default to point at.
+            isDefault:
+               Boolean(database) && Boolean(schema) && schemaName === schema,
+         }));
+      },
+      "before-log",
+   );
 }
 
 async function getSchemasForTrino(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   if (!connection.trinoConnection) {
+   const trino = connection.trinoConnection;
+   if (!trino) {
       throw new Error("Trino connection is required");
    }
-   try {
-      const configuredSchema = connection.trinoConnection.schema;
-      let allRows: { catalog: string; schema: string }[] = [];
+   return withIntrospectionFailure(
+      `schemas for Trino connection ${connection.name}`,
+      async () => {
+         const configuredSchema = trino.schema;
+         let allRows: { catalog: string; schema: string }[] = [];
 
-      if (connection.trinoConnection.catalog) {
-         const catalog = connection.trinoConnection.catalog;
-         const result = await runIntrospectionSQL(
-            malloyConnection,
-            `SELECT schema_name FROM ${assertSafeSqlIdentifier(
-               catalog,
-               "catalog name",
-            )}.information_schema.schemata ORDER BY schema_name`,
-         );
-         const rows = standardizeRunSQLResult(result);
-         allRows = rows.map((row: unknown) => {
-            const r = row as Record<string, unknown>;
-            return {
-               catalog,
-               schema: String(r.schema_name ?? r.Schema ?? ""),
-            };
-         });
-      } else {
-         const catalogsResult = await runIntrospectionSQL(
-            malloyConnection,
-            `SHOW CATALOGS`,
-         );
-         const catalogNames = standardizeRunSQLResult(catalogsResult).map(
-            (row: unknown) => {
+         if (trino.catalog) {
+            const catalog = trino.catalog;
+            const result = await runIntrospectionSQL(
+               malloyConnection,
+               `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                  catalog,
+                  "catalog name",
+               )}.information_schema.schemata ORDER BY schema_name`,
+            );
+            const rows = standardizeRunSQLResult(result);
+            allRows = rows.map((row: unknown) => {
                const r = row as Record<string, unknown>;
-               return String(r.Catalog ?? r.catalog ?? "");
-            },
-         );
-
-         for (const catalog of catalogNames) {
-            try {
-               const result = await runIntrospectionSQL(
-                  malloyConnection,
-                  `SELECT schema_name FROM ${assertSafeSqlIdentifier(
-                     catalog,
-                     "catalog name",
-                  )}.information_schema.schemata ORDER BY schema_name`,
-               );
-               const rows = standardizeRunSQLResult(result);
-               for (const row of rows) {
+               return {
+                  catalog,
+                  schema: String(r.schema_name ?? r.Schema ?? ""),
+               };
+            });
+         } else {
+            const catalogsResult = await runIntrospectionSQL(
+               malloyConnection,
+               `SHOW CATALOGS`,
+            );
+            const catalogNames = standardizeRunSQLResult(catalogsResult).map(
+               (row: unknown) => {
                   const r = row as Record<string, unknown>;
-                  allRows.push({
-                     catalog,
-                     schema: String(r.schema_name ?? r.Schema ?? ""),
-                  });
+                  return String(r.Catalog ?? r.catalog ?? "");
+               },
+            );
+
+            for (const catalog of catalogNames) {
+               try {
+                  const result = await runIntrospectionSQL(
+                     malloyConnection,
+                     `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                        catalog,
+                        "catalog name",
+                     )}.information_schema.schemata ORDER BY schema_name`,
+                  );
+                  const rows = standardizeRunSQLResult(result);
+                  for (const row of rows) {
+                     const r = row as Record<string, unknown>;
+                     allRows.push({
+                        catalog,
+                        schema: String(r.schema_name ?? r.Schema ?? ""),
+                     });
+                  }
+               } catch (catalogError) {
+                  logger.warn(
+                     `Failed to list schemas for Trino catalog ${catalog}`,
+                     { error: catalogError },
+                  );
                }
-            } catch (catalogError) {
-               logger.warn(
-                  `Failed to list schemas for Trino catalog ${catalog}`,
-                  { error: catalogError },
-               );
             }
          }
-      }
 
-      return allRows.map(({ catalog, schema }) => {
-         const name = connection.trinoConnection?.catalog
-            ? schema
-            : `${catalog}.${schema}`;
-         return {
-            name,
-            isHidden: ["information_schema", "performance_schema"].includes(
-               schema,
-            ),
-            isDefault: configuredSchema ? schema === configuredSchema : false,
-         };
-      });
-   } catch (error) {
-      // A rejected catalog name is the caller's/config's to fix, not an
-      // internal fault. Flattened into a generic Error it classifies as
-      // "unexpected internal error, retry later", which is the retry-forever
-      // loop this PR exists to remove.
-      if (error instanceof BadRequestError) throw error;
-      logger.error(
-         `Error getting schemas for Trino connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for Trino connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         return allRows.map(({ catalog, schema }) => {
+            const name = trino?.catalog ? schema : `${catalog}.${schema}`;
+            return {
+               name,
+               isHidden: ["information_schema", "performance_schema"].includes(
+                  schema,
+               ),
+               isDefault: configuredSchema
+                  ? schema === configuredSchema
+                  : false,
+            };
+         });
+      },
+      "before-log",
+   );
 }
 
 async function getSchemasForDatabricks(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   if (!connection.databricksConnection) {
+   const databricks = connection.databricksConnection;
+   if (!databricks) {
       throw new Error("Databricks connection is required");
    }
-   try {
-      const configuredSchema = connection.databricksConnection.defaultSchema;
-      let allRows: { catalog: string; schema: string }[] = [];
+   return withIntrospectionFailure(
+      `schemas for Databricks connection ${connection.name}`,
+      async () => {
+         const configuredSchema = databricks.defaultSchema;
+         let allRows: { catalog: string; schema: string }[] = [];
 
-      if (connection.databricksConnection.defaultCatalog) {
-         const catalog = connection.databricksConnection.defaultCatalog;
-         const result = await runIntrospectionSQL(
-            malloyConnection,
-            `SELECT schema_name FROM ${assertSafeSqlIdentifier(
-               catalog,
-               "catalog name",
-            )}.information_schema.schemata ORDER BY schema_name`,
-         );
-         const rows = standardizeRunSQLResult(result);
-         allRows = rows.map((row: unknown) => {
-            const r = row as Record<string, unknown>;
-            return {
-               catalog,
-               schema: String(r.schema_name ?? r.Schema ?? ""),
-            };
-         });
-      } else {
-         const catalogsResult = await runIntrospectionSQL(
-            malloyConnection,
-            `SHOW CATALOGS`,
-         );
-         const catalogNames = standardizeRunSQLResult(catalogsResult).map(
-            (row: unknown) => {
+         if (databricks.defaultCatalog) {
+            const catalog = databricks.defaultCatalog;
+            const result = await runIntrospectionSQL(
+               malloyConnection,
+               `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                  catalog,
+                  "catalog name",
+               )}.information_schema.schemata ORDER BY schema_name`,
+            );
+            const rows = standardizeRunSQLResult(result);
+            allRows = rows.map((row: unknown) => {
                const r = row as Record<string, unknown>;
-               return String(r.catalog ?? r.Catalog ?? r.catalog_name ?? "");
-            },
-         );
-
-         for (const catalog of catalogNames) {
-            try {
-               const result = await runIntrospectionSQL(
-                  malloyConnection,
-                  `SELECT schema_name FROM ${assertSafeSqlIdentifier(
-                     catalog,
-                     "catalog name",
-                  )}.information_schema.schemata ORDER BY schema_name`,
-               );
-               const rows = standardizeRunSQLResult(result);
-               for (const row of rows) {
+               return {
+                  catalog,
+                  schema: String(r.schema_name ?? r.Schema ?? ""),
+               };
+            });
+         } else {
+            const catalogsResult = await runIntrospectionSQL(
+               malloyConnection,
+               `SHOW CATALOGS`,
+            );
+            const catalogNames = standardizeRunSQLResult(catalogsResult).map(
+               (row: unknown) => {
                   const r = row as Record<string, unknown>;
-                  allRows.push({
-                     catalog,
-                     schema: String(r.schema_name ?? r.Schema ?? ""),
-                  });
+                  return String(r.catalog ?? r.Catalog ?? r.catalog_name ?? "");
+               },
+            );
+
+            for (const catalog of catalogNames) {
+               try {
+                  const result = await runIntrospectionSQL(
+                     malloyConnection,
+                     `SELECT schema_name FROM ${assertSafeSqlIdentifier(
+                        catalog,
+                        "catalog name",
+                     )}.information_schema.schemata ORDER BY schema_name`,
+                  );
+                  const rows = standardizeRunSQLResult(result);
+                  for (const row of rows) {
+                     const r = row as Record<string, unknown>;
+                     allRows.push({
+                        catalog,
+                        schema: String(r.schema_name ?? r.Schema ?? ""),
+                     });
+                  }
+               } catch (catalogError) {
+                  logger.warn(
+                     `Failed to list schemas for Databricks catalog ${catalog}`,
+                     { error: catalogError },
+                  );
                }
-            } catch (catalogError) {
-               logger.warn(
-                  `Failed to list schemas for Databricks catalog ${catalog}`,
-                  { error: catalogError },
-               );
             }
          }
-      }
-      logger.info("allRows for Schemas for Databricks", { allRows });
-      return allRows.map(({ catalog, schema }) => {
-         const name = connection.databricksConnection?.defaultCatalog
-            ? schema
-            : `${catalog}.${schema}`;
-         return {
-            name,
-            isHidden: ["information_schema"].includes(schema),
-            isDefault: configuredSchema ? schema === configuredSchema : false,
-         };
-      });
-   } catch (error) {
-      // A rejected catalog name is the caller's/config's to fix, not an
-      // internal fault. Flattened into a generic Error it classifies as
-      // "unexpected internal error, retry later", which is the retry-forever
-      // loop this PR exists to remove.
-      if (error instanceof BadRequestError) throw error;
-      logger.error(
-         `Error getting schemas for Databricks connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for Databricks connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         logger.info("allRows for Schemas for Databricks", { allRows });
+         return allRows.map(({ catalog, schema }) => {
+            const name = databricks?.defaultCatalog
+               ? schema
+               : `${catalog}.${schema}`;
+            return {
+               name,
+               isHidden: ["information_schema"].includes(schema),
+               isDefault: configuredSchema
+                  ? schema === configuredSchema
+                  : false,
+            };
+         });
+      },
+      "before-log",
+   );
 }
 
 async function getSchemasForDuckDB(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   if (!connection.duckdbConnection) {
+   const duckdb = connection.duckdbConnection;
+   if (!duckdb) {
       throw new Error("DuckDB connection is required");
    }
-   try {
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
-      );
+   return withIntrospectionFailure(
+      `schemas for DuckDB connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            "SELECT DISTINCT schema_name,catalog_name FROM information_schema.schemata ORDER BY catalog_name,schema_name",
+         );
 
-      const rows = standardizeRunSQLResult(result);
+         const rows = standardizeRunSQLResult(result);
 
-      const schemas: ApiSchema[] = rows.map((row: unknown) => {
-         const typedRow = row as Record<string, unknown>;
-         const schemaName = String(typedRow.schema_name ?? "");
-         const catalogName = String(typedRow.catalog_name ?? "");
+         const schemas: ApiSchema[] = rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = String(typedRow.schema_name ?? "");
+            const catalogName = String(typedRow.catalog_name ?? "");
 
-         return {
-            name: `${catalogName}.${schemaName}`,
-            isHidden:
-               [
-                  "information_schema",
-                  "performance_schema",
-                  "pg_catalog",
-                  "pg_toast",
-                  "",
-               ].includes(schemaName) ||
-               ["md_information_schema", "system"].includes(catalogName),
-            isDefault: catalogName === "main",
-         };
-      });
+            return {
+               name: `${catalogName}.${schemaName}`,
+               isHidden:
+                  [
+                     "information_schema",
+                     "performance_schema",
+                     "pg_catalog",
+                     "pg_toast",
+                     "",
+                  ].includes(schemaName) ||
+                  ["md_information_schema", "system"].includes(catalogName),
+               isDefault: catalogName === "main",
+            };
+         });
 
-      const attachedDatabases =
-         connection.duckdbConnection.attachedDatabases || [];
+         const attachedDatabases = duckdb.attachedDatabases || [];
 
-      const cloudDatabases = attachedDatabases.filter(
-         (attachedDb) =>
-            (attachedDb.type === "gcs" || attachedDb.type === "s3") &&
-            (attachedDb.gcsConnection || attachedDb.s3Connection),
-      );
+         const cloudDatabases = attachedDatabases.filter(
+            (attachedDb) =>
+               (attachedDb.type === "gcs" || attachedDb.type === "s3") &&
+               (attachedDb.gcsConnection || attachedDb.s3Connection),
+         );
 
-      const cloudDbPromises = cloudDatabases.map(async (attachedDb) => {
-         const dbType = attachedDb.type as "gcs" | "s3";
-         const credentials =
-            dbType === "gcs"
-               ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
-               : s3ConnectionToCredentials(attachedDb.s3Connection!);
+         const cloudDbPromises = cloudDatabases.map(async (attachedDb) => {
+            const dbType = attachedDb.type as "gcs" | "s3";
+            const credentials =
+               dbType === "gcs"
+                  ? gcsConnectionToCredentials(attachedDb.gcsConnection!)
+                  : s3ConnectionToCredentials(attachedDb.s3Connection!);
 
-         try {
-            return await listCloudDirectorySchemas(credentials);
-         } catch (cloudError) {
-            logger.warn(
-               `Failed to list ${dbType.toUpperCase()} directory schemas for ${attachedDb.name}`,
-               { error: cloudError },
-            );
-            return [];
+            try {
+               return await listCloudDirectorySchemas(credentials);
+            } catch (cloudError) {
+               logger.warn(
+                  `Failed to list ${dbType.toUpperCase()} directory schemas for ${attachedDb.name}`,
+                  { error: cloudError },
+               );
+               return [];
+            }
+         });
+
+         const cloudSchemaArrays = await Promise.all(cloudDbPromises);
+         for (const cloudSchemas of cloudSchemaArrays) {
+            schemas.push(...cloudSchemas);
          }
-      });
 
-      const cloudSchemaArrays = await Promise.all(cloudDbPromises);
-      for (const cloudSchemas of cloudSchemaArrays) {
-         schemas.push(...cloudSchemas);
-      }
-
-      const azureDatabases = attachedDatabases.filter(
-         (attachedDb) =>
-            attachedDb.type === "azure" && attachedDb.azureConnection,
-      );
-      for (const attachedDb of azureDatabases) {
-         if (attachedDb.name) {
-            schemas.push({
-               name: attachedDb.name,
-               isHidden: false,
-               isDefault: false,
-            });
+         const azureDatabases = attachedDatabases.filter(
+            (attachedDb) =>
+               attachedDb.type === "azure" && attachedDb.azureConnection,
+         );
+         for (const attachedDb of azureDatabases) {
+            if (attachedDb.name) {
+               schemas.push({
+                  name: attachedDb.name,
+                  isHidden: false,
+                  isDefault: false,
+               });
+            }
          }
-      }
 
-      return schemas;
-   } catch (error) {
-      logger.error(
-         `Error getting schemas for DuckDB connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for DuckDB connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         return schemas;
+      },
+   );
 }
 
 async function getSchemasForMotherDuck(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   if (!connection.motherduckConnection) {
+   const motherduck = connection.motherduckConnection;
+   if (!motherduck) {
       throw new Error("MotherDuck connection is required");
    }
-   try {
-      const database = connection.motherduckConnection.database;
-      const whereClause = database
-         ? `WHERE catalog_name = '${sqlLiteral(database, connection.type)}'`
-         : "";
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT DISTINCT schema_name FROM information_schema.schemata ${whereClause} ORDER BY schema_name`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return rows.map((row: unknown) => {
-         const typedRow = row as Record<string, unknown>;
-         const schemaName = String(
-            typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+   return withIntrospectionFailure(
+      `schemas for MotherDuck connection ${connection.name}`,
+      async () => {
+         const database = motherduck.database;
+         const whereClause = database
+            ? `WHERE catalog_name = '${sqlLiteral(database, connection.type)}'`
+            : "";
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT DISTINCT schema_name FROM information_schema.schemata ${whereClause} ORDER BY schema_name`,
          );
-         return {
-            name: schemaName,
-            isHidden: ["information_schema", "performance_schema", ""].includes(
-               schemaName,
-            ),
-            isDefault: schemaName === "main",
-         };
-      });
-   } catch (error) {
-      logger.error(
-         `Error getting schemas for MotherDuck connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for MotherDuck connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         const rows = standardizeRunSQLResult(result);
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = String(
+               typedRow.schema_name ?? typedRow.SCHEMA_NAME ?? "",
+            );
+            return {
+               name: schemaName,
+               isHidden: [
+                  "information_schema",
+                  "performance_schema",
+                  "",
+               ].includes(schemaName),
+               isDefault: schemaName === "main",
+            };
+         });
+      },
+   );
 }
 
 async function getSchemasForDuckLake(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   try {
-      // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
-      const catalogName = connection.name ?? "";
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
-      );
-      const rows = standardizeRunSQLResult(result);
+   return withIntrospectionFailure(
+      `schemas for DuckLake connection ${connection.name}`,
+      async () => {
+         // The catalog is attached with the connection name (see attachDuckLake in connection.ts)
+         const catalogName = connection.name ?? "";
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT schema_name FROM information_schema.schemata WHERE catalog_name = '${sqlLiteral(catalogName, connection.type)}' ORDER BY schema_name`,
+         );
+         const rows = standardizeRunSQLResult(result);
 
-      return rows.map((row: unknown) => {
-         const typedRow = row as Record<string, unknown>;
-         const schemaName = typedRow.schema_name as string;
-         const shouldShow = schemaName === "main" || schemaName === "public";
-         return {
-            name: schemaName,
-            isHidden: !shouldShow,
-            isDefault: false,
-         };
-      });
-   } catch (error) {
-      logger.error(
-         `Error getting schemas for DuckLake connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get schemas for DuckLake connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         return rows.map((row: unknown) => {
+            const typedRow = row as Record<string, unknown>;
+            const schemaName = typedRow.schema_name as string;
+            const shouldShow = schemaName === "main" || schemaName === "public";
+            return {
+               name: schemaName,
+               isHidden: !shouldShow,
+               isDefault: false,
+            };
+         });
+      },
+   );
 }
 
 /** Abort introspection requests that hang instead of holding the slot open. */
@@ -1066,36 +1051,75 @@ async function listTablesForPublisher(
    });
 }
 
+type ConnectionType = NonNullable<ApiConnection["type"]>;
+
+/** How one connection type lists its schemas and the tables in one schema. */
+interface Introspector {
+   schemas(
+      connection: ApiConnection,
+      malloyConnection: Connection,
+   ): Promise<ApiSchema[]>;
+   tables(
+      connection: ApiConnection,
+      schemaName: string,
+      malloyConnection: Connection,
+      tableNames?: string[],
+   ): Promise<ApiTable[]>;
+}
+
+const INTROSPECTORS: Record<ConnectionType, Introspector> = {
+   bigquery: {
+      schemas: getSchemasForBigQuery,
+      tables: listTablesForBigQuery,
+   },
+   postgres: {
+      schemas: getSchemasForPostgres,
+      tables: listTablesForPostgres,
+   },
+   mysql: { schemas: getSchemasForMySQL, tables: listTablesForMySQL },
+   sqlserver: {
+      schemas: getSchemasForSQLServer,
+      tables: listTablesForSQLServer,
+   },
+   snowflake: {
+      schemas: getSchemasForSnowflake,
+      tables: listTablesForSnowflake,
+   },
+   trino: { schemas: getSchemasForTrino, tables: listTablesForTrino },
+   databricks: {
+      schemas: getSchemasForDatabricks,
+      tables: listTablesForDatabricks,
+   },
+   duckdb: { schemas: getSchemasForDuckDB, tables: listTablesForDuckDB },
+   motherduck: {
+      schemas: getSchemasForMotherDuck,
+      tables: listTablesForMotherDuck,
+   },
+   ducklake: {
+      schemas: getSchemasForDuckLake,
+      tables: listTablesForDuckLake,
+   },
+   publisher: {
+      schemas: getSchemasForPublisher,
+      tables: (connection, schemaName, _malloyConnection, tableNames) =>
+         listTablesForPublisher(connection, schemaName, tableNames),
+   },
+};
+
+function introspectorFor(connection: ApiConnection): Introspector {
+   const type = connection.type;
+   // hasOwn, not `in`: a type such as "constructor" must not resolve.
+   if (type && Object.hasOwn(INTROSPECTORS, type)) {
+      return INTROSPECTORS[type];
+   }
+   throw new Error(`Unsupported connection type: ${connection.type}`);
+}
+
 export async function getSchemasForConnection(
    connection: ApiConnection,
    malloyConnection: Connection,
 ): Promise<ApiSchema[]> {
-   switch (connection.type) {
-      case "bigquery":
-         return getSchemasForBigQuery(connection);
-      case "postgres":
-         return getSchemasForPostgres(connection, malloyConnection);
-      case "mysql":
-         return getSchemasForMySQL(connection);
-      case "sqlserver":
-         return getSchemasForSQLServer(connection, malloyConnection);
-      case "snowflake":
-         return getSchemasForSnowflake(connection, malloyConnection);
-      case "trino":
-         return getSchemasForTrino(connection, malloyConnection);
-      case "databricks":
-         return getSchemasForDatabricks(connection, malloyConnection);
-      case "duckdb":
-         return getSchemasForDuckDB(connection, malloyConnection);
-      case "motherduck":
-         return getSchemasForMotherDuck(connection, malloyConnection);
-      case "ducklake":
-         return getSchemasForDuckLake(connection, malloyConnection);
-      case "publisher":
-         return getSchemasForPublisher(connection);
-      default:
-         throw new Error(`Unsupported connection type: ${connection.type}`);
-   }
+   return introspectorFor(connection).schemas(connection, malloyConnection);
 }
 
 /**
@@ -1333,82 +1357,12 @@ export async function listTablesForSchema(
    malloyConnection: Connection,
    tableNames?: string[],
 ): Promise<ApiTable[]> {
-   switch (connection.type) {
-      case "bigquery":
-         return listTablesForBigQuery(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "mysql":
-         return listTablesForMySQL(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "postgres":
-         return listTablesForPostgres(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "sqlserver":
-         return listTablesForSQLServer(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "snowflake":
-         return listTablesForSnowflake(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "trino":
-         return listTablesForTrino(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "databricks":
-         return listTablesForDatabricks(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "duckdb":
-         return listTablesForDuckDB(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "motherduck":
-         return listTablesForMotherDuck(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "ducklake":
-         return listTablesForDuckLake(
-            connection,
-            schemaName,
-            malloyConnection,
-            tableNames,
-         );
-      case "publisher":
-         return listTablesForPublisher(connection, schemaName, tableNames);
-      default:
-         throw new Error(`Unsupported connection type: ${connection.type}`);
-   }
+   return introspectorFor(connection).tables(
+      connection,
+      schemaName,
+      malloyConnection,
+      tableNames,
+   );
 }
 
 /**
@@ -1421,71 +1375,65 @@ async function listTablesForBigQuery(
    malloyConnection: Connection,
    tableNames?: string[],
 ): Promise<ApiTable[]> {
-   try {
-      const bigquery = await createBigQueryClient(connection);
-      // A 3-segment table reference ("project.dataset.table") reaches here with a
-      // project-qualified schema ("project.dataset"). bigquery.dataset() takes a
-      // BARE dataset id plus an optional projectId, so passing "project.dataset" as
-      // the id resolves to a non-existent dataset in the client's default project —
-      // the dataset's tables never list, so the orphan sweep can't see (and reclaim)
-      // those tables. Split the project off the last dot. (Domain-scoped project ids
-      // like "domain.com:project" keep their dots/colon since we split on the last.)
-      const lastDot = schemaName.lastIndexOf(".");
-      const dataset =
-         lastDot === -1
-            ? bigquery.dataset(schemaName)
-            : bigquery.dataset(schemaName.slice(lastDot + 1), {
-                 projectId: schemaName.slice(0, lastDot),
-              });
-      const [tables] = await dataset.getTables();
+   return withIntrospectionFailure(
+      `tables for BigQuery schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const bigquery = await createBigQueryClient(connection);
+         // A 3-segment table reference ("project.dataset.table") reaches here with a
+         // project-qualified schema ("project.dataset"). bigquery.dataset() takes a
+         // BARE dataset id plus an optional projectId, so passing "project.dataset" as
+         // the id resolves to a non-existent dataset in the client's default project —
+         // the dataset's tables never list, so the orphan sweep can't see (and reclaim)
+         // those tables. Split the project off the last dot. (Domain-scoped project ids
+         // like "domain.com:project" keep their dots/colon since we split on the last.)
+         const lastDot = schemaName.lastIndexOf(".");
+         const dataset =
+            lastDot === -1
+               ? bigquery.dataset(schemaName)
+               : bigquery.dataset(schemaName.slice(lastDot + 1), {
+                    projectId: schemaName.slice(0, lastDot),
+                 });
+         const [tables] = await dataset.getTables();
 
-      let names = tables
-         .map((table) => table.id)
-         .filter((id): id is string => id !== undefined);
-      if (tableNames) {
-         const allowed = new Set(tableNames);
-         names = names.filter((id) => allowed.has(id));
-      }
+         let names = tables
+            .map((table) => table.id)
+            .filter((id): id is string => id !== undefined);
+         if (tableNames) {
+            const allowed = new Set(tableNames);
+            names = names.filter((id) => allowed.has(id));
+         }
 
-      const results = await Promise.all(
-         names.map(async (tableName) => {
-            const tablePath = `${schemaName}.${tableName}`;
-            try {
-               const source = await (
-                  malloyConnection as Connection & {
-                     fetchTableSchema: (
-                        tableKey: string,
-                        tablePath: string,
-                     ) => Promise<TableSourceDef | undefined>;
-                  }
-               ).fetchTableSchema(tableName, tablePath);
-               const columns =
-                  source?.fields?.map((field) => ({
-                     name: field.name,
-                     type: field.type,
-                  })) || [];
-               return { resource: tablePath, columns };
-            } catch (error) {
-               logger.warn(`Failed to get schema for table ${tableName}`, {
-                  error: extractErrorDataFromError(error),
-                  schemaName,
-                  tableName,
-               });
-               return { resource: tablePath, columns: [] };
-            }
-         }),
-      );
-      return results;
-   } catch (error) {
-      logger.error(
-         `Error getting tables for BigQuery schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get tables for BigQuery schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         const results = await Promise.all(
+            names.map(async (tableName) => {
+               const tablePath = `${schemaName}.${tableName}`;
+               try {
+                  const source = await (
+                     malloyConnection as Connection & {
+                        fetchTableSchema: (
+                           tableKey: string,
+                           tablePath: string,
+                        ) => Promise<TableSourceDef | undefined>;
+                     }
+                  ).fetchTableSchema(tableName, tablePath);
+                  const columns =
+                     source?.fields?.map((field) => ({
+                        name: field.name,
+                        type: field.type,
+                     })) || [];
+                  return { resource: tablePath, columns };
+               } catch (error) {
+                  logger.warn(`Failed to get schema for table ${tableName}`, {
+                     error: extractErrorDataFromError(error),
+                     schemaName,
+                     tableName,
+                  });
+                  return { resource: tablePath, columns: [] };
+               }
+            }),
+         );
+         return results;
+      },
+   );
 }
 
 async function listTablesForMySQL(
@@ -1497,23 +1445,17 @@ async function listTablesForMySQL(
    if (!connection.mysqlConnection) {
       throw new Error("Mysql connection is required");
    }
-   try {
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for MySQL schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get tables for MySQL schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+   return withIntrospectionFailure(
+      `tables for MySQL schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }
 
 /**
@@ -1539,29 +1481,23 @@ async function listTablesForSQLServer(
    if (!connection.sqlserverConnection) {
       throw new Error("SQL Server connection is required");
    }
-   try {
-      // The SQL Server connector returns rows as plain objects keyed by column
-      // name, so no row_to_json wrapping as for Postgres. Every literal is
-      // N'…': a plain '…' is converted to the database's code page before it
-      // is compared, so under a Latin1 collation a schema named `Продажи`
-      // becomes question marks and matches nothing. The information_schema
-      // columns are nvarchar, so the Unicode literal compares as written.
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = ${sqlserverNLiteral(schemaName)} ${sqlserverInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for SQL Server schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get tables for SQL Server schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+   return withIntrospectionFailure(
+      `tables for SQL Server schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         // The SQL Server connector returns rows as plain objects keyed by column
+         // name, so no row_to_json wrapping as for Postgres. Every literal is
+         // N'…': a plain '…' is converted to the database's code page before it
+         // is compared, so under a Latin1 collation a schema named `Продажи`
+         // becomes question marks and matches nothing. The information_schema
+         // columns are nvarchar, so the Unicode literal compares as written.
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = ${sqlserverNLiteral(schemaName)} ${sqlserverInFilter("table_name", tableNames)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }
 
 async function listTablesForPostgres(
@@ -1573,25 +1509,19 @@ async function listTablesForPostgres(
    if (!connection.postgresConnection) {
       throw new Error("Postgres connection is required");
    }
-   try {
-      // Wrap in row_to_json because the Malloy Postgres driver's runSQL
-      // de-JSONs each row via row.row (matching Malloy-generated queries).
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position) t`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for Postgres schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get tables for Postgres schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+   return withIntrospectionFailure(
+      `tables for Postgres schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         // Wrap in row_to_json because the Malloy Postgres driver's runSQL
+         // de-JSONs each row via row.row (matching Malloy-generated queries).
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT row_to_json(t) as row FROM (SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position) t`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }
 
 async function listTablesForSnowflake(
@@ -1600,52 +1530,46 @@ async function listTablesForSnowflake(
    malloyConnection: Connection,
    tableNames?: string[],
 ): Promise<ApiTable[]> {
-   if (!connection.snowflakeConnection) {
+   const snowflake = connection.snowflakeConnection;
+   if (!snowflake) {
       throw new Error("Snowflake connection is required");
    }
-   try {
-      const parts = schemaName.split(".");
-      let databaseName: string;
-      let schemaOnly: string;
+   return withIntrospectionFailure(
+      `tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const parts = schemaName.split(".");
+         let databaseName: string;
+         let schemaOnly: string;
 
-      if (parts.length >= 2) {
-         databaseName = parts[0];
-         schemaOnly = parts[1];
-      } else {
-         databaseName = connection.snowflakeConnection.database ?? "";
-         schemaOnly = parts[0];
-      }
+         if (parts.length >= 2) {
+            databaseName = parts[0];
+            schemaOnly = parts[1];
+         } else {
+            databaseName = snowflake.database ?? "";
+            schemaOnly = parts[0];
+         }
 
-      if (!databaseName) {
-         throw new Error(
-            `Cannot resolve database for schema "${schemaName}": provide DATABASE.SCHEMA or configure a database on the connection`,
+         if (!databaseName) {
+            throw new Error(
+               `Cannot resolve database for schema "${schemaName}": provide DATABASE.SCHEMA or configure a database on the connection`,
+            );
+         }
+
+         // Identifier position below, so this is validated, not escaped.
+         assertSafeSqlIdentifier(databaseName, "database name");
+         const qualifiedSchema = `${databaseName}.${schemaOnly}`;
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
          );
-      }
-
-      // Identifier position below, so this is validated, not escaped.
-      assertSafeSqlIdentifier(databaseName, "database name");
-      const qualifiedSchema = `${databaseName}.${schemaOnly}`;
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE FROM ${databaseName}.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("TABLE_NAME", tableNames, connection.type)} ORDER BY TABLE_NAME, ORDINAL_POSITION`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${qualifiedSchema}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for Snowflake schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      // A bad argument must stay a bad argument: rewrapping it as a plain
-      // Error sends it to the internal-fault classifier, whose advice is "try
-      // again later", so an agent retries a deterministically-invalid argument
-      // forever. Only DuckDB escaped that, because its throw sits outside a try.
-      if (error instanceof BadRequestError) throw error;
-      throw new Error(
-         `Failed to get tables for Snowflake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(
+            rows,
+            (t) => `${qualifiedSchema}.${t}`,
+         );
+      },
+      "after-log",
+   );
 }
 
 async function listTablesForTrino(
@@ -1654,54 +1578,48 @@ async function listTablesForTrino(
    malloyConnection: Connection,
    tableNames?: string[],
 ): Promise<ApiTable[]> {
-   if (!connection.trinoConnection) {
+   const trino = connection.trinoConnection;
+   if (!trino) {
       throw new Error("Trino connection is required");
    }
-   try {
-      let catalogPrefix: string;
-      let schemaOnly: string;
-      let resourcePrefix: string;
+   return withIntrospectionFailure(
+      `tables for Trino schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         let catalogPrefix: string;
+         let schemaOnly: string;
+         let resourcePrefix: string;
 
-      if (connection.trinoConnection.catalog) {
-         catalogPrefix = `${connection.trinoConnection.catalog}.`;
-         schemaOnly = schemaName;
-         resourcePrefix = `${connection.trinoConnection.catalog}.${schemaName}`;
-      } else {
-         const dotIdx = schemaName.indexOf(".");
-         if (dotIdx > 0) {
-            catalogPrefix = `${assertSafeSqlIdentifier(
-               schemaName.substring(0, dotIdx),
-               "catalog name",
-            )}.`;
-            schemaOnly = schemaName.substring(dotIdx + 1);
-         } else {
-            catalogPrefix = "";
+         if (trino.catalog) {
+            catalogPrefix = `${trino.catalog}.`;
             schemaOnly = schemaName;
+            resourcePrefix = `${trino.catalog}.${schemaName}`;
+         } else {
+            const dotIdx = schemaName.indexOf(".");
+            if (dotIdx > 0) {
+               catalogPrefix = `${assertSafeSqlIdentifier(
+                  schemaName.substring(0, dotIdx),
+                  "catalog name",
+               )}.`;
+               schemaOnly = schemaName.substring(dotIdx + 1);
+            } else {
+               catalogPrefix = "";
+               schemaOnly = schemaName;
+            }
+            resourcePrefix = schemaName;
          }
-         resourcePrefix = schemaName;
-      }
 
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for Trino schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      // A bad argument must stay a bad argument: rewrapping it as a plain
-      // Error sends it to the internal-fault classifier, whose advice is "try
-      // again later", so an agent retries a deterministically-invalid argument
-      // forever. Only DuckDB escaped that, because its throw sits outside a try.
-      if (error instanceof BadRequestError) throw error;
-      throw new Error(
-         `Failed to get tables for Trino schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(
+            rows,
+            (t) => `${resourcePrefix}.${t}`,
+         );
+      },
+      "after-log",
+   );
 }
 
 async function listTablesForDatabricks(
@@ -1710,54 +1628,48 @@ async function listTablesForDatabricks(
    malloyConnection: Connection,
    tableNames?: string[],
 ): Promise<ApiTable[]> {
-   if (!connection.databricksConnection) {
+   const databricks = connection.databricksConnection;
+   if (!databricks) {
       throw new Error("Databricks connection is required");
    }
-   try {
-      let catalogPrefix: string;
-      let schemaOnly: string;
-      let resourcePrefix: string;
+   return withIntrospectionFailure(
+      `tables for Databricks schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         let catalogPrefix: string;
+         let schemaOnly: string;
+         let resourcePrefix: string;
 
-      if (connection.databricksConnection.defaultCatalog) {
-         catalogPrefix = `${connection.databricksConnection.defaultCatalog}.`;
-         schemaOnly = schemaName;
-         resourcePrefix = `${connection.databricksConnection.defaultCatalog}.${schemaName}`;
-      } else {
-         const dotIdx = schemaName.indexOf(".");
-         if (dotIdx > 0) {
-            catalogPrefix = `${assertSafeSqlIdentifier(
-               schemaName.substring(0, dotIdx),
-               "catalog name",
-            )}.`;
-            schemaOnly = schemaName.substring(dotIdx + 1);
-         } else {
-            catalogPrefix = "";
+         if (databricks.defaultCatalog) {
+            catalogPrefix = `${databricks.defaultCatalog}.`;
             schemaOnly = schemaName;
+            resourcePrefix = `${databricks.defaultCatalog}.${schemaName}`;
+         } else {
+            const dotIdx = schemaName.indexOf(".");
+            if (dotIdx > 0) {
+               catalogPrefix = `${assertSafeSqlIdentifier(
+                  schemaName.substring(0, dotIdx),
+                  "catalog name",
+               )}.`;
+               schemaOnly = schemaName.substring(dotIdx + 1);
+            } else {
+               catalogPrefix = "";
+               schemaOnly = schemaName;
+            }
+            resourcePrefix = schemaName;
          }
-         resourcePrefix = schemaName;
-      }
 
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${resourcePrefix}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for Databricks schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      // A bad argument must stay a bad argument: rewrapping it as a plain
-      // Error sends it to the internal-fault classifier, whose advice is "try
-      // again later", so an agent retries a deterministically-invalid argument
-      // forever. Only DuckDB escaped that, because its throw sits outside a try.
-      if (error instanceof BadRequestError) throw error;
-      throw new Error(
-         `Failed to get tables for Databricks schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM ${catalogPrefix}information_schema.columns WHERE table_schema = '${sqlLiteral(schemaOnly, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(
+            rows,
+            (t) => `${resourcePrefix}.${t}`,
+         );
+      },
+      "after-log",
+   );
 }
 
 async function listTablesForDuckDB(
@@ -1840,23 +1752,17 @@ async function listTablesForDuckDB(
    const catalogName = schemaName.substring(0, dotIdx);
    const actualSchemaName = schemaName.substring(dotIdx + 1);
 
-   try {
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for DuckDB schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get tables for DuckDB schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+   return withIntrospectionFailure(
+      `tables for DuckDB schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }
 
 async function listTablesForMotherDuck(
@@ -1868,23 +1774,17 @@ async function listTablesForMotherDuck(
    if (!connection.motherduckConnection) {
       throw new Error("MotherDuck connection is required");
    }
-   try {
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for MotherDuck schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get tables for MotherDuck schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+   return withIntrospectionFailure(
+      `tables for MotherDuck schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(schemaName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }
 
 async function listTablesForDuckLake(
@@ -1901,23 +1801,17 @@ async function listTablesForDuckLake(
 
    const catalogName = schemaName.split(".")[0];
    const actualSchemaName = schemaName.split(".")[1];
-   try {
-      const result = await runIntrospectionSQL(
-         malloyConnection,
-         `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
-      );
-      const rows = standardizeRunSQLResult(result);
-      return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
-   } catch (error) {
-      logger.error(
-         `Error getting tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
-         { error },
-      );
-      throw new Error(
-         `Failed to get tables for DuckLake schema ${schemaName} in connection ${connection.name}: ${(error as Error).message}`,
-         { cause: error },
-      );
-   }
+   return withIntrospectionFailure(
+      `tables for DuckLake schema ${schemaName} in connection ${connection.name}`,
+      async () => {
+         const result = await runIntrospectionSQL(
+            malloyConnection,
+            `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = '${sqlLiteral(actualSchemaName, connection.type)}' AND table_catalog = '${sqlLiteral(catalogName, connection.type)}' ${sqlInFilter("table_name", tableNames, connection.type)} ORDER BY table_name, ordinal_position`,
+         );
+         const rows = standardizeRunSQLResult(result);
+         return groupColumnRowsIntoTables(rows, (t) => `${schemaName}.${t}`);
+      },
+   );
 }
 
 export function extractErrorDataFromError(error: unknown): {
