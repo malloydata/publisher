@@ -195,7 +195,9 @@ describe("NewDocumentDialog", () => {
          onCreated,
       });
       await titleFilled("By category");
-      expect(screen.getByRole("listbox", { name: "Views" })).toBeDefined();
+      expect(
+         screen.getByRole("listbox", { name: "From the model" }),
+      ).toBeDefined();
 
       fireEvent.click(screen.getByRole("button", { name: "Create report" }));
       await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1));

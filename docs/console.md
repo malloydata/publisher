@@ -100,7 +100,7 @@ is a Console convenience.
   wash; click one and type. In a one-line field Enter keeps the edit and Escape puts the old text
   back; in a text tile, leaving it or Cmd/Ctrl+Enter keeps it, Escape drops it, and Cmd/Ctrl+S saves
   from inside the field. A **text tile** holds markdown (a heading, a paragraph, a list). A query
-  tile's **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and
+  tile's **Chart** choices are Default (as set in the model), Table, Line, Bar, Big value, Scatter, Shape map and
   Segment map; a choice the view cannot render stays in the list, greyed, with its reason under it.
   The layout is the file's: the builder draws the report as its `layout=` says and never rewrites
   it. Adding a tile
