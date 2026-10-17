@@ -38,6 +38,8 @@ export interface ConnectionDecl {
    env?: string;
    name: string;
    kind: "postgres" | "ducklake" | "duckdb";
+   /** ducklake only: the catalog's `catalog.metadataSchema`, as a per-tenant catalog sets it. */
+   metadataSchema?: string;
 }
 
 /** Controls the server lifecycle a scenario runs against. */

@@ -20,9 +20,15 @@
  *
  * Textual rather than through `@malloydata/malloy-tag`, which the SDK loads
  * lazily so a host may bundle without it; a synchronous check in the render
- * path cannot wait on that import. The cost is that a tag NAME inside a quoted
- * string reads as a tag, which only ever withholds the promotion.
+ * path cannot wait on that import. Quoted values are blanked before the line is
+ * split, so a tag name inside one (`# label="table"`) is not read as a tag.
  */
+
+import { blankQuoted } from "../../utils/blankQuoted";
+import {
+   isTotalColumn,
+   type ResultField,
+} from "../RenderedResult/chartShapeProblem";
 
 /**
  * The renderer's top-level render tags: any one of these on the result means
@@ -32,6 +38,7 @@ const RENDER_TAGS = new Set([
    "bar_chart",
    "line_chart",
    "scatter_chart",
+   "combo_chart",
    "shape_map",
    "segment_map",
    "point_map",
@@ -50,11 +57,6 @@ const RENDER_TAGS = new Set([
 
 const BIG_VALUE_ANNOTATION = { value: "# big_value\n" };
 
-interface ResultField {
-   kind?: string;
-   annotations?: Array<{ value?: string }>;
-}
-
 interface ResultShape {
    schema?: { fields?: ResultField[] };
    data?: { kind?: string; array_value?: unknown[] };
@@ -62,39 +64,16 @@ interface ResultShape {
 }
 
 /**
- * Whether an output field is an aggregate.
- *
- * Measured against the server: every output field of a query comes back
- * `kind: "dimension"` — a result's columns are its dimensions, whatever they
- * were in the source — and what marks an aggregate is the `calculation` token
- * in the field's internal annotation:
- *
- *     #(malloy) reference_id = "…" calculation drill_expression { … }
- *
- * `kind === "measure"` is kept for a renderer that says so directly, but no
- * real result has yet. Until this read the annotation the promotion never
- * fired on real output, and only its own fixture — written with `"measure"` —
- * ever passed it.
- */
-const MALLOY_CALCULATION = /^#\(malloy\)[\s\S]*\bcalculation\b/;
-function isMeasureField(field: ResultField | undefined): boolean {
-   if (!field) return false;
-   if (field.kind === "measure") return true;
-   return (field.annotations ?? []).some(
-      (annotation) =>
-         typeof annotation?.value === "string" &&
-         MALLOY_CALCULATION.test(annotation.value.trim()),
-   );
-}
-
-/**
  * True when the result is one row consisting solely of measures: the shape a
- * `view: kpis is { aggregate: … }` tile produces.
+ * `view: kpis is { aggregate: … }` tile produces. A column is a measure by
+ * the result panel's own rule ({@link isTotalColumn}): every output column
+ * comes back `kind: "dimension"`, and an aggregate is the one whose
+ * `#(malloy)` note carries `calculation` as a property of its own.
  */
 export function isMeasureRow(result: ResultShape): boolean {
    const fields = result.schema?.fields;
    if (!Array.isArray(fields) || fields.length === 0) return false;
-   if (!fields.every(isMeasureField)) return false;
+   if (!fields.every((field) => isTotalColumn(field))) return false;
    const data = result.data;
    if (!data) return false;
    if (data.kind === "record_cell") return true;
@@ -123,7 +102,7 @@ export function carriesRenderTag(annotations: readonly string[]): boolean {
          text.startsWith('#"')
       )
          continue;
-      const body = text.slice(1).replace(/"(?:[^"\\]|\\.)*"/g, '""');
+      const body = blankQuoted(text.slice(1));
       for (const token of body.split(/[\s{}=.,[\]]+/)) {
          if (RENDER_TAGS.has(token)) return true;
       }

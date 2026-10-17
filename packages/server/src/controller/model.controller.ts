@@ -70,22 +70,15 @@ export class ModelController {
             throw new ModelNotFoundError(`${modelPath} is a notebook`);
          }
          // A file nobody can query is not shown either: same rule, same 404
-         // text as the query route. Inert with no surface and under "all",
-         // and skipped when the caller asked to see the files off the surface.
+         // text as the query route.
          if (!includeHiddenFilesAndSources) model.assertFileOnSurface();
-         // The compiled view and the file's own text, together: the file is on
-         // disk beside the package, and a client showing code next to the model
-         // otherwise has no way to fetch it. The read stays on `getPackage`'s
-         // lock-free fast path (see environment.ts: callers reachable from
-         // `Model.getModel()` must not take the package lock): a single
-         // `readFile` against a mid-swap tree sees the old file, the new file,
-         // or ENOENT, and only the last needs handling — it withholds the text,
-         // never the compiled model the spec marks it optional beside.
+         // The file text is read without the package lock (callers reachable
+         // from `Model.getModel()` must not take it): a mid-swap read sees the
+         // old file, the new one, or ENOENT, and ENOENT only withholds the text.
          const [compiled, sourceText] = await Promise.all([
             model.getModel(),
             // Withheld when the text names a source the file does not publish,
-            // unless the caller asked to see the files off the surface: then
-            // the text is the point, and the compiled body stays curated.
+            // unless the caller asked to see the files off the surface.
             p
                .getModelFileText(modelPath)
                .then((text) =>
@@ -116,7 +109,6 @@ export class ModelController {
          ) {
             throw error;
          }
-         // Wrap other errors with more context
          throw new Error(
             `Failed to get model ${modelPath} from package ${packageName} in environment ${environmentName}: ${error}`,
          );

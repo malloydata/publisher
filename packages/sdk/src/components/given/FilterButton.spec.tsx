@@ -54,12 +54,12 @@ function mount(
 }
 
 describe("FilterButton's starting value, in the builder", () => {
-   it("opens the report with the current value, a filter as its text", () => {
+   it("makes the current value the report's default, a filter as its text", () => {
       // Not an f'…' literal: the server unwraps one without un-escaping it.
       const { setStartingValue } = mount(BRAND, "O'Brien");
       fireEvent.click(
          screen.getByRole("button", {
-            name: "Open the report with this value",
+            name: "Make this the report's default",
          }),
       );
       expect(setStartingValue).toHaveBeenCalledWith("BRAND", "O'Brien");
@@ -69,24 +69,40 @@ describe("FilterButton's starting value, in the builder", () => {
       const { setStartingValue } = mount(SINCE, "2024-03-01");
       fireEvent.click(
          screen.getByRole("button", {
-            name: "Open the report with this value",
+            name: "Make this the report's default",
          }),
       );
       expect(setStartingValue).toHaveBeenCalledWith("SINCE", "2024-03-01");
    });
 
-   it("says so when the report already opens there, and offers the default instead", () => {
+   it("says Report default when it is, and offers the filter's own default for one this report declares", () => {
       const { setStartingValue } = mount(BRAND, "Ford", { start: "f'Ford'" });
-      expect(
-         screen.getByText("The report opens with this value."),
-      ).toBeDefined();
+      expect(screen.getByText("Report default")).toBeDefined();
       expect(
          screen.queryByRole("button", {
-            name: "Open the report with this value",
+            name: "Make this the report's default",
          }),
       ).toBeNull();
+      expect(
+         screen.queryByRole("button", { name: "Use the model's default" }),
+      ).toBeNull();
       fireEvent.click(
-         screen.getByRole("button", { name: "Open at the default instead" }),
+         screen.getByRole("button", { name: "Use the filter's default" }),
+      );
+      expect(setStartingValue).toHaveBeenCalledWith("BRAND", undefined);
+   });
+
+   it("offers the model's default for a filter the model declares", () => {
+      const { setStartingValue } = mount(BRAND, "Ford", {
+         start: "f'Ford'",
+         state: { origin: "model" },
+      });
+      expect(screen.getByText("Report default")).toBeDefined();
+      expect(
+         screen.queryByRole("button", { name: "Use the filter's default" }),
+      ).toBeNull();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Use the model's default" }),
       );
       expect(setStartingValue).toHaveBeenCalledWith("BRAND", undefined);
    });
@@ -95,7 +111,7 @@ describe("FilterButton's starting value, in the builder", () => {
       mount(BRAND, undefined);
       expect(
          screen.queryByRole("button", {
-            name: "Open the report with this value",
+            name: "Make this the report's default",
          }),
       ).toBeNull();
    });
@@ -122,7 +138,7 @@ describe("FilterButton for a filter the model sets", () => {
       // Where the report opens is still the report's to say.
       expect(
          screen.getByRole("button", {
-            name: "Open the report with this value",
+            name: "Make this the report's default",
          }),
       ).toBeDefined();
       fireEvent.click(screen.getByRole("button", { name: "Open the model" }));

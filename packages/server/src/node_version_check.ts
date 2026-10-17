@@ -4,19 +4,13 @@
 import * as fs from "node:fs";
 
 /**
- * Minimum Node major version Publisher supports: a support policy, not a proven
- * technical minimum. Every `@malloydata/*` dependency declares `>=20`, as does
- * the repo root, so running below 20 means running on a configuration
- * Publisher's own dependencies disclaim and nothing here tests.
+ * Minimum supported Node major: a support policy (every `@malloydata/*`
+ * dependency declares `>=20`), not a proven technical minimum.
  *
- * `engines` cannot enforce that policy alone, which is why this check exists:
- * npm downgrades a mismatch to `npm WARN EBADENGINE` unless `engine-strict` is
- * set, it is an install-time check for a run-time condition (install on 20,
- * point a shell at 18 later), and neither the Docker image nor `bun run` from a
- * clone consults it at all.
- *
- * Every other declaration of the floor is pinned to this constant by the
- * "engines contract" block in `node_version_check.spec.ts`.
+ * `engines` alone cannot enforce it: npm only warns without `engine-strict`,
+ * it is checked at install rather than run time, and neither Docker nor
+ * `bun run` consults it. Every other declaration of the floor is pinned to
+ * this constant by `node_version_check.spec.ts`.
  */
 export const MIN_NODE_MAJOR = 20;
 
@@ -40,14 +34,10 @@ export interface RuntimeVerdict {
 }
 
 /**
- * Two deliberate exemptions:
- *
- * - **Bun is always supported.** The Docker image runs the bundle under Bun
- *   (`CMD ["bun", "run", ...]`), as does `start:dev`, and the Node version Bun
- *   reports says nothing about what Bun provides. Without this the image would
- *   refuse to boot.
- * - **An unparseable version is supported.** Refusing a working runtime over an
- *   odd version string would be worse than the failure this prevents.
+ * Two deliberate exemptions: Bun is always supported (the Docker image and
+ * `start:dev` run under it, and the Node version it reports means nothing),
+ * and so is an unparseable version, since refusing a working runtime over an
+ * odd string is worse than the failure this prevents.
  */
 export function evaluateRuntime(versions: RuntimeVersions): RuntimeVerdict {
    if (versions.bunVersion) {
@@ -75,13 +65,9 @@ function parseMajor(version: string): number | undefined {
 }
 
 /**
- * Names the requirement, what is running, and the next command, because the
- * failure this replaces named none of the three. States the floor as policy: the
- * crash that exposed it is fixed in `service/query_metadata.ts`, so naming a
- * mechanism would describe something that no longer happens.
- *
- * The mise line is not over-explaining: `mise use -g node@24 && npm start` in
- * one chain re-runs on the old Node, because PATH is not re-evaluated mid-chain.
+ * Names the requirement, what is running, and the next command. The mise line
+ * says to open a new shell because `mise use ... && npm start` in one chain
+ * still runs the old Node: PATH is not re-evaluated mid-chain.
  */
 function unsupportedMessage(nodeVersion: string): string {
    return [
@@ -104,14 +90,9 @@ export interface AssertNodeVersionOptions extends Partial<RuntimeVersions> {
 }
 
 /**
- * Refuse to run on an unsupported Node, before any argument parsing, storage
- * init, or listener. Hard exit rather than a warning because the failure that
- * exposed this floor was a silent success: healthy boot log, `load_errors=0`,
- * MCP discovery served, dead on the first query. A warning would scroll past in
- * that same log.
- *
- * Writes to stderr directly, not through `logger`, so the message does not
- * depend on winston being configured.
+ * Refuse to run on an unsupported Node. A hard exit, not a warning: on an old
+ * Node the boot looks healthy and the first query fails, so a warning would
+ * scroll past. Writes to stderr directly so it does not depend on winston.
  */
 export function assertSupportedNodeVersion(
    options: AssertNodeVersionOptions = {},
@@ -144,9 +125,8 @@ export function assertSupportedNodeVersion(
 
 /**
  * Synchronous, because `process.exit` does not flush an async write to a piped
- * stderr and losing the message under `npm start | tee`, CI log capture, or
- * Docker would recreate the silent failure. `writeSync` can throw EAGAIN on a
- * non-blocking fd, so the stream write is the fallback.
+ * stderr. `writeSync` can throw EAGAIN on a non-blocking fd, hence the
+ * fallback.
  */
 function writeToStderr(text: string): void {
    try {

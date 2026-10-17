@@ -242,7 +242,7 @@ describe("Dashboard discovery (E2E)", () => {
       });
       // Each tile carries the givens it actually references, so a viewer can
       // re-run only the tiles a changed control affects.
-      expect(manifest.tiles).toEqual([
+      expect(manifest.tiles as unknown[]).toEqual([
          { kind: "query", query: "orders -> by_brand", givenNames: ["BRAND"] },
          {
             kind: "query",
@@ -263,7 +263,7 @@ describe("Dashboard discovery (E2E)", () => {
    it("carries each tile's label, colspan and break off its view", async () => {
       const manifest = await getManifest("tiled");
       expect(manifest).toMatchObject({ dashboardColumns: 12 });
-      expect(manifest.tiles).toEqual([
+      expect(manifest.tiles as unknown[]).toEqual([
          {
             kind: "query",
             query: "tiles -> order_tile",

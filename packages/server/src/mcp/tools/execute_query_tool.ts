@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
+import { validateRenderTags } from "@malloydata/render-validator";
 import { getQueryTimeoutMs } from "../../config";
 import { logger } from "../../logger";
 import {
@@ -22,7 +23,7 @@ import {
 } from "../handler_utils";
 import { jsonResource, jsonToolError } from "../tool_response";
 import { buildQueryEnvelope } from "../query_envelope";
-import { mintCorrelationId } from "../../service/query_metadata";
+import { buildQueryMetadataInput } from "../../service/query_metadata";
 import { bigIntReplacer } from "../../json_utils";
 import { MCP_ERROR_MESSAGES } from "../mcp_constants";
 import { recordDeprecatedFilterUsage } from "../../filter_deprecation";
@@ -39,9 +40,7 @@ function isUndefinedNameError(message: string): boolean {
    );
 }
 
-// Zod shape defining required/optional params for executeQuery
 const executeQueryShape = {
-   // environmentName is required; other fields mirror SDK expectations
    environmentName: z
       .string()
       .describe("Environment name, as list_packages returns it."),
@@ -87,9 +86,8 @@ const executeQueryShape = {
       ),
 };
 
-// The shape without includeHiddenFilesAndSources, which is what a server
-// offers unless its config is for authoring. See
-// isMcpIncludeHiddenFilesAndSources.
+// What a server offers unless its config is for authoring
+// (isMcpIncludeHiddenFilesAndSources).
 const { includeHiddenFilesAndSources: _authoringOnly, ...curatedShape } =
    executeQueryShape;
 
@@ -116,11 +114,6 @@ A JSON object, the same shape Credible's execute_query and an in-package data ap
 
 Values above 2^53 are returned as JSON strings so their digits survive.`;
 
-// Type inference is handled automatically by the MCP server based on the executeQueryShape
-
-/**
- * Registers the execute_query tool with the MCP server.
- */
 export function registerExecuteQueryTool(
    mcpServer: McpServer,
    environmentStore: EnvironmentStore,
@@ -135,9 +128,7 @@ export function registerExecuteQueryTool(
       (offerHidden
          ? executeQueryShape
          : curatedShape) as typeof executeQueryShape,
-      /** Handles requests for the execute_query tool */
       async (params) => {
-         // Destructure environmentName as well
          const {
             environmentName,
             packageName,
@@ -153,7 +144,7 @@ export function registerExecuteQueryTool(
          const includeHiddenFilesAndSources =
             offerHidden && params.includeHiddenFilesAndSources === true;
 
-         logger.info("[MCP Tool executeQuery] Received params:", { params });
+         logger.debug("[MCP Tool executeQuery] Received params", { params });
 
          const hasAdhocQuery = !!query;
          const hasNamedQuery = !!queryName;
@@ -170,12 +161,6 @@ export function registerExecuteQueryTool(
                MCP_ERROR_MESSAGES.MUTUALLY_EXCLUSIVE_PARAMS,
             );
          }
-         // Zod/SDK handles missing required fields (packageName, modelPath) based on the shape
-
-         // --- Get Package and Model ---
-         logger.info(
-            `[MCP Tool executeQuery] Calling getModelForQuery for ${environmentName}/${packageName}/${modelPath}`,
-         );
          const modelResult = await getModelForQuery(
             environmentStore,
             environmentName,
@@ -183,7 +168,6 @@ export function registerExecuteQueryTool(
             modelPath,
          );
 
-         // Handle errors during package/model access (e.g., not found, initial compilation)
          if ("error" in modelResult) {
             return jsonToolError(
                "error://executeQuery/modelAccess",
@@ -191,55 +175,29 @@ export function registerExecuteQueryTool(
             );
          }
 
-         // --- Execute Query ---
          const { model, environment, pkg } = modelResult;
-         logger.info(
-            `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
-         );
-         // Per-pod concurrency slot. MCP shares the same slot pool
-         // as the HTTP query routes so a hot agent loop can't
-         // bypass PUBLISHER_MAX_CONCURRENT_QUERIES. `mcp:executeQuery`
-         // is a fixed label so the dashboard can separate MCP load
-         // from HTTP route load. Acquisition can throw
-         // ServiceUnavailableError; the existing catch below surfaces
-         // it as the standard MCP error-content payload.
+         // Shares the HTTP routes' slot pool so an agent loop cannot bypass
+         // PUBLISHER_MAX_CONCURRENT_QUERIES; the label separates MCP load on
+         // the dashboard. A refusal throws into the catch below.
          let querySlot: QuerySlotHandle | null = null;
          try {
             querySlot = tryAcquireQuerySlot("mcp:executeQuery");
-            // Per-query metadata, built the same way the HTTP query controller
-            // builds it: MCP is a query boundary like any other, and a
-            // connection's enforced properties describe the deployment rather
-            // than the protocol a query arrived over.
-            const queryMetadataInput = {
-               environment: environmentName,
-               // Minted here because the envelope below returns it.
-               correlationId: mintCorrelationId(),
-               // The package owns its manifest, so the least-specific
-               // author-declared layer is read here; the model knows only its
-               // own file and its package's NAME.
-               packageDeclaration: pkg.getDeclaredQueryMetadata(),
-               // The environment owns the connection configs, so the default
-               // and enforced layers are read here rather than from the model.
-               connectionMetadata: (connectionName: string) => {
-                  try {
-                     const connection =
-                        environment.getApiConnection(connectionName);
-                     return {
-                        default: connection.queryMetadata,
-                        enforced: connection.queryMetadataEnforced,
-                     };
-                  } catch (error) {
-                     logger.debug(
-                        "[MCP Tool executeQuery] No query-metadata layers for connection",
-                        { connectionName, error },
-                     );
-                     return null;
-                  }
-               },
-            };
+            // Built as the HTTP controller builds it: a connection's enforced
+            // properties describe the deployment, not the transport.
+            const queryMetadataInput = buildQueryMetadataInput({
+               environmentName,
+               environment,
+               pkg,
+               noLayersLogMessage:
+                  "[MCP Tool executeQuery] No query-metadata layers for connection",
+            });
             // The two call modes differ only in which arguments carry the
             // query; everything after the run is identical, so they share one
-            // path rather than two copies that can drift.
+            // path rather than two copies that can drift. Ad-hoc text runs on
+            // its own: a sourceName sent beside it is not passed on.
+            const target = query
+               ? { sourceName: undefined, queryName: undefined, query }
+               : { sourceName, queryName, query: undefined };
             const {
                result,
                compactResult,
@@ -248,42 +206,23 @@ export function registerExecuteQueryTool(
                queryCorrelationId,
             } = await runWithQueryTimeout(
                (abortSignal) =>
-                  query
-                     ? model.getQueryResults(
-                          undefined,
-                          undefined,
-                          query,
-                          filterParams,
-                          undefined,
-                          givens as Record<string, GivenValue> | undefined,
-                          abortSignal,
-                          queryMetadataInput,
-                          // The envelope below is built from `compactResult`, so
-                          // that is the shape to cap and to guard. Left at the
-                          // default this measured the full wrapped result and
-                          // threw the string away, which meant a query could be
-                          // refused on bytes the agent would never receive: the
-                          // envelope is truncated to MAX_RESULT_CHARS anyway, so
-                          // a wrapped result measuring over the cap was a 413 for
-                          // a payload that would have arrived at 90k characters.
-                          "compact",
-                          // MCP sends no #(authorize) bypass, ever.
-                          false,
-                          includeHiddenFilesAndSources,
-                       )
-                     : model.getQueryResults(
-                          sourceName,
-                          queryName,
-                          undefined,
-                          filterParams,
-                          undefined,
-                          givens as Record<string, GivenValue> | undefined,
-                          abortSignal,
-                          queryMetadataInput,
-                          "compact",
-                          false,
-                          includeHiddenFilesAndSources,
-                       ),
+                  model.getQueryResults(
+                     target.sourceName,
+                     target.queryName,
+                     target.query,
+                     filterParams,
+                     undefined,
+                     givens as Record<string, GivenValue> | undefined,
+                     abortSignal,
+                     queryMetadataInput,
+                     // The envelope is built from `compactResult`, so cap
+                     // that shape: measuring the wrapped result would 413 on
+                     // bytes the agent never receives.
+                     "compact",
+                     // MCP sends no #(authorize) bypass, ever.
+                     false,
+                     includeHiddenFilesAndSources,
+                  ),
                getQueryTimeoutMs(),
             );
             recordDeprecatedFilterUsage({ filterParams });
@@ -291,9 +230,6 @@ export function registerExecuteQueryTool(
             // Render-tag validation reads the FULL Malloy result: the tags live
             // in its schema annotations, which the flat rows do not carry. It
             // runs regardless of which shape is returned.
-            const { validateRenderTags } = await import(
-               "@malloydata/render-validator"
-            );
             const renderLogs = filterPublisherOwnedRenderLogs(
                validateRenderTags(result),
                pkg.getModel(modelPath)?.carriesReportTag() ?? false,
@@ -336,27 +272,20 @@ export function registerExecuteQueryTool(
                text: notes.length > 0 ? notes.join("\n\n") : undefined,
             });
          } catch (queryError) {
-            // Handle query execution errors (syntax errors, invalid queries, etc.)
             logger.error(
                `[MCP Server Error] Error executing query in ${environmentName}/${packageName}/${modelPath}:`,
                { error: queryError },
             );
-            // Home the error by class first. tryAcquireQuerySlot runs inside
-            // this try, so at the concurrency cap a ServiceUnavailableError
-            // lands here; funnelling that through the Malloy helper told the
-            // agent to check its syntax when the answer was to retry.
+            // By class: a slot refusal also lands here, and must say "retry",
+            // not "check your syntax".
             const errorDetails: ErrorDetails = classifyToolError(
                "executeQuery",
-               `${environmentName}/${packageName}/${modelPath}`, // Include environment
+               `${environmentName}/${packageName}/${modelPath}`,
                queryError,
             );
 
-            // A name the model does not define reads as a typo, and the
-            // suggestions say so. But the same error is what an author gets
-            // after saving a new source or view: the served model is the one
-            // compiled at boot, so the name exists on disk and not in memory.
-            // Point at the reload rather than let them hunt for a typo that
-            // isn't there.
+            // An undefined name is also what an author gets after saving a new
+            // source or view without reloading, so point at the reload too.
             const suggestions = [...errorDetails.suggestions];
             if (isUndefinedNameError(errorDetails.message)) {
                suggestions.push(
@@ -369,9 +298,8 @@ export function registerExecuteQueryTool(
                suggestions,
             });
          } finally {
-            // Release on every exit path — success, error, or
-            // unreachable code-path throw. `release()` is idempotent
-            // so a double-fault during cleanup can't double-decrement.
+            // `release()` is idempotent, so a double-fault cannot
+            // double-decrement.
             querySlot?.release();
          }
       },

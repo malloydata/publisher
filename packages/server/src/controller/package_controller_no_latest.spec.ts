@@ -9,7 +9,8 @@ import { internalErrorToHttpError, PackageVersionError } from "../errors";
 import { Environment } from "../service/environment";
 import type { EnvironmentStore } from "../service/environment_store";
 import { DuckDBConnection } from "../storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../storage/duckdb/DuckDBRepository";
+import { createDuckDBRepository } from "../storage/duckdb/DuckDBRepository";
+import type { ResourceRepository } from "../storage/DatabaseInterface";
 import { initializeSchema } from "../storage/duckdb/schema";
 import { PackageController } from "./package.controller";
 
@@ -30,7 +31,7 @@ const PKG = "sales";
 let root: string;
 let envPath: string;
 let db: DuckDBConnection;
-let repo: DuckDBRepository;
+let repo: ResourceRepository;
 let env: Environment;
 let controller: PackageController;
 
@@ -89,7 +90,7 @@ beforeEach(async () => {
       "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
       [ENV_ID, ENV_NAME, envPath],
    );
-   repo = new DuckDBRepository(db);
+   repo = createDuckDBRepository(db);
    env = await Environment.create(ENV_NAME, envPath, []);
    env.bindVersions(repo, ENV_ID, {
       downloaderFor: (_packageName, location) => async (stagingPath) => {

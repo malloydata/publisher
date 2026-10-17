@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Pure parsing of the package manifest's (publisher.json) `materialization`
- * block and its discovery surface (`explores`). Kept side-effect free (no fs,
- * no worker bootstrap) so it is unit testable in isolation from the
- * package-load worker that consumes it.
+ * Pure parsing of publisher.json's `materialization` block and discovery
+ * surface (`explores`). No fs or worker dependencies, so it unit-tests alone.
  */
 
 import { INDEX_MODEL_NAME, normalizeModelPath } from "../constants";
@@ -15,20 +13,18 @@ const FRESHNESS_FALLBACKS = ["live", "stale_ok", "fail"] as const;
 export type FreshnessFallback = (typeof FRESHNESS_FALLBACKS)[number];
 
 /**
- * Package-level Malloy Persistence scope mode, declared once at the manifest
- * root. `package` (the default) = artifacts are reused across the package's
- * versions when they satisfy freshness; `version` = each artifact is owned by
- * one published version (the only mode a `materialization.schedule` is legal
- * in). Applied uniformly to every persist source and index in the package.
+ * Package-level Malloy Persistence scope, applied to every persist source and
+ * index. `package` (default): artifacts are reused across versions when fresh;
+ * `version`: each artifact is owned by one published version (the only mode a
+ * `materialization.schedule` is legal in).
  */
 export const PACKAGE_SCOPES = ["version", "package"] as const;
 export type PackageScope = (typeof PACKAGE_SCOPES)[number];
 
 /**
  * Read a `scope` value, defaulting to `"package"` when absent or null. Any other
- * value is a manifest error: scope is load-bearing (it decides version-owned vs
- * cross-version reuse), so a typo must fail loudly rather than silently pick a
- * default. Throws on an invalid value.
+ * value throws: scope decides cross-version reuse, so a typo must not silently
+ * pick a default.
  */
 export function parsePackageScope(raw: unknown): PackageScope {
    if (raw === undefined || raw === null) {
@@ -44,21 +40,13 @@ export function parsePackageScope(raw: unknown): PackageScope {
 }
 
 /**
- * Resolve the package's scope from its two possible homes: `materialization.scope`
- * (canonical — every other build-behavioral knob lives in that block) and the
- * manifest root (the original home, deprecated).
+ * Resolve the package's scope from `materialization.scope` (canonical, with
+ * the other build knobs) and the manifest root (deprecated, still read for
+ * already-published packages). Different values in the two homes throw:
+ * guessing could share a table across versions that was never meant to be.
  *
- * The root form keeps working because scope rides the published artifact: a
- * package published before the move must keep parsing until it is republished.
- * Declaring DIFFERENT values in the two homes throws, because scope decides
- * whether an artifact is version-owned and guessing which one the author meant
- * could reuse a table across versions that was never supposed to be shared.
- *
- * Only a root-ONLY declaration is deprecated. Both homes agreeing is the
- * transition state the server itself writes (see `writePackageManifest`): the
- * envelope for this build, the root for an older publisher that would otherwise
- * silently default to `package`. Warning about that would be warning an operator
- * about something the server did on their behalf and they cannot fix.
+ * Only a root-ONLY declaration warns. Both homes agreeing is what
+ * `writePackageManifest` itself writes, for older publishers that read the root.
  */
 export function resolvePackageScope(
    rootRaw: unknown,
@@ -78,11 +66,8 @@ export function resolvePackageScope(
 
    if (rootDeclared && envelopeDeclared) {
       if (rootScope !== envelopeScope) {
-         // Names the fix, because this throw fails the package LOAD: the
-         // package is skipped and its only trace is /status loadErrors, so the
-         // message is the whole diagnosis. Guessing instead would be worse —
-         // picking the wrong one reuses a table across versions that was never
-         // meant to be shared, silently.
+         // Names the fix: this fails the load, and /status loadErrors is the
+         // package's only trace, so the message is the whole diagnosis.
          throw new PackageManifestError(
             `Conflicting "scope" in publisher.json: root "${rootScope}" vs ` +
                `"materialization.scope" "${envelopeScope}". The package cannot ` +
@@ -107,24 +92,13 @@ const SCOPE_ROOT_DEPRECATION =
    `older publisher still reads the right value.`;
 
 /**
- * Resolve the package's per-query metadata from its two homes: the manifest root
- * (canonical) and `materialization.queryMetadata` (the original home, now
- * deprecated).
+ * Resolve per-query metadata from the manifest root (canonical: the properties
+ * ride every statement, not just builds) and `materialization.queryMetadata`
+ * (deprecated).
  *
- * The move is the opposite direction to {@link resolvePackageScope}, for the
- * opposite reason. Scope is a build knob, so it belongs with the build knobs.
- * Query metadata is not one: the properties ride every statement the package's
- * sources issue, a served query as much as a build. Declaring them inside
- * `materialization` describes a scope the feature does not have, and sends an
- * author hunting through build settings for a way to label their traffic.
- *
- * A conflict WARNS and prefers the root, where scope THROWS. Scope decides
- * whether an artifact is version-owned, so guessing could reuse a table across
- * versions that was never meant to be shared — worth failing a load over. A tag
- * is observability only, excluded from `sourceEntityId` and from build identity,
- * so the worst a wrong guess yields is a mislabelled statement. Failing a load
- * over a label would break the rule the whole feature rests on: a tag must never
- * be the reason something refuses to run.
+ * A conflict WARNS and prefers the root, where scope throws: a tag is
+ * observability only (outside `sourceEntityId` and build identity), and a tag
+ * must never be the reason something refuses to run.
  */
 export function resolvePackageQueryMetadata(
    rootRaw: unknown,
@@ -138,8 +112,7 @@ export function resolvePackageQueryMetadata(
    const envelopeDeclared = envelopeRaw !== undefined && envelopeRaw !== null;
 
    if (rootDeclared && envelopeDeclared) {
-      // Both homes agreeing is the transition state the server itself writes,
-      // so it is not worth a word to an operator who cannot act on it.
+      // Both homes agreeing is what the server itself writes; no warning.
       if (sameQueryMetadataBag(rootRaw, envelopeRaw)) {
          return { queryMetadata: rootRaw, home: "root", warnings: [] };
       }
@@ -160,15 +133,9 @@ export function resolvePackageQueryMetadata(
 }
 
 /**
- * Whether two raw `queryMetadata` declarations say the same thing, INSENSITIVE
- * to key order. `{team, tier}` and `{tier, team}` are the same bag; comparing
- * serialized forms directly called them a conflict and sent an author off to
- * reconcile two homes that already agreed.
- *
- * Runs on RAW, pre-validation input, so it cannot assume a flat string map — a
- * value may be a number, a null, an array or an object. Compared through a
- * key-sorted re-serialization that recurses, so nesting is handled rather than
- * assumed away.
+ * Whether two raw `queryMetadata` declarations are equal regardless of key
+ * order. The input is pre-validation, so the comparison recurses through any
+ * JSON shape rather than assuming a flat string map.
  */
 function sameQueryMetadataBag(a: unknown, b: unknown): boolean {
    return keySortedJson(a) === keySortedJson(b);
@@ -192,11 +159,7 @@ function keySortedJson(value: unknown): string {
       .join(",")}}`;
 }
 
-/**
- * Which home a resolved bag came from. Carried so a parse warning about one of
- * its properties can name the home the author actually wrote, rather than a
- * hardcoded spelling that is wrong for whichever home did not win.
- */
+/** Which home a resolved bag came from, so warnings name the one the author wrote. */
 export type QueryMetadataHome = "root" | "envelope";
 
 const QUERY_METADATA_HOME_LABELS: Record<QueryMetadataHome, string> = {
@@ -220,10 +183,9 @@ const QUERY_METADATA_CONFLICT =
    `the right value.`;
 
 /**
- * The manifest's `materialization.freshness` block, surfaced verbatim for the
- * control plane (which owns the scheduling and query-time gating logic).
- * Fields are kept only when valid — an invalid value is dropped, never
- * defaulted, so absence on the wire always means "not declared".
+ * `materialization.freshness`, surfaced for the control plane (which owns
+ * scheduling and query-time gating). An invalid field is dropped, never
+ * defaulted, so absence on the wire means "not declared".
  */
 export interface PackageFreshnessConfig {
    /** Maximum acceptable staleness, as a duration string (e.g. "24h"). */
@@ -234,28 +196,18 @@ export interface PackageFreshnessConfig {
 
 export interface PackageMaterializationConfig {
    /**
-    * 5-field UNIX cron the control plane uses to schedule version-level
-    * re-materialization. Null when absent or not a string. Publish-gated:
-    * only valid when every persist source resolves to explicit
+    * 5-field cron for version-level re-materialization; null when absent or not
+    * a string. Publish-gated: every persist source must resolve to explicit
     * `sharing=private` (see Package.scheduleWarnings).
     */
    schedule: string | null;
-   /**
-    * Freshness policy ({ window, fallback }). Null when the manifest declares
-    * none — distinct from an empty object, so the control plane can tell
-    * "no policy" from "policy with no valid fields".
-    */
+   /** Null when none is declared, distinct from `{}` (a policy with no valid fields). */
    freshness: PackageFreshnessConfig | null;
    /**
-    * Package-level per-query metadata: the least specific model-side layer,
-    * overridden per property by a model-file, source or per-request declaration.
-    * Null when the manifest declares none.
-    *
-    * Kept VERBATIM (every string-valued property, conforming or not) rather than
-    * filtered to what Malloy will accept. A property that violates the contract
-    * has to be visible somewhere to be fixable: publish reports it as a warning
-    * from this block, and the runtime clamps it with a metric. Filtering here
-    * would make an author's typo disappear with nothing to point at.
+    * Package-level per-query metadata, the least specific layer (overridden by
+    * model-file, source and per-request declarations); null when none. Every
+    * string property is kept, conforming or not, so publish can warn about a
+    * bad one and the runtime clamp it with a metric, rather than it vanishing.
     */
    queryMetadata: Record<string, string> | null;
 }
@@ -279,17 +231,9 @@ function parseFreshness(raw: unknown): PackageFreshnessConfig | null {
 }
 
 /**
- * The `materialization.queryMetadata` block: string-valued properties verbatim.
- * A non-object block, or one with no string values, degrades to null so absence
- * on the wire always means "declared nothing usable". A non-string value is
- * dropped here because it cannot round-trip as a property at all; contract
- * violations of the string values are deliberately NOT dropped (see
- * {@link PackageMaterializationConfig.queryMetadata}).
- *
- * Each dropped value is reported, because the drop happens BEFORE the config
- * validation that would otherwise name it: an unquoted `"team": 123` is a
- * plausible hand-edit, and without this it disappears with nothing anywhere to
- * point at.
+ * String-valued `queryMetadata` properties verbatim; null when there are none.
+ * A non-string value cannot be a property, so it is dropped and reported (the
+ * drop happens before the validation that would otherwise name it).
  */
 function parseQueryMetadata(
    raw: unknown,
@@ -321,15 +265,8 @@ function parseQueryMetadata(
 }
 
 /**
- * Read the manifest's `materialization` object, keeping only recognized fields.
- * Returns null when the block is absent so the API field is null rather than an
- * empty object; a non-string schedule degrades to null, and an absent or
- * non-object freshness degrades to null.
- *
- * `materialization.scope` is deliberately NOT read here: scope is a package-level
- * mode rather than a layered knob, and it has two possible homes to reconcile —
- * see {@link resolvePackageScope}, which owns that read and surfaces the
- * resolved value on the package itself.
+ * Read the manifest's `materialization` object, keeping only recognized fields;
+ * null when the block is absent. `scope` is read by {@link resolvePackageScope}.
  */
 export function parsePackageMaterialization(
    raw: unknown,
@@ -350,14 +287,9 @@ export function parsePackageMaterialization(
 }
 
 /**
- * The package's materialization config with `queryMetadata` taken from whichever
- * home won (see {@link resolvePackageQueryMetadata}), so every consumer keeps
- * reading one accessor and no caller has to know there are two homes.
- *
- * Returns a config even when the manifest has NO `materialization` block, which
- * is the shape the canonical form produces: a package that declares tags at the
- * root and nothing else has no build policy to express. Null only when neither
- * home declares anything.
+ * The materialization config with `queryMetadata` from whichever home won (see
+ * {@link resolvePackageQueryMetadata}), so callers read one accessor. Non-null
+ * without a `materialization` block when the root declares tags.
  */
 export function materializationWithQueryMetadata(
    parsed: PackageMaterializationConfig | null,
@@ -372,11 +304,7 @@ export function materializationWithQueryMetadata(
    };
 }
 
-/**
- * Properties the winning `queryMetadata` home declared but could not keep,
- * named after THAT home. Hardcoding the enveloped spelling pointed the author of
- * a root-only manifest at a `materialization` block their file does not have.
- */
+/** Properties the winning `queryMetadata` home declared but could not keep, named after that home. */
 export function queryMetadataParseWarnings(
    raw: unknown,
    home: QueryMetadataHome = "root",
@@ -389,54 +317,32 @@ export function queryMetadataParseWarnings(
 // ──────────────────────────────────────────────────────────────────────
 
 /**
- * Resolve a package's discovery surface from its two sources: an explicit
- * `explores` in publisher.json, and the `index.malloy` convention.
+ * Resolve a package's discovery surface from an explicit `explores` in
+ * publisher.json or, where the manifest is silent, the `index.malloy`
+ * convention. The convention only defaults that one field: nothing downstream
+ * knows where a surface came from, so the two cannot behave differently. An
+ * explicit `explores: []` still counts as explicit (every model is listed).
  *
- * The convention is a DEFAULT FOR ONE MANIFEST FIELD and nothing more. A
- * surface it fills in is indistinguishable downstream from one an author
- * wrote: same listing curation, same within-file `export {}` filtering, same
- * query boundary, same `queryableSources` handling. Nothing in the system
- * carries where the surface came from, and that is deliberate — the moment a
- * convention-derived surface behaves differently from a declared one, every
- * consumer has to learn the difference and the two drift.
+ * Only a root `index.malloy` spelled exactly counts; a root file differing
+ * only in case gets a warning. Warnings are at most two sentences: what is
+ * wrong, then `Fix:` and the one edit.
  *
- * Explicit always wins; the convention fills in only where the manifest is
- * silent. An explicit `explores: []` counts as explicit and suppresses the
- * convention: it reads as a deliberate "do not curate", and today it means
- * every model is listed.
- *
- * Only a root-level `index.malloy` counts, matched exactly. A nested
- * `reports/index.malloy` is an ordinary model, and `Index.malloy` does not
- * trigger the convention even where the filesystem would open it under the
- * conventional name: the code tests for one spelling, so it must claim only
- * that one. A root file that differs only in case is almost certainly meant
- * as the surface, so it gets a warning saying it is not.
- *
- * Every warning is at most two sentences: what is wrong in this package, then
- * `Fix:` and the one edit. How the surface works belongs in the docs.
- *
- * Precedence never throws: a package that declares both a surface and an index
- * file has a defined answer, and only the author's intent is in doubt, which is
- * a warning. A MALFORMED `explores` does throw, like {@link
- * resolvePackageScope}, and fails the package load -- see the rejection below
- * for why refusing beats every way of carrying on.
+ * Precedence never throws (conflicting intent is a warning); a MALFORMED
+ * `explores` does, and fails the load (see below).
  */
 export function resolveExplores(input: {
    /** The raw `explores` value as it appeared in publisher.json. */
    declaredExplores: unknown;
    /**
-    * The raw `queryableSources` value as it appeared in publisher.json, or
-    * undefined when the key was absent. Raw rather than a resolved mode,
-    * because `"all"` and `"declared"` need different deprecation advice: the
-    * convention replaces one of them and cannot express the other.
+    * The raw `queryableSources` value, or undefined when absent. Raw because
+    * `"all"` and `"declared"` need different deprecation advice.
     */
    declaredQueryableSources: unknown;
    /** Package-relative model paths, as produced by `filterModelPaths`. */
    modelPaths: readonly string[];
    /**
-    * Which of the declared entries are reports (`report.ts`), by the same
-    * rule discovery applies. A report needs no `explores` entry and has no
-    * replacement to name. Absent means none are.
+    * Which declared entries are reports (`report.ts`); a report needs no
+    * `explores` entry. Absent means none are.
     */
    reportPaths?: ReadonlySet<string>;
 }): { explores: string[] | undefined; warnings: string[] } {
@@ -445,24 +351,10 @@ export function resolveExplores(input: {
    const hasIndexModel = modelPaths.includes(INDEX_MODEL_NAME);
    const warnings: string[] = [];
 
-   // An array of strings is the only well-formed shape, and anything else fails
-   // the package load. `explores` decides what is REACHABLE, so a value the
-   // server only partly understands must not be partly applied:
-   //
-   //  - ignoring it widens the surface. `["orders.malloy", 7]` would resolve to
-   //    no surface at all, and every source the author curated away would be
-   //    listed and queryable -- the exact direction `brokenSurfaceWarnings`
-   //    refuses for the same question in package.ts.
-   //  - keeping the entries that parse serves a surface the author did not
-   //    write, which is guessing at intent on the one key where guessing wrong
-   //    is an access change.
-   //  - coercing (`String(null)` -> "null") builds a surface naming a model
-   //    that cannot exist, so the package lists nothing while reporting a
-   //    reason that describes a file rather than the typo that caused it.
-   //
-   // Refusing is the only one of the four that neither widens the surface nor
-   // invents intent, and an absent package is visible in `loadErrors` where a
-   // silently-uncurated one is not.
+   // Anything but an array of strings fails the load. `explores` decides what
+   // is REACHABLE: ignoring a bad value widens the surface, and keeping the
+   // parseable entries or coercing invents intent. A refused package shows in
+   // `loadErrors`; a silently-uncurated one would not.
    if (
       declaredExplores !== undefined &&
       !(
@@ -481,10 +373,8 @@ export function resolveExplores(input: {
       ? declaredExplores.map((entry) => normalizeModelPath(entry as string))
       : undefined;
 
-   // `"all"` is not warned about. It is the only way to curate listings
-   // WITHOUT refusing queries, and the convention has no equivalent: a surface
-   // it derives always arms the boundary, because `queryableSources` defaults
-   // to `"declared"`. A use with no replacement gets no deprecation notice.
+   // `"all"` is not warned about: it is the only way to curate listings
+   // without refusing queries, so it has no replacement.
    if (
       declaredQueryableSources !== undefined &&
       declaredQueryableSources !== "all"
@@ -493,9 +383,7 @@ export function resolveExplores(input: {
    }
 
    if (declared !== undefined) {
-      // Every use of the key is deprecated, and each shape gets the one edit
-      // that replaces it. An empty array beside an index.malloy is the old
-      // opt-out; the file itself is now the switch.
+      // Every use is deprecated; each shape gets the edit that replaces it.
       if (declared.length === 0) {
          warnings.push(
             hasIndexModel
@@ -507,8 +395,7 @@ export function resolveExplores(input: {
             exploresDeprecation(declared, hasIndexModel, reportPaths),
          );
       }
-      // Beside the deprecation, not instead of it: together they say "you are
-      // using a deprecated key, and it is overriding the recommended one".
+      // In addition to the deprecation: the key is overriding the file.
       if (
          hasIndexModel &&
          declared.length > 0 &&
@@ -520,8 +407,6 @@ export function resolveExplores(input: {
    }
 
    if (!hasIndexModel) {
-      // Only here: with an `explores` key the file is not what decides the
-      // surface anyway, and beside an exact index.malloy it is just a file.
       for (const modelPath of modelPaths) {
          if (
             !modelPath.includes("/") &&
@@ -537,7 +422,6 @@ export function resolveExplores(input: {
       return { explores: undefined, warnings };
    }
 
-   // The recommended shape, so nothing to say.
    return { explores: [INDEX_MODEL_NAME], warnings };
 }
 
@@ -550,9 +434,7 @@ function listFiles(files: readonly string[]): string {
 
 /**
  * The deprecation for a non-empty `explores`, with the edit that replaces it.
- * Entries for index.malloy and for reports need no replacement: the file is
- * the surface, and every report is served. Reports are recognized by the
- * report rule (`reportPaths`), not by where they live. What is left is what
+ * Entries for index.malloy and reports need no replacement; the rest are what
  * index.malloy has to import.
  */
 function exploresDeprecation(
@@ -592,8 +474,7 @@ const EXPLORES_OMITS_INDEX_MODEL =
    `of it) if it isn't meant to decide what is published.`;
 
 /** The old opt-out: an empty array beside an index.malloy. The fix names the
- *  imports because a rename alone breaks every file that imports the old
- *  name, and a broken import fails the whole package's compile. */
+ *  imports because a broken import fails the whole package's compile. */
 const EXPLORES_EMPTY_SUPPRESSES_CONVENTION =
    `"explores" in publisher.json is deprecated. Here it stops ` +
    `${INDEX_MODEL_NAME} from limiting what this package publishes. Fix: to ` +
@@ -603,8 +484,5 @@ const EXPLORES_EMPTY_SUPPRESSES_CONVENTION =
 /** An empty array with no index.malloy: the package is uncurated anyway. */
 const EXPLORES_EMPTY_IS_UNCURATED = `"explores": [] in publisher.json does nothing. Fix: delete it.`;
 
-/** `"declared"` is the default, so the key changes nothing. `"all"` is not
- *  warned about: it is the one way to hide a source from listings while it
- *  stays queryable by name (for an #(authorize)-gated source), and nothing
- *  replaces it. */
+/** `"declared"` is the default, so the key changes nothing. */
 const QUERYABLE_SOURCES_DEPRECATION = `"queryableSources" in publisher.json does nothing. Fix: delete it.`;

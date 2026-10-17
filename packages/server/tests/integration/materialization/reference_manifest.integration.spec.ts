@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import path from "path";
 import { fileURLToPath } from "url";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { pollFor, TERMINAL_STATUSES, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,8 +15,6 @@ const __dirname = path.dirname(__filename);
 const PROJECT_NAME = "test-project-refmanifest";
 const PACKAGE_NAME = "persist-multi-level";
 const API = `/api/v0/environments/${PROJECT_NAME}/packages/${PACKAGE_NAME}`;
-
-const TERMINAL_STATUSES = ["MANIFEST_FILE_READY", "FAILED", "CANCELLED"];
 
 /**
  * WI-1 (Phase D): the orchestrated build seeds its build Manifest from
@@ -59,23 +58,7 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
          );
       }
 
-      const deadline = Date.now() + 30_000;
-      let pkgReady = false;
-      while (!pkgReady && Date.now() < deadline) {
-         try {
-            const res = await fetch(`${baseUrl}${API}`);
-            if (res.ok) {
-               pkgReady = true;
-               break;
-            }
-         } catch {
-            // not ready yet
-         }
-         await new Promise((r) => setTimeout(r, 500));
-      }
-      if (!pkgReady) {
-         throw new Error("Test package did not become available in time");
-      }
+      await waitUntilOk(`${baseUrl}${API}`, "Test package");
    });
 
    afterAll(async () => {
@@ -110,15 +93,16 @@ describe("Materialization reference manifest + strictUpstreams (E2E)", () => {
       id: string,
       timeoutMs = 90_000,
    ): Promise<Record<string, unknown>> {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-         const res = await fetch(url(`/materializations/${id}`));
-         expect(res.status).toBe(200);
-         const data = (await res.json()) as Record<string, unknown>;
-         if (TERMINAL_STATUSES.includes(data.status as string)) return data;
-         await new Promise((r) => setTimeout(r, 250));
-      }
-      throw new Error(`Materialization ${id} did not reach a terminal state`);
+      return pollFor(
+         async () => {
+            const res = await fetch(url(`/materializations/${id}`));
+            expect(res.status).toBe(200);
+            return (await res.json()) as Record<string, unknown>;
+         },
+         (data) => TERMINAL_STATUSES.includes(data.status as string),
+         `Materialization ${id} did not reach a terminal state`,
+         timeoutMs,
+      );
    }
 
    /** Delete a terminal materialization record (optionally dropping its tables). */

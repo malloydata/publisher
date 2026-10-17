@@ -2,23 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Shared given-expansion and structural-warning helpers for the SOURCE-LINE
- * form of `#(authorize)` — the given a struct's gate expression transitively
- * reaches through a field reference, and whether that expression negates a
- * membership test. Originally home to the DIMENSION form's own discovery and
- * load-time validation as well (a boolean dimension annotated in FIELD
- * position, referenced by NAME at graft time); that form and everything
- * specific to it were deleted in Task 6 — see `git log` for this file's
- * history if you need the discovery/validation shape it once carried.
- *
- * `resolveFieldUsagePath`'s join-following walk, and {@link
- * expandRefSummaryGivenIds} built on it, survive because the source-line
- * form's own G4/W1/W2 (`validateSourceLineGateGivenUsage` below) need the
- * identical non-transitive expansion: a gate that is a bare field reference
- * to another dimension (`#(authorize) authorized` over `dimension: authorized
- * is org_id in $GROUPS`) carries `fieldUsage` but no `givenUsage` at all, and
- * a naive G4/W1 that only read the raw `refSummary.givenUsage` would pass a
- * defaulted given hidden one hop away.
+ * Given-expansion and structural-warning helpers for the source-line form of
+ * `#(authorize)`: which givens a gate expression transitively reaches through
+ * field references, and whether it negates a membership test.
  */
 
 import {
@@ -31,38 +17,24 @@ import {
 import { ModelCompilationError } from "../errors";
 
 /**
- * Result of {@link expandRefSummaryGivenIds}: either the full
- * transitively-reachable given id set, or a signal that some referenced field
- * path could not be resolved. `ok: false` must NEVER be read as "zero
- * givens" — an unresolvable reference means the expansion is incomplete, not
- * that the gate references nothing, and a caller that fell back to an empty
- * set here would silently bypass G4 and the request-time given-unbound
- * backstop for exactly the gate they exist to check.
+ * Result of {@link expandRefSummaryGivenIds}. `ok: false` must never be read
+ * as "zero givens": the expansion is incomplete, and treating it as empty
+ * would silently bypass G4 and the request-time given-unbound backstop.
  */
 export type GivenIdExpansion =
    | { ok: true; givenIds: Set<string> }
    | { ok: false; unresolvedPath: string };
 
 /**
- * Resolve a `refSummary.fieldUsage` path (source-rooted, per-segment name —
- * `["h", "ok"]` for `h.ok`) against `struct`, following a JOINED field's own
- * embedded struct for every segment but the last. This is given-expansion
- * ONLY — it does not widen gate discovery — it lets a gate's OWN expression
- * correctly account for a given reached through a join it references
- * (`authorized is h.ok`), which a leaf-only match could not see at all.
+ * Resolve a `refSummary.fieldUsage` path (`["h", "ok"]` for `h.ok`) against
+ * `struct`, descending into each joined segment's struct. Used for
+ * given-expansion only, not gate discovery.
  *
- * Matches each segment by full name, not by scanning `struct.fields` for
- * something merely named like the leaf — the bug this replaces would let an
- * unrelated LOCAL field that happens to share the leaf's name (e.g. `struct`
- * has its own `ok`) silently substitute for the join-qualified `h.ok`.
- *
- * An intermediate segment may also be a record- or array-typed dimension
- * (`rec.a`, `tags.each`): Malloy marks those `join` too but they are not
- * `SourceDef`s, so requiring `isSourceDef` on every segment refused such a
- * gate at load even though its given resolves fine. They carry their own
- * `fields`, so the descent is the same one — and an unresolvable NON-EMPTY
- * path still returns `undefined` rather than resolving to nothing, which is
- * what G4 rests on.
+ * Every segment is matched by name along the path; matching the leaf alone
+ * would let an unrelated local field of the same name stand in for `h.ok`.
+ * Intermediate segments may be record/array dimensions (Malloy marks them
+ * `join` but they are not `SourceDef`s); they carry `fields`, so the descent
+ * is the same. An unresolvable path returns `undefined`, which G4 relies on.
  */
 function resolveFieldUsagePath(
    struct: SourceDef,
@@ -87,37 +59,24 @@ function resolveFieldUsagePath(
    return field ? { struct: current, field } : undefined;
 }
 
-/** The two `refSummary` slots {@link expandRefSummaryGivenIds} reads —
- *  matches the shape both a `FieldDef`'s own `refSummary` and a compiled
- *  `FilterCondition`'s own `refSummary` carry. Exported for `./authorize`'s
- *  callers, which read this shape off a duck-typed `CompiledGateCondition`
- *  rather than Malloy's own (unexported) `FilterCondition`. */
+/** The `refSummary` slots {@link expandRefSummaryGivenIds} reads, shared by
+ *  a `FieldDef` and a compiled `FilterCondition` (which Malloy does not
+ *  export). */
 export type ExpandableRefSummary = {
    fieldUsage?: { path: string[] }[];
    givenUsage?: { id: string }[];
 };
 
 /**
- * Every given id transitively reachable from `refSummary` — a raw IR
- * reference summary — resolved against `struct`. Malloy's own
- * `refSummary.givenUsage` is NOT transitive — a bare-reference wrapper
- * dimension (`authorized is base_authorized`) carries no `givenUsage` of its
- * own even though `base_authorized` does, and the SAME gap applies to a
- * compiled `FilterCondition`'s own top-level `refSummary` — so this walks
- * `refSummary.fieldUsage` recursively (through {@link resolveFieldUsagePath},
- * so a join-qualified reference like `h.ok` is followed into `h`'s own struct
- * rather than silently dropped) and unions in each referenced field's own
- * `givenUsage`. `seen` is keyed by FIELD OBJECT IDENTITY, not name — a
- * name-keyed set would misreport a cycle the first time a joined struct
- * happens to reuse a local field name (e.g. both `struct` and a join both
- * declare `org_id`), truncating the expansion.
+ * Every given id transitively reachable from `refSummary`, resolved against
+ * `struct`. Malloy's `givenUsage` is not transitive (a wrapper dimension
+ * `authorized is base_authorized` carries none of `base_authorized`'s), so
+ * this recurses through `fieldUsage`, following joins. `seen` is keyed by
+ * field object identity: a name-keyed set would report a false cycle when a
+ * join reuses a local field name, truncating the expansion.
  *
- * Returns `{ok: false}` — never an empty set — when a referenced path cannot
- * be resolved at all; see {@link GivenIdExpansion}'s doc for why that
- * distinction is load-bearing.
- *
- * Exported for `./gate_classification`'s `resolveGateShape`, which runs this
- * against a LIFTED `FilterCondition`'s own `refSummary`.
+ * Returns `{ok: false}`, never an empty set, when a path cannot be resolved
+ * (see {@link GivenIdExpansion}).
  */
 export function expandRefSummaryGivenIds(
    struct: SourceDef,
@@ -127,12 +86,9 @@ export function expandRefSummaryGivenIds(
    const ids = new Set<string>();
    for (const g of refSummary?.givenUsage ?? []) ids.add(g.id);
    for (const usage of refSummary?.fieldUsage ?? []) {
-      // Malloy emits a synthetic `fieldUsage` entry with an empty `path` for
-      // a function call (e.g. `upper(region)`) — it carries no field
-      // reference to resolve. The real field the call reads (`region`)
-      // arrives as its own separate, non-empty-path entry, so skipping this
-      // one loses nothing; treating it as unresolvable would wrongly refuse
-      // every gate containing a function call.
+      // Malloy emits an empty-path entry for a function call (`upper(region)`);
+      // the field it reads arrives as its own entry. Treating this one as
+      // unresolvable would refuse every gate containing a function call.
       if (usage.path.length === 0) continue;
       const resolved = resolveFieldUsagePath(struct, usage.path);
       if (!resolved) {
@@ -154,14 +110,9 @@ export function expandRefSummaryGivenIds(
 }
 
 /**
- * Whether `node` (a compiled boolean expression, or a sub-tree of one)
- * contains a negated membership test (`not (x in $Y)`) — W2's shape, where an
- * EMPTY given then matches every row rather than none. A narrow structural
- * scan over exactly the node kinds a boolean predicate can compose from
- * (`and`/`or`/`not`/`()`/`inGiven`).
- *
- * Exported for the string-form-era doc references and re-used unchanged by
- * {@link validateSourceLineGateGivenUsage}'s W2.
+ * Whether a compiled boolean expression contains a negated membership test
+ * (`not (x in $Y)`), W2's shape: an empty given then matches every row
+ * rather than none. Scans only `and`/`or`/`not`/`()`/`inGiven` nodes.
  */
 export function containsNegatedMembership(node: unknown, depth = 0): boolean {
    if (depth > 64 || node === null || typeof node !== "object") return false;
@@ -173,9 +124,7 @@ export function containsNegatedMembership(node: unknown, depth = 0): boolean {
    };
    if (n.node === "inGiven" && n.not === true) return true;
    if (n.node === "not") {
-      // Unwrap `()` before checking — `not (x in $Y)` compiles the
-      // parenthesized operand as its own `()` node, so checking `n.e`
-      // directly (without descending through it first) missed this shape.
+      // `not (x in $Y)` compiles the operand as a `()` node; unwrap it.
       let inner = n.e as { node?: unknown; e?: unknown } | null | undefined;
       while (inner && inner.node === "()") {
          inner = inner.e as { node?: unknown; e?: unknown } | null | undefined;
@@ -194,52 +143,30 @@ export function containsNegatedMembership(node: unknown, depth = 0): boolean {
    return false;
 }
 
-/** Non-fatal {@link validateSourceLineGateGivenUsage} findings — ridden on
- *  the same metric channel `./authorize`'s `RowLevelGateRejectionCause`
- *  uses. */
+/** Non-fatal {@link validateSourceLineGateGivenUsage} findings, reported on
+ *  the same metric channel as `RowLevelGateRejectionCause`. */
 export type SourceLineGateWarningCause =
    | "source_line_gate_no_given_reference"
    | "source_line_gate_negated_membership";
 
 /**
- * G4/W1/W2 for the SOURCE-LINE form of a gate on EITHER route: the load-time
- * given-default refusal and the two non-fatal warnings, run against a
- * source-line gate's lifted probe condition.
+ * Load-time checks for a source-line gate (either route), run against its
+ * lifted probe condition: G4 refuses a referenced given that has a default;
+ * W1 (no given referenced) and W2 (negated membership) are warnings.
  *
- * G3 (every referenced given resolves) needs no separate check here — it is
- * covered by Malloy's own compile error on the very probe this reads
- * `refSummary`/`conditionExpr` off (`./authorize`'s `liftRowLevelCondition`):
- * an unreachable given fails that compile before this function is ever
- * reached. `declaredGivenNames`-reachability therefore has no counterpart
- * here either — the probe already compiled against the graft target's real
- * field scope.
+ * G3 (every given resolves) is already enforced by the probe's own compile.
+ * The given set is the transitive expansion, not raw `givenUsage`: a gate
+ * `#(authorize) authorized` over `dimension: authorized is org_id in $GROUPS`
+ * carries only `fieldUsage`, so reading `givenUsage` would let a defaulted
+ * given through G4 and misfire W1.
  *
- * Reuses {@link expandRefSummaryGivenIds} rather than reading
- * `refSummary.givenUsage` directly, for the identical non-transitivity
- * reason `./gate_classification`'s request-time `resolveGateShape` does: a
- * gate that is a bare field reference to another dimension (`#(authorize)
- * authorized` over `dimension: authorized is org_id in $GROUPS`) carries
- * `fieldUsage` but no `givenUsage` at all, and a G4 that only read the raw
- * field would pass a defaulted given hidden one hop away. W1 is therefore
- * "the EXPANDED given set is empty", never raw `givenUsage.length === 0` —
- * those differ for exactly this shape (confirmed: `1 = 1`/`org_id = 999`
- * carry neither `fieldUsage` nor `givenUsage` and correctly expand to empty;
- * `#(authorize) authorized` over a given-referencing wrapper dimension
- * carries `fieldUsage` alone and must NOT be mistaken for W1).
- *
- * `struct` must be the gate's OWN declaring source's compiled struct — the
- * same one `buildRowLevelProbe` grafted the probe onto, so `refSummary`'s
- * field paths are already resolved against it. Throws `ModelCompilationError`
- * naming `sourceName` on G4 or an unresolvable reference — fail-closed: an
- * unresolvable reference is refused, never silently treated as referencing no
- * given. `onWarning` fires for W1/W2, which do not fail the load.
+ * `struct` must be the gate's declaring source's compiled struct (the one the
+ * probe was grafted onto). Fails closed: an unresolvable reference throws
+ * `ModelCompilationError`.
  */
 export function validateSourceLineGateGivenUsage(
    sourceName: string,
-   /**
-    * The route this gate was collected under. Both routes are validated here,
-    * so every message below names the annotation the author actually wrote.
-    */
+   /** The gate's route, so messages name the annotation the author wrote. */
    route: string,
    struct: SourceDef,
    refSummary: ExpandableRefSummary | undefined,

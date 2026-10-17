@@ -7,7 +7,8 @@ import {
    type PackageVersionErrorReason,
 } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
+import { createDuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
+import type { ResourceRepository } from "../../storage/DatabaseInterface";
 import { initializeSchema } from "../../storage/duckdb/schema";
 import { requestedVersionId, VersionService } from "./version_service";
 
@@ -19,7 +20,7 @@ afterEach(async () => {
    while (dbs.length) await dbs.pop()!.close();
 });
 
-async function freshRegistry(): Promise<DuckDBRepository> {
+async function freshRegistry(): Promise<ResourceRepository> {
    const db = new DuckDBConnection(":memory:");
    dbs.push(db);
    await db.initialize();
@@ -28,10 +29,10 @@ async function freshRegistry(): Promise<DuckDBRepository> {
       "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'env', '/env', now(), now())",
       [ENV_ID],
    );
-   return new DuckDBRepository(db);
+   return createDuckDBRepository(db);
 }
 
-async function addPackage(repo: DuckDBRepository, name: string) {
+async function addPackage(repo: ResourceRepository, name: string) {
    await repo.createPackage({
       environmentId: ENV_ID,
       name,
@@ -40,7 +41,7 @@ async function addPackage(repo: DuckDBRepository, name: string) {
 }
 
 async function publish(
-   repo: DuckDBRepository,
+   repo: ResourceRepository,
    name: string,
    versionId: string,
    promote: boolean,

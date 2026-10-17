@@ -77,16 +77,11 @@ type GetAgentParams = z.infer<z.ZodObject<typeof getAgentShape>>;
  * Registers the get_agent MCP tool: serves the agents a package declares in its
  * `publisher.json`, resolved to the files they name.
  *
- * Why a tool and not prompts or an entry in get_context. Agents are an explicit
- * choice by the user, so nothing advertises them: they are absent from
- * `MCP_INSTRUCTIONS` and from get_context, and a caller finds them only by
- * asking for a package's agents. Packages reload and are added at runtime, the
- * same reason get_skill is a tool.
+ * Agents are an explicit user choice, so nothing advertises them (not
+ * MCP_INSTRUCTIONS, not get_context); a caller finds them only by asking.
  *
- * SECURITY: returns author-written text from the package's own tree, at the
- * same trust level as the guides get_skill returns, and no row data. A
- * definition carries no tool, permission or hook setting, so adopting one adds
- * words to a session and widens nothing.
+ * SECURITY: returns author-written text from the package's tree, no row data. A
+ * definition carries no tool, permission or hook setting, so it widens nothing.
  */
 export function registerGetAgentTool(
    mcpServer: McpServer,

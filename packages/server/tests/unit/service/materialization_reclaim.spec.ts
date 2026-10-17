@@ -15,7 +15,8 @@ import { PackageController } from "../../../src/controller/package.controller";
 import { VersionController } from "../../../src/controller/version.controller";
 import type { Materialization } from "../../../src/storage/DatabaseInterface";
 import { DuckDBConnection } from "../../../src/storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../../../src/storage/duckdb/DuckDBRepository";
+import { createDuckDBRepository } from "../../../src/storage/duckdb/DuckDBRepository";
+import type { ResourceRepository } from "../../../src/storage/DatabaseInterface";
 import { initializeSchema } from "../../../src/storage/duckdb/schema";
 import { Environment } from "../../../src/service/environment";
 import { EnvironmentStore } from "../../../src/service/environment_store";
@@ -104,7 +105,7 @@ const WAREHOUSE = {
 
 /** Wait until a run has settled and the service has stopped tracking it. */
 async function settledRun(
-   repository: Pick<DuckDBRepository, "getMaterializationById">,
+   repository: Pick<ResourceRepository, "getMaterializationById">,
    service: MaterializationService,
    id: string,
 ): Promise<Materialization> {
@@ -174,7 +175,7 @@ describe("reclaiming an archived version's tables", () => {
    let envPath: string;
    let sourcesPath: string;
    let db: DuckDBConnection;
-   let repo: DuckDBRepository;
+   let repo: ResourceRepository;
    let env: Environment;
    let service: MaterializationService;
    const environments: Environment[] = [];
@@ -343,7 +344,7 @@ describe("reclaiming an archived version's tables", () => {
          "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
          [ENV_ID, ENV, envPath],
       );
-      repo = new DuckDBRepository(db);
+      repo = createDuckDBRepository(db);
       reclaims = [];
       env = await newEnvironment();
       service = newService(env);

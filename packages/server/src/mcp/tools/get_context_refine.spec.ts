@@ -22,9 +22,8 @@ import {
 import {
    MAX_ENTITIES_PER_SOURCE_TARGET,
    MAX_JOINED_ROWS_PER_SOURCE_TARGET,
-   type ResolvedRequest,
-   type ResultEntity,
-} from "./get_context_tool";
+} from "./get_context_response";
+import type { ResolvedRequest, ResultEntity } from "./get_context_types";
 import { mapRawScore } from "./get_context_scoring";
 
 type Search = ResolvedRequest["searches"][number];

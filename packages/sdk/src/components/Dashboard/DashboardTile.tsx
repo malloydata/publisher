@@ -16,6 +16,7 @@ import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { failureCategory, useReportEvents } from "../Report/telemetry";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
@@ -68,7 +69,10 @@ export interface DashboardTileProps {
     * server accepts: a surfaced given a query does not reference is ignored.
     */
    givenNames?: string[];
-   height: number;
+   /** Cap on the result's height, past which it scrolls. Undefined is no cap: the tile grows to fit. */
+   height: number | undefined;
+   /** A further cap when the result is a table, past which it scrolls under its pinned header. */
+   tableMaxHeight?: number;
    maxResultSize?: number;
    /** Cell clicks and their affordance, for the dashboard's `# drill`. */
    drill?: DrillBinding;
@@ -141,6 +145,7 @@ export function DashboardTile({
    declaredTypes,
    givenNames,
    height,
+   tableMaxHeight,
    maxResultSize,
    drill,
    onExplore,
@@ -266,6 +271,11 @@ export function DashboardTile({
                state={state}
                context={tile ?? queryName ?? modelPath}
                maxHeight={height}
+               tableMaxHeight={tableMaxHeight}
+               // Uncapped in a linear report, a tile would first paint at the
+               // 2000px default and collapse once measured. A grid tile's cap
+               // is a sound first guess for every tile.
+               firstPaintHeight={TILE_MAX_HEIGHT}
                maxResultSize={maxResultSize}
                drill={drill}
                // A composite tile that is one row of measures draws as KPI cards,

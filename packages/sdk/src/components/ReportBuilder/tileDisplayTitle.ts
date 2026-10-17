@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { tileTitle } from "../Dashboard/DashboardTile";
-import type { QueryTile } from "./document";
+import { tileExpression, type QueryTile } from "./document";
 
 /**
  * The title a query tile is drawn under when it has no label of its own: the
@@ -10,4 +10,4 @@ import type { QueryTile } from "./document";
  * live tile, a placeholder and the menu agree.
  */
 export const tileDisplayTitle = (tile: QueryTile): string =>
-   tile.label ?? tileTitle(`${tile.source} -> ${tile.name}`);
+   tile.label ?? tileTitle(tileExpression(tile));

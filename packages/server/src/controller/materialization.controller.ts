@@ -44,11 +44,9 @@ export class MaterializationController {
       );
    }
 
-   // Whitelist: only these fields are read off the client body. `trigger` is
-   // deliberately NOT accepted here — it is service-level-only, defaulted to
-   // `ON_DEMAND` and set to `SCHEDULER` solely by the in-process scheduler
-   // (which calls the service directly, not this HTTP path). Do not add
-   // `trigger` to this parser, or an API caller could forge a scheduled run.
+   // Whitelist of client body fields. Never accept `trigger` here: only the
+   // in-process scheduler (which calls the service directly) sets `SCHEDULER`,
+   // and accepting it would let an API caller forge a scheduled run.
    private validateCreateBody(body: Record<string, unknown>): {
       forceRefresh?: boolean;
       reseed?: boolean;
@@ -108,10 +106,9 @@ export class MaterializationController {
          }
          result.forceRefresh = body.forceRefresh;
       }
-      // The run-level ask for a full rebuild of the in-scope incremental sources,
-      // and a SEPARATE flag from forceRefresh on purpose: that one only defeats
-      // skip-if-unchanged, and conflating the two would make every scheduled fire
-      // (which forces on every tick) a full rebuild.
+      // Full rebuild of the in-scope incremental sources. Separate from
+      // forceRefresh, which only defeats skip-if-unchanged: conflating them
+      // would make every scheduled fire (always forced) a full rebuild.
       if (body.reseed !== undefined) {
          if (typeof body.reseed !== "boolean") {
             throw new BadRequestError("reseed must be a boolean");
@@ -134,14 +131,9 @@ export class MaterializationController {
 
    /**
     * Validate `runContext`, the caller's observability context for one run.
-    * `trigger` is a closed enum here even though it feeds a metadata property:
-    * the whole point is that a reader can group runs by how they started, which a
-    * free-form value would quietly break.
-    *
-    * Note this is NOT the service-level `trigger` the parser above deliberately
-    * refuses. That one decides whether the run counts as scheduled; this one only
-    * labels the statements the run issues, so accepting `publish` from a caller
-    * forges nothing.
+    * `trigger` is a closed enum so readers can group runs by how they started.
+    * It only labels the run's statements (unlike the service-level `trigger`
+    * refused above), so accepting `publish` from a caller forges nothing.
     */
    private validateRunContext(raw: unknown): RunContext {
       if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -164,11 +156,9 @@ export class MaterializationController {
          if (typeof obj.runId !== "string") {
             throw new BadRequestError("runContext.runId must be a string");
          }
-         // Held to the metadata contract like any other caller-supplied
-         // property: it becomes the `run_id` on every statement of the build,
-         // and a value the contract rejects would otherwise be truncated and
-         // rewritten in silence — leaving the caller with an id it cannot join
-         // on and no way to know why.
+         // Held to the metadata contract: it becomes `run_id` on every
+         // statement, and a rejected value would otherwise be silently
+         // rewritten, leaving the caller an id it cannot join on.
          const violations = queryMetadataViolations({ run_id: obj.runId });
          if (violations.length > 0) {
             throw new BadRequestError(
@@ -265,11 +255,9 @@ export class MaterializationController {
       return {
          sourceEntityId: ref.sourceEntityId as string,
          physicalTableName: ref.physicalTableName as string,
-         // The connection the upstream table lives on. Optional; carried through
-         // so the seed loop can dialect-quote the reference for a case-folding
-         // engine (#904). Dropping it silently reverts to an unquoted seed, which
-         // fails a downstream build on such an engine — the same manual-copy drift
-         // that dropped BuildInstruction.destination.
+         // The upstream table's connection. Must be carried through so the seed
+         // loop can dialect-quote the reference; an unquoted seed fails a
+         // downstream build on a case-folding engine.
          ...(typeof ref.connectionName === "string"
             ? { connectionName: ref.connectionName }
             : {}),
@@ -319,17 +307,13 @@ export class MaterializationController {
          materializedTableId: instruction.materializedTableId as string,
          physicalTableName: instruction.physicalTableName as string,
          realization: instruction.realization,
-         // The `storage=` destination the orchestrator targets. Optional in the
-         // schema; must be carried through, or an orchestrated build silently
-         // falls back to a colocated build (isStorageBuild=false) and
-         // never materializes into the storage destination.
+         // The `storage=` destination. Must be carried through, or an
+         // orchestrated build silently falls back to a colocated build.
          ...(typeof instruction.destination === "string"
             ? { destination: instruction.destination }
             : {}),
-         // The per-source ask for a full rebuild, OR-ed with the request-level
-         // `reseed`. Must be carried through for the same reason as `destination`
-         // above: dropping it here would leave a host unable to rebuild one source
-         // without rebuilding all of them.
+         // Per-source full rebuild, OR-ed with the request-level `reseed`;
+         // without it a host cannot rebuild one source without all of them.
          ...(typeof instruction.reseed === "boolean"
             ? { reseed: instruction.reseed }
             : {}),
@@ -337,11 +321,9 @@ export class MaterializationController {
    }
 
    /**
-    * Validate one `buildInstructions.ledger` entry's SHAPE. Every field is an
-    * echo of a `ManifestEntry.ledger` the publisher reported, so nothing here
-    * is interpreted — only checked for being present and of the right type.
-    * What the entry claims (which table, which source definition) is validated
-    * against the package's build plan by the service, at create time.
+    * Validate one `buildInstructions.ledger` entry's SHAPE only. Each echoes a
+    * `ManifestEntry.ledger` the publisher reported; what it claims is checked
+    * against the build plan by the service at create time.
     */
    private validateLedgerEntry(raw: unknown): LedgerEntry {
       if (typeof raw !== "object" || raw === null) {
@@ -395,17 +377,13 @@ export class MaterializationController {
          watermark: entry.watermark as string,
          strategy: entry.strategy,
          sourceEntityId: entry.sourceEntityId as string,
-         // Absent and empty mean the same thing — a keyless (range-replace)
-         // source — so an absent list is not normalized into one here; the
-         // comparison reads both as no merge keys.
+         // Absent and empty both mean a keyless (range-replace) source.
          ...(Array.isArray(entry.mergeKeys)
             ? { mergeKeys: entry.mergeKeys as string[] }
             : {}),
-         // Absent means the table is colocated in its own warehouse. Part of the
-         // boundary's table identity, so it has to survive this boundary: an
-         // entry that arrives naming a destination and is indexed without one is
-         // never found by the source that owns it, which rebuilds in full on
-         // every refresh instead of advancing.
+         // Absent means colocated. Part of the table identity: an entry indexed
+         // without its destination is never found by its source, which then
+         // rebuilds in full on every refresh instead of advancing.
          ...(typeof entry.storageDestinationName === "string"
             ? { storageDestinationName: entry.storageDestinationName }
             : {}),

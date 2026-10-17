@@ -13,7 +13,8 @@ import {
    VersionFilesMissingError,
 } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
+import { createDuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
+import type { ResourceRepository } from "../../storage/DatabaseInterface";
 import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
@@ -33,7 +34,7 @@ interface Loaded {
 let root: string;
 let envPath: string;
 let db: DuckDBConnection;
-let repo: DuckDBRepository;
+let repo: ResourceRepository;
 let log: string[];
 let building: Set<string>;
 let failLoad: Set<string>;
@@ -152,7 +153,7 @@ beforeEach(async () => {
       "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, 'env', ?, now(), now())",
       [ENV_ID, envPath],
    );
-   repo = new DuckDBRepository(db);
+   repo = createDuckDBRepository(db);
    log = [];
    building = new Set();
    failLoad = new Set();

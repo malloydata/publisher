@@ -8,7 +8,8 @@ import {
 } from "../../errors";
 import { NewVersion } from "../DatabaseInterface";
 import { DuckDBConnection, isUniqueViolation } from "./DuckDBConnection";
-import { DuckDBRepository } from "./DuckDBRepository";
+import { createDuckDBRepository } from "./DuckDBRepository";
+import type { ResourceRepository } from "../DatabaseInterface";
 import { initializeSchema } from "./schema";
 
 const ENV_ID = "env-1";
@@ -30,12 +31,12 @@ async function freshDb(): Promise<DuckDBConnection> {
 /** A registry with one environment and one package row, as a publish leaves it. */
 async function freshRepo(): Promise<{
    db: DuckDBConnection;
-   repo: DuckDBRepository;
+   repo: ResourceRepository;
    packageId: string;
 }> {
    const db = await freshDb();
    await initializeSchema(db);
-   const repo = new DuckDBRepository(db);
+   const repo = createDuckDBRepository(db);
    await db.run(
       `INSERT INTO environments (id, name, path, created_at, updated_at)
        VALUES (?, 'env', '/env', now(), now())`,
@@ -66,7 +67,7 @@ function newVersion(versionId: string, extra: Partial<NewVersion> = {}) {
 const always = () => true;
 const never = () => false;
 
-async function latestOf(repo: DuckDBRepository): Promise<string | null> {
+async function latestOf(repo: ResourceRepository): Promise<string | null> {
    const pkg = await repo.getPackageByName(ENV_ID, PKG);
    return pkg?.latestVersion ?? null;
 }
@@ -394,13 +395,6 @@ describe("VersionRepository", () => {
       expect(await repo.listVersionsByEnvironment(ENV_ID)).toEqual([]);
    });
 
-   it("deletes versions with the environment's packages", async () => {
-      const { repo } = await freshRepo();
-      await repo.commitPublish(newVersion("1.0.0"), always);
-      await repo.deletePackagesByEnvironmentId(ENV_ID);
-      expect(await repo.listVersionsByEnvironment(ENV_ID)).toEqual([]);
-   });
-
    it("says whether a package has any version", async () => {
       const { repo } = await freshRepo();
       expect(await repo.hasVersions(ENV_ID, PKG)).toBe(false);
@@ -530,7 +524,7 @@ describe("versions schema upgrade", () => {
          "updated_at",
       ]);
 
-      const repo = new DuckDBRepository(db);
+      const repo = createDuckDBRepository(db);
       const pkg = await repo.getPackageByName("env-1", "sales");
       expect(pkg).toMatchObject({ id: "p-1", description: "kept" });
       expect(pkg!.latestVersion).toBeNull();

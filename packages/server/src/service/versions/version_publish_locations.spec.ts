@@ -8,7 +8,8 @@ import * as os from "os";
 import * as path from "path";
 import { PackageVersionError } from "../../errors";
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
-import { DuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
+import { createDuckDBRepository } from "../../storage/duckdb/DuckDBRepository";
+import type { ResourceRepository } from "../../storage/DatabaseInterface";
 import { initializeSchema } from "../../storage/duckdb/schema";
 import { VersionHost, VersionService } from "./version_service";
 import { VersionStore } from "./version_store";
@@ -100,7 +101,7 @@ let root: string;
 let envPath: string;
 let sourcesPath: string;
 let db: DuckDBConnection;
-let repo: DuckDBRepository;
+let repo: ResourceRepository;
 let downloads: InstanceType<typeof EnvironmentStore>;
 let svc: VersionService<Loaded>;
 /** Fake bucket contents, by "bucket/key". */
@@ -282,7 +283,7 @@ beforeEach(async () => {
       "INSERT INTO environments (id, name, path, created_at, updated_at) VALUES (?, ?, ?, now(), now())",
       [ENV_ID, ENV_NAME, envPath],
    );
-   repo = new DuckDBRepository(db);
+   repo = createDuckDBRepository(db);
    svc = new VersionService<Loaded>(
       repo,
       ENV_ID,

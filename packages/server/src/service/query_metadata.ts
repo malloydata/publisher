@@ -31,6 +31,7 @@
 import type { QueryMetadata } from "@malloydata/malloy";
 import * as crypto from "node:crypto";
 import { getQueryMetadataMode } from "../config";
+import { logger } from "../logger";
 import {
    recordQueryMetadataApplied,
    recordQueryMetadataDropped,
@@ -59,10 +60,8 @@ export type QueryClass = (typeof QUERY_CLASSES)[number];
  *   - property values: printable ASCII except `"`, <=256 chars
  *   - at most 20 properties
  *
- * Kept in one place with the upstream pin below so a future core change is a
- * one-line update here rather than a scattered hunt. A bag that satisfies this
- * is renderable by every connector, including into the `-- NAME="value"` comment
- * form.
+ * A bag that satisfies this is renderable by every connector, including into
+ * the `-- NAME="value"` comment form.
  *
  * Pinned to @malloydata/malloy 0.0.426 (`packages/malloy/src/query_metadata.ts`).
  */
@@ -72,9 +71,8 @@ export const MAX_PROPERTIES = 20;
 const PROPERTY_NAME_RE = /^[A-Za-z0-9_]+$/;
 /**
  * Snowflake's `QUERY_TAG` holds the whole bag as one JSON string capped at 2000
- * chars, and db-snowflake clamps by slicing — which truncates mid-JSON and
- * leaves an unparseable tag, i.e. silently unqueryable in `QUERY_HISTORY`,
- * which is the entire point of tagging. So the budget is enforced here, on the
+ * chars, and db-snowflake clamps by slicing mid-JSON, leaving a tag that is
+ * unqueryable in `QUERY_HISTORY`. So the budget is enforced here, on the
  * serialized size, by dropping whole properties.
  */
 const MAX_SERIALIZED_LENGTH = 2000;
@@ -138,14 +136,9 @@ export function queryMetadataViolations(raw: unknown): string[] {
 /**
  * Advisory notes about a bag that satisfies the contract but still will not do
  * what it says, so it is reported at declaration rather than discovered in a
- * warehouse console. Two kinds today:
- *
- *  - **A backend quietly discards it.** BigQuery's label grammar needs a name
- *    that starts with a lowercase letter after transformation; db-bigquery drops
- *    one it cannot make valid while every other connector keeps it. Same
- *    declaration, present on Snowflake, absent on BigQuery.
- *  - **The server will not have room for it.** The contract's cap covers the
- *    whole bag, and the server's context is added on top of what was declared.
+ * warehouse console: BigQuery's label grammar needs a name starting with a
+ * letter, and db-bigquery drops one it cannot make valid while other
+ * connectors keep it.
  */
 export function queryMetadataAdvisoryWarnings(meta: QueryMetadata): string[] {
    const warnings: string[] = [];
@@ -163,12 +156,8 @@ export function queryMetadataAdvisoryWarnings(meta: QueryMetadata): string[] {
  * Declared properties whose names the server owns, and which
  * {@link mergeQueryMetadata} therefore drops from a declaration.
  *
- * Separate from {@link queryMetadataAdvisoryWarnings} because the failure is a
- * different one: an advisory property is attached and then discarded by ONE
- * backend, while a reserved one is never attached at all. Both belong at a
- * declaration boundary rather than in a metric — a `queryMetadata` block naming
- * `model` publishes clean, vanishes on every statement, and reports it only as a
- * counter tick, which is the shape of thing an author cannot debug.
+ * Reported at declaration because otherwise a block naming `model` publishes
+ * clean and vanishes on every statement, visible only as a counter tick.
  */
 export function queryMetadataReservedWarnings(meta: QueryMetadata): string[] {
    return Object.keys(meta)
@@ -183,12 +172,10 @@ export function queryMetadataReservedWarnings(meta: QueryMetadata): string[] {
  * The budget warning for a declaration of `declared` properties, or undefined
  * when it fits.
  *
- * Separate from {@link queryMetadataAdvisoryWarnings} because the count that
- * matters is not always one bag's: a connection declares a default AND an
- * enforced map, and they share the budget, so summing them is the caller's job.
- * The contract's 20 covers the whole bag, and the server's own context lands on
- * top of everything declared — so a declaration that fills the contract publishes
- * clean and then loses properties on every statement, visible only as a metric.
+ * Takes a count because a connection's default and enforced maps share the
+ * budget; summing them is the caller's job. The server's context lands on top
+ * of everything declared, so a declaration that fills the contract would
+ * otherwise lose properties on every statement, visible only as a metric.
  */
 export function queryMetadataBudgetWarning(
    declared: number,
@@ -210,12 +197,10 @@ export function queryMetadataBudgetWarning(
  * deployment, cost centre) supplies them as a connection default or a
  * per-request override, and the publisher does not invent them.
  *
- * Every field except the correlation id is a property of the unit of work rather
- * than of the individual call, so a repeated query produces the same values. The
- * correlation id is per call by definition — it is the join key a response hands
- * back — which on a backend with no native tag mechanism makes the statement text
- * unique and so bypasses an exact-text result cache. That is the deliberate cost
- * of being able to find one query again.
+ * Every field except the correlation id is stable across repeats of a query.
+ * The correlation id is per call, so on a backend with no native tag mechanism
+ * it makes the statement text unique and bypasses an exact-text result cache:
+ * the deliberate cost of being able to find one query again.
  */
 export interface QueryContext {
    /** What issued the query. Absent only where the class is genuinely unknown. */
@@ -240,9 +225,8 @@ export interface QueryContext {
    runId?: string;
    /**
     * Identifies this single query, minted by the request boundary that returns
-    * it to the caller (see {@link mintCorrelationId}). Set only where there is a
-    * response field to carry it: an id nobody can read would cost the result
-    * cache and buy nothing.
+    * it to the caller (see {@link mintCorrelationId}). Set only where a response
+    * field carries it: an unread id costs the result cache for nothing.
     */
    correlationId?: string;
 }
@@ -255,14 +239,7 @@ export interface QueryContext {
  * its own request id in the bag declares it under its own property name.
  */
 export function mintCorrelationId(): string {
-   // Via the imported module, not the `crypto` global. This is hygiene, not the
-   // fix for a supported configuration: `node:crypto.randomUUID` works on every
-   // Node this project supports, while the global arrived unflagged only in Node
-   // 19, so reaching for it raised this line's floor above the module's for no
-   // benefit. It is how the unsupported-Node problem surfaced, though: this line
-   // is on the query-execution path and not the compile path, so on Node 18
-   // every query failed with "crypto is not defined" while inspecting a model
-   // kept working. The support floor itself is enforced in node_version_check.ts.
+   // The imported module, not the `crypto` global, which needs Node 19+.
    return crypto.randomUUID();
 }
 
@@ -321,15 +298,12 @@ export interface QueryMetadataLayers {
     * declaration can overwrite and which outlive every author property when the
     * bag has to shrink.
     *
-    * A host that runs one Publisher for several tenants needs this layer to win
-    * for the properties it is billed by — otherwise the tenant label is both
-    * forgeable (a `#@ persist queryMetadata.tenant=…` outranks a connection
-    * default) and the first thing shed under budget, which is a poor showing for
-    * the property finance reads.
+    * A multi-tenant host needs this for the properties it bills by; otherwise
+    * the tenant label is forgeable (`#@ persist queryMetadata.tenant=…`
+    * outranks a connection default) and shed first under budget.
     *
-    * The trust split it rests on is the DEPLOYMENT's, not this module's: nothing
-    * here authenticates a connection write, so it separates operator from author
-    * only where something in front of Publisher does.
+    * The operator/author trust split is the DEPLOYMENT's: nothing here
+    * authenticates a connection write.
     */
    enforced?: QueryMetadata | null;
    /** The server's own context, which wins over every other layer. */
@@ -405,14 +379,10 @@ export function mergeQueryMetadata(
    const drops: { name: string; reason: QueryMetadataDropReason }[] = [];
    const contextProperties = queryContextProperties(layers.context ?? {});
 
-   // Layers in precedence order, least specific first, then context on top. Each
-   // property remembers the layer whose value SURVIVED, not the first layer that
-   // mentioned it, so the shed order below matches the precedence that produced
-   // the bag.
-   // Null-prototype: `__proto__` satisfies the contract's name rule, so it
-   // reaches an assignment that an object literal would route to the prototype
-   // setter — which ignores a string and drops the property with no record of
-   // it. Every other invalid name is dropped loudly; this one would not be.
+   // Each property remembers the layer whose value SURVIVED, so the shed order
+   // below matches the precedence that produced the bag.
+   // Null-prototype: `__proto__` satisfies the name rule, and an object
+   // literal's prototype setter would silently drop it.
    const merged: QueryMetadata = Object.create(null) as QueryMetadata;
    const winningLayer = new Map<string, number>();
    const orderedLayers = [
@@ -430,18 +400,12 @@ export function mergeQueryMetadata(
             drops.push({ name, reason: "invalid_name" });
             continue;
          }
-         // A DECLARED property may not take a context name. Context only
-         // overwrites names it has a VALUE for, and a served query has no
-         // `source`, `trigger` or `run_id` — so without this a model file's
-         // `queryMetadata.source="orders_daily"` would ride an interactive
-         // statement and read, in the warehouse's own history, exactly like a
-         // build of that source. Reserving the whole context vocabulary rather
-         // than the three that leak today keeps the rule statable: context names
-         // describe what the server did, and are never an author's to set.
-         //
-         // Scoped to the declared layer deliberately. The connection and request
-         // layers can do the same thing and always could; widening to them is a
-         // separate decision with its own compatibility question.
+         // A DECLARED property may not take a context name. Context overwrites
+         // only names it has a value for, and a served query has no `source`,
+         // so a model's `queryMetadata.source="orders_daily"` would make an
+         // interactive statement look like a build of that source. Scoped to
+         // the declared layer; the connection and request layers are not
+         // restricted (a compatibility decision).
          if (index === DECLARED_LAYER_INDEX && RESERVED_NAMES.has(name)) {
             drops.push({ name, reason: "reserved_name" });
             continue;
@@ -458,15 +422,12 @@ export function mergeQueryMetadata(
       merged[name] = sanitizeValue(value);
    }
 
-   // Shedding runs least-specific-first, the same order that decides which value
-   // wins: a connection-wide default is the cheapest thing to lose, the caller's
-   // own per-request property — most likely its join key into whatever it is
-   // correlating — outlives it, and an enforced property outlives them all,
-   // because the deployment is billed by it.
+   // Shedding runs least-specific-first, the same order that decides which
+   // value wins; enforced properties go last because the deployment bills by
+   // them.
    const shedOrder = [...winningLayer.entries()]
-      // hasOwnProperty, not `in`: `__proto__` is a contract-legal property name
-      // and `in` finds it on every object literal's prototype, which would take
-      // a declared one off the shed list and make it unsheddable.
+      // hasOwnProperty, not `in`: `in` finds `__proto__` on every object,
+      // which would make a declared `__proto__` unsheddable.
       .filter(
          ([name]) =>
             !Object.prototype.hasOwnProperty.call(contextProperties, name),
@@ -487,10 +448,8 @@ export function mergeQueryMetadata(
    ) {
       shed("serialized_cap");
    }
-   // Context alone over either budget is a server bug, not a caller's — but a
-   // thrown query would be worse than a partial tag, so shed context too. Least
-   // load-bearing first, ending at the two that make the bag worth reading: the
-   // workload class, and the id a response handed back as a join key.
+   // Context alone over budget is a server bug, but a thrown query is worse
+   // than a partial tag, so shed context too, in CONTEXT_SHED_ORDER.
    const contextShedOrder = CONTEXT_SHED_ORDER.filter(
       (name) => name in contextProperties,
    );
@@ -543,4 +502,86 @@ export function parseQueryClass(raw: unknown): QueryClass | undefined {
    throw new Error(
       `queryClass must be one of ${QUERY_CLASSES.join(" | ")} (got ${JSON.stringify(raw)})`,
    );
+}
+
+/**
+ * What a request boundary contributes to a model query's per-query metadata: the
+ * caller's own properties and class, the environment the query runs in, and a
+ * reader for the executing connection's default (the controller owns the
+ * environment, so it supplies the lookup rather than the model reaching for it).
+ */
+export interface ModelQueryMetadataInput {
+   request?: QueryMetadata;
+   queryClass?: QueryClass;
+   environment?: string;
+   version?: string;
+   /**
+    * The id this query is correlated by, minted by the boundary that returns it
+    * (see `mintCorrelationId`). Omitted by callers with no response field to
+    * carry it, which is why it is not minted here.
+    */
+   correlationId?: string;
+   /**
+    * The executing connection's two metadata layers: its overridable default and
+    * the properties the deployment enforces. Supplied by the controller, which
+    * owns the environment; the model only knows the connection by name.
+    */
+   connectionMetadata?: (connectionName: string) => {
+      default?: QueryMetadata | null;
+      enforced?: QueryMetadata | null;
+   } | null;
+   /**
+    * The package's declared bag — the least specific author-declared layer.
+    * Supplied by the controller, which owns the package; the model knows only
+    * its own file and its package's NAME.
+    */
+   packageDeclaration?: QueryMetadata | null;
+}
+
+/**
+ * The {@link ModelQueryMetadataInput} a query boundary (REST or MCP) hands the
+ * model: the caller's own bag and class, the environment, a fresh correlation
+ * id, the package's declared layer, and a reader for the executing
+ * connection's default and enforced layers. Built the same way at every
+ * boundary, because a connection's enforced properties describe the
+ * deployment rather than the protocol a query arrived over.
+ */
+export function buildQueryMetadataInput(args: {
+   environmentName: string;
+   environment: {
+      getApiConnection(connectionName: string): {
+         queryMetadata?: QueryMetadata;
+         queryMetadataEnforced?: QueryMetadata;
+      };
+   };
+   pkg: { getDeclaredQueryMetadata(): QueryMetadata | null };
+   request?: QueryMetadata;
+   queryClass?: QueryClass;
+   version?: string;
+   /** Debug message logged when a connection's layers cannot be read. */
+   noLayersLogMessage: string;
+}): ModelQueryMetadataInput {
+   const { environment } = args;
+   return {
+      request: args.request,
+      queryClass: args.queryClass,
+      environment: args.environmentName,
+      version: args.version,
+      correlationId: mintCorrelationId(),
+      packageDeclaration: args.pkg.getDeclaredQueryMetadata(),
+      connectionMetadata: (connectionName) => {
+         try {
+            const connection = environment.getApiConnection(connectionName);
+            return {
+               default: connection.queryMetadata,
+               enforced: connection.queryMetadataEnforced,
+            };
+         } catch (error) {
+            // Fail open (a tag must not fail a query), but log it: this drop
+            // has no metric and loses the ENFORCED layer.
+            logger.debug(args.noLayersLogMessage, { connectionName, error });
+            return null;
+         }
+      },
+   };
 }

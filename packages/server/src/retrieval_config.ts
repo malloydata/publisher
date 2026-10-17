@@ -85,13 +85,11 @@ export type RetrievalConfig = {
 /**
  * Default for `retrieval.indexing.maxEntities`. A package past this is not
  * embedded: its first index would take minutes of provider calls and rate
- * limit. The bundled examples sit around a few hundred entities.
+ * limit.
  *
- * Counted in ENTITIES, not rows. Faceting means a documented entity costs
- * more than one embedding (a name row plus its doc rows), so the ceiling on
- * first-sync provider calls is a small multiple of this number. It is still
- * expressed in entities because the check runs before facets are computed and
- * it is the figure an operator can reason about from their model.
+ * Counted in ENTITIES, not embedding rows (a documented entity embeds a name
+ * row plus doc rows), because the check runs before faceting and it is the
+ * figure an operator can reason about from their model.
  */
 export const DEFAULT_SEMANTIC_INDEX_MAX_ENTITIES = 5_000;
 
@@ -418,9 +416,6 @@ function parseEgress(raw: unknown): { preset: EgressPreset } | undefined {
  * Validate the `retrieval` block. Throws, naming the key and the fix, on a
  * value that cannot be used: a bad value must stop the server at startup
  * rather than silently fall back to a setting the operator did not choose.
- *
- * A digit-only string is accepted for numbers because `${VAR}` substitution
- * in the config file always produces a string.
  */
 export function parseRetrievalConfig(
    raw: unknown,
@@ -432,8 +427,8 @@ export function parseRetrievalConfig(
             `Fix: "retrieval": { "indexing": { "maxEntities": 20000 } }`,
       );
    }
-   // A typo in a top-level key ("embeding") would otherwise leave the whole
-   // block silently unset, as it does for every key below.
+   // Unknown keys are refused here and in every nested block, so a typo
+   // ("embeding") fails loudly instead of leaving a setting at its default.
    const input = block(
       raw,
       "retrieval",
@@ -444,8 +439,6 @@ export function parseRetrievalConfig(
 
    const indexing = input.indexing;
    if (indexing !== undefined && indexing !== null) {
-      // Through block() like every other nested object, so a typo such as
-      // "maxEntitites" fails loudly instead of leaving the cap at its default.
       const fields = block(
          indexing,
          "retrieval.indexing",
@@ -475,9 +468,7 @@ export function parseRetrievalConfig(
    return out;
 }
 
-// The block as the running server loaded it, set once at startup by
-// setRetrievalConfig and read by the provider getters. Module state, like the
-// entity cap in embedding_index: nothing re-reads the file on a request.
+// Set once at startup; nothing re-reads the file on a request.
 let loaded: RetrievalConfig | undefined;
 
 export function setRetrievalConfig(config: RetrievalConfig | undefined): void {

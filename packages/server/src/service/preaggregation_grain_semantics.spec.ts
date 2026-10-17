@@ -22,7 +22,7 @@ import { computeSourceEntityId } from "./build_plan";
 import {
    duckdbTestConnections,
    loadTestModel,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 // Two rows on the SAME DAY at different hours. A day-truncated store collapses
 // them, so an untruncated query served from the rollup is visibly, checkably

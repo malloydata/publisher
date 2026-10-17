@@ -167,7 +167,7 @@ export function BuilderBar({ controls, onDone: onDoneProp }: BuilderBarProps) {
                                  <AddItem
                                     icon={<InsertChartOutlinedIcon />}
                                     title="Tile"
-                                    detail="A view from the model"
+                                    detail="A chart or table from the model"
                                     onClick={pick(add.tile)}
                                  />
                               )}

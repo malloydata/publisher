@@ -16,7 +16,7 @@
  * against 0.0.427", but in prose, not in an assertion that goes red on a
  * version bump. A real P0 leak on this branch (a composite parent's gate and
  * its member's gate being OR'd into one list — see
- * `row_level_authorize.integration.spec.ts`'s "composite gate grouping"
+ * `tests/component/authorize/row_level_enforcement.spec.ts`'s "composite gate grouping"
  * describe block) existed precisely because one of these behaviors was not
  * known. The failure direction is NOT uniformly fail-closed, so a silent
  * change here can open access rather than close it.
@@ -71,7 +71,7 @@ function ownLevelNotes(annotations: RawAnnotations | undefined): RawNote[] {
 }
 
 /** Compile `text` to a real `ModelDef` — same idiom as
- *  `row_level_authorize.integration.spec.ts`'s `createModel`, trimmed to just
+ *  `tests/component/authorize/row_level_enforcement.spec.ts`'s `createModel`, trimmed to just
  *  the compile step since these tests inspect IR shape and never run a
  *  query. Every model here uses `duckdb.sql(...)` literals, so an in-memory
  *  connection with no seeded tables is enough. */

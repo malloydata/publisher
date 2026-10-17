@@ -53,6 +53,7 @@ import {
 } from "./controls";
 import {
    isQueryTile,
+   tileKey,
    type DashboardDocument,
    type DashboardTile,
    type LocalGiven,
@@ -205,9 +206,10 @@ function FieldPicker({
 }
 
 /**
- * Why a tile cannot take a binding. A tile declared on its source and one
- * declared HERE in a body with no single block for a `where:` are different
- * situations, and saying "from the model" about the second one is untrue.
+ * Why a tile cannot take a binding. A tile declared on its source, one
+ * declared HERE in a body with no single block for a `where:`, and one naming a
+ * query are different situations, and saying "from the model" about the others
+ * is untrue.
  */
 const unbindable = (tile: DashboardTile | undefined) =>
    tile && isQueryTile(tile) && tile.declaration.kind === "opaque"
@@ -215,10 +217,17 @@ const unbindable = (tile: DashboardTile | undefined) =>
            label: "Not bindable",
            reason: `Its body is ${tile.declaration.why}, so a filter has no single place to go.`,
         }
-      : {
-           label: "From the model",
-           reason: "Declared on its source, which this report does not write.",
-        };
+      : tile && isQueryTile(tile) && tile.declaration.kind === "query"
+        ? {
+             label: "Not bindable",
+             reason:
+                "It names a query, whose filters live in that query's own definition.",
+          }
+        : {
+             label: "From the model",
+             reason:
+                "Declared on its source, which this report does not write.",
+          };
 
 export function FilterDialog({
    open,
@@ -709,7 +718,7 @@ export function FilterDialog({
                               : undefined;
                            return (
                               <Stack
-                                 key={`${tile.source}.${tile.name}`}
+                                 key={tileKey(tile)}
                                  direction="row"
                                  sx={{
                                     gap: 1,

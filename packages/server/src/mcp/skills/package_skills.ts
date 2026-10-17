@@ -38,9 +38,8 @@ export interface PackageSkills {
     */
    files: Array<{ path: string; text: string }>;
    /**
-    * Non-fatal findings. A package that fails to load is skipped entirely, and
-    * losing a working model over a malformed markdown file is the wrong trade,
-    * so nothing here throws.
+    * Non-fatal findings. Nothing here throws: a failed package load is skipped
+    * entirely, and a malformed markdown file must not cost a working model.
     */
    warnings: string[];
    /** The subset of `warnings` that leave a skill unserved, which an agent cannot be served without. */
@@ -116,13 +115,9 @@ function referenceFilesInside(
  * optional `reference/*.md`. The package's own `skills/` and an agent's skill
  * roots are both read through here.
  *
- * Parsing is shared with the repo's own skills (`parseSkill`, `parseReference`)
- * so one definition decides what a SKILL.md means. Selection deliberately is
- * NOT shared: `buildSkills` gates on `manifests/publisher-local.json`, which
- * answers "what does this server ship" and has no counterpart in a package. A
- * package ships what it contains, and the repo's `credible-*` exclusion is
- * likewise not applied: it exists for a gitignored install target inside this
- * repo, and silently dropping a customer's skill by name would be a trap.
+ * Parsing is shared with the repo's own skills; selection is not. A package
+ * ships what it contains: no manifest gating, and no `credible-*` exclusion,
+ * which would silently drop a customer's skill by name.
  */
 export function readSkillsDir(
    packagePath: string,
@@ -672,15 +667,10 @@ export function readPackageAgents(
  * The skills in force for one package: the bundled set, with the package's own
  * skills shadowing any bundled skill of the same name and adding the rest.
  *
- * Shadowing by name is the whole mechanism. Publisher does not know which
- * skills the calling agent already holds, so it cannot patch or merge one; it
- * can only decide what to return when asked for a name. A package that wants
- * to change how an agent uses IT ships a file under that agent-facing name, and
- * gets its version back.
- *
- * `origin` rides on every entry because a replaced base skill is otherwise
- * indistinguishable from the original, which is exactly the thing a reader
- * debugging an agent's behaviour needs to see.
+ * Shadowing by name is the whole mechanism: Publisher does not know which
+ * skills the agent already holds, so it cannot merge, only choose what a name
+ * returns. `origin` is on every entry because a replaced skill is otherwise
+ * indistinguishable from the original.
  */
 export function resolveSkills(
    bundled: SkillEntry[],

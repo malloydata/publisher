@@ -4,6 +4,7 @@
 import { malformedReply } from "../service/http_retry";
 import { postJson } from "./http";
 import type { RawChat, RawChatRequest } from "./chat_model";
+import { isVector, type EmbedChunkFn } from "./embedding_http";
 import type { ChatResult, FetchFn, ProviderName } from "./types";
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -58,9 +59,9 @@ function count(value: unknown): number | undefined {
 /**
  * Chat through an OpenAI-style `/chat/completions` endpoint: OpenAI itself,
  * Ollama's compatibility endpoint, and any server that copies the shape
- * (vLLM, Azure, a gateway). Temperature is 0 unless the model rejects it (see
- * rejectsTemperature). `response_format` is sent only when JSON was asked for. Ollama and some gateways need no key, so the
- * Authorization header is omitted when there is none.
+ * (vLLM, Azure, a gateway). `response_format` is sent only when JSON was asked
+ * for, and the Authorization header only when there is a key (Ollama and some
+ * gateways need none).
  */
 export class OpenAiCompatibleChat implements RawChat {
    constructor(
@@ -80,8 +81,8 @@ export class OpenAiCompatibleChat implements RawChat {
          model: this.model,
          messages,
       };
-      // Temperature 0 keeps ranking stable where the model allows it. OpenAI's
-      // gpt-5 and o-series models answer 400 "Unsupported value: 'temperature'".
+      // Temperature 0 keeps ranking stable where the model allows it (see
+      // rejectsTemperature).
       if (!rejectsTemperature(this.provider, this.model)) body.temperature = 0;
       if (req.maxTokens !== undefined) {
          // OpenAI renamed the field; other servers still read max_tokens.
@@ -122,4 +123,66 @@ export class OpenAiCompatibleChat implements RawChat {
          },
       };
    }
+}
+
+/**
+ * One request to an OpenAI-compatible `/embeddings` endpoint. The API key
+ * travels only in the Authorization header; postJson keeps it out of every
+ * error message.
+ */
+export function openAiEmbedChunk(args: {
+   baseUrl: string;
+   apiKey: string;
+   model: string;
+   dimensions?: number;
+   fetchFn: FetchFn;
+}): EmbedChunkFn {
+   const url = `${args.baseUrl}/embeddings`;
+   return async (inputs, signal, timeoutMs) => {
+      const json = (await postJson({
+         fetchFn: args.fetchFn,
+         url,
+         headers: { Authorization: `Bearer ${args.apiKey}` },
+         body: {
+            model: args.model,
+            input: inputs,
+            ...(args.dimensions !== undefined
+               ? { dimensions: args.dimensions }
+               : {}),
+         },
+         signal,
+         timeoutMs,
+         secrets: [args.apiKey],
+         authHint: "EMBEDDING_API_KEY",
+         what: "Embedding request",
+      })) as { data?: { index?: number; embedding?: unknown }[] } | null;
+      const data = json?.data;
+      if (!Array.isArray(data) || data.length !== inputs.length) {
+         throw malformedReply(
+            "Embedding response",
+            url,
+            `expected ${inputs.length} embeddings, got ${Array.isArray(data) ? data.length : "none"}`,
+         );
+      }
+
+      // The response documents per-item `index` fields; place by index
+      // defensively rather than assuming order.
+      const vectors = new Array<number[] | undefined>(inputs.length);
+      for (let i = 0; i < data.length; i++) {
+         const item = data[i];
+         const idx = typeof item?.index === "number" ? item.index : i;
+         if (
+            // Check contents, not just shape: [1, null, "x"] would otherwise
+            // be stored and yield NaN scores at search time.
+            !isVector(item?.embedding) ||
+            idx < 0 ||
+            idx >= inputs.length ||
+            vectors[idx] !== undefined
+         ) {
+            throw malformedReply("Embedding response", url, `bad item ${i}`);
+         }
+         vectors[idx] = item.embedding;
+      }
+      return vectors as number[][];
+   };
 }

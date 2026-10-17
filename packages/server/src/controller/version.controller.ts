@@ -5,17 +5,16 @@ import {
    isManifestLocation,
    MANIFEST_LOCATION_FORMS,
 } from "./manifest_location";
-import express from "express";
+import type express from "express";
 import { components } from "../api";
 import { API_PREFIX } from "../constants";
 import {
    BadRequestError,
    FrozenConfigError,
-   internalErrorToHttpError,
    PackageNotFoundError,
 } from "../errors";
-import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
+import { apiRoute } from "../routes/json_route";
 import type { EnvironmentStore } from "../service/environment_store";
 import type { Package } from "../service/package";
 import type { VersionService } from "../service/versions/version_service";
@@ -181,39 +180,33 @@ function toApiVersion(
 }
 
 /**
- * The versions routes.
+ * The versions routes, registered on the app's route table like every other
+ * `/api/v0` route: each answers through {@link apiRoute}, so a refusal is
+ * logged once at `warn` and a failure once at `error`.
  */
-export function versionsRouter(controller: VersionController): express.Router {
-   const router = express.Router();
-   const base = `${API_PREFIX}/environments/:environmentName/packages/:packageName`;
+export function registerVersionRoutes(
+   app: express.Express,
+   pkg: string,
+   controller: VersionController,
+): void {
+   const route = (run: (req: express.Request) => Promise<unknown>) =>
+      apiRoute((req) => {
+         assertSafePackageName(req.params.packageName);
+         return run(req);
+      });
 
-   const handle =
-      (
-         run: (req: express.Request) => Promise<unknown>,
-      ): express.RequestHandler =>
-      async (req, res) => {
-         try {
-            assertSafePackageName(req.params.packageName);
-            res.status(200).json(await run(req));
-         } catch (error) {
-            logger.error(error);
-            const { json, status } = internalErrorToHttpError(error as Error);
-            res.status(status).json(json);
-         }
-      };
-
-   router.get(
-      `${base}/versions`,
-      handle((req) =>
+   app.get(
+      `${pkg}/versions`,
+      route((req) =>
          controller.listVersions(
             req.params.environmentName,
             req.params.packageName,
          ),
       ),
    );
-   router.get(
-      `${base}/versions/:version`,
-      handle((req) =>
+   app.get(
+      `${pkg}/versions/:version`,
+      route((req) =>
          controller.getVersion(
             req.params.environmentName,
             req.params.packageName,
@@ -221,9 +214,9 @@ export function versionsRouter(controller: VersionController): express.Router {
          ),
       ),
    );
-   router.patch(
-      `${base}/versions/:version`,
-      handle((req) =>
+   app.patch(
+      `${pkg}/versions/:version`,
+      route((req) =>
          controller.updateVersion(
             req.params.environmentName,
             req.params.packageName,
@@ -232,9 +225,9 @@ export function versionsRouter(controller: VersionController): express.Router {
          ),
       ),
    );
-   router.put(
-      `${base}/versions/:version/manifest`,
-      handle((req) =>
+   app.put(
+      `${pkg}/versions/:version/manifest`,
+      route((req) =>
          controller.setManifest(
             req.params.environmentName,
             req.params.packageName,
@@ -243,9 +236,9 @@ export function versionsRouter(controller: VersionController): express.Router {
          ),
       ),
    );
-   router.put(
-      `${base}/latest`,
-      handle((req) =>
+   app.put(
+      `${pkg}/latest`,
+      route((req) =>
          controller.setLatest(
             req.params.environmentName,
             req.params.packageName,
@@ -253,5 +246,4 @@ export function versionsRouter(controller: VersionController): express.Router {
          ),
       ),
    );
-   return router;
 }

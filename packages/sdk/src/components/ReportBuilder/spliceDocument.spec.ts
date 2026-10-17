@@ -1532,6 +1532,53 @@ describe("spliceDashboardDocument: what it refuses", () => {
       if (spliceFailed(r)) expect(r.reason).toContain("declared on its source");
    });
 
+   // A named query stays a named query: the entry is moved or dropped as
+   // written, never rewritten to the `source -> …` it happens to read, and its
+   // `query:` stays in the file, where other things may still read it.
+   describe("a tile that names a query", () => {
+      const NAMED = `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }
+import { flights } from '../flights.malloy'
+
+# bar_chart
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+
+      it("moves with its entry spelled as written", async () => {
+         const out = await spliced(NAMED, (d) => {
+            d.tiles.reverse();
+         });
+         expect(out).toContain('tiles=["flights -> by_month", "by_carrier"]');
+         expect(out).toContain(
+            "# bar_chart\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }",
+         );
+      });
+
+      it("moves an unquoted entry, and keeps it unquoted", async () => {
+         const out = await spliced(
+            NAMED.replace('"by_carrier"', "by_carrier"),
+            (d) => {
+               d.tiles.reverse();
+            },
+         );
+         expect(out).toContain('tiles=["flights -> by_month", by_carrier]');
+      });
+
+      it("leaves its query in the file when the tile is removed", async () => {
+         const out = await spliced(NAMED, (d) => {
+            d.tiles.shift();
+         });
+         expect(out).toContain('tiles=["flights -> by_month"]');
+         expect(out).toContain("query: by_carrier is flights");
+      });
+
+      it("refuses to restyle it", async () => {
+         expect(
+            await refused(NAMED, (d) => {
+               d.tiles[0].colspan = 6;
+            }),
+         ).toContain("names a query");
+      });
+   });
+
    it("refuses a new tile that is not a reference to a view", async () => {
       expect(
          await refused(SOURCE, (d) => {

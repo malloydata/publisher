@@ -24,13 +24,9 @@ type ApiNotebook = components["schemas"]["Notebook"];
 type ApiRawNotebook = components["schemas"]["RawNotebook"];
 
 /**
- * DEPRECATED: the `…/dashboards*` and `…/notebooks*` routes, kept for clients
- * that still read them. Each answers from the report API through the
- * projections in `service/legacy_report_views.ts`; `routes/deprecated.ts`
- * registers them, and `server-old.ts` serves the same on its legacy paths.
- *
- * Each method counts one use of its feature as it starts, whatever it then
- * answers, so every route that reaches it — on either path — counts once.
+ * DEPRECATED: the `…/dashboards*` and `…/notebooks*` routes, answered from the
+ * report API through `service/legacy_report_views.ts`. Each method counts one
+ * deprecated use as it starts, so every route reaching it counts once.
  */
 export class LegacyReportController {
    private environmentStore: EnvironmentStore;
@@ -130,8 +126,7 @@ export class LegacyReportController {
          environmentName,
          false,
       );
-      // Shed load before any disk / DB work; same rationale as
-      // QueryController.getQuery — already-loaded packages bypass the
+      // Shed load before any disk / DB work: loaded packages bypass the
       // package-load admission gate.
       environment.assertCanAdmitQuery();
       const p = await environment.getPackage(packageName, false, { versionId });
@@ -153,12 +148,9 @@ export class LegacyReportController {
                abortSignal,
                {
                   environment: environmentName,
-                  // The package owns its manifest, so the least-specific
-                  // author-declared layer is read here; the model knows only its
-                  // own file and its package's NAME.
+                  // Read here because the model knows neither its package's
+                  // manifest nor the environment's connection configs.
                   packageDeclaration: p.getDeclaredQueryMetadata(),
-                  // The environment owns the connection configs, so the default
-                  // and enforced layers are read here rather than from the model.
                   connectionMetadata: (connectionName) => {
                      try {
                         const connection =
@@ -168,8 +160,8 @@ export class LegacyReportController {
                            enforced: connection.queryMetadataEnforced,
                         };
                      } catch (error) {
-                        // Fails open, and says so: what an unreadable
-                        // connection costs is the enforced layer.
+                        // Fails open: an unreadable connection loses its
+                        // enforced layer.
                         logger.debug(
                            "No query-metadata layers for connection",
                            { connectionName, error },

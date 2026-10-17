@@ -220,7 +220,7 @@ source: recalls_tiles is recalls extend {
       ],
    };
 
-   it("can open the report with the model filter's current value", async () => {
+   it("can make the model filter's current value the report's default", async () => {
       packageFile = RECALLS;
       served = READS_MANUFACTURER;
       open();
@@ -229,13 +229,11 @@ source: recalls_tiles is recalls extend {
       );
       fireEvent.click(
          await screen.findByRole("button", {
-            name: "Open the report with this value",
+            name: "Make this the report's default",
          }),
       );
       // The report now holds it: the popover says so, and Undo takes it back.
-      expect(
-         await screen.findByText("The report opens with this value."),
-      ).toBeDefined();
+      expect(await screen.findByText("Report default")).toBeDefined();
       expect(
          (
             screen.getByRole("button", {
