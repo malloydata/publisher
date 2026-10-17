@@ -3,7 +3,11 @@
 
 import {
    metrics,
+   SpanStatusCode,
+   trace,
+   type Attributes,
    type Counter,
+   type Span,
    type Histogram,
    type Meter,
    type UpDownCounter,
@@ -88,4 +92,33 @@ export function lazyHistogram(
 /** Drop every lazily created instrument so the next use binds to the current provider. */
 export function resetInstrumentsForTesting(): void {
    for (const reset of instrumentResets) reset();
+}
+
+const tracer = () => trace.getTracer(METER_NAME);
+
+/**
+ * Run `fn` inside a span that is active for everything it awaits, so spans the
+ * SDK's auto-instrumentation makes (HTTP, database drivers) nest under it. A
+ * throw marks the span as an error and is rethrown. Without an exporter
+ * configured the tracer is a no-op.
+ */
+export async function withSpan<T>(
+   name: string,
+   attributes: Attributes,
+   fn: (span: Span) => Promise<T>,
+): Promise<T> {
+   return tracer().startActiveSpan(name, { attributes }, async (span) => {
+      try {
+         return await fn(span);
+      } catch (error) {
+         span.recordException(error as Error);
+         span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: error instanceof Error ? error.message : String(error),
+         });
+         throw error;
+      } finally {
+         span.end();
+      }
+   });
 }

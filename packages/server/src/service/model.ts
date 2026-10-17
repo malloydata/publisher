@@ -18,7 +18,7 @@ import {
 } from "@malloydata/malloy";
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { DataStyles } from "@malloydata/render";
-import { lazyCounter, lazyHistogram } from "../telemetry";
+import { lazyCounter, lazyHistogram, withSpan } from "../telemetry";
 import { recordStorageServeRouting } from "../materialization_metrics";
 import * as fs from "fs/promises";
 import { createRequire } from "module";
@@ -6388,7 +6388,29 @@ export class Model {
       assertFilterGivensParse(this.givens, givens);
    }
 
+   /**
+    * Run a query against this model: a named view on a source, a named
+    * query, or ad-hoc Malloy text. Traced as one `publisher.query` span.
+    */
    public async getQueryResults(
+      ...args: Parameters<Model["runQueryResults"]>
+   ): ReturnType<Model["runQueryResults"]> {
+      return withSpan(
+         "publisher.query",
+         {
+            "malloy.package": this.packageName,
+            "malloy.model.path": this.modelPath,
+         },
+         async (span) => {
+            const result = await this.runQueryResults(...args);
+            if (result.servedFrom)
+               span.setAttribute("publisher.served_from", result.servedFrom);
+            return result;
+         },
+      );
+   }
+
+   private async runQueryResults(
       sourceName?: string,
       queryName?: string,
       query?: string,

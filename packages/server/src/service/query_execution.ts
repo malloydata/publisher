@@ -9,6 +9,7 @@
  * the two and stays with the caller.
  */
 
+import { withSpan } from "../telemetry";
 import {
    API,
    MalloyError,
@@ -52,6 +53,22 @@ export interface PreparedRun {
  * name, which only the prepared result knows), then run.
  */
 export async function prepareAndRun(
+   runnable: QueryMaterializer,
+   options: PrepareOptions,
+   run: {
+      abortSignal: AbortSignal | undefined;
+      maxRows: number;
+      queryMetadata: (
+         connectionName: string,
+      ) => QueryMetadata | undefined | Promise<QueryMetadata | undefined>;
+   },
+): Promise<PreparedRun> {
+   return withSpan("publisher.query.execute", {}, () =>
+      prepareAndRunUntraced(runnable, options, run),
+   );
+}
+
+async function prepareAndRunUntraced(
    runnable: QueryMaterializer,
    options: PrepareOptions,
    run: {

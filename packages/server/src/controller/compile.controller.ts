@@ -8,6 +8,7 @@ import {
    lazyCounter,
    lazyHistogram,
    REQUEST_DURATION_BUCKETS_MS,
+   withSpan,
 } from "../telemetry";
 import type { CompiledDocument } from "../service/compile_document";
 import type { CompileScope, TaggedLogMessage } from "../service/environment";
@@ -50,14 +51,19 @@ export class CompileController {
       const start = performance.now();
       let outcome = "refused";
       try {
-         const result = await this.compileText(
-            environmentName,
-            packageName,
-            modelName,
-            source,
-            includeSql,
-            givens,
-            scope,
+         const result = await withSpan(
+            "publisher.compile",
+            { "malloy.package": packageName, "publisher.compile.scope": scope },
+            () =>
+               this.compileText(
+                  environmentName,
+                  packageName,
+                  modelName,
+                  source,
+                  includeSql,
+                  givens,
+                  scope,
+               ),
          );
          outcome = result.status;
          return result;
