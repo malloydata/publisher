@@ -17,7 +17,7 @@
  * `buildGatedModel` to skip `Model.create`'s load-time preflight — same
  * convention, and same two helpers (copied rather than imported, this
  * file's own convention already documented in
- * `source_line_authorize_integration.spec.ts`), as that file.
+ * `tests/component/authorize/load_validation.spec.ts`), as that file.
  *
  * `org_id`/`owner` are deliberately DIFFERENT per row (see `SEED_SQL`) so a
  * misbound query returns a DIFFERENT row set than the correctly-bound query,
@@ -94,7 +94,7 @@ async function createModel(
  * DuckDB, so a table this process seeded via `runSQL` is invisible there —
  * every fixture below reads its rows from an inline `duckdb.sql("select …
  * union all select …")` literal instead of `duckdb.table(...)`, the same
- * workaround `row_level_authorize.integration.spec.ts`'s own worker-pool test
+ * workaround `tests/component/authorize/row_level_enforcement.spec.ts`'s own worker-pool test
  * uses.
  */
 async function createPackageWithFiles(
@@ -160,7 +160,7 @@ function compilationErrorOf(model: Model): Error | undefined {
 
 /** A notebook cell's `result` is Malloy's own wire-format JSON, not the
  *  `compactResult` shape `getQueryResults` returns — same helper
- *  `row_level_authorize.integration.spec.ts` keeps its own copy of. */
+ *  `tests/component/authorize/row_level_enforcement.spec.ts` keeps its own copy of. */
 function firstCellResultValue(resultJson: string): unknown {
    const parsed = JSON.parse(resultJson);
    const row = parsed?.data?.array_value?.[0]?.record_value?.[0];
@@ -209,7 +209,7 @@ async function expectServesWithCount(
 /**
  * Build a `Model` from real compiled Malloy IR while skipping `Model.create`'s
  * pre-flight `validateAuthorizeProbes` call — see
- * `source_line_authorize_integration.spec.ts`'s identical helper (that file
+ * `tests/component/authorize/load_validation.spec.ts`'s identical helper (that file
  * owns the canonical version; duplicated per its own documented convention).
  * Used ONLY for gates deliberately unexpressible at the one entry point
  * under test, so the test reaches request time instead of aborting at load.

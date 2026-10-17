@@ -33,7 +33,7 @@ const ADVISORY_PACKAGE = "persist-advisory-test";
 //
 // The delta DML's own behavior is executed against a real engine in
 // incremental_dml_semantics.spec.ts, and the SEED/DELTA/SKIP decisions are
-// covered in incremental_apply.spec.ts and materialization_service.spec.ts.
+// covered in incremental_apply.spec.ts and materialization_service_*.spec.ts.
 describe("Incremental refresh over REST", () => {
    let env: (RestE2EEnv & { stop(): Promise<void> }) | null = null;
    let baseUrl: string;

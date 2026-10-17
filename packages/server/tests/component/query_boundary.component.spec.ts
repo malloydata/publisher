@@ -21,7 +21,7 @@
  * filters use; an unresolvable target fails closed.
  *
  * This is the *what* axis; `#(authorize)` (the *who* axis) is orthogonal and
- * tested in explore_visibility.spec.ts / the authorize specs. Reports are
+ * tested in tests/component/explore_visibility.component.spec.ts / the authorize specs. Reports are
  * always public and never gated.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";

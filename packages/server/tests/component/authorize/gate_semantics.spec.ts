@@ -543,7 +543,7 @@ source: own_lock is base extend {}
    it("except: the gated column then rename: another onto its name denies rather than filtering on the wrong column", async () => {
       // The graft compiles (a field named org_id exists again), but
       // filter_binding_guard proves it no longer binds the declaring
-      // source's column. See filter_binding_guard_integration.spec.ts for
+      // source's column. See tests/component/filter_binding_guard.component.spec.ts for
       // the full variant matrix.
       const gated = await buildGatedModel(`given:
   GROUPS :: number[]

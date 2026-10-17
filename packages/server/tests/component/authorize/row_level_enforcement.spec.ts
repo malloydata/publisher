@@ -1091,7 +1091,7 @@ source: X is duckdb.table('parent') extend {
 /**
  * Extract the value of the first field of the first row from a notebook
  * cell's JSON-stringified result (`executeNotebookCell`'s `result` string).
- * Same shape `filter_integration.spec.ts`'s `parseNotebookResult` decodes,
+ * Same shape `tests/component/filter.component.spec.ts`'s `parseNotebookResult` decodes,
  * narrowed to the one cell this file only needs: a single-row, single-column
  * `aggregate:` result.
  */
@@ -1926,7 +1926,7 @@ source: X is duckdb.table('parent') extend {
          // `except: org_id` then `rename: org_id is val` frees the name
          // `org_id` the inherited `where:` still reads by text, rebinding it
          // to a different physical column (`val`) — the same misbind
-         // `filter_binding_guard_integration.spec.ts`'s "a plain where:
+         // `tests/component/filter_binding_guard.component.spec.ts`'s "a plain where:
          // filter with NO access_filter annotation" tests prove denies with
          // storage routing off.
          await expect(

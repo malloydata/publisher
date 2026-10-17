@@ -766,7 +766,7 @@ run: mid_ungated -> { aggregate: c }`,
       // -> card` fails to lex, loadQuery throws, the catch swallows it, and the
       // misconfigured view is silently skipped -- which would defeat the feature
       // for any quote-needing name (the repo already has such a source,
-      // `gated-source`, in authorize_integration.spec.ts).
+      // `gated-source`, in tests/component/authorize/lock_enforcement.spec.ts).
       fs.writeFileSync(
          path.join(tempDir, "hyphen_render.malloy"),
          `source: \`bad-source\` is duckdb.sql("select 1 as a, 2 as b") extend {

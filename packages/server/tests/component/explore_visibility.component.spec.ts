@@ -5,7 +5,7 @@
  * Integration test: Explore Visibility.
  *
  * Drives `Package.create` through the package-load worker pool (same harness as
- * package_worker_path.spec.ts) and verifies, end-to-end, the listing rule:
+ * tests/component/package_worker_path.component.spec.ts) and verifies, end-to-end, the listing rule:
  *
  *   - A root `index.malloy` is the surface: it hides every other .malloy model
  *     from `listModels()` while they still compile for import/join resolution.

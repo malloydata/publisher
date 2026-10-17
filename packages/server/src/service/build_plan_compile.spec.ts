@@ -220,7 +220,7 @@ describe("compilePackageBuildPlan", () => {
 });
 
 // Real-compiler coverage of `compilePackageBuildPlan`'s gate-classification
-// wiring, over an actual temp-dir package (like `query_boundary.spec.ts`'s
+// wiring, over an actual temp-dir package (like `tests/component/query_boundary.component.spec.ts`'s
 // `makeMalloyConfig` pattern), rather than the stubbed `Model.getModelRuntime`
 // above. `classifyPersistSourceGate` (`classifyPersistSourceGate.spec.ts`) is
 // otherwise only ever called directly; nothing else asserts that

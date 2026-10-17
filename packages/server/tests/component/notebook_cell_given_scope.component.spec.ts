@@ -5,7 +5,7 @@
 // `.malloynb` notebooks (see RELEASE_NOTES deprecations). Every test in
 // this file is about that deprecated feature.
 
-// Harness pattern from authorize_import_hop.integration.spec.ts.
+// Harness pattern from tests/component/authorize/import_hop.spec.ts.
 import { MalloyError } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
 import { AccessDeniedError } from "../../src/errors";
