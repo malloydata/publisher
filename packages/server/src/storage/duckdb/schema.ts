@@ -600,6 +600,23 @@ export function planColumnReconcile(
    return { adds, needsMigration, undeclared };
 }
 
+/** A table's columns as `PRAGMA table_info` reports them; [] when it is absent. */
+async function existingColumns(
+   db: DuckDBConnection,
+   table: string,
+): Promise<{ name: string; pk: boolean }[]> {
+   const present = await db.all<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+      [table],
+   );
+   if (present.length === 0) {
+      return [];
+   }
+   return db.all<{ name: string; pk: boolean }>(
+      `PRAGMA table_info('${table}')`,
+   );
+}
+
 /**
  * Drop an `incremental_ledger` still keyed on (environment, package, source
  * address), so the pass above recreates it keyed on the table.
@@ -615,19 +632,14 @@ export function planColumnReconcile(
 async function dropPackageKeyedIncrementalLedger(
    db: DuckDBConnection,
 ): Promise<void> {
-   const present = await db.all<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='incremental_ledger'",
-   );
-   if (!present || present.length === 0) {
+   const columns = await existingColumns(db, "incremental_ledger");
+   if (columns.length === 0) {
       return;
    }
    // `pk` is true for every column of a composite primary key, so the old key is
    // identifiable by package_name being part of it. Reading the key rather than a
    // schema version means this is self-limiting: once no database has the old key,
    // it never fires again.
-   const columns = await db.all<{ name: string; pk: boolean }>(
-      "PRAGMA table_info('incremental_ledger')",
-   );
    const keyedOnPackage = columns.some(
       (column) => column.name === "package_name" && Boolean(column.pk),
    );
@@ -660,15 +672,10 @@ async function dropPackageKeyedIncrementalLedger(
 async function dropStoreBlindIncrementalLedger(
    db: DuckDBConnection,
 ): Promise<void> {
-   const present = await db.all<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='incremental_ledger'",
-   );
-   if (!present || present.length === 0) {
+   const columns = await existingColumns(db, "incremental_ledger");
+   if (columns.length === 0) {
       return;
    }
-   const columns = await db.all<{ name: string; pk: boolean }>(
-      "PRAGMA table_info('incremental_ledger')",
-   );
    // Nothing to do for a table this build created; the old key is identifiable by
    // the destination being absent from it — either the column does not exist at
    // all, or it exists as the nullable non-key form that shipped before this.
@@ -702,15 +709,10 @@ async function dropStoreBlindIncrementalLedger(
 async function dropPreFacetEntityEmbeddings(
    db: DuckDBConnection,
 ): Promise<void> {
-   const present = await db.all<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_embeddings'",
-   );
-   if (!present || present.length === 0) {
+   const columns = await existingColumns(db, "entity_embeddings");
+   if (columns.length === 0) {
       return;
    }
-   const columns = await db.all<{ name: string }>(
-      "PRAGMA table_info('entity_embeddings')",
-   );
    if (columns.some((column) => column.name === "facet")) {
       return;
    }
