@@ -107,18 +107,22 @@ export function isRenderableWatermarkType(malloyType: string): boolean {
 }
 
 /**
- * Escape a string for a single-quoted SQL literal (doubling the quote).
+ * Escape a string for a single-quoted SQL literal.
  *
- * Snowflake and BigQuery treat `\` as an escape, so a trailing backslash would
- * swallow the closing quote and must be doubled. Postgres (with
- * standard_conforming_strings, the default) would read a doubled backslash as two
- * characters, so it is left alone there.
+ * Snowflake and BigQuery read `\` in a single-quoted string as an escape
+ * character, so a backslash must be doubled there or a value ending in one
+ * swallows the closing quote; Postgres (standard_conforming_strings, its
+ * default) reads a doubled backslash as two characters. A quote is doubled
+ * everywhere except BigQuery, which has no `''` escape (adjacent literals are a
+ * syntax error) and takes `\'`; its backslashes are escaped first so they
+ * cannot pair with that escape.
  */
 function escapeSqlString(value: string, dialect?: string): string {
+   if (dialect === "standardsql") {
+      return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+   }
    const quoted = value.replace(/'/g, "''");
-   return dialect === "snowflake" || dialect === "standardsql"
-      ? quoted.replace(/\\/g, "\\\\")
-      : quoted;
+   return dialect === "snowflake" ? quoted.replace(/\\/g, "\\\\") : quoted;
 }
 
 /**
