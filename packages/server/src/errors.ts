@@ -14,43 +14,23 @@ import { redactPgSecrets } from "./pg_helpers";
 
 export { isConnectionFailure, isCredentialRejection };
 
-// Client-facing body for an internal failure (500/502). The specific error
-// message can carry internal detail -- a filesystem path, an SQL fragment, an
-// upstream host -- so it is logged server-side (below) and NOT returned.
+// Client-facing bodies for internal failures. The specific message can carry a
+// filesystem path, an SQL fragment or an upstream host, so it is logged
+// server-side and NOT returned.
 //
-// Generalizing is decided per branch, not by status class -- 501, 503 and 504
-// are 5xx and still return their messages. Every 4xx returns its message
-// because a client error names what the caller must change, with one
-// exception: the 424 for rejected credentials returns a fixed message, because
-// its driver text can name a user or an account. The 5xx branches
-// that return theirs do so because the message is one this server composed (a
-// missing feature, a cap that was reached, a timeout), which is true of most of
-// them but not all: the worker-pool and compile-worker throws behind 503
-// interpolate the underlying failure, so a crash message reaches the caller
-// there. An unusable publisher.json does not land in that branch: it throws
-// PackageManifestError, which the pool's wire shape carries by class, so it
-// maps to 424 below instead of reading as a worker outage.
+// Generalizing is decided per branch, not by status class: every 4xx returns
+// its message (it names what the caller must change) except the 424 for
+// rejected credentials, whose driver text can name a user or account; 501, 503
+// and 504 return server-composed messages, though the worker-pool 503s
+// interpolate the underlying failure. A NEW 5xx branch must generalize if its
+// message comes from a driver, a worker, or the filesystem.
 //
-// So a NEW 5xx branch is a decision rather than a default: generalize it here
-// if its message comes from a driver, a worker, or the filesystem.
+// A refused filesystem access (EACCES, EPERM, EROFS) is the exception: only
+// the operator can fix it, so its body names the path, composed from the
+// errno's fields and never copied from the message.
 //
-// The one filesystem failure that is NOT generalized is a refused access
-// (EACCES, EPERM, EROFS; see filesystemAccessFailure). It is a deployment
-// fault only the operator can fix, and the generic body hides which mount is
-// wrong. Its body is composed here from the errno's code, syscall and path,
-// never copied from the error's message.
-//
-// Neither generic body carries a correlation handle, which is what a user
-// reporting "I got Internal server error." would hand an operator to find the
-// logged detail. That is deliberately unchanged rather than overlooked: no error
-// response in this server has ever carried one (the `details` field the Error
-// schema declares is populated nowhere, and the MCP JSON-RPC path answers with a
-// bare "Internal server error" too), so adding one only here would make this the
-// single exception rather than the new convention. Worth doing server-wide --
-// `loggerMiddleware` already derives a W3C traceId when the caller sends
-// `traceparent`, and it would go in `details` with no schema change -- but it is
-// its own change, and it wants an id that exists for callers who send no
-// traceparent.
+// No error body carries a correlation id yet; adding one belongs server-wide
+// (in the Error schema's `details`), not to this branch alone.
 const GENERIC_INTERNAL_MESSAGE = "Internal server error.";
 const GENERIC_UPSTREAM_MESSAGE = "Upstream connection error.";
 const GENERIC_UNREACHABLE_MESSAGE =
@@ -59,54 +39,27 @@ const GENERIC_AUTH_MESSAGE =
    "The database rejected the connection's credentials. Check the connection's user, password, key or token.";
 
 /**
- * Cap on the logged detail. `error.message` here is unbounded and
- * caller-influenced: a MalloyError embeds the whole compile error text, and the
- * sqlQuery path wraps a driver error that can echo the caller's entire SQL
- * statement, bounded only by the request body limit. With a stack appended that
- * is multi-KB per failure, and a log sink with a max line size drops the largest
- * lines first -- precisely the ones worth keeping.
+ * Cap on the logged detail. The message is unbounded and caller-influenced (a
+ * driver error can echo the caller's whole SQL), and a log sink with a max line
+ * size drops the largest lines first -- the ones worth keeping.
  */
 const MAX_LOGGED_DETAIL_CHARS = 2000;
 
 /**
- * Log an internal failure's detail server-side, in the one place the response
- * stops carrying it.
+ * Log an internal failure's detail server-side, where the response stops
+ * carrying it.
  *
- * The fields are copied out explicitly rather than passing the Error itself:
- * `message` and `stack` are non-enumerable own properties, so
- * `logger.error(msg, { error })` on an actual Error serializes to
- * `{"error":{}}` under both formats this server configures -- the detail would
- * exist nowhere at all. Copying the fields is also what lets the guards below
- * apply to them.
- *
- * They are nested under `error` rather than spread at the top level because
- * `message` is winston's own reserved key: a top-level `message` is fused into
- * `info.message`, so the summary becomes "<summary> <the whole driver error>".
- * That makes the summary unique per failure -- unusable as a grouping key or an
- * alert condition -- and leaves no queryable field holding just the error text.
- * Nesting keeps the summary stable and puts the detail at `error.message`. This
- * is not the `{ error }` bug above returning: these are plain strings, so
- * nothing depends on non-enumerable properties.
- *
- * Newlines and other control characters are stripped because the default format
- * (colorize + simple, whenever OTEL_EXPORTER_OTLP_ENDPOINT is unset) is
- * newline-delimited plain text, so a message carrying `\n` -- and caller SQL can
- * -- could otherwise forge log entries. The range also covers the separators
- * JSON.stringify does NOT escape (NEL, and the U+2028/U+2029 line and paragraph
- * separators): those reach the rendered line verbatim under both formats, so
- * `format.json()` is not a backstop for them the way it is for `\n`.
- *
- * Postgres passwords and URI userinfo are redacted, because a failed attach
- * echoes the command it ran: DuckDB's error for a DuckLake catalog names the
- * whole metadata connection string, password included, and a driver error can
- * carry a connection URI.
- *
- * `level` separates the two cases that reach here, because they mean different
- * things to whoever is watching. An unrecognized error is a bug in this server
- * and belongs at `error`. An upstream connection failure is usually the
- * caller's or the warehouse's, and a caller can drive it in a loop with bad
- * SQL, so logging it at `error` lets one client fill the error log and move an
- * error-rate dashboard meant to track our own faults. It goes to `warn`.
+ * - Fields are copied out because `message`/`stack` are non-enumerable, so
+ *   logging the Error itself serializes to `{"error":{}}`.
+ * - They are nested under `error` because a top-level `message` is winston's
+ *   reserved key and would be fused into the summary, making it unique per
+ *   failure and useless for grouping or alerting.
+ * - Control characters, NEL and U+2028/U+2029 are stripped so caller text
+ *   cannot forge log lines; `format.json()` does not escape the latter three.
+ * - Postgres passwords and URI userinfo are redacted: a failed DuckLake attach
+ *   echoes the metadata connection string, password included.
+ * - `level` is `warn` for upstream failures, which a caller can drive in a loop,
+ *   so they do not flood the error log meant for our own bugs.
  */
 export function logInternalFailure(
    summary: string,
@@ -120,11 +73,8 @@ export function logInternalFailure(
       value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
    const message = error.message ?? "";
    const stack = error.stack ?? "";
-   // V8 prefixes the stack with `Name: message`, so capping the stack from
-   // character 0 spends the whole budget on a message that is already logged in
-   // its own field -- a 3KB driver error echoing the caller's SQL (the case
-   // MAX_LOGGED_DETAIL_CHARS exists for) leaves zero frames, on the branch where
-   // the frames are the point. Drop the prefix, then cap what remains.
+   // V8 prefixes the stack with `Name: message`, which is already logged; drop
+   // it so a long message does not spend the whole cap and leave no frames.
    const framesOnly = stack.startsWith(`${error.name}: ${message}`)
       ? stack.slice(`${error.name}: ${message}`.length).replace(/^\r?\n/, "")
       : stack;
@@ -144,29 +94,18 @@ export function logInternalFailure(
 }
 
 /**
- * Machine-readable discriminator on an error response, for callers that must
- * branch on *which* 404 they got rather than on prose.
- *
- * The router retries a 404 by invalidating its cached worker location and
- * asking the control plane again, because a 404 normally means the worker it
- * called no longer hosts that environment or connection. A table that is not in
- * the database is also a 404 but carries no such implication -- retrying it
- * re-queries the same absent table and throws away a cache entry every other
- * caller on that connection is using. Only reasons that a caller is expected to
- * branch on are emitted; absence is the norm and means "no special handling".
+ * Machine-readable discriminator on an error response, for callers that branch
+ * on which error they got rather than on prose. The router retries a plain 404
+ * on another worker; TABLE_NOT_FOUND tells it not to. Absent means no special
+ * handling.
  */
 export type ErrorReason =
    | "TABLE_NOT_FOUND"
-   // On a 502: the database could not be reached, so the query never ran. The
-   // query and the model are fine, and rewriting either will not help. Marks a
-   // 502 as the customer's database being down, not Credible failing.
+   // 502: the database could not be reached; the query and model are fine.
    | "CONNECTION_FAILED"
-   // On a 424: the database rejected the connection's credentials (a wrong
-   // password, an invalid key, an expired token). The query never ran, and
-   // whoever configures the connection has to fix it.
+   // 424: the database rejected the connection's credentials.
    | "CONNECTION_AUTH_FAILED"
-   // On a 424: the model names a connection the environment does not have,
-   // usually one deleted after the package was loaded.
+   // 424: the model names a connection the environment does not have.
    | "CONNECTION_NOT_FOUND";
 
 const FILESYSTEM_ACCESS_DESCRIPTIONS: Record<string, string> = {
@@ -201,14 +140,9 @@ export function filesystemAccessFailure(
 
 /**
  * The error to answer with when a failure is about the connection rather than
- * the statement: rejected credentials, an unreachable database, or a
- * connection the environment does not have. An unreachable database is a 502
- * (something is down); rejected credentials and a missing connection are 424
- * (something is misconfigured). Undefined for anything else, which keeps the
- * status its route gave it.
- *
- * Credentials are checked first, so an error that matches both answers as
- * credentials.
+ * the statement: 502 for an unreachable database, 424 for rejected credentials
+ * or a missing connection. Undefined otherwise, keeping the route's status.
+ * Credentials win when an error matches both.
  */
 export function databaseAccessFailure(
    error: unknown,
@@ -231,22 +165,13 @@ export function databaseAccessFailure(
 }
 
 /**
- * Postgres SQLSTATEs a SELECT the caller wrote can produce, from class 42
- * ("syntax error or access rule violation"): a syntax error, a column, table,
- * function, type or parameter that does not exist, an ambiguous name, a type
- * mismatch or a cast the dialect refuses, a GROUP BY or window the planner
- * rejects, a duplicate output column. The connection was fine -- it logged in
- * and parsed the text -- so the statement, which only the caller can change,
- * is what is wrong.
+ * Postgres class-42 SQLSTATEs that only the caller's SELECT can raise, so the
+ * statement, not the connection, is wrong.
  *
- * An allowlist, not the class. Three things in class 42 are not the caller's
- * statement: 42501 insufficient_privilege, which a role without CONNECT raises
- * at session startup before any caller SQL runs, and which on a table is
- * fixed by a GRANT the caller cannot issue; the generic 42000; and the DDL
- * rejections (a duplicate table, an invalid definition), which the caller's
- * SELECT cannot raise but a connection's admin-authored setupSQL, run on the
- * same client just before it, can. Each stays what it was, a 502 that pages,
- * rather than reading as a caller's typo nobody looks at.
+ * An allowlist rather than the whole class: 42501 (insufficient_privilege, also
+ * raised at session startup), the generic 42000, and DDL rejections (raised by
+ * admin-authored setupSQL) are not the caller's fault and must stay a 502 that
+ * pages.
  */
 const POSTGRES_STATEMENT_SQLSTATES = new Set([
    "42601", // syntax_error
@@ -284,28 +209,17 @@ const POSTGRES_UNDEFINED_TABLE = "42P01";
 const POSTGRES_RELATION_MISSING = /^relation ".*" does not exist$/;
 
 /**
- * The error to answer with when Postgres rejected the caller's statement
- * rather than the connection: a 404 with `reason: TABLE_NOT_FOUND` when the
- * statement names a table that is not there, so the router does not retry it
- * on another worker, and otherwise a 400 carrying the driver's message, which
- * names the caller's own identifier (`column "x" does not exist`) and nothing
- * internal. Undefined for anything else, which keeps the status its route gave
- * it.
+ * The error to answer with when Postgres rejected the caller's statement:
+ * 404 TABLE_NOT_FOUND for a missing table (so the router does not retry it
+ * elsewhere), otherwise 400 with the driver's message, which names only the
+ * caller's own identifiers. Undefined for anything else.
  *
- * The code is read from whichever error in the `cause` chain carries it, and
- * so is the message: a wrapper's "Failed to run SQL" tells the caller
- * nothing, and its text was never vetted to name nothing internal. Anything
- * Postgres marks FATAL is skipped whatever its code: FATAL ends the session,
- * raised at startup or by the server, never by the caller's SELECT.
+ * Code and message come from the same error in the `cause` chain, since a
+ * wrapper's text was never vetted. FATAL/PANIC is skipped: it ends the
+ * session and is never raised by the caller's SELECT.
  *
- * Postgres only, on purpose. It is the driver whose SQLSTATE arrives as
- * `code` on the error node-pg raises and the Malloy driver lets through
- * unwrapped. Snowflake's arrives as `sqlState` on snowflake-sdk's error and
- * would be one more field to read, not patterns to write; its 42S02 conflates
- * a missing table with one not authorized, so it would want 400 throughout.
- * MySQL's is lost at the driver (`throw new Error(e)`). The 2026-10-13 page
- * this exists for -- a dropped column recompiled once a minute, 2,268 router
- * 502s in a day -- was Postgres.
+ * Postgres only: other drivers carry SQLSTATE elsewhere (Snowflake's
+ * `sqlState`, whose 42S02 also means "not authorized") or lose it (MySQL).
  */
 export function statementRejection(
    error: unknown,
@@ -382,12 +296,8 @@ export function internalErrorToHttpError(
    };
    const access = filesystemAccessFailure(error);
    if (access) {
-      // Ahead of the typed branches: a wrap like PackageNotFoundError around
-      // an EACCES would otherwise answer 404, which reads as "does not exist"
-      // and sends the operator looking for a file that is there. That also
-      // means a 4xx class whose cause chain holds a refused access answers 500
-      // with the errno; moving this branch below any typed branch demotes the
-      // errno to that branch's status and message.
+      // Must precede the typed branches: a PackageNotFoundError wrapping an
+      // EACCES would otherwise answer 404 and hide which path is unreadable.
       logInternal("Filesystem access refused", error, "warn");
       return httpError(
          500,
@@ -464,29 +374,12 @@ export function internalErrorToHttpError(
    } else if (error instanceof PackageManifestError) {
       return httpError(424, error.message);
    } else if (error instanceof ConnectionError) {
-      // 502. A server-authored message (see ConnectionError.callerSafe) is
-      // actionable and returned as-is; anything wrapping a driver message is
-      // logged and generalized, because it can name an internal host/port, echo
-      // the caller's SQL, or distinguish refused from timed-out from auth-failed.
-      //
-      // For every dialect but Postgres (see statementRejection) this
-      // intentionally covers a statement the warehouse itself rejected, on
-      // the sqlSource and sqlQuery paths, and that is the uncomfortable half of
-      // the trade: "object DB.SCHEMA.FOO does not exist" is the most useful
-      // sentence the product produces, and only the caller can act on it. It is
-      // generalized anyway because ConnectionError is one class covering both a
-      // rejected statement and any driver failure no recognizer knows, and the
-      // same text that names the caller's own typo names an internal hostname
-      // when the failure is ours. (An unreachable database and rejected
-      // credentials are recognized, and answered above.) Splitting the class
-      // -- a rejected statement as 4xx with its message, transport failure as
-      // a generic 502 -- is the right end state and wants its own change; a
-      // table path that names nothing already took that route (see
-      // TableNotFoundError, 404), and so has a statement Postgres rejected by
-      // SQLSTATE (statementRejection: 400, or 404 for a relation it lacks).
-      // Every other dialect's rejected statement still lands here, and a
-      // caller who needs the driver's text gets it from the logs, by
-      // traceparent.
+      // A server-authored message (callerSafe) is returned as-is; a driver
+      // message is logged and generalized, since it can name an internal host,
+      // echo SQL, or act as a failure-mode oracle. This also hides a statement
+      // the warehouse rejected (for every dialect but Postgres, see
+      // statementRejection), because ConnectionError does not distinguish a
+      // rejected statement from a transport failure.
       if (error.callerSafe) {
          return httpError(502, error.message);
       }
@@ -512,15 +405,10 @@ export function internalErrorToHttpError(
    } else if (error instanceof QueryTimeoutError) {
       return httpError(504, error.message);
    } else if (error instanceof NotImplementedError) {
-      // 501, not the 500 default. Asking for a feature the server does not have
-      // (today: a `versionId`, which every route declaring it rejects) is not an
-      // internal failure, and the OpenAPI spec has documented 501 on those
-      // routes all along.
+      // A feature the server does not have (e.g. `versionId`) is not an
+      // internal failure; the OpenAPI spec documents 501 on those routes.
       return httpError(501, error.message);
    } else {
-      // Unrecognized error: a genuine internal failure. Its message may carry a
-      // stack fragment, path, or SQL, so log it server-side and return a generic
-      // body to the client.
       logInternal("Unhandled internal error", error);
       return httpError(500, GENERIC_INTERNAL_MESSAGE);
    }
@@ -532,8 +420,7 @@ function httpError(code: number, message: string, reason?: ErrorReason) {
       json: {
          code,
          message: message,
-         // Omitted rather than undefined so existing toStrictEqual assertions
-         // on reason-less errors keep passing.
+         // Omitted rather than undefined, so reason-less bodies have no key.
          ...(reason ? { reason } : {}),
       },
    };
@@ -552,33 +439,17 @@ export class BadRequestError extends Error {
 }
 
 /**
- * A specific argument was malformed, and the message says which and what shape
- * was expected.
- *
- * A subclass rather than a plain BadRequestError because the two want different
- * agent-facing advice. BadRequestError is this codebase's general wrapper for
- * query-time failures too ("Model compilation failed: ...", filter validation),
- * which are Malloy problems and should keep the Malloy syntax guidance. These
- * are not about Malloy at all: a schema-introspection argument error answered
- * with four suggestions about `source:` and `view:` keywords sends the caller
- * to edit a model they never mentioned.
- *
- * Still a BadRequestError, so it still maps to HTTP 400.
+ * A specific argument was malformed; the message says which and what shape was
+ * expected. A subclass so MCP advice does not offer Malloy syntax guidance for
+ * a non-Malloy argument error. Still a 400.
  */
 export class InvalidArgumentError extends BadRequestError {}
 
 /**
- * A dashboard write was refused because the text does not compile, and the
- * message names each problem with its line and column.
- *
- * A subclass so telemetry can tell the compile gate doing its job apart from a
- * malformed request — a frozen config, a path that is not a dashboard, a body
- * with no source. Those are a caller getting the API wrong; this one is a
- * caller getting Malloy wrong, and an operator watching the write path needs
- * the two counted separately. Classifying on the message text would have
- * worked until someone reworded it.
- *
- * Still a BadRequestError, so it still maps to HTTP 400.
+ * A dashboard write was refused because the text does not compile; the message
+ * names each problem with its line and column. A subclass so telemetry counts
+ * a Malloy mistake apart from an API misuse without parsing message text.
+ * Still a 400.
  */
 export class CompileRefusedError extends BadRequestError {}
 
@@ -605,12 +476,9 @@ export class UnparseableTextError extends CompileRefusedError {
 }
 
 /**
- * `lookup` is set where a name was looked up and missed. It carries the names
- * that do exist, so an MCP tool can tell the agent what to use instead. The
- * names stay out of the message because the message is also the REST 404 body,
- * and a REST caller may be scoped to one environment by the router in front.
- * The MCP tools do put the names in their message, to any caller. That adds no
- * disclosure: `list_packages` already names every loaded environment over MCP.
+ * `lookup` carries the environment names that do exist, so an MCP tool can
+ * suggest one. They stay out of the message because it is also the REST 404
+ * body, and a REST caller may be scoped to one environment by the router.
  */
 export class EnvironmentNotFoundError extends Error {
    constructor(
@@ -681,18 +549,10 @@ export class ConnectionNotFoundError extends Error {
 }
 
 /**
- * The connection is reachable and authenticated, but it holds no table at that
- * path. A caller's bad reference, not a server or upstream fault, so it maps to
- * 404 -- which is what every spec declaring this route has always documented
- * (502 appears in none of them).
- *
- * Distinct from {@link ConnectionError}, which stays 502 for upstream failures
- * such as an exhausted quota. (An unreachable database is
- * {@link ConnectionFailedError}, also 502; rejected credentials are
- * {@link ConnectionAuthError}, 424.) The
- * split matters beyond tidiness, because a 5xx here is counted against the
- * router's server-error budget and pages on-call for what is a typo in someone's
- * model.
+ * The connection is reachable and authenticated but holds no table at that
+ * path: the caller's bad reference, so 404. Distinct from
+ * {@link ConnectionError} (502) because a 5xx counts against the router's
+ * error budget and pages on-call for a typo in someone's model.
  */
 export class TableNotFoundError extends Error {
    constructor(message: string) {
@@ -702,20 +562,10 @@ export class TableNotFoundError extends Error {
 
 export class ConnectionError extends Error {
    /**
-    * True when {@link message} was authored by this server and is safe to return
-    * to the caller; false (the default) when it carries a driver or upstream
-    * error verbatim.
-    *
-    * The 502 class covers two different things. Some are server-authored and
-    * purely actionable -- "Table x.y not found" tells the caller to fix the table
-    * name and names nothing internal. The rest wrap a driver message that can
-    * carry an internal host/port, the caller's own SQL, or a failure-mode oracle
-    * (refused vs timed out vs auth-failed). Genericizing the whole class to
-    * suppress the second kind would throw away the first, so the distinction is
-    * made where the error is raised, by whoever knows which one it is.
-    *
-    * Defaults to false so an unmarked message is generalized: a new throw site
-    * that forgets to think about this leaks nothing.
+    * True when {@link message} was authored by this server and is safe to
+    * return; false when it carries a driver message verbatim, which can name
+    * an internal host or echo SQL. Only the throw site knows which, so it
+    * decides. Defaults to false so an unmarked throw site leaks nothing.
     */
    readonly callerSafe: boolean;
 
@@ -726,33 +576,19 @@ export class ConnectionError extends Error {
 }
 
 /**
- * The database could not be reached: the connection was refused, reset or
- * timed out, or the server closed it. The query never ran, so it maps to 502
- * with `reason: CONNECTION_FAILED`, not to the 400 a rejected query gets.
- *
- * 5xx because something is down, and a retry can succeed; a misconfigured
- * connection (rejected credentials, a deleted connection) is a 424 instead.
- * 502 is already what this server answers for a driver failure, rather than
- * 500 (our bug), 503 (our overload: a router cools the worker down and reruns
- * the query elsewhere, against the same database) or 504 (our query timeout).
- * The reason is what tells it from Credible failing.
- *
- * Raised only where {@link isConnectionFailure} recognized the driver's error.
- * The message is the driver's, so it is logged and generalized: it can name an
- * internal host and port.
+ * The database could not be reached (refused, reset, timed out or closed), so
+ * the query never ran: 502 with `reason: CONNECTION_FAILED`. Not 503, which
+ * makes a router rerun the query elsewhere against the same database. Raised
+ * where {@link isConnectionFailure} matched; the driver message is logged and
+ * generalized because it can name an internal host and port.
  */
 export class ConnectionFailedError extends ConnectionError {}
 
 /**
- * A model names a connection the environment does not have, usually because
- * it was deleted after the package was loaded. Raised by the environment's
- * connection lookup when Malloy's own lookup fails for a name the environment
- * does not configure, with Malloy's message. Maps to 424 with
- * `reason: CONNECTION_NOT_FOUND`.
- *
- * Distinct from {@link ConnectionNotFoundError}, the 404 a connection route
- * answers for a name the caller typed: here the caller named nothing, and
- * nothing a retry elsewhere would fix.
+ * A model names a connection the environment does not have, usually one
+ * deleted after the package loaded: 424 with `reason: CONNECTION_NOT_FOUND`.
+ * Distinct from {@link ConnectionNotFoundError}, the 404 for a name the caller
+ * typed into a connection route.
  */
 export class UnconfiguredConnectionError extends Error {
    constructor(name: string, options?: { cause?: unknown }) {
@@ -774,12 +610,9 @@ export class ConnectionPoolExhaustedError extends ConnectionError {
 }
 
 /**
- * A storage destination was named but is not configured on the
- * environment. Distinct from {@link ConnectionNotFoundError} so a misconfigured
- * destination is diagnosable in logs, and mapped to 422 rather than 404 because
- * it can only be raised by a build or serve path: the connection endpoints
- * resolve through the connection list alone, which never holds a destination and
- * so answers for one exactly as it does for a name that does not exist.
+ * A build or serve path named a storage destination the environment does not
+ * configure. 422 rather than 404 because the destination is not the resource
+ * being addressed; see {@link StorageDestinationNotFoundError} for that case.
  */
 export class DestinationNotFoundError extends Error {
    constructor(message: string) {
@@ -787,12 +620,7 @@ export class DestinationNotFoundError extends Error {
    }
 }
 
-/**
- * The storage destination a request's path names is not configured on the
- * environment. 404, unlike {@link DestinationNotFoundError}: here the destination
- * is the resource being addressed, so its absence is an ordinary not-found, not
- * a build or serve that named something unconfigured.
- */
+/** The storage destination a request's path addresses is not configured: 404. */
 export class StorageDestinationNotFoundError extends Error {
    constructor(message: string) {
       super(message);
@@ -800,10 +628,8 @@ export class StorageDestinationNotFoundError extends Error {
 }
 
 /**
- * A DuckLake storage destination is configured, but its catalog has never been
- * created: nothing has been built into it yet. 404, because the catalog is what
- * a listing addresses. Raised only where the attach was read-only, which refuses
- * to create a catalog; the message is composed here, never copied from DuckDB's,
+ * A DuckLake destination's catalog has never been created (nothing built into
+ * it yet): 404. The message is composed here, never copied from DuckDB's,
  * which names the metadata connection string.
  */
 export class StorageCatalogNotFoundError extends Error {
@@ -813,11 +639,9 @@ export class StorageCatalogNotFoundError extends Error {
 }
 
 /**
- * The database rejected the connection's credentials: a wrong password, an
- * invalid key, an expired token. Raised where {@link isCredentialRejection}
- * recognized the driver's error. Maps to 424 with
- * `reason: CONNECTION_AUTH_FAILED`: the query never ran, and the fix is the
- * connection's configuration, not the query and not a retry.
+ * The database rejected the connection's credentials. 424 with
+ * `reason: CONNECTION_AUTH_FAILED`: the fix is the connection's configuration,
+ * not the query and not a retry.
  */
 export class ConnectionAuthError extends Error {
    constructor(message: string) {
@@ -825,10 +649,9 @@ export class ConnectionAuthError extends Error {
    }
 }
 
-// A catalog was reached and authenticated fine, but its on-disk format is
-// outside the range the pinned engine's extension can attach (see
-// ducklake_version.ts). Distinct from ConnectionAuthError so the 422 doesn't
-// read as a credentials problem. Maps to HTTP 422.
+// A reachable catalog whose on-disk format the pinned DuckLake extension cannot
+// attach (see ducklake_version.ts). 422, so it does not read as a credentials
+// problem.
 export class UnsupportedCatalogFormatError extends Error {
    constructor(message: string) {
       super(message);
@@ -836,24 +659,17 @@ export class UnsupportedCatalogFormatError extends Error {
 }
 
 export class ModelCompilationError extends Error {
-   // Accepts a MalloyError or any message-bearing object, so callers that add
-   // context around a compile failure (e.g. naming the source whose authorize
-   // annotation failed) can reuse this 424 mapping without a separate class.
+   // Any message-bearing object, so callers can add context and keep the 424.
    constructor(error: { message: string }) {
       super(error.message);
    }
 }
 
 /**
- * The package's publisher.json cannot be used as written: it is not a JSON
- * object, it has a malformed `explores` or an unknown `scope`, or its two
- * `scope` homes disagree. The
- * package is not served until the author fixes the file.
- *
- * 424, like a model that does not compile: the request was fine, the package it
- * depends on is not. The manifest is read inside the package-load worker, so
- * the worker flags it `isManifestError` and deserializeError restores the
- * class; without that the pool reports the author's typo as a 503 outage.
+ * The package's publisher.json cannot be used as written, so the package is not
+ * served. 424, like a model that does not compile. The worker flags it
+ * `isManifestError` so the pool restores the class instead of reporting the
+ * author's typo as a 503 outage.
  */
 export class PackageManifestError extends Error {
    constructor(message: string) {
@@ -863,19 +679,12 @@ export class PackageManifestError extends Error {
 }
 
 /**
- * A persist source was asked to materialize into a `storage=` destination (the
- * DuckDB/DuckLake tier) but is ineligible: it has an unbound free parameter, it
- * references a given (an RLAC/tenant-isolation refusal), or its served shape
- * does not compile in DuckDB. Mapped to HTTP **422** (the request is
- * well-formed, but the source cannot be processed into a materialized artifact)
- * — a hard refuse, never a silent fallback. Kept a distinct class so the
- * givens/RLAC refusal is greppable for security review. Accepts a
- * message-bearing object to match {@link ModelCompilationError}'s ergonomics.
- * `reason` is optional so an existing throw site need not be touched to keep
- * compiling; every current throw site sets it, matching the same value it
- * hands `recordEligibilityRefused` — a caller that needs the bounded reason
- * (rather than parsing the message) reads it off the error instead of a
- * second classification pass.
+ * A persist source cannot materialize into a `storage=` destination: an
+ * unbound free parameter, a given reference (an RLAC/tenant-isolation
+ * refusal), or a shape that does not compile in DuckDB. 422, a hard refusal,
+ * never a silent fallback; a distinct class so the givens refusal is greppable
+ * for security review. `reason` matches what the throw site passed to
+ * `recordEligibilityRefused`.
  */
 export class MaterializationEligibilityError extends Error {
    readonly reason?: EligibilityRefusalReason;
@@ -888,15 +697,11 @@ export class MaterializationEligibilityError extends Error {
 }
 
 /**
- * A chained `storage=` build found that its downstream depends on a persisted
- * source the build cannot see: one that was neither built in this run nor
- * supplied by reference, or one whose table lives in another destination. Not a
- * shape problem — the downstream may well compile over its parents — but a
- * dispatch one: the orchestrator meant to pin that upstream and this build has
- * no table for it. Recomputing it from raw would rebuild a stored table the
- * orchestrator did not ask for, which is the mis-build `strictUpstreams`
- * exists to refuse, so under strict this error is refused outright while a
- * shape failure ({@link MaterializationEligibilityError}) falls back.
+ * A chained `storage=` build depends on a persisted upstream it has no table
+ * for (not built this run, not supplied, or in another destination).
+ * Recomputing it from raw would rebuild a stored table nobody asked for, so
+ * under `strictUpstreams` this is refused outright, while a shape failure
+ * ({@link MaterializationEligibilityError}) falls back.
  */
 export class ChainedUpstreamMissingError extends Error {
    readonly missing: readonly string[];
@@ -909,15 +714,10 @@ export class ChainedUpstreamMissingError extends Error {
 }
 
 /**
- * A chained `storage=` build had every stored upstream it depends on, and the
- * downstream reaches nothing but those, yet the model assembled over them did
- * not compile — a limit of what the build can carry (a refinement not
- * re-emitted, a construct the destination's dialect lacks), not a property of
- * the source. Recomputing from raw WOULD build it, but it would also rebuild
- * stored tables the build was handed, so under `strictUpstreams` this is
- * refused like a missing upstream rather than recomputed like a source that
- * genuinely reaches the warehouse ({@link MaterializationEligibilityError}
- * from the chained path).
+ * A chained `storage=` build had every stored upstream, but the model assembled
+ * over them did not compile: a limit of what the build can carry, not of the
+ * source. Recomputing from raw would rebuild the handed-in tables, so under
+ * `strictUpstreams` it is refused like a missing upstream.
  */
 export class ChainedShapeNotCarriedError extends Error {
    constructor(detail: string) {
@@ -927,14 +727,9 @@ export class ChainedShapeNotCarriedError extends Error {
 }
 
 /**
- * The config file exists but could not be turned into a manifest: malformed
- * JSON, a shape the loader rejects, or a `${VAR}` reference to an unset
- * environment variable.
- *
- * Distinct from the file being ABSENT, which is not an error: Publisher then
- * falls back to the bundled DuckDB-only default. This is a file the operator
- * wrote and Publisher cannot honour, so it must not degrade to serving nothing
- * while reporting healthy.
+ * The config file exists but cannot be read (malformed JSON, a rejected shape,
+ * an unset `${VAR}`). Unlike an absent file, which falls back to the bundled
+ * default, this must not degrade to serving nothing while reporting healthy.
  */
 export class PublisherConfigError extends Error {
    constructor(configName: string, cause: unknown) {
@@ -969,11 +764,9 @@ export class FrozenConfigError extends Error {
 }
 
 /**
- * A request was refused access to a source (HTTP 403), for one of two reasons:
- * an `#(authorize)` lock the supplied givens do not satisfy, or either route's
- * gate failing to apply at all (an unresolvable shape, nothing to attach to, a
- * referenced given with no value). An `#(access_filter)` that simply matches no
- * row is NOT this — that is a 200 with the caller's (empty) rows.
+ * A request refused access to a source (403): an unsatisfied `#(authorize)`,
+ * or a gate that could not apply at all. An `#(access_filter)` matching no row
+ * is not this; that is a 200 with empty rows.
  */
 export class AccessDeniedError extends Error {
    constructor(message: string) {
@@ -983,13 +776,9 @@ export class AccessDeniedError extends Error {
 }
 
 /**
- * Caller-submitted query text that did not compile. Each problem's range is
- * expressed in the text exactly as the caller sent it, not the text the server
- * compiled, so a client can point at the failing span of its own payload.
- *
- * Extends MalloyError so every consumer that classifies a compile failure by
- * class (the MCP error advice, restricted-mode detection by problem code) keeps
- * treating this as one.
+ * Caller-submitted query text that did not compile, with problem ranges in the
+ * text as the caller sent it. Extends MalloyError so class-based compile
+ * classification still applies.
  */
 export class QueryCompileError extends MalloyError {
    constructor(message: string, problems: LogMessage[]) {
@@ -999,9 +788,8 @@ export class QueryCompileError extends MalloyError {
 }
 
 /**
- * A problem as the query surface returns it: the shape `/compile` uses, minus
- * the document URL. The query text has no URL of its own; the one the compiler
- * assigns it is a per-request identifier that names nothing a caller can open.
+ * A problem as the query surface returns it: the `/compile` shape minus the
+ * document URL, which for query text is a per-request identifier.
  */
 function toQueryTextProblem(problem: LogMessage) {
    return {
@@ -1013,15 +801,11 @@ function toQueryTextProblem(problem: LogMessage) {
 }
 
 /**
- * A query targeted a source/model that is not part of the package's queryable
- * surface under `queryableSources: "declared"` (a non-`explores` model file, or
- * a source not in a model's `export {}` closure). Mapped to HTTP **404**, not
- * 403: unlike `#(authorize)` (which is identity-scoped and answers "who"), the
- * explore boundary is identity-free and answers "what is queryable". This
- * class carries the generic message, which reads the same for a hidden target
- * as for a missing one, so a gated model offers no enumeration or existence
- * oracle. Where nothing is gated, the refusal is the {@link OffSurfaceError}
- * subclass instead, which says why.
+ * A query targeted a source or model outside the package's queryable surface
+ * under `queryableSources: "declared"`. 404, not 403: the boundary is
+ * identity-free. The generic message reads the same for a hidden target as a
+ * missing one, so a gated model offers no existence oracle; ungated models use
+ * {@link OffSurfaceError}, which says why.
  */
 export class NotQueryableError extends Error {
    constructor(message: string) {
@@ -1031,18 +815,10 @@ export class NotQueryableError extends Error {
 }
 
 /**
- * A query-boundary refusal that says why: the target is real, it is off the
- * package's published surface, and the message names that surface and the fix.
- *
- * Only thrown when the model that refused carries no gate, `#(authorize)` or
- * `#(access_filter)`, anywhere. The generic NotQueryableError exists so a hidden GATED source is
- * indistinguishable from a missing one. An ungated hidden source has nothing to
- * protect that way: curation is not access control, and `/compile` (exempt from
- * the boundary) already answers a hidden file differently from a missing one.
- * Without the reason, a modeler who saves a new file and queries it reads the
- * 404 as a typo.
- *
- * Still a NotQueryableError, so it still maps to 404.
+ * A query-boundary refusal that says why: the target is real but off the
+ * published surface, and the message names the fix. Only thrown when the model
+ * carries no `#(authorize)` or `#(access_filter)` anywhere, since curation is
+ * not access control and there is nothing to hide. Still a 404.
  */
 export class OffSurfaceError extends NotQueryableError {
    constructor(message: string) {
@@ -1072,13 +848,9 @@ export class WriteConflictError extends Error {
 }
 
 /**
- * A write that was applied and then taken back: the package would not serve it,
- * so the previous text was put back. The caller's request was well-formed and
- * the file compiled, so this is the server's failure, not theirs — 500, with
- * the message, which says what state the package was left in. The underlying
- * failure is attached as `cause` and logged, never put in the message; it can
- * carry a path. A refused filesystem access in the cause chain still answers
- * through the composed-errno branch of `internalErrorToHttpError`.
+ * A write that was applied and then rolled back because the package would not
+ * serve it: 500, the server's failure. The underlying failure is the `cause`
+ * and is logged, never put in the message, since it can carry a path.
  */
 export class WriteRolledBackError extends Error {
    constructor(message: string, options?: ErrorOptions) {
@@ -1112,11 +884,7 @@ export class InvalidStateTransitionError extends Error {
    }
 }
 
-/**
- * Thrown when the publisher is temporarily refusing a request to keep
- * RSS under the configured `PUBLISHER_MAX_MEMORY_BYTES` cap. Mapped to
- * HTTP 503 so an upstream proxy / client can retry with back-off.
- */
+/** Temporary refusal (e.g. to stay under `PUBLISHER_MAX_MEMORY_BYTES`): 503, retry with back-off. */
 export class ServiceUnavailableError extends Error {
    constructor(message: string, options?: ErrorOptions) {
       super(message, options);
@@ -1124,20 +892,14 @@ export class ServiceUnavailableError extends Error {
 }
 
 /**
- * The memory governor refused to admit a new compiled copy of a package. A
- * 503 like any {@link ServiceUnavailableError}, but an answer to one request
- * rather than a fault of the server or the package: the caller places the
- * package elsewhere, and nothing about this server is left to repair.
+ * The memory governor refused to admit a new compiled copy of a package: a
+ * 503 the caller answers by placing the package elsewhere, not a fault.
  */
 export class PackageAdmissionRefusedError extends ServiceUnavailableError {}
 
 /**
- * Thrown when a response would exceed a server-side size cap (e.g. an
- * ad-hoc connection SQL query that returned more than
- * `PUBLISHER_MAX_QUERY_ROWS` rows). Mapped to HTTP 413 so callers know
- * the request was well-formed but the result is too large for the
- * publisher to materialize; the remediation is "refine the query" or
- * "raise the cap", not "retry".
+ * A response would exceed a server-side size cap (e.g.
+ * `PUBLISHER_MAX_QUERY_ROWS`): 413, refine the query or raise the cap, not retry.
  */
 export class PayloadTooLargeError extends Error {
    constructor(message: string) {
@@ -1147,33 +909,20 @@ export class PayloadTooLargeError extends Error {
 }
 
 /**
- * The subset of {@link PayloadTooLargeError} where the response could not be
- * serialized at all, rather than merely measuring over the cap. Still HTTP 413
- * by inheritance, because the request was well-formed and the result is too
- * large; the distinction exists so callers are not told to raise a cap. Raising
- * `PUBLISHER_MAX_RESPONSE_BYTES` cannot help here, because there is no cap at
- * which a response that will not serialize starts serializing, so the only
- * remedies are the ones that shrink the response.
+ * A response that could not be serialized at all. Still 413, but distinct so
+ * callers are not told to raise a cap: no cap makes it serialize.
  */
 export class ResponseUnserializableError extends PayloadTooLargeError {
    constructor(message: string) {
       super(message);
-      // Set explicitly rather than derived, so it survives a bundler that
-      // mangles class names. Without it the subclass logs as its parent, which
-      // defeats the point of a class callers are meant to tell apart.
+      // Explicit, so a bundler that mangles class names cannot make it log as its parent.
       this.name = "ResponseUnserializableError";
    }
 }
 
 /**
- * Thrown when a query exceeded the configured wall-clock budget
- * (`PUBLISHER_QUERY_TIMEOUT_MS`) and the publisher aborted it
- * mid-execution. Mapped to HTTP 504 (`Gateway Timeout`) because the
- * publisher acts as a gateway to the underlying database — the
- * upstream caller did nothing wrong, but the downstream query took
- * too long. Distinct from {@link ServiceUnavailableError} so clients
- * can distinguish "back off, the pod is loaded" (503, retryable)
- * from "this specific query is too expensive" (504, refine it).
+ * A query exceeded `PUBLISHER_QUERY_TIMEOUT_MS` and was aborted: 504, so
+ * clients can tell "this query is too expensive" from a retryable 503.
  */
 export class QueryTimeoutError extends Error {
    constructor(message: string) {
