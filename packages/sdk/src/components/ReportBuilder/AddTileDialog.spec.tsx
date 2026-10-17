@@ -74,7 +74,7 @@ describe("AddTileDialog", () => {
    it("searches, and Enter adds what the search left picked", async () => {
       const onAdd = mock((_tile: unknown) => {});
       await mount(onAdd);
-      const search = screen.getByRole("combobox", { name: "Search views" });
+      const search = screen.getByRole("combobox", { name: "Search the model" });
       fireEvent.change(search, { target: { value: "nothing like it" } });
       expect(screen.getByText(/No view matches/)).toBeDefined();
       fireEvent.change(search, { target: { value: "tot" } });
@@ -115,7 +115,7 @@ describe("AddTileDialog", () => {
          />,
       );
       // Opens on `totals`; the search hides it.
-      const search = screen.getByRole("combobox", { name: "Search views" });
+      const search = screen.getByRole("combobox", { name: "Search the model" });
       fireEvent.change(search, { target: { value: "brand" } });
       fireEvent.keyDown(search, { key: "Enter" });
       expect(onAdd.mock.calls[0]?.[0]).toMatchObject({ view: "by_brand" });

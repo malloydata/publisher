@@ -138,7 +138,7 @@ describe("ReportBuilder: a notebook is one column", () => {
       fireEvent.click(button("Add tile"));
       expect(
          screen.getByText(
-            "Pick a view from this package. You can change its title and chart now or later.",
+            "Pick what the tile shows from the model. You can change its title and chart now or later.",
          ),
       ).toBeDefined();
       cleanup();
@@ -147,7 +147,7 @@ describe("ReportBuilder: a notebook is one column", () => {
       fireEvent.click(button("Add tile"));
       expect(
          screen.getByText(
-            "Pick a view from this package. You can change its title and chart now or later.",
+            "Pick what the tile shows from the model. You can change its title and chart now or later.",
          ),
       ).toBeDefined();
    });

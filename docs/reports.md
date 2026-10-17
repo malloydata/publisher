@@ -913,7 +913,7 @@ rewrites `layout=`; to turn a linear report into a grid (or back), edit the tag 
 cannot already see the chosen source the builder adds a named import for it, at the right relative path for
 the report's location.
 
-The **Chart** choices are From the view, Table, Line, Bar, Big value, Scatter, Shape map and Segment
+The **Chart** choices are Default (as set in the model), Table, Line, Bar, Big value, Scatter, Shape map and Segment
 map. A choice the view cannot render stays in the list, greyed, with its reason under it: Big value needs a
 view with only totals, and a map needs a view that already carries a map chart. A chart line the builder
 does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and Chart is disabled for that

@@ -87,7 +87,7 @@ describe("ReportBuilder: charts", () => {
       const names = enabledCharts();
       // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
       expect(names).toEqual([
-         "From the view",
+         "Default",
          "Table",
          "Line",
          "Bar",
@@ -112,7 +112,7 @@ describe("ReportBuilder: charts", () => {
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       pickChart("Bar");
-      pickChart("From the view");
+      pickChart("Default");
       closeMenu();
       const save = screen.queryByRole("button", {
          name: "Save",

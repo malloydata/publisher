@@ -171,7 +171,7 @@ export function ViewPicker({
                size="small"
                fullWidth
                inputRef={searchRef}
-               placeholder="Search views"
+               placeholder="Search the model"
                value={query}
                disabled={disabled}
                onChange={(event) => onQuery(event.target.value)}
@@ -192,7 +192,7 @@ export function ViewPicker({
                   }
                }}
                inputProps={{
-                  "aria-label": "Search views",
+                  "aria-label": "Search the model",
                   role: "combobox",
                   "aria-controls": listId,
                   "aria-expanded": true,
@@ -214,7 +214,7 @@ export function ViewPicker({
          <Box
             id={listId}
             role="listbox"
-            aria-label="Views"
+            aria-label="From the model"
             sx={{ overflowY: "auto", flex: 1, minHeight: 0, pb: 1 }}
          >
             {groups.length === 0 && empty}

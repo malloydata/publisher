@@ -241,7 +241,7 @@ export function AddTileDialog({
          maxWidth="md"
          initialFocus={searchRef}
          title="Add a tile"
-         description="Pick a view from this package. You can change its title and chart now or later."
+         description="Pick what the tile shows from the model. You can change its title and chart now or later."
          actions={
             <>
                <Button onClick={onAddText} sx={{ mr: "auto" }}>
@@ -296,7 +296,7 @@ export function AddTileDialog({
                         sx={{ color: theme.tileTitle, p: 2 }}
                      >
                         {catalog
-                           ? "This package publishes no source with a view to put on a tile."
+                           ? "This package's models have nothing to put on a tile yet."
                            : "The package's sources are still loading."}
                      </Typography>
                   }
@@ -448,8 +448,8 @@ export function AddTileDialog({
                            sx={{ color: "text.secondary", mt: 0.75 }}
                         >
                            {picked.view.chart
-                              ? `The view declares ${DECLARED[picked.view.chart] ?? "a chart"}.`
-                              : "The view declares no chart, so it shows as a table."}
+                              ? `The model sets ${DECLARED[picked.view.chart] ?? "a chart"}.`
+                              : "The model sets no chart, so it shows as a table."}
                         </Typography>
                      </Box>
                      {unwritable && (
