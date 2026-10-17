@@ -211,7 +211,7 @@ export function withLegacyNotebookKind(
 
 /**
  * A compiled document with the old `kind` beside `layout`, on it and on its
- * manifest: what `POST …/compile` has answered since documents were compiled.
+ * manifest, as `POST …/compile` answers it for older clients.
  */
 export function withLegacyDocumentKind(
    document: CompiledDocument,
