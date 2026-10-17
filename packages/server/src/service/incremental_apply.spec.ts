@@ -87,6 +87,30 @@ describe("renderSqlBound", () => {
       );
    });
 
+   it("escapes a quote with a backslash on BigQuery, which rejects a doubled one", () => {
+      // GoogleSQL has no '' escape: 'o''brien' is two adjacent literals, a
+      // syntax error. The backslash is escaped first so it cannot pair with
+      // the quote's own escape.
+      expect(
+         renderSqlBound(
+            { malloyType: "string", value: "o'brien" },
+            "standardsql",
+         ),
+      ).toBe("'o\\'brien'");
+      expect(
+         renderSqlBound(
+            { malloyType: "string", value: "a\\'b" },
+            "standardsql",
+         ),
+      ).toBe("'a\\\\\\'b'");
+      expect(
+         renderSqlBound(
+            { malloyType: "string", value: "o'brien" },
+            "snowflake",
+         ),
+      ).toBe("'o''brien'");
+   });
+
    it("truncates a timestamp to whole seconds", () => {
       // Safe because the range is half-open and the ledger records the value
       // used: the trailing sub-second rows are picked up by the next run, which
