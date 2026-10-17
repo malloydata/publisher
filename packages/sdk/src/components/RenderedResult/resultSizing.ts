@@ -290,9 +290,14 @@ export function initialResultHeight(maxHeight: number | undefined): number {
  * `fillHeight` is the room the surface has to give, for a cell that stretches
  * its result (a dashboard tile). It is a FLOOR on a measured content-sized
  * result and wins over the cap, so a short table reaches the bottom of its cell
- * and a long one still scrolls inside it. A container-sized result ignores it,
- * and so does one not measured yet, which would otherwise paint at a made-up
- * height.
+ * and a long one still scrolls inside it. A content-sized result not measured
+ * yet ignores it, since it would otherwise paint at a made-up height.
+ *
+ * A container-sized result (a chart) takes it only as a CEILING: drawn at its
+ * cap in a cell shorter than that, it ran past the cell's bottom and lost its
+ * x-axis labels to the card's clip, which is what a tile with a set `rowspan`
+ * is. It still never grows past its cap. No ratchet follows, because the chart
+ * sits out of flow in its cell, so the cell's height never depends on it.
  */
 export function resolveResultHeight({
    sizing,
@@ -306,7 +311,10 @@ export function resolveResultHeight({
    fillHeight?: number | undefined;
 }): number {
    if (sizing === "container") {
-      return maxHeight ?? UNCAPPED_CONTAINER_HEIGHT;
+      const cap = maxHeight ?? UNCAPPED_CONTAINER_HEIGHT;
+      return fillHeight !== undefined && fillHeight > 0
+         ? Math.min(cap, fillHeight)
+         : cap;
    }
    if (contentHeight === undefined || contentHeight <= 0) {
       return initialResultHeight(maxHeight);
