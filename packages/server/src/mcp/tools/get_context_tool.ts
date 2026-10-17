@@ -65,8 +65,7 @@ import {
    type StoredSourceSummary,
 } from "./source_summaries";
 
-// The package embedding hooks and the list_packages tool lived here; callers
-// outside mcp/ still import them from this module.
+// server.ts and package.controller.ts import these from here.
 export {
    getPackageEmbeddingStatus,
    startPackageEmbeddingSync,
@@ -286,21 +285,15 @@ function runListing(
 }
 
 // The stages and retrievers runContextQuery runs; a new stage is one file and
-// one line here. The stage lists are functions, read when a request runs,
-// because the stage files import this one and a list built at load would read
-// their exports before they exist whenever one of them is loaded first.
+// one line here.
 const QUERY_STAGES: QueryStage[] = [];
-// A function like the stage lists: get_context_retrievers imports this file, so
-// a constant here would read both retrievers while this module is still being
-// evaluated, and importing the retrievers first threw "Cannot access
-// 'semanticRetriever' before initialization".
-const retrievers = (): Retriever[] => [semanticRetriever, lexicalRetriever];
+const RETRIEVERS: readonly Retriever[] = [semanticRetriever, lexicalRetriever];
 // Source match is listed only for a request it applies to, so a trace shows
 // no row for it otherwise (refine and rerank report "skipped" when off; this
 // one has nothing to say unless it has work).
 const rankStages = (ctx: PipelineContext): RankStage[] =>
    sourceMatchActive(ctx) ? [sourceMatchStage, refineStage] : [refineStage];
-const cardStages = (): CardStage[] => [rerankStage];
+const CARD_STAGES: readonly CardStage[] = [rerankStage];
 
 /**
  * Tier 3 (enumerate) and tier 4 (rank) over ONE package, driven by an already
@@ -465,7 +458,7 @@ async function runContextQuery(
          retrieval: ctx.embeddingConfigured ? "semantic" : "lexical",
       };
    }
-   for (const retriever of ranked ? [] : retrievers()) {
+   for (const retriever of ranked ? [] : RETRIEVERS) {
       const result = await retriever.retrieve(retrievalCtx);
       if ("unavailable" in result) {
          // "unconfigured" means no provider: the next retriever is the mode.
@@ -486,11 +479,7 @@ async function runContextQuery(
       ranked = await runRankStages(rankStages(ctx), ranked, ctx);
       // Grouping into cards, paging and serialization are shared by both
       // retrievers so the two cannot drift.
-      cards = await runCardStages(
-         cardStages(),
-         assembleCards(ranked, ctx),
-         ctx,
-      );
+      cards = await runCardStages(CARD_STAGES, assembleCards(ranked, ctx), ctx);
    } catch (error) {
       if (error instanceof StageError) {
          return stageFailureError(uri, error, traceFields());
