@@ -9,6 +9,7 @@ import {
    ALLOW_DUCKDB_SETUP_SQL_ENV,
    getExtensionFetchPolicy,
    isDuckdbSetupSqlAllowed,
+   parseBoolEnv,
 } from "../config";
 import { BadRequestError } from "../errors";
 import { logger } from "../logger";
@@ -16,7 +17,6 @@ import {
    resolveCloudStorageCredentials,
    validateS3ProviderShape,
 } from "./gcs_s3_utils";
-import { parseBoolEnv } from "../config";
 import {
    ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV,
    allowUnverifiedHostKey,
@@ -31,10 +31,9 @@ import {
 type ApiConnection = components["schemas"]["Connection"];
 type AttachedDatabase = components["schemas"]["AttachedDatabase"];
 
-// TLS modes accepted on a postgres connection, proxied or direct. Canonical here
-// (rather than in connection.ts, which imports this module) so both the
-// config-load validator and the connect-time builders derive from one list.
-// Mirrors the `sslmode` enum in api-doc.yaml.
+// TLS modes accepted on a postgres connection, proxied or direct. Defined here
+// (connection.ts imports this module) so config-load validation and the
+// connect-time builders share one list. Mirrors `sslmode` in api-doc.yaml.
 export const PROXIED_SSLMODES = [
    "disable",
    "no-verify",
@@ -43,10 +42,9 @@ export const PROXIED_SSLMODES = [
 ] as const;
 
 /**
- * Throws unless `sslmode` is one of PROXIED_SSLMODES, and, for `verify-ca`,
- * unless a readable CA bundle is available to pin it against. `subject` is the
- * phrase error messages lead with, so a proxied and a direct connection each
- * name themselves the way their existing errors do.
+ * Throws unless `sslmode` is one of PROXIED_SSLMODES and, for `verify-ca`, a
+ * readable CA bundle is available to pin it against. `subject` leads each
+ * error message.
  */
 function validatePostgresSslmode(subject: string, sslmode: string): void {
    if (!(PROXIED_SSLMODES as readonly string[]).includes(sslmode)) {
@@ -131,14 +129,10 @@ const PUBLISHER_DUCKDB_API_FIELDS = new Set<string>([
 ]);
 
 /**
- * Collapse `null` to `undefined` for an optional connection field.
- *
- * JSON config distinguishes "absent" from "explicitly null", but the Malloy
- * config layer treats only `undefined` as absent -- `makeDigest` reads
- * `.length` off every part it is given and special-cases `undefined` alone, so
- * a `null` throws rather than hashing as empty. Callers that spread through
- * `removeUndefined` are not protected either: it filters `undefined`, so a
- * `null` survives it.
+ * Collapse `null` to `undefined` for an optional connection field. The Malloy
+ * config layer treats only `undefined` as absent: `makeDigest` reads `.length`
+ * off every part and special-cases `undefined` alone, so a `null` throws.
+ * `removeUndefined` does not help, since a `null` survives it.
  */
 function nullToUndefined<T>(value: T | null | undefined): T | undefined {
    return value ?? undefined;
@@ -217,15 +211,12 @@ export function normalizeSnowflakePrivateKey(privateKey: string): string {
    return privateKeyContent;
 }
 
-// NOTE: This narrows the environment-author API surface (it rejects securityPolicy,
+// Narrows the environment-author API surface: rejects securityPolicy,
 // allowedDirectories, etc., and admits setupSQL only behind
-// PUBLISHER_ALLOW_DUCKDB_SETUP_SQL). It is NOT a filesystem isolation
-// boundary: attachedDatabases[].path is not normalized or constrained to stay
-// under the environment root, and DuckDB's local-file access is unchanged.
-// Adversarial filesystem isolation is an explicit non-goal here: DuckDB
-// hardening knobs are not exposed and there is no adversarial DuckDB
-// filesystem isolation. Future work owns any path-traversal/allowlist
-// enforcement.
+// PUBLISHER_ALLOW_DUCKDB_SETUP_SQL. It is NOT a filesystem isolation boundary:
+// attachedDatabases[].path is not constrained to the environment root, and
+// DuckDB's local-file access is unchanged. Adversarial filesystem isolation
+// (path-traversal checks, an allowlist) is not provided.
 export function validateDuckdbApiSurface(connection: ApiConnection): void {
    if (connection.type !== "duckdb" || !connection.duckdbConnection) return;
 
@@ -484,10 +475,8 @@ function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
          });
       }
    }
-   // The budget is checked over BOTH maps, not each one: they merge into the
-   // same bag, so a connection declaring 6 defaults and 6 enforced is over it
-   // while neither map is. This is the boundary where the admin who created the
-   // squeeze is the one reading the warning.
+   // The budget is checked over BOTH maps: they merge into one bag, so 6
+   // defaults plus 6 enforced can be over it while neither map is.
    const overBudget = queryMetadataBudgetWarning(declared);
    if (overBudget) {
       logger.warn("Connection query metadata will not apply as declared", {
@@ -502,16 +491,13 @@ function validateProxyShape(
    proxy: NonNullable<ApiConnection["proxy"]>,
 ): void {
    // A connection proxy makes THIS server open an outbound SSH tunnel to a
-   // tenant-configured bastion. It's a normal connection capability,
-   // authorized by whoever configures the connection — deliberately NOT gated
-   // by an env flag, and kept separate from the `publisher` HTTP multi-hop
-   // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
-   // publisher-to-publisher proxying, a distinct operator decision). Host-key
-   // pinning is required and fail-closed at connect time, unless the deployment
-   // sets PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see
-   // openProxy); the proxy-specific fields are validated up front below so a
-   // permanent misconfig fails at config load, not by repeatedly dialing the
-   // tenant's bastion at query time.
+   // tenant-configured bastion. It is a normal connection capability,
+   // deliberately NOT gated by an env flag, and separate from the `publisher`
+   // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate (publisher-to-publisher
+   // proxying is a distinct operator decision). Host-key pinning is fail-closed
+   // at connect time unless PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY is set (see
+   // openProxy). Proxy fields are validated here so a permanent misconfig fails
+   // at config load, not by repeatedly dialing the bastion at query time.
    if (proxy.type !== "ssh") {
       throw new Error(
          `Connection '${connection.name}' has an unsupported proxy type '${proxy.type}'. Only 'ssh' is supported.`,
@@ -527,12 +513,10 @@ function validateProxyShape(
          `Connection proxy on '${connection.name}' has type 'ssh' but no 'ssh' config object.`,
       );
    }
-   // The tunnel forwards to an explicit host:port; the connectionString form
-   // can't be rewritten to the local endpoint. Reject it outright when a
-   // proxy is set — normal postgres gives connectionString precedence over
-   // host/port, so a config carrying BOTH would silently tunnel to
-   // host/port and ignore the connectionString, connecting to a different
-   // database than the operator configured. Require discrete host/port.
+   // The tunnel forwards to an explicit host:port, and a connectionString
+   // cannot be rewritten to the local endpoint. A config carrying both would
+   // tunnel to host/port and ignore the connectionString (which normally takes
+   // precedence), reaching a different database than configured.
    if (connection.postgresConnection?.connectionString) {
       throw new Error(
          `Connection proxy on '${connection.name}' does not support the connectionString form; ` +
@@ -549,27 +533,18 @@ function validateProxyShape(
       );
    }
 
-   // hostKey is optional at config time, but a non-empty hostKey that parses to
-   // zero keys -- only blank lines, whitespace, or `#` comments, e.g. a paste
-   // that grabbed just ssh-keyscan's `# host:port ...` header -- is a
-   // misconfigured pin and is rejected here so the operator gets a config error.
-   // (Truthiness, not trim(): "" is the unpinned signal; "   " is a non-empty
-   // value that must yield a key.) An omitted/empty hostKey is unpinned, which
-   // the tunnel refuses at connect time unless the deployment sets
-   // PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see openProxy's host-key policy).
+   // An omitted or empty hostKey is unpinned, which the tunnel refuses at
+   // connect time unless PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY is set. A
+   // non-empty hostKey that parses to zero keys (only blanks or `#` comments,
+   // e.g. just ssh-keyscan's header) is a misconfigured pin and is rejected.
+   // Truthiness, not trim(): "" means unpinned; "   " must yield a key.
    const hostKey = proxy.ssh?.hostKey;
-   // Warn at config load rather than leaving the refusal to be discovered by a
-   // failing query. The tunnel is dialed lazily, so an upgrading deployment with
-   // unpinned connections is silent through startup and first learns of the new
-   // policy when a user runs a query. Naming them here lets an operator pin the
-   // keys before anyone hits one. Not an error: refusing to start over a
-   // connection nobody may use today would be worse than the problem.
-   // Config load is a context that can throw, so this is where a
-   // misspelled opt-in is caught: parseBoolEnv rejects anything that is
-   // neither a boolean spelling nor empty, which stops `=ture` from reading
-   // as "off" and silently refusing every tunnel through this connection.
-   // The connect-time check in proxy.ts cannot do this -- see
-   // allowUnverifiedHostKey for why it falls back instead of throwing.
+   // The tunnel is dialed lazily, so an unpinned connection would otherwise be
+   // discovered only by a failing query. Warn rather than throw: refusing to
+   // start over a connection nobody may use would be worse.
+   // Config load can throw, so a misspelled opt-in (`=ture`) is caught here
+   // rather than read as "off"; the connect-time check in proxy.ts falls back
+   // instead (see allowUnverifiedHostKey).
    parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
    if (!hostKey && !allowUnverifiedHostKey()) {
       logger.warn(
@@ -588,36 +563,26 @@ function validateProxyShape(
       );
    }
 
-   // Validate the proxied TLS mode up front. The tunnel is dialed lazily on
-   // first lookup and a failed build is retried on every subsequent query, so
-   // a permanent sslmode misconfig left to throw at connect time would re-dial
-   // the tenant's bastion indefinitely. Fail at config load instead.
-   // `!= null` (not truthiness) so a present-but-empty sslmode ("") is caught
-   // here as unsupported rather than slipping through to fail at tunnel-build;
-   // null/undefined mean unset (server applies the default).
+   // A failed tunnel build is retried on every query, so a bad sslmode left to
+   // connect time would re-dial the bastion indefinitely. `!= null`, not
+   // truthiness, so an empty sslmode is rejected here; null/undefined is unset.
    const sslmode = connection.postgresConnection?.sslmode;
    if (sslmode != null) {
       validatePostgresSslmode(
          `Connection proxy on '${connection.name}'`,
          sslmode,
       );
-      // No precondition for `verify-full`: unlike `verify-ca` (which passes an
-      // explicit `sslrootcert` path), it verifies against Node's ambient trust
-      // anchors (its bundled Mozilla CA roots + NODE_EXTRA_CA_CERTS), so
-      // requiring a bundle here would wrongly reject targets with a
-      // publicly-trusted CA. An untrusted CA surfaces as a clear pg error at
-      // connect time instead. This means verify-full's CA trust is broader
-      // than verify-ca's pinned bundle — intentional (it adds the hostname
-      // check without narrowing trust), so unlike libpq, verify-full here is
-      // not a strict superset of verify-ca.
+      // No bundle precondition for `verify-full`: it verifies against Node's
+      // ambient trust anchors (bundled roots + NODE_EXTRA_CA_CERTS), so a
+      // publicly-trusted CA must be accepted. Its CA trust is therefore broader
+      // than verify-ca's pinned bundle; unlike libpq, verify-full here is not a
+      // strict superset of verify-ca. Intentional.
    }
 
-   // The proxied path builds a connectionString to the local tunnel endpoint;
-   // pg decodes the database path with decodeURI, which leaves URI-reserved
-   // characters percent-encoded — so a db name containing them would resolve
-   // to the wrong database. Reject it clearly rather than failing later with a
-   // confusing "database does not exist". (user/password use decodeURIComponent
-   // on parse and round-trip fine.)
+   // The proxied path builds a connectionString to the tunnel endpoint, and pg
+   // decodes the database path with decodeURI, which leaves URI-reserved
+   // characters encoded, so such a name would resolve to the wrong database.
+   // (user/password use decodeURIComponent and round-trip fine.)
    const dbName = connection.postgresConnection?.databaseName;
    if (dbName && decodeURI(encodeURIComponent(dbName)) !== dbName) {
       throw new Error(
@@ -633,9 +598,8 @@ function validateSqlServerShape(connection: ApiConnection): void {
    if (!sqlserver) {
       throw new Error("SQL Server connection configuration is missing.");
    }
-   // The connector reads a port that is not a number as no port and
-   // dials 1433, so a typo would surface as a connection failure naming
-   // a port the operator never configured. Name the value instead.
+   // The connector reads a non-numeric port as no port and dials 1433, so a
+   // typo would surface as a failure naming a port nobody configured.
    const port: unknown = sqlserver.port;
    if (
       port !== undefined &&
@@ -650,9 +614,7 @@ function validateSqlServerShape(connection: ApiConnection): void {
             `${JSON.stringify(port)} (expected an integer from 1 to 65535).`,
       );
    }
-   // Both routes to a server, and the driver takes the instance name over
-   // the port when given both. Saying so at load, rather than letting a
-   // port the operator set go quietly unused.
+   // The driver takes the instance name over the port when given both.
    if (sqlserver.instanceName && sqlserver.port) {
       logger.warn(
          `Connection '${connection.name}' sets both sqlserverConnection.instanceName ` +
@@ -664,11 +626,9 @@ function validateSqlServerShape(connection: ApiConnection): void {
 function validateBigQueryShape(connection: ApiConnection): void {
    const bigquery = connection.bigqueryConnection;
    if (bigquery?.impersonateServiceAccount) {
-      // An authClient replaces the credential entirely in the SDK, so a
-      // key alongside it would sit there looking live while the
-      // impersonated identity executes every query. Core refuses the
-      // combination at construction too; refusing here surfaces it as a
-      // config error at load instead of a connection error at first use.
+      // An authClient replaces the credential entirely, so a key alongside it
+      // would look live while the impersonated identity runs every query.
+      // Core refuses this too; refusing here makes it a load-time error.
       if (bigquery.serviceAccountKeyJson) {
          throw new Error(
             `Connection '${connection.name}' sets impersonateServiceAccount ` +
@@ -677,9 +637,8 @@ function validateBigQueryShape(connection: ApiConnection): void {
                `one or the other.`,
          );
       }
-      // With an authClient the SDK resolves the project id through the
-      // impersonated credential, not ambient ADC, so auto-detection is
-      // not a meaningful fallback for the job project. Require it named.
+      // With an authClient the SDK resolves the project through the
+      // impersonated credential, not ADC, so auto-detection is no fallback.
       if (!bigquery.billingProjectId) {
          throw new Error(
             `Connection '${connection.name}' sets impersonateServiceAccount ` +
@@ -697,12 +656,9 @@ function validateDuckDBShape(connection: ApiConnection): void {
       throw new Error("DuckDB connection configuration is missing.");
    }
    const attached = connection.duckdbConnection.attachedDatabases ?? [];
-   // AttachedDatabase reuses the BigqueryConnection schema, but the
-   // ATTACH path builds a DuckDB BIGQUERY secret from key JSON — the
-   // DuckDB extension takes a key, not a token — so an impersonation
-   // request here would be accepted and silently ignored. Refuse it
-   // with the limitation named, rather than the generic "service
-   // account key required" it would otherwise hit later.
+   // AttachedDatabase reuses the BigqueryConnection schema, but the ATTACH
+   // path builds a DuckDB BIGQUERY secret from key JSON (the extension takes a
+   // key, not a token), so impersonation would be silently ignored.
    for (const attachedDb of attached) {
       if (
          attachedDb.type === "bigquery" &&
@@ -726,13 +682,11 @@ function validateDuckDBShape(connection: ApiConnection): void {
          `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
       );
    }
-   // Shape only, deliberately not the whole credential check. This
-   // validator's throw fails the ENTIRE environment (assembleEnvironmentConnections
-   // has no per-connection recovery), and nothing here validates an attached
-   // database's credentials today — so demanding a key pair at load would turn
-   // configs that load-and-fail-late into configs that load nothing at all.
-   // These checks reject only shapes no path ever accepted, so no config that
-   // loads today stops loading.
+   // Shape only, deliberately not the full credential check: this throw fails
+   // the ENTIRE environment (assembleEnvironmentConnections has no
+   // per-connection recovery), so demanding a key pair here would turn a
+   // config that fails late on one attachment into one that loads nothing.
+   // Only shapes no path accepts are rejected.
    for (const attachedDb of attached) {
       if (attachedDb.type === "s3" && attachedDb.s3Connection) {
          validateS3ProviderShape(
@@ -753,11 +707,9 @@ function validateMotherDuckShape(connection: ApiConnection): void {
 }
 
 function validateDuckLakeShape(connection: ApiConnection): void {
-   // Every field the ATTACH demands (see attachDuckLakeWithMode), checked
-   // together here rather than split between this validator and the pojo
-   // assembler below. `bucketUrl` was the one nobody checked: a destination
-   // is only attached at its first BUILD, so a missing bucket surfaced
-   // hours after the config change that caused it.
+   // Every field the ATTACH demands (see attachDuckLakeWithMode). A
+   // destination is only attached at its first BUILD, so a field missed here
+   // would surface hours after the config change that caused it.
    if (!connection.ducklakeConnection) {
       throw new Error("DuckLake connection configuration is missing.");
    }
@@ -771,35 +723,23 @@ function validateDuckLakeShape(connection: ApiConnection): void {
          `Storage bucketUrl is required for DuckLake: ${connection.name}`,
       );
    }
-   // Shape only, matching the duckdb branch above, and for the same reason:
-   // this validator's throw reaches assembleEnvironmentConnections, which has
-   // no per-connection recovery, so a rule enforced here fails the ENTIRE
-   // environment. The mutual-exclusion and enum guards are safe to apply
-   // because no config that loads today can violate them. The key-pair
-   // requirement is NOT applied here — a DuckLake carrying a present but
-   // incomplete s3Connection has always loaded and failed when used, and
-   // making it fail every other connection in the environment is a worse
-   // trade than reporting it late.
-   //
-   // A storage DESTINATION is different: validateStorageDestinations rejects
-   // one entry without touching the rest, so it can afford the full check and
-   // does it there. That is the case that motivated moving these guards at
-   // all — a destination is only attached at its first BUILD.
+   // Shape only, as in the duckdb branch: a throw here fails the ENTIRE
+   // environment. The mutual-exclusion and enum guards are safe; the key-pair
+   // requirement is NOT applied, because failing every other connection over
+   // an incomplete s3Connection is worse than reporting it when used.
+   // validateStorageDestinations rejects one destination at a time, so it
+   // applies the full check.
    const storage = connection.ducklakeConnection.storage;
    if (storage.s3Connection) {
       validateS3ProviderShape(storage.s3Connection, connection.name);
    }
-   // metadataSchema is optional, but when present it reaches the ATTACH as a
-   // quoted string literal AND the catalog-format preflight as a quoted
-   // identifier. Rather than escape one value for two grammars, restrict it
-   // to a plain identifier here — a deterministic config error, caught at
-   // load instead of at the connection's first attach.
+   // metadataSchema reaches the ATTACH as a quoted string literal AND the
+   // catalog-format preflight as a quoted identifier. Rather than escape one
+   // value for two grammars, restrict it to a plain identifier.
    //
-   // The typeof check is load-bearing, not defensive: the value arrives from
-   // untyped JSON, and RegExp.test() coerces its argument, so `true` and `null`
-   // both satisfy the pattern as "true"/"null" and would reach escapeSQL's
-   // String.replace as a non-string — a TypeError at the first attach, which is
-   // exactly the failure this check exists to turn into a config error.
+   // The typeof check is load-bearing: the value comes from untyped JSON and
+   // RegExp.test() coerces, so `true` or `null` would pass the pattern and
+   // reach escapeSQL as a non-string, a TypeError at the first attach.
    if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
       const schema = connection.ducklakeConnection.catalog.metadataSchema;
       if (
@@ -868,17 +808,13 @@ function validateSnowflakeShape(connection: ApiConnection): void {
 }
 
 function validatePublisherShape(connection: ApiConnection): void {
-   // SSRF gate (default-deny / fail-closed). A `publisher` connection
-   // makes THIS server issue outbound HTTP to a tenant-controlled
-   // `connectionUri` (both the query path in db-publisher's
-   // PublisherConnection and the introspection path in db_utils). That is
-   // the intended behavior for local `--watch-env` authoring, but in a
-   // hosted multi-tenant deployment (e.g. Credible running this server) it
-   // is an SSRF surface. Require an explicit opt-in so the type is refused
-   // unless the operator deliberately enabled it. This is the single
-   // choke point — every connection passes validateConnectionShape before
-   // it can be assembled, queried, or introspected — so denying here shuts
-   // off all three at once.
+   // SSRF gate (default-deny, fail-closed). A `publisher` connection makes
+   // THIS server issue outbound HTTP to a tenant-controlled `connectionUri`
+   // (the query path in db-publisher and the introspection path in db_utils).
+   // Intended for local `--watch-env` authoring, but an SSRF surface in a
+   // hosted multi-tenant deployment, so it needs an explicit opt-in. Every
+   // connection passes validateConnectionShape before it can be assembled,
+   // queried, or introspected, so denying here shuts off all three.
    if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
       throw new Error(
          `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
@@ -895,12 +831,10 @@ function validatePublisherShape(connection: ApiConnection): void {
             `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
       );
    }
-   // Reject a malformed connectionUri here, at config-load, rather than
-   // letting it fail deep in the request path — where the thrown error can
-   // echo the raw value back, leaking any credentials embedded in it
-   // (`redactUrlCredentials` returns the URI unchanged when it can't parse
-   // it). Never include the raw connectionUri in these messages; the
-   // scheme is safe to name.
+   // Reject a malformed connectionUri at config load: deep in the request
+   // path the error can echo the raw value, leaking embedded credentials
+   // (`redactUrlCredentials` returns an unparseable URI unchanged). Never
+   // include the raw connectionUri in these messages; the scheme is safe.
    let parsedUri: URL;
    try {
       parsedUri = new URL(publisher.connectionUri);
@@ -941,11 +875,9 @@ function validateConnectionShape(connection: ApiConnection): void {
       validateProxyShape(connection, connection.proxy);
    }
 
-   // A direct connection's sslmode, when set, takes the place of the deployment
-   // PGSSLMODE; unset, PGSSLMODE applies as before. A connectionString carries its
-   // own sslmode, so alongside one the field is ignored - said here, once per
-   // config load, rather than left for the operator to discover from the TLS
-   // posture the connection actually got.
+   // A direct connection's sslmode, when set, replaces the deployment
+   // PGSSLMODE. A connectionString carries its own sslmode, so alongside one
+   // the field is ignored; warn once per config load.
    if (!connection.proxy && connection.postgresConnection?.sslmode != null) {
       validatePostgresSslmode(
          `Connection '${connection.name}'`,
@@ -978,10 +910,9 @@ function validateConnectionShape(connection: ApiConnection): void {
  * the build path, and every type admitted here is another way to define a
  * warehouse that no connection endpoint audits.
  *
- * Narrower than `STORAGE_DESTINATION_TYPES` in materialization_build_session,
- * which is what the build can materialize INTO and also accepts `duckdb`. Nothing
- * can currently reach that branch with a `duckdb` destination, because this is the
- * only way one gets configured — widen here, deliberately, if that changes.
+ * Also narrower than `STORAGE_DESTINATION_TYPES` in
+ * materialization_build_session, which accepts `duckdb` too; this set is the
+ * only way a destination is configured, so widen it deliberately.
  */
 export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
    new Set(["ducklake"]);
@@ -992,26 +923,21 @@ export const DECLARABLE_STORAGE_DESTINATION_TYPES: ReadonlySet<string> =
  * files derive into.
  *
  * Not cosmetic. A DuckDB instance is pooled by `databasePath` +
- * `workingDirectory`, and the share key excludes the connection name
- * (`buildDuckDBShareKey`, `duckdb-share-key-v2`) — while both lists derive that
- * path as `<root>/<name>…duckdb`. The two namespaces are independent and may
- * legitimately hold the same name, which would then derive the same path and
- * share one pooled instance; since the attach is `ATTACH OR REPLACE … AS <name>`,
- * one would silently replace the other's, and a query could read across the two.
- * Separate roots make that unreachable rather than relying on names never
- * coinciding. (If malloydata/malloy#3006 changes how the share key is computed,
- * re-check that it still excludes the name before relying on anything narrower.)
+ * `workingDirectory`; the share key excludes the connection name
+ * (`buildDuckDBShareKey`), and both lists derive the path as
+ * `<root>/<name>…duckdb`. A connection and a destination may share a name, so
+ * without separate roots they would share one pooled instance, and
+ * `ATTACH OR REPLACE … AS <name>` would let one replace the other's attach and
+ * a query read across the two. (If malloydata/malloy#3006 changes the share
+ * key, re-check that it still excludes the name.)
  *
  * Dot-prefixed like `.staging`/`.retired`, so a walk that enumerates an
  * environment for package trees cannot mistake it for one.
  *
- * ASYMMETRY, deliberate: a CONNECTION's local DuckDB file still derives directly
- * into the environment root, where it sits among the package trees Publisher
- * copies in. Nothing enumerates that directory today, so nothing is exposed by
- * it — but moving those files would change every existing deployment's pooled
+ * Deliberately asymmetric: a CONNECTION's local DuckDB file still derives into
+ * the environment root. Moving it would change every deployment's pooled
  * instance identity, re-attaching each connection against a new empty local
- * primary and orphaning the old file. That is a change worth making on its own,
- * not as a side effect of adding this directory.
+ * primary and orphaning the old file.
  */
 export const STORAGE_DESTINATIONS_DIR = ".storage-destinations";
 
@@ -1108,16 +1034,11 @@ export function validateStorageDestinations(
 
       try {
          validateConnectionShape(destination);
-         // Stricter than validateConnectionShape is allowed to be. It stops at the
-         // credential SHAPE because its throw fails a whole environment; here a bad
-         // entry is rejected on its own, so the full check is affordable — and it is
-         // wanted, because a destination is only attached at its first BUILD, which
-         // is where a missing storage credential would otherwise surface, hours
-         // after the config change that caused it.
-         // Both arms, and in the attach path's own precedence (see
-         // attachDuckLakeWithMode, which takes s3 over gcs): a partial GCS
-         // credential is the same late failure as a partial S3 one, and
-         // resolveCloudStorageCredentials already enforces that pair too.
+         // The full credential check, which validateConnectionShape cannot
+         // afford (its throw fails a whole environment): a destination is only
+         // attached at its first BUILD, so a missing credential would surface
+         // hours after the config change. Both arms, in the attach path's
+         // precedence (attachDuckLakeWithMode takes s3 over gcs).
          const storage = destination.ducklakeConnection?.storage;
          if (storage?.s3Connection) {
             resolveCloudStorageCredentials(
@@ -1299,14 +1220,11 @@ function buildMySQLEntry(connection: NamedConnection): CoreConnectionEntry {
 }
 
 function buildSqlServerEntry(connection: NamedConnection): CoreConnectionEntry {
-   // A pass-through: the API field names are the connector's own, so
-   // the authentication kinds and the connection-string form the
-   // connector also takes are additive here when the API grows them.
-   // The two optional names are read as unset when blank: the
-   // connector drops the port whenever instanceName is DEFINED, so a
-   // "" from a form field left empty would send the driver to SQL
-   // Browser for an instance called nothing, and a "" certificate
-   // name would be checked against the certificate.
+   // A pass-through: the API field names are the connector's own. The two
+   // optional names are read as unset when blank: the connector drops the
+   // port whenever instanceName is DEFINED, so "" would send the driver to SQL
+   // Browser for an instance called nothing, and a "" certificate name would
+   // be checked against the certificate.
    const sqlserver = connection.sqlserverConnection;
    return {
       is: "sqlserver",
@@ -1328,15 +1246,13 @@ function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
          | string
          | undefined,
    );
-   // Impersonation rides the config-overlay mechanism: the pojo
-   // carries a plain-JSON reference, and buildEnvironmentMalloyConfig
-   // registers the `gcpImpersonation` overlay that resolves it to a
-   // live Impersonated auth client. The property is opaque +
-   // overlay-sourced + mustHaveValue on the bigquery type, so a
-   // literal can never satisfy it and an unresolved reference errors
-   // instead of falling back to ambient ADC. The raw reference (which
-   // embeds the SA email) is also what core folds into the connection
-   // digest, giving per-identity BuildIDs.
+   // Impersonation rides the config-overlay mechanism: the pojo carries a
+   // plain-JSON reference, which the `gcpImpersonation` overlay registered by
+   // buildEnvironmentMalloyConfig resolves to a live auth client. The property
+   // is opaque, overlay-sourced and mustHaveValue, so a literal can never
+   // satisfy it and an unresolved reference errors instead of falling back to
+   // ambient ADC. The reference embeds the SA email, so core's connection
+   // digest (and so the BuildID) is per identity.
    const impersonateServiceAccount =
       connection.bigqueryConnection?.impersonateServiceAccount;
    return {
@@ -1345,10 +1261,9 @@ function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
          connection.bigqueryConnection?.defaultProjectId ||
          serviceAccountKey?.project_id,
       serviceAccountKey,
-      // Spread rather than `authClient: x ?? undefined`: the property
-      // is mustHaveValue, and core keys off the property being SET —
-      // an `authClient: undefined` entry still counts as set and
-      // fails every plain connection with "no value arrived".
+      // Spread rather than `authClient: x ?? undefined`: the property is
+      // mustHaveValue and core checks whether it is SET, so an undefined
+      // entry would fail every plain connection with "no value arrived".
       ...(impersonateServiceAccount
          ? {
               authClient: {
@@ -1378,27 +1293,16 @@ function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
          connection.snowflakeConnection?.privateKeyPass,
       ),
       warehouse: connection.snowflakeConnection?.warehouse,
-      // An EXPLICIT `"database": null` in config (or a client that
-      // serializes unset optionals as null) survives to here; an omitted
-      // field arrives as `undefined` and was always fine. Malloy's
-      // `makeDigest` reads `.length` off each part and special-cases
-      // `undefined` only, so a surviving `null` throws
-      // "null is not an object (evaluating 'p.length')" on the first
-      // digest.
-      //
-      // Defense in depth rather than the load-bearing fix: Malloy's own
-      // connection lookup already drops nulls before building a
-      // connector, so this pojo path is covered upstream today. The fix
-      // that matters is `removeUndefined` in connection.ts, on the
-      // key-pair path that bypasses that lookup. Kept because the Malloy
-      // dependency is a caret range and core's guard is not a contract.
+      // An explicit `null` here would throw in Malloy's `makeDigest` (see
+      // nullToUndefined). Defense in depth: Malloy's connection lookup drops
+      // nulls today, but that guard is not a contract and the dependency is a
+      // caret range. The key-pair path that bypasses the lookup is handled by
+      // `removeUndefined` in connection.ts.
       database: nullToUndefined(connection.snowflakeConnection?.database),
       schema: nullToUndefined(connection.snowflakeConnection?.schema),
       role: nullToUndefined(connection.snowflakeConnection?.role),
       timeoutMs: connection.snowflakeConnection?.responseTimeoutMilliseconds,
-      // Pool sizing is server-owned policy (matches the values
-      // main's deleted switch passed pre-MalloyConfig adoption).
-      // Not exposed through the public API.
+      // Pool sizing is server-owned policy, not exposed through the API.
       poolMin: 1,
       poolMax: 20,
    };
@@ -1478,12 +1382,10 @@ function buildDuckLakeEntry(
 }
 
 function buildPublisherEntry(connection: NamedConnection): CoreConnectionEntry {
-   // connectionUri presence is validated by validateConnectionShape
-   // above. The proxied dataplane owns auth and read-only enforcement;
-   // PublisherConnection itself does not reject writes. The real
-   // dialect is the remote connection's and is resolved at runtime by
-   // the live connection, so getStaticConnectionAttributes returns
-   // undefined for publisher (falls through to its default).
+   // connectionUri presence is validated by validateConnectionShape. The
+   // proxied dataplane owns auth and read-only enforcement; PublisherConnection
+   // itself does not reject writes. The dialect is the remote connection's,
+   // resolved at runtime, so getStaticConnectionAttributes returns undefined.
    const publisher = connection.publisherConnection!;
    return {
       is: "publisher",

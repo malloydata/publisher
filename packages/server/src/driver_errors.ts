@@ -108,9 +108,8 @@ const SQLSERVER_CONNECTION_CODES = new Set(["ESOCKET", "EINSTLOOKUP"]);
  * is a query that ran longer than `requestTimeoutMs`. Only the first is a
  * server that could not be reached; the second answered as unreachable would
  * tell a caller to retry the slow query. `mssql` rewraps both and names its
- * own classes, so the class name is what tells them apart. The name is
- * mssql's, not tedious's (whose error classes set none), so this depends on
- * the connector reaching tedious through mssql, as it does today.
+ * own classes, so the class name tells them apart. The name is mssql's, not
+ * tedious's, so this depends on the connector reaching tedious through mssql.
  */
 function isSqlserverConnectTimeout(error: Error, code: string): boolean {
    return code === "ETIMEOUT" && error.name === "ConnectionError";
@@ -165,12 +164,10 @@ function causeChainHasTlsVerificationFailure(error: Error): boolean {
  * Read from the driver's structured fields on the error and its `cause` chain:
  * a Node socket code, a Postgres connection SQLSTATE, a tedious socket or
  * connect-timeout code (unless it wraps a TLS verification failure, which is
- * config),
- * or mysql2's `fatal` flag, which it sets when the connection is unusable,
- * unless the same error carries a code naming a config fault
- * ({@link MYSQL_CONFIG_CODES}). Message text is the last resort, for the few
- * drivers that raise a connection failure with no code, and is matched whole
- * so a row value or a table name quoted inside a longer message cannot match.
+ * config), or mysql2's `fatal` flag unless the same error carries a config-fault
+ * code ({@link MYSQL_CONFIG_CODES}). Message text is the last resort, for
+ * drivers that raise one with no code, and is matched whole so a value quoted
+ * inside a longer message cannot match.
  */
 export function isConnectionFailure(error: unknown): boolean {
    for (const current of causeChain(error)) {
