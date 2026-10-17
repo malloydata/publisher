@@ -107,6 +107,10 @@ export function chartResetLine(): string {
  * The line for a pick. Given the chart tags the view carries it negates only those; without them
  * (the catalog does not know the view) it negates every other chart tag. `-viz` stays either way,
  * since the catalog does not report a `viz=` tag.
+ *
+ * Table also negates `big_value` always. A one-row view of totals draws as big numbers with no
+ * tag of its own (`promoteMeasureRowToKpis` puts `# big_value` ahead of the view's lines), so
+ * "the view carries none" is not "nothing to take off": only a `-big_value` after it draws a table.
  */
 export function chartLineText(
    chart: ChartPick | "none",
@@ -114,7 +118,10 @@ export function chartLineText(
 ): string {
    const negated = PLUGIN_TAGS.filter(
       (tag) =>
-         tag !== chart && (carried === undefined || carried.includes(tag)),
+         tag !== chart &&
+         (carried === undefined ||
+            carried.includes(tag) ||
+            (chart === "none" && tag === "big_value")),
    ).map((tag) => `-${tag}`);
    return ["#", ...negated, "-viz", ...(chart === "none" ? [] : [chart])].join(
       " ",
@@ -171,6 +178,21 @@ export const seriesColorResetLine = "# -theme.palette.series";
 /** Whether a colour is one the builder writes: `#rrggbb`. */
 export const isSeriesColor = (value: string): boolean =>
    /^#[0-9A-Fa-f]{6}$/.test(value);
+
+/**
+ * A theme colour as the builder writes it (`#rrggbb`, lower case), or
+ * undefined for one it cannot write. A host theme may spell its series `#abc`,
+ * which is widened; a named colour or `rgb()` is not offered, since a line
+ * holding one would not read back (`seriesColorOf`).
+ */
+export function seriesColorFrom(value: string): string | undefined {
+   const text = value.trim().toLowerCase();
+   if (isSeriesColor(text)) return text;
+   const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(text);
+   return short
+      ? `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`
+      : undefined;
+}
 
 /** The lines of `lines` that are about the chart, recognized or not: what a "custom" state is made of. */
 export const chartLinesOf = (lines: string[]): string[] =>

@@ -9,6 +9,8 @@ import {
    within,
 } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
+import { promoteMeasureRowToKpis } from "../Dashboard/promoteMeasureRow";
+import { requestedChart } from "../RenderedResult/chartShapeProblem";
 import { chartLineText } from "./chartLine";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
@@ -256,6 +258,48 @@ source: a is scoped_orders extend {
          "Big value",
          "Scatter",
       ]);
+   });
+
+   // The view carries no chart tag, but its one row of totals draws as big
+   // numbers anyway (the KPI promotion), so Table has to take that off.
+   it("draws a table when Table is picked on a tile of totals", async () => {
+      let written: string | undefined;
+      const document = await openDocument(INLINE);
+      render(
+         <ReportBuilder
+            source={INLINE}
+            document={document}
+            catalog={withOwnViews}
+            onSave={(source) => {
+               written = source;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for Key figures"));
+      pickChart("Table");
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain("  # -big_value -viz\n");
+      const promoted = JSON.parse(
+         promoteMeasureRowToKpis(
+            JSON.stringify({
+               schema: {
+                  fields: [
+                     { kind: "measure", name: "revenue" },
+                     { kind: "measure", name: "order_count" },
+                  ],
+               },
+               data: { kind: "array_cell", array_value: [{}] },
+               annotations: [{ value: "# -big_value -viz\n" }],
+            }),
+         ),
+      ) as { annotations: Array<{ value: string }> };
+      expect(
+         requestedChart(promoted.annotations.map((a) => a.value)),
+      ).toBeUndefined();
    });
 
    it("says the shape is unknown, rather than what the view lacks, when no model reported it", async () => {

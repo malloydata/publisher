@@ -21,11 +21,12 @@ import type { CatalogView } from "./catalog";
 import {
    isQueryTile,
    isReadOnlyTile,
+   tileExpression,
    type DashboardTile,
    type QueryTile,
 } from "./document";
 import { chartChoices, type ViewStatus } from "./ChartPicker";
-import { isSeriesColor, type ChartState } from "./chartLine";
+import { isSeriesColor, seriesColorFrom, type ChartState } from "./chartLine";
 
 /**
  * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
@@ -186,7 +187,15 @@ export function TileMenu({
       (drawn === undefined || !COLORED_CHARTS.has(drawn)
          ? "Only a bar, line, scatter or bar and line chart has a color to set."
          : undefined);
-   const swatches = theme.series.slice(0, 8);
+   // As the builder writes them, so a pick reads back; one it cannot write is
+   // left to the "any other colour" picker.
+   const swatches = Array.from(
+      new Set(
+         theme.series
+            .map(seriesColorFrom)
+            .filter((c): c is string => c !== undefined),
+      ),
+   ).slice(0, 8);
    const pickColor = (next: string | undefined) =>
       applyQuery((t) => {
          if (next === undefined) delete t.color;
@@ -222,11 +231,7 @@ export function TileMenu({
             MenuListProps={{
                dense: true,
                disabledItemsFocusable: true,
-               "aria-label": query
-                  ? query.declaration.kind === "query"
-                     ? query.name
-                     : `${query.source} ${query.name}`
-                  : "Tile",
+               "aria-label": query ? tileExpression(query) : "Tile",
             }}
             // Set like the builder's other menus: a rounded, bordered card.
             slotProps={{
@@ -355,7 +360,8 @@ export function TileMenu({
                      color: "text.secondary",
                   }}
                >
-                  {query.source} → {query.name}
+                  {/* As the tile's placeholder names it (`TileFrame`): a named query is its name alone. */}
+                  {tileExpression(query).replace("->", "→")}
                </Box>
             )}
          </Menu>
@@ -522,7 +528,7 @@ const COLORED_CHARTS = new Set<string>([
 
 /** A colour input takes `#rrggbb` only. */
 const toHex = (color: string | undefined) =>
-   color && isSeriesColor(color) ? color.toLowerCase() : "#000000";
+   (color && seriesColorFrom(color)) ?? "#000000";
 
 /**
  * A colour square. Leading, it sits before a choice's name; trailing, it

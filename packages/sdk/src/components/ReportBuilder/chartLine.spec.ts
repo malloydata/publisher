@@ -10,7 +10,25 @@ import {
    isChartPick,
    mentionsChartTag,
    parseChartLine,
+   seriesColorFrom,
+   seriesColorLine,
+   seriesColorOf,
 } from "./chartLine";
+
+describe("seriesColorFrom", () => {
+   // A host theme's series, as the swatches offer them: only what a colour
+   // line can hold and read back.
+   it("writes a theme colour as #rrggbb, widening #abc and refusing what it cannot write", () => {
+      expect(seriesColorFrom("#1F6AA8")).toBe("#1f6aa8");
+      expect(seriesColorFrom("#AbC")).toBe("#aabbcc");
+      expect(seriesColorFrom("rebeccapurple")).toBeUndefined();
+      expect(seriesColorFrom("rgb(1, 2, 3)")).toBeUndefined();
+      for (const color of ["#1F6AA8", "#AbC"])
+         expect(
+            seriesColorOf(seriesColorLine(seriesColorFrom(color) as string)),
+         ).toBe(seriesColorFrom(color));
+   });
+});
 
 describe("parseChartLine", () => {
    it("recognizes a bare pick, negations, and the writer's own lines", () => {
@@ -90,12 +108,19 @@ describe("chartLineText", () => {
       expect(chartLineText("line_chart", ["bar_chart"])).toBe(
          "# -bar_chart -viz line_chart",
       );
-      expect(chartLineText("none", ["bar_chart"])).toBe("# -bar_chart -viz");
       expect(chartLineText("bar_chart", ["bar_chart"])).toBe(
          "# -viz bar_chart",
       );
       expect(chartLineText("line_chart", [])).toBe("# -viz line_chart");
-      expect(chartLineText("none", [])).toBe("# -viz");
+   });
+
+   // A view of totals draws as big numbers with no tag (the KPI promotion
+   // adds one), so Table takes `big_value` off whatever the view carries.
+   it("always takes big_value off for Table", () => {
+      expect(chartLineText("none", ["bar_chart"])).toBe(
+         "# -bar_chart -big_value -viz",
+      );
+      expect(chartLineText("none", [])).toBe("# -big_value -viz");
    });
 
    it("reads a narrowed line back as the same state", () => {
