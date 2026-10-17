@@ -28,7 +28,7 @@ describe("a report the builder writes", () => {
       const out = await edited(PLAIN, (d) =>
          addTileToDocument(
             d,
-            { base: "flights", view: "by_origin" },
+            { base: "flights", modelPath: "m.malloy", view: "by_origin" },
             { modelPath: "dashboards/x.malloy", textHeld: false, widths: true },
          ),
       );

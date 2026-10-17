@@ -87,7 +87,8 @@ describe("resolvedChart agrees with the renderer", () => {
    for (const [viewTag, queryTag] of cases)
       it(`${JSON.stringify(viewTag)} under ${JSON.stringify(queryTag)}`, async () => {
          const drawn = await drawnBy(viewTag, queryTag);
-         const resolved = resolvedChart([viewTag, queryTag]) ?? "table";
+         // The renderer's name is a plain string; compare as one.
+         const resolved: string = resolvedChart([viewTag, queryTag]) ?? "table";
          expect(resolved).toBe(drawn ?? "table");
       });
    // Not only agreeing: each reset line draws what the tile picked.
