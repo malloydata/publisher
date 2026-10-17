@@ -89,8 +89,7 @@ function validateAzureUrl(url: string, fieldName: string): void {
          );
       }
    } else if (pathWithoutQuery.endsWith("**")) {
-      // recursive — valid
-      // includes all data files in the container and all subdirectories
+      // Recursive glob: valid.
    } else {
       const lastSegment = pathWithoutQuery.split("/").pop() || "";
       if (stars !== 1 || !lastSegment.startsWith("*")) {
@@ -120,13 +119,10 @@ function validateEnvironmentAzureUrls(environment: ApiEnvironment): void {
    }
 }
 
-// Safely clear a prior mount target before (re)mounting at `targetPath`.
-// Distinguishes symlinks from real dirs: fs.rm's recursive mode could otherwise
-// traverse into a symlinked source and damage it, so unlink symlinks and rm real
-// dirs. Both the in-place (symlink) and copy mount paths call this, so toggling
-// watch mode across runs against the same publisher_data can't leave a stale
-// entry that breaks the next mount (mkdir is a no-op on a symlink and fs.cp then
-// throws ERR_FS_CP_DIR_TO_NON_DIR).
+// Clear a prior mount target before (re)mounting. A symlink is unlinked, never
+// rm'd recursively, which could traverse into and damage the linked source.
+// Both mount modes call this so toggling watch mode across runs cannot leave
+// an entry that breaks the next mount.
 async function clearMountTarget(targetPath: string): Promise<void> {
    try {
       const stats = await fs.promises.lstat(targetPath);
@@ -155,10 +151,8 @@ export function resolvePackageLocation(
 ): string {
    let expanded = location;
    if (location.startsWith("~/")) {
-      // Resolved lazily, inside the tilde branch only: os.homedir() can throw
-      // where HOME is unset and there is no passwd entry for the uid (e.g. a
-      // distroless container with runAsUser), and a `./sales` or absolute
-      // location must never fail on that.
+      // Lazily: os.homedir() can throw in a distroless container, and a
+      // location without `~` must never fail on that.
       const home = homeDir ?? os.homedir();
       if (!home) {
          throw new Error(
@@ -171,10 +165,9 @@ export function resolvePackageLocation(
 }
 
 /**
- * Options for every package git clone. Packages are served from the default
- * branch's working tree only (no ref is ever checked out afterwards, and no
- * later git operation touches the clone: a reload deletes and re-clones), so
- * history is pure download cost. Exported for tests.
+ * Options for every package git clone. Shallow, because only the default
+ * branch's working tree is served and a reload re-clones, so history is pure
+ * download cost.
  */
 export const GIT_CLONE_OPTIONS: Record<string, string | number | null> = {
    "--depth": 1,
@@ -182,13 +175,10 @@ export const GIT_CLONE_OPTIONS: Record<string, string | number | null> = {
 };
 
 /**
- * With a progress handler configured, simple-git forces `--progress`, and a
- * failed clone's error message then carries every progress line git wrote to
- * stderr. Those messages surface in API error responses on the add/update
- * package path and in the failure logs (the boot path's `/status` loadErrors
- * carries a location-level summary instead), so drop the noise and keep the
- * lines that say what went wrong. Returns the input when everything matched,
- * rather than an empty error.
+ * Drop git progress lines from a failed clone's error message (simple-git
+ * forces `--progress` when a progress handler is set), since the message
+ * reaches API error responses and logs. Returns the input rather than an
+ * empty error when every line matched.
  */
 export function stripGitProgressNoise(message: string): string {
    const kept = message
@@ -222,12 +212,10 @@ export function cloneProgressLabel(
 }
 
 /**
- * Streams git clone progress to stderr: off winston (whose format changes
- * under OTEL and whose level can hide info lines) and off stdout (which an
- * MCP stdio transport would own), and it is where git itself reports
- * progress. A TTY gets one line rewritten in place; anything else (CI logs)
- * gets a line per stage and per 25-point step, so a slow clone shows life
- * without flooding. Exported for tests.
+ * Streams git clone progress to stderr, not winston (whose level can hide it)
+ * or stdout (which an MCP stdio transport would own). A TTY gets one line
+ * rewritten in place; anything else gets a line per stage and per 25-point
+ * step.
  */
 export class CloneProgressReporter {
    private lastStage: string | undefined;
@@ -258,12 +246,9 @@ export class CloneProgressReporter {
       const counts = total > 0 ? ` (${processed}/${total})` : "";
       const text = `${this.label}: ${stage} ${progress}%${counts}`;
       if (this.out.isTTY === true && this.claimTtyLine()) {
-         // Clamped to the terminal width: an auto-wrapped line breaks the
-         // \r rewrite (git clamps its own progress output for the same
-         // reason). The moving part sits at the end, so shorten the label
-         // and keep the stage/percentage visible; only when even the
-         // suffix cannot fit does a plain head slice apply. \x1b[K clears
-         // the tail of a longer previous line.
+         // Clamped to the terminal width, since a wrapped line breaks the \r
+         // rewrite; the label is shortened first to keep the percentage
+         // visible. \x1b[K clears the tail of a longer previous line.
          const budget = Math.max(1, (this.out.columns || 80) - 1);
          const suffix = `: ${stage} ${progress}%${counts}`;
          let line: string;
@@ -321,10 +306,8 @@ export class CloneProgressReporter {
 }
 
 /**
- * The last `/segment` of a run of non-empty path segments at the start of
- * `afterRepo`, or undefined. Reproduces the capture of the old
- * `(\/[^/]+)*` group, which retained only its final iteration and stopped at
- * the first empty segment.
+ * The last `/segment` of the run of non-empty path segments at the start of
+ * `afterRepo`, or undefined (the capture semantics of a `(\/[^/]+)*` group).
  */
 function lastGitHubPathSegment(afterRepo: string): string | undefined {
    if (!afterRepo.startsWith("/")) return undefined;
@@ -340,20 +323,15 @@ function lastGitHubPathSegment(afterRepo: string): string | undefined {
  * Parse a GitHub package location into owner, repo, and (optionally) the
  * subdirectory path segment.
  *
- * Uses a repetition-free regex for owner/repo plus plain string ops for the
- * path, NOT a single `(\/[^/]+)*` regex: those shapes were flagged as
- * polynomial-backtracking (ReDoS) on adversarial input, and the location is
- * user/config supplied. Behavior is preserved exactly, including
- * `packagePath` being only the LAST path segment after the repo (a quirk the
- * callers rely on); environment_store.spec.ts fuzzes the old regexes as an
- * oracle to prove equivalence. Exported for that test.
+ * String ops rather than a `(\/[^/]+)*` regex, which backtracks
+ * polynomially (ReDoS) on a user-supplied location. `packagePath` is only the
+ * LAST path segment after the repo, a quirk callers rely on;
+ * environment_store.spec.ts fuzzes this against the reference regexes.
  */
 export function parseGitHubUrl(
    githubUrl: string,
 ): { owner: string; repoName: string; packagePath?: string } | null {
-   // HTTPS: https://github.com/owner/repo/tree/branch/subdir. The host may
-   // appear anywhere (the old regex was unanchored); the owner/repo pattern
-   // has no repetition group, so it cannot backtrack polynomially.
+   // HTTPS: https://github.com/owner/repo/tree/branch/subdir; unanchored.
    const httpsMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(githubUrl);
    if (httpsMatch) {
       const afterRepo = githubUrl.slice(
@@ -366,13 +344,8 @@ export function parseGitHubUrl(
       };
    }
 
-   // SSH: git@github.com:owner/repo(.git)?(/subdir)*. The old regex was
-   // $-anchored, so the whole tail after the repo had to be a run of
-   // non-empty `/segment`s; a trailing slash or empty segment matched nothing
-   // and failed the parse.
-   // `git@github.com:` may appear anywhere (the old regex was not anchored at
-   // the start), though in practice isGitHubURL only routes locations that
-   // begin with it here.
+   // SSH: git@github.com:owner/repo(.git)?(/subdir)*, unanchored at the start
+   // but $-anchored: a trailing slash or empty segment fails the parse.
    const SSH_PREFIX = "git@github.com:";
    const sshAt = githubUrl.indexOf(SSH_PREFIX);
    if (sshAt !== -1) {
@@ -386,8 +359,7 @@ export function parseGitHubUrl(
             secondSlash === -1 ? afterOwner : afterOwner.slice(0, secondSlash);
          const afterRepo =
             secondSlash === -1 ? "" : afterOwner.slice(secondSlash);
-         // repo was `[^/\s]+` (no whitespace); anything else falls through to
-         // "not a GitHub URL", as the old regex did.
+         // A repo segment containing whitespace is not a GitHub URL.
          if (repoSeg.length > 0 && !/\s/.test(repoSeg)) {
             const repoName =
                repoSeg.length > 4 && repoSeg.endsWith(".git")
@@ -397,7 +369,7 @@ export function parseGitHubUrl(
                return { owner, repoName };
             }
             const segments = afterRepo.slice(1).split("/");
-            // $-anchored: every trailing segment had to be non-empty.
+            // $-anchored: every trailing segment must be non-empty.
             if (!segments.includes("")) {
                return {
                   owner,
@@ -422,12 +394,9 @@ function displayHost(host: string): string {
 }
 
 /**
- * The one-line machine-readable boot signal. Scripts grep for the
- * `PUBLISHER_READY` prefix instead of polling `/api/v0/status`, and the
- * counts carry what `operationalState: "serving"` alone does not say: how
- * much of the configured world actually loaded. Host and ports mirror
- * server.ts's use-site defaults; parseArgs writes the flag values into
- * process.env before the store is constructed. Exported for tests.
+ * The one-line machine-readable boot signal scripts grep for instead of
+ * polling `/api/v0/status`; the counts say how much of the configured world
+ * actually loaded. Host and port defaults mirror server.ts's.
  */
 export function formatReadinessLine(counts: {
    environments: number;
@@ -449,38 +418,29 @@ export class EnvironmentStore {
    public serverRootPath: string;
    private environments: Map<string, Environment> = new Map();
    /**
-    * Environments that were configured but did not load, keyed by name.
-    *
-    * A load failure is not fatal: the environment is skipped and the server
-    * still reports `serving`. Nothing else remembers it, because the throw
-    * happens before the environment reaches `this.environments` or the
-    * database, so this is the only record that a configured environment is
-    * missing rather than never asked for. Surfaced on `getStatus`.
+    * Environments that were configured but did not load, keyed by name: the
+    * only record that one is missing rather than never asked for, since a
+    * skipped environment never reaches `this.environments`. Surfaced on
+    * `getStatus`.
     */
    private failedEnvironments = new Map<string, string>();
    /**
-    * Why this server booted empty, when it did because no config was found
-    * (or the --config path was missing). Set by logUnconfiguredNotice, so it
-    * carries that method's gate: an environment the database held but could
-    * not load does not set it. Reported on getStatus as `emptyReason` only
-    * while no environment exists, so it disappears once one is created at
-    * runtime. It is a startup snapshot, which is why its text says so: a
-    * config written later is not read until a restart.
+    * Why this server booted empty because no config was found (set by
+    * logUnconfiguredNotice). Reported as `emptyReason` only while no
+    * environment exists. A startup snapshot: a config written later is not
+    * read until a restart.
     */
    private unconfiguredNotice: string | null = null;
    /**
-    * Why initialization failed, when it did. The server stays up and
-    * not-ready (operationalState stays "initializing"), so without this the
-    * reason is on stderr only and /status reads as a server still starting.
-    * Reported on getStatus as `initError`.
+    * Why initialization failed. The server stays up but not ready, so without
+    * this `/status` reads as still starting. Reported as `initError`.
     */
    private initError: string | null = null;
    private environmentMutexes = new Map<string, Mutex>();
    public publisherConfigIsFrozen: boolean;
    /**
-    * `mcp.includeHiddenFilesAndSources` from publisher.config.json, read once
-    * here. The MCP server registers its tools on every request, so reading the
-    * config at registration would re-read and re-parse the file on every call.
+    * Read once: the MCP server registers its tools per request, and must not
+    * re-parse the config each time.
     */
    public readonly mcpIncludeHiddenFilesAndSources: boolean;
    public finishedInitialization: Promise<void>;
@@ -490,33 +450,16 @@ export class EnvironmentStore {
       followRegionRedirects: true,
    });
    private gcsClient: Storage;
-   // Shared by every Environment so the back-pressure decision is
-   // process-wide. Set once at server start via setMemoryGovernor;
-   // new Environments pick it up at construction.
    private memoryGovernor: PackageMemoryGovernor | null = null;
-   // Called for every package that enters any Environment's package map.
-   // Set once at server start; new Environments pick it up at creation.
    private packageLoadedHook:
       | ((environmentName: string, pkg: Package) => void)
       | null = null;
 
    /**
-    * Set of environment names that should be loaded "in place" — i.e. the
-    * package directories under `publisher_data/<envName>/` are symlinks to
-    * the original local source directories instead of recursive copies.
-    *
-    * In-place mode powers the `npm run dev`-style live-reload story: edits
-    * to your source repo are visible to Publisher and trigger watch events
-    * that fan out via SSE to embedded HTML pages. Production mode (the
-    * default) keeps the safe copy semantics so the source repo and the
-    * served package are decoupled.
-    *
-    * Populated from the `PUBLISHER_WATCH` env var (comma-separated env
-    * names) at construction; can also be augmented via `markInPlace()` if
-    * a future feature wants to flip an environment to dev mode at runtime.
-    *
-    * Only LOCAL-DIR package locations are eligible for symlinking; remote
-    * sources (GitHub, GCS, S3) always copy regardless.
+    * Environments (from `PUBLISHER_WATCH`) whose package directories under
+    * `publisher_data/<env>/` are symlinks to the local sources rather than
+    * copies, so source edits live-reload. The default copy keeps source and
+    * served package decoupled. Remote locations always copy.
     */
    private inPlaceEnvs = new Set<string>();
 
@@ -555,10 +498,8 @@ export class EnvironmentStore {
    }
 
    /**
-    * Attach (or detach with `null`) the shared {@link PackageMemoryGovernor}.
-    * Propagated to every Environment so the back-pressure decision is
-    * process-wide, and remembered so any Environment created *after*
-    * this call also picks it up at construction.
+    * Attach (or detach with `null`) the shared {@link PackageMemoryGovernor},
+    * for existing and future Environments, so back-pressure is process-wide.
     */
    public setMemoryGovernor(governor: PackageMemoryGovernor | null): void {
       this.memoryGovernor = governor;
@@ -590,11 +531,7 @@ export class EnvironmentStore {
       );
    }
 
-   /**
-    * Snapshot of the environments currently held in memory. Used by the
-    * standalone materialization scheduler to sweep loaded packages without
-    * touching the database or triggering loads.
-    */
+   /** The environments in memory, without touching the database or loading. */
    public getLoadedEnvironments(): Environment[] {
       return [...this.environments.values()];
    }
@@ -624,14 +561,9 @@ export class EnvironmentStore {
    }
 
    /**
-    * Log a skipped environment AND remember why, for getStatus to report.
-    *
-    * Both boot paths funnel through here: the config path
-    * ({@link addConfiguredEnvironment}) and the database-restore path taken by
-    * every restart against an existing publisher.db. Keeping the record here
-    * rather than in the callers is deliberate: recording it in only one of them
-    * would leave the other silently dropping failures, which is the bug this is
-    * meant to fix.
+    * Log a skipped environment AND remember why, for getStatus. Both boot
+    * paths (config and database restore) funnel through here so neither drops
+    * failures silently.
     */
    private recordEnvironmentInitializationFailure(
       environmentName: string | undefined,
@@ -642,17 +574,11 @@ export class EnvironmentStore {
          `Error initializing environment${label}; skipping environment`,
          this.extractErrorDataFromError(error),
       );
-      // Only record an environment that is genuinely not there. An environment
-      // reaches `this.environments` before the rest of its setup (the database
-      // sync, its package listing) is done, and a throw from that tail lands
-      // here while the environment is live and serving. Reporting it would
-      // contradict `environments`, which still lists it, and a loadErrors entry
-      // with no `package` means the whole environment was skipped. It also could
-      // never be cleared: the clear below only runs when an environment is
-      // created, so a live one would carry the entry until restart.
+      // Only record an environment that is genuinely absent. A throw from the
+      // tail of setup can land here after the environment is live; recording
+      // it would contradict `environments` and never be cleared.
       if (environmentName && !this.environments.has(environmentName)) {
-         // Redacted because this is bound for an HTTP response body, not just a
-         // log line; see the same call in environment.ts.
+         // Redacted: bound for an HTTP response body.
          this.failedEnvironments.set(
             environmentName,
             redactPgSecrets(
@@ -674,7 +600,6 @@ export class EnvironmentStore {
       repository: ResourceRepository,
    ) {
       try {
-         // Check if environment files exist on disk
          const environmentExists = await fs.promises
             .access(dbEnvironment.path)
             .then(() => true)
@@ -685,7 +610,6 @@ export class EnvironmentStore {
          );
 
          if (!environmentExists) {
-            // Try to find in config and reload
             if (environmentConfig) {
                const environmentInstance = await this.addEnvironment(
                   {
@@ -696,22 +620,12 @@ export class EnvironmentStore {
                      packages: environmentConfig.packages,
                   },
                   true,
-                  // The config is a fallback here, not the set
-                  // of record: it is read because the
-                  // directory was missing, and a config
-                  // declaring no destinations normalizes to an
-                  // empty list, which the sync would otherwise
-                  // read as "clear them" and prune every
-                  // destination registered over the API. A
-                  // missing directory is transient; that
-                  // deletion is not. Omitting the field would
-                  // not help — this call CREATES the
-                  // environment, and the constructor seats an
-                  // authoritative empty list either way.
+                  // The config is only a fallback for a missing directory:
+                  // its empty destination list must not prune destinations
+                  // registered over the API.
                   { storageDestinationsAreFallback: true },
                );
 
-               // Update database with new path
                await repository.updateEnvironment(dbEnvironment.id, {
                   path: environmentInstance.metadata.location,
                });
@@ -725,20 +639,12 @@ export class EnvironmentStore {
             }
          }
 
-         // Get connections from database
          const connections = await repository.listConnections(dbEnvironment.id);
 
-         // Destinations the same way, so one registered over the
-         // API outlives the restart that would otherwise leave
-         // every materialized query for it falling back to live.
-         // The config file seeds only an environment the database
-         // holds none for, which is how a destination added to
-         // publisher.config.json after first boot still loads.
-         //
-         // Not fatal to the environment: a build naming a
-         // destination that did not load fails loudly and its
-         // materialized queries serve live, which is a better
-         // outcome than dropping every package in the environment.
+         // Destinations from the database too, so one registered over the API
+         // survives a restart; the config seeds only an environment the
+         // database holds none for. Not fatal: a missing destination only
+         // makes its materialized queries serve live.
          let destinations = environmentConfig?.storageDestinations;
          let destinationsRead = true;
          try {
@@ -771,20 +677,16 @@ export class EnvironmentStore {
             })),
             destinations,
          );
-         // Whatever we ended up with is a fallback, not the set of
-         // record, so the sync must not reconcile the stored rows
-         // against it — see markStorageDestinationsUnknown.
+         // A fallback, not the set of record: see
+         // markStorageDestinationsUnknown.
          if (!destinationsRead) {
             environmentInstance.markStorageDestinationsUnknown();
          }
          environmentInstance.setMemoryGovernor(this.memoryGovernor);
          this.attachPackageLoadedHook(environmentInstance);
-         // Re-establish serve routing when a package loads, from
-         // its latest successful materialization — so serving
-         // survives a restart, not only a fresh build. The full
-         // entry map is returned; the environment splits it by
-         // tier (colocated + storage=) in
-         // rebindServeBindingsFromLocalStore.
+         // Re-establish serve routing from each package's latest successful
+         // materialization, so serving survives a restart. The environment
+         // splits the entries by tier in rebindServeBindingsFromLocalStore.
          const envId = dbEnvironment.id;
          environmentInstance.setStorageBindingResolver(async (packageName) => {
             const runs = await repository.listMaterializations(
@@ -797,7 +699,6 @@ export class EnvironmentStore {
             return latest?.manifest?.entries ?? {};
          });
 
-         // Get packages from database
          const packages = await repository.listPackages(dbEnvironment.id);
          packages.forEach((pkg) => {
             environmentInstance.setPackageStatus(
@@ -834,20 +735,16 @@ export class EnvironmentStore {
 
          const repository = this.storageManager.getRepository();
 
-         // What was ASKED FOR, which is not what loaded: an environment can be
-         // declared and still be absent from `this.environments` afterwards.
-         // Counted here because only this scope sees both sources.
+         // What was ASKED FOR, which may differ from what loaded.
          let declaredEnvironments = environmentManifest.environments.length;
 
          let existingEnvironments: DbEnvironment[] = [];
          if (!reInit) {
-            // Load existing environments from database
             existingEnvironments = await repository.listEnvironments();
             declaredEnvironments += existingEnvironments.length;
          }
 
          if (existingEnvironments.length > 0) {
-            // Load environments from database
             await Promise.all(
                existingEnvironments.map((dbEnvironment) =>
                   this.restoreEnvironmentFromDatabase(
@@ -858,8 +755,8 @@ export class EnvironmentStore {
                ),
             );
          } else {
-            // Load environments from config file: always on --init, and as
-            // the fallback when the database is empty.
+            // From the config: always on --init, else when the database is
+            // empty.
             await Promise.all(
                environmentManifest.environments.map(async (environment) => {
                   await this.addConfiguredEnvironment(environment);
@@ -882,10 +779,8 @@ export class EnvironmentStore {
          const errorData = this.extractErrorDataFromError(error);
          logger.error("Error initializing environment store", errorData);
          try {
-            // The failure counterpart of PUBLISHER_READY, so a script
-            // waiting on that token fails fast instead of hanging on a
-            // broken config. Redacted because initialization errors can
-            // carry connection strings.
+            // The failure counterpart of PUBLISHER_READY, so a waiting script
+            // fails fast. Redacted for the same reason as above.
             process.stderr.write(
                `PUBLISHER_INIT_FAILED error=${JSON.stringify(
                   redactPgSecrets(
@@ -900,32 +795,15 @@ export class EnvironmentStore {
    }
 
    /**
-    * Say why an empty server is empty, once, beside the readiness line.
+    * Say why an empty server is empty, once, beside the readiness line:
+    * otherwise an operator who forgot to mount a config sees a healthy server
+    * and an empty catalog, with no output naming the path checked.
     *
-    * A server that loaded nothing reports `serving` with `environments=0
-    * packages=0 load_errors=0`, and every one of those numbers is accurate:
-    * nothing failed, because nothing was asked for. Without this line there is
-    * no output at all naming the config path that was checked, so an operator
-    * who forgot to mount one sees a healthy server and an empty catalog.
-    *
-    * `info`, not `warn`, because booting unconfigured is a supported mode
-    * rather than a fault: a deployment can mount no config and create its
-    * environments over the API afterwards, which is what Credible's workers do.
-    * Levelling this at `warn` would alarm on every one of those boots. The
-    * sibling case (falling back to the bundled default) logs at `info` too.
-    *
-    * Gated on how many environments were DECLARED, not on how many loaded.
-    * Those differ, and the gap is where this line goes wrong: an environment
-    * the database holds whose directory has gone is skipped at the
-    * `not found in config and files missing` branch with a logged error and no
-    * `failedEnvironments` entry, so a loaded-count gate sees zero and blames a
-    * config file that was never the problem, immediately after the one line
-    * that named the real cause. That boot is reachable the way this very
-    * message invites: start unconfigured, create an environment over the API,
-    * restart onto a root where `publisher_data/<env>` is gone.
-    *
-    * Runtime creation is unconditionally available in this branch: with no
-    * config file, `frozenConfig` takes its default of false.
+    * `info`, not `warn`: booting unconfigured and creating environments over
+    * the API is a supported mode. Gated on environments DECLARED, not loaded:
+    * a database environment whose directory is gone loads nothing, and
+    * blaming the config file for it would be wrong. With no config,
+    * `frozenConfig` is false, so runtime creation is always available here.
     */
    private logUnconfiguredNotice(declaredEnvironments: number): void {
       if (declaredEnvironments > 0) {
@@ -936,8 +814,7 @@ export class EnvironmentStore {
          return;
       }
       if (checked.explicit) {
-         // getPublisherConfig already logged this at error, so only /status
-         // needs the sentence.
+         // getPublisherConfig already logged this; only /status needs it.
          this.unconfiguredNotice =
             `Serving with no environments: the --config path ${checked.path} was not found when the server started. ` +
             `Fix the path and restart. Environments can also be created at runtime through the API.`;
@@ -951,12 +828,8 @@ export class EnvironmentStore {
    }
 
    /**
-    * Printed exactly once, from initialize()'s success tail: markReady() has
-    * just flipped /api/v0/status to "serving", and both HTTP listeners bound
-    * long before the downloads finished, so this is the same moment every
-    * existing readiness consumer (CI status polls, MCP /health/readiness)
-    * fires on. The catch above swallows a failed boot after markNotReady(),
-    * so the line never prints for a server that is not actually serving.
+    * Printed exactly once, right after markReady(), so it fires at the same
+    * moment as every other readiness signal and never for a failed boot.
     */
    private emitReadinessLine(): void {
       let packages = 0;
@@ -994,23 +867,16 @@ export class EnvironmentStore {
 
       const repository = this.storageManager.getRepository();
 
-      // Sync environment metadata
       const dbEnvironment = await this.addEnvironmentMetadata(
          environment,
          repository,
       );
-
-      // Sync connections
       await this.addConnections(environment, dbEnvironment.id, repository);
-
-      // Sync storage destinations
       await this.syncStorageDestinations(
          environment,
          dbEnvironment.id,
          repository,
       );
-
-      // Sync packages
       await this.addPackages(environment, dbEnvironment.id, repository);
 
       logger.info(`Synced environment "${environmentName}" to database`);
@@ -1019,13 +885,11 @@ export class EnvironmentStore {
    public async deleteEnvironmentFromDatabase(
       environmentName: string,
    ): Promise<void> {
-      // Before the metadata lookup, for the same reason as the package
-      // variant: the cleanup needs only the name, never the row.
+      // Before the metadata lookup: see deletePackageFromDatabase.
       this.cleanupEnvironmentEmbeddings(environmentName);
 
       const repository = this.storageManager.getRepository();
 
-      // Get the environment from database
       const dbEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
@@ -1034,7 +898,7 @@ export class EnvironmentStore {
          return;
       }
 
-      // Delete the environment (this will cascade delete connections and packages)
+      // Cascades to connections and packages.
       await repository.deleteEnvironment(dbEnvironment.id);
       logger.info(`Deleted environment "${environmentName}" from database`);
    }
@@ -1082,7 +946,6 @@ export class EnvironmentStore {
    ): Promise<void> {
       const packages = await environment.listPackages();
 
-      // Sync each package
       for (const pkg of packages) {
          if (!pkg.name) {
             logger.warn("Skipping package with undefined name");
@@ -1162,14 +1025,12 @@ export class EnvironmentStore {
    ): Promise<void> {
       try {
          const connections = environment.listApiConnections();
-         // Add/update connections
          for (const conn of connections) {
             if (!conn.name) {
                logger.warn("Skipping connection with undefined name");
                continue;
             }
 
-            // Check if connection exists
             const existingConn = await repository.getConnectionByName(
                environmentId,
                conn.name,
@@ -1192,14 +1053,10 @@ export class EnvironmentStore {
    }
 
    /**
-    * Mirrors an environment's destination list into the database so it survives a
-    * restart, the same way its connections do.
-    *
-    * Unlike {@link addConnections} this also deletes the rows for destinations
-    * the environment no longer holds. The list has replace semantics — an update
-    * hands over the whole set, there is no per-destination delete endpoint — so a
-    * left-behind row would silently resurrect a destination that had been removed
-    * the next time the environment loaded from the database.
+    * Mirror an environment's destination list into the database so it
+    * survives a restart. Unlike {@link addConnections} it also deletes rows the
+    * environment no longer holds: the list has replace semantics, so a
+    * left-behind row would resurrect a removed destination on the next load.
     */
    private async syncStorageDestinations(
       environment: Environment,
@@ -1223,11 +1080,9 @@ export class EnvironmentStore {
             });
          }
 
-         // Pruning is only safe against a list that IS the desired state. When a
-         // load could not read the stored destinations the list is unknown rather
-         // than empty, and reconciling to it would delete every registration over
-         // a transient read error — permanently, since the next restart then has
-         // nothing to restore. Upserting what we do hold stays safe either way.
+         // Prune only against a list that IS the desired state. After a failed
+         // read the list is unknown, and pruning would permanently delete every
+         // registration over a transient error.
          if (!environment.hasAuthoritativeStorageDestinations()) {
             logger.warn(
                `Not reconciling stored storage destinations for "${environment.metadata?.name}": this environment's destinations were never read, so the in-memory list is not the desired state`,
@@ -1322,7 +1177,6 @@ export class EnvironmentStore {
       const environment = await this.getEnvironment(environmentName, false);
       const repository = this.storageManager.getRepository();
 
-      // Get the environment ID from database
       const dbEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
@@ -1333,7 +1187,6 @@ export class EnvironmentStore {
          );
       }
 
-      // Get the package from the environment
       const packages = await environment.listPackages();
       const pkg = packages.find((p) => p.name === packageName);
 
@@ -1342,14 +1195,10 @@ export class EnvironmentStore {
          return;
       }
 
-      // Sync the specific package
       await this.addPackage(pkg, dbEnvironment.id, repository);
       logger.info(`Synced package "${packageName}" to database`);
    }
 
-   /**
-    * Delete a package from the database
-    */
    public async deletePackageFromDatabase(
       environmentName: string,
       packageName: string,
@@ -1361,7 +1210,6 @@ export class EnvironmentStore {
 
       const repository = this.storageManager.getRepository();
 
-      // Get the environment ID from database
       const dbEnvironment =
          await repository.getEnvironmentByName(environmentName);
 
@@ -1370,7 +1218,6 @@ export class EnvironmentStore {
          return;
       }
 
-      // Find and delete the package
       const existingPackage = await repository.getPackageByName(
          dbEnvironment.id,
          packageName,
@@ -1383,14 +1230,10 @@ export class EnvironmentStore {
    }
 
    /**
-    * Best-effort, non-blocking: drop a deleted package's cached entity
-    * embeddings so package churn does not grow publisher.db forever.
-    * Not awaited by callers: the cleanup queues on the package's sync
-    * mutex, which an in-flight bulk embed can hold for minutes, and a
-    * DELETE response must not stall behind it. Needs only the names, so
-    * it runs regardless of whether the metadata row still exists. An
-    * orphaned row is inert (reads are scoped by environment + package),
-    * so failure is logged, never propagated.
+    * Best-effort, non-blocking: drop a deleted package's cached embeddings so
+    * churn does not grow publisher.db forever. Not awaited: it queues behind
+    * the package's sync mutex, which a bulk embed can hold for minutes. An
+    * orphaned row is inert, so failure is logged, never propagated.
     */
    private cleanupPackageEmbeddings(
       environmentName: string,
@@ -1443,9 +1286,8 @@ export class EnvironmentStore {
    private async cleanupAndCreatePublisherPath() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
 
-      // Ensure serverRootPath exists as a directory (mkdir recursive is a
-      // no-op when the directory already exists and avoids a Bun-on-Windows
-      // bug where fs.promises.stat resolves to undefined instead of throwing)
+      // mkdir rather than stat: Bun on Windows resolves fs.promises.stat to
+      // undefined instead of throwing.
       await fs.promises.mkdir(this.serverRootPath, { recursive: true });
 
       if (reInit) {
@@ -1467,7 +1309,6 @@ export class EnvironmentStore {
                   `Permission denied, skipping cleanup of upload documents path ${uploadDocsPath}`,
                );
             } else if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-               // Ignore if directory doesn't exist
                throw error;
             }
          }
@@ -1494,11 +1335,8 @@ export class EnvironmentStore {
    }
 
    public async getStatus(options: { includeLoading?: boolean } = {}) {
-      // Surface the memory governor's back-pressure as a "throttled"
-      // operational state so the control plane can stop routing new package
-      // loads/queries to a throttled worker. Draining takes precedence: a
-      // shutting-down server should keep reporting "draining". When the
-      // governor is disabled (no PUBLISHER_MAX_MEMORY_BYTES) this never fires.
+      // Back-pressure reads as "throttled" so the control plane can stop
+      // routing to this worker; "draining" takes precedence.
       const baseState = getOperationalState();
       const operationalState = (
          baseState !== "draining" &&
@@ -1563,13 +1401,8 @@ export class EnvironmentStore {
          }),
       );
 
-      // Collected AFTER listEnvironments, not before: serialize() awaits
-      // listPackages(), which is what loads an environment's packages and so
-      // records their failures. Reading the maps at the top of this method risks
-      // reading them before the failures they report have been recorded.
-      //
-      // A read-time overlay over live state, like "throttled" above, so there is
-      // no fourth stored status to keep in sync.
+      // Collected AFTER listEnvironments: serialize() loads packages, which is
+      // what records their failures.
       const loadErrors: LoadError[] = [];
       for (const [environmentName, message] of this.failedEnvironments) {
          loadErrors.push({ environment: environmentName, message });
@@ -1582,12 +1415,9 @@ export class EnvironmentStore {
                message,
             });
          }
-         // Stale packages are SERVING (they still appear in environments, and
-         // the readiness counters still count them), but the model answering
-         // queries is older than the files on disk because the latest reload
-         // failed to compile. Reported here so the failure is visible off-box:
-         // without it a broken watch-mode save is stderr-only and /status
-         // keeps reading healthy while queries answer from the previous model.
+         // Stale packages are SERVING, but from a model older than the files on
+         // disk because the latest reload failed to compile. Without this a
+         // broken save is invisible off-box.
          for (const [
             packageName,
             stale,
@@ -1601,15 +1431,11 @@ export class EnvironmentStore {
             });
          }
       }
-      // Left unset when nothing failed, so the key is absent from the response
-      // and a healthy server's status body is byte-for-byte what it was before
-      // this field existed.
+      // Absent, not empty, when nothing failed.
       if (loadErrors.length > 0) {
          status.loadErrors = loadErrors;
       }
-      // "serving" with an empty environments list reads as healthy. This is
-      // the one place a caller polling /status learns the server found no
-      // config, rather than having been configured with nothing.
+      // The one place a /status poller learns the server found no config.
       if (this.unconfiguredNotice && status.environments.length === 0) {
          status.emptyReason = this.unconfiguredNotice;
       }
@@ -1635,14 +1461,12 @@ export class EnvironmentStore {
       await this.finishedInitialization;
       assertSafePackageName(environmentName);
 
-      // Check if environment is already loaded first
       const environment = this.environments.get(environmentName);
       if (environment !== undefined && !reload) {
          return environment;
       }
 
-      // We need to acquire the mutex to prevent concurrent requests from creating the
-      // environment multiple times.
+      // Serialize so concurrent requests do not create the environment twice.
       let environmentMutex = this.environmentMutexes.get(environmentName);
       if (environmentMutex?.isLocked()) {
          await environmentMutex.waitForUnlock();
@@ -1655,7 +1479,6 @@ export class EnvironmentStore {
       this.environmentMutexes.set(environmentName, environmentMutex);
 
       return environmentMutex.runExclusive(async () => {
-         // Double-check after acquiring mutex
          const existingEnvironment = this.environments.get(environmentName);
          if (existingEnvironment !== undefined && !reload) {
             return existingEnvironment;
@@ -1687,9 +1510,8 @@ export class EnvironmentStore {
             name: environmentName,
             resource: `${API_PREFIX}/environments/${environmentName}`,
             connections: environmentConfig?.connections || [],
-            // Only asserted when the config declares destinations. A `reload=true`
-            // on an environment whose destinations were registered over the API
-            // would otherwise carry an empty list, which reads as "clear them".
+            // Only asserted when the config declares destinations: an empty
+            // list reads as "clear them", wiping API-registered ones on reload.
             ...(environmentConfig?.storageDestinations?.length
                ? {
                     storageDestinations: environmentConfig.storageDestinations,
@@ -1700,12 +1522,9 @@ export class EnvironmentStore {
    }
 
    /**
-    * `storageDestinationsAreFallback` says the destinations on this payload are
-    * the best guess available rather than the desired state, so the database sync
-    * below must not reconcile the stored rows against them. It has to be decided
-    * here rather than by the caller afterwards: this method syncs before it
-    * returns, so by the time a caller holds the instance the pruning has already
-    * happened.
+    * `storageDestinationsAreFallback` marks the payload's destinations as a best
+    * guess, so the database sync must not prune against them. It is a parameter
+    * because this method syncs before it returns.
     */
    public async addEnvironment(
       environment: ApiEnvironment,
@@ -1723,7 +1542,6 @@ export class EnvironmentStore {
       for (const _package of environment.packages || []) {
          assertSafePackageName(_package.name);
       }
-      // Check if environment already exists and update it instead of creating a new one
       const existingEnvironment = this.environments.get(environmentName);
       if (existingEnvironment) {
          const updatedEnvironment =
@@ -1776,10 +1594,7 @@ export class EnvironmentStore {
       }
 
       this.environments.set(environmentName, newEnvironment);
-      // It loaded, so any earlier failure for this name is stale. A boot
-      // failure can be followed by a successful POST or lazy load of the same
-      // environment, and a status that keeps reporting the old error would lie
-      // in the other direction.
+      // It loaded, so any earlier failure for this name is stale.
       this.failedEnvironments.delete(environmentName);
 
       environment?.packages?.forEach((_package) => {
@@ -1801,11 +1616,9 @@ export class EnvironmentStore {
 
    public async unzipEnvironment(absoluteEnvironmentPath: string) {
       assertSafeEnvironmentPath(absoluteEnvironmentPath);
-      // The archive extracts to a sibling directory named for it. Resolve the
-      // target and check it lexically against the archive's directory, in
-      // the one shape CodeQL's js/path-injection query accepts as a barrier
-      // (an unconditional startsWith on the resolved value it later sinks),
-      // so the target provably stays beside the archive.
+      // Extracts to a sibling directory named for the archive. The check is in
+      // the one shape CodeQL's js/path-injection accepts as a barrier (an
+      // unconditional startsWith on the resolved value it later sinks).
       const archiveDir = path.resolve(path.dirname(absoluteEnvironmentPath));
       const unzippedEnvironmentPath = path.resolve(
          archiveDir,
@@ -1839,12 +1652,9 @@ export class EnvironmentStore {
       });
       await fs.promises.mkdir(targetDir, { recursive: true });
 
-      // Stream-extract via yauzl (wrapped by extract-zip). Each entry's
-      // inflate and write are dispatched to the libuv thread pool, so the
-      // main event loop stays responsive even for very large archives.
-      // The previous adm-zip path used fs.readFileSync + zlib.inflateRawSync
-      // on the main thread, which parked the loop long enough on multi-
-      // hundred-MB packages to fail Kubernetes liveness probes mid-extract.
+      // Stream-extract off the main thread (yauzl via extract-zip): a
+      // synchronous inflate of a large archive blocks the event loop long
+      // enough to fail Kubernetes liveness probes.
       let entryCount = 0;
       let totalUncompressedBytes = 0;
       try {
@@ -1921,7 +1731,6 @@ export class EnvironmentStore {
 
       const environmentPath = environment.metadata?.location;
 
-      // Close all connections before removing the environment
       await environment.closeAllConnections();
 
       this.environments.delete(environmentName);
@@ -1950,25 +1759,15 @@ export class EnvironmentStore {
          return getProcessedPublisherConfig(serverRootPath);
       } catch (error) {
          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-            // A file the operator wrote that Publisher cannot honour: malformed
-            // JSON, a rejected shape, or a `${VAR}` naming an unset variable.
-            // Raised, not absorbed. This used to log and return an EMPTY
-            // manifest, which meant a single typo produced a server that
-            // printed PUBLISHER_READY, reported operationalState "serving" and
-            // an empty loadErrors, and served no environment at all -- with the
-            // cause reduced to `{"error":{}}`, since an Error has no enumerable
-            // fields to serialize. loadErrors is the field operators and agents
-            // are told to check, and it cannot carry this: it is keyed by
-            // environment and there are no environments to key by.
-            //
-            // Boot turns this into PUBLISHER_INIT_FAILED via initialize()'s
-            // handler, which is the documented terminal signal. A server
-            // already serving keeps serving: getEnvironment returns a loaded
-            // environment before reaching here, so only an explicit reload
-            // pays, and it answers with the reason rather than with silence.
+            // A config Publisher cannot honour (malformed JSON, a rejected
+            // shape, an unset `${VAR}`) is raised, not absorbed into an empty
+            // manifest, which would boot "serving" with nothing and no
+            // loadErrors entry to say why. At boot it becomes
+            // PUBLISHER_INIT_FAILED; a serving server is affected only on an
+            // explicit reload, which answers with the reason.
             throw new PublisherConfigError(PUBLISHER_CONFIG_NAME, error);
          } else {
-            // If publisher.config.json is missing, generate the manifest from directories
+            // No publisher.config.json: one environment per directory.
             try {
                const entries = await fs.promises.readdir(serverRootPath, {
                   withFileTypes: true,
@@ -1991,8 +1790,7 @@ export class EnvironmentStore {
                }
                return { frozenConfig: false, environments };
             } catch (lsError) {
-               // `{ error }` alone serializes an Error to {}, since its fields
-               // are not enumerable, so the message has to be lifted out.
+               // An Error's fields are not enumerable; `{ error }` logs {}.
                logger.error(`Error listing directories in ${serverRootPath}`, {
                   error:
                      lsError instanceof Error
@@ -2034,12 +1832,9 @@ export class EnvironmentStore {
    }
 
    /**
-    * Absolute on-disk path for a local package `location`, anchored at the
-    * directory holding the active config. That covers locations POSTed at
-    * runtime too, which no config declares. When there is no config worth
-    * anchoring to, `getPublisherConfigDir` returns null (it owns the cases) and
-    * the server root is the only meaningful base, which is also what this did
-    * before the anchor moved.
+    * Absolute on-disk path for a local package `location` (including one
+    * POSTed at runtime), anchored at the active config's directory, else the
+    * server root.
     */
    private resolveLocalPath(location: string): string {
       return resolvePackageLocation(
@@ -2064,18 +1859,13 @@ export class EnvironmentStore {
    }
 
    /**
-    * Isolate a location failure to the packages it actually affects instead of
-    * aborting the whole environment. The packages that mounted still serve;
-    * each one named here is left un-mounted, so its configured status entry
-    * (set in addEnvironment) resolves to a per-package load failure that
-    * getFailedPackages() -> /status loadErrors reports. A bad location now
-    * behaves like a bad manifest: those packages dropped, siblings unaffected.
+    * Isolate a location failure to the packages it affects instead of
+    * aborting the environment: each one named here is left un-mounted and
+    * reported in /status loadErrors, while siblings serve.
     *
-    * The message is kept rather than letting the lazy load speak for it. An
-    * un-mounted package fails later on the manifest that was never copied, and
-    * "Package manifest ... does not exist." points at publisher_data/ instead
-    * of the location that is actually wrong. Redacted because it reaches an
-    * HTTP response body.
+    * The message is kept because the later lazy-load error ("Package manifest
+    * ... does not exist.") would point at publisher_data/ instead of the bad
+    * location. Redacted because it reaches an HTTP response body.
     */
    private recordMountFailure(
       error: unknown,
@@ -2103,9 +1893,6 @@ export class EnvironmentStore {
          PUBLISHER_DATA_DIR,
          environmentName,
       );
-      // Why each package's location failed, carried out to the Environment so
-      // /status can report the real cause rather than the missing manifest it
-      // leaves behind.
       const mountErrors = new Map<string, string>();
 
       await fs.promises.mkdir(absoluteTargetPath, { recursive: true });
@@ -2116,7 +1903,7 @@ export class EnvironmentStore {
          );
       }
 
-      // Group packages by location to optimize downloads
+      // Grouped by location so each is downloaded once.
       const locationGroups = new Map<
          string,
          Array<{ name: string; location: string }>
@@ -2133,12 +1920,11 @@ export class EnvironmentStore {
             );
          }
 
-         // For GitHub URLs, group by base repository URL to optimize downloads
+         // GitHub locations group by repository, in HTTPS form.
          let locationKey = _package.location;
          if (this.isGitHubURL(_package.location)) {
             const githubInfo = parseGitHubUrl(_package.location);
             if (githubInfo) {
-               // Always use HTTPS format for grouping to ensure consistency
                locationKey = `https://github.com/${githubInfo.owner}/${githubInfo.repoName}`;
             }
          }
@@ -2152,30 +1938,25 @@ export class EnvironmentStore {
          });
       }
 
-      // Processing by each unique location
       const totalPackages = packages.length;
       let mountedCount = 0;
       for (const [groupedLocation, packagesForLocation] of locationGroups) {
-         // Use a hash instead of base64 to keep paths short (Windows MAX_PATH limit)
-         // This works for both local and remote paths
+         // A short hash keeps paths under Windows MAX_PATH.
          const locationHash = crypto
             .createHash("sha256")
             .update(groupedLocation)
             .digest("hex")
-            .substring(0, 16); // Use first 16 chars for shorter paths
+            .substring(0, 16);
          const tempDownloadPath = safeJoinUnderRoot(
             absoluteTargetPath,
             `.temp_${locationHash}`,
          );
          await fs.promises.mkdir(tempDownloadPath, { recursive: true });
          logger.info(`Created temporary directory: ${tempDownloadPath}`);
-         // Two failure scopes, deliberately separate. The download is shared by
-         // every package at this location, so losing it loses all of them. An
-         // extract is per package, so one bad sibling must not strand the ones
-         // after it in the loop.
+         // Two failure scopes: a failed download loses every package at this
+         // location, while a failed extract must not strand its siblings.
          let downloaded = true;
          try {
-            // Use the existing download method for all locations
             await this.downloadOrMountLocation(
                groupedLocation,
                tempDownloadPath,
@@ -2192,14 +1973,10 @@ export class EnvironmentStore {
                mountErrors,
             );
          }
-         // Extract each package from the downloaded content
          for (const _package of downloaded ? packagesForLocation : []) {
-            // Declared out here so the catch can clean up the exact path this
-            // iteration created. Never re-derive it from the package name
-            // there: the name may be why we are in the catch at all, and
-            // safeJoinUnderRoot permits a name that resolves to the root, so a
-            // package called "." would hand the cleanup the whole environment
-            // directory. Undefined means nothing was created yet.
+            // Declared out here so the catch cleans up exactly this path.
+            // Never re-derive it from the name there: a package called "."
+            // would hand the cleanup the whole environment directory.
             let absolutePackagePath: string | undefined;
             try {
                const packageDir = _package.name;
@@ -2211,13 +1988,11 @@ export class EnvironmentStore {
                const isLocalArchive =
                   this.isLocalPath(_package.location) &&
                   _package.location.endsWith(".zip");
-               // For GitHub URLs, extract the subdirectory path from the original location
                let sourcePath: string;
                if (this.isGitHubURL(_package.location)) {
                   const githubInfo = parseGitHubUrl(_package.location);
                   if (githubInfo && githubInfo.packagePath) {
-                     // Extract subdirectory from the original GitHub URL
-                     // Handle both /tree/main/subdir and /tree/branch/subdir cases
+                     // The subdirectory after /tree/<branch>/.
                      const subPathMatch =
                         _package.location.match(/\/tree\/[^/]+\/(.+)$/);
                      if (subPathMatch) {
@@ -2226,24 +2001,19 @@ export class EnvironmentStore {
                            subPathMatch[1],
                         );
                      } else {
-                        // If no subdirectory after /tree/branch, the repo itself is the package
+                        // The repo itself is the package.
                         sourcePath = tempDownloadPath;
                      }
                   } else {
-                     // No packagePath means the repo itself is the package
                      sourcePath = tempDownloadPath;
                   }
                } else {
-                  // For non-GitHub locations, use package name
                   if (isLocalArchive) {
-                     // The mount above extracted the archive into the
-                     // download dir; the location itself is the .zip file.
+                     // The archive was extracted into the download dir.
                      sourcePath = tempDownloadPath;
                   } else if (this.isLocalPath(_package.location)) {
-                     // Same resolution rule as `downloadOrMountLocation`.
-                     // Without this step the existing-source check below
-                     // falls through for any relative location, and the
-                     // in-place mount branch is unreachable.
+                     // Resolved as in `downloadOrMountLocation`, so a relative
+                     // location can reach the in-place mount branch.
                      sourcePath = this.resolveLocalPath(_package.location);
                   } else {
                      sourcePath = safeJoinUnderRoot(
@@ -2259,18 +2029,9 @@ export class EnvironmentStore {
                   .catch(() => false);
 
                if (sourceExists) {
-                  // In-place mount path (watch-mode-only, local-dir packages
-                  // only). Replace the recursive copy with a symlink so that
-                  // edits to the source repo are visible to Publisher and
-                  // can trigger live-reload events.
-                  //
-                  // Carefully: we MUST distinguish symlinks from real dirs
-                  // when removing the prior content, because `fs.rm`'s
-                  // recursive mode could in principle traverse into a
-                  // symlinked source dir and damage it. We lstat first and
-                  // call `unlink` for symlinks, `rm` for real directories.
-                  // An archive has no source tree to link to, and the download
-                  // dir it was extracted into is removed after this loop.
+                  // Watch mode links a local-dir package in place so source
+                  // edits live-reload. Not an archive: its extracted copy is
+                  // removed after this loop.
                   const isInPlace =
                      this.inPlaceEnvs.has(environmentName) &&
                      this.isLocalPath(_package.location) &&
@@ -2278,11 +2039,8 @@ export class EnvironmentStore {
                   if (isInPlace) {
                      await clearMountTarget(absolutePackagePath);
                      const absoluteSourcePath = path.resolve(sourcePath);
-                     // On Windows a "dir" symlink needs elevation
-                     // (SeCreateSymbolicLinkPrivilege — admin or Developer
-                     // Mode); a junction does not and works for absolute
-                     // directory targets, so prefer it there. chokidar watches
-                     // through both.
+                     // On Windows a "dir" symlink needs elevation and a
+                     // junction does not; chokidar watches through both.
                      const linkType =
                         process.platform === "win32" ? "junction" : "dir";
                      try {
@@ -2295,11 +2053,8 @@ export class EnvironmentStore {
                            `In-place mount (watch mode): linked package "${packageDir}" -> "${absoluteSourcePath}" (${++mountedCount}/${totalPackages})`,
                         );
                      } catch (linkError) {
-                        // Degrade gracefully instead of failing the env load:
-                        // copy the package so it still serves. Live reload
-                        // won't work for it (source edits aren't seen), but the
-                        // environment comes up. Hit e.g. on locked-down Windows
-                        // where even junction creation is denied.
+                        // Degrade to a copy (e.g. locked-down Windows denying
+                        // even junctions): it serves, without live reload.
                         const code =
                            (linkError as NodeJS.ErrnoException)?.code ??
                            String(linkError);
@@ -2333,9 +2088,8 @@ export class EnvironmentStore {
                            `Watch mode: package "${packageDir}" is an archive "${_package.location}" — extracted and copied. Source-edit live reload won't work for this package; use an unpacked local-dir location to enable it.`,
                         );
                      }
-                     // Copy the specific directory. Clear any stale mount target
-                     // first (e.g. a symlink left by a prior --watch-env run), or
-                     // fs.cp would throw ERR_FS_CP_DIR_TO_NON_DIR onto it.
+                     // Clear a stale target first (e.g. a symlink from a prior
+                     // --watch-env run), or fs.cp throws onto it.
                      await clearMountTarget(absolutePackagePath);
                      await fs.promises.mkdir(absolutePackagePath, {
                         recursive: true,
@@ -2348,7 +2102,7 @@ export class EnvironmentStore {
                      );
                   }
                } else {
-                  // If source doesn't exist, copy the entire download as the package
+                  // No source subdirectory: the whole download is the package.
                   await clearMountTarget(absolutePackagePath);
                   await fs.promises.mkdir(absolutePackagePath, {
                      recursive: true,
@@ -2367,19 +2121,15 @@ export class EnvironmentStore {
                   [_package.name],
                   mountErrors,
                );
-               // Leave nothing behind. A copy that threw part way through can
-               // leave a tree holding the manifest and models but not the data,
-               // which loads cleanly and therefore clears the very error
-               // recorded above, so the package serves incomplete content and
-               // /status says nothing. Continuing past the failure is what
-               // makes this reachable for more than one package per location.
+               // Leave nothing behind: a partial copy can hold the manifest
+               // but not the data, load cleanly, clear the error just
+               // recorded, and serve incomplete content.
                if (absolutePackagePath) {
                   await clearMountTarget(absolutePackagePath);
                }
             }
          }
          try {
-            // Clean up temporary download directory
             await fs.promises.rm(tempDownloadPath, {
                recursive: true,
                force: true,
@@ -2412,7 +2162,6 @@ export class EnvironmentStore {
          packageNames,
       );
       if (!loader) {
-         // If we get here, the path format is not supported
          const errorMsg = `Invalid package path: "${location}". Must be an absolute mounted path or a GCS/S3/GitHub URI.`;
          logger.error(errorMsg, { environmentName, location });
          throw new PackageNotFoundError(errorMsg);
@@ -2454,7 +2203,6 @@ export class EnvironmentStore {
         }
       | undefined {
       const isCompressedFile = location.endsWith(".zip");
-      // Handle GCS paths
       if (this.isGCSURL(location)) {
          return {
             action: "download GCS directory",
@@ -2470,7 +2218,6 @@ export class EnvironmentStore {
          };
       }
 
-      // Handle GitHub URLs
       if (this.isGitHubURL(location)) {
          return {
             action: "clone GitHub repository",
@@ -2484,7 +2231,6 @@ export class EnvironmentStore {
          };
       }
 
-      // Handle S3 paths
       if (this.isS3URL(location)) {
          return {
             action: "download S3 directory",
@@ -2500,7 +2246,6 @@ export class EnvironmentStore {
          };
       }
 
-      // Handle absolute and relative paths
       if (this.isLocalPath(location)) {
          const packagePath: string = this.resolveLocalPath(location);
          return {
@@ -2541,10 +2286,8 @@ export class EnvironmentStore {
          throw error;
       });
       if (environmentPath.endsWith(".zip") && source.isFile()) {
-         // Extract straight into the target, which the server owns. The
-         // location only has to be readable: nothing is written beside the
-         // archive, so a read-only package mount works and a directory that
-         // happens to share the archive's name is left alone.
+         // Extract straight into the server-owned target: nothing is written
+         // beside the archive, so a read-only mount works.
          await this.extractZipInto(environmentPath, absoluteTargetPath);
       } else if (source.isDirectory()) {
          await fs.promises.rm(absoluteTargetPath, {
@@ -2590,9 +2333,8 @@ export class EnvironmentStore {
       }
       await Promise.all(
          files.map(async (file) => {
-            // Strip leading `/` left over from prefix removal when the
-            // GCS prefix lacked a trailing slash — otherwise
-            // `safeJoinUnderRoot` treats it as absolute and rejects.
+            // Strip a leading `/` (prefix without trailing slash), which
+            // `safeJoinUnderRoot` would reject as absolute.
             const relativeFilePath = file.name
                .replace(prefix, "")
                .replace(/^\/+/, "");
@@ -2629,7 +2371,6 @@ export class EnvironmentStore {
       const prefix = prefixParts.join("/");
 
       if (isCompressedFile) {
-         // Download the single zip file
          const zipFilePath = `${absoluteDirPath}.zip`;
          await fs.promises.mkdir(path.dirname(zipFilePath), {
             recursive: true,
@@ -2652,13 +2393,11 @@ export class EnvironmentStore {
             file.on("finish", resolve);
          });
 
-         // Extract the zip file
          await this.unzipEnvironment(zipFilePath);
          logger.info(`Downloaded S3 zip file ${s3Path} to ${absoluteDirPath}`);
          return;
       }
 
-      // Original behavior: download directory contents
       const objects = await this.s3Client.listObjectsV2({
          Bucket: bucketName,
          Prefix: prefix,
@@ -2677,9 +2416,7 @@ export class EnvironmentStore {
             if (!key) {
                return;
             }
-            // Strip leading `/` left over from prefix removal when the
-            // S3 prefix lacked a trailing slash — otherwise
-            // `safeJoinUnderRoot` treats it as absolute and rejects.
+            // Strip a leading `/`, as for GCS above.
             const relativeFilePath = key
                .replace(prefix, "")
                .replace(/^\/+/, "");
@@ -2718,8 +2455,7 @@ export class EnvironmentStore {
       progressContext?: { environmentName?: string; packageNames?: string[] },
    ) {
       assertSafeEnvironmentPath(absoluteDirPath);
-      // First we'll clone the repo without the additional path
-      // E.g. we're removing `/tree/main/imdb` from https://github.com/credibledata/malloy-samples/tree/main/imdb
+      // Clone the whole repo, then hoist the package subdirectory (if any).
       const githubInfo = parseGitHubUrl(githubUrl);
       if (!githubInfo) {
          throw new Error(`Invalid GitHub URL: ${githubUrl}`);
@@ -2731,8 +2467,6 @@ export class EnvironmentStore {
          packagePath?.replace("/tree/main", "") || ""
       ).replace(/^\/+/, "");
 
-      // We'll make sure whatever was in absoluteDirPath is removed,
-      // so we have a nice a clean directory where we can clone the repo
       await fs.promises.rm(absoluteDirPath, {
          recursive: true,
          force: true,
@@ -2743,7 +2477,6 @@ export class EnvironmentStore {
          cloneProgressLabel(`${owner}/${repoName}`, progressContext),
       );
 
-      // We'll clone the repo into absoluteDirPath
       await new Promise<void>((resolve, reject) => {
          simpleGit({
             progress: (event) => reporter.onProgress(event),
@@ -2768,7 +2501,6 @@ export class EnvironmentStore {
          });
       });
 
-      // If there's no specific package path, we're done (for grouped downloads)
       if (!cleanPackagePath) {
          logger.info(
             `Successfully cloned entire repository to: ${absoluteDirPath}`,
@@ -2776,18 +2508,13 @@ export class EnvironmentStore {
          return;
       }
 
-      // For single package downloads, extract the specific subdirectory
-      // After cloning, we'll replace all contents of absoluteDirPath with the contents of absoluteDirPath/cleanPackagePath
-      // E.g. we're moving /var/publisher/asd123/imdb/publisher.json into /var/publisher/asd123/publisher.json
-
-      // Remove all contents of absoluteDirPath (/var/publisher/asd123)
-      // except for the cleanPackagePath directory (/var/publisher/asd123/imdb)
+      // Replace the clone with the subdirectory's contents, e.g.
+      // <dir>/imdb/publisher.json becomes <dir>/publisher.json.
       const packageFullPath = safeJoinUnderRoot(
          absoluteDirPath,
          cleanPackagePath,
       );
 
-      // Check if the cleanPackagePath (/var/publisher/asd123/imdb) exists
       const packageExists = await fs.promises
          .access(packageFullPath)
          .then(() => true)
@@ -2799,10 +2526,8 @@ export class EnvironmentStore {
          );
       }
 
-      // Remove everything in absoluteDirPath (/var/publisher/asd123)
       const dirContents = await fs.promises.readdir(absoluteDirPath);
       for (const entry of dirContents) {
-         // Don't remove the cleanPackagePath directory itself (/var/publisher/asd123/imdb)
          if (entry !== cleanPackagePath.replace(/^\/+/, "").split("/")[0]) {
             await fs.promises.rm(safeJoinUnderRoot(absoluteDirPath, entry), {
                recursive: true,
@@ -2811,7 +2536,6 @@ export class EnvironmentStore {
          }
       }
 
-      // Now, move the contents of packageFullPath (/var/publisher/asd123/imdb) up to absoluteDirPath (/var/publisher/asd123)
       const packageContents = await fs.promises.readdir(packageFullPath);
       for (const entry of packageContents) {
          await fs.promises.rename(
@@ -2820,10 +2544,7 @@ export class EnvironmentStore {
          );
       }
 
-      // Remove the now-empty cleanPackagePath directory (/var/publisher/asd123/imdb)
       await fs.promises.rm(packageFullPath, { recursive: true, force: true });
-
-      // https://github.com/credibledata/malloy-samples/imdb/publisher.json -> ${absoluteDirPath}/publisher.json
    }
 
    private extractErrorDataFromError(error: unknown): {

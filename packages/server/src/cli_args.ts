@@ -110,13 +110,9 @@ export function applyCliArgs(
          process.exit(0);
       }
    }
-   // Zero-config invocation (`npx @malloy-publisher/server`) opts in to
-   // the bundled DuckDB-only sample config so the Quick Start works
-   // without any flags. Any explicit --server_root or --config disables
-   // this — the user told us where to look. Skip in NODE_ENV=test as a
-   // belt-and-suspenders so any spec that ends up evaluating this
-   // module doesn't accidentally pin the EnvironmentStore to the
-   // bundled examples config.
+   // A zero-config invocation serves the bundled DuckDB-only sample config;
+   // an explicit --server_root or --config says where to look instead. Never
+   // in tests, so a spec cannot pin the EnvironmentStore to the samples.
    if (!sawServerRoot && !sawConfig && env.NODE_ENV !== "test") {
       env.PUBLISHER_USE_BUNDLED_DEFAULT = "true";
    }
