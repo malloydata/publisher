@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod/v3";
 import type { GivenValue } from "@malloydata/malloy";
+import { validateRenderTags } from "@malloydata/render-validator";
 import { getQueryTimeoutMs } from "../../config";
 import { logger } from "../../logger";
 import {
@@ -219,7 +220,11 @@ export function registerExecuteQueryTool(
             });
             // The two call modes differ only in which arguments carry the
             // query; everything after the run is identical, so they share one
-            // path rather than two copies that can drift.
+            // path rather than two copies that can drift. Ad-hoc text runs on
+            // its own: a sourceName sent beside it is not passed on.
+            const target = query
+               ? { sourceName: undefined, queryName: undefined, query }
+               : { sourceName, queryName, query: undefined };
             const {
                result,
                compactResult,
@@ -228,42 +233,28 @@ export function registerExecuteQueryTool(
                queryCorrelationId,
             } = await runWithQueryTimeout(
                (abortSignal) =>
-                  query
-                     ? model.getQueryResults(
-                          undefined,
-                          undefined,
-                          query,
-                          filterParams,
-                          undefined,
-                          givens as Record<string, GivenValue> | undefined,
-                          abortSignal,
-                          queryMetadataInput,
-                          // The envelope below is built from `compactResult`, so
-                          // that is the shape to cap and to guard. Left at the
-                          // default this measured the full wrapped result and
-                          // threw the string away, which meant a query could be
-                          // refused on bytes the agent would never receive: the
-                          // envelope is truncated to MAX_RESULT_CHARS anyway, so
-                          // a wrapped result measuring over the cap was a 413 for
-                          // a payload that would have arrived at 90k characters.
-                          "compact",
-                          // MCP sends no #(authorize) bypass, ever.
-                          false,
-                          includeHiddenFilesAndSources,
-                       )
-                     : model.getQueryResults(
-                          sourceName,
-                          queryName,
-                          undefined,
-                          filterParams,
-                          undefined,
-                          givens as Record<string, GivenValue> | undefined,
-                          abortSignal,
-                          queryMetadataInput,
-                          "compact",
-                          false,
-                          includeHiddenFilesAndSources,
-                       ),
+                  model.getQueryResults(
+                     target.sourceName,
+                     target.queryName,
+                     target.query,
+                     filterParams,
+                     undefined,
+                     givens as Record<string, GivenValue> | undefined,
+                     abortSignal,
+                     queryMetadataInput,
+                     // The envelope below is built from `compactResult`, so
+                     // that is the shape to cap and to guard. Left at the
+                     // default this measured the full wrapped result and
+                     // threw the string away, which meant a query could be
+                     // refused on bytes the agent would never receive: the
+                     // envelope is truncated to MAX_RESULT_CHARS anyway, so
+                     // a wrapped result measuring over the cap was a 413 for
+                     // a payload that would have arrived at 90k characters.
+                     "compact",
+                     // MCP sends no #(authorize) bypass, ever.
+                     false,
+                     includeHiddenFilesAndSources,
+                  ),
                getQueryTimeoutMs(),
             );
             recordDeprecatedFilterUsage({ filterParams });
@@ -271,9 +262,6 @@ export function registerExecuteQueryTool(
             // Render-tag validation reads the FULL Malloy result: the tags live
             // in its schema annotations, which the flat rows do not carry. It
             // runs regardless of which shape is returned.
-            const { validateRenderTags } = await import(
-               "@malloydata/render-validator"
-            );
             const renderLogs = filterPublisherOwnedRenderLogs(
                validateRenderTags(result),
                pkg.getModel(modelPath)?.carriesReportTag() ?? false,
