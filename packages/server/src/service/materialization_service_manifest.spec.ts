@@ -9,44 +9,65 @@ import {
 } from "../storage/DatabaseInterface";
 import { makeMaterialization } from "../test_helpers/materialization_test_fixtures";
 import { createMocks } from "../test_helpers/materialization_service_harness";
+import type { MaterializationService } from "./materialization_service";
 
 /**
  * How a run's manifest is committed, loaded into the package models, and read
  * back as the previous run's entries.
  */
 
-describe("autoLoadManifest", () => {
-   let ctx: ReturnType<typeof createMocks>;
-   beforeEach(() => {
-      ctx = createMocks();
-   });
+/** The private manifest methods these tests drive. */
+function manifestMethods(service: MaterializationService): {
+   autoLoadManifest: (
+      env: unknown,
+      pkg: string,
+      entries: Record<string, unknown>,
+   ) => Promise<void>;
+   commitManifest: (
+      id: string,
+      entries: Record<string, unknown>,
+      failures: Record<string, unknown>,
+      metadata: Record<string, unknown>,
+   ) => Promise<void>;
+   getMostRecentManifestEntries: (
+      envId: string,
+      pkg: string,
+      excludeId: string,
+   ) => Promise<Record<string, unknown>>;
+} {
+   return service as unknown as ReturnType<typeof manifestMethods>;
+}
 
-   it("binds an entry that built", () => {
-      // This is the path that rewrites a query's FROM.
-      const reload = sinon.stub().resolves();
-      const environment = {
-         reloadAllModelsForPackage: reload,
-         bindPackageStorageServeBindings: sinon.stub().resolves(),
+let ctx: ReturnType<typeof createMocks>;
+beforeEach(() => {
+   ctx = createMocks();
+});
+
+describe("autoLoadManifest", () => {
+   it("loads only entries with a physical table into the package models", async () => {
+      const reloadAllModelsForPackage = sinon.stub().resolves();
+      const entries = {
+         b1: {
+            sourceEntityId: "b1",
+            physicalTableName: "orders_v1",
+            connectionName: "duckdb",
+         },
+         b2: { sourceEntityId: "b2", physicalTableName: undefined },
       };
 
-      void (
-         ctx.service as unknown as {
-            autoLoadManifest: (
-               env: unknown,
-               pkg: string,
-               entries: Record<string, unknown>,
-            ) => Promise<void>;
-         }
-      ).autoLoadManifest(environment, "pkg", {
-         ok: {
-            sourceEntityId: "ok",
-            sourceName: "healthy",
-            physicalTableName: "ok_v1",
-         },
-      });
+      await manifestMethods(ctx.service).autoLoadManifest(
+         { reloadAllModelsForPackage },
+         "pkg",
+         entries,
+      );
 
-      const bound = reload.firstCall?.args[1] ?? {};
-      expect(Object.keys(bound)).toContain("ok");
+      expect(reloadAllModelsForPackage.calledOnce).toBe(true);
+      // connectionName is carried alongside tableName so the bind step
+      // (Package.quoteBoundTableNames) can quote the path for its dialect.
+      expect(reloadAllModelsForPackage.firstCall.args).toEqual([
+         "pkg",
+         { b1: { tableName: "orders_v1", connectionName: "duckdb" } },
+      ]);
    });
 
    it("does not bind a failed source mirrored into entries", async () => {
@@ -61,15 +82,7 @@ describe("autoLoadManifest", () => {
          bindPackageStorageServeBindings: bindStorage,
       };
 
-      await (
-         ctx.service as unknown as {
-            autoLoadManifest: (
-               env: unknown,
-               pkg: string,
-               entries: Record<string, unknown>,
-            ) => Promise<void>;
-         }
-      ).autoLoadManifest(environment, "pkg", {
+      await manifestMethods(ctx.service).autoLoadManifest(environment, "pkg", {
          ok: {
             sourceEntityId: "ok",
             sourceName: "healthy",
@@ -86,68 +99,23 @@ describe("autoLoadManifest", () => {
       expect(Object.keys(reload.firstCall.args[1])).toEqual(["ok"]);
       expect(Object.keys(bindStorage.firstCall.args[1])).toEqual(["ok"]);
    });
-});
-
-describe("autoLoadManifest", () => {
-   let ctx: ReturnType<typeof createMocks>;
-   beforeEach(() => {
-      ctx = createMocks();
-   });
-
-   it("loads only entries with a physical table into the package models", async () => {
-      const reloadAllModelsForPackage = sinon.stub().resolves();
-      const entries = {
-         b1: {
-            sourceEntityId: "b1",
-            physicalTableName: "orders_v1",
-            connectionName: "duckdb",
-         },
-         b2: { sourceEntityId: "b2", physicalTableName: undefined },
-      };
-
-      await (
-         ctx.service as unknown as {
-            autoLoadManifest: (
-               env: { reloadAllModelsForPackage: sinon.SinonStub },
-               pkg: string,
-               entries: Record<string, unknown>,
-            ) => Promise<void>;
-         }
-      ).autoLoadManifest({ reloadAllModelsForPackage }, "pkg", entries);
-
-      expect(reloadAllModelsForPackage.calledOnce).toBe(true);
-      // connectionName is carried alongside tableName so the bind step
-      // (Package.quoteBoundTableNames) can quote the path for its dialect.
-      expect(reloadAllModelsForPackage.firstCall.args).toEqual([
-         "pkg",
-         { b1: { tableName: "orders_v1", connectionName: "duckdb" } },
-      ]);
-   });
 
    it("swallows a reload failure (best-effort; run already succeeded)", async () => {
       const reloadAllModelsForPackage = sinon
          .stub()
          .rejects(new Error("reload boom"));
       await expect(
-         (
-            ctx.service as unknown as {
-               autoLoadManifest: (
-                  env: { reloadAllModelsForPackage: sinon.SinonStub },
-                  pkg: string,
-                  entries: Record<string, unknown>,
-               ) => Promise<void>;
-            }
-         ).autoLoadManifest({ reloadAllModelsForPackage }, "pkg", {
-            b1: { sourceEntityId: "b1", physicalTableName: "t" },
-         }),
+         manifestMethods(ctx.service).autoLoadManifest(
+            { reloadAllModelsForPackage },
+            "pkg",
+            { b1: { sourceEntityId: "b1", physicalTableName: "t" } },
+         ),
       ).resolves.toBeUndefined();
    });
 });
 
 describe("commitManifest", () => {
-   let ctx: ReturnType<typeof createMocks>;
    beforeEach(() => {
-      ctx = createMocks();
       // commitManifest makes TWO transitions (PENDING -> MANIFEST_ROWS_READY ->
       // MANIFEST_FILE_READY) and each validates against the row's CURRENT status,
       // so the read has to advance as the writes land or the second hop is
@@ -164,13 +132,6 @@ describe("commitManifest", () => {
       );
    });
 
-   type CommitFn = (
-      id: string,
-      entries: Record<string, unknown>,
-      failures: Record<string, unknown>,
-      metadata: Record<string, unknown>,
-   ) => Promise<void>;
-
    /** The manifest the run PERSISTED, read off the repository write. */
    function persistedManifest(): { entries?: unknown; failures?: unknown } {
       const call = ctx.repository.updateMaterialization
@@ -179,22 +140,22 @@ describe("commitManifest", () => {
       return (call?.args[1] as { manifest: Record<string, unknown> }).manifest;
    }
 
+   const healthy = {
+      ok: {
+         sourceEntityId: "ok",
+         sourceName: "healthy",
+         physicalTableName: "ok_v1",
+      },
+   };
+
    it("persists a failed source's reason on the manifest the control plane reads", async () => {
       // The reason only reaches a consumer if it is written into the stored
       // manifest. Everything upstream of this can be correct while the field is
       // dropped on the way to the store, which would leave a consumer inferring a
       // partial failure from an absent entry -- exactly the state this replaces.
-      await (
-         ctx.service as unknown as { commitManifest: CommitFn }
-      ).commitManifest(
+      await manifestMethods(ctx.service).commitManifest(
          "mat-1",
-         {
-            ok: {
-               sourceEntityId: "ok",
-               sourceName: "healthy",
-               physicalTableName: "ok_v1",
-            },
-         },
+         healthy,
          {
             bad: {
                sourceEntityId: "bad",
@@ -224,17 +185,9 @@ describe("commitManifest", () => {
       // same fact, and the absent key is the shape every manifest written before
       // this change has. Writing `{}` instead would make a clean run's manifest
       // differ from its own history for no gain.
-      await (
-         ctx.service as unknown as { commitManifest: CommitFn }
-      ).commitManifest(
+      await manifestMethods(ctx.service).commitManifest(
          "mat-1",
-         {
-            ok: {
-               sourceEntityId: "ok",
-               sourceName: "healthy",
-               physicalTableName: "ok_v1",
-            },
-         },
+         healthy,
          {},
          { mode: "auto" },
       );
@@ -243,10 +196,54 @@ describe("commitManifest", () => {
    });
 });
 
-describe("getMostRecentManifestEntries (legacy tolerance)", () => {
-   let ctx: ReturnType<typeof createMocks>;
-   beforeEach(() => {
-      ctx = createMocks();
+describe("getMostRecentManifestEntries", () => {
+   it("returns entries from the most recent successful run, excluding the in-flight one", async () => {
+      const entries = {
+         b1: {
+            sourceEntityId: "b1",
+            physicalTableName: "orders_v1",
+            connectionName: "duckdb",
+         },
+      };
+      ctx.repository.listMaterializations.resolves([
+         makeMaterialization({
+            id: "in-flight",
+            status: "MANIFEST_ROWS_READY",
+         }),
+         makeMaterialization({
+            id: "old-success",
+            status: "MANIFEST_FILE_READY",
+            manifest: { builtAt: "t", strict: false, entries },
+         }),
+      ]);
+
+      const result = await manifestMethods(
+         ctx.service,
+      ).getMostRecentManifestEntries("env-1", "pkg", "in-flight");
+
+      expect(result).toEqual(entries);
+   });
+
+   it("returns {} when the only successful run is the excluded one", async () => {
+      ctx.repository.listMaterializations.resolves([
+         makeMaterialization({
+            id: "self",
+            status: "MANIFEST_FILE_READY",
+            manifest: {
+               builtAt: "t",
+               strict: false,
+               entries: {
+                  b1: { sourceEntityId: "b1", physicalTableName: "t1" },
+               },
+            },
+         }),
+      ]);
+
+      const result = await manifestMethods(
+         ctx.service,
+      ).getMostRecentManifestEntries("env-1", "pkg", "self");
+
+      expect(result).toEqual({});
    });
 
    it("does not return a legacy failed entry from a persisted manifest", async () => {
@@ -281,84 +278,10 @@ describe("getMostRecentManifestEntries (legacy tolerance)", () => {
          }),
       ]);
 
-      const entries = await (
-         ctx.service as unknown as {
-            getMostRecentManifestEntries: (
-               envId: string,
-               pkg: string,
-               excludeId: string,
-            ) => Promise<Record<string, unknown>>;
-         }
+      const entries = await manifestMethods(
+         ctx.service,
       ).getMostRecentManifestEntries("env-1", "pkg", "mat-current");
 
       expect(Object.keys(entries)).toEqual(["healthy"]);
-   });
-});
-
-describe("getMostRecentManifestEntries (skip-if-unchanged)", () => {
-   let ctx: ReturnType<typeof createMocks>;
-   beforeEach(() => {
-      ctx = createMocks();
-   });
-
-   it("returns entries from the most recent successful run, excluding the in-flight one", async () => {
-      const entries = {
-         b1: {
-            sourceEntityId: "b1",
-            physicalTableName: "orders_v1",
-            connectionName: "duckdb",
-         },
-      };
-      ctx.repository.listMaterializations.resolves([
-         makeMaterialization({
-            id: "in-flight",
-            status: "MANIFEST_ROWS_READY",
-         }),
-         makeMaterialization({
-            id: "old-success",
-            status: "MANIFEST_FILE_READY",
-            manifest: { builtAt: "t", strict: false, entries },
-         }),
-      ]);
-
-      const result = await (
-         ctx.service as unknown as {
-            getMostRecentManifestEntries: (
-               e: string,
-               p: string,
-               x: string,
-            ) => Promise<unknown>;
-         }
-      ).getMostRecentManifestEntries("env-1", "pkg", "in-flight");
-
-      expect(result).toEqual(entries);
-   });
-
-   it("returns {} when the only successful run is the excluded one", async () => {
-      ctx.repository.listMaterializations.resolves([
-         makeMaterialization({
-            id: "self",
-            status: "MANIFEST_FILE_READY",
-            manifest: {
-               builtAt: "t",
-               strict: false,
-               entries: {
-                  b1: { sourceEntityId: "b1", physicalTableName: "t1" },
-               },
-            },
-         }),
-      ]);
-
-      const result = await (
-         ctx.service as unknown as {
-            getMostRecentManifestEntries: (
-               e: string,
-               p: string,
-               x: string,
-            ) => Promise<unknown>;
-         }
-      ).getMostRecentManifestEntries("env-1", "pkg", "self");
-
-      expect(result).toEqual({});
    });
 });
