@@ -13,6 +13,7 @@ import {
    startMaterializationSchedulerFromEnv,
 } from "../../../src/server";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
+import { pollFor, waitUntilOk } from "./polling";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,12 +63,7 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
       // Wait for the package to load, then switch it to an every-minute cron so
       // the real timer fires within the test window (the fixture ships a daily
       // cron, which a wall-clock test can't wait on).
-      const deadline = Date.now() + 30_000;
-      while (Date.now() < deadline) {
-         const res = await fetch(`${baseUrl}${API}`);
-         if (res.ok) break;
-         await new Promise((r) => setTimeout(r, 500));
-      }
+      await waitUntilOk(`${baseUrl}${API}`, "Test package");
       const patch = await fetch(`${baseUrl}${API}`, {
          method: "PATCH",
          headers: { "Content-Type": "application/json" },
@@ -118,21 +114,23 @@ describe("MaterializationScheduler wiring (E2E, real env-var timer)", () => {
          expect(scheduler).not.toBeNull();
 
          // Wait for the real timer to fire a SCHEDULER build and for it to build.
-         const deadline = Date.now() + 150_000;
-         let built: Record<string, unknown> | null = null;
-         while (Date.now() < deadline && !built) {
-            const res = await fetch(`${baseUrl}${API}/materializations`);
-            const rows = (await res.json()) as Array<Record<string, unknown>>;
-            built =
-               rows.find(
+         const built = await pollFor(
+            async () => {
+               const res = await fetch(`${baseUrl}${API}/materializations`);
+               const rows = (await res.json()) as Array<
+                  Record<string, unknown>
+               >;
+               return rows.find(
                   (m) =>
                      (m.metadata as { trigger?: string } | null)?.trigger ===
                         "SCHEDULER" && m.status === "MANIFEST_FILE_READY",
-               ) ?? null;
-            if (!built) await new Promise((r) => setTimeout(r, 1_000));
-         }
-
-         expect(built).not.toBeNull();
+               );
+            },
+            (found) => found !== undefined,
+            "the scheduler's timer never fired a SCHEDULER build that completed",
+            150_000,
+            1_000,
+         );
          const entries = (
             built!.manifest as { entries: Record<string, unknown> }
          ).entries;
