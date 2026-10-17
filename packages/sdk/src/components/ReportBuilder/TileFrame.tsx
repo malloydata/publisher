@@ -21,6 +21,7 @@ import {
    GRID_GAP_PX,
    MAX_TILE_ROWS,
    MIN_TILE_ROWS,
+   TILE_ROW_PX,
 } from "../Dashboard/DashboardGrid";
 import {
    TILE_HEADING_CLASS,
@@ -684,6 +685,52 @@ export function GridGuides({ columns }: { columns: number }) {
                key={column}
                sx={{
                   // A faint band per column: the tracks a width snaps to.
+                  bgcolor: theme.accent,
+                  opacity: 0.06,
+                  borderRadius: "3px",
+               }}
+            />
+         ))}
+      </Box>
+   );
+}
+
+/**
+ * The rows a height snaps to, drawn while a tile's bottom edge is dragged: a
+ * faint band per row from the tile's top down, across its width, the way
+ * {@link GridGuides} draws the columns a width snaps to. Behind the tiles and
+ * held inside the grid, so it shows in the space the tile can grow into.
+ */
+export function RowGuides({
+   top,
+   left,
+   width,
+}: {
+   top: number;
+   left: number;
+   width: number;
+}) {
+   const { theme } = usePublisherTheme();
+   return (
+      <Box
+         aria-hidden
+         sx={{
+            position: "absolute",
+            inset: 0,
+            overflow: "hidden",
+            pointerEvents: "none",
+            zIndex: 0,
+         }}
+      >
+         {Array.from({ length: MAX_TILE_ROWS }, (_, row) => (
+            <Box
+               key={row}
+               sx={{
+                  position: "absolute",
+                  top: top + row * (TILE_ROW_PX + GRID_GAP_PX),
+                  left,
+                  width,
+                  height: TILE_ROW_PX,
                   bgcolor: theme.accent,
                   opacity: 0.06,
                   borderRadius: "3px",

@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { rowsForHeight } from "../Dashboard/DashboardGrid";
 import type { DashboardTile } from "./document";
 
@@ -12,6 +12,8 @@ export interface HeightState {
    /** The rows the drag started from, set or drawn: a release that changed nothing writes nothing. */
    from: number;
    top: number;
+   /** The tile's box against the grid's, where the row guides are drawn from. */
+   guide: { top: number; left: number; width: number };
 }
 
 /** While the edge is dragged the page stops selecting text and keeps one cursor, as a width drag does. */
@@ -31,10 +33,13 @@ const dragChrome = (on: boolean) => {
  */
 export function useTileHeight({
    tiles,
+   gridBox,
    onStart,
    commit,
 }: {
    tiles: readonly DashboardTile[];
+   /** Wraps the grid: the row guides are placed against it. */
+   gridBox: RefObject<HTMLDivElement | null>;
    /** The tile a drag begins on, which the caller selects. */
    onStart: (index: number) => void;
    /** The rows to write when the drag ends. */
@@ -57,14 +62,25 @@ export function useTileHeight({
       index: number,
    ) => {
       const tile = event.currentTarget.parentElement?.getBoundingClientRect();
-      if (!tile) return;
+      const grid = gridBox.current?.getBoundingClientRect();
+      if (!tile || !grid) return;
       event.stopPropagation();
       event.preventDefault();
       event.currentTarget.setPointerCapture(event.pointerId);
       dragChrome(true);
       onStart(index);
       const from = tiles[index]?.rowspan ?? rowsForHeight(tile.height);
-      setHeight({ index, rows: from, from, top: tile.top });
+      setHeight({
+         index,
+         rows: from,
+         from,
+         top: tile.top,
+         guide: {
+            top: tile.top - grid.top,
+            left: tile.left - grid.left,
+            width: tile.width,
+         },
+      });
    };
 
    const onHeight = (event: React.PointerEvent<HTMLDivElement>) => {

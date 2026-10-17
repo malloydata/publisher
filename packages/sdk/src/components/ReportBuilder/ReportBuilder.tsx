@@ -331,6 +331,7 @@ export function ReportBuilder({
    // Dragging a tile's bottom edge sets its height in rows, the same way.
    const sizing = useTileHeight({
       tiles: editor.document.tiles,
+      gridBox,
       onStart: selectTile,
       commit: (index, rows) =>
          editor.update((draft) => {

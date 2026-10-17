@@ -19,7 +19,13 @@ import { InlineText } from "./InlineText";
 import { gapId, tileEntry, withGaps } from "./layout";
 import { builderSensors } from "./sortable";
 import { TextTileBody } from "./TextTileBody";
-import { GapTarget, GridGuides, TileFrame, TilePlaceholder } from "./TileFrame";
+import {
+   GapTarget,
+   GridGuides,
+   RowGuides,
+   TileFrame,
+   TilePlaceholder,
+} from "./TileFrame";
 import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileReorder } from "./useTileReorder";
@@ -125,6 +131,7 @@ export function BuilderGrid({
                {rules.widths && (dragging || resize !== undefined) && (
                   <GridGuides columns={columns} />
                )}
+               {tall !== undefined && <RowGuides {...tall.guide} />}
 
                <DashboardGrid
                   tiles={entries}
