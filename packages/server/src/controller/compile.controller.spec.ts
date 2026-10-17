@@ -7,8 +7,8 @@ import { BadRequestError } from "../errors";
 import type { EnvironmentStore } from "../service/environment_store";
 import { CompileController } from "./compile.controller";
 
-const controllerWith = () => {
-   const compileSource = sinon.stub().resolves({ problems: [] });
+const controllerWith = (compiled: object = { problems: [] }) => {
+   const compileSource = sinon.stub().resolves(compiled);
    const store = {
       getEnvironment: async () => ({ compileSource }),
    } as unknown as EnvironmentStore;
@@ -32,5 +32,47 @@ describe("CompileController.compile", () => {
       await controller.compile("env", "pkg", "m.malloy", undefined);
       expect(compileSource.firstCall.args[2]).toBe("run: x");
       expect(compileSource.secondCall.args[2]).toBeUndefined();
+   });
+
+   it.each([
+      ["no problems", [], "success"],
+      ["only warnings", ["warn", "info"], "success"],
+      ["any error", ["warn", "error"], "error"],
+   ])("status with %s is %s", async (_, severities, status) => {
+      const problems = severities.map((severity) => ({
+         severity,
+         message: "m",
+      }));
+      const { controller } = controllerWith({ problems });
+      const result = await controller.compile("env", "pkg", "m.malloy", "x");
+      expect(result).toEqual({ status, problems } as typeof result);
+   });
+
+   it("passes sql through and adds the legacy kind to a document", async () => {
+      const { controller, compileSource } = controllerWith({
+         problems: [],
+         sql: "SELECT 1",
+         document: { layout: "grid", cells: [] },
+      });
+      const result = await controller.compile(
+         "env",
+         "pkg",
+         "m.malloy",
+         "x",
+         true,
+         { G: 1 },
+         "file",
+      );
+      expect(compileSource.firstCall.args.slice(3)).toEqual([
+         true,
+         { G: 1 },
+         "file",
+      ]);
+      expect(result.sql).toBe("SELECT 1");
+      expect(result.document).toEqual({
+         layout: "grid",
+         cells: [],
+         kind: "dashboard",
+      });
    });
 });
