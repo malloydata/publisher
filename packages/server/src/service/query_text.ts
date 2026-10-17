@@ -106,33 +106,18 @@ export function malloyIdentifiers(text: string): string[] {
  * caller-authored text for filter inheritance -- a filter-protected source
  * carries its filter requirements when read under a derived name.
  *
- * `source:`-only and last-declaration-wins. It reads STRIPPED text, so the two
- * misreads this map used to carry are closed: a declaration spelled inside a
- * string literal is no longer an edge that last-wins could use to REPLACE a
- * real base, and a comment between `is` and the base no longer ERASES one.
- *
- * Those misreads are why the query boundary stopped reading this map: a replaced
- * edge re-pointed a name from the hidden base it really derives from to a
- * curated one and bought admission. That boundary still uses
- * {@link buildDerivationBaseMap}, which is set-valued and refuses on ambiguity;
- * this map stays last-wins and single-valued because
+ * `source:`-only and last-declaration-wins, because
  * {@link Model.resolveFilterSource} needs ONE source name to inject filters
- * from. Prefer that one on any path where an edge grants access.
+ * from. Last-wins means a later edge REPLACES an earlier one, so never use this
+ * on a path where an edge grants access: use the set-valued
+ * {@link buildDerivationBaseMap}, which refuses on ambiguity.
  *
- * Strips its own input rather than trusting the caller to have done it. A
- * documented "pass me stripped text" precondition would hold only until the
- * next caller, and the failure is silent in the unsafe direction -- a missed
- * edge means no filter is injected, on a path with no post-compile backstop.
- * {@link stripMalloyCommentsAndLiterals} blanks to spaces, so it is idempotent
- * and a caller that already stripped pays a second scan and nothing else.
+ * Strips its own input rather than trusting callers: a missed edge is silent in
+ * the unsafe direction (no filter injected, no post-compile backstop), and the
+ * strip is idempotent, so a pre-stripped caller pays only a second scan.
  */
 export function buildSourceAliasMap(query: string): Map<string, string> {
    const aliasOf = new Map<string, string>();
-   // The same statement reader {@link buildDerivationBaseMap} uses, for the
-   // same reason: a missed edge here is silent in the unsafe direction -- no
-   // filter is injected and the caller sees unfiltered rows with no error.
-   // Deliberately still `source:`-only and single-valued: this feeds
-   // `resolveFilterSource`, which needs exactly one base to inject from.
    readDefinitions(query, (keyword, name, base) => {
       if (keyword === "source" && base !== UNREADABLE_BASE) {
          aliasOf.set(name, base);
@@ -149,13 +134,9 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
  *  - **Comments** can HIDE a declaration from a scan that a compiler still
  *    reads around (`source: mine is -- c\n X extend { … }`), or plant a decoy
  *    one that never compiles at all (`-- run: bogus`).
- *  - **String literals** can FORGE a declaration. A scan that reads inside
- *    them lets `where: note = 'source: mine is open_src'` inject an alias
- *    edge, which — if a later edge for a name could overwrite an earlier one —
- *    would let a caller relabel its own derivation's base. (The alias map
- *    below keeps EVERY base per name rather than the last, so forging is
- *    additive and cannot erase a real edge; blanking literals closes it at
- *    the source as well.)
+ *  - **String literals** can FORGE a declaration: a scan reading inside them
+ *    lets `where: note = 'source: mine is open_src'` inject an alias edge
+ *    that could relabel a derivation's base in a last-wins map.
  *
  * One left-to-right pass that follows `MalloyLexer.g4`, so a `--` inside a
  * string is not a comment and a `'` inside a comment does not open a string:
@@ -179,9 +160,8 @@ export function buildSourceAliasMap(query: string): Map<string, string> {
  * Backtick-quoted identifiers are PRESERVED and SKIPPED WHOLE: unlike
  * `'…'`/`"…"` they carry real names (`` source: `my-src` is X ``) that the scan
  * must see, and Malloy lexes the span as a single token, so nothing inside it
- * can open a comment or a literal. Scanning into one was a bypass in its own
- * right — a legal `` dimension: `q'` is 1 `` opened a phantom literal that
- * blanked every declaration after it.
+ * can open a comment or a literal (scanning into `` `q'` `` would open a
+ * phantom literal blanking every declaration after it).
  *
  * Replacement is character-for-character (a space, or `~` where a space would
  * let a second pass read a delimiter differently), so every offset, line, and
@@ -676,20 +656,12 @@ function continuesToken(text: string, i: number): boolean {
  * too. A future caller that reads this map with an ANY-branch ADMISSION
  * quantifier would invert that and turn a forged edge into a bypass.
  *
- * Does NOT replace {@link buildSourceAliasMap}, which survives for
- * `resolveFilterSource`'s filter-inheritance walk.
- *
  * Every item of a statement is read (`source: a is x extend {} b is y`), with
  * an optional parameter list after the name and any number of `(` before the
  * base; a name whose base cannot be read gets {@link UNREADABLE_BASE}, so a
  * decoy elsewhere cannot stand in for the declaration it missed.
  *
- * Strips its own input, for the reason {@link buildSourceAliasMap} gives: a
- * documented precondition holds only until the next caller, and the strip is
- * idempotent, so a caller that already stripped pays a second scan and nothing
- * else. The stakes are lower here than there -- this map is set-valued and its
- * callers refuse on ambiguity rather than picking one -- but the argument for
- * owning the guarantee rather than documenting it is the same.
+ * Strips its own input, for the reason {@link buildSourceAliasMap} gives.
  */
 export function buildDerivationBaseMap(
    query: string,

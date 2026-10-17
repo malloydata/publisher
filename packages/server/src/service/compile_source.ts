@@ -33,7 +33,7 @@ import {
    safeJoinUnderRoot,
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
-import { lazyCounter, resetInstrumentsForTesting } from "../telemetry";
+import { lazyCounter } from "../telemetry";
 import { URL_READER } from "../utils";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
@@ -58,44 +58,20 @@ import { translatorMalloyError } from "./translator_error";
 /**
  * Append-scope compile refusals, by reason.
  *
- * The reasons answer 4xx or 5xx on the same endpoint, so without the label a
- * dependency outage and a caller sending forbidden text are one indistinguishable
- * spike -- and the one that needs paging looks like the one that does not.
- * `restricted_construct` is the caller's text; `base_model_load_failed` is the
- * named model failing to load, which includes the schema-fetch case that answers
- * 503. `render_tag` is a document carrying a URL-producing render tag or markup
- * in a label, also the caller's text but a different fix than a data root.
+ * Labelled so a dependency outage is distinguishable from a caller sending
+ * forbidden text. `restricted_construct` and `render_tag` (a URL-producing
+ * render tag or markup in a label) are the caller's text;
+ * `base_model_load_failed` is the named model failing to load.
  */
 const getCompileRefusalsCounter = lazyCounter(
    "publisher_compile_refusals_total",
    "Compiles refused at append scope, labelled by reason and environment",
 );
 
-/** Visible for tests; resets the lazy counter so a fresh MeterProvider sees future writes. */
-export function resetCompileTelemetryForTesting(): void {
-   resetInstrumentsForTesting();
-}
-
-/**
- * Run a /compile authorize gate, converting an access denial on a
- * boundary-hidden target into the boundary's generic 404.
- *
- * /compile is exempt from the query boundary so a curated package stays
- * authorable, but the exemption must not turn /compile into an existence
- * oracle. Without this, an unauthorized caller probing a source that is both
- * boundary-hidden and `#(authorize)`-gated gets a 403 naming it — proof the
- * source exists — where the query surface answers a flat 404, letting the
- * hidden namespace be enumerated one guess at a time. Re-running the boundary
- * on the denial path only (it throws for a hidden target and otherwise returns
- * without effect) restores "hidden is indistinguishable from nonexistent" while
- * leaving compile itself ungated: a target the boundary does not hide keeps its
- * informative 403.
- */
 /**
  * What the submitted source means to /compile, and how far the check reaches.
  *
- * - "append" (the default, and the historical behavior): the source is
- *   appended to the target model and compiled in its namespace. Right for
+ * - "append" (the default): the source is appended to the target model and compiled in its namespace. Right for
  *   validating NEW definitions and queries; an edit to an existing definition
  *   collides ("Cannot redefine"), and diagnostics are positioned in the
  *   concatenated virtual file.
@@ -128,6 +104,17 @@ export function packageRelativeModelPath(
    return rel.split(pathModule.sep).join("/");
 }
 
+/**
+ * Run a /compile authorize gate, converting an access denial on a
+ * boundary-hidden target into the boundary's generic 404.
+ *
+ * /compile is exempt from the query boundary so a curated package stays
+ * authorable, but must not become an existence oracle: a 403 naming a source
+ * that is both boundary-hidden and `#(authorize)`-gated proves it exists, where
+ * the query surface answers a flat 404. Re-running the boundary on the denial
+ * path only keeps "hidden is indistinguishable from nonexistent"; a target the
+ * boundary does not hide keeps its informative 403.
+ */
 async function denyHiddenAsNotQueryable(
    convert: () => void | Promise<void>,
    gate: () => Promise<void>,
@@ -220,14 +207,10 @@ export async function compileSource(
       scope,
    };
    assertValidCompileRequest(request);
-   // Hold the per-package mutex for the duration of every disk read —
-   // both the explicit `fs.readFile(modelPath)` below and the implicit
-   // import resolution that `runtime.loadModel` does through the URL
-   // reader. This is mutually exclusive with `installPackage`'s Phase 2
-   // rename swap and with `deletePackage`'s rename-to-retired, so a
-   // compile can never observe a half-rewritten tree. The slow Phase 1
-   // download happens outside this lock, so a multi-second clone does
-   // not block compiles.
+   // Hold the per-package mutex across every disk read (the model file and
+   // the imports `runtime.loadModel` resolves), which excludes install's
+   // rename swap and delete's rename-to-retired, so a compile never observes
+   // a half-rewritten tree.
    return host.withPackageLock(packageName, async () => {
       const ctx = await openCompileContext(host, request);
       if (scope === "package") return compilePackageDryRun(ctx);
@@ -270,11 +253,9 @@ function assertValidCompileRequest({
             `the runnable text at scope "append" or "file" instead.`,
       );
    }
-   // The submitted source lands in the package's namespace (appended to the
-   // target model, or replacing a file wholesale), so an authorize
-   // annotation in it would sit alongside — or displace — the author's.
-   // Same rejection as the query path on every scope, and `includeSql`
-   // makes this door the more valuable one to an attacker.
+   // The submitted source lands in the package's namespace, so an authorize
+   // annotation in it would sit alongside — or displace — the author's. Same
+   // rejection as the query path, on every scope.
    if (source !== undefined) {
       try {
          assertNoCallerAuthorizeAnnotation(source);
@@ -283,12 +264,8 @@ function assertValidCompileRequest({
          throw err;
       }
    }
-   // /compile interprets modelPath as a .malloy model (namespace context at
-   // "append", the file being written at "file"/"package"-with-source). A
-   // notebook (.malloynb) is markdown + cells, not a model, so compiling
-   // against it only yields a confusing parse error — reject it up front
-   // with an actionable message. (Notebooks remain public for
-   // discovery/query; this is specific to the compile context.)
+   // A notebook (.malloynb) is markdown + cells, not a model, so compiling
+   // against it only yields a confusing parse error.
    if (
       modelName.endsWith(NOTEBOOK_FILE_SUFFIX) &&
       (scope !== "package" || source !== undefined)
@@ -320,19 +297,12 @@ async function openCompileContext(
       modelName,
    );
    const packagePath = safeJoinUnderRoot(host.environmentPath, packageName);
-   // Where the compiled text lives, by scope. "append": a virtual file
-   // in the model's directory (so relative imports resolve) holding the
-   // model's content with the source appended — the historical behavior,
-   // whose diagnostics are positioned in the CONCATENATED file. "file"
-   // (and "package" with a source): the virtual file IS modelPath, so
-   // the submitted text replaces the on-disk copy, diagnostics land at
-   // true file coordinates, and — at "package" — every importer compiles
-   // against the new text. Use `pathToFileURL` rather than hand-prefixing
-   // `file://`: on Windows the latter produces a malformed URL
-   // (`file://D:\Temp\…`) that round-trips differently than the URL the
-   // Malloy runtime synthesizes from the same path, breaking the
-   // intercepting reader's string comparison below and falling through
-   // to disk for a virtual file that doesn't exist.
+   // "append": a virtual file beside the model (so relative imports resolve)
+   // holding the model plus the source. "file" (and "package" with a
+   // source): the virtual file IS modelPath, so importers compile against
+   // the new text. `pathToFileURL`, not a hand-built `file://`: on Windows
+   // that round-trips differently from the runtime's URL and breaks the
+   // intercepting reader's string comparison.
    const modelDir = path.dirname(modelPath);
    const virtualUrl =
       scope === "append"
@@ -345,10 +315,8 @@ async function openCompileContext(
          ? await appendToSavedModel(modelPath, source, virtualUri)
          : { fullSource: source ?? "", callerRegion: undefined };
 
-   // Create a URL Reader that serves the source string for the virtual
-   // file, but falls back to the disk for everything else (imports). At
-   // scope "package" with no source there is nothing to substitute and
-   // every file reads from disk as saved.
+   // Serve the source for the virtual file and read everything else from
+   // disk; at "package" with no source, nothing is substituted.
    const substitute = scope !== "package" || source !== undefined;
    const interceptingReader = {
       readURL: async (url: URL) => {
@@ -359,7 +327,6 @@ async function openCompileContext(
       },
    };
 
-   // Use the locked variant — we already hold the per-package mutex.
    const pkg = await host.loadPackageLocked(packageName);
 
    const { gateModel, hasExactGateModel } = await resolveGateModel(
@@ -368,10 +335,9 @@ async function openCompileContext(
       modelPath,
       packagePath,
    );
-   // A document is gated cell by cell and tile by tile below, so one
-   // restricted cell does not refuse the cells the caller may read.
-   // Text over a document's annotation budget is not parsed to find
-   // out: when it names `artifact` at all it is taken for a document, and
+   // A document is gated cell by cell, so one restricted cell does not refuse
+   // the cells the caller may read. Text over the document budget is not
+   // parsed to find out: naming `artifact` at all makes it a candidate, and
    // the budget refuses it below.
    const documentCandidate =
       scope === "append" &&
@@ -381,27 +347,22 @@ async function openCompileContext(
          : carriesArtifactTag(source));
    const runEarlyGate = async (): Promise<void> => {
       if (gateModel && hasExactGateModel && source !== undefined) {
-         // Only the authorize gate (the *who* axis) applies to /compile.
-         // The query boundary (`explores`/`queryableSources`, the *what*
-         // axis) deliberately does NOT: compile is the authoring loop
-         // (validate -> save -> reload), and gating it would make a curated
-         // package un-authorable: every per-file compile would 404 once
-         // `queryableSources: "declared"` is set. The boundary is
+         // Only the authorize gate (the *who* axis) applies to /compile, not
+         // the query boundary (the *what* axis): gating the authoring loop
+         // would make a curated package un-authorable. The boundary is
          // discovery curation, not access control; the accepted trade is
-         // that /compile can reveal a
-         // non-exported source's schema (and, with includeSql, SQL) —
-         // sources whose confidentiality matters are gated by
-         // `#(authorize)`, which still applies here in full.
+         // that /compile can reveal a non-exported source's schema (and,
+         // with includeSql, SQL). Confidential sources use `#(authorize)`,
+         // which applies here in full.
          await denyHiddenAsNotQueryable(
             () => {
                gateModel.assertQueryBoundaryEarly(undefined, undefined, source);
             },
             () =>
                gateModel.assertAuthorizedForText(source, givens ?? {}, {
-                  // File and package scope compile the whole file (or, at
-                  // package scope with a source, the whole replacement) —
-                  // a locked name that is not the statement Malloy runs
-                  // must not refuse it, and its joins are author joins.
+                  // File and package scope compile a whole author file: a
+                  // locked name that is not the run statement must not
+                  // refuse it, and its joins are author joins.
                   wholeFile: scope !== "append",
                }),
          );
@@ -409,13 +370,10 @@ async function openCompileContext(
    };
    if (!documentCandidate) await runEarlyGate();
 
-   // Initialize Runtime with the package's active MalloyConfig so compile
-   // checks see the same package-scoped duckdb as execution. This runtime
-   // borrows the package config; the package/environment lifecycle owns release.
-   // Thread the package's bound build manifest (when present) so the
-   // /compile preview routes persist sources to their materialized tables
-   // exactly like execution does — otherwise includeSql=true would always
-   // show base-table SQL and diverge from what executeQuery actually runs.
+   // The package's MalloyConfig (borrowed; the package lifecycle releases it)
+   // and bound build manifest, so compile sees the same duckdb and the same
+   // persist routing as execution — otherwise includeSql would show
+   // base-table SQL that diverges from what runs.
    const boundManifestEntries = pkg.getBuildManifestEntries();
    const runtime = new Runtime({
       urlReader: interceptingReader,
@@ -425,12 +383,8 @@ async function openCompileContext(
          : undefined,
    });
 
-   // Tag each diagnostic with the package-relative model it points at,
-   // read off `at.url`. Load-bearing at scope "package" (one array,
-   // many files) and clarifying everywhere else: an "append"-scope
-   // diagnostic can point at pre-existing model content, and the tag is
-   // what says so. The append-mode virtual file reports as the model it
-   // extends.
+   // Tag each diagnostic with the package-relative model `at.url` points at;
+   // the append-mode virtual file reports as the model it extends.
    const tagProblems = (problems: LogMessage[]): TaggedLogMessage[] =>
       problems.map((problem) => {
          const url = (problem as { at?: { url?: string } }).at?.url;
@@ -480,25 +434,17 @@ async function appendToSavedModel(
    source: string | undefined,
    virtualUri: string,
 ): Promise<{ fullSource: string; callerRegion: CallerRegion }> {
-   // Read the full model file so the submitted source inherits the
-   // model's complete namespace — imports, source definitions,
-   // queries, etc.
    let modelContent = "";
    try {
       modelContent = await fs.promises.readFile(modelPath, "utf8");
    } catch {
-      // Empty content here, and compilation reports the problem. Note
-      // this fallback no longer decides the missing-model case on its
-      // own at `append` scope: the restricted-construct gate below
-      // loads the same model to check the caller's text against, and
-      // refuses when it cannot, so a model that does not exist is
-      // rejected there before this leniency can apply.
+      // Empty content; a missing model is refused by `loadAppendBase`.
    }
    const fullSource = modelContent
       ? `${modelContent}\n${source}`
       : (source ?? "");
-   // Checked again where the compiler reads it: a saved model ending in an open block note re-lexes the caller's prose.
-   // Both checks are load-bearing: this in-context form accepts text the stand-alone check above refuses.
+   // Checked again in context: a saved model ending in an open block note
+   // re-lexes the caller's prose. Both checks are load-bearing.
    if (source !== undefined && modelContent) {
       try {
          assertNoCallerAuthorizeAnnotation(source, `${modelContent}\n`);
@@ -530,23 +476,15 @@ async function resolveGateModel(
    modelPath: string,
    packagePath: string,
 ): Promise<{ gateModel: Model | undefined; hasExactGateModel: boolean }> {
-   // Authorize gate: /compile is compile-only, but it can still act
-   // as a schema oracle (a denied caller learns a gated source's columns
-   // from compile errors) and, with includeSql, leak its SQL. Decide the
-   // locks the submitted text names BEFORE compiling — mirrors the query
-   // path's early gate (see `assertAuthorizedForText` for what each scope
-   // reads); the compiled backstop below settles a target this cannot
-   // name. The gate runs against the package's cached Model (its
-   // `given:` block + authorize annotations), independent of the virtual
-   // compile below. A new model path has no cached Model, so its early
-   // surface-syntax gate cannot run; the compiled backstop below instead
+   // /compile can act as a schema oracle (columns in compile errors) and,
+   // with includeSql, leak SQL, so the locks the text names are decided
+   // BEFORE compiling against the package's cached Model, as on the query
+   // path. A new model path has no cached Model; the compiled backstop then
    // evaluates gates carried by the runnable's own ModelDef.
    const { model, exact } = pkg.getCompileAuthorizationModel(modelName);
-   // A file can exist on disk without being in the cached package model
-   // (for example, it was added after the last reload). Compile that
-   // author's file once as an ephemeral gate model so file-level givens
-   // and authorize annotations come from the correct namespace. A truly
-   // new path still falls back to the compiled-runnable gate below.
+   // A file on disk but not in the cached package (added since the last
+   // reload) is compiled once as an ephemeral gate model, so its givens and
+   // authorize annotations come from the right namespace.
    if (!exact && source !== undefined) {
       const diskTarget = await fs.promises
          .stat(modelPath)
@@ -621,31 +559,18 @@ async function compileAppend(
    ctx: CompileContext,
 ): Promise<CompileSourceResult> {
    const { source, documentCandidate } = ctx;
-   // Containment for caller-submitted fragments. Scope "append" is the
-   // one scope whose text is a FRAGMENT checked against a curated model
-   // rather than a file the author owns, so it has no legitimate need to
-   // define its own data roots -- and Malloy resolves a source's schema
-   // at compile time, so an unrestricted one reaches the connection, the
-   // filesystem and the network without running a query. Scopes "file"
-   // and "package" are deliberately NOT gated: there the source IS the
-   // model file, and `import` plus `connection.table(...)` /
-   // `connection.sql(...)` are how any model declares what it reads.
-   // Gating them would make an ordinary package un-authorable.
+   // Containment: an append FRAGMENT has no legitimate need for its own data
+   // roots, and Malloy resolves schemas at compile time, so an unrestricted
+   // one reaches the connection, filesystem and network without running a
+   // query. "file" and "package" are NOT gated: there the source IS the model
+   // file, and `import`/`connection.table(...)` are how a model declares what
+   // it reads.
    const { appendBase, baseModel } = await loadAppendBase(ctx);
-   // The fragment ALONE, against the compiled base model. The
-   // concatenation the real compile runs cannot be passed here:
-   // `extendModel` judges text as an extension of a model that
-   // already holds those declarations, so feeding it the model's
-   // own text yields `Cannot redefine` for every source in the file
-   // and aborts before the appended fragment is ever classified --
-   // which is a bypass rather than a stricter check.
-   //
-   // What closes the continuation hole instead is the gate refusing
-   // when it could not parse what it was given (see
-   // assertNoRestrictedConstructs). A continuation fragment is a
-   // syntax error on its own, and that is now a refusal rather than
-   // silence read as approval.
-   // A document's whole-text gate runs on the text that compiles, after the per-cell access phase.
+   // The fragment ALONE, against the compiled base model: passing the
+   // concatenation would yield `Cannot redefine` for every source and abort
+   // before the fragment is classified — a bypass. A continuation fragment
+   // is a syntax error alone, which the gate refuses rather than approving.
+   // A document's whole-text gate runs after the per-cell access phase.
    if (!documentCandidate) {
       await refuseConstructs(ctx, baseModel, source ?? "", false);
    }
@@ -674,38 +599,22 @@ async function loadAppendBase(
    ctx: CompileContext,
 ): Promise<{ appendBase: ModelMaterializer; baseModel: MalloyModel }> {
    const { runtime, modelPath, modelName, environmentName } = ctx;
-   // The model as saved, WITHOUT the caller's appended text: the
-   // fragment is checked against the surface the author published, so
-   // the caller cannot widen the namespace it is judged against.
+   // The model as saved, WITHOUT the caller's text, so the caller cannot
+   // widen the namespace it is judged against.
    //
-   // Five of the seven restricted constructs are refused on sight,
-   // but two are not: `name!type(...)` and the `sql_*` family are
-   // classified inside `computeExpression(fs)`, which needs a resolved
-   // FieldSpace. With no base model a fragment like
-   // `run: base_source -> { ... }` never resolves `base_source`, so
-   // the expression is never evaluated, the construct is never
-   // classified, and the gate passes text the real compile then runs
-   // for real. So a base model that will not load fails the request
-   // rather than lowering the gate: the caller's own text is not what
-   // failed, and the same argument `assertNoRestrictedConstructs`
-   // makes about its own catch applies here -- an infrastructure
-   // error carries no evidence either way.
+   // `name!type(...)` and the `sql_*` family are classified only inside a
+   // resolved FieldSpace; with no base model `run: base_source -> {…}` never
+   // resolves and the construct is never classified. So a base model that
+   // will not load fails the request rather than lowering the gate.
    try {
       const appendBase = runtime.loadModel(pathToFileURL(modelPath));
       const baseModel = await appendBase.getModel();
       return { appendBase, baseModel };
    } catch (error) {
-      // Three different failures arrive here and they are not one
-      // answer. Refusing uniformly would tell a caller their text was
-      // bad when the warehouse was down, and a 4xx says "do not
-      // retry" -- the opposite of what an outage wants. The detail
-      // stays server-side either way: `modelPath` is an absolute path
-      // inside the container, so returning it would answer "does this
-      // file exist, and is it readable" for any path a caller names,
-      // which is the shape of oracle this gate exists to close.
-      // `warn`, not `error`: a caller typo in `modelPath` reaches here,
-      // and an unauthenticated 400 must not emit ERROR at whatever rate
-      // a caller likes.
+      // The detail stays server-side: returning the absolute `modelPath`
+      // would answer "does this file exist and is it readable" for any path
+      // a caller names. `warn`, not `error`: a caller typo reaches here, and
+      // an unauthenticated 400 must not emit ERROR at a caller-chosen rate.
       logger.warn("Compile gate could not load the base model", {
          modelPath,
          error,
@@ -715,23 +624,10 @@ async function loadAppendBase(
          reason: "base_model_load_failed",
       });
       if (error instanceof MalloyError) {
-         // Every MalloyError here is the same answer: the model this
-         // fragment would be judged against did not compile, so there
-         // is nothing to judge it against.
-         //
-         // There was a 503 branch keyed on `failed-to-fetch-table-schema`,
-         // on the reading that a schema fetch which failed means the
-         // dependency is unreachable. That code does not carry that
-         // meaning: a table that simply DOES NOT EXIST produces it too,
-         // so a permanent authoring error was telling the client to
-         // retry. The reverse also held -- a `conn.sql(...)`-rooted
-         // model whose warehouse was genuinely down fails with
-         // `invalid-sql-source` and took the 400 anyway. Splitting on
-         // it was therefore wrong in both directions, and Malloy
-         // publishes no code here that means "unreachable". Until one
-         // exists, these are one 400 carrying the model's own problems,
-         // which is also what `file` and `package` scope already do
-         // with the same failure.
+         // One 400 for every MalloyError, as at `file`/`package` scope. Do
+         // not split out a 503 on `failed-to-fetch-table-schema`: a missing
+         // table produces that code too, and a down warehouse can surface as
+         // `invalid-sql-source`. Malloy has no code meaning "unreachable".
          throw new CompileRefusedError(
             `Cannot validate the submitted source: the model ` +
                `"${modelName}" does not compile, so there is nothing ` +
@@ -748,7 +644,7 @@ async function loadAppendBase(
    }
 }
 
-// Counted here rather than inside the gate so every reason shares one instrument and one label set; only a refusal is counted, since anything else the gate rethrows is an infrastructure failure.
+// Only a refusal is counted; anything else the gate rethrows is an infrastructure failure.
 function countRefusal(environmentName: string, error: unknown): void {
    // An unparseable tile is a compile problem for the document, not a refusal.
    if (
@@ -899,7 +795,6 @@ async function compileVirtualFile(
       scope,
       tagProblems,
    } = ctx;
-   // Attempt to compile
    try {
       const modelMaterializer = runtime.loadModel(virtualUrl);
       const model = await modelMaterializer.getModel();
@@ -909,36 +804,19 @@ async function compileVirtualFile(
       try {
          queryMaterializer = modelMaterializer.loadFinalQuery();
       } catch {
-         // No runnable query (e.g. only source definitions) — nothing to
-         // gate or extract. The early text gate ran, but it only REFUSES
-         // a gate it cannot classify or graft: every expressible one is
-         // deferred to the compiled backstop below, which needs a
-         // runnable. Nothing is exposed by skipping it here, since
-         // without a runnable there is no result and no SQL.
+         // No runnable query: nothing to gate or extract, and with no
+         // runnable there is no result and no SQL to expose.
       }
 
-      // Compiled-source backstops — run REGARDLESS of includeSql. They
-      // gate the source the COMPILED final query actually reads, closing
-      // the named-query and derivation indirection the early
-      // surface-syntax gate cannot see. Compiling a gated source even
-      // without SQL is a schema oracle
-      // (field-not-found errors leak its columns), so this must not be
-      // conditional on SQL extraction. (A `source: x is gated` alias
-      // carries the gate: only a declaration of its OWN `#(authorize)`
-      // replaces it, and caller text may not declare one.)
-
-      // No boundary backstop here: /compile is exempt from the query
-      // boundary by design (see the gate comment above). Only the
-      // authorize backstop runs.
-
-      // Authorize backstop (the *who* axis, 403). NOT guarded by
-      // hasAuthorize(): that reads only top-level modelDef.contents
-      // sources' OWN annotations, so a run target gated solely by what it
-      // derives from is invisible to it and this backstop would silently
-      // never run for such a model — the same bypass
-      // assertAuthorizedForRunnable itself closes on the query path (see
-      // model.ts assertAuthorizedForAllSources). The own-source probe and
-      // derivation walk it runs are cheap no-ops for an ungated model.
+      // Compiled authorize backstop, REGARDLESS of includeSql: compiling a
+      // gated source is a schema oracle even without SQL. It gates what the
+      // COMPILED final query reads, closing named-query and derivation
+      // indirection the early text gate cannot see. (No boundary backstop:
+      // /compile is exempt by design.) NOT guarded by hasAuthorize(), which
+      // reads only top-level sources' own annotations and would skip a
+      // target gated solely by what it derives from. (A `source: x is gated`
+      // alias carries the gate: only its OWN `#(authorize)` replaces it, and
+      // caller text may not declare one.)
       if (queryMaterializer && gateModel) {
          await gateCompiledRunnable(
             ctx,
@@ -948,14 +826,11 @@ async function compileVirtualFile(
          );
       }
 
-      // If includeSql is requested and compilation succeeded, attempt to extract SQL
       let sql: string | undefined;
       if (includeSql && queryMaterializer) {
-         // A given value the compiled text's own filter types cannot read
-         // is a bad request, as on the query route. Checked here, after
-         // the gate and against the submitted text's givens rather than
-         // the cached model's, because this is the only place /compile
-         // binds given values.
+         // A given value the compiled text's own filter types cannot read is
+         // a 400, as on the query route; checked against the submitted text's
+         // givens, since this is the only place /compile binds values.
          assertFilterGivensParse(
             Array.from(model.givens.values()).map((g) =>
                malloyGivenToApi(g as MalloyGiven),
@@ -965,15 +840,10 @@ async function compileVirtualFile(
          try {
             sql = await queryMaterializer.getSQL({ givens });
          } catch (error) {
-            // A bad caller given (unknown name, wrong-typed value, finalized
-            // override, ...) surfaces as a Malloy `runtime-given-*` error.
-            // Map it to a 400 rather than silently omitting `sql` (which is
-            // indistinguishable from "no runnable query"). Duck-type on
-            // `.code`; let a MalloyError fall to the outer catch → problems.
-            // The `runtime-given-` prefix is pinned to Malloy's error codes
-            // (given_binding.ts / runtime.ts, same as model.ts) — if they're
-            // renamed upstream a bad given would silently revert to the omit
-            // branch below, so keep the two in sync.
+            // A bad caller given surfaces as a Malloy `runtime-given-*`
+            // error: a 400, not a silently omitted `sql`. The prefix is
+            // pinned to Malloy's codes (as in model.ts); if renamed upstream
+            // a bad given would fall through to the omit branch.
             const givenCode = (error as { code?: string })?.code;
             if (
                typeof givenCode === "string" &&
@@ -986,12 +856,10 @@ async function compileVirtualFile(
             if (error instanceof MalloyError) {
                throw error;
             }
-            // Otherwise the source may just not contain a runnable query
-            // (e.g. only source definitions) — omit the sql field.
+            // Otherwise there may be no runnable query: omit `sql`.
          }
       }
 
-      // If successful, return any non-fatal warnings
       const readerProblem = notebookReaderProblem(
          modelName,
          fullSource,
@@ -1012,8 +880,7 @@ async function compileVirtualFile(
          sql,
       };
    } catch (thrown) {
-      // If parsing/compilation fails, return the errors. The
-      // translator's plain Error is one of them, not a server fault.
+      // The translator's plain Error is a compile problem, not a server fault.
       const error = translatorMalloyError(thrown) ?? thrown;
       if (error instanceof MalloyError) {
          return {
@@ -1025,7 +892,6 @@ async function compileVirtualFile(
             ]),
          };
       }
-      // If it's a system error (e.g. file not found), throw it up
       throw error;
    }
 }
@@ -1053,11 +919,9 @@ async function compilePackageDryRun(
    // the reload compiler sees, including files hidden from discovery.
    // It returns no rows or SQL; authorize still gates caller text.
    const { collect, problems } = problemCollector(ctx.tagProblems);
-   // The findings a reload would add on the main thread after this
-   // same worker compile: render tags and the report, given and
-   // drill lints. Read before the per-file text lint below, which
-   // drops its copy of a finding only when the report lint reported
-   // it too.
+   // The findings a reload adds on the main thread (render tags; report,
+   // given and drill lints). Read first: the per-file text lint below drops
+   // a finding the report lint already reported.
    const { renderTagWarnings, reportWarnings } =
       await Package.lintWorkerOutcome(
          ctx.environmentName,
@@ -1100,9 +964,8 @@ async function compilePackageDryRun(
             );
          }
       }
-      // A file that did not compile carries no text back, so it is read as saved (or as replaced).
-      // Any file that can be a report; the lint says nothing about a
-      // file with no artifact tag, wherever it lives.
+      // Any report-eligible file; one that did not compile carries no text
+      // back, so it is read as saved (or as replaced).
       const lintText = !(
          compiled.modelPath.endsWith(".malloy") &&
          isReportEligiblePath(compiled.modelPath)
@@ -1182,10 +1045,8 @@ async function gateReplacementOnMainThread(ctx: CompileContext): Promise<void> {
          await gateCompiledRunnable(ctx, gateModel, finalQuery);
       }
    } catch (error) {
-      // Compiler diagnostics are returned by the worker below,
-      // the translator's plain Error among them (the worker
-      // classifies it). Authorization denials are policy outcomes
-      // and propagate.
+      // Compiler diagnostics come back from the worker; authorization
+      // denials propagate.
       if (!(error instanceof MalloyError) && !translatorMalloyError(error)) {
          throw error;
       }
@@ -1272,10 +1133,9 @@ function problemCollector(
    return { problems, collect };
 }
 
-// Each keeps its own severity, so a broken dashboard makes the
-// compile an error, as it should. They carry no position, so the
-// subject (the view, field or given) leads the message: without
-// it, two views with the same finding would collapse into one.
+// Keeps its own severity, so a broken dashboard makes the compile an error.
+// No position, so the subject leads the message; otherwise two views with
+// the same finding would de-duplicate into one.
 function warningAsProblem(
    warning: Awaited<
       ReturnType<typeof Package.lintWorkerOutcome>
