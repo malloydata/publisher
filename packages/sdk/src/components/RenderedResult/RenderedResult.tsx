@@ -4,7 +4,6 @@
 import { Box } from "@mui/material";
 import React, {
    Suspense,
-   useCallback,
    useEffect,
    useLayoutEffect,
    useMemo,
@@ -39,7 +38,7 @@ import {
    markDrillableCells,
    type DrillMetadataSource,
 } from "../drill/markDrillableCells";
-import type { DrillClickPayload } from "../drill/resolveDrill";
+import { drillClickRelay, type RendererDrill } from "../drill/drillClickRelay";
 import { loadMalloyTag } from "../ReportBuilder/loadMalloy";
 import type { DrillBinding } from "../drill/useDrill";
 
@@ -120,6 +119,7 @@ const FILL_ATTR = "data-publisher-fill";
 const createRenderer = async (
    theme: ResolvedTheme,
    onClick?: DrillBinding["onClick"],
+   onDrill?: (data: RendererDrill) => void,
 ): Promise<MalloyVizHandle> => {
    if (typeof window === "undefined") {
       throw new Error("MalloyRenderer can only be used in browser environment");
@@ -128,6 +128,9 @@ const createRenderer = async (
    const { MalloyRenderer } = await loadMalloyRenderer();
    const renderer = new MalloyRenderer({
       onClick,
+      // A table cell's row reaches the host only through the renderer's drill,
+      // which it reports only with `enableDrill` set; see `drillClickRelay`.
+      ...(onDrill ? { onDrill, tableConfig: { enableDrill: true } } : {}),
       vegaConfigOverride: buildVegaThemeOverride(theme),
       // Pass the explicit theme so table chrome and dashboard tiles
       // pick up the operator's colours directly. Without this the
@@ -391,6 +394,14 @@ div.malloy-render .malloy-dashboard .dashboard-row-header {
    color: var(--publisher-drill-link) !important;
    text-decoration: underline;
 }
+/* The renderer's own drill, on so a click can report its row, paints the
+   whole hovered row as a link. Which cells click is the marking above. */
+.malloy-render .malloy-table .td.highlight {
+   color: inherit;
+}
+.malloy-render .malloy-table .td.highlight:not(.${DRILL_CELL_CLASS}) {
+   cursor: inherit;
+}
 `;
 
 /**
@@ -431,9 +442,11 @@ function RenderedResultInner({
    // one safely.
    const drillRef = useRef(drill);
    drillRef.current = drill;
-   const handleDrillClick = useCallback((payload: DrillClickPayload) => {
-      drillRef.current?.onClick(payload);
-   }, []);
+   // The click and the row the renderer reports for it, joined; see the relay.
+   const relay = useMemo(
+      () => drillClickRelay((payload) => drillRef.current?.onClick(payload)),
+      [],
+   );
    // Whether any drill is wired at all, which is what the effect reacts to: a
    // surface that gains or loses the capability has to (re)mark its cells, but
    // a new inline binding with the same capability must not rebuild anything.
@@ -591,7 +604,11 @@ function RenderedResultInner({
          if (!isCurrent()) return;
 
          try {
-            viz = await createRenderer(effectiveTheme, handleDrillClick);
+            viz = await createRenderer(
+               effectiveTheme,
+               relay.onClick,
+               drillable ? relay.onDrill : undefined,
+            );
          } catch (error) {
             console.error("Failed to create renderer:", error);
             return;
@@ -971,7 +988,7 @@ function RenderedResultInner({
       };
    }, [
       result,
-      handleDrillClick,
+      relay,
       drillable,
       onSizeChange,
       onSizing,

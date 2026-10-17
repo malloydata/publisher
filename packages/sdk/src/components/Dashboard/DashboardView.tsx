@@ -32,7 +32,7 @@ import {
    tileHeightPx,
 } from "./DashboardGrid";
 import { DashboardTile } from "./DashboardTile";
-import { RowsDialog, stepsOf, type RowsRequest } from "./RowsDialog";
+import { RowsDialog, rowsRequestFor, type RowsRequest } from "./RowsDialog";
 import { useReportEvents } from "../Report/telemetry";
 import type { TileChrome } from "./TileCard";
 import { tileIgnoredFilterLabels } from "./TileFilterTag";
@@ -224,14 +224,8 @@ export function DashboardView({
    // only: each names its source, which is what the rows are of.
    const [rows, setRows] = useState<RowsRequest | undefined>(undefined);
    const onRows = useCallback((request: DrillRowsRequest) => {
-      const steps = stepsOf(request.context);
-      if (steps === undefined) return;
-      setRows({
-         ...steps,
-         field: request.field,
-         rawValue: request.rawValue,
-         label: request.label,
-      });
+      const next = rowsRequestFor(request);
+      if (next !== undefined) setRows(next);
    }, []);
 
    // The whole applied row and any gate givens: a source's own `where:` may read any of it, and a
