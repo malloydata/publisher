@@ -15,8 +15,9 @@ ready when it prints `ready: nothing blocks a run`.
 
 - A Malloy package with a `publisher.json`, in a git repository. Git is how a
   run pins the model it measured and how an improve step is rolled back.
-- A built Publisher clone (`bun install && bun run build`), Python 3.11+, and a
-  Java runtime for the SDK build.
+- A built Publisher clone (`bun install && bun run build`; Bun is needed only
+  to build, the scripts run it with Node), Python 3.11+, and a Java runtime for
+  the SDK build.
 - `EMBEDDING_API_KEY` exported, for semantic retrieval. Without it the model
   server ranks lexically and says so on start.
 

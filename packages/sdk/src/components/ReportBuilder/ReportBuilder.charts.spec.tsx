@@ -9,6 +9,8 @@ import {
    within,
 } from "@testing-library/react";
 import { describe, expect, it } from "bun:test";
+import { promoteMeasureRowToKpis } from "../Dashboard/promoteMeasureRow";
+import { requestedChart } from "../RenderedResult/chartShapeProblem";
 import { chartLineText } from "./chartLine";
 import { ReportBuilder } from "./ReportBuilder";
 import { openDocument } from "./testing/fixtures";
@@ -89,7 +91,7 @@ describe("ReportBuilder: charts", () => {
       // enabled; the rest are listed disabled. A table is enabled too: a
       // shape map draws whatever `viz` says, so its line takes the map off.
       expect(names).toEqual([
-         "From the view",
+         "Default",
          "Table",
          "Line",
          "Bar",
@@ -114,7 +116,7 @@ describe("ReportBuilder: charts", () => {
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       pickChart("Table");
-      pickChart("From the view");
+      pickChart("Default");
       closeMenu();
       const save = screen.queryByRole("button", {
          name: "Save",
@@ -155,7 +157,7 @@ describe("ReportBuilder: charts", () => {
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       pickChart("Bar");
-      pickChart("From the view");
+      pickChart("Default");
       closeMenu();
       const save = screen.queryByRole("button", {
          name: "Save",
@@ -301,14 +303,67 @@ source: a is scoped_orders extend {
          />,
       );
       fireEvent.click(screen.getByLabelText("Settings for Key figures"));
-      expect(enabledCharts()).toEqual(["From the view", "Table", "Big value"]);
+      expect(enabledCharts()).toEqual([
+         "Default",
+         "Table",
+         "Big value",
+         "Scatter",
+      ]);
       const line = chartItems().find((o) => primary(o) === "Line");
       expect(line?.textContent).toContain(
          "This view has no field for the x-axis",
       );
       pickChart("Table");
-      pickChart("From the view");
-      expect(enabledCharts()).toEqual(["From the view", "Table", "Big value"]);
+      pickChart("Default");
+      expect(enabledCharts()).toEqual([
+         "Default",
+         "Table",
+         "Big value",
+         "Scatter",
+      ]);
+   });
+
+   // The view carries no chart tag, but its one row of totals draws as big
+   // numbers anyway (the KPI promotion), so Table has to take that off.
+   it("draws a table when Table is picked on a tile of totals", async () => {
+      let written: string | undefined;
+      const document = await openDocument(INLINE);
+      render(
+         <ReportBuilder
+            source={INLINE}
+            document={document}
+            catalog={withOwnViews}
+            onSave={(source) => {
+               written = source;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for Key figures"));
+      pickChart("Table");
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      const table = chartLineText("none");
+      expect(written).toContain(`  ${table}\n`);
+      const promoted = JSON.parse(
+         promoteMeasureRowToKpis(
+            JSON.stringify({
+               schema: {
+                  fields: [
+                     { kind: "measure", name: "revenue" },
+                     { kind: "measure", name: "order_count" },
+                  ],
+               },
+               data: { kind: "array_cell", array_value: [{}] },
+               annotations: [{ value: `${table}\n` }],
+            }),
+         ),
+      ) as { annotations: Array<{ value: string }> };
+      expect(
+         requestedChart(promoted.annotations.map((a) => a.value)),
+      ).toBeUndefined();
    });
 
    it("says the shape is unknown, rather than what the view lacks, when no model reported it", async () => {
@@ -323,7 +378,7 @@ source: a is scoped_orders extend {
       fireEvent.click(screen.getByLabelText("Settings for Key figures"));
       const big = chartItems().find((o) => primary(o) === "Big value");
       expect(big?.textContent).toContain(
-         "Not a view the catalog lists, so its shape is unknown",
+         "Not in the model's list, so its shape is unknown",
       );
    });
 });

@@ -28,13 +28,11 @@ export function renderTagTargets(
 ): RenderTagTarget[] {
    const targets: RenderTagTarget[] = [];
    for (const query of queries ?? []) {
-      // Only an annotated, named query can carry a render tag to validate;
-      // skip the rest rather than compiling every query in the package.
+      // Only an annotated, named query can carry a render tag; skip the rest
+      // rather than compiling every query in the package.
       if (!query.name || !query.annotations?.length) {
          continue;
       }
-      // Quote the identifier (see quoteMalloyIdentifier) so a name needing
-      // Malloy quoting still lexes and cannot break out of the quotes.
       targets.push({
          label: query.name,
          queryString: `run: ${quoteMalloyIdentifier(query.name)}`,
@@ -45,15 +43,13 @@ export function renderTagTargets(
       for (const view of source.views ?? []) {
          // Render tags live on the view's own or inherited annotations, not
          // via source-to-view inheritance, so an unannotated view has nothing
-         // to validate and need not be compiled. (A model-level `##` tag is the
-         // one case this gate doesn't reach, but those are theme/config, not
-         // the child-only chart tags this guards against.)
+         // to validate. (Model-level `##` tags are theme/config, not the
+         // child-only chart tags this guards against.)
          if (!view.name || !view.annotations?.length) {
             continue;
          }
-         // Quote both identifiers (see quoteMalloyIdentifier): an unquoted
-         // name like `gated-source` fails to lex, and the prepare would then
-         // fail and silently skip the very view this is meant to validate.
+         // Quoted: an unquoted name like `gated-source` fails to lex, and the
+         // prepare would silently skip the very view this validates.
          targets.push({
             label: `${source.name} -> ${view.name}`,
             queryString: `run: ${quoteMalloyIdentifier(source.name)} -> ${quoteMalloyIdentifier(view.name)}`,

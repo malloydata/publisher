@@ -81,16 +81,22 @@ export function writtenSpan(
    return span === 1 && columns <= 2 && drawnWithout === 1 ? undefined : span;
 }
 
-/** Set a tile's width as {@link writtenSpan} would write it: a `colspan`, or none. */
-export function setSpan(
-   tile: { colspan?: number },
+/**
+ * The tile with its width as {@link writtenSpan} would write it: a `colspan`,
+ * or none. A copy, so a caller puts it back in its list rather than writing
+ * through an entry it looked up.
+ */
+export function withSpan<T extends { colspan?: number }>(
+   tile: T,
    span: number,
    columns: number,
    drawnWithout = 1,
-): void {
+): T {
+   const next = { ...tile };
    const colspan = writtenSpan(span, columns, drawnWithout);
-   if (colspan === undefined) delete tile.colspan;
-   else tile.colspan = colspan;
+   if (colspan === undefined) delete next.colspan;
+   else next.colspan = colspan;
+   return next;
 }
 
 export function layoutRules(

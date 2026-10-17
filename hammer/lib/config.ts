@@ -91,6 +91,7 @@ export function ducklakeDest(
    pg: PostgresHandle,
    catalogDb: string,
    storageDir: string,
+   metadataSchema?: string,
 ): ConnectionConfig {
    return {
       name,
@@ -104,6 +105,7 @@ export function ducklakeDest(
                userName: pg.user,
                password: pg.password,
             },
+            ...(metadataSchema ? { metadataSchema } : {}),
          },
          storage: { bucketUrl: storageDir },
       },

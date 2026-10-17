@@ -5,23 +5,15 @@
  * A bounded, least-recently-used cache of the table and SQL schemas a
  * package-load worker has fetched through the main thread.
  *
- * Each worker compiles one package at a time, and a package compiles every
- * model separately, so the same table is asked for many times within a load
- * (160 requests for 36 tables in one observed package) and again by every
- * later load of a package on the same tables. Each request is a round trip
- * through the main thread, which answers it from its connection's own schema
- * cache and copies the schema back. Caching here removes the round trip; it
- * changes nothing about when a schema is fetched from the warehouse.
+ * Every model compiles separately, so one load asks for the same table many
+ * times; caching removes the round trip to the main thread without changing
+ * when the warehouse is queried.
  *
- * Entries outlive a load and are evicted least-recently-used first, to keep
- * their total serialized size within a byte budget: an entry count would let a
- * few very wide tables take an unbounded share of the worker's heap. Keys are
- * built by the caller and must name everything the schema depends on: the
- * environment, the connection instance, and the table path or SQL. Entries
- * never go stale on their own, as in Malloy's connection cache, which only
- * refetches when a request carries a `refreshTimestamp`; the caller sends
- * those requests to the main thread rather than reading them from here, and
- * stores what comes back over the entry.
+ * Bounded by serialized bytes rather than entry count, so a few very wide
+ * tables cannot take an unbounded share of the heap. Keys must name everything
+ * the schema depends on (environment, connection instance, table path or
+ * SQL). Entries never go stale on their own; a `refreshTimestamp` request
+ * bypasses the cache and overwrites the entry.
  */
 export class SchemaCache<T> {
    private readonly entries = new Map<string, { value: T; bytes: number }>();

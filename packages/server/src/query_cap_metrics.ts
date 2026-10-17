@@ -2,30 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Centralized telemetry for row-cap / byte-cap rejections (HTTP 413).
+ * Telemetry for row-cap / byte-cap rejections (HTTP 413). The counter's
+ * `cap_type` and `source` labels tell an operator which cap fired on which
+ * query surface, which a bare 413 status count cannot. Gauges expose the
+ * effective caps for utilization panels.
  *
- * Without this, operators tuning {@link PUBLISHER_MAX_QUERY_ROWS} /
- * {@link PUBLISHER_MAX_RESPONSE_BYTES} can only see undifferentiated
- * `http_server_requests_total{status_code="413"}` — they can't tell
- * which cap is firing or which query surface is hottest. The counter
- * here carries `cap_type` (`rows` / `bytes` / `unserializable`) and `source`
- * (`connection_sql` / `model_query` / `notebook_cell`) so a single
- * dashboard panel can answer "what should I tune and on which
- * endpoint?".
- *
- * Observable gauges expose the current effective caps so dashboards
- * can render `actual_rows_returned / max_rows` utilization without
- * a separate config feed — same pattern the memory governor uses
- * for high/low water bytes and the concurrency middleware uses for
- * its slot cap.
- *
- * Lazy init for the same reason as `query_timeout.ts` /
- * `query_concurrency.ts`: instruments created before
- * `setGlobalMeterProvider` bind to a NoOp meter
- * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
- * The first throw site initializes the counter; the gauges are
- * installed alongside on the same call so the production hot path
- * is one boolean check after the first 413.
+ * Lazily created: instruments made before `setGlobalMeterProvider` bind to
+ * NoOp (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
 import { type Counter } from "@opentelemetry/api";
@@ -34,11 +17,9 @@ import { publisherMeter } from "./telemetry";
 import { getMaxQueryRows, getMaxResponseBytes } from "./config";
 
 /**
- * `unserializable` is deliberately distinct from `bytes`: the response could
- * not be turned into JSON at all, which is not the same event as measuring
- * over the configured cap and may not have exceeded any cap (the engine's own
- * string limit can be lower than a raised cap). Sharing one label would mix
- * the two under whatever alerts on it.
+ * `unserializable` is distinct from `bytes`: the response could not become
+ * JSON at all, which may happen under a raised cap (the engine's own string
+ * limit can be lower), so alerts must not conflate the two.
  */
 export type QueryCapType = "rows" | "bytes" | "unserializable";
 export type QueryCapSource = "connection_sql" | "model_query" | "notebook_cell";
@@ -61,13 +42,8 @@ function ensureCapTelemetry(): Counter {
       );
    }
    if (!configGaugesInstalled) {
-      // Live config readouts so dashboards can render
-      // "actual / max" utilization for the row and byte caps the
-      // same way `publisher_memory_*_bytes` does for the governor.
-      // Read on every scrape so a runtime env-var change is
-      // visible without a restart; an env-var parse failure
-      // reports -1 so misconfig is visible rather than silently
-      // dropped (mirrors `publisher_query_timeout_ms`).
+      // Read per scrape so an env-var change shows immediately; a parse
+      // failure reports -1 so misconfig is visible.
       meter
          .createObservableGauge("publisher_max_query_rows", {
             description:
@@ -99,14 +75,8 @@ function ensureCapTelemetry(): Counter {
 }
 
 /**
- * Record a single 413 cap-exceeded event. Call BEFORE throwing
- * `PayloadTooLargeError` so the metric ticks even if a downstream
- * `catch` swallows the error (MCP tools surface failures as content
- * payloads rather than letting them bubble to the HTTP error
- * mapper).
- *
- * `cap_type` must be one of `rows` / `bytes` / `unserializable`; `source` identifies
- * the query surface that detected the overflow.
+ * Record one cap-exceeded event. Call BEFORE throwing, so the metric ticks
+ * even if a downstream `catch` swallows the error (MCP tools do).
  */
 export function recordQueryCapExceeded(
    capType: QueryCapType,
@@ -115,11 +85,7 @@ export function recordQueryCapExceeded(
    ensureCapTelemetry().add(1, { cap_type: capType, source });
 }
 
-/**
- * Visible for tests. Drops the cached instruments so a fresh
- * `MeterProvider` (installed via `startMetricsHarness`) can capture
- * future emissions. Do NOT call from production code.
- */
+/** Test-only: drop cached instruments so a fresh MeterProvider captures them. */
 export function resetQueryCapTelemetryForTesting(): void {
    capExceededCounter = null;
    configGaugesInstalled = false;

@@ -13,6 +13,8 @@ export interface ChartChoice {
    /** Listed but not pickable; `reason` says what the view would need. */
    disabled?: boolean;
    reason?: string;
+   /** A quiet second line on a choice that can be picked: what it means. */
+   hint?: string;
 }
 
 /** The reason a chart that plots rows cannot draw a view with no group-by: said in the reader's words, not the renderer's. */
@@ -53,9 +55,9 @@ export function chartChoices(
       view !== undefined
          ? undefined
          : viewStatus === "loading"
-           ? "Still loading this view's details"
+           ? "Still loading this tile's details"
            : viewStatus === "unlisted"
-             ? "Not a view the catalog lists, so its shape is unknown"
+             ? "Not in the model's list, so its shape is unknown"
              : undefined;
    const shape = view?.shape;
    // A pick is a line merged over the view's own tags, taking the view's
@@ -73,11 +75,11 @@ export function chartChoices(
             ? overridden(pick)
             : shape && shape.groupBys > 0
               ? "This view has a group by, so it is more than one row; big numbers need a view of totals only"
-              : (unknown ?? "Needs a view with only totals (no group by)");
+              : (unknown ?? "Needs results that are only totals (no group by)");
       if (pick === "shape_map" || pick === "segment_map")
          return view?.chart === pick
             ? undefined
-            : (unknown ?? "Needs a view that already carries a map chart");
+            : (unknown ?? "Needs a map chart set in the model");
       if (view?.chart === pick) return undefined;
       const drawnOver = overridden(pick);
       if (drawnOver) return drawnOver;
@@ -114,7 +116,7 @@ export function chartChoices(
    ];
    const tableReason = overridden("none");
    return [
-      { value: "default", label: "From the view" },
+      { value: "default", label: "Default", hint: "As set in the model" },
       {
          value: "none",
          label: "Table",
@@ -179,7 +181,7 @@ export function ChartPicker({
          FormHelperTextProps={{ id: reasonId }}
          SelectProps={{
             ...(onOpen ? { onOpen } : {}),
-            // The menu items carry a reason line; the closed field shows the label alone.
+            // The menu items carry a reason or hint line; the closed field shows the label alone.
             renderValue: (value) =>
                choices.find((choice) => choice.value === value)?.label ??
                String(value),
@@ -201,7 +203,9 @@ export function ChartPicker({
             >
                <ListItemText
                   primary={choice.label}
-                  {...(choice.reason ? { secondary: choice.reason } : {})}
+                  {...((choice.reason ?? choice.hint)
+                     ? { secondary: choice.reason ?? choice.hint }
+                     : {})}
                />
             </MenuItem>
          ))}

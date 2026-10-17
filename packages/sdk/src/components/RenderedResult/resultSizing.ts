@@ -307,11 +307,20 @@ export const UNCAPPED_CONTAINER_HEIGHT = 400;
  */
 export const INITIAL_RENDER_HEIGHT = 2000;
 
-/** First-paint height, before anything is known about the result. */
-export function initialResultHeight(maxHeight: number | undefined): number {
-   return maxHeight === undefined
-      ? INITIAL_RENDER_HEIGHT
-      : Math.min(maxHeight, INITIAL_RENDER_HEIGHT);
+/**
+ * First-paint height, before anything is known about the result.
+ *
+ * `firstPaintHeight` replaces {@link INITIAL_RENDER_HEIGHT} for a caller that
+ * knows better. A report tile does: uncapped in a linear report, it would
+ * otherwise open at 2000px and collapse once measured, jumping the page under
+ * the reader. It is a first paint only; the measured height still wins.
+ */
+export function initialResultHeight(
+   maxHeight: number | undefined,
+   firstPaintHeight?: number,
+): number {
+   const first = firstPaintHeight ?? INITIAL_RENDER_HEIGHT;
+   return maxHeight === undefined ? first : Math.min(maxHeight, first);
 }
 
 /**
@@ -333,17 +342,20 @@ export function resolveResultHeight({
    contentHeight,
    maxHeight,
    fillHeight,
+   firstPaintHeight,
 }: {
    sizing: ResultSizing | undefined;
    contentHeight: number | undefined;
    maxHeight: number | undefined;
    fillHeight?: number | undefined;
+   /** See {@link initialResultHeight}. */
+   firstPaintHeight?: number | undefined;
 }): number {
    if (sizing === "container") {
       return maxHeight ?? UNCAPPED_CONTAINER_HEIGHT;
    }
    if (contentHeight === undefined || contentHeight <= 0) {
-      return initialResultHeight(maxHeight);
+      return initialResultHeight(maxHeight, firstPaintHeight);
    }
    const own =
       maxHeight === undefined

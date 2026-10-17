@@ -18,41 +18,26 @@ import type { ManifestEntry } from "../storage/DatabaseInterface";
 import { quoteManifestTablePath } from "./quoting";
 
 /**
- * The per-source serve pointer the virtual-source serve transform consumes. Two
- * origins, one shape (the "injectable binding seam"): the publisher self-derives
- * it from a build's manifest entry (standalone), or a host
- * supplies it. `tablePath` is the LOGICAL, unquoted physical table path; `schema`
- * is the AUTHORITATIVE DuckDB column schema captured post-build (raw DuckDB type
- * strings), which the transform declares verbatim — see {@link buildServeShapeModel}.
- */
-/**
- * A dimension or measure defined on the materialized source in the author's
- * model, re-declared on the serve shape's virtual base so it is computed at
- * serve time from the stored columns rather than forcing a live fallback.
+ * A dimension or measure from the author's source, re-declared on the serve
+ * shape so it is computed from the stored columns instead of serving live.
  * `code` is the original Malloy expression text.
  */
-export interface FieldRefinement {
+interface FieldRefinement {
    kind: "dimension" | "measure";
    name: string;
    code: string;
 }
 
 /**
- * A join defined on the materialized source in the author's model, re-declared
- * on the serve shape's virtual base so a query traversing it serves from the
- * materialized tables (DuckDB runs the join over the stored tables) instead of
- * falling back to live.
+ * A join from the author's source, re-declared on the serve shape so DuckDB runs
+ * it over the stored tables.
  *
- * A join is only re-emitted when its joined source is ITSELF materialized (has a
- * binding) — the serve shape is one model, so a join to a source that is not a
- * sibling virtual source would fail to compile the WHOLE shape and disable
- * storage serving for the entire package (see {@link extractJoins}'s gate). The
- * `text` is the author's verbatim join declaration (`<alias> is <source> [on|
- * with ...]`), lifted from the source by location — the on-condition is an
- * arbitrary expression, so lifting text carries any condition for free, whereas
- * reconstructing it from the compiled expression tree would not.
+ * Emitted only when the joined source is ITSELF materialized: the serve shape is
+ * one model, so a join to a non-sibling would fail the WHOLE shape and disable
+ * storage serving for the package (see {@link extractJoins}). `text` is lifted
+ * verbatim by location, which carries an arbitrary on-condition for free.
  */
-export interface JoinRefinement {
+interface JoinRefinement {
    kind: "join";
    /** The join alias (`join_one: <alias> is ...`); used for logging/ordering. */
    name: string;
@@ -65,20 +50,14 @@ export interface JoinRefinement {
 }
 
 /**
- * A view (turtle) defined on the materialized source in the author's model,
- * re-declared on the serve shape so a query invoking it by name serves from the
- * materialized tables. A view is a nested query pipeline, not a single
- * expression, so — like a join — its declaration `text` is lifted verbatim from
- * the author's source by location rather than reconstructed.
+ * A view (turtle) from the author's source, re-declared on the serve shape;
+ * `text` is lifted verbatim by location, like a join's.
  *
- * A view has no cheap dependency gate (it can reference any of the source's
- * columns, dimensions, measures, and joins): it is emitted optimistically and,
- * if the resulting shape does not compile (it reaches a refinement not carried —
- * a join to a non-materialized source, a nested view), the serve path drops the
- * view category and falls back for those queries (see the shape-compile
- * escalation in the model's serve path).
+ * A view can reference anything on the source, so there is no cheap dependency
+ * gate: it is emitted optimistically, and if the shape then fails to compile the
+ * serve path's escalation drops the view category.
  */
-export interface ViewRefinement {
+interface ViewRefinement {
    kind: "view";
    /** The view name (`view: <name> is { ... }`); used for logging/ordering. */
    name: string;
@@ -87,22 +66,17 @@ export interface ViewRefinement {
 }
 
 /**
- * A `where:` written in the materialized source's extend block, re-declared on
- * the serve shape's virtual base.
+ * A `where:` from the source's extend block, re-declared on the serve shape.
  *
- * The filter is NOT part of the materialized relation: Malloy's build SQL for a
- * persisted source is the persisted relation alone, and an extend-block `where:`
- * refines that relation when it is read. The colocated tier gets this for free
- * (substitution swaps only the `FROM`, so the reading query keeps its own
- * `WHERE`); the storage tier re-declares the source instead, so it has to carry
- * the filter itself or serve rows the source excludes.
+ * The build SQL is the persisted relation alone; the `where:` applies on read.
+ * The colocated tier keeps it for free (only the `FROM` is swapped), but the
+ * storage tier re-declares the source, so it must carry the filter or serve rows
+ * the source excludes.
  *
- * `code` is the author's verbatim expression text. One refinement per
- * `filterList` entry, emitted as its own `where:` line: Malloy parenthesises
- * each entry and ANDs them, so joining two entries' `code` with `and` would
- * reassociate a top-level `or`.
+ * One refinement per `filterList` entry, each its own `where:` line: joining two
+ * entries with `and` would reassociate a top-level `or`.
  */
-export interface FilterRefinement {
+interface FilterRefinement {
    kind: "filter";
    /** Verbatim author expression, e.g. `not is_deleted`. */
    code: string;
@@ -111,19 +85,13 @@ export interface FilterRefinement {
 /**
  * A `given:` to declare on the serve-shape model, copied from the author's.
  *
- * The other half of {@link FilterRefinement}. A re-emitted `where:` carries the
- * author's verbatim text, so a term over a given arrives as `where: org_id =
- * $ORG_ID` — which compiles only if the shape declares `ORG_ID`. Declaring it is
- * what turns a stripped term back into the filter it was: Malloy substitutes the
- * value the request bound as an inline literal, so the artifact is read with the
- * caller's own predicate, and an equality on a partition column prunes the
- * files it does not name.
+ * A re-emitted {@link FilterRefinement} such as `where: org_id = $ORG_ID`
+ * compiles only if the shape declares `ORG_ID`. Malloy then inlines the
+ * request's value, so the artifact is read with the caller's own predicate (and
+ * a partition-column equality prunes files).
  *
- * `defaultText` is the author's default as a source literal, carried so a caller
- * who supplies nothing gets the answer the live path would give them. Without
- * it, such a request fails the shape compile ("no value and no default") and
- * falls back to live — safe, but a silent loss of the tier for every unbound
- * request.
+ * `defaultText` keeps an unbound request on the tier: without it the shape
+ * compile fails ("no value and no default") and the request silently serves live.
  */
 export interface ServeShapeGiven {
    name: string;
@@ -144,22 +112,17 @@ export type SourceRefinement =
    | ViewRefinement
    | FilterRefinement;
 
+/**
+ * The per-source serve pointer the serve transform consumes, either derived from
+ * a build's manifest entry ({@link deriveServeBindings}) or supplied by a host.
+ */
 export interface ServeBinding {
    /** The Malloy source name to rebind (`source: <sourceName> is ...`). */
    sourceName: string;
    /**
-    * What the source this table was built for IS: `persist` for one the modeler
-    * annotated, `preaggregate` for a rollup the publisher synthesized from
-    * `#@ preaggregate` measures. Absent means `persist`, which is what an entry
-    * written before the field existed means.
-    *
-    * Load-bearing rather than decorative, because the two are shaped differently
-    * and a rollup handled as an ordinary binding fails in both directions. Its
-    * `sourceName` names no source in any model file, so the author-model lookups
-    * that give an ordinary binding its refinements and its public column set find
-    * nothing; and its stored columns are partial aggregates that no source
-    * publicly exposes, so narrowing them against an author source would strip
-    * exactly the columns its measures read. See {@link rollupServeBindings}.
+    * `persist` for a modeler-annotated source, `preaggregate` for a synthesized
+    * rollup; absent means `persist`. A rollup must not take the ordinary
+    * author-model lookups (see {@link rollupServeBindings}).
     */
    origin?: "persist" | "preaggregate";
    /** The storage destination the physical table lives in. */
@@ -171,24 +134,16 @@ export interface ServeBinding {
    /** Authoritative DuckDB columns captured post-build (raw DuckDB types). */
    schema: { name: string; type: string }[];
    /**
-    * Refinements defined on the source in the author's model, re-emitted as an
-    * `extend {}` on the virtual base so queries using them serve from the
-    * materialized tables instead of falling back to live: dimensions/measures
-    * (computed over the stored columns), joins whose target is also materialized
-    * (the join runs over the stored tables), and views (turtles) reproducible
-    * from those. Analytic source-fields are still not carried — a query using
-    * one falls back. Attached at serve time from the compiled model, not the
-    * build.
+    * The author source's refinements, re-emitted as an `extend {}` on the
+    * virtual base. Attached at serve time from the compiled model. Analytic
+    * fields are not carried; a query using one serves live.
     */
    refinements?: SourceRefinement[];
    /** Optional freshness anchor (data-as-of instant); carried through verbatim. */
    freshAsOf?: string;
    /**
-    * Optional freshness window + fallback, carried through verbatim so the serve
-    * path can gate this binding per query the SAME way the colocated
-    * serve does — a stale binding whose fallback is `live`/`fail` is dropped from
-    * the serve shape and served live; `stale_ok` (or un-gated) keeps serving the
-    * materialized table. Placement (`storage=`) is orthogonal to freshness.
+    * Gates this binding per query the same way the colocated serve does: a
+    * stale binding with fallback `live`/`fail` is dropped from the shape.
     */
    freshnessWindowSeconds?: number;
    freshnessFallback?: "live" | "stale_ok" | "fail";
@@ -198,25 +153,16 @@ export interface ServeBinding {
  * For each persist source in a build plan, the sources that materialize into its
  * table — the `aliasesBySourceName` argument {@link deriveServeBindings} takes.
  *
- * Grouped BY content address, because that is what decides which sources really
- * share a table, then keyed BY name, because a name is the only identifier a
- * manifest entry carries that means the same thing whoever built it (an
- * instructed build stamps the caller's `sourceEntityId` on its entry).
+ * Grouped by content address (which decides who shares a table), then keyed by
+ * name, the only identifier a manifest entry carries that means the same thing
+ * whoever built it (an instructed build stamps the caller's `sourceEntityId`).
  *
- * A name declared at more than ONE address is dropped from aliasing entirely.
- * Source names are not unique in a package — two models may each declare `daily`,
- * which is why the wire plan is keyed by sourceID — so such a name cannot be
- * resolved to a table by name at all, and picking one by map order would
- * eventually bind the same name to two different tables. Two `source: daily`
- * declarations then land in one serve shape, which fails to compile and takes the
- * storage tier out for EVERY model in the package (bindings are pushed
- * package-wide), silently: base-only is the tier the ladder trusts without a
- * probe, so the failure surfaces per query rather than at shape build where the
- * tier-drop metric would see it. Dropping the ambiguous name costs that one source
- * its routing and keeps everything else correct.
- *
- * The source that OWNS a name still binds it — see the builder rule in
- * {@link deriveServeBindings}. Only aliasing is withheld.
+ * A name declared at more than one address is dropped from aliasing: names are
+ * not unique in a package, and binding one name to two tables puts two `source:`
+ * declarations in the package-wide serve shape, which fails to compile and
+ * silently takes the storage tier out for every model. Dropping costs only that
+ * source its routing. The source that OWNS the name still binds it (see
+ * {@link deriveServeBindings}).
  */
 export function groupAliasesByName(
    planSources: { name?: string; sourceEntityId?: string }[],
@@ -247,58 +193,37 @@ export function groupAliasesByName(
 }
 
 /**
- * Derive the publisher's self-maintained serve bindings from a build's manifest
- * entries — the standalone half of the injectable binding seam (a host/control
- * plane can supply {@link ServeBinding}s directly instead). Only entries that
- * were materialized into a storage destination (carrying `storageDestinationName`
- * and a captured `schema`) produce a binding; colocated entries do
- * not (they serve through the same-connection manifest, not the transform).
+ * Derive serve bindings from a build's manifest entries (a host may supply
+ * {@link ServeBinding}s directly instead). Only storage-destination entries with
+ * a captured schema produce one; colocated entries serve through the
+ * same-connection manifest.
  *
- * The virtual handle is the source's build-posture **content identity**
- * (`sourceEntityId`): identity-scoped so two imports of the same source dedup to
- * one shared virtual table, and stable across generations — the generation lives
- * in the mapped table path (`physicalTableName`), not the handle. This is the one
- * hard cross-producer contract: whoever supplies the binding (this function, or
- * a host) must key the handle the same way the build did.
+ * The virtual handle is the source's content identity (`sourceEntityId`), so two
+ * imports of one source share a virtual table, and stable across generations
+ * (the generation lives in `physicalTableName`). Whoever supplies a binding must
+ * key the handle the same way the build did.
  *
- * An entry can serve MORE THAN ONE source. `#@ persist` is inherited and `extend`
- * does not change a source's materialization SQL, so a base and its extension
- * share a content address and therefore one entry and one table — the extension
- * correctly gets no table of its own, but it still has to READ the base's. An
- * entry names only the source that BUILT it, so `aliasesBySourceName` supplies the
- * rest, and every one of them is bound to the same virtual handle. That is the
- * handle's purpose: it is identity-scoped, so several sources resolving to one
- * virtual table is the design rather than a collision.
+ * One entry can serve several sources: a base and its `extend`s share a content
+ * address and one table, but the entry names only the builder, so
+ * `aliasesBySourceName` supplies the rest, all bound to the same handle.
  *
- * Without it exactly one alias routes and the others silently serve live, chosen
- * by whichever source happened to build the table.
- *
- * Keyed by source NAME, deliberately, not by `entry.sourceEntityId`. That field
- * carries the identity the BUILDER stamped, which on an instructed build is the
- * caller's — `executeInstructedBuild` treats an instruction's `sourceEntityId` as
- * opaque precisely so a host may derive it any way it likes — while the alias
- * grouping has to be computed from the publisher's own content addresses. Keying
- * on the entry's id would agree with the group only while the host happened to
- * hash exactly as the publisher does, and would silently degrade to one-alias
- * routing the moment it did not. A name is the one identifier both sides mean the
- * same thing by.
+ * Aliases are keyed by NAME, not `entry.sourceEntityId`: on an instructed build
+ * that id is the host's opaque value, which need not match the publisher's own
+ * content addresses the grouping is computed from.
  */
 export function deriveServeBindings(
    entries: Record<string, ManifestEntry>,
    aliasesBySourceName: Record<string, string[]>,
 ): ServeBinding[] {
    const bindings: ServeBinding[] = [];
-   // Every name that OWNS a table in this manifest. An alias never claims one:
-   // the owner is the source whose SQL produced that table, and a name bound
-   // twice — once as its owner, once as someone else's alias — puts two
-   // `source: <name>` declarations in one serve shape.
+   // Names that OWN a table. An alias never claims one, or the name would be
+   // bound twice and declared twice in one serve shape.
    const builders = new Set(
       Object.values(entries)
          .map((entry) => entry.sourceName)
          .filter((name): name is string => !!name),
    );
    for (const entry of Object.values(entries)) {
-      // Need the source name to rebind it, plus a storage destination + table.
       if (
          !entry.sourceName ||
          !entry.storageDestinationName ||
@@ -311,9 +236,8 @@ export function deriveServeBindings(
          .filter((c) => c.name && c.type)
          .map((c) => ({ name: c.name as string, type: c.type as string }));
       if (schema.length === 0) continue;
-      // The builder's own name first, so it wins any ordering downstream; the
-      // aliases follow. Deduplicated because the builder's name is normally in
-      // the address group too.
+      // Builder first so it wins any ordering downstream; deduplicated because
+      // the builder is normally in its own alias group.
       const names = [
          entry.sourceName,
          ...(aliasesBySourceName[entry.sourceName] ?? []).filter(
@@ -323,17 +247,13 @@ export function deriveServeBindings(
       for (const sourceName of names) {
          bindings.push({
             sourceName,
-            // Carried rather than inferred: a manifest travels without its build
-            // plan, so this is the only thing that says a table belongs to a
-            // source that appears in no model file.
+            // Carried, not inferred: a manifest travels without its build plan.
             origin:
                entry.origin === "preaggregate" ? "preaggregate" : "persist",
             destinationName: entry.storageDestinationName,
             virtualHandle: entry.sourceEntityId,
-            // Qualify the table with the destination catalog (the attach alias) so
-            // the serve reads `<store>.<table>` — the build wrote it there, and an
-            // unqualified name would resolve against the serve session's default
-            // catalog, not the attached store.
+            // Qualified with the attach alias: unqualified, it would resolve
+            // against the serve session's default catalog.
             tablePath: `${entry.storageDestinationName}.${entry.physicalTableName}`,
             schema,
             freshAsOf: entry.dataAsOf,
@@ -349,18 +269,12 @@ export function deriveServeBindings(
  * Map a DuckDB column type (as reported by `DESCRIBE`) to a Malloy basic type
  * for the serve-shape `type:` declaration.
  *
- * Only Malloy's basic scalar types are legal in a `type:` field
- * (`number` | `string` | `boolean` | `date` | `timestamp` | `json`), so every
- * DuckDB type must collapse onto one. Numeric widths all become `number`;
- * temporal-with-time becomes `timestamp`; anything unrecognized (nested/array/
- * struct/enum/blob) falls back to `json` — a safe, lossy carrier so an exotic
- * column never breaks the whole serve shape — and is logged so the gap is
- * visible. Matching is case-insensitive and ignores precision args (`DECIMAL(18,2)`)
- * and array suffixes (`INTEGER[]`).
+ * Only Malloy's basic scalar types are legal in `type:`, so every DuckDB type
+ * collapses onto one. Anything unrecognized falls back to `json`, a lossy
+ * carrier so an exotic column never breaks the whole serve shape, and is logged.
  */
 export function duckdbTypeToMalloy(duckdbType: string): string {
    const raw = duckdbType.trim();
-   // Arrays / nested collections carry as json (lossy but safe) for now.
    if (/\[\s*\]/.test(raw)) {
       recordServeShapeTypeFallback("array");
       logger.warn(
@@ -371,13 +285,12 @@ export function duckdbTypeToMalloy(duckdbType: string): string {
       );
       return "json";
    }
-   // Strip precision/scale args: DECIMAL(18,2) -> DECIMAL, VARCHAR(255) -> VARCHAR.
+   // DECIMAL(18,2) -> DECIMAL
    const base = raw
       .replace(/\(.*\)/, "")
       .trim()
       .toUpperCase();
 
-   // Temporal-with-time first (so "TIMESTAMP WITH TIME ZONE" doesn't fall through).
    if (base === "DATE") return "date";
    if (
       base.startsWith("TIMESTAMP") ||
@@ -444,20 +357,14 @@ function emitFieldName(name: string): string {
 }
 
 /**
- * Generate the transient serve-shape model text that rebinds a materialized
- * source to a virtual source on its storage connection, declaring the captured
- * authoritative schema.
+ * Generate the transient serve-shape model that rebinds a materialized source to
+ * a virtual source on its storage connection.
  *
- * The declared `type:` fields are the schema-authority contract: the compiler
- * does NOT type-check a virtual source's declared columns against the real
- * table, so whatever this declares is trusted — a wrong or approximated schema
- * surfaces only as a serve-time execution error. That is why the binding must
- * carry the post-build DESCRIBE schema and this function declares exactly it.
- *
- * Field syntax is DuckDB user-type double-colon (`name::type`); the source line
- * binds to `<conn>.virtual('<handle>')` with the `::<Shape>` constraint. The
- * `##! experimental.virtual_source` flag is injected on this transient model
- * ONLY — it never touches the author's model.
+ * The compiler does NOT check a virtual source's declared columns against the
+ * real table, so a wrong schema surfaces only as a serve-time execution error.
+ * Hence the binding carries the post-build DESCRIBE schema, declared exactly.
+ * The `##! experimental.virtual_source` flag is set on this transient model
+ * only, never the author's.
  */
 export function buildServeShapeModel(
    sourceName: string,
@@ -479,9 +386,8 @@ source: ${sourceName} is ${binding.destinationName}.virtual('${binding.virtualHa
 /**
  * One `given:` declaration line, with the author's default when it has one.
  *
- * The default is emitted as its already-rendered source literal rather than
- * re-printed from the parsed AST, so a string keeps its quoting and a filter
- * keeps its `f''` form without this having to know one type from another.
+ * The default is the already-rendered source literal, so a string keeps its
+ * quoting and a filter its `f''` form without type-specific printing.
  */
 function serveShapeGivenLine(given: ServeShapeGiven): string {
    const suffix =
@@ -502,15 +408,8 @@ function serveShapeFragment(binding: ServeBinding): string {
    let source =
       `source: ${binding.sourceName} is ` +
       `${binding.destinationName}.virtual('${binding.virtualHandle}')::${shapeTypeName}`;
-   // Re-declare the source's refinements on the virtual base so queries that use
-   // them are computed from the stored tables at serve time (the wrapper) rather
-   // than falling back to live. Emission order matters for resolution: joins
-   // first (a dimension/measure/view may reference a joined field), then
-   // dimensions/measures, then the source's own `where:` clauses (which may
-   // reference either), then views (a view may reference any of them).
-   // Everything here references the shape's columns, a sibling virtual source, or
-   // an earlier refinement; anything it references that the shape lacks makes the
-   // serve shape fail to compile, which safely falls back.
+   // Anything a refinement references that the shape lacks fails the shape
+   // compile, which safely falls back.
    const lines = refinementLines(binding.refinements ?? []);
    if (lines.length > 0) {
       source += ` extend {\n${lines.join("\n")}\n}`;
@@ -524,13 +423,10 @@ function serveShapeFragment(binding: ServeBinding): string {
  * Joins first (a dimension, measure, filter or view may reference a joined
  * field), then dimensions and measures, then the source's own `where:` clauses
  * (which may reference either), then views (which may reference any of them).
- * One line per filter — see {@link FilterRefinement} for why they are never
- * combined with `and`.
+ * One line per filter (see {@link FilterRefinement}).
  *
- * Shared by the virtual rebind of a materialized source and the lift of a
- * derived one so the two cannot drift into different orders: a change that
- * resolved in one and not the other would show up as an unexplained fallback on
- * whichever was not the case under test.
+ * Shared by the rebind of a materialized source and the lift of a derived one so
+ * the two cannot drift into different orders.
  */
 function refinementLines(refinements: readonly SourceRefinement[]): string[] {
    const lines: string[] = [];
@@ -552,29 +448,10 @@ function refinementLines(refinements: readonly SourceRefinement[]): string[] {
 }
 
 /**
- * Generate ONE transient serve-shape model rebinding every supplied
- * materialized source to its virtual form — the model the serve path compiles
- * queries against when `PERSIST_STORAGE_MODE=on`. The `##! experimental.virtual_source`
- * flag is emitted once. Each source declares the authoritative captured schema
- * (see {@link buildServeShapeModel} for why the declared schema is trusted on
- * faith and must match the built table).
- *
- * Coverage note: this rebinds each source's BASE to the virtual table with the
- * captured columns, and re-declares the source's dimensions, measures,
- * materialized-target joins, and views (see {@link ServeBinding.refinements}) on
- * top. A query relying on a refinement not carried here (an analytic field, or a
- * join/view that reaches a non-materialized source) does not compile against
- * this model, and the serve path falls back to serving it live.
- */
-/**
- * The two source sets that explain a serve-shape fallback.
- *
- * The compiler names the symbol it could not resolve, which is a symptom shared
- * by both reasons a source can be missing from the shape: it carries no
- * `#@ persist`, or the freshness gate withheld it. "Reference to undefined
- * object" reads identically either way, so the sets are reported next to it.
- *
- * A name the query wants that appears in NEITHER is not materialized at all.
+ * The two source sets that explain a serve-shape fallback. "Reference to
+ * undefined object" reads the same whether a source is unpersisted or withheld
+ * by the freshness gate, so the sets are reported beside it. A name in NEITHER
+ * is not materialized at all.
  */
 export function serveShapeDiagnostics(
    allBindings: ServeBinding[],
@@ -594,12 +471,9 @@ export function serveShapeDiagnostics(
  * A source the author did NOT persist, carried onto the serve shape because
  * everything it is built from is.
  *
- * Without this a query naming such a source cannot compile against the shape and
- * is served live — correct answers, no tier — which is the whole cost of the
- * arrangement the partitioned design recommends for a caller term that does not
- * belong in an artifact (a term over a joined source's own filter). The term
- * lives one level above the persisted sources, where it was never in an artifact
- * to begin with, so serving it needs the entry point on the shape.
+ * Without it a query naming such a source cannot compile against the shape and
+ * serves live. This is the entry point for a caller term kept out of artifacts
+ * by living one level above the persisted sources.
  */
 export interface DerivedSourceLift {
    /** The source name a query names. */
@@ -612,10 +486,9 @@ export interface DerivedSourceLift {
    /** Only what this source ADDS to its base — see {@link liftDerivedSources}. */
    refinements: SourceRefinement[];
    /**
-    * A query-derived source (`X is base -> { … }`), carried as the author's
-    * declaration verbatim rather than as refinements over its base: a query's
-    * output is a new relation, so nothing it declares is inherited from the base
-    * and there is nothing to subtract. When set, `refinements` is empty.
+    * A query-derived source (`X is base -> { … }`), carried verbatim: its output
+    * is a new relation, so nothing is inherited to subtract. When set,
+    * `refinements` is empty.
     */
    text?: string;
 }
@@ -629,45 +502,32 @@ function derivedSourceFragment(lift: DerivedSourceLift): string {
 }
 
 /** The compiled-model facts {@link liftDerivedSources} reads. */
-export interface DerivedLiftContext {
+interface DerivedLiftContext {
    /** The model's `contents`, by source name. */
    contents: Record<string, DerivedSourceDef>;
    /** sourceID -> author source name. */
    sourceNameById: Map<string, string>;
-   /**
-    * Names already on the shape: the materialized sources it rebinds, FRESH
-    * ones only. These are the bases a lift may extend.
-    */
+   /** The FRESH materialized sources on the shape: the bases a lift may extend. */
    shapeSourceNames: ReadonlySet<string>;
    /**
-    * Every source with a serve binding of its own, fresh or not. A candidate is
-    * excluded against this rather than against {@link shapeSourceNames}, and the
-    * two differ by exactly the sources whose bindings were withheld.
-    *
-    * Carrying one of those would serve its base's artifact under its name while
-    * reporting `servedFrom: storage` — which is the outcome a `freshnessFallback`
-    * of `live` or `fail` exists to prevent. A source with no binding at all is
-    * still a candidate; it is the withheld ones that must fall back.
+    * Every source with its own serve binding, fresh or not. Candidates are
+    * excluded against this, not {@link shapeSourceNames}: lifting a withheld
+    * source would serve its base's artifact under its name as
+    * `servedFrom: storage`, defeating a `live`/`fail` `freshnessFallback`.
     */
    boundSourceNames?: ReadonlySet<string>;
    liftText: (location: SourceLocation) => string | undefined;
    /**
-    * Carry a persist source that EXTENDS another as a lift over its base. By
-    * design `#@ persist` is inherited and `extend` does not change the SQL, so
-    * such an extension is its base's table plus what it adds; a lift over the
-    * base's rebound source, re-declaring the additions, is exactly its meaning.
-    * Off by default, which is what the serve path wants: there the extension is
-    * bound as an ALIAS of its base's entry, with that entry's freshness gate, and
-    * a lift beside the alias would be two declarations of one name. The chained
-    * build binds no alias for an extension, so it is the lift or nothing.
+    * Carry a persist source that EXTENDS another as a lift over its base (its
+    * base's table plus what it adds). Off for the serve path, which binds such
+    * an extension as an ALIAS of the base's entry, so a lift would declare the
+    * name twice. The chained build binds no alias, so it needs the lift.
     */
    carryPersistExtensions?: boolean;
    /**
-    * The names a lift may be chosen from. When given, a derived source not in
-    * it is never a candidate, though it stays in `contents` as a base another
-    * candidate may extend. The serve path uses it to lift only what a query
-    * against the model can name — its namespace and what that derives from —
-    * so a hidden dependency the model never exposes cannot fail the shape.
+    * When given, only these names may be lifted (others stay in `contents` as
+    * bases). The serve path passes what a query can name, so a hidden
+    * dependency cannot fail the shape.
     */
    candidateNames?: ReadonlySet<string>;
 }
@@ -678,9 +538,8 @@ export interface DerivedSourceDef {
    /** The sourceID of the source this one extends, when it extends one. */
    extends?: unknown;
    /**
-    * A query-derived source's query. Malloy does not set `extends` on one
-    * (`mkQuerySourceDef` drops it, deliberately), so `structRef` is the only
-    * link to the source it reads.
+    * A query-derived source's query. Malloy sets no `extends` on one, so
+    * `structRef` is the only link to the source it reads.
     */
    query?: { structRef?: unknown; pipeline?: unknown };
    /** Where the author declared the source, for lifting its text verbatim. */
@@ -696,11 +555,8 @@ export interface DerivedSourceDef {
 /**
  * Whether a source opts out of the pre-built table with `#@ -persist`.
  *
- * Read from the source's OWN block notes, never from the `persistent` flag. A
- * source extending a persisted one inherits its `#@ persist` and so is
- * `persistent: true`; writing `#@ -persist` makes it `false` — but so does
- * simply never having inherited one, and the two mean different things here.
- * Only the annotation says the AUTHOR asked for this.
+ * Read from the source's OWN block notes, not the `persistent` flag, which is
+ * also false for a source that never inherited `#@ persist`.
  */
 function optsOutOfPersist(def: DerivedSourceDef): boolean {
    const notes = (
@@ -717,34 +573,20 @@ function optsOutOfPersist(def: DerivedSourceDef): boolean {
  * Choose the non-persisted sources the shape can carry, and reduce each to what
  * it ADDS to its base.
  *
- * Both halves are load-bearing, and the second is the one that is not obvious.
- * A source that extends another INHERITS every one of its fields — its
- * dimensions, measures, views and joins are all present again on the extending
- * source's own field list, and its `where:` clauses are a prefix of the
- * extending source's `filterList`. Re-emitting any of them on top of a base that
- * already declares them is `Cannot redefine`, which fails the whole shape and
- * takes storage serving for every source in the model with it. So each kind is
- * subtracted against the base: fields by name, filters as a prefix by their
- * code.
+ * An extending source's field list repeats every inherited field, and its
+ * `filterList` starts with the base's. Re-emitting those over the base is
+ * `Cannot redefine`, which fails the whole shape, so fields are subtracted by
+ * name and filters as a prefix by code.
  *
- * Selection is a fixpoint rather than one pass, so a chain (a source derived
- * from a derived source) is carried whole, and append order is emission order —
- * a base is always written before anything extending it.
+ * Selection is a fixpoint, so a chain of derived sources is carried whole and a
+ * base is always emitted before its extenders.
  *
- * It fails closed twice over, and neither is theoretical:
- *
- *  - A source is carried only when its base is ALREADY on the shape. A base that
- *    is not materialized, or whose binding the freshness gate withheld, leaves
- *    the source off, and a query naming it falls back live.
- *  - A source that declares a join this cannot carry is left off ENTIRELY rather
- *    than emitted without it. Dropping a join silently is safe on a materialized
- *    source, where an unreferenced join is pruned from the build and a referenced
- *    one fails to compile; here it is not, because the source's own `where:` may
- *    read the alias, and a shape that does not compile costs every source in the
- *    model its tier rather than just this one. Any join not carried — a
- *    non-materialized target, an inline target with no sourceID, an access-
- *    restricted one, or a declaration whose text could not be recovered —
- *    refuses the lift.
+ * Fails closed:
+ *  - A source is carried only when its base is ALREADY on the shape (not
+ *    materialized or withheld as stale leaves it off, serving live).
+ *  - A source with any join this cannot carry is left off ENTIRELY, not emitted
+ *    without the join: its own `where:` may read the alias, and an uncompilable
+ *    shape costs every source in the model its tier.
  */
 export function liftDerivedSources(
    ctx: DerivedLiftContext,
@@ -758,30 +600,15 @@ export function liftDerivedSources(
          derivedFrom(def) !== undefined &&
          (ctx.candidateNames === undefined || ctx.candidateNames.has(name)) &&
          !(ctx.boundSourceNames ?? ctx.shapeSourceNames).has(name) &&
-         // A source that is itself a build target is never a lift candidate,
-         // however it came to be one — `persistent` is true for a plain
-         // extension of a persisted source, which inherits the annotation.
-         //
-         // `shapeSourceNames` cannot stand in for this. It is the set of bindings
-         // that are present AND FRESH, so a persist target whose binding was
-         // withheld — refused, failed, never run, or stale past its window — is
-         // absent from it and would otherwise be lifted over its base. That
-         // serves the base's artifact under the derived source's name while
-         // reporting `servedFrom: storage`, which is precisely what a
-         // `freshnessFallback` of `live` or `fail` exists to prevent.
+         // A build target (including a plain extension, which inherits
+         // `#@ persist`) is never a candidate. `shapeSourceNames` cannot stand
+         // in: a withheld target is absent from it and would be lifted over its
+         // base, serving the base's artifact as `servedFrom: storage`.
          (def?.persistent !== true ||
             (ctx.carryPersistExtensions === true &&
                typeof def.extends === "string")) &&
-         // `#@ -persist` is documented as recomputing the query INSTEAD of using
-         // the pre-built table, and `opt-out-persist-recomputes` pins that
-         // reading. Carrying such a source here would serve it from the stored
-         // table, which is the opposite of what its author asked for.
-         //
-         // This does NOT leave the lift with nothing to carry. Persistence is
-         // inherited through `extend` (Malloy's `src/doc/persist/api.md`), and an
-         // inheriting source is documented as reading the persisted table — which
-         // is what a lift over its base does. `#@ -persist` is the annotation that
-         // opts out of exactly that, so it is the one excluded here.
+         // `#@ -persist` means recompute instead of reading the pre-built table
+         // (pinned by `opt-out-persist-recomputes`); a lift would read it.
          !optsOutOfPersist(def),
    );
    let progressed = true;
@@ -797,9 +624,7 @@ export function liftDerivedSources(
             typeof def.extends === "string"
                ? liftOneDerivedSource(name, def, base, available, ctx)
                : liftQueryDerivedSource(name, def, base, available, ctx);
-         // A source whose joins cannot all be carried is refused for good, not
-         // retried: nothing later in the fixpoint can make a join target
-         // materialized.
+         // A refusal is final: nothing later can make a join target materialized.
          pending[i] = undefined as unknown as (typeof pending)[number];
          progressed = true;
          if (!lift) continue;
@@ -810,7 +635,6 @@ export function liftDerivedSources(
    return lifts;
 }
 
-/** One candidate, or undefined when it cannot be carried safely. */
 /**
  * The sourceID a derived source is built from: the source it extends, or the
  * source a query-derived source's query reads. Undefined for anything else.
@@ -825,13 +649,9 @@ function derivedFrom(def: DerivedSourceDef | undefined): string | undefined {
 }
 
 /**
- * The source an inline parenthesized extension is built on, for a declaration
- * of the form `h is (base extend { … }) -> { … }`. The compiler embeds the
- * parenthesized source as the `structRef` itself: a definition with `extends`
- * and its own join fields but no `sourceID`, since nothing names it. Its text
- * is part of the declaration's, so it is carried with the declaration; what
- * the lift needs from it is what it reads — its base, and its joins (see
- * {@link inlineExtendJoins}).
+ * The base of an inline extension in `h is (base extend { … }) -> { … }`. The
+ * compiler embeds it as the `structRef`: a definition with `extends` and its
+ * own join fields but no `sourceID`. Its text travels with the declaration.
  */
 function inlineExtendBase(structRef: unknown): string | undefined {
    if (structRef === null || typeof structRef !== "object") return undefined;
@@ -849,9 +669,8 @@ function inlineExtendJoins(structRef: unknown): unknown[] {
 }
 
 /**
- * The sourceID a `structRef` names. The compiled model carries it either as the
- * reference itself or as the referenced definition embedded whole, which then
- * holds its own `sourceID`. An inline source has neither and yields undefined.
+ * The sourceID a `structRef` names: the reference itself, or the `sourceID` of
+ * an embedded definition. Undefined for an inline source.
  */
 function structRefSourceId(structRef: unknown): string | undefined {
    if (typeof structRef === "string") return structRef;
@@ -865,19 +684,13 @@ function structRefSourceId(structRef: unknown): string | undefined {
  * Carry a query-derived source (`X is base -> { … } [extend { … }]`) as the
  * author's declaration, verbatim.
  *
- * The private-fact / public-wrapper idiom is the case: `#@ persist` sits on the
- * fact, and queries name a wrapper whose query reads it. Malloy gives such a
- * wrapper no identity of its own (no `extends`, not `persistent`), so it is never
- * a build target and has no binding; without this it is an undefined name on the
- * shape and every query naming it serves live.
+ * This serves the private-fact / public-wrapper idiom: `#@ persist` on the fact,
+ * queries on a wrapper that reads it. The wrapper has no `extends` and is not
+ * `persistent`, so it has no binding of its own.
  *
- * Carried only when everything the declaration names is already on the shape,
- * decided before emission: the base; every source a pipeline stage reads or
- * joins; and every join the extend block declares. That is what keeps a lift
- * that could not compile off the shape — a declaration reaching a warehouse
- * table or an unmaterialized source is left off, and a query naming it falls
- * back live, rather than failing the rung and costing every source in the model
- * its views.
+ * Carried only when everything it names (the base, every source a pipeline stage
+ * reads or joins, every declared join) is already on the shape, so an
+ * uncompilable lift serves live instead of failing the rung for every source.
  */
 function liftQueryDerivedSource(
    sourceName: string,
@@ -913,18 +726,15 @@ function liftQueryDerivedSource(
 }
 
 /**
- * Every source a query pipeline names — a stage's `structRef`, and the
- * `sourceID` of anything it joins. A reference with no in-model identity (an
- * inline source) is reported as the empty string, which maps to no name and so
- * refuses the lift. A named source is not descended into: what it reads is its
- * own binding's concern, and its embedded definition names sources (its own
- * base, a warehouse table) that are rightly absent from the shape.
+ * Every source a query pipeline names: each stage's `structRef` and each join's
+ * `sourceID`. An inline source yields "", which maps to no name and refuses the
+ * lift. A named source is not descended into: what it reads is its own
+ * binding's concern.
  */
 function referencedSourceIds(pipeline: unknown): string[] {
    const out: string[] = [];
-   // Too deep to read is a reference that cannot be vouched for, so it refuses
-   // this lift — never an exception, which would escape lift selection and cost
-   // every other lift in the model with it.
+   // Too deep refuses this lift rather than throwing, which would escape lift
+   // selection and cost every other lift.
    let tooDeep = false;
    const walk = (node: unknown, depth: number): void => {
       if (tooDeep) return;
@@ -1003,13 +813,9 @@ function fieldKey(field: unknown): string {
  * The filters this source adds, i.e. its `filterList` with the base's stripped
  * from the front.
  *
- * Matched by `code` rather than by identity, and only as a PREFIX: a source's
- * inherited filters arrive ahead of its own, so anything after the first
- * mismatch is the source's own even if it happens to repeat the base's text.
- * Re-applying an inherited filter would in fact be harmless for a deterministic
- * predicate — the terms are ANDed — but it would put a term in the shape text
- * that the base beside it already carries, which is a thing a reader has to
- * work out rather than read.
+ * Matched by `code` and only as a PREFIX: inherited filters arrive first, so
+ * anything after the first mismatch is the source's own even if it repeats the
+ * base's text.
  */
 function ownFilterList(
    filterList: unknown[] | undefined,
@@ -1029,42 +835,33 @@ function ownFilterList(
    return own.slice(shared);
 }
 
+/**
+ * Generate ONE transient serve-shape model rebinding every supplied materialized
+ * source to its virtual form, with its refinements re-declared on top. This is
+ * the model the serve path compiles queries against; a query relying on
+ * anything not carried fails to compile here and serves live.
+ */
 export function buildServeShapeModelForBindings(
    bindings: ServeBinding[],
    /**
-    * Pre-aggregation groups, each re-exposing one base source name over its
-    * rollup members. Their members are NOT in `bindings`: a rollup is bound under
-    * a synthesized name nothing queries, and it reaches the shape only through
-    * its group.
+    * Pre-aggregation groups. Their members are NOT in `bindings`: a rollup's
+    * synthesized name is never queried, so it reaches the shape only here.
     */
    rollupGroups: RollupShapeGroup[] = [],
    /**
-    * The author model's given surface, declared verbatim on the shape.
-    *
-    * The WHOLE surface, not the subset the re-emitted filters reference. Two
-    * reasons, and the second is the one that matters. A given the shape declares
-    * and nothing references is inert — Malloy substitutes only where a name is
-    * read — so carrying extras costs nothing. And the routed QUERY is compiled
-    * against this model too: a query whose own text reads a given the model
-    * declares would otherwise fail to compile here and fall back to live, even
-    * though the live answer it falls back to is the same query over the same
-    * rows. Declaring the surface makes the shape accept exactly what the author's
-    * model accepts, which is the property that lets a caller-scoped term live in
-    * a non-persisted extension over materialized sources.
+    * The author model's WHOLE given surface, not just what re-emitted filters
+    * read: an unreferenced given is inert, and the routed query itself may read
+    * a given, so the shape must accept what the author's model accepts.
     */
    givens: ServeShapeGiven[] = [],
    /**
-    * Non-persisted sources built entirely from materialized ones, in dependency
-    * order (see {@link liftDerivedSources}). Emitted after the sources they
-    * extend, which is what makes them resolve.
+    * Non-persisted sources built from materialized ones, in dependency order
+    * (see {@link liftDerivedSources}), emitted after the sources they extend.
     */
    derived: DerivedSourceLift[] = [],
    /**
-    * The `##!` flags of the author files whose declarations `derived` carries,
-    * verbatim. A lift is the author's text, and text written under
-    * `access_modifiers` (an `include { public: … }` wrapper) or any other
-    * experiment compiles only under the same flag; without them one such lift
-    * fails the shape and every lift with it.
+    * The `##!` flags of the author files `derived` came from: lifted text
+    * written under e.g. `access_modifiers` compiles only under the same flag.
     */
    documentFlags: string[] = [],
 ): {
@@ -1076,19 +873,11 @@ export function buildServeShapeModelForBindings(
    // After the materialized sources, before the rollup groups: a lift extends a
    // source emitted above it, and nothing below it can reference one.
    const lifted = derived.map(derivedSourceFragment).join("\n");
-   // Rollup groups last. Nothing above can reference a group's base name — a join
-   // is emitted only when its target is itself a bound source, and a rollup's base
-   // is not one — so no ordering constraint reaches across this boundary.
-   //
-   // That exclusion is correct rather than merely convenient: joining TO a
-   // rollup-backed source would join to pre-aggregated rows, which is not what the
-   // author's join means. A query using such a join does not compile against this
-   // shape and is served live, which is the right answer.
+   // Rollup groups last: nothing above can reference a group's base, since joins
+   // are emitted only to bound sources. Joining TO rollup-backed rows would not
+   // mean what the author's join means, so such a query rightly serves live.
    const groups = rollupGroups.map(rollupServeShapeFragment).join("\n");
-   // Each flag only when the thing it enables is actually emitted, so a package
-   // with no rollups and no givens produces byte-identical text to before either
-   // existed — an unused experimental flag should not be a difference anyone has
-   // to reason about when reading a shape that has none of it in it.
+   // Each flag only when what it enables is emitted.
    const enabled = ["virtual_source"];
    if (rollupGroups.length) enabled.push("composite_sources");
    if (givens.length) enabled.push("givens");
@@ -1105,24 +894,17 @@ export function buildServeShapeModelForBindings(
    return { modelText: `${flags}\n${givenBlock}${body}\n` };
 }
 
-/** One base source re-exposed over its rollup members. */
 /**
- * The refinement kind that is SEMANTICS rather than an optimization, and so is
- * carried by every tier of the serve-shape ladder.
- *
- * Dropping a join or a view costs the tier for the queries that use it; dropping
- * a source's `where:` answers with rows the source excludes. See
- * {@link buildServeShapeTiers}.
+ * Refinement kinds that are SEMANTICS, carried by every tier of the ladder:
+ * dropping a join or view only costs the tier, but dropping a `where:` answers
+ * with rows the source excludes.
  */
 export const NEVER_THINNED: readonly string[] = ["filter"];
 
 /**
- * The refinement kinds each tier keeps, richest first: everything a source
- * declares, then without views, then without joins, then only the kinds that
- * change rows ({@link NEVER_THINNED}). One ladder for the serve shape and the
- * chained build, so a parent's table is read the same way wherever it is
- * read, and thinned the same way when a declaration will not compile over
- * the virtual base.
+ * The refinement kinds each tier keeps, richest first, down to
+ * {@link NEVER_THINNED}. Shared by the serve shape and the chained build so a
+ * parent's table is read and thinned the same way in both.
  */
 export const REFINEMENT_TIER_KINDS: ReadonlyArray<ReadonlySet<string>> = [
    new Set([...NEVER_THINNED, "join", "dimension", "measure", "view"]),
@@ -1132,13 +914,9 @@ export const REFINEMENT_TIER_KINDS: ReadonlyArray<ReadonlySet<string>> = [
 ];
 
 /**
- * Run `attempt` over `bindings` thinned to each tier in turn, richest first,
- * until one succeeds. A tier that keeps the same refinements as the one before
- * it is skipped (nothing to retry); an error `retryOn` does not recognize
- * passes through at once (infrastructure, not shape); when every tier fails,
- * the last tier's error is the one thrown — the shape the floor could not
- * carry. The floor keeps {@link NEVER_THINNED}, so no tier reads a parent
- * unfiltered.
+ * Run `attempt` over `bindings` thinned to each tier, richest first, until one
+ * succeeds. A tier identical to the previous one is skipped; an error `retryOn`
+ * rejects passes through at once; if every tier fails, the last error is thrown.
  */
 export async function buildOverTiers<T>(
    bindings: ServeBinding[],
@@ -1174,50 +952,42 @@ export async function buildOverTiers<T>(
  * One rung of the serve-shape escalation ladder: which refinement kinds to keep,
  * and whether pre-aggregation groups are carried.
  */
-export interface ServeShapeTier {
+interface ServeShapeTier {
    keep: ReadonlySet<string>;
    groups: RollupShapeGroup[];
 }
 
 /**
- * The ladder `Model.compileServeShape` walks, richest first.
- *
- * Built here rather than inline so the invariant that matters can be asserted:
- * EVERY tier keeps {@link NEVER_THINNED}. A tier that did not would answer with
- * rows the source excludes, which is the defect the filter refinement exists to
- * close — and a floor tier assembled separately from the thinning ladder is
- * exactly how that reappears.
+ * The ladder `Model.compileServeShape` walks, richest first. Built here so the
+ * invariant can be asserted: EVERY tier, including the floor, keeps
+ * {@link NEVER_THINNED}.
  */
 export function buildServeShapeTiers(
    rollupGroups: RollupShapeGroup[],
 ): ServeShapeTier[] {
    const always = [...NEVER_THINNED];
-   // Richest first; each keeps fewer optional kinds than the last.
    const keepKinds: Array<ReadonlySet<string>> = [...REFINEMENT_TIER_KINDS];
    const hasGroups = rollupGroups.length > 0;
    return [
-      // Richest, with groups.
       { keep: keepKinds[0], groups: rollupGroups },
       // Then groups DROPPED while every authored refinement is kept, so a
       // group-caused failure costs the rollups and nothing else.
       ...(hasGroups
          ? [{ keep: keepKinds[0], groups: [] as RollupShapeGroup[] }]
          : []),
-      // Then the ordinary thinning ladder, still WITH groups: reaching here means
-      // dropping the groups alone did not fix it, so an authored refinement is
-      // implicated and the groups may be fine.
+      // Then the thinning ladder, still WITH groups: dropping groups alone did
+      // not help, so an authored refinement is implicated.
       ...keepKinds.slice(1).map((keep) => ({ keep, groups: rollupGroups })),
-      // The floor: no optional refinements and no groups. Appended only when
-      // there is a group to drop, since without one the last thinning tier is
-      // already this shape. It keeps the never-thinned kinds like every tier
-      // above it — this floor is the one that historically did not, which let a
-      // package carrying any rollup serve a filtered source unfiltered.
+      // The floor: no optional refinements and no groups (without groups the
+      // last thinning tier is already this). Must still keep NEVER_THINNED, or
+      // a package with any rollup serves a filtered source unfiltered.
       ...(hasGroups
          ? [{ keep: new Set(always), groups: [] as RollupShapeGroup[] }]
          : []),
    ];
 }
 
+/** One base source re-exposed over its rollup members. */
 export interface RollupShapeGroup {
    baseSourceName: string;
    members: ServeBinding[];
@@ -1227,17 +997,12 @@ export interface RollupShapeGroup {
  * The fragment that re-exposes ONE base source name over its rollups: each member
  * as its own virtual source, then a `compose()` binding the author's name to them.
  *
- * `compose()` even for a single member, deliberately. A one-member composite
- * compiles and routes identically to a direct rebind (pinned in
- * preaggregation_virtual_compose_spike.spec.ts), so treating one grain and several
- * as one code path removes a branch that would otherwise be the only difference
- * between the common case and the general one — and a branch there is exactly
- * where a "works with one grain, silently stops with two" bug would live.
+ * `compose()` even for one member: it routes identically to a direct rebind
+ * (pinned in preaggregation_virtual_compose_contract.spec.ts), and one code path
+ * for one grain and several leaves no branch for a grain-count bug to hide in.
  *
- * The composite is NOT total: there is no base member, because the base lives on
- * the source warehouse and every member of a composite must share a connection.
- * So a query no rollup covers fails to compile against this model and falls back
- * to live, which is the fallback the serve path relies on.
+ * The composite has no base member (the base is on another connection), so a
+ * query no rollup covers fails to compile here and serves live.
  */
 function rollupServeShapeFragment(group: RollupShapeGroup): string {
    const members = group.members.map(serveShapeFragment).join("\n");
@@ -1246,42 +1011,20 @@ function rollupServeShapeFragment(group: RollupShapeGroup): string {
 }
 
 /**
- * Assemble the transient BUILD model for a chained `storage=` source — the
- * "stack on the parent" build. Every materialized upstream is rebound
- * to a virtual source on its storage connection (via the SAME serve-shape rebind
- * as the serve path), so the downstream computes over the parents' STORED lake
- * tables in DuckDB; the downstream source is then re-declared over them and
- * annotated `#@ persist` so it surfaces as a persist source when the caller
- * compiles this model and reads `PersistSource.getSQL({ virtualMap })` (the exact
- * mirror of the warehouse build's `getSQL`, only over rebound parents).
+ * Assemble the transient BUILD model for a chained `storage=` source. Every
+ * materialized upstream is rebound to its virtual source (the same rebind as
+ * the serve path), so the downstream computes over the parents' STORED tables
+ * in DuckDB. The downstream is re-declared over them under `#@ persist` so the
+ * caller can read `PersistSource.getSQL({ virtualMap })` from this model.
  *
- * `downstreamDefText` is the RHS of the author's `source: <name> is …` statement,
- * lifted verbatim by location (a top-level source's `location.range` starts just
- * after the `source: ` keyword), so this prepends `source: `. The `#@ persist
- * storage=<dest>` annotation only makes the source appear in the transient build
- * plan — the value is not otherwise consumed (the build session already knows the
- * destination), but naming the real destination keeps the model self-consistent.
+ * `downstreamDefText` is the RHS of the author's `source: <name> is …`, lifted
+ * by location (a top-level source's range starts after `source: `). The
+ * `storage=<dest>` value only puts the source in the transient build plan.
  *
- * Upstream rebinds here are base-only (the captured schema, no re-emitted
- * dimensions/joins/views): the dominant chained case is a rollup over the
- * parent's stored OUTPUT columns. A downstream that references a parent
- * refinement not carried here fails to compile against this model, and the
- * caller falls back to recompute-from-raw — re-emitting parent
- * refinements to widen coverage is a follow-on.
- *
- * `derived` carries the non-persisted sources between the downstream and its
- * stored parents (see {@link liftDerivedSources}), emitted after the parents and
- * before the downstream so each resolves what it names. A downstream need not
- * read a stored parent directly: `checklists_kept is checklists_all extend {…}`
- * over a stored `site_seasons` reads it through `checklists_all`, and without
- * that intermediate in the model the downstream's definition names an undefined
- * object.
- *
- * `documentFlags` are the `##!` lines of the author files the lifted text came
- * from, emitted verbatim ahead of the flags this model needs itself. A lifted
- * declaration is compiled under the flags its own file enabled — `include {}`
- * needs `access_modifiers` — and a transient model that carried only its own two
- * would refuse exactly the declarations the author's file accepts.
+ * `derived` carries non-persisted intermediates between the downstream and its
+ * stored parents (see {@link liftDerivedSources}), emitted between the two so
+ * each resolves what it names. `documentFlags` are the author files' `##!`
+ * lines, which lifted declarations need to compile.
  */
 export function buildChainedStorageBuildModel(params: {
    upstreams: ServeBinding[];
@@ -1291,25 +1034,14 @@ export function buildChainedStorageBuildModel(params: {
    derived?: DerivedSourceLift[];
    documentFlags?: string[];
    /**
-    * The author model's given surface, declared on this model as the serve
-    * shape declares it. A carried intermediate's text is the author's verbatim,
-    * and a dimension on it that reads `$REGION` compiles only if `REGION` is
-    * declared — whether or not the downstream reads that dimension. The build
-    * binds no given; the declarations are what lets the text compile.
+    * The author model's given surface. The build binds no given, but carried
+    * text reading `$REGION` compiles only if `REGION` is declared.
     */
    givens?: ServeShapeGiven[];
 }): string {
-   // A rollup is never an upstream — nothing can reference one, its name being
-   // synthesized and absent from every model file — so one arriving here means a
-   // caller widened its set without deciding to.
-   //
-   // Asserted rather than filtered, and the distinction matters. Filtering would
-   // make a rollup here harmless, which it already is: `deriveServeBindings`
-   // attaches no refinements, so the fragments are bare virtual sources nothing
-   // references. But that is the SAME assumption that expired on the serve path,
-   // where these bindings later acquired refinements — at which point a rollup's
-   // merged measures would start entering BUILD models. An assertion fails loudly
-   // when the assumption stops holding; a filter would keep the damage silent.
+   // A rollup is never referenceable, so one here means a caller widened its
+   // set by mistake. Asserted rather than filtered so the mistake is loud, not
+   // silently tolerated if rollups ever carry refinements into build models.
    const rollup = params.upstreams.find((b) => b.origin === "preaggregate");
    if (rollup) {
       throw new Error(
@@ -1321,9 +1053,7 @@ export function buildChainedStorageBuildModel(params: {
    const upstreamFragments = orderBindingsByJoinDeps(params.upstreams)
       .map(serveShapeFragment)
       .join("\n");
-   // The author's flags first, this model's own last: Malloy accumulates `##!`
-   // lines, so repeating a flag the author also enabled is harmless, and the
-   // two this model always needs are stated once wherever the author's stand.
+   // Malloy accumulates `##!` lines, so repeating an author's flag is harmless.
    const givens = params.givens ?? [];
    const flags = [
       ...(params.documentFlags ?? []),
@@ -1346,21 +1076,16 @@ export function buildChainedStorageBuildModel(params: {
 }
 
 /** What {@link reachedPersistedSources} found on the paths out of a source. */
-export interface ReachedSources {
+interface ReachedSources {
    /**
-    * The persist sources the walk stopped at — the stored tables the source
-    * depends on, whether it reads them directly or through intermediates — as
-    * the model's name for each and its `sourceID`. Neither is a table: several
-    * names share one (`#@ persist` is inherited and `extend` never changes the
-    * SQL), and a name is not unique across a package's models, so the caller
-    * resolves each to its content address by `sourceID` before asking whether
-    * the table is present.
+    * The persist sources the walk stopped at. Names are neither tables (several
+    * share one) nor package-unique, so the caller resolves each to its content
+    * address by `sourceID`.
     */
    persisted: { name: string; sourceID: string }[];
    /**
-    * Set when some path ends at a source with no stored table behind it — a
-    * table or SQL source, or a reference with no in-model identity — which is a
-    * read of the source warehouse nothing stored can stand in for.
+    * Some path ends at a source with no stored table behind it (a table or SQL
+    * source, or a reference with no in-model identity).
     */
    raw: boolean;
    /** The sources those paths ended at (`regions`), for the reason text. */
@@ -1368,52 +1093,34 @@ export interface ReachedSources {
    /** The non-persisted sources that reach them (`daily_regional`). */
    rawVia: string[];
    /**
-    * Every named source the walk passed through or stopped at, the root
-    * excluded: the downstream's dependency closure, which is exactly the set
-    * of sources a build over its stored parents needs declared — and no
-    * other. A model declares more than one chain, and a source off this
-    * one's path is not this build's concern, however it lifts.
+    * Every named source the walk passed through or stopped at, root excluded:
+    * exactly the sources a build over the stored parents needs declared.
     */
    visited: string[];
 }
 
 /**
  * What a source reaches, walking the author model from `name` through the
- * sources it is built from and stopping at each persist source on the way —
- * `isPersisted(name)`, which the caller answers from the build plan.
+ * sources it is built from and stopping at each persist source, as
+ * `isPersisted` (answered from the build plan) says.
  *
- * Which names are persist sources is the plan's to say, not the annotation's.
- * `#@ persist` is inherited: a plain `extend` of a persisted source, or a rename
- * of one, is a persist source too and shares the base's table, because neither
- * changes the SQL the table is built from. Nothing on a definition says which
- * of several names "declared" the annotation (the compiler copies the base's
- * notes onto an extension), and the design does not ask: a stored table is a
- * content address, and every name whose SQL hashes to it is that table. So the
- * walk records the NAMES it stopped at, and the caller resolves each to its
- * address group to decide whether the table is present.
+ * The plan, not the annotation, decides: `#@ persist` is inherited, so an
+ * `extend` or rename of a persisted source shares its table, and nothing on a
+ * definition says which name "declared" it. The walk records names; the caller
+ * resolves each to its address group.
  *
- * An extension's own refinements are the one thing of its that is NOT in the
- * table: `daily_regional is daily extend { join_one: r is regions … }` has
- * `daily`'s SQL and `daily`'s table, and the join to `regions` is computed over
- * it at read time. A downstream reading `r.region` therefore reaches `regions`
- * — a warehouse table — even though every persist source on its path is
- * stored. So at a persist source that extends another, the walk still follows
- * the joins the extension adds (those its base does not carry) and nothing
- * else of it; its base's query is the table.
+ * An extension's own joins are NOT in its table: `daily_regional is daily
+ * extend { join_one: r is regions … }` computes the join at read time, so the
+ * walk still follows the joins a persisted extension adds, and nothing else.
  *
- * A reference carried as the referenced definition embedded whole (an inline
- * `(daily extend { … }) -> …`, a join written in place) is walked as that
- * definition; only a reference with no identity at all, or to a name the model
- * does not hold, reads as raw.
+ * An embedded definition (inline extension, join written in place) is walked
+ * as itself; only a reference with no identity, or to a name the model lacks,
+ * is raw.
  *
- * The distinction this draws is the one a chained build's refusal turns on. A
- * stored table the walk finds that this build did not materialize or reference
- * is an upstream the orchestrator meant to pin and the build cannot see — the
- * case `strictUpstreams` exists to refuse. A path that reaches raw is a shape
- * the destination alone cannot express, where recomputing from the warehouse is
- * the only build there is. And a source that reaches neither raw nor a missing
- * table, yet cannot be carried over its parents, is a limit of the carrying —
- * which strict must not read as licence to recompute a table it pinned.
+ * A chained build's refusal turns on this: a stored table not bound is an
+ * upstream `strictUpstreams` refuses; a raw path can only be recomputed from
+ * the warehouse; a source reaching neither that still cannot be carried is a
+ * carrying limit, which strict must not treat as licence to recompute.
  */
 export function reachedPersistedSources(
    ctx: Pick<DerivedLiftContext, "contents" | "sourceNameById">,
@@ -1433,11 +1140,10 @@ export function reachedPersistedSources(
       rawLeaves.add(leaf);
       rawVia.add(via);
    };
-   // A reference is a sourceID (string), the referenced definition embedded
-   // whole (object), or nothing usable.
-   // A `sourceID` is `name@<model URL>`; the name alone is what a reason may
-   // carry, since the URL is the server's path to the file.
+   // A `sourceID` is `name@<model URL>`; only the name may appear in a reason,
+   // since the URL is the server's file path.
    const nameOf = (sourceID: string): string => sourceID.split("@")[0];
+   // A reference is a sourceID, an embedded definition, or nothing usable.
    const follow = (ref: unknown, via: string): void => {
       if (typeof ref === "string") {
          const next = ctx.sourceNameById.get(ref);
@@ -1445,9 +1151,8 @@ export function reachedPersistedSources(
             visit(ctx.contents[next], next, false, via);
             return;
          }
-         // No definition to descend into, but the plan knows the id as a
-         // persist source: a stored table reached through an import the
-         // model's own view does not carry. A stop, never raw.
+         // Not in this model's view (e.g. via an import) but known to the plan
+         // as a persist source: a stop, never raw.
          const name = nameOf(ref);
          if (isPersisted(name, ref)) {
             visited.add(name);
@@ -1471,8 +1176,6 @@ export function reachedPersistedSources(
       for (const field of fields ?? []) {
          const f = field as { join?: unknown; sourceID?: unknown };
          if (typeof f.join !== "string") continue;
-         // A join field is the joined definition itself, with its identity on it
-         // when the model names it.
          follow(
             typeof f.sourceID === "string" ? f.sourceID : field,
             sourceName,
@@ -1491,11 +1194,8 @@ export function reachedPersistedSources(
       );
       return (def.fields ?? []).filter((f) => !baseFields.has(fieldKey(f)));
    };
-   // `sourceName` is the model's name for the definition, or undefined for one
-   // embedded in place, which no plan fact can be about. `via` is the source
-   // whose definition referenced this one — what the reason names as reaching a
-   // leaf, since the leaf itself (`regions`) says nothing about which
-   // intermediate dragged it in, and what an embedded definition is reported as.
+   // `sourceName` is undefined for an embedded definition. `via` is the source
+   // that referenced this one, which the reason names alongside the leaf.
    const visit = (
       def: DerivedSourceDef | undefined,
       sourceName: string | undefined,
@@ -1510,8 +1210,7 @@ export function reachedPersistedSources(
       if (seen.has(def)) return;
       seen.add(def);
       if (!root && sourceName !== undefined) visited.add(sourceName);
-      // The root is the source being built: it is persisted by definition, and
-      // the question is what IT reaches, so only its descendants can stop the walk.
+      // The root is the source being built; only its descendants stop the walk.
       const sourceID = (def as { sourceID?: unknown }).sourceID;
       if (
          !root &&
@@ -1576,11 +1275,9 @@ export function missingPersistedTables(
 }
 
 /**
- * Every reference a query pipeline makes — a stage's `structRef`, and anything
- * it joins — as the sourceID when the model names it, else the embedded
- * definition itself, so a caller can walk into an inline source rather than
- * give up on it. A named source is not descended into: its definition is the
- * caller's to look up, and descending here would walk it twice.
+ * Every reference a query pipeline makes (stage `structRef`s and joins), as the
+ * sourceID when named, else the embedded definition so the caller can walk an
+ * inline source. Named sources are not descended into; the caller looks them up.
  */
 function pipelineReferences(pipeline: unknown): unknown[] {
    const out: unknown[] = [];
@@ -1606,19 +1303,12 @@ function pipelineReferences(pipeline: unknown): unknown[] {
 }
 
 /**
- * The `##!` lines of an author file — the document flags its declarations
- * compile under. Order is kept and blank lines are dropped.
- */
-/**
- * What a bound source adds to the relation its table holds: the joins,
- * dimensions and measures, extend-block filters and views declared on it,
- * which its build SQL leaves out (a persist source's build is the persisted
- * relation alone) and which must be re-declared on its virtual binding to be
- * applied when the table is read. One assembly for the serve shape and the
- * chained build, so a table is read the same way wherever it is read; a
- * binding missing its source's `where:` reads unfiltered rows, silently.
- * `materializedSourceNames` bounds the joins carried: one to a source that is
- * not on the shape is left off, and text that reads it then fails to compile.
+ * What a bound source adds to its table's relation (joins, dimensions,
+ * measures, filters, views), which the build SQL leaves out and the virtual
+ * binding must re-declare. Shared by the serve shape and the chained build so a
+ * table is read the same way in both; a binding missing its `where:` silently
+ * reads unfiltered rows. Joins to sources outside `materializedSourceNames` are
+ * left off.
  */
 export function authorRefinementsFor(
    sourceName: string,
@@ -1639,9 +1329,8 @@ export function authorRefinementsFor(
 }
 
 /**
- * The `##!` flags of every author file a set of lifts carries declarations
- * from, deduplicated in first-seen order — what a model that carries their
- * text must enable to compile it.
+ * The `##!` flags of every author file the lifts come from, deduplicated in
+ * first-seen order: what a model carrying their text must enable.
  */
 export function documentFlagsForLifts(
    lifts: readonly { sourceName: string }[],
@@ -1660,6 +1349,7 @@ export function documentFlagsForLifts(
       .filter((line, i, all) => all.indexOf(line) === i);
 }
 
+/** The `##!` lines of an author file, in order, trimmed. */
 export function documentFlagLines(text: string): string[] {
    // Block comments first, so a `##!` quoted inside one is not a flag.
    return text
@@ -1670,17 +1360,11 @@ export function documentFlagLines(text: string): string[] {
 }
 
 /**
- * The compiled-model facts a lift reads, assembled from a compiled `ModelDef`:
- * its `contents` by source name, a sourceID index over them, and readers that
- * recover a declaration's verbatim text, or a whole file, from the author's
- * source by location. One file cache per call, so a package's sources read each
- * file once between them.
- *
- * Shared by the serve path (refinement extraction and the derived-source lift)
- * and the chained build (the intermediates it carries), so both read ONE view
- * of the model.
+ * The compiled-model facts a lift reads: `contents` by source name, a sourceID
+ * index, and readers for a declaration's verbatim text or a whole file. Shared
+ * by the serve path and the chained build so both read ONE view of the model.
  */
-export type AuthorModelLiftContext = {
+type AuthorModelLiftContext = {
    contents: Record<string, DerivedSourceDef & { sourceID?: unknown }>;
    sourceNameById: Map<string, string>;
    liftText: (location: SourceLocation) => string | undefined;
@@ -1688,10 +1372,8 @@ export type AuthorModelLiftContext = {
 };
 
 /**
- * One context per compiled model: a compiled `ModelDef` is immutable, and the
- * files it was compiled from are what they were when it was — a republish
- * compiles a new one. Without this a run rebuilt the context, and re-read the
- * author files, once or twice per persist source.
+ * One context per compiled model, which is immutable (a republish compiles a
+ * new one), so author files are read once rather than per persist source.
  */
 const liftContextByModel = new WeakMap<object, AuthorModelLiftContext>();
 
@@ -1724,15 +1406,10 @@ function buildAuthorModelLiftContext(
         }
       | undefined;
    const namespace = md?.contents ?? {};
-   // The model's namespace, plus its hidden dependencies: a source an import
-   // brought in transitively without placing it in this model's namespace —
-   // `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly`
-   // is built from, out of `contents` — lives in `sourceRegistry` as a full
-   // definition under its declared name (`as`). The walk, the lift and the
-   // flag gathering read one view of what this model's sources are built
-   // from, so a stored parent reached only through an import is a stop and a
-   // carried declaration, not a table the model cannot name. The namespace
-   // wins a name clash: it is what the model's own text refers to.
+   // The namespace plus hidden dependencies from `sourceRegistry`:
+   // `import { weekly } from "orders.malloy"` leaves `daily`, which `weekly` is
+   // built from, out of `contents`. Including them lets a stored parent reached
+   // only through an import be found. The namespace wins a name clash.
    const contents: Record<string, Def> = {};
    for (const value of Object.values(md?.sourceRegistry ?? {})) {
       const entry = value?.entry;
@@ -1742,15 +1419,12 @@ function buildAuthorModelLiftContext(
       contents[name] = entry;
    }
    Object.assign(contents, namespace);
-   // sourceID -> author source name, for the join materialization gate and
-   // for resolving what a derived source extends.
    const sourceNameById = new Map<string, string>();
    for (const [name, def] of Object.entries(contents)) {
       if (typeof def?.sourceID === "string") {
          sourceNameById.set(def.sourceID, name);
       }
    }
-   // Cache each source file's text (or null when unreadable) across lookups.
    const fileCache = new Map<string, string | null>();
    const fileText = (url: string): string | undefined => {
       if (!url.startsWith("file:")) return undefined;
@@ -1766,14 +1440,10 @@ function buildAuthorModelLiftContext(
 }
 
 /**
- * Order bindings so a joined source is declared before the source that joins it:
- * Malloy resolves `source:` statements top-to-bottom, so a join to a source not
- * yet declared is an "undefined object" error. Only intra-set join dependencies
- * are ordered (a join is emitted only when its target is in the set anyway).
- * Stable: independent sources keep their original order. On a dependency cycle
- * (mutual joins, which cannot be single-pass forward-referenced), the remaining
- * sources are appended in original order — the resulting shape fails to compile
- * and the caller drops joins / falls back, rather than looping.
+ * Order bindings so a joined source is declared before the source joining it
+ * (Malloy resolves `source:` top-to-bottom). Stable. On a cycle the rest are
+ * appended in original order; the shape then fails to compile and the caller
+ * thins joins, rather than looping.
  */
 function orderBindingsByJoinDeps(bindings: ServeBinding[]): ServeBinding[] {
    const present = new Set(bindings.map((b) => b.sourceName));
@@ -1821,28 +1491,10 @@ function orderBindingsByJoinDeps(bindings: ServeBinding[]): ServeBinding[] {
 }
 
 /**
- * Extract a materialized source's re-emittable refinements — the dimensions and
- * measures defined on it in the author's model — from its compiled field list,
- * so they can be re-declared on the serve shape's virtual base.
- *
- * A derived field carries its original expression as `code` and an
- * `expressionType`; the source's raw output columns have neither (they are the
- * stored columns, already in the shape's `::` type). Scalar → dimension,
- * aggregate → measure. Joins are handled separately ({@link extractJoins});
- * views (turtles) and analytic/calculation fields are deliberately skipped —
- * re-emitting them is out of scope, and a query that uses one simply falls back
- * to live (safe).
- */
-/**
- * Whether a compiled field carries a non-public access modifier
- * (`private`/`internal`). Such a field is hidden by the live model's access
- * control, so it must NEVER be re-emitted onto the serve shape: the served
- * virtual source carries no access modifiers, so re-declaring a private/internal
- * dimension, measure, join, or view would expose — over the stored table — a
- * field the live path refuses. Skipping it makes any query that references it
- * fall back to live, where the modifier is enforced (fail-safe). Defensive on
- * the value: anything other than an absent/`public` modifier is treated as
- * restricted, so a future modifier kind also fails closed.
+ * Whether a compiled field carries a non-public access modifier. Such a field
+ * must NEVER be re-emitted: the virtual source carries no access modifiers, so
+ * it would expose what the live path refuses. Anything but absent/`public`
+ * counts as restricted, so an unknown future modifier fails closed.
  */
 function isAccessRestricted(field: unknown): boolean {
    const am = (field as { accessModifier?: unknown }).accessModifier;
@@ -1853,42 +1505,24 @@ function isAccessRestricted(field: unknown): boolean {
  * Narrow a binding's captured DESCRIBE schema to the columns the source
  * PUBLICLY exposes, dropping any physical column the source hides.
  *
- * The build's `getSQL` projects the source's underlying columns, so a column
- * hidden at the source level — removed by `except:`, or carrying a non-public
- * access modifier — is still materialized into the table and captured by
- * `DESCRIBE`. Declaring it on the serve shape would make it reachable through
- * the virtual source even though the live path hides it (v0 never does this: it
- * recompiles the original source definition with only the base table swapped, so
- * the source's own visibility always applies). A column is kept only if it names
- * a publicly-visible field of the compiled source; an `except:`-ed column is
- * absent from the field list, and an access-restricted one is caught by
- * {@link isAccessRestricted} — both are dropped. A captured name is matched
- * EXACTLY first and only then case-insensitively, and the surviving column is
- * emitted under the AUTHOR's spelling, because the captured name is in the
- * source warehouse's identifier case rather than the author's. An ambiguous
- * fold — several author fields folding onto one captured column — is dropped
- * rather than guessed. See the body for why each of those three is load-bearing. Dropped columns stay physically
- * in the table but become unreachable through the source: a query that
- * references one fails the shape compile and falls back to live, where the
- * source's visibility rules are enforced (fail-safe). This mirrors the
- * refinement/join/view access filtering — the serve surface must reproduce the
- * source's PUBLIC surface exactly, never widen it.
+ * A column hidden by `except:` or an access modifier is still materialized and
+ * captured by `DESCRIBE`; declaring it would expose it through the virtual
+ * source. The serve surface must reproduce the source's PUBLIC surface exactly,
+ * never widen it. A query touching a dropped column serves live, where
+ * visibility is enforced.
+ *
+ * A captured name matches EXACTLY first, then case-insensitively, and is
+ * emitted under the AUTHOR's spelling; an ambiguous fold is dropped. See the
+ * body for why each rule matters.
  */
 export function narrowSchemaToPublic(
    schema: { name: string; type: string }[],
    fields: readonly unknown[] | undefined,
 ): { name: string; type: string }[] {
-   // Two lookups, tried in that order, because the two sides of this
-   // intersection are in different namespaces: `fields` carries the names the
-   // author WROTE, while `schema` carries what DESCRIBE reported for the built
-   // table -- and a warehouse that folds unquoted identifiers (Snowflake, Oracle,
-   // Redshift and Teradata all upper-fold) reports them in ITS case, not the
-   // author's. Matching only exactly intersects to nothing there, and an empty
-   // narrowed schema is not a partial failure: the caller drops such a binding
-   // entirely, so the source vanishes from the serve shape and every query on it
-   // dies at "Reference to undefined object" and falls back live. Silently -- the
-   // rows are correct, only the tier is lost -- so it reads as "materialization
-   // did nothing" rather than as a bug.
+   // `fields` has the author's spelling; `schema` has DESCRIBE's, which an
+   // upper-folding warehouse (Snowflake, Oracle, Redshift, Teradata) reports in
+   // its own case. Exact-only matching would narrow to nothing there, and the
+   // caller drops an empty binding, silently losing the tier.
    const exactNames = new Set<string>();
    const byFoldedName = new Map<string, string[]>();
    for (const f of fields ?? []) {
@@ -1909,34 +1543,23 @@ export function narrowSchemaToPublic(
    for (const c of schema) {
       let authorName: string | undefined;
       if (exactNames.has(c.name)) {
-         // An exact hit is authoritative and must be tried FIRST. On a
-         // case-PRESERVING warehouse the captured name already is the author's,
-         // and Malloy permits two fields whose names differ only in case -- a
-         // `TitleCase` dimension over a `snake_case` column. Folding first would
-         // let the dimension's name win the physical column, so the shape declared
-         // the stored column under the dimension's name, the duplicate failed the
-         // shape down to base-only, and the query served the raw column in place
-         // of the computed one. Wrong rows, `servedFrom: storage`, no warning.
+         // Exact first: Malloy allows fields differing only in case, and folding
+         // first could declare a stored column under a dimension's name, which
+         // serves the raw column in place of the computed one (wrong rows).
          authorName = c.name;
       } else {
          const candidates = byFoldedName.get(c.name.toLowerCase());
-         // Exactly one, or not at all. Several author fields folding onto one
-         // captured column cannot be resolved from here, and guessing is the
-         // failure above; dropping sends a query that touches it to live, where
-         // the author's own names still distinguish them.
+         // Exactly one, or drop (serves live) rather than guess.
          if (candidates?.length === 1) {
             authorName = candidates[0];
          }
       }
-      // Absent from the public surface (`except:`-ed or access-restricted) in
-      // either namespace: dropped, exactly as before. Neither lookup can invent
-      // an author field, so a hidden one stays hidden.
+      // Not on the public surface: dropped. Neither lookup can invent a field.
       if (authorName === undefined) {
          continue;
       }
-      // Two captured columns can still reach one author field (a folded hit plus
-      // an exact one). Declaring the name twice fails the whole shape, so the
-      // first in captured order wins and the rest drop.
+      // A folded and an exact hit can reach one field; declaring it twice fails
+      // the shape, so the first in captured order wins.
       if (emitted.has(authorName)) {
          continue;
       }
@@ -1950,40 +1573,22 @@ export function narrowSchemaToPublic(
  * The source-level filters to re-declare on the serve shape, one per
  * `filterList` entry of the materialized source's compiled definition.
  *
- * EVERY entry is carried, including one that cannot be reproduced on the shape:
- * a filter reaching through a join whose target is not materialized, or one over
- * a column the source hides (the declared `::Shape` is narrowed to the source's
- * PUBLIC columns, so `where: not is_deleted` with `except: is_deleted` names a
- * column the shape does not declare). Such an entry makes the shape fail to
- * compile, which is the required outcome — a dropped filter is not a lost
- * optimization, it is rows the source excludes. See the serve-shape ladder in
- * `Model.compileServeShape`, which keeps this kind at every tier for that
- * reason.
+ * EVERY entry is carried, even one the shape cannot reproduce (through an
+ * unmaterialized join, or over a hidden column): the shape must then fail to
+ * compile, because a dropped filter serves rows the source excludes.
+ * `Model.compileServeShape` probes bindings alone and withholds only the ones
+ * whose filters do not reproduce, so siblings keep their tier.
  *
- * The cost is that source's tier and no one else's. The shape is one model text
- * covering every binding, so the failure surfaces model-wide; `compileServeShape`
- * answers it by probing each binding alone, withholding the ones whose filters do
- * not reproduce, and re-entering the ladder with the rest — so a sibling keeps
- * its joins and views rather than being frozen at the shape that failed.
+ * The main case is a `where:` over a given: the build leaves it out, so the
+ * artifact holds every caller's rows, and this re-emission puts the term back
+ * per caller. `filterList` accumulates through `extend`, so inherited filters
+ * are included.
  *
- * A filter referencing a given is the main thing that reaches here. The gate
- * admits an extend-block `where:` over a given — the build leaves it out, so the
- * artifact holds every caller's rows and this re-emission is what puts the term
- * back per caller. It compiles because the shape declares the model's givens.
- * `#(partition)` and `#(authorize)` are still refused outright.
+ * A rollup member carries no filter refinement: its build reads the base, so
+ * the filter is already baked in.
  *
- * `filterList` accumulates through `extend`, so a source's own entries already
- * carry every filter it inherits from the source it extends.
- *
- * A pre-aggregation ROLLUP member carries no filter refinement, and that
- * asymmetry is not an oversight: a rollup is a `-> { }` derived source, so
- * READING its base applies the base's filter and the rollup's own build SQL bakes
- * it in. A base binding rebinds the stored relation directly and so must
- * re-declare the filter; a rollup already has it.
- *
- * Fail-closed on a malformed entry: an entry whose `code` is not a string
- * yields a filter that cannot compile, so the binding is withheld rather than
- * silently under-filtered.
+ * A malformed entry (non-string `code`) yields {@link UNREPRODUCIBLE_FILTER},
+ * withholding the binding rather than under-filtering.
  */
 export function extractSourceFilters(
    filterList: readonly unknown[] | undefined,
@@ -2000,13 +1605,18 @@ export function extractSourceFilters(
 }
 
 /**
- * Emitted in place of a filter whose expression text could not be read. Not
- * valid Malloy, deliberately: it fails the shape compile, which withholds the
- * binding and serves live. The alternative — dropping the entry — would serve
- * the unfiltered relation.
+ * Emitted for a filter whose text could not be read. Deliberately not valid
+ * Malloy: failing the shape compile serves live, where dropping the entry would
+ * serve the unfiltered relation.
  */
 export const UNREPRODUCIBLE_FILTER = "__unreproducible_filter__";
 
+/**
+ * The dimensions and measures defined on a materialized source, from its
+ * compiled fields. Raw columns have no `code`; joins and views are extracted
+ * separately, and analytic/calculation fields are skipped (those queries serve
+ * live).
+ */
 export function extractRefinements(
    fields: readonly unknown[] | undefined,
 ): FieldRefinement[] {
@@ -2024,22 +1634,17 @@ export function extractRefinements(
          out.push({ kind: "dimension", name: f.name, code: f.code });
       } else if (
          f.expressionType === "aggregate" ||
-         // `all(…)` / `exclude(…)` over a measure: a measure like any other
-         // on the relation it is declared over, which a virtual base is. A
-         // view on the same source commonly reads one, and a view is carried
-         // verbatim — leaving the measure off makes that view fail to compile.
+         // `all(…)` / `exclude(…)`: carried views often read one.
          f.expressionType === "ungrouped_aggregate"
       ) {
          out.push({ kind: "measure", name: f.name, code: f.code });
       }
-      // analytic / calculation and non-atomic fields (joins, turtles have no
-      // `code`) are skipped → those queries fall back.
    }
    return out;
 }
 
 /** A zero-based Malloy source range (as carried on a compiled field's `location`). */
-export interface SourceRange {
+interface SourceRange {
    start: { line: number; character: number };
    end: { line: number; character: number };
 }
@@ -2051,10 +1656,9 @@ export interface SourceLocation {
 }
 
 /**
- * Slice the substring covered by a Malloy `location.range` out of the full
- * source text (both line and character are zero-based). Returns undefined when
- * the range is out of bounds — a stale or mismatched source — so the caller
- * skips the refinement and falls back to live rather than emitting garbage.
+ * Slice the text covered by a zero-based Malloy `location.range`. Undefined
+ * when out of bounds (stale or mismatched source), so the caller skips the
+ * refinement rather than emitting garbage.
  */
 export function sliceSourceRange(
    text: string,
@@ -2077,12 +1681,10 @@ export function sliceSourceRange(
 }
 
 /** What {@link extractJoins} needs beyond the compiled field list. */
-export interface JoinExtractionContext {
+interface JoinExtractionContext {
    /**
-    * The joined source's author name, keyed by the compiled join field's
-    * `sourceID` (which equals the joined source's own `sourceID`). Only a join
-    * whose target maps here — a named, in-model source — is a candidate; an
-    * anonymous/inline join target is absent from the map and is skipped.
+    * sourceID -> author source name. An inline join target is absent, so its
+    * join is skipped.
     */
    sourceNameById: Map<string, string>;
    /** Author source names that are materialized (have a serve binding). */
@@ -2092,19 +1694,11 @@ export interface JoinExtractionContext {
 }
 
 /**
- * Extract a materialized source's re-emittable joins from its compiled field
- * list. A join is carried only when BOTH hold: (1) its joined source is a
- * named, in-model source (its `sourceID` maps to a name), and (2) that source
- * is itself materialized (has a binding). The second is load-bearing, not an
- * optimization: the serve shape is one model, so a join to a source it does not
- * declare would fail the whole shape's compile and disable storage serving for
- * every source in the package.
- *
- * The declaration text is lifted verbatim from the author's source by location
- * (the on-condition is an arbitrary expression; lifting text carries any
- * condition, whereas reconstructing it from the compiled expression tree would
- * not); the keyword comes from the compiled relationship. A join we cannot map
- * or lift is skipped, and a query using it falls back to live (safe).
+ * Extract a materialized source's re-emittable joins. A join is carried only
+ * when its target is a named in-model source that is itself materialized: a
+ * join to a source the shape does not declare fails the whole shape (see
+ * {@link JoinRefinement}). A join that cannot be mapped or lifted is skipped,
+ * and queries using it serve live.
  */
 export function extractJoins(
    fields: readonly unknown[] | undefined,
@@ -2149,15 +1743,8 @@ export function extractJoins(
 }
 
 /**
- * Extract a materialized source's re-emittable views (turtles) from its compiled
- * field list. A view is a nested query pipeline, not a single expression, so its
- * declaration text is lifted verbatim from the author's source by location
- * rather than reconstructed. Unlike a join, a view has no cheap dependency gate
- * (it can reference any column/dimension/measure/join of the source), so it is
- * emitted optimistically: if the resulting shape does not compile — the view
- * reaches something not carried (a join to a non-materialized source, a nested
- * view) — the serve path drops the view category and those queries fall back to
- * live (safe). A view we cannot lift is skipped.
+ * Extract a materialized source's re-emittable views, emitted optimistically
+ * (see {@link ViewRefinement}). A view whose text cannot be lifted is skipped.
  */
 export function extractViews(
    fields: readonly unknown[] | undefined,
@@ -2182,18 +1769,10 @@ export function extractViews(
 }
 
 /**
- * Assemble the per-call `virtualMap` (`destinationName -> handle -> canonical
- * table path`) core resolves a virtual source through. The table path is quoted
- * canonical for DuckDB — core validates every entry is canonical SQL for some
- * dialect and then pastes it verbatim (it does not quote it), so an unquoted or
- * mis-cased path is a run-time error. Multiple bindings on one connection fold
- * into that connection's inner map.
- *
- * This is a FROM-bind site, so it uses {@link quoteManifestTablePath} — the same
- * quoting authority as the build-side manifest seed and the serve-side manifest
- * bind (publisher #904) — which quotes for the dialect UNLESS the path is already
- * canonical SQL (an author-supplied `name=` the author already quoted), so an
- * already-quoted name is never double-quoted.
+ * Assemble the per-call `virtualMap` (`destinationName -> handle -> table
+ * path`). Core pastes each path verbatim, so it must be quoted canonical
+ * DuckDB SQL. {@link quoteManifestTablePath} is the same quoting authority the
+ * manifest binds use, and never double-quotes an author-quoted `name=`.
  */
 export function buildVirtualMap(
    bindings: ServeBinding[],
@@ -2211,19 +1790,12 @@ export function buildVirtualMap(
 }
 
 /**
- * The DuckDB-compile portability gate (the third materialization-eligibility
- * check, deferred from the pre-build pass because it needs the post-build
- * schema): compile the serve-shape model against DuckDB and refuse the source if
- * it does not compile. Because the served table lives in DuckDB, a source
- * authored against a warehouse must have a DuckDB-compilable served shape — this
- * turns a serve-time 500 into a build-time refusal.
+ * The DuckDB portability gate, run post-build because it needs the captured
+ * schema: refuse a source whose serve shape does not compile in DuckDB, turning
+ * a serve-time 500 into a build-time refusal.
  *
- * Scope note: the current serve shape declares the captured columns (a
- * simple-semantic-layer serve); preserving a rich extend block (measures/dims/
- * joins) across the base swap and compiling THAT in DuckDB is the
- * base-swap-preserve-refinements follow-on. This gate therefore proves the
- * captured schema forms a valid DuckDB virtual source; it is a floor, not the
- * full semantic-layer portability check.
+ * It compiles only the base shape (captured columns, no refinements), so it is
+ * a floor, not a full check that the source's refinements are DuckDB-portable.
  *
  * @throws {MaterializationEligibilityError} (HTTP 422) if the serve shape does
  *   not compile in DuckDB.
@@ -2264,23 +1836,14 @@ export async function assertServesInDuckDB(
  *
  * A join to a given-scoped source reproduces the caller's scope only through
  * that source's own binding (see `joinedSourceRefusal`). It cannot be re-emitted
- * when the target is not bound — stale past its window, never built, refused —
- * nor when it is bound on a different destination, since one query cannot join
- * across two connections; nor when the join is access-restricted, since
- * restricted joins are never re-emitted while a public field may still read
- * through them. Either way every
- * field reading through the join fails the shape compile. Left in, that failure
- * is answered by the serve-shape ladder, which thins EVERY binding in the model:
- * one stale grant table would cost each sibling source its joins, dimensions and
- * measures. Withholding the joining binding instead confines the cost to the
- * source that needs the join, which serves live.
+ * when the target is unbound, bound on another destination (no cross-connection
+ * joins), or the join is access-restricted; fields reading through it then fail
+ * the shape. Left in, the ladder would thin EVERY binding in the model;
+ * withholding confines the cost to the joining source, which serves live.
  *
- * To a fixpoint because withholding one binding removes it as a target: a source
- * with a caller-scoped join to the withheld one is itself withheld next.
- *
- * Only caller-scoped joins. A join to an ordinary unmaterialized source keeps its
- * existing treatment — skipped at extraction, with the ladder answering whatever
- * reads through it.
+ * A fixpoint, because a withheld binding stops being a valid target.
+ * Ordinary unmaterialized join targets are not handled here: extraction skips
+ * them and the ladder answers whatever reads through them.
  */
 export function withholdUnreproducibleCallerScopedJoins(
    bindings: ServeBinding[],

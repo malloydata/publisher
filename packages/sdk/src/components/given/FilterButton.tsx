@@ -3,6 +3,7 @@
 
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
+import CheckIcon from "@mui/icons-material/Check";
 import CloseIcon from "@mui/icons-material/Close";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
@@ -256,9 +257,14 @@ function startingComparable(
 }
 
 /**
- * Where the report opens this filter, in the builder: "Open the report with
- * this value", or back to its default. Any filter has one, the model's
- * included, since where a report opens is the report's to say.
+ * The report's default for this filter, in the builder: the value the report
+ * opens with (`givens { … }`). "Make this the report's default" saves the
+ * current value as it; once saved, a quiet "Report default" with a check says
+ * so, and the clearing button goes back to the default the filter is declared
+ * with: "Use the model's default" for a model's filter, "Use the filter's
+ * default" for one this report declares, whose fallback is the default written
+ * in the report. Any filter has one, the model's included, since where a
+ * report opens is the report's to say.
  */
 function StartingValue({
    name,
@@ -275,6 +281,7 @@ function StartingValue({
    if (!editing?.setStartingValue) return null;
    const set = editing.setStartingValue;
    const start = startingComparable(editing.startingValueOf?.(name), type);
+   const declaredHere = editing.stateOf(name)?.origin === "dashboard";
    const buttonSx = { px: 0.75, minWidth: 0, ...ui.type.control };
    return (
       <>
@@ -284,14 +291,18 @@ function StartingValue({
                   ...ui.type.caption,
                   color: mui.palette.text.secondary,
                   px: 0.75,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 0.5,
                })}
             >
-               The report opens with this value.
+               <CheckIcon aria-hidden sx={{ fontSize: 14 }} />
+               Report default
             </Typography>
          )}
          {text !== undefined && text !== start && (
             <Button size="small" onClick={() => set(name, text)} sx={buttonSx}>
-               Open the report with this value
+               Make this the report&apos;s default
             </Button>
          )}
          {start !== undefined && (
@@ -300,7 +311,9 @@ function StartingValue({
                onClick={() => set(name, undefined)}
                sx={buttonSx}
             >
-               Open at the default instead
+               {declaredHere
+                  ? "Use the filter's default"
+                  : "Use the model's default"}
             </Button>
          )}
       </>

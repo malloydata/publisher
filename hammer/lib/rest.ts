@@ -67,6 +67,17 @@ export class Rest {
       return rows.map((r) => r.name);
    }
 
+   /** The listing's HTTP status alone, for a listing expected to be refused. */
+   async listDestinationTablesStatus(
+      dest: string,
+      schema: string,
+   ): Promise<{ status: number; body: string }> {
+      const res = await fetch(
+         this.destinationUrl(dest, `/schemas/${schema}/tables`),
+      );
+      return { status: res.status, body: await res.text() };
+   }
+
    /** `DELETE …/storageDestinations/{dest}/schemas/{schema}/tables/{table}`. */
    async dropDestinationTable(
       dest: string,

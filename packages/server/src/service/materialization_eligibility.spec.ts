@@ -22,7 +22,7 @@ import {
    assertMaterializationEligible,
    READ_ONLY_DIALECTS,
 } from "./materialization_eligibility";
-import { fakeSource } from "./materialization_test_fixtures";
+import { fakeSource } from "../test_helpers/materialization_test_fixtures";
 import {
    classifyDynamicTerms,
    readTimeDynamicTerms,

@@ -169,6 +169,51 @@ describe("chartShapeProblem", () => {
       ).toBeUndefined();
       expect(chartShapeProblem("not json")).toBeUndefined();
    });
+
+   // The renderer reads channels written on the chart tag itself, and counts
+   // nothing then: the form its own combo error recommends.
+   it("leaves channels placed on the chart tag to the renderer", () => {
+      expect(
+         chartShapeProblem(
+            result(
+               [groupBy("carrier"), ...kpis, total("distance")],
+               ["# combo_chart { y=revenue y2=order_count }\n"],
+            ),
+         ),
+      ).toBeUndefined();
+      expect(
+         chartShapeProblem(
+            result(
+               [groupBy("month"), groupBy("revenue")],
+               ["# line_chart { y=revenue }\n"],
+            ),
+         ),
+      ).toBeUndefined();
+   });
+
+   // A `viz=` replaces a bar chart in the renderer, so a table drawn over an
+   // inherited `# bar_chart` is not a bar chart missing its x-axis.
+   it("reads viz=table over an inherited bar chart as a table", () => {
+      expect(
+         requestedChart(["# bar_chart\n", "# viz=table\n"]),
+      ).toBeUndefined();
+      expect(
+         chartShapeProblem(result(kpis, ["# bar_chart\n", "# viz=table\n"])),
+      ).toBeUndefined();
+   });
+
+   // The renderer's scatter plots the first two columns, whatever they are.
+   it("lets a scatter chart plot two totals against each other", () => {
+      expect(
+         chartShapeGap("scatter_chart", { groupBys: 0, totals: 2 }),
+      ).toBeUndefined();
+      expect(chartShapeGap("scatter_chart", { groupBys: 0, totals: 1 })).toBe(
+         "no_x_axis",
+      );
+      expect(
+         chartShapeProblem(result(kpis, ["# scatter_chart\n"])),
+      ).toBeUndefined();
+   });
 });
 
 describe("ResultPanel with a chart its result cannot fill", () => {

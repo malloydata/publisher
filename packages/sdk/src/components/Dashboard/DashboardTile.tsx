@@ -16,6 +16,7 @@ import type { GivenValue, HostGivenValue } from "../../hooks/givenValue";
 import { humanizeSlug, type DrillBinding } from "../drill";
 import { givensToRequest, withHostGivens } from "../given/paramCodec";
 import { ResultPanel } from "../RenderedResult/ResultPanel";
+import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import { failureCategory, useReportEvents } from "../Report/telemetry";
 import { dropValueUrlTags } from "./dropValueUrlTags";
 import { promoteMeasureRowToKpis } from "./promoteMeasureRow";
@@ -271,6 +272,10 @@ export function DashboardTile({
                context={tile ?? queryName ?? modelPath}
                maxHeight={height}
                tableMaxHeight={tableMaxHeight}
+               // Uncapped in a linear report, a tile would first paint at the
+               // 2000px default and collapse once measured. A grid tile's cap
+               // is a sound first guess for every tile.
+               firstPaintHeight={TILE_MAX_HEIGHT}
                maxResultSize={maxResultSize}
                drill={drill}
                // A composite tile that is one row of measures draws as KPI cards,

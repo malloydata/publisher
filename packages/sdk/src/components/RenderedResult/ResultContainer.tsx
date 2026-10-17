@@ -44,6 +44,8 @@ interface ResultContainerProps {
     * stops here and scrolls inside itself under its pinned header row.
     */
    tableMaxHeight?: number;
+   /** The height to paint at before the result is measured, in place of the default (see `initialResultHeight`). */
+   firstPaintHeight?: number;
    // if Results are larger than this size, show a warning and a button to proceed
    // this is to prevent performance issues with large results.
    // the default is 0, which means no warning will be shown.
@@ -72,6 +74,7 @@ export default function ResultContainer({
    result,
    maxHeight,
    tableMaxHeight,
+   firstPaintHeight,
    maxResultSize = 0,
    renderLogs,
    drill,
@@ -159,6 +162,7 @@ export default function ResultContainer({
       contentHeight,
       maxHeight: cap,
       fillHeight: fill ? cellHeight : undefined,
+      firstPaintHeight,
    });
    const renderedResult = (
       <Suspense fallback={loading}>
@@ -188,7 +192,7 @@ export default function ResultContainer({
             // Grows from the unfloored height, so a result that gets shorter
             // lets its row shrink; the result is out of flow for the same reason.
             ...(fill && {
-               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight: cap })}px`,
+               flex: `1 1 ${resolveResultHeight({ sizing, contentHeight, maxHeight: cap, firstPaintHeight })}px`,
                minHeight: 0,
             }),
          }}

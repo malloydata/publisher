@@ -3,16 +3,6 @@
 
 import { components } from "../api";
 
-/**
- * Generic database interface for storage abstraction
- * This allows switching between DuckDB, PostgreSQL, MySQL, etc.
- */
-export interface DatabaseConnection {
-   initialize(): Promise<void>;
-   close(): Promise<void>;
-   isInitialized(): Promise<boolean>;
-}
-
 export interface ResourceRepository {
    // Environments
    listEnvironments(): Promise<Environment[]>;
@@ -295,23 +285,15 @@ export type RefusedSource = components["schemas"]["RefusedSource"];
 /**
  * Whether a manifest entry records a FAILED source, in the deprecated shape.
  *
- * Two things make this necessary rather than redundant with `failures`, and both
- * end when `ManifestEntry.error` is removed:
+ * Manifests at rest (in `publisher.db` and bound manifest files) may hold a
+ * failed source INTO `entries`, and this build still mirrors failures there.
+ * Its `physicalTableName` names a table the build never created; with stable
+ * auto-run names (`selfAssignTableName`) that is the PREVIOUS generation's real
+ * table, which would be served as though fresh.
  *
- *  - 0.0.245 and 0.0.246 wrote a failed source INTO `entries`, with the required
- *    `physicalTableName` naming a table the build never created. Those manifests
- *    are at rest in `publisher.db` and in bound manifest files, and they outlive
- *    the upgrade -- so a read boundary that trusted `entries` to be built-only
- *    would bind that name. Auto-run physical names are stable
- *    (`selfAssignTableName`), which makes it the PREVIOUS generation's real table:
- *    served as though fresh, not a miss.
- *  - This build mirrors the failure into `entries` for the same window, so the
- *    shape is produced as well as read.
- *
- * Applied at the READ boundaries a persisted manifest enters through, not at each
- * consumer: `splitManifestEntries` (both the host-manifest fetch and the
- * local-store rebind) and `getMostRecentManifestEntries` (reuse and reference
- * resolution). Delete this with the field.
+ * Applied at the READ boundaries a persisted manifest enters through:
+ * `splitManifestEntries` and `getMostRecentManifestEntries`. Delete this with
+ * `ManifestEntry.error`.
  */
 export function isLegacyFailedEntry(entry: { error?: string | null }): boolean {
    return Boolean(entry?.error);

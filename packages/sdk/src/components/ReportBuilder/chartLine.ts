@@ -115,14 +115,14 @@ export function mentionsChartTag(line: string): boolean {
 }
 
 /**
- * The line that previews "From the view" on a tile whose saved body may carry
+ * The line that previews "Default" on a tile whose saved body may carry
  * a chart line of its own: the chart tags taken off, and nothing put on.
  * Unlike Table's line it does not negate `viz`, so it is not a choice of
  * rendering: what the view's own shape gives is what draws.
  *
  * `big_value` is left alone. A one-row view of totals draws as big numbers
- * with no tag at all (see `promoteMeasureRowToKpis`), which is what "From the
- * view" must show; measured, a `# big_value` after a `# -big_value` in the
+ * with no tag at all (see `promoteMeasureRowToKpis`), which is what Default
+ * must show; measured, a `# big_value` after a `# -big_value` in the
  * same result does not bring the cards back, and the tile drew a one-row
  * table. Big value can only have been picked on such a view, so keeping it
  * changes nothing that Default would otherwise show.
@@ -253,6 +253,21 @@ export const seriesColorResetLine = "# -theme.palette.series";
 /** Whether a colour is one the builder writes: `#rrggbb`. */
 export const isSeriesColor = (value: string): boolean =>
    /^#[0-9A-Fa-f]{6}$/.test(value);
+
+/**
+ * A theme colour as the builder writes it (`#rrggbb`, lower case), or
+ * undefined for one it cannot write. A host theme may spell its series `#abc`,
+ * which is widened; a named colour or `rgb()` is not offered, since a line
+ * holding one would not read back (`seriesColorOf`).
+ */
+export function seriesColorFrom(value: string): string | undefined {
+   const text = value.trim().toLowerCase();
+   if (isSeriesColor(text)) return text;
+   const short = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(text);
+   return short
+      ? `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`
+      : undefined;
+}
 
 /** The lines of `lines` that are about the chart, recognized or not: what a "custom" state is made of. */
 export const chartLinesOf = (lines: string[]): string[] =>

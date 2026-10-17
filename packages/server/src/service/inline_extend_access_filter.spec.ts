@@ -3,10 +3,11 @@
 
 import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { Connection, GivenValue } from "@malloydata/malloy";
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { logger } from "../logger";
 import { Model } from "./model";
 
 /**
@@ -252,13 +253,45 @@ describe("an inline extend cannot widen the access filter", () => {
          ).toEqual(expected);
       });
 
-   it("refuses redefining the filtered dimension outright", async () => {
-      const got = await both(
-         "redefine",
-         "flights_af extend { dimension: carrier_code is 'WN' } -> by_carrier",
-         { CARRIER_SCOPE: "WN" },
-      );
-      expect(got.named).not.toHaveProperty("rows");
-      expect(got.adhoc).not.toHaveProperty("rows");
+   // The two shadows above are denied whether or not the guard runs: before
+   // the graft reached an inline extension, the proof that it landed refused
+   // them too. So the reason is pinned: the filter would read a different
+   // field than the one it was written against.
+   it("refuses each shadow because the filter would read another field", async () => {
+      for (const [name, query] of CASES.filter(([n]) => n.endsWith("_shadow")))
+         expect(
+            await denialReasons(() =>
+               both(name, query, { CARRIER_SCOPE: "WN", ROLE: "analyst" }),
+            ),
+         ).toEqual([
+            "a row-security filter references `carrier_code`, which resolves to a different field on the executed source",
+            "a row-security filter references `carrier_code`, which resolves to a different field on the executed source",
+         ]);
+   });
+
+   // Malloy itself refuses to redefine a field an extension inherits
+   // (`definition-name-conflict`), before any access check runs.
+   it("refuses redefining the filtered dimension outright, at compile", async () => {
+      expect(
+         await both(
+            "redefine",
+            "flights_af extend { dimension: carrier_code is 'WN' } -> by_carrier",
+            { CARRIER_SCOPE: "WN" },
+         ),
+      ).toEqual(same({ refused: "ModelCompilationError" }));
    });
 });
+
+/** Why each access denial during `run` was made, as the model logs it. */
+async function denialReasons(run: () => Promise<unknown>): Promise<string[]> {
+   const spy = spyOn(logger, "debug");
+   try {
+      await run();
+      // `logger.debug(message, meta)`: winston's overloads type one argument.
+      return (spy.mock.calls as unknown[][])
+         .filter(([message]) => String(message).endsWith("; denying"))
+         .map(([, meta]) => String((meta as { error?: unknown }).error));
+   } finally {
+      spy.mockRestore();
+   }
+}

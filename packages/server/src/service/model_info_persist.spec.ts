@@ -6,7 +6,7 @@ import { describe, expect, it } from "bun:test";
 import {
    duckdbTestConnections,
    loadTestRuntime,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 import { modelInfoOf } from "./model_info";
 
 // `ORG` has no default and a query bakes it, so reading the model's schemas

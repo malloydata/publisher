@@ -281,13 +281,13 @@ export function NewDocumentDialog({
    const unread = choices.size === 0 && (modelsFailed || failed.length > 0);
    // Create is off only when nothing typed could make it succeed; the title is checked on press.
    const blocked = loading
-      ? "Loading model views"
+      ? "Loading the model"
       : unread
-        ? "Couldn't read the model views to start from"
+        ? "Couldn't read the model to start from"
         : choices.size === 0
-          ? "No model view to start from yet"
+          ? "Nothing in the model to start from yet"
           : chosen === undefined
-            ? "Pick a view to start from"
+            ? "Pick what to start from"
             : undefined;
    const label = "report";
    const createLabel = busy ? `Creating ${label}…` : `Create ${label}`;
@@ -342,7 +342,7 @@ export function NewDocumentDialog({
          // A write in flight is not abandoned by Escape or a backdrop click.
          onClose={busy ? () => {} : onClose}
          title={`New ${label}`}
-         description="A report is a Malloy file in the package that lays out text and queries. Pick the view its first query shows; the rest is the builder."
+         description="A report is a Malloy file in the package that lays out text and queries. Pick what its first query shows; the rest is the builder."
          actions={
             <>
                <Button onClick={onClose} disabled={busy}>
@@ -394,9 +394,8 @@ export function NewDocumentDialog({
                   severity="warning"
                   action={canRetry ? retryButton(retry) : undefined}
                >
-                  Couldn&apos;t read {failed.join(", ")}, so{" "}
-                  {failed.length === 1 ? "its" : "their"} views aren&apos;t
-                  listed.
+                  Couldn&apos;t read {failed.join(", ")}, so nothing from{" "}
+                  {failed.length === 1 ? "it" : "them"} is listed.
                </Alert>
             ) : (
                isSuccess &&
@@ -450,7 +449,7 @@ export function NewDocumentDialog({
                         >
                            {loading
                               ? "Reading the package's models…"
-                              : "No view to start from."}
+                              : "Nothing to start from."}
                         </Typography>
                      }
                   />
@@ -547,8 +546,8 @@ export function NewDocumentDialog({
                               sx={{ color: "text.secondary", m: "auto" }}
                            >
                               {picked
-                                 ? "The view you picked is no longer in this model; pick another."
-                                 : "Pick a view to start from."}
+                                 ? "What you picked is no longer in this model; pick something else."
+                                 : "Pick what to start from."}
                            </Typography>
                         )}
                      </Box>

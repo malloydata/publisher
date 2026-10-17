@@ -21,20 +21,19 @@ import type {
    PipelineSettings,
    RankedState,
 } from "./get_context_pipeline";
-import {
-   getPackageIndex,
-   projectEntity,
-   type PackageIndex,
-   type ResolvedRequest,
-   type ResultEntity,
-} from "./get_context_tool";
+import { projectEntity } from "./get_context_response";
+import type {
+   PackageIndex,
+   ResolvedRequest,
+   ResultEntity,
+} from "./get_context_types";
+import { getPackageIndex } from "./package_entities";
 
 const ASSEMBLY: PipelineSettings = {
    joins: "assembly",
    entityWindow: { perSourcePerTarget: 10 },
    joinMaxDepth: 10,
    joinDamping: 0.9,
-   scoring: "cosine",
    maxChars: null,
    reserveChars: 1_000,
 };

@@ -50,6 +50,7 @@ import {
    trySemanticSearch,
    type EmbeddableEntity,
 } from "./embedding_index";
+import { notIndexing, pollFor } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 
 let tempDir: string;
@@ -138,8 +139,6 @@ function embedder(options: { status?: number; onRequest?: () => void } = {}) {
    );
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 /** One search; the first one starts the sync, later ones may restart it. */
 const ask = (
    provider: EmbeddingProvider,
@@ -163,12 +162,7 @@ async function untilFailed(
    p: Package,
    ents: readonly EmbeddableEntity[],
 ) {
-   for (let i = 0; i < 400; i++) {
-      const r = await ask(provider, p, ents);
-      if (!("unavailable" in r) || r.unavailable !== "indexing") return r;
-      await sleep(5);
-   }
-   throw new Error("the sync never failed");
+   return pollFor(() => ask(provider, p, ents), notIndexing);
 }
 
 const status = (
@@ -247,13 +241,8 @@ describe("a sync that fails with a client error", () => {
       expect("unavailable" in first && first.unavailable).toBe("cooldown");
       expect(stub.requests).toHaveLength(1);
 
-      // Well past the cool-down, with many questions.
-      await sleep(60);
-      for (let i = 0; i < 5; i++) {
-         await ask(provider, p, ents);
-         await sleep(5);
-      }
-      await embeddingSyncQueue.idle();
+      // Past the cool-down, with many questions.
+      for (let i = 0; i < 5; i++) await askAfterCooldown(provider, p, ents);
       expect(stub.requests).toHaveLength(1);
 
       const s = await status(provider, p, ents);
@@ -271,12 +260,7 @@ describe("a sync that fails with a client error", () => {
       const ents = entities();
       await untilFailed(provider, p, ents);
       expect(requests).toBe(1);
-      await sleep(60);
-      for (let i = 0; i < 5; i++) {
-         await ask(provider, p, ents);
-         await sleep(5);
-      }
-      await embeddingSyncQueue.idle();
+      for (let i = 0; i < 5; i++) await askAfterCooldown(provider, p, ents);
       expect(requests).toBe(1);
    });
 
@@ -286,9 +270,13 @@ describe("a sync that fails with a client error", () => {
       const p = pkg({ sourceSummary: { enabled: true } });
       await untilFailed(provider, p, entities());
       expect(stub.requests).toHaveLength(1);
-      await sleep(60);
-      // An edit to a doc is new content: it gets its own attempt.
-      await untilFailed(provider, p, entities("Now it is documented better."));
+      // An edit to a doc is new content: past the cool-down, it gets its own
+      // attempt.
+      await askAfterCooldown(
+         provider,
+         p,
+         entities("Now it is documented better."),
+      );
       expect(stub.requests.length).toBeGreaterThan(1);
    });
 

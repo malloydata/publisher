@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Tag } from "@malloydata/malloy-tag";
 import {
    chartLinesOf,
    chartStateOfTagLines,
@@ -372,8 +373,33 @@ function gridWidth(
 
 const QUOTED_ENTRY = /^"((?:[^"\\]|\\.)+)"$/;
 const TEXT_ENTRY = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/;
-/** A quoted entry that is one plain name: a query, as the server's reader takes it. */
+/** An entry that is one plain name, quoted or bare: a query, as the server's reader takes it. */
 const NAMED_QUERY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * What the reader takes off a tile's own tags for its frame: label, subtitle,
+ * width, a row break, no border. For a tile the builder draws but does not
+ * rewrite, so it is drawn as the reader draws it.
+ */
+function readOnlyFrame(t: Tag | undefined): {
+   label?: string;
+   subtitle?: string;
+   colspan?: number;
+   break?: true;
+   borderless?: true;
+} {
+   return {
+      ...(t?.text("label") ? { label: t.text("label") as string } : {}),
+      ...(t?.text("subtitle")
+         ? { subtitle: t.text("subtitle") as string }
+         : {}),
+      ...(t?.numeric("colspan") !== undefined
+         ? { colspan: t.numeric("colspan") as number }
+         : {}),
+      ...(t?.has("break") ? { break: true as const } : {}),
+      ...(t?.has("borderless") ? { borderless: true as const } : {}),
+   };
+}
 
 /** Refuses rather than throws: `Tag.text()` throws on a malformed date literal such as `@2024-13-01`, and dropping the value would lose it on the next save. */
 export async function readDashboardDocument(
@@ -545,15 +571,25 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
          continue;
       }
       const entry = quoted?.[1] ?? entryText;
-      // A bare name is a named query, `query: by_carrier is flights -> { … }`,
-      // here or in the model: the server's reader runs it as `run: by_carrier`.
-      // One in this file that reads `<source> -> <view>` is the builder's to
-      // edit (`named`); any other is shown and movable, never rewritten.
-      if (quoted && NAMED_QUERY.test(entry.trim())) {
+      // A plain name, quoted or bare, is a named query,
+      // `query: by_carrier is flights -> { … }`, here or in the model: the
+      // server's reader runs it as `run: by_carrier`. One in this file that
+      // reads `<source> -> <view>` is the builder's to edit (`named`); any
+      // other is shown and movable, never rewritten, and framed by the query's
+      // own tags when this file declares it, as the reader frames it.
+      if (NAMED_QUERY.test(entry.trim())) {
          const name = entry.trim();
          const query = parsed.queries.find((q) => q.name === name);
          const named = query && namedTile(query, parseAnnotation as ParseTags);
-         tiles.push(named ?? { name, declaration: { kind: "query" } });
+         tiles.push(
+            named ?? {
+               name,
+               declaration: { kind: "query" },
+               ...readOnlyFrame(
+                  query ? parseAnnotation(tagText(query.tags)).tag : undefined,
+               ),
+            },
+         );
          continue;
       }
       const steps = quoted ? tileSteps(entry) : undefined;
@@ -606,17 +642,9 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
                      ? view.body.why
                      : "unreadable",
             },
-            ...(t?.text("label") ? { label: t.text("label") as string } : {}),
-            ...(t?.text("subtitle")
-               ? { subtitle: t.text("subtitle") as string }
-               : {}),
-            ...(t?.numeric("colspan") !== undefined
-               ? { colspan: t.numeric("colspan") as number }
-               : {}),
+            ...readOnlyFrame(t),
             ...chartField(view.tags),
             ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
-            ...(t?.has("break") ? { break: true } : {}),
-            ...(t?.has("borderless") ? { borderless: true } : {}),
          });
          continue;
       }

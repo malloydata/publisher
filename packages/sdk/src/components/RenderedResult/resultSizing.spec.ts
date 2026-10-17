@@ -248,6 +248,22 @@ describe("resolveResultHeight", () => {
    it("stays at the seed while a content-sized root measures zero", () => {
       expect(at("content", 0, 400)).toBe(400);
    });
+
+   // An uncapped report tile (a linear report's) first paints at the tile
+   // cap rather than 2000px, and then grows or shrinks to what it measures.
+   it("first paints an uncapped tile at the height it is given, and measures past it", () => {
+      const tile = (contentHeight: number | undefined) =>
+         resolveResultHeight({
+            sizing: contentHeight === undefined ? undefined : "content",
+            contentHeight,
+            maxHeight: undefined,
+            firstPaintHeight: 400,
+         });
+      expect(tile(undefined)).toBe(400);
+      expect(tile(900)).toBe(900);
+      expect(tile(120)).toBe(120);
+      expect(initialResultHeight(300, 400)).toBe(300);
+   });
 });
 
 describe("resolveResultHeight with a cell to fill", () => {

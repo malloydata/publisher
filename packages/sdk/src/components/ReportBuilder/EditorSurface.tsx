@@ -102,7 +102,9 @@ export function EditorSurface({
    /**
     * The file's own compiled model as the package serves it, for the shapes
     * of the views it declares (which charts each tile can take). Absent for a
-    * document held as text, whose compile answer carries no per-view shapes.
+    * document held as text, whose compile answer carries no per-view shapes,
+    * and whenever the opened text is not the one this model compiled (a kept
+    * draft, the host's record, a held-back version): the catalog answers then.
     */
    fileModel?: CompiledModel;
    textSource?: TextSourceOptions;
@@ -344,8 +346,8 @@ export function EditorSurface({
       [doc, opened.document, servedReads],
    );
    const specs = useMemo(
-      () => previewGivens(doc, modelSpecs, modelReads),
-      [doc, modelSpecs, modelReads],
+      () => previewGivens(doc, modelSpecs, modelReads, servedReads),
+      [doc, modelSpecs, modelReads, servedReads],
    );
    // A filter in the row the builder can show and set but not change: say
    // where it is set instead. Not always the model: a report's own `source:`

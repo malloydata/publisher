@@ -662,6 +662,13 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
             "It names a query, so its chart is set where that query is declared.",
          ),
       ).toBeDefined();
+      // The menu names what the tile runs: the query, with no empty source.
+      const menu = screen.getByRole("menu", {
+         name: "by_carrier",
+         hidden: true,
+      });
+      expect(within(menu).getByText("by_carrier")).toBeDefined();
+      expect(within(menu).queryByText(/→/)).toBeNull();
    });
 
    it("removes it from the list and saves the query untouched", async () => {

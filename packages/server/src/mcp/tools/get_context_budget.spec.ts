@@ -27,6 +27,7 @@ import {
 import { DuckDBConnection } from "../../storage/duckdb/DuckDBConnection";
 import { createEntityEmbeddingsTable } from "../../storage/duckdb/schema";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
+import { pollFor } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { registerGetContextTool } from "./get_context_tool";
 
@@ -194,15 +195,12 @@ describe("get_context response budget: semantic", () => {
          getEnvironment: async () => envWith(bigPackage()),
          storageManager: { getDuckDbConnection: () => db },
       });
-      for (let i = 0; i < 2_000; i++) {
-         const { text, payload } = await ask(handler, "sem", query);
-         if (payload.retrieval === "semantic") {
-            expectFitsWholeCards(text, payload);
-            return;
-         }
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      throw new Error("retrieval never became semantic");
+      const { text, payload } = await pollFor(
+         () => ask(handler, "sem", query),
+         ({ payload }) => payload.retrieval === "semantic",
+         10_000,
+      );
+      expectFitsWholeCards(text, payload);
    });
 });
 

@@ -12,7 +12,7 @@ import { computeSourceEntityId, deriveAnnotationFields } from "./build_plan";
 import {
    compilePersistSources,
    duckdbTestConnections,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 import { RECOGNIZED_PERSIST_KEYS } from "./incremental_declaration";
 import {
    parsePartitionValue,

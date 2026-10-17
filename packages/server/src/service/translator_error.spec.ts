@@ -5,7 +5,7 @@
  * The translator's plain Error on an author's text (`d ~ @2025`) is a compile
  * problem on every path that compiles, not a server fault. This file covers
  * the classifier and `Model.create`, the in-process load path; the worker
- * load path is in package_worker_path.spec.ts and `/compile` at each scope is
+ * load path is in tests/component/package_worker_path.component.spec.ts and `/compile` at each scope is
  * in curated_compile_errors.integration.spec.ts.
  */
 import { DuckDBConnection } from "@malloydata/db-duckdb";

@@ -1,8 +1,11 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { parseTag } from "@malloydata/malloy-tag";
 import type { CompiledModel } from "../../client";
+import {
+   columnCounts,
+   type ResultField,
+} from "../RenderedResult/chartShapeProblem";
 import { exportedSources } from "../DocumentCreate/exportedSources";
 import { CHART_TAGS } from "./chartLine";
 import { chartOf, docOf } from "./viewAnnotations";
@@ -149,25 +152,7 @@ function parsedSourceInfos(model: CompiledModel): ParsedSourceInfo[] {
    return infos;
 }
 
-/** An aggregate output column has `calculation` as a top-level property of its `#(malloy)` note; a group-by or nested one does not. */
-const isAggregateColumn = (field: Record<string, unknown>) =>
-   ((field["annotations"] as Array<{ value?: string }> | undefined) ?? []).some(
-      (note) => {
-         const text = note.value ?? "";
-         return (
-            text.startsWith("#(malloy)") &&
-            parseTag(text.slice("#(malloy)".length)).tag?.has("calculation") ===
-               true
-         );
-      },
-   );
-
-/** Whether a column is a group-by a chart can put on its x axis: not an aggregate, and not a nest. */
-const isGroupByColumn = (field: Record<string, unknown>) =>
-   !isAggregateColumn(field) &&
-   (field["type"] as { kind?: string } | undefined)?.kind !== "array_type";
-
-/** Per source, per view: the shape of its output, and whether every column is a total. */
+/** Per source, per view: the shape of its output, and whether every column is a total. Columns are read by the result panel's own rule (`columnCounts`). */
 function viewShapesOf(
    model: CompiledModel,
 ): Map<string, Map<string, Omit<CatalogView, "name">>> {
@@ -178,10 +163,9 @@ function viewShapesOf(
          if (field["kind"] !== "view" || typeof field["name"] !== "string")
             continue;
          const columns = (field["schema"] as { fields?: unknown } | undefined)
-            ?.fields as Array<Record<string, unknown>> | undefined;
+            ?.fields as ResultField[] | undefined;
          if (!columns || columns.length === 0) continue;
-         const totals = columns.filter(isAggregateColumn).length;
-         const groupBys = columns.filter(isGroupByColumn).length;
+         const { groupBys, totals } = columnCounts(columns);
          views.set(field["name"], {
             shape: { groupBys, totals },
             ...(totals === columns.length ? { aggregateOnly: true } : {}),

@@ -2,24 +2,18 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * The bare (unqualified) name of a possibly container-qualified table path:
- * the segment after the last dot, e.g. `my_schema.my_table` -> `my_table` and
- * `my_table` -> `my_table`.
- *
- * Not a rename target on its own: whether a bare target keeps the table in its
- * own container or moves it to the session's is dialect-specific, which is what
- * {@link quoteRenameTarget} decides.
+ * The segment after the last dot of a table path (`s.t` -> `t`). Not a rename
+ * target on its own: whether a bare target stays in its container is
+ * dialect-specific, which {@link quoteRenameTarget} decides.
  */
 export function bareTableName(tableName: string): string {
    const lastDot = tableName.lastIndexOf(".");
    return lastDot >= 0 ? tableName.substring(lastDot + 1) : tableName;
 }
 
-// Dialects whose identifier quote character is a backtick; everything else uses
-// the SQL-standard double quote. Keyed by Malloy `dialectName`. The control
-// plane encodes the same fact keyed by connection type
-// (`PhysicalTableName.BACKTICK_TYPES` = {bigquery, mysql, databricks}); the two
-// must stay byte-compatible. See the conformance table in quoting.spec.ts.
+// Keyed by Malloy `dialectName`; everything else uses double quotes. Must stay
+// byte-compatible with the control plane's `PhysicalTableName.BACKTICK_TYPES`
+// (keyed by connection type); see the conformance table in quoting.spec.ts.
 const BACKTICK_DIALECTS = new Set(["standardsql", "mysql", "databricks"]);
 
 /**
@@ -34,14 +28,9 @@ export function quoteIdentifier(identifier: string, dialect: string): string {
 }
 
 /**
- * Dialect-quote a (possibly container-qualified) table path so it can be inlined
- * into DDL. Each dot segment is quoted independently and rejoined with dots, so
- * a path like {@code my-proj.mydataset.engaged_events_v0} becomes
- * `` `my-proj`.`mydataset`.`engaged_events_v0` `` on BigQuery or
- * {@code "my-proj"."mydataset"."engaged_events_v0"} on Postgres — handling
- * container hierarchies and quote-requiring names (e.g. hyphenated BigQuery
- * project ids) uniformly. The control plane provides the logical (unquoted) path
- * in `physicalTableName`; quoting for the warehouse is the publisher's job.
+ * Dialect-quote a table path for DDL, segment by segment, so names that need
+ * quoting (e.g. hyphenated BigQuery project ids) work at any depth. The control
+ * plane sends `physicalTableName` unquoted; quoting is the publisher's job.
  */
 export function quoteTablePath(tableName: string, dialect: string): string {
    return tableName
@@ -52,11 +41,9 @@ export function quoteTablePath(tableName: string, dialect: string): string {
 
 /**
  * Dialects whose `ALTER TABLE ... RENAME TO` target must be QUALIFIED, because a
- * bare one is either resolved against the session's current container -- moving
- * the table -- or is resolved that way by some of the dialect's backends. A
- * qualified target naming the table's own container is a no-op for placement, so
- * this set is safe to widen and costly to leave narrow: the failure it prevents
- * is a silent write to the wrong container.
+ * bare one resolves (on some or all backends) against the session's container,
+ * moving the table. Safe to widen, costly to leave narrow: the failure it
+ * prevents is a silent write to the wrong container.
  *
  * Measured, one table per dialect, by renaming `s1.t_staging` to a bare `t` with
  * the session pointed at `s2`:
@@ -88,10 +75,9 @@ const QUALIFIED_RENAME_TARGET_DIALECTS = new Set([
 ]);
 
 /**
- * Dialect-quote the TARGET of an `ALTER TABLE ... RENAME TO` for a (possibly
- * container-qualified) logical table path: the full path on the dialects that
- * resolve a bare target against the session, and the bare name -- which names
- * the table within its existing container -- on those that require it.
+ * Dialect-quote the TARGET of an `ALTER TABLE ... RENAME TO`: the full path on
+ * dialects that resolve a bare target against the session, the bare name
+ * (within the existing container) on those that require it.
  */
 export function quoteRenameTarget(tableName: string, dialect: string): string {
    return QUALIFIED_RENAME_TARGET_DIALECTS.has(dialect)
@@ -100,28 +86,22 @@ export function quoteRenameTarget(tableName: string, dialect: string): string {
 }
 
 /**
- * Whether a table path already carries a dialect quote character, in which case
- * it is treated as canonical SQL that must not be re-quoted. The single
- * definition of "already quoted" shared by every bind site.
+ * Whether a table path already carries a quote character, i.e. is canonical
+ * SQL that must not be re-quoted. Shared by every bind site.
  */
 export function isQuotedIdentifierPath(tableName: string): boolean {
    return tableName.includes('"') || tableName.includes("`");
 }
 
 /**
- * Quote a physical table path for a manifest entry so a Malloy `FROM` resolves
- * it correctly, unless it is already canonical SQL (passed through unchanged).
- * This is the single quoting authority for the two places a physical name is
- * bound into a `FROM`: the serve-side bind ({@link Package.quoteBoundTableNames})
- * and the build-side manifest that stitches chained persist sources together
- * (materialization_service). Both must mirror the CREATE side's
- * {@link quoteTablePath} so a case-folding engine (Snowflake uppercases
- * unquoted identifiers) can resolve the case-preserved table the builder wrote.
+ * Quote a physical table path for a manifest entry, unless already quoted. The
+ * single quoting authority for both `FROM` bind sites (serve-side
+ * {@link Package.quoteBoundTableNames} and the build-side chained-persist
+ * manifest). Must mirror {@link quoteTablePath} so a case-folding engine
+ * (Snowflake) resolves the case-preserved table the builder wrote.
  *
- * Passing an already-quoted name through is safe for the names this handles:
- * control-plane physical names are logical/unquoted (never contain a quote),
- * and a self-assigned `#@ persist name=` value is the author's own canonical
- * SQL (they own quoting it for the dialect).
+ * Pass-through is safe: control-plane names never contain a quote, and a
+ * `#@ persist name=` value is the author's own canonical SQL.
  */
 export function quoteManifestTablePath(
    tableName: string,

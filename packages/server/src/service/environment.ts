@@ -1,71 +1,35 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type {
-   GivenValue,
-   LogMessage,
-   Model as MalloyModel,
-   ModelDef,
-} from "@malloydata/malloy";
-import { MalloyError, Runtime } from "@malloydata/malloy";
-import { compileDocument, type CompiledDocument } from "./compile_document";
-import { notebookReaderProblem } from "./notebook";
-import {
-   carriesArtifactTag,
-   isReportEligiblePath,
-   isUnderPublicDir,
-   reportWritePathProblem,
-} from "./report";
-import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
-import { publisherMeter } from "../telemetry";
+import type { GivenValue } from "@malloydata/malloy";
+import { type CompiledDocument } from "./compile_document";
+import { isUnderPublicDir, reportWritePathProblem } from "./report";
+import { lazyCounter, resetInstrumentsForTesting } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
-import { fileURLToPath, pathToFileURL } from "url";
 import { components } from "../api";
 import {
    API_PREFIX,
    INDEX_MODEL_NAME,
    normalizeModelPath,
-   NOTEBOOK_FILE_SUFFIX,
    README_NAME,
    PACKAGE_INSTALL_RECORDS_DIR,
 } from "../constants";
 import {
-   AccessDeniedError,
    BadRequestError,
-   CompileRefusedError,
-   RenderTagRefusedError,
    ConnectionNotFoundError,
    DestinationNotFoundError,
    EnvironmentNotFoundError,
    InvalidModelPathError,
-   ModelCompilationError,
-   NotQueryableError,
-   PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
-   UnparseableTextError,
    WriteRollbackFailedError,
    WriteRolledBackError,
    WriteVerifyError,
    PackageAdmissionRefusedError,
 } from "../errors";
-import { assertNoCallerAuthorizeAnnotation } from "./authorize";
-import type { CallerRegion } from "./caller_joins";
-import {
-   assertFilterGivensParse,
-   malloyGivenToApi,
-   type MalloyGiven,
-} from "./given";
-import {
-   assertNoRenderTags,
-   assertNoRestrictedConstructs,
-   exceedsDocumentBudget,
-} from "./compile_restriction";
-import { translatorMalloyError } from "./translator_error";
-import { recordAuthorizeGuardRejection } from "../authorize_metrics";
 import { getPersistStorageMode } from "../config";
 import { logger } from "../logger";
 import { redactPgSecrets } from "../pg_helpers";
@@ -81,9 +45,7 @@ import {
    safeJoinUnderRoot,
 } from "../path_safety";
 import { FreshnessManifest, ManifestEntry } from "../storage/DatabaseInterface";
-import { errMessage, URL_READER } from "../utils";
-import { UNCODED_REPORT_FINDING } from "../report_metrics";
-import { getPackageLoadPool } from "../package_load/package_load_pool";
+import { errMessage } from "../utils";
 import {
    buildEnvironmentMalloyConfig,
    deleteDuckLakeConnectionFile,
@@ -101,33 +63,39 @@ import {
    splitManifestEntries,
    type FetchedManifest,
 } from "./manifest_loader";
-import { ApiConnection, Model } from "./model";
+import { ApiConnection } from "./model";
 import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
+import {
+   compileSource,
+   type CompileScope,
+   type TaggedLogMessage,
+} from "./compile_source";
+
+export {
+   COMPILE_SCOPES,
+   packageRelativeModelPath,
+   type CompileScope,
+   type TaggedLogMessage,
+} from "./compile_source";
 
 /**
- * Sibling dirs under `environmentPath` used by the install/delete pipeline so
- * that long downloads do not hold the per-package mutex.
+ * Sibling dirs under `environmentPath` that keep long downloads off the
+ * per-package mutex:
  *
- *  - `.staging/<pkg>-<uuid>/` — a download in progress. Renamed to the
+ *  - `.staging/<pkg>-<uuid>/` — a download in progress, renamed to the
  *    canonical path under the lock once complete.
- *  - `.retired/<pkg>-<uuid>/` — the previous canonical tree, atomically
- *    renamed out of the way during a swap or delete. `fs.rm`'d asynchronously
- *    after the lock is released.
+ *  - `.retired/<pkg>-<uuid>/` — the previous canonical tree, renamed aside
+ *    during a swap or delete and removed after the lock is released.
  *
- * Both hold PACKAGE TREES, in the same directory the canonical ones live in, so
- * both are dot-prefixed: anything that enumerates an environment looking for
- * packages must not find a half-downloaded or already-superseded copy. No such
- * enumeration exists today — `listPackages` reads the registered names and this
- * sweep removes these two paths by name — so the prefix is what keeps that true
- * for whatever walks the directory next, rather than a guard on a live path.
+ * Dot-prefixed so anything that walks an environment for packages never finds
+ * a half-downloaded or superseded copy.
  */
 const STAGING_DIR_NAME = ".staging";
 const RETIRED_DIR_NAME = ".retired";
 
-// How long to wait for a control-plane manifest fetch during (re)bind before
-// giving up and serving live. Binding happens before a package is marked
-// SERVING, so an unreachable/slow manifest store must not block the package.
+// Binding happens before a package is SERVING, so a slow manifest store must
+// not block it: past this, the package serves live.
 const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
 
 export enum PackageStatus {
@@ -154,11 +122,9 @@ type RetiredConnectionGeneration = {
 const RETIRED_CONNECTION_DRAIN_MS = 30_000;
 
 /**
- * The only fields of a storage destination any read reports, so an
- * operator or orchestrator can see which destinations a worker holds without
- * being handed their warehouse credentials. Also the test for a write entry that
- * is a reference to a stored destination rather than a new config for it — see
- * {@link Environment.setStorageDestinations}.
+ * The only storage-destination fields any read reports, so a reader never sees
+ * warehouse credentials. Also identifies a write entry that only references a
+ * stored destination (see {@link Environment.setStorageDestinations}).
  */
 const DESTINATION_READ_FIELDS: ReadonlySet<string> = new Set([
    "name",
@@ -166,145 +132,141 @@ const DESTINATION_READ_FIELDS: ReadonlySet<string> = new Set([
    "resource",
 ]);
 
-/**
- * Module-scoped admission-rejection counters. Lazy-initialized so
- * the OTel JS `ProxyMeter` cannot strand them on a NoOp instrument
- * created before the SDK MeterProvider was registered (a real risk
- * in unit tests; see comment in `query_timeout.ts`). Environment
- * name is attached as a label so dashboards can identify hot
- * environments without grepping logs.
- */
-import { type Counter } from "@opentelemetry/api";
-let queryAdmissionRejectionsCounter: Counter | null = null;
-let packageAdmissionRejectionsCounter: Counter | null = null;
-function getQueryAdmissionRejectionsCounter(): Counter {
-   if (queryAdmissionRejectionsCounter) return queryAdmissionRejectionsCounter;
-   queryAdmissionRejectionsCounter = publisherMeter().createCounter(
-      "publisher_query_admission_rejections_total",
-      {
-         description:
-            "Queries rejected with 503 because Environment.assertCanAdmitQuery() observed memory back-pressure",
-      },
-   );
-   return queryAdmissionRejectionsCounter;
-}
-function getPackageAdmissionRejectionsCounter(): Counter {
-   if (packageAdmissionRejectionsCounter) {
-      return packageAdmissionRejectionsCounter;
-   }
-   packageAdmissionRejectionsCounter = publisherMeter().createCounter(
-      "publisher_package_admission_rejections_total",
-      {
-         description:
-            "Package loads rejected with 503 because Environment.assertCanAdmitNewPackage() observed memory back-pressure",
-      },
-   );
-   return packageAdmissionRejectionsCounter;
-}
-let compileRefusalsCounter: Counter | null = null;
-/**
- * Append-scope compile refusals, by reason.
- *
- * The reasons answer 4xx or 5xx on the same endpoint, so without the label a
- * dependency outage and a caller sending forbidden text are one indistinguishable
- * spike -- and the one that needs paging looks like the one that does not.
- * `restricted_construct` is the caller's text; `base_model_load_failed` is the
- * named model failing to load, which includes the schema-fetch case that answers
- * 503. `render_tag` is a document carrying a URL-producing render tag or markup
- * in a label, also the caller's text but a different fix than a data root.
- */
-function getCompileRefusalsCounter(): Counter {
-   if (compileRefusalsCounter) return compileRefusalsCounter;
-   compileRefusalsCounter = publisherMeter().createCounter(
-      "publisher_compile_refusals_total",
-      {
-         description:
-            "Compiles refused at append scope, labelled by reason and environment",
-      },
-   );
-   return compileRefusalsCounter;
-}
+const getQueryAdmissionRejectionsCounter = lazyCounter(
+   "publisher_query_admission_rejections_total",
+   "Queries rejected with 503 because Environment.assertCanAdmitQuery() observed memory back-pressure",
+);
+const getPackageAdmissionRejectionsCounter = lazyCounter(
+   "publisher_package_admission_rejections_total",
+   "Package loads rejected with 503 because Environment.assertCanAdmitNewPackage() observed memory back-pressure",
+);
 
 /**
  * Visible for tests; production code never calls this. Resets the
  * lazy caches so a fresh MeterProvider can capture future writes.
  */
 export function resetAdmissionTelemetryForTesting(): void {
-   queryAdmissionRejectionsCounter = null;
-   packageAdmissionRejectionsCounter = null;
-   compileRefusalsCounter = null;
+   resetInstrumentsForTesting();
 }
 
+/** The publisher.json fields a metadata write may set. */
+type PackageManifestUpdate = {
+   name: string;
+   description?: string;
+   location?: string;
+   explores?: string[];
+   queryableSources?: "declared" | "all";
+   manifestLocation?: string | null;
+   scope?: ApiPackage["scope"];
+   queryMetadata?: ApiPackage["queryMetadata"];
+   materialization?: ApiPackage["materialization"];
+};
+
 /**
- * Run a /compile authorize gate, converting an access denial on a
- * boundary-hidden target into the boundary's generic 404.
- *
- * /compile is exempt from the query boundary so a curated package stays
- * authorable, but the exemption must not turn /compile into an existence
- * oracle. Without this, an unauthorized caller probing a source that is both
- * boundary-hidden and `#(authorize)`-gated gets a 403 naming it — proof the
- * source exists — where the query surface answers a flat 404, letting the
- * hidden namespace be enumerated one guess at a time. Re-running the boundary
- * on the denial path only (it throws for a hidden target and otherwise returns
- * without effect) restores "hidden is indistinguishable from nonexistent" while
- * leaving compile itself ungated: a target the boundary does not hide keeps its
- * informative 403.
+ * The publisher.json to write: the manifest on disk with `metadata` applied,
+ * preserving what the caller did not send.
  */
-/**
- * What the submitted source means to /compile, and how far the check reaches.
- *
- * - "append" (the default, and the historical behavior): the source is
- *   appended to the target model and compiled in its namespace. Right for
- *   validating NEW definitions and queries; an edit to an existing definition
- *   collides ("Cannot redefine"), and diagnostics are positioned in the
- *   concatenated virtual file.
- * - "file": the source is compiled AS the target model file, replacing its
- *   on-disk content for this check. Right for validating an edit before
- *   saving; diagnostics land at true file coordinates.
- * - "package": a dry-run of every .malloy file in the package as saved —
- *   validation with reload's reach but none of its effects on the served
- *   model. An optional source replaces the target file's content, so
- *   importers compile against the edit ("what breaks if I save this?").
- */
-export const COMPILE_SCOPES = ["append", "file", "package"] as const;
-export type CompileScope = (typeof COMPILE_SCOPES)[number];
+function mergePackageManifest(
+   existingManifest: Record<string, unknown>,
+   metadata: PackageManifestUpdate,
+): Record<string, unknown> {
+   const onDiskMaterialization =
+      existingManifest.materialization !== null &&
+      typeof existingManifest.materialization === "object" &&
+      !Array.isArray(existingManifest.materialization)
+         ? (existingManifest.materialization as Record<string, unknown>)
+         : undefined;
 
-/** A compiler diagnostic tagged with the package-relative model it belongs
- *  to, resolvable from `at.url` — load-bearing at scope "package", where
- *  problems from every file share one array. */
-export type TaggedLogMessage = LogMessage & { model?: string };
+   // Scope has two homes, `materialization.scope` (canonical) and the root
+   // (deprecated), and both are written in sync: root-only would conflict
+   // with an existing envelope (see resolvePackageScope), and envelope-only
+   // would make an older publisher default a `version` package to `package`.
+   // The wire materialization block has no `scope`, so an on-disk envelope
+   // value survives a materialization PATCH.
+   const resolvedScope =
+      metadata.scope ??
+      (onDiskMaterialization?.scope as ApiPackage["scope"] | undefined) ??
+      (existingManifest.scope as ApiPackage["scope"] | undefined);
 
-/** The package-relative model path of a file inside the package, `/`-separated on every platform; undefined outside it. */
-export function packageRelativeModelPath(
-   packagePath: string,
-   filePath: string,
-   pathModule: Pick<typeof path, "relative" | "isAbsolute" | "sep"> = path,
-): string | undefined {
-   const rel = pathModule.relative(packagePath, filePath);
-   if (rel === "" || rel.startsWith("..") || pathModule.isAbsolute(rel)) {
-      return undefined;
-   }
-   return rel.split(pathModule.sep).join("/");
-}
+   // A materialization PATCH replaces the block wholesale (schedule and
+   // freshness are the policy being set), but `queryMetadata` is orthogonal:
+   // dropping it on omission would silently untag every build statement.
+   // Null preserves too, at both wire homes, since some clients serialize
+   // unset fields as null; the clear is an empty bag.
+   const preservedQueryMetadata =
+      metadata.materialization !== undefined &&
+      metadata.materialization?.queryMetadata == null &&
+      onDiskMaterialization?.queryMetadata !== undefined
+         ? { queryMetadata: onDiskMaterialization.queryMetadata }
+         : {};
 
-async function denyHiddenAsNotQueryable(
-   convert: () => void | Promise<void>,
-   gate: () => Promise<void>,
-): Promise<void> {
-   try {
-      await gate();
-   } catch (error) {
-      if (error instanceof AccessDeniedError) {
-         // The conversion must resolve the target at least as well as the gate
-         // that denied it: the pre-compile text gate converts on surface
-         // syntax, but the compiled gate must convert on the COMPILED run
-         // target, or a multi-statement decoy / derivation alias keeps a 403
-         // that names the hidden source. Each call site passes the matching
-         // boundary check.
-         await convert();
-      }
-      throw error;
-   }
+   const materializationBase: Record<string, unknown> | undefined =
+      metadata.materialization !== undefined
+         ? { ...metadata.materialization, ...preservedQueryMetadata }
+         : onDiskMaterialization !== undefined
+           ? { ...onDiskMaterialization }
+           : undefined;
+   const materializationBlock =
+      resolvedScope !== undefined
+         ? { ...(materializationBase ?? {}), scope: resolvedScope }
+         : materializationBase;
+
+   // `queryMetadata` also has two homes, the other way round: the root is
+   // canonical, the envelope deprecated, and both are written so an older
+   // publisher reading only the envelope still tags. Precedence matches the
+   // manifest resolver: top-level field, then the block, then disk. Null
+   // means "not provided" throughout; the clear is an empty bag.
+   const resolvedQueryMetadata =
+      metadata.queryMetadata ??
+      (materializationBlock as { queryMetadata?: unknown } | undefined)
+         ?.queryMetadata ??
+      (existingManifest as { queryMetadata?: unknown }).queryMetadata;
+
+   // Fields are overwritten only when provided. A convention-derived surface
+   // is never written: a read-modify-write PATCH echoes the `index.malloy`
+   // surface a GET derived, and freezing it into `explores` would leave the
+   // package serving nothing once that file is renamed. Recognized as the
+   // exact derived value in a manifest that declares no `explores`.
+   const echoesDerivedSurface =
+      existingManifest.explores === undefined &&
+      Array.isArray(metadata.explores) &&
+      metadata.explores.length === 1 &&
+      metadata.explores[0] === INDEX_MODEL_NAME;
+
+   return {
+      ...existingManifest,
+      name: metadata.name,
+      // An undefined would be dropped by JSON.stringify, erasing it on disk.
+      ...(metadata.description !== undefined
+         ? { description: metadata.description }
+         : {}),
+      ...(metadata.explores !== undefined && !echoesDerivedSurface
+         ? { explores: metadata.explores }
+         : {}),
+      ...(metadata.queryableSources !== undefined
+         ? { queryableSources: metadata.queryableSources }
+         : {}),
+      ...(metadata.manifestLocation !== undefined
+         ? { manifestLocation: metadata.manifestLocation }
+         : {}),
+      ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
+      ...(resolvedQueryMetadata !== undefined
+         ? { queryMetadata: resolvedQueryMetadata }
+         : {}),
+      // Mirrored into the deprecated home only when it already exists or the
+      // caller wrote to it, so a manifest never gains the block being
+      // migrated away from.
+      ...(materializationBlock !== undefined
+         ? {
+              materialization: {
+                 ...materializationBlock,
+                 ...(resolvedQueryMetadata !== undefined
+                    ? { queryMetadata: resolvedQueryMetadata }
+                    : {}),
+              },
+           }
+         : {}),
+   };
 }
 
 /** Cap on runtime add failures kept per environment for /status. */
@@ -313,74 +275,46 @@ const MAX_RECORDED_ADD_FAILURES = 100;
 export class Environment {
    private packages: Map<string, Package> = new Map();
    // Lock ordering: connectionMutex (environment) MUST be acquired before any
-   // packageMutex. Connection updates may invalidate cached package
-   // MalloyConfigs and force reloads, so the environment lock is the outer one.
-   // Never acquire connectionMutex while holding a packageMutex — that's the
-   // AB/BA deadlock path.
+   // packageMutex, since connection updates can force package reloads. Never
+   // acquire connectionMutex while holding a packageMutex (AB/BA deadlock).
    private packageMutexes = new Map<string, Mutex>();
    private packageStatuses: Map<string, PackageInfo> = new Map();
    /**
-    * Packages with a load, reinstall or recompile in progress here, keyed by
-    * name, with when the first in-flight operation began. This is what
-    * `Package.status.loading` reports. It is kept apart from
-    * `packageStatuses`, whose LOADING/SERVING/UNLOADING answers "is a copy
-    * registered to serve", because the two are independent: a reload of a
-    * serving package is in flight here while the previous copy stays in
-    * `packages` and keeps answering queries. Entries are reference-counted so
-    * a nested operation (a reinstall that then rebinds a manifest) stays
-    * marked until the outermost one finishes.
+    * Packages with a load, reinstall or recompile in progress, with when the
+    * first began; what `Package.status.loading` reports. Separate from
+    * `packageStatuses` ("is a copy registered to serve") because a reload runs
+    * while the previous copy keeps serving. Reference-counted so a nested
+    * operation stays marked until the outermost finishes.
     */
    private loadsInFlight: Map<
       string,
       {
          count: number;
          since: number;
-         /**
-          * Resolves once every load counted here has finished, however each
-          * ended. Loads of one package started independently (a reinstall
-          * racing a reload, a lazy load joined by an install) share the entry,
-          * so a waiter is released only when the last of them is done.
-          */
+         /** Resolves once every load sharing this entry has finished. */
          settled: Promise<void>;
          settle: () => void;
       }
    > = new Map();
    /**
-    * Configured packages that failed to load, keyed by name, with the reason.
-    *
-    * A load failure is not fatal: the package is omitted and its siblings serve
-    * on. It is also observable exactly once, because the failing load deletes
-    * the `packageStatuses` entry that `listPackages` enumerates, so the next
-    * listing no longer knows the package was ever configured. That makes this
-    * the only lasting record. Read by EnvironmentStore.getStatus.
+    * Configured packages that failed to load, with the reason. The only
+    * lasting record: the failing load deletes the `packageStatuses` entry, so
+    * `listPackages` forgets the package was configured.
     */
    private failedPackages: Map<string, string> = new Map();
    /**
-    * Why a configured package never reached the disk, keyed by package name.
-    *
-    * Separate from {@link failedPackages} because it is the more specific
-    * answer and has to win. A package whose location failed to mount is still
-    * seeded SERVING by addEnvironment, so its later lazy load fails on the
-    * manifest that was never copied and `listPackages` records that instead.
-    * Reporting "Package manifest ... does not exist." for what was really a
-    * typo'd `location` sends the reader hunting in the wrong place.
+    * Why a configured package never reached the disk. Wins over
+    * {@link failedPackages}: an unmounted package is still seeded SERVING, so
+    * its lazy load later fails on a missing manifest, which would hide a
+    * typo'd `location`.
     */
    private mountErrors: Map<string, string> = new Map();
    /** Runtime add failures recorded in {@link mountErrors}, oldest first. */
    private recordedAddFailures: string[] = [];
    /**
-    * Why a SERVING package's most recent reload failed to compile, keyed by
-    * package name.
-    *
-    * Separate from {@link failedPackages} because the package is NOT failed:
-    * a failed reload keeps the last good compiled model serving (see
-    * {@link _loadOrGetPackageLocked}), so `getFailedPackages()` and the
-    * serving counters must not include it. What this records is staleness:
-    * the model answering queries is older than the files on disk. Without it
-    * a watch-mode recompile failure is visible only on stderr, and /status
-    * keeps reporting a healthy server while queries answer from the previous
-    * model. Read by EnvironmentStore.getStatus, which reports each entry as a
-    * loadErrors item with `stale: true`.
+    * Why a SERVING package's latest reload failed to compile. Not a failure:
+    * the last good model keeps serving, so this records staleness, reported
+    * by /status as a `stale: true` loadErrors item rather than only on stderr.
     */
    private staleCompileErrors: Map<
       string,
@@ -392,59 +326,37 @@ export class Environment {
       new Set<RetiredConnectionGeneration>();
    private apiConnections: ApiConnection[];
    /**
-    * Warehouses materialization builds write to and materialized queries are
-    * served from. Disjoint from {@link apiConnections}: a destination is not a
-    * connection, so it is absent from `listApiConnections`, unresolvable by name
-    * from a user's model, and free to share a name with a connection without
-    * colliding with it. Two lists rather than one flagged list so that every
-    * existing connection consumer excludes destinations structurally, instead of
-    * each having to remember a filter.
+    * Warehouses materialization builds write to and serve from. A separate
+    * list, not a flag on {@link apiConnections}, so every connection consumer
+    * excludes destinations structurally: they are unresolvable from a model
+    * and may share a name with a connection.
     */
    private destinations: ApiConnection[];
    /**
-    * The live Malloy connections for {@link destinations}, assembled exactly the
-    * way the user-facing ones are but from the destination list — so a
-    * materialization serve shape can reach a destination while nothing in the
-    * namespace a package compiles against can. Rebuilt whenever the list is
-    * replaced, retiring the previous generation's handles.
-    *
-    * Always assigned by the time anything can read it: the constructor sets the
-    * destination list unconditionally, and `setStorageDestinations` treats an
-    * unbuilt config as a reason to build even when the list has not changed —
-    * which is what makes the assertion here true for an environment with no
-    * destinations at all.
+    * Live Malloy connections for {@link destinations}, outside the namespace
+    * packages compile against. Rebuilt (retiring old handles) whenever the
+    * list is replaced. Always assigned: the constructor calls
+    * `setStorageDestinations`, which builds an unbuilt config even for an
+    * unchanged empty list.
     */
    private destinationMalloyConfig!: EnvironmentMalloyConfig;
    /**
-    * Whether {@link destinations} is the authoritative set for this environment —
-    * i.e. safe to reconcile the stored rows against.
-    *
-    * False when a load could not READ the stored destinations. The list is then
-    * "unknown", not "empty", and the two are not interchangeable: the database
-    * sync prunes rows the list does not hold, so treating a failed read as an
-    * empty list turns a transient error into permanently deleted registrations.
-    * An explicit set (config or API) makes it authoritative again.
+    * False when a load could not read the stored destinations: the list is
+    * then unknown, not empty, and the database sync must not prune rows
+    * against it. An explicit set makes it authoritative again.
     */
    private destinationsAuthoritative = true;
    private environmentPath: string;
    private environmentName: string;
-   // Resolves a package's latest persisted materialization manifest entries
-   // (the full map — colocated tableName entries AND `storage=` cross-connection
-   // entries), so serve routing for BOTH tiers is re-established when a package
-   // (re)loads — e.g. after a worker restart — instead of only when a build's
-   // auto-load runs. Injected by the EnvironmentStore, which owns the
-   // materialization repository. Undefined ⇒ no re-bind on load (routing then
-   // depends on a fresh build, the old behavior). See
+   // Resolves a package's latest persisted manifest entries (both tiers), so
+   // serve routing is re-established whenever a package (re)loads, not only
+   // after a build. Undefined ⇒ no re-bind on load. See
    // {@link rebindServeBindingsFromLocalStore}.
    private storageBindingResolver?: (
       packageName: string,
    ) => Promise<Record<string, ManifestEntry>>;
    public metadata: ApiEnvironment;
-   // The shared memory governor that consults process RSS. Optional —
-   // when null the gate is a no-op and the environment behaves exactly
-   // like it did before the governor was introduced. Set by
-   // EnvironmentStore.setMemoryGovernor at server start so we keep the
-   // governor as the single owner of the back-pressure boolean.
+   // Owner of the RSS back-pressure flag; null makes the admission gates no-ops.
    private memoryGovernor: PackageMemoryGovernor | null = null;
    // Called with each package the moment it enters `this.packages`. Set by
    // EnvironmentStore (see setPackageLoadedHook); null means nobody listens.
@@ -467,9 +379,7 @@ export class Environment {
       apiConnections: InternalConnection[],
       storageDestinations: ApiConnection[] = [],
    ) {
-      // Sanitizer barrier: every downstream `path.join(this.environmentPath,
-      // …)` site (including the static `sweepStaleInstallDirs` sweep) gets a
-      // value that has cleared an allowlist check at the gate.
+      // Sanitizer barrier for every downstream `path.join(this.environmentPath, …)`.
       assertSafeEnvironmentPath(environmentPath);
       this.environmentName = environmentName;
       this.environmentPath = environmentPath;
@@ -502,15 +412,9 @@ export class Environment {
    }
 
    public async update(payload: ApiEnvironment) {
-      // Ahead of the readme write, so a body carrying a destination list we
-      // cannot read is refused before this method has changed anything.
-      //
-      // Absent means "leave alone", so a caller updating only the readme or the
-      // connections cannot blank the destination list by omission. Anything else
-      // present is acted on, including a shape we cannot read: the list replaces
-      // what is stored, so "we did not understand this" must not resolve to "then
-      // keep none of them". An explicit empty list is a different thing and does
-      // clear it.
+      // First, so an unreadable destination list is refused before anything
+      // changes. Absent leaves the list alone; an unreadable shape is
+      // rejected rather than read as "keep none"; an explicit [] clears.
       if (payload.storageDestinations !== undefined) {
          this.setStorageDestinations(payload.storageDestinations, {
             rejectInvalid: true,
@@ -522,23 +426,16 @@ export class Environment {
          await this.writeEnvironmentReadme(payload.readme);
       }
 
-      // Handle connections update
-      // TODO: Update environment connections should have its own API endpoint
       if (payload.connections) {
          const payloadConnections = payload.connections;
          await this.runConnectionUpdateExclusive(async () => {
             logger.info(
                `Updating ${payloadConnections.length} connections for environment ${this.environmentName}`,
             );
-            // This list replaces the stored one wholesale, and responses no
-            // longer carry credentials, so an entry echoed back from a read
-            // arrives without one. Merge each entry against what is stored, the
-            // same "an entry that names a stored one and carries no config
-            // keeps it" rule storageDestinations already documents. Without
-            // this, adding or deleting ANY connection through the app strips
-            // the credentials of every other connection in the environment,
-            // because the app sends the whole list back. An entry with no
-            // stored counterpart is new and passes through as sent.
+            // The list replaces the stored one wholesale, but reads carry no
+            // credentials, so an echoed entry arrives without them. Merging
+            // against the stored entry keeps one connection edit in the app
+            // from stripping every other connection's credentials.
             const mergedConnections = payloadConnections.map((incoming) => {
                const stored = this.apiConnections.find(
                   (existing) => existing.name === incoming.name,
@@ -606,12 +503,8 @@ export class Environment {
          storageDestinations,
       );
 
-      // Best-effort: a previous run may have crashed mid-install or
-      // mid-delete and left orphan dirs under .staging/ or .retired/.
-      // Run against the validated constructor argument so the sink path
-      // here does NOT route through `this` (which CodeQL conservatively
-      // treats as tainted because other methods on this class touch
-      // request-derived `packageName` values).
+      // Best-effort cleanup of orphans from a crashed install or delete. Takes
+      // the validated argument, not `this`, which CodeQL treats as tainted.
       await Environment.sweepStaleInstallDirs(environmentPath);
 
       return environment;
@@ -626,7 +519,7 @@ export class Environment {
             )
          ).toString();
       } catch {
-         // Readme not found, so we'll just return an empty string
+         // No readme.
       }
       this.metadata = {
          ...this.metadata,
@@ -649,946 +542,20 @@ export class Environment {
       sql?: string;
       document?: CompiledDocument;
    }> {
-      assertSafePackageName(packageName);
-      assertSafeRelativeModelPath(modelName);
-      if (!COMPILE_SCOPES.includes(scope)) {
-         throw new BadRequestError(
-            `Invalid compile scope "${String(scope)}": expected one of ` +
-               `${COMPILE_SCOPES.map((s) => `"${s}"`).join(", ")}.`,
-         );
-      }
-      // Scope decides what `source` means, so it decides whether one is
-      // required: "append" and "file" compile the submitted text (nothing to
-      // do without it), while "package" is a dry-run of the files as saved and
-      // takes source only as an optional what-if replacement for modelPath.
-      if (source === undefined && scope !== "package") {
-         throw new BadRequestError(
-            `Compile scope "${scope}" requires a source to compile. ` +
-               `Fix: pass the Malloy text in "source", or use scope "package" ` +
-               `to validate the package's files as saved.`,
-         );
-      }
-      if (scope === "package" && includeSql) {
-         throw new BadRequestError(
-            `includeSql is not available at scope "package": the dry-run has ` +
-               `no single runnable query to extract SQL from. Fix: compile ` +
-               `the runnable text at scope "append" or "file" instead.`,
-         );
-      }
-      // The submitted source lands in the package's namespace (appended to the
-      // target model, or replacing a file wholesale), so an authorize
-      // annotation in it would sit alongside — or displace — the author's.
-      // Same rejection as the query path on every scope, and `includeSql`
-      // makes this door the more valuable one to an attacker.
-      if (source !== undefined) {
-         try {
-            assertNoCallerAuthorizeAnnotation(source);
-         } catch (err) {
-            recordAuthorizeGuardRejection("compile_source");
-            throw err;
-         }
-      }
-      // /compile interprets modelPath as a .malloy model (namespace context at
-      // "append", the file being written at "file"/"package"-with-source). A
-      // notebook (.malloynb) is markdown + cells, not a model, so compiling
-      // against it only yields a confusing parse error — reject it up front
-      // with an actionable message. (Notebooks remain public for
-      // discovery/query; this is specific to the compile context.)
-      if (
-         modelName.endsWith(NOTEBOOK_FILE_SUFFIX) &&
-         (scope !== "package" || source !== undefined)
-      ) {
-         throw new BadRequestError(
-            `Cannot compile against a notebook ("${modelName}"). ` +
-               `/compile takes a .malloy model path.`,
-         );
-      }
-      // Hold the per-package mutex for the duration of every disk read —
-      // both the explicit `fs.readFile(modelPath)` below and the implicit
-      // import resolution that `runtime.loadModel` does through the URL
-      // reader. This is mutually exclusive with `installPackage`'s Phase 2
-      // rename swap and with `deletePackage`'s rename-to-retired, so a
-      // compile can never observe a half-rewritten tree. The slow Phase 1
-      // download happens outside this lock, so a multi-second clone does
-      // not block compiles.
-      return this.withPackageLock(packageName, async () => {
-         // Sanitized join: input segments are allowlisted above; the
-         // resolve-and-contain check here is the secondary guard CodeQL's
-         // path-injection sanitizer recognises.
-         const modelPath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-            modelName,
-         );
-         const packagePath = safeJoinUnderRoot(
-            this.environmentPath,
-            packageName,
-         );
-         // Where the compiled text lives, by scope. "append": a virtual file
-         // in the model's directory (so relative imports resolve) holding the
-         // model's content with the source appended — the historical behavior,
-         // whose diagnostics are positioned in the CONCATENATED file. "file"
-         // (and "package" with a source): the virtual file IS modelPath, so
-         // the submitted text replaces the on-disk copy, diagnostics land at
-         // true file coordinates, and — at "package" — every importer compiles
-         // against the new text. Use `pathToFileURL` rather than hand-prefixing
-         // `file://`: on Windows the latter produces a malformed URL
-         // (`file://D:\Temp\…`) that round-trips differently than the URL the
-         // Malloy runtime synthesizes from the same path, breaking the
-         // intercepting reader's string comparison below and falling through
-         // to disk for a virtual file that doesn't exist.
-         const modelDir = path.dirname(modelPath);
-         const virtualUrl =
-            scope === "append"
-               ? pathToFileURL(path.join(modelDir, "__compile_check.malloy"))
-               : pathToFileURL(modelPath);
-         const virtualUri = virtualUrl.toString();
-
-         let fullSource = source ?? "";
-         // Where the caller's own text starts in the compiled file, so its joins
-         // are gated as the query path gates them. "file" and "package" have
-         // none: the whole text is the author's file.
-         let callerRegion: CallerRegion | undefined;
-         if (scope === "append") {
-            // Read the full model file so the submitted source inherits the
-            // model's complete namespace — imports, source definitions,
-            // queries, etc.
-            let modelContent = "";
-            try {
-               modelContent = await fs.promises.readFile(modelPath, "utf8");
-            } catch {
-               // Empty content here, and compilation reports the problem. Note
-               // this fallback no longer decides the missing-model case on its
-               // own at `append` scope: the restricted-construct gate below
-               // loads the same model to check the caller's text against, and
-               // refuses when it cannot, so a model that does not exist is
-               // rejected there before this leniency can apply.
-            }
-            fullSource = modelContent
-               ? `${modelContent}\n${source}`
-               : (source ?? "");
-            // Checked again where the compiler reads it: a saved model ending in an open block note re-lexes the caller's prose.
-            // Both checks are load-bearing: this in-context form accepts text the stand-alone check above refuses.
-            if (source !== undefined && modelContent) {
-               try {
-                  assertNoCallerAuthorizeAnnotation(
-                     source,
-                     `${modelContent}\n`,
-                  );
-               } catch (err) {
-                  recordAuthorizeGuardRejection("compile_source");
-                  throw err;
-               }
-            }
-            callerRegion = {
-               kind: "span",
-               url: virtualUri,
-               // 0-based: the appended text starts on the line after the model's.
-               fromLine: modelContent ? modelContent.split("\n").length : 0,
-               text: source ?? "",
-            };
-         }
-
-         // Create a URL Reader that serves the source string for the virtual
-         // file, but falls back to the disk for everything else (imports). At
-         // scope "package" with no source there is nothing to substitute and
-         // every file reads from disk as saved.
-         const substitute = scope !== "package" || source !== undefined;
-         const interceptingReader = {
-            readURL: async (url: URL) => {
-               if (substitute && url.toString() === virtualUri) {
-                  return fullSource;
-               }
-               return URL_READER.readURL(url);
-            },
-         };
-
-         // Use the locked variant — we already hold the per-package mutex.
-         const pkg = await this._loadOrGetPackageLocked(packageName);
-
-         // Authorize gate: /compile is compile-only, but it can still act
-         // as a schema oracle (a denied caller learns a gated source's columns
-         // from compile errors) and, with includeSql, leak its SQL. Decide the
-         // locks the submitted text names BEFORE compiling — mirrors the query
-         // path's early gate (see `assertAuthorizedForText` for what each scope
-         // reads); the compiled backstop below settles a target this cannot
-         // name. The gate runs against the package's cached Model (its
-         // `given:` block + authorize annotations), independent of the virtual
-         // compile below. A new model path has no cached Model, so its early
-         // surface-syntax gate cannot run; the compiled backstop below instead
-         // evaluates gates carried by the runnable's own ModelDef.
-         let { model: gateModel, exact: hasExactGateModel } =
-            pkg.getCompileAuthorizationModel(modelName);
-         // A file can exist on disk without being in the cached package model
-         // (for example, it was added after the last reload). Compile that
-         // author's file once as an ephemeral gate model so file-level givens
-         // and authorize annotations come from the correct namespace. A truly
-         // new path still falls back to the compiled-runnable gate below.
-         if (!hasExactGateModel && source !== undefined) {
-            const diskTarget = await fs.promises
-               .stat(modelPath)
-               .catch(() => undefined);
-            if (diskTarget?.isFile()) {
-               gateModel = await Model.create(
-                  packageName,
-                  packagePath,
-                  modelName,
-                  pkg.getMalloyConfig(),
-                  {
-                     buildManifest: pkg.getBuildManifestEntries(),
-                  },
-               );
-               hasExactGateModel = true;
-            }
-         }
-         // A document is gated cell by cell and tile by tile below, so one
-         // restricted cell does not refuse the cells the caller may read.
-         // Text over a document's annotation budget is not parsed to find
-         // out: when it names `artifact` at all it is taken for a document, and
-         // the budget refuses it below.
-         const documentCandidate =
-            scope === "append" &&
-            source !== undefined &&
-            (exceedsDocumentBudget(source)
-               ? source.includes("artifact")
-               : carriesArtifactTag(source));
-         const runEarlyGate = async (): Promise<void> => {
-            if (gateModel && hasExactGateModel && source !== undefined) {
-               // Only the authorize gate (the *who* axis) applies to /compile.
-               // The query boundary (`explores`/`queryableSources`, the *what*
-               // axis) deliberately does NOT: compile is the authoring loop
-               // (validate -> save -> reload), and gating it would make a curated
-               // package un-authorable: every per-file compile would 404 once
-               // `queryableSources: "declared"` is set. The boundary is
-               // discovery curation, not access control; the accepted trade is
-               // that /compile can reveal a
-               // non-exported source's schema (and, with includeSql, SQL) —
-               // sources whose confidentiality matters are gated by
-               // `#(authorize)`, which still applies here in full.
-               await denyHiddenAsNotQueryable(
-                  () => {
-                     gateModel.assertQueryBoundaryEarly(
-                        undefined,
-                        undefined,
-                        source,
-                     );
-                  },
-                  () =>
-                     gateModel.assertAuthorizedForText(source, givens ?? {}, {
-                        // File and package scope compile the whole file (or, at
-                        // package scope with a source, the whole replacement) —
-                        // a locked name that is not the statement Malloy runs
-                        // must not refuse it, and its joins are author joins.
-                        wholeFile: scope !== "append",
-                     }),
-               );
-            }
-         };
-         if (!documentCandidate) await runEarlyGate();
-
-         // Initialize Runtime with the package's active MalloyConfig so compile
-         // checks see the same package-scoped duckdb as execution. This runtime
-         // borrows the package config; the package/environment lifecycle owns release.
-         // Thread the package's bound build manifest (when present) so the
-         // /compile preview routes persist sources to their materialized tables
-         // exactly like execution does — otherwise includeSql=true would always
-         // show base-table SQL and diverge from what executeQuery actually runs.
-         const boundManifestEntries = pkg.getBuildManifestEntries();
-         const runtime = new Runtime({
-            urlReader: interceptingReader,
-            config: pkg.getMalloyConfig(),
-            buildManifest: boundManifestEntries
-               ? { entries: boundManifestEntries, strict: false }
-               : undefined,
-         });
-
-         // Tag each diagnostic with the package-relative model it points at,
-         // read off `at.url`. Load-bearing at scope "package" (one array,
-         // many files) and clarifying everywhere else: an "append"-scope
-         // diagnostic can point at pre-existing model content, and the tag is
-         // what says so. The append-mode virtual file reports as the model it
-         // extends.
-         const tagProblems = (problems: LogMessage[]): TaggedLogMessage[] =>
-            problems.map((problem) => {
-               const url = (problem as { at?: { url?: string } }).at?.url;
-               let model: string | undefined;
-               if (url && url.startsWith("file:")) {
-                  try {
-                     model = packageRelativeModelPath(
-                        packagePath,
-                        fileURLToPath(url),
-                     );
-                  } catch {
-                     // Not a resolvable file URL — leave the tag off.
-                  }
-               }
-               if (scope === "append" && url === virtualUri) {
-                  model = modelName;
-               }
-               return model !== undefined ? { ...problem, model } : problem;
-            });
-
-         if (scope === "package") {
-            // Gate the caller's replacement once on the main thread. The full
-            // package compile below runs in the load worker, but authorization
-            // probes use the package's live connection/config and must remain
-            // on this side of the worker boundary.
-            if (source !== undefined && gateModel) {
-               try {
-                  const materializer = runtime.loadModel(virtualUrl);
-                  await materializer.getModel();
-                  let finalQuery: ReturnType<
-                     typeof materializer.loadFinalQuery
-                  > | null = null;
-                  try {
-                     finalQuery = materializer.loadFinalQuery();
-                  } catch {
-                     // No runnable query in the replacement text.
-                  }
-                  if (finalQuery) {
-                     await denyHiddenAsNotQueryable(
-                        () => {
-                           if (!hasExactGateModel) {
-                              throw new NotQueryableError(
-                                 "Query target is not queryable.",
-                              );
-                           }
-                           return gateModel.assertCompiledTargetQueryable(
-                              finalQuery,
-                              source,
-                           );
-                        },
-                        () =>
-                           hasExactGateModel
-                              ? gateModel.assertAuthorizedForRunnable(
-                                   finalQuery,
-                                   givens ?? {},
-                                )
-                              : gateModel.assertAuthorizedFromCompiledRunnable(
-                                   finalQuery,
-                                   givens ?? {},
-                                ),
-                     );
-                  }
-               } catch (error) {
-                  // Compiler diagnostics are returned by the worker below,
-                  // the translator's plain Error among them (the worker
-                  // classifies it). Authorization denials are policy outcomes
-                  // and propagate.
-                  if (
-                     !(error instanceof MalloyError) &&
-                     !translatorMalloyError(error)
-                  ) {
-                     throw error;
-                  }
-               }
-            }
-
-            // Use the exact worker path a reload uses: dotfiles are ignored,
-            // both .malloy and .malloynb files are compiled, CPU work is kept
-            // off the event loop, and the worker's timeout bounds the request.
-            // This does not swap the returned models into the served package.
-            let outcome;
-            try {
-               outcome = await getPackageLoadPool().loadPackage({
-                  packagePath,
-                  packageName,
-                  environmentName: this.environmentName,
-                  malloyConfig: pkg.getMalloyConfig(),
-                  defaultConnectionName: "duckdb",
-                  buildManifest: boundManifestEntries,
-                  collectProblems: true,
-                  replacement:
-                     source === undefined
-                        ? undefined
-                        : { modelPath: modelName, source },
-               });
-            } catch (error) {
-               // Same split as Package.loadViaWorker: compile errors and an
-               // unusable publisher.json keep their 4xx mapping, and only an
-               // infrastructure failure reads as a worker outage.
-               if (
-                  error instanceof MalloyError ||
-                  error instanceof ModelCompilationError ||
-                  error instanceof PackageManifestError
-               ) {
-                  throw error;
-               }
-               throw new ServiceUnavailableError(
-                  `Package compile worker unavailable: ${
-                     error instanceof Error ? error.message : String(error)
-                  }`,
-               );
-            }
-
-            // Package scope intentionally reports diagnostics from every model
-            // the reload compiler sees, including files hidden from discovery.
-            // It returns no rows or SQL; authorize still gates caller text.
-            const seen = new Set<string>();
-            const problems: TaggedLogMessage[] = [];
-            const collect = (
-               batch: LogMessage[],
-               fallbackModel?: string,
-            ): void => {
-               for (const problem of tagProblems(batch)) {
-                  const problemUrl = (problem as { at?: { url?: string } }).at
-                     ?.url;
-                  const tagged =
-                     problem.model === undefined &&
-                     problemUrl === undefined &&
-                     fallbackModel !== undefined
-                        ? { ...problem, model: fallbackModel }
-                        : problem;
-                  const start = (
-                     tagged as {
-                        at?: {
-                           range?: {
-                              start?: { line?: number; character?: number };
-                           };
-                        };
-                     }
-                  ).at?.range?.start;
-                  const key = `${tagged.model ?? problemUrl ?? ""}|${
-                     start?.line ?? -1
-                  }|${start?.character ?? -1}|${tagged.severity}|${
-                     tagged.message
-                  }`;
-                  if (seen.has(key)) continue;
-                  seen.add(key);
-                  problems.push(tagged);
-               }
-            };
-            // The findings a reload would add on the main thread after this
-            // same worker compile: render tags and the report, given and
-            // drill lints. Read before the per-file text lint below, which
-            // drops its copy of a finding only when the report lint reported
-            // it too.
-            const { renderTagWarnings, reportWarnings } =
-               await Package.lintWorkerOutcome(
-                  this.environmentName,
-                  packageName,
-                  packagePath,
-                  pkg.getMalloyConfig(),
-                  outcome,
-                  boundManifestEntries,
-                  source === undefined
-                     ? undefined
-                     : { modelPath: modelName, source },
-               );
-            for (const compiled of outcome.models) {
-               if (compiled.problems) {
-                  collect(
-                     compiled.problems as LogMessage[],
-                     compiled.modelPath,
-                  );
-               }
-               const readerProblem =
-                  compiled.modelDef && compiled.modelSourceText !== undefined
-                     ? notebookReaderProblem(
-                          compiled.modelPath,
-                          compiled.modelSourceText,
-                          compiled.modelDef as ModelDef,
-                          pathToFileURL(
-                             path.join(packagePath, compiled.modelPath),
-                          ).toString(),
-                       )
-                     : undefined;
-               if (readerProblem) collect([readerProblem], compiled.modelPath);
-               if (compiled.compilationError) {
-                  const compilerProblems =
-                     compiled.compilationError.malloyProblems;
-                  if (compilerProblems) {
-                     collect(
-                        compilerProblems as LogMessage[],
-                        compiled.modelPath,
-                     );
-                  } else {
-                     collect(
-                        [
-                           {
-                              severity: "error",
-                              message: compiled.compilationError.message,
-                           } as LogMessage,
-                        ],
-                        compiled.modelPath,
-                     );
-                  }
-               }
-               // A file that did not compile carries no text back, so it is read as saved (or as replaced).
-               // Any file that can be a report; the lint says nothing about a
-               // file with no artifact tag, wherever it lives.
-               const lintText = !(
-                  compiled.modelPath.endsWith(".malloy") &&
-                  isReportEligiblePath(compiled.modelPath)
-               )
-                  ? undefined
-                  : (compiled.modelSourceText ??
-                    (compiled.modelPath === modelName && source !== undefined
-                       ? source
-                       : await fs.promises
-                            .readFile(
-                               path.join(packagePath, compiled.modelPath),
-                               "utf8",
-                            )
-                            .catch(() => undefined)));
-               if (lintText !== undefined) {
-                  collect(
-                     notebookLintProblems(
-                        compiled.modelPath,
-                        lintText,
-                        pathToFileURL(
-                           path.join(packagePath, compiled.modelPath),
-                        ).toString(),
-                     ).filter(
-                        (problem) =>
-                           !reportedByDashboardLint(
-                              problem,
-                              compiled.modelPath,
-                              reportWarnings,
-                           ),
-                     ),
-                     compiled.modelPath,
-                  );
-               }
-            }
-            // Each keeps its own severity, so a broken dashboard makes the
-            // compile an error, as it should. They carry no position, so the
-            // subject (the view, field or given) leads the message: without
-            // it, two views with the same finding would collapse into one.
-            const asProblem = (
-               warning: (typeof renderTagWarnings)[number],
-               code: string,
-            ): LogMessage =>
-               ({
-                  severity: warning.severity ?? "warn",
-                  message: warning.subject
-                     ? `${warning.subject}: ${warning.message}`
-                     : warning.message,
-                  code,
-               }) as LogMessage;
-            for (const warning of renderTagWarnings) {
-               collect([asProblem(warning, "render-tag")], warning.model);
-            }
-            for (const warning of reportWarnings) {
-               collect(
-                  [asProblem(warning, warning.code ?? UNCODED_REPORT_FINDING)],
-                  warning.model,
-               );
-            }
-            if (
-               source !== undefined &&
-               outcome.replacementMatchedExisting === false
-            ) {
-               collect(
-                  [
-                     {
-                        severity: "warn",
-                        message:
-                           `No existing package file exactly matched ` +
-                           `"${modelName}"; the source was validated as a new ` +
-                           `file and did not replace another model.`,
-                     } as LogMessage,
-                  ],
-                  modelName,
-               );
-            }
-            return { problems };
-         }
-
-         // The model the append-scope fragment is judged against, loaded once for the gate and for a document.
-         let appendBase: ReturnType<Runtime["loadModel"]> | undefined;
-
-         // Counted here rather than inside the gate so every reason shares one instrument and one label set; only a refusal is counted, since anything else the gate rethrows is an infrastructure failure.
-         const countRefusal = (error: unknown): void => {
-            // An unparseable tile is a compile problem for the document, not a refusal.
-            if (
-               error instanceof CompileRefusedError &&
-               !(error instanceof UnparseableTextError)
-            ) {
-               getCompileRefusalsCounter().add(1, {
-                  environment: this.environmentName,
-                  reason:
-                     error instanceof RenderTagRefusedError
-                        ? "render_tag"
-                        : "restricted_construct",
-               });
-            }
-         };
-         const refuseConstructs = async (
-            baseModel: MalloyModel,
-            text: string,
-            renderTags: boolean,
-         ): Promise<void> => {
-            try {
-               await assertNoRestrictedConstructs(runtime, baseModel, text, {
-                  renderTags,
-               });
-            } catch (error) {
-               countRefusal(error);
-               throw error;
-            }
-         };
-         const refuseRenderTags = (text: string): void => {
-            try {
-               assertNoRenderTags(text);
-            } catch (error) {
-               countRefusal(error);
-               throw error;
-            }
-         };
-
-         // Containment for caller-submitted fragments. Scope "append" is the
-         // one scope whose text is a FRAGMENT checked against a curated model
-         // rather than a file the author owns, so it has no legitimate need to
-         // define its own data roots -- and Malloy resolves a source's schema
-         // at compile time, so an unrestricted one reaches the connection, the
-         // filesystem and the network without running a query. Scopes "file"
-         // and "package" are deliberately NOT gated: there the source IS the
-         // model file, and `import` plus `connection.table(...)` /
-         // `connection.sql(...)` are how any model declares what it reads.
-         // Gating them would make an ordinary package un-authorable.
-         if (scope === "append") {
-            // The model as saved, WITHOUT the caller's appended text: the
-            // fragment is checked against the surface the author published, so
-            // the caller cannot widen the namespace it is judged against.
-            //
-            // Five of the seven restricted constructs are refused on sight,
-            // but two are not: `name!type(...)` and the `sql_*` family are
-            // classified inside `computeExpression(fs)`, which needs a resolved
-            // FieldSpace. With no base model a fragment like
-            // `run: base_source -> { ... }` never resolves `base_source`, so
-            // the expression is never evaluated, the construct is never
-            // classified, and the gate passes text the real compile then runs
-            // for real. So a base model that will not load fails the request
-            // rather than lowering the gate: the caller's own text is not what
-            // failed, and the same argument `assertNoRestrictedConstructs`
-            // makes about its own catch applies here -- an infrastructure
-            // error carries no evidence either way.
-            let baseModel: MalloyModel;
-            try {
-               appendBase = runtime.loadModel(pathToFileURL(modelPath));
-               baseModel = await appendBase.getModel();
-            } catch (error) {
-               // Three different failures arrive here and they are not one
-               // answer. Refusing uniformly would tell a caller their text was
-               // bad when the warehouse was down, and a 4xx says "do not
-               // retry" -- the opposite of what an outage wants. The detail
-               // stays server-side either way: `modelPath` is an absolute path
-               // inside the container, so returning it would answer "does this
-               // file exist, and is it readable" for any path a caller names,
-               // which is the shape of oracle this gate exists to close.
-               // `warn`, not `error`: a caller typo in `modelPath` reaches here,
-               // and an unauthenticated 400 must not emit ERROR at whatever rate
-               // a caller likes.
-               logger.warn("Compile gate could not load the base model", {
-                  modelPath,
-                  error,
-               });
-               getCompileRefusalsCounter().add(1, {
-                  environment: this.environmentName,
-                  reason: "base_model_load_failed",
-               });
-               if (error instanceof MalloyError) {
-                  // Every MalloyError here is the same answer: the model this
-                  // fragment would be judged against did not compile, so there
-                  // is nothing to judge it against.
-                  //
-                  // There was a 503 branch keyed on `failed-to-fetch-table-schema`,
-                  // on the reading that a schema fetch which failed means the
-                  // dependency is unreachable. That code does not carry that
-                  // meaning: a table that simply DOES NOT EXIST produces it too,
-                  // so a permanent authoring error was telling the client to
-                  // retry. The reverse also held -- a `conn.sql(...)`-rooted
-                  // model whose warehouse was genuinely down fails with
-                  // `invalid-sql-source` and took the 400 anyway. Splitting on
-                  // it was therefore wrong in both directions, and Malloy
-                  // publishes no code here that means "unreachable". Until one
-                  // exists, these are one 400 carrying the model's own problems,
-                  // which is also what `file` and `package` scope already do
-                  // with the same failure.
-                  throw new CompileRefusedError(
-                     `Cannot validate the submitted source: the model ` +
-                        `"${modelName}" does not compile, so there is nothing ` +
-                        `to check the submitted source against. Problems: ` +
-                        error.problems.map((p) => p.message).join("; "),
-                  );
-               }
-               // Missing file, permission, anything else: the caller named a
-               // model this server cannot load, which is theirs to correct.
-               throw new CompileRefusedError(
-                  `Cannot validate the submitted source: the model ` +
-                     `"${modelName}" could not be loaded to check it against.`,
-               );
-            }
-            // The fragment ALONE, against the compiled base model. The
-            // concatenation the real compile runs cannot be passed here:
-            // `extendModel` judges text as an extension of a model that
-            // already holds those declarations, so feeding it the model's
-            // own text yields `Cannot redefine` for every source in the file
-            // and aborts before the appended fragment is ever classified --
-            // which is a bypass rather than a stricter check.
-            //
-            // What closes the continuation hole instead is the gate refusing
-            // when it could not parse what it was given (see
-            // assertNoRestrictedConstructs). A continuation fragment is a
-            // syntax error on its own, and that is now a refusal rather than
-            // silence read as approval.
-            // A document's whole-text gate runs on the text that compiles, after the per-cell access phase.
-            if (!documentCandidate) {
-               await refuseConstructs(baseModel, source ?? "", false);
-            }
-         }
-
-         if (documentCandidate && source !== undefined) {
-            const gate = gateModel;
-            const exact = hasExactGateModel;
-            const base = appendBase;
-            if (!base) throw new Error("append base model was not loaded");
-            const baseModel = await base.getModel();
-            // Syntactic and cheap, so it runs ahead of the cell reader; the compile-based gate runs once access is settled.
-            refuseRenderTags(source);
-            const result = await compileDocument({
-               base,
-               source,
-               modelName,
-               gates: {
-                  text: (text) =>
-                     gate && exact
-                        ? denyHiddenAsNotQueryable(
-                             () => {
-                                gate.assertQueryBoundaryEarly(
-                                   undefined,
-                                   undefined,
-                                   text,
-                                );
-                             },
-                             () =>
-                                gate.assertAuthorizedForText(
-                                   text,
-                                   givens ?? {},
-                                ),
-                          )
-                        : Promise.resolve(),
-                  compiled: (runnable) =>
-                     gate
-                        ? denyHiddenAsNotQueryable(
-                             () => gate.assertCompiledTargetQueryable(runnable),
-                             () =>
-                                exact
-                                   ? gate.assertAuthorizedForRunnable(
-                                        runnable,
-                                        givens ?? {},
-                                     )
-                                   : gate.assertAuthorizedFromCompiledRunnable(
-                                        runnable,
-                                        givens ?? {},
-                                     ),
-                          )
-                        : Promise.resolve(),
-                  constructs: (text) => refuseConstructs(baseModel, text, true),
-                  document: (text) => refuseConstructs(baseModel, text, false),
-                  nameVisible: (query, definitions) => {
-                     gate?.assertTextNameVisible(query, definitions);
-                  },
-                  boundaryCompiled: async (
-                     runnable,
-                     compiledSource,
-                     query,
-                     definitions,
-                  ) => {
-                     gate?.assertQueryBoundaryCompiled(
-                        compiledSource,
-                        query,
-                        definitions,
-                     );
-                     await gate?.assertDocumentJoinsQueryable(
-                        `${definitions}\n${query}`,
-                        runnable,
-                     );
-                  },
-                  boundary: async (query, definitions) => {
-                     gate?.assertQueryBoundaryEarly(
-                        undefined,
-                        undefined,
-                        query,
-                        definitions,
-                     );
-                     await gate?.assertDocumentJoinsQueryable(
-                        `${definitions}\n${query}`,
-                     );
-                  },
-               },
-            });
-            if (result) {
-               return {
-                  problems: result.problems.map((problem) => ({
-                     ...problem,
-                  })) as TaggedLogMessage[],
-                  ...(result.document && { document: result.document }),
-               };
-            }
-            // Not a readable document after all, so the ordinary compile runs and the whole text is judged as one.
-            await refuseConstructs(baseModel, source, false);
-            await runEarlyGate();
-         }
-
-         // Attempt to compile
-         try {
-            const modelMaterializer = runtime.loadModel(virtualUrl);
-            const model = await modelMaterializer.getModel();
-
-            // Resolve the final query's materializer once (if there is one).
-            let queryMaterializer: ReturnType<
-               typeof modelMaterializer.loadFinalQuery
-            > | null = null;
-            try {
-               queryMaterializer = modelMaterializer.loadFinalQuery();
-            } catch {
-               // No runnable query (e.g. only source definitions) — nothing to
-               // gate or extract. The early text gate ran, but it only REFUSES
-               // a gate it cannot classify or graft: every expressible one is
-               // deferred to the compiled backstop below, which needs a
-               // runnable. Nothing is exposed by skipping it here, since
-               // without a runnable there is no result and no SQL.
-            }
-
-            // Compiled-source backstops — run REGARDLESS of includeSql. They
-            // gate the source the COMPILED final query actually reads, closing
-            // the named-query and derivation indirection the early
-            // surface-syntax gate cannot see. Compiling a gated source even
-            // without SQL is a schema oracle
-            // (field-not-found errors leak its columns), so this must not be
-            // conditional on SQL extraction. (A `source: x is gated` alias
-            // carries the gate: only a declaration of its OWN `#(authorize)`
-            // replaces it, and caller text may not declare one.)
-
-            // No boundary backstop here: /compile is exempt from the query
-            // boundary by design (see the gate comment above). Only the
-            // authorize backstop runs.
-
-            // Authorize backstop (the *who* axis, 403). NOT guarded by
-            // hasAuthorize(): that reads only top-level modelDef.contents
-            // sources' OWN annotations, so a run target gated solely by what it
-            // derives from is invisible to it and this backstop would silently
-            // never run for such a model — the same bypass
-            // assertAuthorizedForRunnable itself closes on the query path (see
-            // model.ts assertAuthorizedForAllSources). The own-source probe and
-            // derivation walk it runs are cheap no-ops for an ungated model.
-            if (queryMaterializer && gateModel) {
-               const materializer = queryMaterializer;
-               await denyHiddenAsNotQueryable(
-                  () => {
-                     if (!hasExactGateModel) {
-                        throw new NotQueryableError(
-                           "Query target is not queryable.",
-                        );
-                     }
-                     return gateModel.assertCompiledTargetQueryable(
-                        materializer,
-                        source,
-                     );
-                  },
-                  () =>
-                     hasExactGateModel
-                        ? gateModel.assertAuthorizedForRunnable(
-                             materializer,
-                             givens ?? {},
-                             callerRegion,
-                          )
-                        : // No region: this gate model is another file's
-                          // namespace, so its source names cannot place a join.
-                          gateModel.assertAuthorizedFromCompiledRunnable(
-                             materializer,
-                             givens ?? {},
-                          ),
-               );
-            }
-
-            // If includeSql is requested and compilation succeeded, attempt to extract SQL
-            let sql: string | undefined;
-            if (includeSql && queryMaterializer) {
-               // A given value the compiled text's own filter types cannot read
-               // is a bad request, as on the query route. Checked here, after
-               // the gate and against the submitted text's givens rather than
-               // the cached model's, because this is the only place /compile
-               // binds given values.
-               assertFilterGivensParse(
-                  Array.from(model.givens.values()).map((g) =>
-                     malloyGivenToApi(g as MalloyGiven),
-                  ),
-                  givens,
-               );
-               try {
-                  sql = await queryMaterializer.getSQL({ givens });
-               } catch (error) {
-                  // A bad caller given (unknown name, wrong-typed value, finalized
-                  // override, ...) surfaces as a Malloy `runtime-given-*` error.
-                  // Map it to a 400 rather than silently omitting `sql` (which is
-                  // indistinguishable from "no runnable query"). Duck-type on
-                  // `.code`; let a MalloyError fall to the outer catch → problems.
-                  // The `runtime-given-` prefix is pinned to Malloy's error codes
-                  // (given_binding.ts / runtime.ts, same as model.ts) — if they're
-                  // renamed upstream a bad given would silently revert to the omit
-                  // branch below, so keep the two in sync.
-                  const givenCode = (error as { code?: string })?.code;
-                  if (
-                     typeof givenCode === "string" &&
-                     givenCode.startsWith("runtime-given-")
-                  ) {
-                     throw new BadRequestError(
-                        error instanceof Error ? error.message : String(error),
-                     );
-                  }
-                  if (error instanceof MalloyError) {
-                     throw error;
-                  }
-                  // Otherwise the source may just not contain a runnable query
-                  // (e.g. only source definitions) — omit the sql field.
-               }
-            }
-
-            // If successful, return any non-fatal warnings
-            const readerProblem = notebookReaderProblem(
-               modelName,
-               fullSource,
-               model._modelDef,
-               virtualUri,
-            );
-            // Its positions are in the concatenated file at "append", so the lint is for a whole file only.
-            const lintProblems =
-               scope === "append"
-                  ? []
-                  : notebookLintProblems(modelName, fullSource, virtualUri);
-            return {
-               problems: tagProblems([
-                  ...model.problems,
-                  ...(readerProblem ? [readerProblem] : []),
-                  ...lintProblems,
-               ]),
-               sql,
-            };
-         } catch (thrown) {
-            // If parsing/compilation fails, return the errors. The
-            // translator's plain Error is one of them, not a server fault.
-            const error = translatorMalloyError(thrown) ?? thrown;
-            if (error instanceof MalloyError) {
-               return {
-                  problems: tagProblems([
-                     ...error.problems,
-                     ...(scope === "append"
-                        ? []
-                        : notebookLintProblems(
-                             modelName,
-                             fullSource,
-                             virtualUri,
-                          )),
-                  ]),
-               };
-            }
-            // If it's a system error (e.g. file not found), throw it up
-            throw error;
-         }
-      });
+      return compileSource(
+         {
+            environmentName: this.environmentName,
+            environmentPath: this.environmentPath,
+            withPackageLock: (name, fn) => this.withPackageLock(name, fn),
+            loadPackageLocked: (name) => this._loadOrGetPackageLocked(name),
+         },
+         packageName,
+         modelName,
+         source,
+         includeSql,
+         givens,
+         scope,
+      );
    }
 
    public listApiConnections(): ApiConnection[] {
@@ -1608,52 +575,34 @@ export class Environment {
    }
 
    /**
-    * Replaces the destination list. Every entry is re-validated here, so this is
-    * also the barrier that keeps an unvalidated destination off the environment
-    * however it arrived — config file or request body.
-    *
-    * An entry that carries nothing but the fields a read reports is resolved
-    * against the stored list first, so a read-modify-write of the environment
-    * keeps the configs it was never shown.
-    *
-    * `rejectInvalid` picks what an entry we cannot use means. A config file or a
-    * restored row is a source that cannot be asked to fix it, so the default
-    * drops the entry and keeps serving. A request body can be refused, and is:
-    * see {@link processStorageDestinationsOrThrow}.
+    * Replaces the destination list, re-validating every entry however it
+    * arrived. An entry carrying only the fields a read reports is resolved
+    * against the stored list, so a read-modify-write keeps configs it was never
+    * shown. `rejectInvalid` refuses a bad entry (a request body) instead of
+    * dropping it (config or a restored row, which cannot be asked to fix it).
     */
    public setStorageDestinations(
       storageDestinations: ApiConnection[],
       { rejectInvalid = false }: { rejectInvalid?: boolean } = {},
    ): void {
       const previous = this.destinations;
-      // Resolved before validation so an entry that legitimately carries no
-      // config of its own — the "keep this one" reference — is validated as the
-      // stored destination it names, not as the bare reference.
+      // Resolved first so a "keep this one" reference validates as the stored
+      // destination it names.
       const requested = Array.isArray(storageDestinations)
          ? storageDestinations.map((destination) =>
               this.resolveDestinationReference(destination),
            )
          : storageDestinations;
-      // Throws before anything is assigned, so a refused update leaves the
-      // environment exactly as it was.
+      // Throws before anything is assigned.
       this.destinations = rejectInvalid
          ? processStorageDestinationsOrThrow(requested)
          : processStorageDestinations(requested);
-      // An explicit set makes the list authoritative again: whatever could not be
-      // read before, this is now the set the store should be reconciled to.
       this.destinationsAuthoritative = true;
 
-      // Nothing to swap when the resolved list describes the same destinations.
-      // An orchestrator that reconciles by re-pushing its whole desired state on
-      // a loop would otherwise re-attach every destination on every cycle and
-      // drop the serve shapes compiled against them, so the comparison ignores
-      // list order and config key order, neither of which changes what a
-      // destination is.
-      //
-      // "Same as before" only means there is nothing to do once something has
-      // been built. On the constructor's call both lists are empty for every
-      // environment with no destinations, so skipping on equality alone would
-      // leave the config unassigned for the common case, not the rare one.
+      // An orchestrator re-pushing its desired state on a loop must not
+      // re-attach every destination each cycle, so an equal list (ignoring
+      // order) is a no-op — but only once a config has been built, since the
+      // constructor's call compares two empty lists.
       if (
          this.destinationMalloyConfig &&
          storageDestinationsEqual(previous, this.destinations)
@@ -1662,9 +611,6 @@ export class Environment {
       }
 
       this.rebuildDestinationMalloyConfig();
-      // Quiet for the overwhelmingly common case of an environment with no
-      // destinations at all, loud for every transition that matters, including
-      // one that empties the list.
       if (previous.length > 0 || this.destinations.length > 0) {
          logger.info(
             `Environment ${this.environmentName} has ${this.destinations.length} storage destination(s)`,
@@ -1674,11 +620,9 @@ export class Environment {
    }
 
    /**
-    * Substitutes the stored destination for an entry that names one and carries
-    * no config of its own. Anything carrying a config is returned untouched and
-    * replaces what is stored; a reference to a name that is not stored is
-    * returned untouched too, and then fails validation like any config-less
-    * entry.
+    * Substitutes the stored destination for a config-less entry naming one.
+    * Anything else is returned untouched (an unknown reference then fails
+    * validation).
     */
    private resolveDestinationReference(
       destination: ApiConnection,
@@ -1699,16 +643,11 @@ export class Environment {
    }
 
    /**
-    * Give a freshly loaded package the connections its materialization serve
-    * shapes compile against — this environment's destinations, resolved live so a
-    * destination-list swap propagates without a package reload.
-    *
-    * Deliberately a push rather than a `Package.create` argument: the package
-    * config a model compiles against must never contain a destination, so this is
-    * the only route by which one reaches a compile at all, and it feeds only the
-    * synthetic serve shape. Missing it costs serve routing (queries fall back to
-    * live), never correctness — so it runs before serve bindings are pushed,
-    * which is what routing actually requires.
+    * Give a loaded package the destination connections its serve shapes
+    * compile against, resolved live so a list swap needs no reload. A push,
+    * not a `Package.create` argument, because a model's own compile config
+    * must never contain a destination. Missing it costs routing (queries go
+    * live), never correctness; it must run before serve bindings are pushed.
     */
    private attachDestinationServeConfig(_package: Package): void {
       _package.setServeDestinationConfig(() =>
@@ -1717,21 +656,16 @@ export class Environment {
    }
 
    /**
-    * (Re)assemble the destination connections after the list changed, draining
-    * the previous generation's handles on the same delay a connection-generation
-    * swap uses.
-    *
-    * A failure here is not fatal to the environment: destinations are an add-on,
-    * and an environment that cannot assemble them still serves its packages —
-    * builds refuse and materialized queries fall back to live.
+    * (Re)assemble the destination connections, draining the previous
+    * generation's handles. A failure is not fatal: the environment serves on,
+    * builds refuse and materialized queries go live.
     */
    private rebuildDestinationMalloyConfig(): void {
       const previous = this.destinationMalloyConfig;
       try {
-         // Rooted apart from the connections' files so a destination can never
-         // share a pooled DuckDB instance with a connection of the same name —
-         // see STORAGE_DESTINATIONS_DIR. Created here because the
-         // directory has to exist before the first lookup opens a database in it.
+         // Rooted apart from the connections' files so a destination never
+         // shares a pooled DuckDB instance with a same-named connection (see
+         // STORAGE_DESTINATIONS_DIR); must exist before the first lookup.
          const destinationRoot = storageDestinationRoot(this.environmentPath);
          if (this.destinations.length > 0) {
             fs.mkdirSync(destinationRoot, { recursive: true });
@@ -1755,22 +689,14 @@ export class Environment {
             `environment ${this.environmentName} destinations`,
             () => previous.releaseConnections(),
          );
-         // A loaded model memoizes the serve shape it compiled, and that shape
-         // holds the connections of the generation just retired — which are
-         // released once the drain elapses. The memo is keyed on the BINDING set,
-         // so a destination change does not change the key and the stale shape
-         // would be reused until the package reloaded: every routed query for it
-         // failing over to live, permanently and quietly. Dropped here, after the
-         // swap, so the next query recompiles against the config now installed.
+         // Memoized serve shapes hold the retired generation's connections but
+         // are keyed on the binding set, which this does not change; left in
+         // place, every routed query would quietly fall back to live.
          this.invalidateServeShapes();
       }
    }
 
-   /**
-    * Drop every loaded model's memoized materialization serve shape. Cheap: the
-    * next routed query recompiles one, and a package with no `storage=` bindings
-    * has none to drop.
-    */
+   /** Drop every loaded model's memoized serve shape; the next query recompiles. */
    private invalidateServeShapes(): void {
       for (const _package of this.packages.values()) {
          _package.invalidateServeShapes();
@@ -1778,21 +704,14 @@ export class Environment {
    }
 
    /**
-    * The connections a materialization serve shape may compile against. Separate
-    * from {@link getEnvironmentMalloyConfig} — which is what a package's models
-    * fall through to — so the two compiles resolve disjoint name sets. Handing
-    * out the same object for both is exactly the mistake this split exists to
-    * make impossible.
+    * The connections a serve shape may compile against. Never the same object
+    * as {@link getEnvironmentMalloyConfig}: the two resolve disjoint name sets.
     */
    public getStorageDestinationMalloyConfig() {
       return this.destinationMalloyConfig.malloyConfig;
    }
 
-   /**
-    * Records that this environment's stored destinations could not be read, so
-    * {@link listStorageDestinations} is a fallback rather than the
-    * authoritative set. Callers that reconcile storage must not prune against it.
-    */
+   /** The stored destinations could not be read; see {@link destinationsAuthoritative}. */
    public markStorageDestinationsUnknown(): void {
       this.destinationsAuthoritative = false;
    }
@@ -1803,10 +722,8 @@ export class Environment {
    }
 
    /**
-    * The destinations configured for this environment, with their configs.
-    * Deliberately not exposed by any controller: a destination config carries
-    * warehouse credentials and the destination has no endpoint of its own, so
-    * nothing can fetch or probe one.
+    * The destinations with their configs. Deliberately exposed by no
+    * controller: a config carries warehouse credentials.
     */
    public listStorageDestinations(): ApiConnection[] {
       return this.destinations;
@@ -1820,9 +737,8 @@ export class Environment {
 
    /**
     * Resolves a storage destination by name. Never falls back to the
-    * connection list: a `storage=` build naming a destination that is not
-    * configured must fail rather than write into a same-named connection, which
-    * would be the tenant's own warehouse.
+    * connection list: an unknown destination must fail rather than write into
+    * a same-named connection, the tenant's own warehouse.
     */
    public getStorageDestination(destinationName: string): ApiConnection {
       const destination = this.destinations.find(
@@ -1899,11 +815,8 @@ export class Environment {
    }
 
    /**
-    * Snapshot of the packages currently loaded in memory (does not trigger a
-    * load or reload). Used by the standalone materialization scheduler to sweep
-    * only already-loaded packages — a not-yet-loaded package is simply not
-    * scheduled until something else loads it, so the scheduler never forces a
-    * load of its own.
+    * Snapshot of the packages loaded in memory; never triggers a load, so the
+    * materialization scheduler sweeps only what something else loaded.
     */
    public getLoadedPackages(): Package[] {
       return [...this.packages.values()];
@@ -1912,23 +825,13 @@ export class Environment {
    /**
     * The packages this environment holds, as the API describes them.
     *
-    * A package whose compiled copy is resident is described from that copy
-    * without taking its lock, so a reload in progress (which holds the lock
-    * and has flipped the registered status to LOADING) is listed with
-    * `status.loading` rather than hidden: the previous copy is still what
-    * answers queries, and a listing that omitted it would read as the package
-    * having left this server. A registered package that is not resident is
-    * loaded here, as before, which is what brings an environment's configured
-    * packages into memory on first listing.
+    * A resident copy is described without its lock, so a reloading package is
+    * listed with `status.loading` (its previous copy still serves) rather than
+    * vanishing. A registered package that is not resident is loaded here.
     *
-    * A package that is loading for the first time has nothing compiled to
-    * describe. It is listed, as its name and `status` alone, only when
-    * `includeLoading` is set; `GET /status?includeLoading=true` sets it so an
-    * orchestrator that reads `status` can tell a load it dispatched from a
-    * package that is absent. Every other listing leaves it out: a listed
-    * package has always meant one that can serve here, and a consumer that
-    * reads the listing that way would otherwise route to a copy still
-    * downloading or compiling.
+    * A first-time load has nothing to describe and is listed (name and
+    * `status` only) only under `includeLoading`, for orchestrators; otherwise
+    * a listed package always means one that can serve here.
     */
    public async listPackages(
       options: { includeLoading?: boolean } = {},
@@ -1958,10 +861,8 @@ export class Environment {
                      }
                      metadata = { name: packageName };
                   } else if (registered === PackageStatus.LOADING) {
-                     // Registered as loading with nothing in flight: a load that
-                     // was interrupted before it settled. Nothing here can be
-                     // described, and loading it from this read path would
-                     // repeat the interrupted work on every listing.
+                     // An interrupted load: reloading it from this read path
+                     // would repeat the work on every listing.
                      return undefined;
                   } else {
                      metadata = (
@@ -1975,19 +876,9 @@ export class Environment {
                   logger.error(
                      `Failed to load package: ${packageName} due to : ${error}`,
                   );
-                  // Directory did not contain a valid package.json file -- therefore, it's not a package.
-                  // Or it timed out
-                  // Redact before this reaches getStatus: compiling a model
-                  // resolves the package's connections, so a Postgres/DuckLake
-                  // ATTACH failure surfaces here carrying the connection string
-                  // (connection.ts builds it, and redacts it before logging for
-                  // the same reason). A log line was the old destination; this
-                  // one is an HTTP response body.
-                  //
-                  // redactPgSecrets covers both keyword-form `password=` (what
-                  // buildPgConnectionString emits) and URI userinfo
-                  // (`postgres://user:pass@host`), so a URL-form connectionString
-                  // supplied verbatim in config is redacted here too.
+                  // Redacted because getStatus returns it in a response body,
+                  // and a Postgres/DuckLake ATTACH failure carries the
+                  // connection string (keyword `password=` or URI userinfo).
                   this.failedPackages.set(
                      packageName,
                      redactPgSecrets(
@@ -2003,23 +894,13 @@ export class Environment {
          );
       } catch (error) {
          logger.error("Error listing packages", { error });
-         console.error(error);
          throw error;
       }
    }
 
    /**
-    * The `Package.status` the API reports for a package here: whether a
-    * compiled copy is resident to answer queries, and whether a load,
-    * reinstall or recompile is in progress. Read without the package lock, so
-    * it answers during the operations it describes.
-    */
-   /**
-    * The server's record of where `packageName` was installed from, kept
-    * outside the package directory (see {@link PACKAGE_INSTALL_RECORDS_DIR}).
-    * Joined under the environment root the way every other path built from a
-    * package name here is, so a name that escaped validation cannot name a
-    * file elsewhere.
+    * Where `packageName` was installed from, recorded outside the package
+    * directory (see {@link PACKAGE_INSTALL_RECORDS_DIR}).
     */
    private installRecordPath(packageName: string): string {
       return safeJoinUnderRoot(
@@ -2030,11 +911,8 @@ export class Environment {
    }
 
    /**
-    * Resolve once no load, reinstall or recompile of the package is in flight
-    * here. A caller that must decide against the copy that will be resident
-    * (a PATCH comparing its `location` with the installed one) waits here
-    * first, so it reads the outcome of the install rather than the copy the
-    * install is about to replace, or has just failed to.
+    * Resolve once no load, reinstall or recompile of the package is in flight,
+    * for a caller that must decide against the copy that will be resident.
     */
    public async awaitPackageLoads(packageName: string): Promise<void> {
       let entry = this.loadsInFlight.get(packageName);
@@ -2044,6 +922,10 @@ export class Environment {
       }
    }
 
+   /**
+    * The `Package.status` the API reports: whether a compiled copy serves, and
+    * whether a load is in progress. Lock-free, so it answers during the load.
+    */
    public describePackageStatus(packageName: string): ApiPackageStatus {
       const inFlight = this.loadsInFlight.get(packageName);
       return {
@@ -2056,11 +938,9 @@ export class Environment {
    }
 
    /**
-    * Run `fn` with the package marked as loading here for its duration (see
-    * `loadsInFlight`). Every path that allocates a new compiled copy of a
-    * package, or recompiles the one it has, runs inside this, so
-    * `Package.status.loading` is true from the moment the work is accepted,
-    * download included, until it has settled or rolled back.
+    * Run `fn` with the package marked as loading (see `loadsInFlight`). Every
+    * path that compiles a copy runs inside this, from acceptance (download
+    * included) until it settles or rolls back.
     */
    private async trackPackageLoad<T>(
       packageName: string,
@@ -2093,20 +973,11 @@ export class Environment {
    }
 
    /**
-    * One mutex per package name; never replace after create — replacing
-    * would allow two loads of the same package to run in parallel and
-    * race on the canonical directory.
-    *
-    * `deletePackage` intentionally leaves the entry behind: a
-    * subsequent re-install must serialize against any straggling
-    * readers from the deleted generation that are still inside
-    * `withPackageLock`. The map therefore grows by the count of
-    * *distinct* package names the environment has ever served, not by
-    * install churn, so for the publisher's expected workload
-    * (config-declared packages, occasional ad-hoc additions) this is
-    * bounded in practice. Long-lived deployments that create and
-    * delete unique package names indefinitely would need an explicit
-    * sweep; we'll add one if/when that pattern appears.
+    * One mutex per package name, never replaced: replacing would let two
+    * loads race on the canonical directory. `deletePackage` keeps the entry
+    * so a re-install serializes against straggling readers, so the map grows
+    * with distinct names ever served; there is no sweep for unbounded
+    * create/delete of unique names.
     */
    private getOrCreatePackageMutex(packageName: string): Mutex {
       let packageMutex = this.packageMutexes.get(packageName);
@@ -2118,16 +989,10 @@ export class Environment {
    }
 
    /**
-    * Run `fn` while holding the per-package mutex. This is the single
-    * synchronization primitive that protects a package directory: every
-    * code path that mutates `{environmentPath}/{packageName}/` or reads
-    * from disk under it must serialize through this lock. See the lock
-    * ordering note above the `packageMutexes` field for the wider
-    * invariant.
-    *
-    * `async-mutex` is **not reentrant** — `fn` must not call any other
-    * method that calls `withPackageLock` on the same package, or it will
-    * deadlock. Use the `_xxxLocked` variants below in that case.
+    * Run `fn` holding the per-package mutex, which every path that mutates or
+    * reads `{environmentPath}/{packageName}/` must go through (lock ordering:
+    * see `packageMutexes`). Not reentrant: inside `fn`, use the `_xxxLocked`
+    * variants or it deadlocks.
     */
    public async withPackageLock<T>(
       packageName: string,
@@ -2157,16 +1022,12 @@ export class Environment {
 
    /**
     * Settle where a write to `target` really leads, creating nothing, and
-    * return the directories it would need, deepest first. The caller holds the
-    * package lock.
+    * return the missing directories, deepest first. Caller holds the lock.
     *
-    * The target is already confined lexically (`safeJoinUnderRoot`), but a
-    * directory in the package can be a symlink elsewhere, which `mkdir` and the
-    * write would follow. So the nearest existing directory (and the file, if it
-    * is a link) is resolved and must lie inside the resolved package root and
-    * outside `public/`, which a symlink or a differently cased name on a
-    * case-insensitive file system would otherwise reach. A path through an
-    * existing file is refused too.
+    * The target is confined lexically already, but a directory can be a
+    * symlink that `mkdir` and the write would follow, so the nearest existing
+    * directory (and the file, if a link) must resolve inside the package root
+    * and outside `public/` (also reachable by case on a case-insensitive FS).
     */
    private async _resolveModelFileDirLocked(
       packageRoot: string,
@@ -2253,11 +1114,9 @@ export class Environment {
    }
 
    /**
-    * Put text at a model path, atomically: a sibling temporary file is renamed
-    * over the target, so a reader never sees a half-written file and a crash
-    * leaves either the old text or the new. The caller holds the package lock,
-    * and the directory exists: {@link _createModelFileDirsLocked} made it for a
-    * new file, and a restore writes where the previous text was.
+    * Put text at a model path atomically (temp file renamed over the target),
+    * so a reader or a crash sees the old text or the new. Caller holds the
+    * lock; the directory exists.
     */
    private async _writeModelFileLocked(
       target: string,
@@ -2274,39 +1133,24 @@ export class Environment {
    }
 
    /**
-    * Write one model file and reload the package behind it, as one step that
-    * either happens or does not.
+    * Write one model file and reload its package as one step that either
+    * happens or does not.
     *
-    * Everything here — the precondition, the write, the reload, the caller's
-    * check on the reloaded package, and the restore when that check fails —
-    * runs inside a single hold of the package lock. That is the point of the
-    * method. Doing it as separate locked calls leaves two windows open: a
-    * second writer can land between the write and the reload, so the reload
-    * serves their text under this caller's success; and it can land between a
-    * failed reload and the restore, so the restore reverts THEIR write instead
-    * of this one. Both end with the package serving something nobody asked
-    * for, and neither is visible to the caller that lost.
+    * The precondition, write, reload, verification and any restore share one
+    * hold of the package lock; as separate locked calls, a second writer could
+    * land between write and reload (served under this caller's success) or
+    * between a failed reload and the restore (which would revert THEIR write).
     *
-    * `check` refuses by throwing, and runs against the file's current text
-    * (undefined when there is none) and the package as loaded before the
-    * write (undefined when it is not) — so two saves racing on one file cannot
-    * both pass their precondition. `verify` runs against the reloaded package
-    * and likewise refuses by throwing; a refusal puts the previous text back
-    * (or removes the file, when it is new), reloads again, and raises
-    * {@link WriteRolledBackError}. When putting it back fails too, that is
-    * logged as an error and raised as {@link WriteRollbackFailedError}: the
-    * package may then serve the new text, so the caller must not read it as
-    * "nothing changed". A restore that lands but whose reload fails is still a
-    * rollback — the previous text is on disk — and its message says the
-    * package may need a reload.
+    * `check(current, loaded)` refuses by throwing, so two racing saves cannot
+    * both pass. `verify(reloaded)` refuses by throwing too; the previous text
+    * is then restored (a new file removed), the package reloaded, and
+    * {@link WriteRolledBackError} raised, even if that reload fails. If the
+    * restore itself fails, {@link WriteRollbackFailedError}: the package may
+    * serve the new text.
     *
-    * Where the path really leads (through any link, into the package and out
-    * of `public/`) is settled before the file is read, so nothing outside the
-    * package is ever read through it.
-    *
-    * Anything that must NOT be under the lock — compiling above all — belongs
-    * before this call: the lock is not reentrant, and compiling the proposed
-    * text does not depend on what is on disk.
+    * The real path is resolved before the file is read, so nothing outside
+    * the package is read through a link. Compile before calling: the lock is
+    * not reentrant.
     */
    public async writeModelFileTransactional<T>(
       packageName: string,
@@ -2335,8 +1179,7 @@ export class Environment {
          try {
             await this._writeModelFileLocked(target, source);
          } catch (error) {
-            // Nothing was served from the new text, so there is no reload to
-            // undo: only a new file and the directories made for it.
+            // No reload to undo: only a new file and its directories.
             if (previous === undefined) {
                await fs.promises.rm(target, { force: true });
                await this._removeCreatedDirsLocked(createdDirs);
@@ -2344,8 +1187,6 @@ export class Environment {
             throw error;
          }
          try {
-            // The locked form, because this whole callback already holds the
-            // mutex that `getPackage` would take.
             const reloaded = await this._loadOrGetPackageLocked(
                packageName,
                true,
@@ -2357,12 +1198,10 @@ export class Environment {
                   await this._writeModelFileLocked(target, previous);
                else {
                   await fs.promises.rm(target, { force: true });
-                  // The directories this create made, emptied by the removal.
                   await this._removeCreatedDirsLocked(createdDirs);
                }
             } catch (restoreError) {
-               // The one log line for this write: the route and the error
-               // mapping leave both rollback outcomes to this method.
+               // The only log line for this write; callers leave it to here.
                logger.error("Report write rollback failed", {
                   packageName,
                   model: modelPath,
@@ -2377,8 +1216,8 @@ export class Environment {
                   { cause: restoreError },
                );
             }
-            // The previous text is on disk again, so this is a rollback even
-            // when reloading it fails: what is left is a reload, not an edit.
+            // The previous text is on disk, so this is a rollback even if the
+            // reload fails.
             let reloadError: unknown;
             try {
                await this._loadOrGetPackageLocked(packageName, true);
@@ -2426,16 +1265,10 @@ export class Environment {
    }
 
    /**
-    * Best-effort sweep of `.staging/` and `.retired/` left over from a
-    * previous run (crash, OOM, etc). Safe because both dirs are managed
-    * exclusively by `installPackage` / `deletePackage`; no in-flight
-    * operation in this process can be using them yet.
-    *
-    * Static + path-as-parameter on purpose: the sink path here must
-    * derive from the validated factory argument, not from `this`,
-    * because CodeQL's path-injection query conservatively treats every
-    * field on this class as tainted (other methods on the same class
-    * receive request-derived `packageName` values).
+    * Best-effort sweep of `.staging/` and `.retired/` left by a previous run.
+    * Safe at startup: only `installPackage` / `deletePackage` use them.
+    * Static so the path derives from the validated argument rather than
+    * `this`, whose fields CodeQL's path-injection query treats as tainted.
     */
    public static async sweepStaleInstallDirs(
       environmentPath: string,
@@ -2443,11 +1276,8 @@ export class Environment {
       assertSafeEnvironmentPath(environmentPath);
       for (const dirName of [STAGING_DIR_NAME, RETIRED_DIR_NAME]) {
          const dir = safeJoinUnderRoot(environmentPath, dirName);
-         // Inline sanitizer barriers in the precise shape CodeQL's
-         // `js/path-injection` query recognises (regex-test +
-         // `indexOf("..") !== -1` guard) so the sink right below is
-         // covered even when the call chain feeding `environmentPath`
-         // is taint-tracked from an HTTP request handler.
+         // Sanitizer barriers in the shape CodeQL's `js/path-injection`
+         // query recognises.
          if (dir.indexOf("..") !== -1) continue;
          if (path.basename(dir) !== dirName) continue;
          try {
@@ -2461,29 +1291,24 @@ export class Environment {
    }
 
    /**
-    * Attach (or detach with `null`) the memory governor that gates new
-    * package allocations. The single instance is owned by the
-    * EnvironmentStore and propagated to every Environment so the
-    * back-pressure decision is process-wide.
+    * Attach (or detach with `null`) the process-wide memory governor that
+    * gates new package allocations.
     */
    public setMemoryGovernor(governor: PackageMemoryGovernor | null): void {
       this.memoryGovernor = governor;
    }
 
    /**
-    * Attach (or detach with `null`) a callback run each time a package
-    * enters this environment's package map: at boot, on add, on install, and
-    * on reload. The callback must only schedule work; see
-    * {@link notifyPackageLoaded}.
+    * Attach (or detach with `null`) a callback run each time a package enters
+    * the package map (boot, add, install, reload). It must only schedule work.
     */
    public setPackageLoadedHook(hook: ((pkg: Package) => void) | null): void {
       this.packageLoadedHook = hook;
    }
 
    /**
-    * Tell the hook a package is now served. Called straight after each
-    * `this.packages.set`. A throwing hook is logged and swallowed: an
-    * observer of the load must never fail it.
+    * Called straight after each `this.packages.set`. A throwing hook is
+    * logged and swallowed: an observer must never fail the load.
     */
    private notifyPackageLoaded(pkg: Package): void {
       try {
@@ -2497,10 +1322,7 @@ export class Environment {
       }
    }
 
-   /**
-    * Inject the resolver that fetches a package's latest persisted
-    * materialization entries — both tiers (see {@link storageBindingResolver}).
-    */
+   /** See {@link storageBindingResolver}. */
    public setStorageBindingResolver(
       resolver: (packageName: string) => Promise<Record<string, ManifestEntry>>,
    ): void {
@@ -2509,43 +1331,26 @@ export class Environment {
 
    /**
     * Re-establish a package's serve routing from its latest persisted
-    * materialization when it (re)loads, so serving survives a restart — both
-    * tiers, not just one. Serve bindings are otherwise in-memory, set only by a
-    * build's post-run auto-load, so a worker restart silently reverted a
-    * materialized source to serving live until the next build. Runs beside
-    * {@link bindManifestIfConfigured} — the same "bind serve state on load" step.
-    * Best-effort: a lookup failure logs and leaves the package serving live (a
-    * subsequent build will bind it).
+    * materialization when it (re)loads. Serve bindings live in memory, so
+    * without this a restart serves materialized sources live until the next
+    * build. Best-effort: a lookup failure leaves the package serving live.
     *
-    * Both tiers are restored from the SAME persisted manifest, split by
-    * {@link splitManifestEntries}, mirroring {@link bindManifest}:
-    *  - **colocated** (same-connection) → {@link Package.bindColocatedServeManifest},
-    *    applied as a per-query `buildManifest` override at serve time (no
-    *    recompile — the load-time compile already produced flag-carrying models).
-    *    Independent of `PERSIST_STORAGE_MODE`: colocated is the v0 path and is
-    *    not gated by the storage kill switch (a plain `#@ persist` materializes
-    *    and serves even when the tier is `off`), so its routing is restored
-    *    regardless of mode.
-    *  - **storage=** (cross-connection) → {@link Package.bindStorageServeBindings},
-    *    the virtual-source transform. Restored only when the tier is not `off`:
-    *    storage serve routing requires the tier on, so an off deployment skips it.
+    * Both tiers come from the same manifest ({@link splitManifestEntries}):
+    *  - colocated → {@link Package.bindColocatedServeManifest}, a per-query
+    *    override with no recompile; restored regardless of
+    *    `PERSIST_STORAGE_MODE`, which does not gate a plain `#@ persist`.
+    *  - storage= → {@link Package.bindStorageServeBindings}; only when the
+    *    storage tier is not `off`.
     *
-    * Skipped entirely when the package has a bound `manifestLocation`: the two
-    * binding producers (this local store and the host's fetched manifest, applied
-    * by {@link bindManifest}) are mutually exclusive by manifest presence, and the
-    * host is authoritative when one is set. An orchestrated publisher STILL
-    * persists its own local materialization records (the host triggers builds
-    * through it), so without this guard the local rebind — which runs AFTER
-    * {@link bindManifestIfConfigured} on load — would overwrite the host's
-    * bindings with a possibly-staler local generation.
+    * Skipped when the package has a `manifestLocation`: the host's manifest is
+    * then authoritative, and this rebind (which runs after
+    * {@link bindManifestIfConfigured}) would overwrite it with a possibly
+    * staler local generation.
     */
    private async rebindServeBindingsFromLocalStore(
       pkg: Package,
    ): Promise<void> {
       if (!this.storageBindingResolver) return;
-      // Host-authoritative: a bound manifestLocation means bindManifest already
-      // supplied both tiers' serve bindings from the host's manifest; the local
-      // store must not clobber them (mutually-exclusive binding sources).
       if (pkg.getPackageMetadata().manifestLocation) return;
       const packageName = pkg.getPackageName();
       try {
@@ -2555,13 +1360,9 @@ export class Environment {
             rawEntries,
             `local store (package ${packageName})`,
          );
-         // Colocated: restore regardless of PERSIST_STORAGE_MODE (v0 path, not
-         // gated by the storage kill switch).
          if (Object.keys(tableNameManifest).length > 0) {
             pkg.bindColocatedServeManifest(tableNameManifest);
          }
-         // Storage=: only meaningful when the tier is not off (serve routing to
-         // the external store requires it). Ships dark otherwise.
          if (
             getPersistStorageMode() !== "off" &&
             Object.keys(storageEntries).length > 0
@@ -2580,16 +1381,10 @@ export class Environment {
    }
 
    /**
-    * Choke-point check called from every code path that would allocate
-    * a *new* package into the in-memory map (lazy load on cache miss,
-    * explicit reload, `addPackage`). Throws HTTP 503 when the governor
-    * is back-pressured; cheap no-op when the governor is unset or
-    * happy.
-    *
-    * `allowAdmission` is the documented opt-out for read paths that
-    * genuinely cannot tolerate 503s. None of the current callers set
-    * it; the parameter exists so a future caller (e.g. a
-    * health/warmup probe) can self-document its bypass intent.
+    * Choke point for every path that allocates a new package into the map
+    * (cache-miss load, reload, add): 503 under memory back-pressure.
+    * `allowAdmission` is an opt-out for a caller that cannot tolerate 503s;
+    * none sets it today.
     */
    private assertCanAdmitNewPackage(
       packageName: string,
@@ -2598,10 +1393,7 @@ export class Environment {
    ): void {
       if (allowAdmission) return;
       if (!this.memoryGovernor?.isBackpressured()) return;
-      // Increment *before* throwing so the metric ticks even on
-      // the not-uncommon "caught and swallowed" path. The label
-      // shape mirrors `assertCanAdmitQuery` so a dashboard panel
-      // can sum both rejection kinds by environment.
+      // Counted before throwing, since callers may swallow the error.
       getPackageAdmissionRejectionsCounter().add(1, {
          environment: this.environmentName,
          reason,
@@ -2612,24 +1404,13 @@ export class Environment {
    }
 
    /**
-    * Reject incoming queries with HTTP 503 when the memory governor
-    * has tripped its high-water mark. Used by every query controller
-    * (connection SQL, model query, notebook cell, MCP `execute_query`)
-    * to shed load before the query runs — complementing
-    * {@link assertCanAdmitNewPackage}, which only fires on cache-miss
-    * package loads and so leaves already-loaded packages fully
-    * queryable under pressure. With this in place, "back-pressured"
-    * means "no new work of any kind" until the governor's low-water
-    * mark is crossed.
-    *
-    * Cheap O(1) boolean read; no allocation when happy.
+    * 503 for a query under memory back-pressure, called by every query path
+    * before it runs. {@link assertCanAdmitNewPackage} alone leaves loaded
+    * packages queryable; together they mean "no new work of any kind".
     */
    public assertCanAdmitQuery(): void {
       if (!this.memoryGovernor?.isBackpressured()) return;
-      // Tick first so the counter reflects every rejection even
-      // when the controller's catch block swallows the error (e.g.
-      // an MCP tool surfaces it as a content payload rather than
-      // letting it bubble to the HTTP error mapper).
+      // Counted before throwing, since callers may swallow the error.
       getQueryAdmissionRejectionsCounter().add(1, {
          environment: this.environmentName,
       });
@@ -2653,26 +1434,17 @@ export class Environment {
       options: { allowAdmission?: boolean } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
-      // Fast-path: serve from cache without acquiring the lock. Safe because
-      // `Package` references are immutable; the disk-reading methods that
-      // actually need protection (compileSource, getModelFileText,
-      // reloadAllModelsForPackage, ...) acquire the lock themselves.
+      // Lock-free fast path: `Package` references are immutable, and
+      // disk-reading methods take the lock themselves.
       //
-      // INVARIANT: callers that consume the returned Package on the fast
-      // path (notably the MCP query tools and Model.getModel()) must
-      // remain in-memory only. If any code reachable from a `Package`
-      // method ever grows new disk I/O against the canonical tree, that
-      // path needs to be bracketed by `withPackageLock`; otherwise a
-      // concurrent install/delete will race against an unlocked reader.
+      // INVARIANT: code reachable from a fast-path Package (MCP query tools,
+      // Model.getModel()) must stay in-memory; any new disk I/O against the
+      // canonical tree needs `withPackageLock`, or it races install/delete.
       const _package = this.packages.get(packageName);
       if (_package !== undefined && !reload) {
          return _package;
       }
 
-      // We are either reloading or about to lazy-load on a cache miss
-      // — both allocate a new package. This is the single choke point
-      // for admission control; controllers no longer need their own
-      // back-pressure check.
       this.assertCanAdmitNewPackage(
          packageName,
          reload ? "reload a package" : "load a package",
@@ -2684,13 +1456,7 @@ export class Environment {
       );
    }
 
-   /**
-    * Load (or reload) a package from its canonical disk location. Assumes
-    * the caller holds the per-package mutex (via {@link withPackageLock}).
-    *
-    * Used by {@link getPackage} and by {@link compileSource} so the
-    * cache-miss path doesn't re-enter the mutex.
-    */
+   /** Load (or reload) a package from disk. Caller holds the package mutex. */
    private async _loadOrGetPackageLocked(
       packageName: string,
       reload: boolean = false,
@@ -2716,42 +1482,23 @@ export class Environment {
                () => this.malloyConfig.malloyConfig,
             );
             this.attachDestinationServeConfig(_package);
-            await this.bindManifestIfConfigured(_package);
-            await this.rebindServeBindingsFromLocalStore(_package);
-            if (existingPackage !== undefined && reload) {
-               this.retireConnectionGeneration(`package ${packageName}`, () =>
-                  existingPackage.getMalloyConfig().shutdown("close"),
-               );
-               _package.noteSurfaceChangeFrom(
-                  existingPackage.getPackageMetadata().explores,
-               );
-            }
-            this.packages.set(packageName, _package);
-            this.notifyPackageLoaded(_package);
-            this.setPackageStatus(packageName, PackageStatus.SERVING);
-            // It loaded, so any earlier failure is stale. A package that failed at
-            // boot can be fixed on disk and reloaded without a restart.
-            this.clearPackageLoadFailure(packageName);
+            await this.commitLoadedPackage(packageName, _package, {
+               bindServeState: true,
+               replaces: existingPackage,
+               reportSurfaceChange: true,
+            });
             logger.debug(`Successfully loaded package ${packageName}`);
 
             return _package;
          } catch (error) {
             logger.error(`Failed to load package ${packageName}`, { error });
             if (existingPackage !== undefined && reload) {
-               // A failed RELOAD must not take down a package that is already
-               // serving. The compiled model in `packages` is still the last good
-               // one (it is only replaced on success), so keep serving it and let
-               // the caller surface the error instead of evicting the package and
-               // leaving the environment with nothing to answer from.
+               // A failed reload keeps serving the last good model (replaced
+               // only on success) rather than evicting the package.
                this.setPackageStatus(packageName, PackageStatus.SERVING);
-               // Serving the last good model is right, but it must not be silent:
-               // this is the only record that the served model is now older than
-               // the files on disk, and it is what makes a failed watch-mode
-               // recompile visible to /status at all (the watch controller only
-               // logs to stderr). Cleared on the next successful load via
-               // clearPackageLoadFailure. Recording here, not in the watch
-               // controller, covers every reload caller: the chokidar watcher,
-               // MCP reload_package, and REST ?reload=true.
+               // Recorded here so every reload caller (watcher, MCP, REST)
+               // reports the staleness to /status; cleared on the next
+               // successful load.
                this.staleCompileErrors.set(packageName, {
                   message: redactPgSecrets(
                      error instanceof Error ? error.message : String(error),
@@ -2765,6 +1512,42 @@ export class Environment {
             throw error;
          }
       });
+   }
+
+   /**
+    * Make a freshly created package the served copy: bind its serve state,
+    * retire the copy it replaces, register it and mark it serving. Caller
+    * holds the package lock. `reportSurfaceChange` warns when the replaced
+    * copy published a surface this one lacks; it runs after the bind, which
+    * may reload the models in place.
+    */
+   private async commitLoadedPackage(
+      packageName: string,
+      pkg: Package,
+      options: {
+         bindServeState: boolean;
+         replaces?: Package;
+         reportSurfaceChange?: boolean;
+      },
+   ): Promise<void> {
+      const { replaces } = options;
+      if (options.bindServeState) {
+         await this.bindManifestIfConfigured(pkg);
+         await this.rebindServeBindingsFromLocalStore(pkg);
+      }
+      if (replaces) {
+         this.retireConnectionGeneration(`package ${packageName}`, () =>
+            replaces.getMalloyConfig().shutdown("close"),
+         );
+         if (options.reportSurfaceChange) {
+            pkg.noteSurfaceChangeFrom(replaces.getPackageMetadata().explores);
+         }
+      }
+      this.packages.set(packageName, pkg);
+      this.notifyPackageLoaded(pkg);
+      this.setPackageStatus(packageName, PackageStatus.SERVING);
+      // A package that failed earlier can be fixed without a restart.
+      this.clearPackageLoadFailure(packageName);
    }
 
    public async addPackage(
@@ -2782,9 +1565,8 @@ export class Environment {
       ) {
          throw new PackageNotFoundError(`Package ${packageName} not found`);
       }
-      // 404 takes precedence over 503 so a permanent "you forgot to
-      // upload the package" failure isn't masked as a transient
-      // "retry later" — the gate runs after the existence check.
+      // After the existence check, so a permanent 404 is not masked as a
+      // retryable 503.
       this.assertCanAdmitNewPackage(
          packageName,
          "add a new package",
@@ -2821,18 +1603,14 @@ export class Environment {
                () => this.malloyConfig.malloyConfig,
             );
             this.attachDestinationServeConfig(addedPackage);
-            this.packages.set(packageName, addedPackage);
-            this.notifyPackageLoaded(addedPackage);
+            await this.commitLoadedPackage(packageName, addedPackage, {
+               bindServeState: false,
+            });
          } catch (error) {
             logger.error("Error adding package", { error });
             this.deletePackageStatus(packageName);
             throw error;
          }
-         this.setPackageStatus(packageName, PackageStatus.SERVING);
-         // Same reasoning as the load and install paths: it is serving now, so an
-         // earlier boot failure is stale. Without this, a package fixed on disk
-         // and re-added keeps its loadError for the life of the process.
-         this.clearPackageLoadFailure(packageName);
          return this.packages.get(packageName);
       });
    }
@@ -2840,22 +1618,14 @@ export class Environment {
    /**
     * Replace a package on disk via stage-and-swap, then load it.
     *
-    *  - Phase 1 (no lock): run `downloader(stagingPath)`, writing the new
-    *    content into a fresh sibling dir at `.staging/<pkg>-<uuid>/`. This
-    *    is where multi-second downloads (git clone, GCS pull, ...) happen.
-    *  - Phase 2 (lock held): atomically rename any existing canonical tree
-    *    out to `.retired/<pkg>-<uuid>/`, rename staging into the canonical
-    *    path, and run `Package.create` against the canonical path.
-    *  - Phase 3 (after lock release): retire the old package's connections
-    *    via the existing 30s drain and `fs.rm` the retired tree.
+    *  - Phase 1 (no lock): `downloader(stagingPath)` fills `.staging/…`, so
+    *    lock holders never queue behind a long download.
+    *  - Phase 2 (lock held): rename the canonical tree to `.retired/…`,
+    *    staging into place, and `Package.create` it.
+    *  - Phase 3 (after release): drain the old connections and remove the
+    *    retired tree.
     *
-    * Concurrent compiles / `getModelFileText` / `reloadAllModels` calls
-    * take the same mutex and so are mutually exclusive with the Phase 2
-    * swap, but they never queue behind a long Phase 1 download.
-    *
-    * On failure (Phase 1 download or Phase 2 `Package.create`), the staging
-    * dir is removed and — if we already renamed the old tree aside — the
-    * old tree is renamed back so the canonical path is restored.
+    * On failure the staging dir is removed and the old tree renamed back.
     */
    public async installPackage(
       packageName: string,
@@ -2864,20 +1634,16 @@ export class Environment {
       options: {
          allowAdmission?: boolean;
          /**
-          * Metadata to apply to the installed copy inside the install's own lock
-          * hold. The `location` it carries is recorded as where the package was
-          * installed from; an install is the only path that records one.
+          * Metadata applied inside the install's lock hold. Its `location` is
+          * recorded as where the package was installed from (only installs
+          * record one).
           */
          update?: ApiPackage;
       } = {},
    ): Promise<Package> {
       assertSafePackageName(packageName);
-      // An install allocates a whole new compiled copy, and for a reinstall
-      // holds it beside the copy still serving until the swap, so it is the
-      // largest single allocation a package can ask for. It is gated before
-      // the download, the same way a lazy load and an add are gated, so a
-      // server under memory back-pressure refuses it with a 503 the caller
-      // can retry elsewhere rather than taking on the work and being killed.
+      // The largest allocation a package can ask for (a reinstall holds two
+      // copies until the swap), so gate it before the download.
       this.assertCanAdmitNewPackage(
          packageName,
          this.packages.has(packageName)
@@ -2964,17 +1730,13 @@ export class Environment {
                packageName,
                canonicalPath,
                () => this.malloyConfig.malloyConfig,
-               // This tree was just staged into place by the rename above, so a
-               // failed load leaves a half-built directory that is ours to
-               // remove; the rollback below restores the previous one.
+               // Freshly staged, so a failed load's half-built tree is ours to
+               // remove.
                true,
             );
             this.attachDestinationServeConfig(newPackage);
-            // Strict-reject hook (publish/update only — reload passes no
-            // validator and stays fail-safe). Throw INSIDE the try so the
-            // catch below rolls the swap back: the just-installed tree is
-            // wiped and the retired tree (if any) is restored, so a rejected
-            // publish/update never leaves the bad tree served on disk.
+            // Publish/update only (reload passes no validator). Thrown inside
+            // the try so the swap rolls back.
             const validationMsg = validate?.(newPackage);
             if (validationMsg) {
                throw new BadRequestError(validationMsg);
@@ -2985,117 +1747,28 @@ export class Environment {
                canonicalPath,
             });
          } catch (err) {
-            // Rollback: clobber whatever (partial) content sits at canonical
-            // — Package.create's own failure-cleanup may have already rm'd
-            // the directory, so the most common outcome here is ENOENT.
-            // `force: true` plus the `.catch(() => {})` make this a
-            // best-effort wipe whose only job is to leave the rename-back
-            // below a clean destination. Then put the old tree back if we
-            // moved one aside.
-            await fs.promises
-               .rm(canonicalPath, { recursive: true, force: true })
-               .catch(() => {});
-            let restored = false;
-            if (retiredPath) {
-               try {
-                  await fs.promises.rename(retiredPath, canonicalPath);
-                  restored = true;
-               } catch (restoreErr) {
-                  logger.error(
-                     "Failed to restore retired package after install rollback",
-                     {
-                        error: restoreErr,
-                        retiredPath,
-                        canonicalPath,
-                     },
-                  );
-               }
-            }
-            await fs.promises
-               .rm(stagingPath, { recursive: true, force: true })
-               .catch(() => {});
-            if (oldPackage && restored) {
-               // The rollback put the old tree back and the previous package is
-               // still in `this.packages` (it is only replaced on success
-               // below), so it is genuinely still serving. Deleting its status
-               // would strand it: listPackages enumerates packageStatuses, so
-               // the package would answer getPackage while being invisible to
-               // listings and discovery until a restart.
-               this.setPackageStatus(packageName, PackageStatus.SERVING);
-            } else {
-               // Either there was nothing to fall back to (a first install), or
-               // the restore did not happen: the rename-back threw, or the old
-               // tree was never on disk to retire. The canonical path is then
-               // missing or still holds the rejected content, so the cached
-               // package no longer matches disk and must not be advertised as
-               // serving. Drop both, and keep the two maps agreeing.
-               this.deletePackageStatus(packageName);
-               if (oldPackage) {
-                  // Retire before dropping it, the same way every other eviction
-                  // here does: once it leaves this.packages, closeAllConnections
-                  // can no longer reach its MalloyConfig, so its native handles
-                  // would never be released. Retire rather than shut down
-                  // inline, because withPackageLock does not cover queries that
-                  // already took this Package from an earlier getPackage; the
-                  // drain lets those finish first.
-                  this.retireConnectionGeneration(
-                     `package ${packageName}`,
-                     () => oldPackage.getMalloyConfig().shutdown("close"),
-                  );
-               }
-               this.packages.delete(packageName);
-            }
-            logger.debug("install.phase2.rollback", {
-               environmentName: this.environmentName,
-               packageName,
-               restored,
-               errorName: err instanceof Error ? err.name : "Unknown",
+            await this.rollbackInstallSwap(packageName, err, {
+               canonicalPath,
+               retiredPath,
+               stagingPath,
+               oldPackage,
             });
             throw err;
          }
 
-         // Best-effort manifest bind happens after the swap commits, outside the
-         // rollback window: a manifest that can't be fetched must not undo an
-         // otherwise-successful install (the package serves live instead).
-         await this.bindManifestIfConfigured(newPackage);
-         await this.rebindServeBindingsFromLocalStore(newPackage);
-
-         this.packages.set(packageName, newPackage);
-         this.notifyPackageLoaded(newPackage);
-         this.setPackageStatus(packageName, PackageStatus.SERVING);
-         // Publishing a fixed package clears the boot failure it replaces.
-         this.clearPackageLoadFailure(packageName);
-
-         if (oldPackage) {
-            this.retireConnectionGeneration(`package ${packageName}`, () =>
-               oldPackage.getMalloyConfig().shutdown("close"),
-            );
-         }
+         // Outside the rollback window: an unfetchable manifest must not undo
+         // a successful install (it serves live instead).
+         await this.commitLoadedPackage(packageName, newPackage, {
+            bindServeState: true,
+            replaces: oldPackage,
+         });
 
          if (retiredPath) {
-            const pathToClean = retiredPath;
-            setImmediate(() => {
-               logger.debug("install.phase3.retired_cleanup", {
-                  environmentName: this.environmentName,
-                  packageName,
-                  retiredPath: pathToClean,
-               });
-               void fs.promises
-                  .rm(pathToClean, { recursive: true, force: true })
-                  .catch((err) => {
-                     logger.warn(
-                        `Failed to clean up retired package directory ${pathToClean}`,
-                        { error: err },
-                     );
-                  });
-            });
+            this.scheduleRetiredTreeCleanup(packageName, retiredPath);
          }
 
-         // Metadata the caller sent with the install (a publish's
-         // `manifestLocation`, an update's whole body) is applied under this
-         // same lock hold. Applied as a second, separately locked step, a
-         // delete queued behind the swap ran first and the update then found
-         // no package and answered 404 for work that had completed.
+         // Same lock hold: as a separate step, a delete queued behind the
+         // swap could run first and the update would 404 for completed work.
          if (options.update !== undefined) {
             await this._updatePackageLocked(packageName, options.update, {
                recordLocation: true,
@@ -3107,23 +1780,106 @@ export class Environment {
    }
 
    /**
-    * Reload every model in a package against the supplied build manifest,
-    * holding the per-package mutex for the duration of the disk reads.
-    * Replaces direct `Package.reloadAllModels` calls from outside
-    * `Environment`.
+    * Undo a failed Phase 2 swap: wipe the canonical path, put the retired tree
+    * back if one was moved aside, and leave the package maps agreeing with
+    * what is now on disk. The caller rethrows `err`.
+    */
+   private async rollbackInstallSwap(
+      packageName: string,
+      err: unknown,
+      {
+         canonicalPath,
+         retiredPath,
+         stagingPath,
+         oldPackage,
+      }: {
+         canonicalPath: string;
+         retiredPath: string | undefined;
+         stagingPath: string;
+         oldPackage: Package | undefined;
+      },
+   ): Promise<void> {
+      // Best-effort wipe (often already gone) so the rename-back has a clean
+      // destination.
+      await fs.promises
+         .rm(canonicalPath, { recursive: true, force: true })
+         .catch(() => {});
+      let restored = false;
+      if (retiredPath) {
+         try {
+            await fs.promises.rename(retiredPath, canonicalPath);
+            restored = true;
+         } catch (restoreErr) {
+            logger.error(
+               "Failed to restore retired package after install rollback",
+               {
+                  error: restoreErr,
+                  retiredPath,
+                  canonicalPath,
+               },
+            );
+         }
+      }
+      await fs.promises
+         .rm(stagingPath, { recursive: true, force: true })
+         .catch(() => {});
+      if (oldPackage && restored) {
+         // The old package still serves; deleting its status would hide it
+         // from listings (which enumerate packageStatuses) until a restart.
+         this.setPackageStatus(packageName, PackageStatus.SERVING);
+      } else {
+         // Nothing to fall back to, or the restore failed: the cached package
+         // no longer matches disk, so drop it from both maps.
+         this.deletePackageStatus(packageName);
+         if (oldPackage) {
+            // Retire before dropping, or its native handles are never
+            // released; drained rather than shut down inline because queries
+            // that already hold this Package are not covered by the lock.
+            this.retireConnectionGeneration(`package ${packageName}`, () =>
+               oldPackage.getMalloyConfig().shutdown("close"),
+            );
+         }
+         this.packages.delete(packageName);
+      }
+      logger.debug("install.phase2.rollback", {
+         environmentName: this.environmentName,
+         packageName,
+         restored,
+         errorName: err instanceof Error ? err.name : "Unknown",
+      });
+   }
+
+   /** Phase 3: remove the retired tree once the lock is released. */
+   private scheduleRetiredTreeCleanup(
+      packageName: string,
+      retiredPath: string,
+   ): void {
+      setImmediate(() => {
+         logger.debug("install.phase3.retired_cleanup", {
+            environmentName: this.environmentName,
+            packageName,
+            retiredPath,
+         });
+         void fs.promises
+            .rm(retiredPath, { recursive: true, force: true })
+            .catch((err) => {
+               logger.warn(
+                  `Failed to clean up retired package directory ${retiredPath}`,
+                  { error: err },
+               );
+            });
+      });
+   }
+
+   /**
+    * Reload every model in a package against a build manifest, under the
+    * package mutex.
     *
-    * Skips the recompile when there is nothing to substitute now AND nothing was
-    * substituted before — the same condition {@link bindManifest} applies to a
-    * pure-storage manifest flip, and for the same reason: a same-connection
-    * `tableName` manifest is resolved at COMPILE time, so an empty one over an
-    * already-empty one changes nothing a recompile could express. The previous
-    * state has to be checked too, because a package that just dropped its last
-    * colocated entry still has to recompile to revert the substitution.
-    *
-    * This matters because every materialization run lands here. Without the
-    * guard a `storage=`-only package — or one with no persist sources at all —
-    * paid a full package recompile per run: measured at ~1.1MB of RSS per run on
-    * the production image, never reclaimed, against a `main` build that reclaims.
+    * Every materialization run lands here, so the recompile (~1.1 MB of RSS
+    * never reclaimed) is skipped when there is nothing to substitute now and
+    * nothing was before: a `tableName` manifest is resolved at compile time,
+    * and a package that dropped its last colocated entry must still recompile
+    * to revert it.
     */
    public async reloadAllModelsForPackage(
       packageName: string,
@@ -3147,13 +1903,9 @@ export class Environment {
    }
 
    /**
-    * Bind a package's `storage=` serve bindings from a build's FULL manifest
-    * entries (carrying `storageDestinationName` + captured `schema`), so a query
-    * against a materialized-into-storage source can be routed through the
-    * virtual-source serve transform. Distinct from
-    * {@link reloadAllModelsForPackage}, which binds the tableName-only manifest
-    * for same-connection persistence. No-op (logged) if the package isn't
-    * loaded — best-effort, like the post-build auto-load itself.
+    * Bind a package's `storage=` serve bindings from a build's full manifest
+    * entries, routing those sources through the virtual-source transform.
+    * Best-effort: logged no-op if the package isn't loaded.
     */
    public async bindPackageStorageServeBindings(
       packageName: string,
@@ -3169,15 +1921,8 @@ export class Environment {
             );
             return;
          }
-         // Host-authoritative: when a manifestLocation is bound, the host's
-         // manifest is the sole source of storage serve bindings (see
-         // bindManifest + rebindServeBindingsFromLocalStore' matching guard). This
-         // method is the LOCAL-store binding path (post-build auto-load and the
-         // post-delete rebind); on an orchestrated deployment the publisher
-         // still writes its own local materialization records, so without this
-         // guard a build's auto-load or a routine retire of a superseded record
-         // would clobber the host's bindings with a possibly-staler local
-         // generation. Standalone (no manifestLocation) is unaffected.
+         // With a manifestLocation the host is authoritative; this local-store
+         // path would clobber its bindings with a possibly staler generation.
          if (pkg.getPackageMetadata().manifestLocation) {
             logger.debug(
                "Skipping local-store storage serve binding: manifestLocation " +
@@ -3191,24 +1936,13 @@ export class Environment {
    }
 
    /**
-    * Re-establish a package's COLOCATED (same-connection) serve routing from a
-    * FreshnessManifest, holding the package lock — the colocated analogue of
-    * {@link bindPackageStorageServeBindings}, used by the post-delete rebind so a
-    * reclaimed colocated table is not left routed. No-op (logged) if the package
-    * isn't loaded, and skipped when a `manifestLocation` is bound (host
-    * authoritative, same as the storage variant). An empty manifest reverts to
-    * serving live.
+    * The colocated analogue of {@link bindPackageStorageServeBindings}, used by
+    * the post-delete rebind so a reclaimed table is not left routed. An empty
+    * manifest reverts to live; skipped under a `manifestLocation`.
     *
-    * Unlike the storage tier — and unlike the load-time colocated rebind
-    * ({@link Package.bindColocatedServeManifest}, which restores routing onto
-    * FRESHLY-compiled models with a per-query overlay, no recompile) — this path
-    * runs against models that a build's auto-load already recompiled with the
-    * substitution BAKED IN. Clearing the per-query overlay would not strip a
-    * baked substitution, so reverting/rebinding here requires a recompile
-    * ({@link Package.reloadAllModels}), exactly as {@link bindManifest} does for
-    * colocated. Skipped when there is nothing to substitute AND nothing was
-    * previously substituted to clear (no needless recompile for a storage-only or
-    * never-materialized package).
+    * Unlike the load-time rebind's per-query overlay, these models have the
+    * substitution baked in by a build's auto-load, so this must recompile —
+    * skipped when there is nothing to substitute or clear.
     */
    public async bindPackageColocatedServeManifest(
       packageName: string,
@@ -3244,12 +1978,9 @@ export class Environment {
    }
 
    /**
-    * If the freshly-loaded package declares a `manifestLocation`, fetch the
-    * control-plane-computed build manifest and rebind its models so persist
-    * references resolve to the materialized tables. Best-effort: a fetch/bind
-    * failure logs a warning and leaves the package serving live (the models are
-    * already loaded without a manifest). Callers must hold the package lock —
-    * this rebinds `pkg` in place rather than re-entering {@link withPackageLock}.
+    * If the package declares a `manifestLocation`, fetch the host's build
+    * manifest and bind it. Best-effort: a failure leaves it serving live.
+    * Caller holds the package lock.
     */
    private async bindManifestIfConfigured(pkg: Package): Promise<void> {
       const manifestLocation = pkg.getPackageMetadata().manifestLocation;
@@ -3266,71 +1997,36 @@ export class Environment {
    ): Promise<void> {
       const packageName = pkg.getPackageName();
       try {
-         // Bind runs before a package is marked SERVING, so a slow/unreachable
-         // manifest store must not block serving indefinitely — bound is the
-         // intended state, live is the degraded fallback. Race the fetch against
-         // a timeout and fall back to live on either failure.
+         // Timed out to live, since binding runs before the package serves.
          const { tableNameManifest, storageEntries } =
             await this.fetchManifestEntriesWithTimeout(manifestLocation);
 
-         // Tier split. Storage entries (cross-connection) bind as serve bindings
-         // WITHOUT a recompile — they apply to the already-compiled models via
-         // Model.setServeBindings. The host is the authoritative producer here,
-         // so this also supersedes the local-store rebind (see
-         // rebindServeBindingsFromLocalStore, which no-ops when manifestLocation
-         // is set).
-         // Bind whenever there ARE storage entries OR there WERE (bindStorage-
-         // ServeBindings with the now-empty set clears them): a manifest whose
-         // storage entries vanished must drop the old bindings, not leave them
-         // routing at a table the host no longer vouches for. Mirrors the
-         // hadColocated guard below.
-         //
-         // Each bind overwrites the state its own guard reads, so take both
-         // `had*` reads before either tier applies.
+         // Storage entries bind without a recompile. Bind when there are any
+         // or were any, so vanished entries drop their old bindings. Take both
+         // `had*` reads before either tier applies, since each bind overwrites
+         // what its guard reads.
          const hasStorage = Object.keys(storageEntries).length > 0;
          const hadStorage = pkg.hasStorageServeBindings();
 
-         // colocated entries drive the same-connection tableName substitution, which
-         // is resolved at COMPILE time — so they require a reloadAllModels
-         // recompile (v0's existing cost). Skip the recompile for a pure-storage
-         // manifest flip: only when there is nothing to substitute AND nothing
-         // previously substituted to clear (otherwise a package that just dropped
-         // its last colocated entry must still recompile to revert it).
+         // Colocated substitution is resolved at compile time, so it needs a
+         // recompile, skipped when there is nothing to substitute or clear.
          const hasColocated = Object.keys(tableNameManifest).length > 0;
          const hadColocated = pkg.hasBoundTableNameManifest();
 
-         // Recompile FIRST. `reloadAllModels` is the only step here that can throw
-         // (a compile error, or the worker pool being unavailable), and the catch
-         // below reports `live_fallback` — "no manifest applied". Binding storage
-         // entries before it would leave the NEW manifest's cross-connection
-         // bindings installed and routing while the package reports that nothing
-         // was applied and `boundManifestUri` still names the OLD manifest: a
-         // caller reading the status as "not serving from manifest tables" would be
-         // wrong about tables this package is actively serving from.
+         // Recompile first: it is the only step that can throw, and the catch
+         // reports "no manifest applied", which would be false if the new
+         // storage bindings were already routing.
          if (hasColocated || hadColocated) {
             await pkg.reloadAllModels(tableNameManifest);
          }
 
-         // Then storage. Ordering between the two is otherwise immaterial:
-         // `reloadAllModels` re-pushes whatever bindings are current onto the fresh
-         // model set, and `bindStorageServeBindings` pushes its own, so the new set
-         // lands either way.
          if (hasStorage || hadStorage) {
             pkg.bindStorageServeBindings(storageEntries);
          }
 
-         // Both tiers have applied by here, so the package is bound regardless of
-         // which one carried entries — a pure-`storage=` manifest binds without a
-         // colocated entry to count, and deriving the status from that count
-         // alone reports `unbound` after a bind that fully succeeded.
-         //
-         // This is deliberately unconditional, and supersedes the status
-         // `recordManifestBinding` derived if the recompile ran: a manifest that
-         // binds nothing (empty, or every entry skipped) is still a manifest that
-         // was fetched and applied, and reporting it `unbound` would make it
-         // permanent drift to a caller that rebinds on anything but `bound`.
-         // `manifestEntryCount` and `storageServeBindings` are what distinguish
-         // "bound and serving" from "bound and empty".
+         // Unconditionally bound, even for a manifest that binds nothing:
+         // reporting `unbound` would be permanent drift to a caller that
+         // rebinds on anything but `bound`. Entry counts distinguish empty.
          pkg.markManifestBound(manifestLocation);
          recordManifestBind("success");
          logger.info("Bound build manifest to package", {
@@ -3356,11 +2052,7 @@ export class Environment {
       }
    }
 
-   /**
-    * Fetch manifest entries, rejecting if the fetch exceeds
-    * {@link MANIFEST_FETCH_TIMEOUT_MS}. Keeps {@link bindManifest}'s bind-before-
-    * serve guarantee from stalling on an unreachable manifest store.
-    */
+   /** Fetch manifest entries, rejecting after {@link MANIFEST_FETCH_TIMEOUT_MS}. */
    private async fetchManifestEntriesWithTimeout(
       manifestLocation: string,
    ): Promise<FetchedManifest> {
@@ -3388,11 +2080,7 @@ export class Environment {
       }
    }
 
-   /**
-    * Read a model's source text from disk, holding the per-package mutex
-    * so the read is serialized against {@link installPackage} /
-    * {@link deletePackage} / {@link updatePackage}.
-    */
+   /** Read a model's source text under the package mutex. */
    public async getModelFileText(
       packageName: string,
       modelPath: string,
@@ -3412,23 +2100,12 @@ export class Environment {
 
    private async writePackageManifest(
       packageName: string,
-      metadata: {
-         name: string;
-         description?: string;
-         location?: string;
-         explores?: string[];
-         queryableSources?: "declared" | "all";
-         manifestLocation?: string | null;
-         scope?: ApiPackage["scope"];
-         queryMetadata?: ApiPackage["queryMetadata"];
-         materialization?: ApiPackage["materialization"];
-      },
+      metadata: PackageManifestUpdate,
    ): Promise<void> {
       const packagePath = safeJoinUnderRoot(this.environmentPath, packageName);
       const manifestPath = safeJoinUnderRoot(packagePath, "publisher.json");
 
       try {
-         // Read existing manifest
          let existingManifest: Record<string, unknown> = {};
          try {
             const content = await fs.promises.readFile(manifestPath, "utf-8");
@@ -3437,164 +2114,19 @@ export class Environment {
             logger.warn(`Could not read manifest for ${packageName}`);
          }
 
-         const onDiskMaterialization =
-            existingManifest.materialization !== null &&
-            typeof existingManifest.materialization === "object" &&
-            !Array.isArray(existingManifest.materialization)
-               ? (existingManifest.materialization as Record<string, unknown>)
-               : undefined;
+         const updatedManifest = mergePackageManifest(
+            existingManifest,
+            metadata,
+         );
 
-         // Scope has two homes: `materialization.scope` (canonical) and the
-         // manifest root (deprecated). The server writes BOTH, in sync, for as
-         // long as the root form is supported:
-         //
-         //  - writing only the root would author a manifest this build's loader
-         //    refuses, since a root that disagrees with an existing envelope is a
-         //    conflict (see resolvePackageScope);
-         //  - writing only the envelope would silently downgrade a package read
-         //    by an older publisher, which knows only the root and would default
-         //    to `package` — cross-version table reuse for a package declared
-         //    `version`.
-         //
-         // A caller can only express scope through the top-level `scope` field
-         // (the wire materialization block has no `scope`), so an envelope value
-         // already on disk is preserved rather than dropped by a materialization
-         // PATCH that says nothing about it.
-         const resolvedScope =
-            metadata.scope ??
-            (onDiskMaterialization?.scope as ApiPackage["scope"] | undefined) ??
-            (existingManifest.scope as ApiPackage["scope"] | undefined);
-
-         // A materialization PATCH replaces the block wholesale, which is right
-         // for schedule and freshness — they are the policy the caller is
-         // setting, and they are mutually exclusive with each other.
-         // `queryMetadata` is orthogonal to both: a client setting a schedule
-         // has no reason to re-send the package's tags, and dropping them
-         // silently untags every statement the package's builds issue. So it is
-         // preserved on omission, like `scope` above.
-         //
-         // A NULL is preserve too, not a clear — one rule at both wire homes.
-         // Null used to clear here while null on the canonical field preserved,
-         // which protected a client that serializes unset fields as null only
-         // if it had already migrated off this home. The clear is an EMPTY bag,
-         // which is unambiguous and which no such client emits by accident.
-         const preservedQueryMetadata =
-            metadata.materialization !== undefined &&
-            metadata.materialization?.queryMetadata == null &&
-            onDiskMaterialization?.queryMetadata !== undefined
-               ? { queryMetadata: onDiskMaterialization.queryMetadata }
-               : {};
-
-         const materializationBase: Record<string, unknown> | undefined =
-            metadata.materialization !== undefined
-               ? { ...metadata.materialization, ...preservedQueryMetadata }
-               : onDiskMaterialization !== undefined
-                 ? { ...onDiskMaterialization }
-                 : undefined;
-         const materializationBlock =
-            resolvedScope !== undefined
-               ? { ...(materializationBase ?? {}), scope: resolvedScope }
-               : materializationBase;
-
-         // `queryMetadata` has two homes as well, migrating the opposite way to
-         // `scope`: the manifest ROOT is canonical and the envelope is
-         // deprecated. Same dual-write rule and the same reason — writing only
-         // the root would leave an older publisher, which reads only the
-         // envelope, serving untagged statements for a package that asked to be
-         // tagged.
-         //
-         // A caller can express tags at either wire home, so precedence follows
-         // the same order the manifest resolver uses: the canonical top-level
-         // field, then the deprecated block, then what is already on disk. A
-         // client that has not migrated keeps working; one that has is not
-         // overruled by a block it did not send.
-         //
-         // A null anywhere in this chain is "not provided", never a clear — the
-         // one rule at both homes (see preservedQueryMetadata). Clearing is an
-         // empty bag, which parses to "no tags" and reaches both homes like any
-         // other value.
-         const resolvedQueryMetadata =
-            metadata.queryMetadata ??
-            (materializationBlock as { queryMetadata?: unknown } | undefined)
-               ?.queryMetadata ??
-            (existingManifest as { queryMetadata?: unknown }).queryMetadata;
-
-         // Update with new metadata. `explores`/`queryableSources` are only
-         // overwritten when the caller explicitly provides them; otherwise the
-         // existing on-disk value is preserved via the spread (an undefined here
-         // must not erase it).
-         // A convention-derived surface is never written. A GET of an
-         // index.malloy-curated package echoes the surface the server derived,
-         // so an ordinary read-modify-write PATCH -- one that meant to change
-         // only the description -- hands that derived value back, and writing
-         // it would freeze a surface that tracks the file into a key that does
-         // not. The two behave identically until the file is renamed or
-         // replaced: the convention then follows it, while the frozen key names
-         // a model that no longer exists, and the package silently lists and
-         // serves nothing. Recognizable because it is the exact value the
-         // convention produces, in a manifest that declares no `explores` (a
-         // surface naming a file that is not there was already rejected
-         // upstream by formatInvalidExplores, so the file exists). Declaring it
-         // by hand buys nothing the convention does not already give.
-         const echoesDerivedSurface =
-            existingManifest.explores === undefined &&
-            Array.isArray(metadata.explores) &&
-            metadata.explores.length === 1 &&
-            metadata.explores[0] === INDEX_MODEL_NAME;
-
-         const updatedManifest = {
-            ...existingManifest,
-            name: metadata.name,
-            // Only when provided: an undefined here is dropped by
-            // JSON.stringify and so would erase the description on disk, which
-            // a PATCH that did not mention it never meant.
-            ...(metadata.description !== undefined
-               ? { description: metadata.description }
-               : {}),
-            ...(metadata.explores !== undefined && !echoesDerivedSurface
-               ? { explores: metadata.explores }
-               : {}),
-            ...(metadata.queryableSources !== undefined
-               ? { queryableSources: metadata.queryableSources }
-               : {}),
-            ...(metadata.manifestLocation !== undefined
-               ? { manifestLocation: metadata.manifestLocation }
-               : {}),
-            ...(resolvedScope !== undefined ? { scope: resolvedScope } : {}),
-            ...(resolvedQueryMetadata !== undefined
-               ? { queryMetadata: resolvedQueryMetadata }
-               : {}),
-            // Mirrored into the deprecated home too, so a package tagged
-            // through the canonical field still reads as tagged on a publisher
-            // that only knows the envelope. Only when that home already exists
-            // or the caller wrote to it: mirroring unconditionally introduced a
-            // `materialization` block into a manifest that never had one, which
-            // is the shape being migrated AWAY from, appearing in a file whose
-            // author only ever used the canonical field.
-            ...(materializationBlock !== undefined
-               ? {
-                    materialization: {
-                       ...materializationBlock,
-                       ...(resolvedQueryMetadata !== undefined
-                          ? { queryMetadata: resolvedQueryMetadata }
-                          : {}),
-                    },
-                 }
-               : {}),
-         };
-
-         // Write back to file
          await fs.promises.writeFile(
             manifestPath,
             JSON.stringify(updatedManifest, null, 2),
             "utf-8",
          );
-         // The install location lives in the server's own record outside the
-         // package directory, so an in-place reload and a restart know where
-         // the package came from, and nothing the package's content carries
-         // (a `location` in publisher.json, a file of this name in a downloaded
-         // tree) is ever read as one. Written only when an install supplies
-         // it; never cleared from here.
+         // Recorded outside the package directory so nothing the package's
+         // content carries is ever read as its install location. Never
+         // cleared from here.
          if (metadata.location !== undefined && metadata.location !== "") {
             const recordPath = this.installRecordPath(packageName);
             await fs.promises.mkdir(path.dirname(recordPath), {
@@ -3616,14 +2148,9 @@ export class Environment {
 
    public async updatePackage(packageName: string, body: ApiPackage) {
       assertSafePackageName(packageName);
-      // An install downloads before it takes the package lock. A PATCH that
-      // arrives then finds the lock free and, during a reinstall, the previous
-      // copy resident; applied at once it would land on that copy, and what
-      // it wrote would be swapped away a moment later, or kept by a rollback
-      // as if the new content had arrived. So a PATCH waits for every load in
-      // flight and is applied to whichever copy is resident afterwards. If
-      // nothing is, the lookup below answers 404 as for any package that is
-      // not here.
+      // An install downloads before taking the lock, so a PATCH arriving then
+      // would land on the copy about to be swapped away. Wait for loads in
+      // flight and apply to whatever is resident afterwards (or 404).
       await this.awaitPackageLoads(packageName);
       return this.withPackageLock(packageName, () =>
          this._updatePackageLocked(packageName, body, {
@@ -3632,22 +2159,14 @@ export class Environment {
       );
    }
 
-   /**
-    * Apply a metadata PATCH to a loaded package. Assumes the caller holds the
-    * per-package mutex: {@link updatePackage} takes it for a standalone PATCH,
-    * and {@link installPackage} calls this inside its own hold so an install
-    * and the metadata that came with it land as one operation.
-    */
+   /** Apply a metadata PATCH to a loaded package. Caller holds the package mutex. */
    private async _updatePackageLocked(
       packageName: string,
       body: ApiPackage,
       options: {
          /**
-          * Whether the body's `location` is recorded as where the package was
-          * installed from. True only for the metadata an install applies to the
-          * copy it just installed: a metadata PATCH never changes it, because a
-          * PATCH naming a different location is a reinstall, decided before it
-          * gets here.
+          * Record the body's `location` as the install location. True only
+          * for an install; a PATCH naming a new location is a reinstall.
           */
          recordLocation: boolean;
       },
@@ -3659,17 +2178,11 @@ export class Environment {
       if (body.name) {
          _package.setName(body.name);
       }
-      // Preserve `explores` across a metadata PATCH. `setPackageMetadata`
-      // replaces the whole object, so a name/description-only update must
-      // carry the existing discovery surface through — otherwise the
-      // in-memory `explores` is wiped and `listModels()` silently starts
-      // serving every model until the next reload. When the body explicitly
-      // carries `explores`, honor the new set instead.
+      // `setPackageMetadata` replaces the whole object, so omitted fields
+      // carry over; a wiped `explores` would silently serve every model.
       const existing = _package.getPackageMetadata();
-      // Normalize API-body explores through the same helper the worker uses
-      // for on-disk explores, so `["./index.malloy"]` / backslash paths
-      // validate and persist identically regardless of input channel (no
-      // misleading publish-time 400, no publish-vs-reload divergence).
+      // Normalized as the worker normalizes on-disk explores, so publish and
+      // reload agree.
       const normalizedExplores = body.explores?.map(normalizeModelPath);
       const explores =
          normalizedExplores !== undefined
@@ -3679,49 +2192,24 @@ export class Environment {
          body.queryableSources != null
             ? body.queryableSources
             : existing.queryableSources;
-      // Preserve the existing manifestLocation unless the body explicitly
-      // sets it (including to null, which clears it and reverts to live).
+      // An explicit null clears it, reverting to live.
       const manifestLocation =
          body.manifestLocation !== undefined
             ? body.manifestLocation
             : existing.manifestLocation;
-      // Persist `scope` and `materialization` (the schedule cron) are
-      // editable via the API — both are writable in the schema. When the
-      // body carries a value, apply it; otherwise preserve the
-      // manifest-derived one (a name/description-only PATCH must not wipe
-      // them, and the control plane must not misread the gap as a removal).
-      // Changing the schedule re-arms the standalone scheduler on its next
-      // tick — no reload needed.
-      //
-      // A *null* scope/materialization is treated the same as omitted
-      // (preserve), NOT a wipe: the control plane's post-build rebind PATCH
-      // carries only name/location/manifestLocation, but a client that
-      // serializes unset fields as explicit null must not thereby trip the
-      // policy gate below (a rejection there fails the orchestrated run) or
-      // reset the persisted policy. `manifestLocation` is deliberately
-      // different — null there means "clear" (revert to live), which the
-      // caller's orchestrated build path relies on.
+      // `scope` and `materialization` apply when provided and are otherwise
+      // preserved; a schedule change re-arms the scheduler on its next tick.
+      // Null counts as omitted, so a client serializing unset fields as null
+      // neither trips the policy gate below (failing an orchestrated run) nor
+      // resets the policy. `manifestLocation` differs: null there clears.
       const scopeProvided = body.scope != null;
       const materializationProvided = body.materialization != null;
       const editingPolicy = scopeProvided || materializationProvided;
       const scope = scopeProvided ? body.scope : existing.scope;
-      // Preserved unless provided, for the same reason as scope: this
-      // replaces the whole metadata object, so omitting it would make a
-      // name/description-only PATCH silently untag every query the package
-      // emits until the next reload. A null is treated as omitted for the
-      // same reason as scope — a client that serializes unset fields as null
-      // must not thereby untag a package. Clearing is an empty bag, which no
-      // such client produces by accident.
-      //
-      // Resolved ONCE across both wire homes and then written to BOTH, the
-      // way writePackageManifest resolves the file. Setting them
-      // independently left whichever home the caller did not send holding a
-      // stale bag, and the two are read by different paths: the serve path
-      // takes the canonical field through getDeclaredQueryMetadata, the build
-      // path takes the block. A migrated client PATCHing only the canonical
-      // field therefore tagged its served queries with the new bag and its
-      // builds with the old one, and getPackageMetadata returned the two
-      // homes contradicting each other on a schema that promises both.
+      // Preserved the same way (null = omitted; the clear is an empty bag),
+      // resolved once across both wire homes and written to both: the serve
+      // path reads the canonical field and the build path the block, so they
+      // must not disagree.
       const queryMetadata =
          body.queryMetadata ??
          body.materialization?.queryMetadata ??
@@ -3735,15 +2223,9 @@ export class Environment {
          materializationBase || queryMetadata !== null
             ? { ...(materializationBase ?? {}), queryMetadata }
             : materializationBase;
-      // `setPackageMetadata` replaces the whole object, so every field the
-      // body omits is carried through from the existing metadata, the way
-      // `explores` and `manifestLocation` below already are. A PATCH that
-      // names only a new `manifestLocation` (the post-build rebind) must not
-      // drop the `location` the package was installed from, which is what a
-      // later reload reinstalls from, or the `resource` the orchestrator
-      // identifies the package by. A null counts as omitted, as it does for
-      // `scope` above: a client that serializes unset fields as null must not
-      // blank them. An empty string is a value, and clears a description.
+      // Omitted (or null) fields carry over, so a rebind PATCH keeps the
+      // `location` a reload reinstalls from and the `resource` an
+      // orchestrator identifies the package by. An empty string is a value.
       _package.setPackageMetadata({
          name: body.name != null ? body.name : existing.name,
          description:
@@ -3761,24 +2243,14 @@ export class Environment {
          scope,
       });
 
-      // Strict-reject, symmetric with the publish path
-      // (package.controller.addPackage): validate the resulting explores
-      // against the live model set and restore the prior metadata before
-      // rejecting, so a bad update neither persists nor mutates the served
-      // surface. When the body edits the persistence policy (scope /
-      // materialization), also enforce the same scope/schedule/freshness/cron
-      // rules a publish enforces — but only then, so a description-only PATCH
-      // on a package with a pre-existing (load-tolerated) policy warning is
-      // not newly rejected. Cron validity is one of these rules
-      // (persistencePolicyWarnings Rule 4), so publish, PATCH, load, and the
-      // scheduler all enforce it identically.
+      // Strict-reject like publish, restoring the prior metadata first so a
+      // bad update neither persists nor changes the served surface. Each check
+      // runs only when the body touches its fields, so a PATCH is never newly
+      // rejected for a warning the load tolerated (and a post-swap update
+      // never fails, leaving the new tree serving unrecorded).
       const policyMsg = editingPolicy
          ? _package.formatInvalidPersistencePolicy()
          : "";
-      // The explores check is gated the same way: a body that does not touch
-      // `explores` (a rebind, the location an install records, a reload) must
-      // not fail after the swap on a surface the load itself only warned
-      // about, leaving the new tree serving with no record and no binding.
       const exploresMsg =
          normalizedExplores !== undefined
             ? _package.formatInvalidExplores()
@@ -3798,9 +2270,6 @@ export class Environment {
          explores: normalizedExplores,
          queryableSources: body.queryableSources ?? undefined,
          manifestLocation: body.manifestLocation,
-         // Only write when explicitly provided (non-null): mirrors the
-         // null-as-absent rule above, so a rebind PATCH neither wipes the
-         // persisted policy nor writes a stray `scope: null`.
          scope: scopeProvided ? body.scope : undefined,
          queryMetadata: body.queryMetadata ?? undefined,
          materialization: materializationProvided
@@ -3808,36 +2277,26 @@ export class Environment {
             : undefined,
       });
 
-      // When the body changes manifestLocation, apply it now so the new
-      // binding takes effect without a separate reload: a URI rebinds models
-      // to the materialized tables; null/empty reverts the package to live.
+      // Apply a manifestLocation change now: a URI rebinds, null/empty
+      // reverts to live.
       const revertsBinding =
          body.manifestLocation !== undefined &&
          !body.manifestLocation &&
          (_package.hasBoundTableNameManifest() ||
             _package.hasStorageServeBindings());
       if (body.manifestLocation) {
-         // A rebind may recompile the package (colocated manifest entries
-         // resolve at compile time), so it is reported as loading while it
-         // runs, like every other recompile.
+         // May recompile, so reported as loading.
          await this.trackPackageLoad(packageName, () =>
             this.bindManifest(_package, body.manifestLocation as string),
          );
       } else if (revertsBinding) {
-         // Revert to live: drop the colocated tableName substitution AND the
-         // cross-connection storage serve bindings the prior bindManifest
-         // applied, so no query still routes to a materialized table after
-         // the operator explicitly cleared the manifest. A package with
-         // nothing bound has nothing to revert, so a null from a client that
-         // serializes unset fields does not recompile it.
+         // Drop both tiers so nothing still routes to a materialized table.
          await this.trackPackageLoad(packageName, async () => {
             await _package.reloadAllModels({});
             _package.bindStorageServeBindings({});
          });
       } else {
-         // The surface may have changed with no file changing, so the tile
-         // findings are re-checked against it. (A manifest rebind above
-         // reloads, which re-discovers and re-lints on its own.)
+         // The surface may have changed with no file changing.
          await _package.relintReports();
       }
 
@@ -3849,12 +2308,9 @@ export class Environment {
    }
 
    /**
-    * Packages this environment is actually serving: registered statuses minus
-    * any recorded as failed or un-mounted. Disjoint from getFailedPackages()
-    * by construction, so the readiness line's packages= and load_errors=
-    * cannot double-count a package that is seeded SERVING at boot and only
-    * pruned later by a side-effect load (which a transient DB or memory-
-    * pressure error can skip). Cheap: no package load is triggered.
+    * Packages actually serving: registered statuses minus failed ones.
+    * Disjoint from getFailedPackages() so the readiness line never
+    * double-counts a package seeded SERVING at boot. Triggers no load.
     */
    public getServingPackageCount(): number {
       const failed = this.getFailedPackages();
@@ -3865,26 +2321,17 @@ export class Environment {
       return serving;
    }
 
-   /**
-    * Record why a configured package's location never mounted, so /status can
-    * name the real cause instead of the missing-manifest fallout it produces.
-    * Called by EnvironmentStore right after the environment is created.
-    */
+   /** Record why a configured package's location never mounted (see {@link mountErrors}). */
    public setPackageMountError(packageName: string, message: string): void {
       this.mountErrors.set(packageName, message);
    }
 
    /**
-    * Record a runtime add that failed before the package could serve, so
-    * /status reports it the way it reports a configured package whose location
-    * never mounted. Skipped while the name has any status: a failed re-install
-    * rolls back to the previous tree, which is not a failed package. Cleared
-    * like every other load failure, by a later successful add or install of
-    * the name, or by deleting it.
-    *
-    * Names are the caller's, so the record is bounded: past
-    * MAX_RECORDED_ADD_FAILURES the oldest recorded add failure is dropped.
-    * Boot-time mount errors are not subject to the cap.
+    * Record a runtime add that failed before the package could serve, for
+    * /status. Skipped while the name has any status (a failed re-install
+    * rolled back, so nothing failed). Names are the caller's, so the record
+    * is capped at MAX_RECORDED_ADD_FAILURES, oldest dropped first; boot-time
+    * mount errors are not capped.
     */
    public recordPackageAddFailure(packageName: string, message: string): void {
       if (this.packageStatuses.has(packageName)) return;
@@ -3947,12 +2394,8 @@ export class Environment {
    public async deletePackage(packageName: string): Promise<void> {
       assertSafePackageName(packageName);
       return this.withPackageLock(packageName, async () => {
-         // Clear the load failure before the early return, not after it. A
-         // package that failed to load is not in `packages` (the load catch
-         // evicts it), so deleting it takes the early return every time, while
-         // the controller still drops its config row. Leaving the entry would
-         // make getStatus report a loadError for a package that is no longer
-         // configured, which is the one thing that channel must not do.
+         // Before the early return: a failed package is never in `packages`,
+         // and a stale entry would report a loadError for an unconfigured one.
          this.clearPackageLoadFailure(packageName);
 
          const _package = this.packages.get(packageName);
@@ -3961,10 +2404,7 @@ export class Environment {
          }
          const packageStatus = this.packageStatuses.get(packageName);
 
-         // The mutex now serializes load/install/compile against delete, so
-         // the LOADING-state guard is mostly vestigial — left in place for
-         // backwards-compatible error messaging in case anything bypasses
-         // the lock.
+         // A guard for anything that bypasses the package lock.
          if (packageStatus?.status === PackageStatus.LOADING) {
             logger.error("Package loading. Can't unload.", {
                environmentName: this.environmentName,
@@ -3980,17 +2420,12 @@ export class Environment {
             this.setPackageStatus(packageName, PackageStatus.UNLOADING);
          }
 
-         // Retire the package's connections via the existing 30s drain so
-         // any in-flight queries that already acquired a connection finish
-         // before the underlying duckdb handle is released.
+         // Drained so in-flight queries finish before the handle is released.
          this.retireConnectionGeneration(`package ${packageName}`, () =>
             _package.getMalloyConfig().shutdown("close"),
          );
 
-         // Atomically rename the canonical tree out of the way so no reader
-         // can stat into it after the lock is released. The actual fs.rm is
-         // deferred to setImmediate to keep the lock-hold time at one
-         // rename rather than a (potentially slow) recursive remove.
+         // Rename aside under the lock; the slow recursive remove is deferred.
          const canonicalPath = safeJoinUnderRoot(
             this.environmentPath,
             packageName,
@@ -4036,14 +2471,9 @@ export class Environment {
    }
 
    /**
-    * Evict a package from the in-memory caches WITHOUT touching its on-disk
-    * directory — the non-destructive counterpart to {@link deletePackage}.
-    *
-    * Used to roll back a no-location `addPackage` (which registers a
-    * *pre-existing*, user-owned directory) when post-load validation rejects
-    * it: deleting the tree there would destroy content the publisher never
-    * created. This still drains and closes the connections the just-created
-    * `Package` opened, so the duckdb handle isn't leaked.
+    * Evict a package from memory without touching its directory: rolls back
+    * a no-location `addPackage` of a user-owned directory, which must not be
+    * deleted. Its connections are still drained and closed.
     */
    public async unloadPackage(packageName: string): Promise<void> {
       assertSafePackageName(packageName);
@@ -4058,15 +2488,10 @@ export class Environment {
          ) {
             this.setPackageStatus(packageName, PackageStatus.UNLOADING);
          }
-         // Same 30s connection drain as deletePackage — just no fs rename/rm.
          this.retireConnectionGeneration(`package ${packageName}`, () =>
             _package.getMalloyConfig().shutdown("close"),
          );
-         // Same reason deletePackage clears: a recorded failure describes a
-         // package that is serving or configured, and after this it is neither.
-         // Today no entry can survive to here (the only caller evicts a package
-         // that addPackage just created, and addPackage clears on success), but
-         // the eviction and the clear belong together whoever calls next.
+         // Eviction and clearing a recorded failure belong together.
          this.clearPackageLoadFailure(packageName);
          this.packages.delete(packageName);
          this.packageStatuses.delete(packageName);
@@ -4116,9 +2541,8 @@ export class Environment {
    }
 
    public async closeAllConnections(): Promise<void> {
-      // Release the package-scoped MalloyConfigs (each holds the package's own
-      // sandbox `duckdb` connection) before tearing down the environment config
-      // they wrap. Without this, hard unload leaks per-package DuckDB handles.
+      // Package configs (each with its own sandbox `duckdb`) first, or hard
+      // unload leaks their handles.
       const packageReleases = await Promise.allSettled(
          Array.from(this.packages.values(), (pkg) =>
             pkg.getMalloyConfig().shutdown("close"),
@@ -4147,9 +2571,7 @@ export class Environment {
       try {
          await this.destinationMalloyConfig.releaseConnections();
       } catch (error) {
-         // `{ error }` alone serializes an Error to `{}`, which is what a reader
-         // of this line gets told. Carry the message so a shutdown failure is
-         // diagnosable from the log rather than only from a debugger.
+         // `{ error }` alone serializes an Error to `{}`.
          logger.error(
             `Error closing storage destinations for environment ${this.environmentName}`,
             { error: error instanceof Error ? error.message : String(error) },
@@ -4157,9 +2579,7 @@ export class Environment {
       }
 
       this.destinations = [];
-      // Torn down, so the empty list above describes nothing rather than
-      // describing an environment with no destinations — anything that reconciled
-      // storage against it from here would be pruning on no information.
+      // Torn down: the empty list is not authoritative to prune against.
       this.destinationsAuthoritative = false;
       await this.releaseAllRetiredConnectionGenerations();
 
@@ -4175,13 +2595,11 @@ export class Environment {
    ): Promise<ApiEnvironment> {
       return {
          ...this.metadata,
-         // Credentials stay server-side, the same rule storageDestinations
-         // below already followed. listApiConnections() is the internal view
-         // and still carries them, because compiling and connecting need them.
+         // Credentials stay server-side; listApiConnections() is the internal
+         // view that still carries them.
          connections: toPublicConnections(this.listApiConnections()),
-         // Name and type only. This is what the status endpoint reports, so it
-         // is how an operator or orchestrator confirms which destinations a
-         // worker picked up; the configs behind them stay server-side.
+         // Name and type only, so an orchestrator can see which destinations
+         // a worker holds.
          storageDestinations: this.destinations.map(({ name, type }) => ({
             name,
             type,
@@ -4229,8 +2647,7 @@ export async function extractPreamble(modelPath: string): Promise<string> {
       const content = await fs.promises.readFile(modelPath, "utf8");
       return extractPreambleFromSource(content);
    } catch {
-      // If the model file can't be read, return empty preamble
-      // and let the compilation surface any import errors naturally.
+      // Unreadable: the compile surfaces any import errors.
       return "";
    }
 }
@@ -4244,7 +2661,6 @@ export function extractPreambleFromSource(content: string): string {
 
    for (const line of lines) {
       const trimmed = line.trim();
-      // Stop at the first source/query/run definition
       if (
          trimmed.startsWith("source:") ||
          trimmed.startsWith("query:") ||

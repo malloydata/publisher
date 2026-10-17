@@ -14,6 +14,7 @@ import { AddressInfo } from "net";
 import path from "path";
 import { fileURLToPath } from "url";
 import { URL } from "url";
+import { pollUntil } from "./spawn_server";
 
 // --- Real Server Import ---
 // Import the actual configured Express app instance
@@ -27,9 +28,6 @@ export interface McpE2ETestEnvironment {
    originalServerRoot: string | undefined;
    originalInitializeStorage: string | undefined;
 }
-
-// Counter for unique port assignment per test suite (incremented only under e2eSetupMutex)
-let portCounter = 0;
 
 // True mutex: the previous Promise-based lock had a TOCTOU race where two beforeAll hooks
 // could both pass the `if (initializationLock)` check and run setup concurrently, sharing
@@ -74,111 +72,60 @@ async function setupE2ETestEnvironmentInternal(): Promise<McpE2ETestEnvironment>
    // Dynamically import the actual app instance
    const { mcpApp } = await import("../../src/server");
 
-   let serverInstance: http.Server;
-   let serverUrl: string;
-
-   // Use unique port per test suite to avoid conflicts when running in parallel
-   // Increment port counter and use it to create unique ports: 4042, 4043, 4044, etc.
-   const portOffset = portCounter++;
-   const TEST_MCP_PORT = Number(process.env.MCP_PORT || 4040) + 2 + portOffset;
-
-   await new Promise<void>((resolve, reject) => {
-      const server = http
-         .createServer(mcpApp)
-         .listen(TEST_MCP_PORT, "127.0.0.1", () => {
-            // Use explicit TEST_MCP_PORT
-            try {
-               const address = server.address() as AddressInfo;
-               if (!address)
-                  throw new Error("Server address is null after listen");
-               serverInstance = server;
-               serverUrl = `http://127.0.0.1:${TEST_MCP_PORT}`;
-               console.log(
-                  `[E2E Test Setup] Real server (using mcpApp) listening on ${serverUrl} (Port: ${TEST_MCP_PORT})`,
-               );
-               resolve();
-            } catch (err) {
-               reject(err);
-            }
+   // An OS-assigned port: suites set up one after another under the mutex,
+   // and a fixed port could be held by anything else on the machine.
+   const listeningServerInstance = await new Promise<http.Server>(
+      (resolve, reject) => {
+         const server = http
+            .createServer(mcpApp)
+            .listen(0, "127.0.0.1", () => resolve(server));
+         server.on("error", (err: NodeJS.ErrnoException) => {
+            console.error(
+               `[E2E Test Setup] Server failed to start: ${err.code} - ${err.message}`,
+            );
+            reject(err);
          });
-      server.on("error", (err: NodeJS.ErrnoException) => {
-         // Provide more specific error info if available (like EADDRINUSE)
-         console.error(
-            `[E2E Test Setup] Server failed to start on port ${TEST_MCP_PORT}: ${err.code} - ${err.message}`,
-         );
-         reject(err);
-      });
-   });
-
-   // Ensure serverInstance and serverUrl are assigned
-   const listeningServerInstance = serverInstance!;
-   const listeningServerUrl = serverUrl!;
-
-   // --- Wait a moment for server to start accepting connections ---
-   console.log("[E2E Test Setup] Waiting for server to accept connections...");
-   await new Promise((resolve) => setTimeout(resolve, 1000));
+      },
+   );
+   const { port } = listeningServerInstance.address() as AddressInfo;
+   const listeningServerUrl = `http://127.0.0.1:${port}`;
+   console.log(
+      `[E2E Test Setup] Real server (using mcpApp) listening on ${listeningServerUrl}`,
+   );
 
    // --- Wait for server to be ready (packages downloaded) ---
-   // Poll the readiness endpoint to ensure initialization completes before tests run
-   // Allow >90s: cold CI can spend most of the budget on clone + package load before markReady().
-   console.log("[E2E Test Setup] Waiting for server to be ready...");
-   const maxWaitTime = 150000; // 150 seconds (INITIALIZE_STORAGE + large samples can be slow)
-   const pollInterval = 1000; // Check every second
-   const startTime = Date.now();
-   let isReady = false;
-
-   while (!isReady && Date.now() - startTime < maxWaitTime) {
-      try {
-         // Use Promise.race to add timeout to fetch
-         const fetchPromise = fetch(`${listeningServerUrl}/health/readiness`);
-         const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Fetch timeout")), 5000),
-         );
-         const response = await Promise.race([fetchPromise, timeoutPromise]);
-
-         if (response.ok) {
-            const data = await response.json();
-            if (data.status === "UP") {
-               isReady = true;
-               console.log("[E2E Test Setup] Server is ready.");
-               break;
-            } else {
-               console.log(
-                  `[E2E Test Setup] Server not ready yet (status: ${data.status}), waiting... (${Math.round((Date.now() - startTime) / 1000)}s)`,
-               );
-            }
-         } else {
-            console.log(
-               `[E2E Test Setup] Readiness check returned ${response.status}, waiting... (${Math.round((Date.now() - startTime) / 1000)}s)`,
+   // Allow >90s: cold CI can spend most of the budget on clone + package load
+   // before markReady().
+   const maxWaitTime = 150_000;
+   const isReady = await pollUntil(
+      async () => {
+         try {
+            const response = await fetch(
+               `${listeningServerUrl}/health/readiness`,
+               { signal: AbortSignal.timeout(5_000) },
             );
-         }
-      } catch (error) {
-         // Server might not be ready yet, continue polling
-         const errorMsg =
-            error instanceof Error ? error.message : String(error);
-         // Only log every 5 seconds to reduce noise
-         const elapsed = Math.round((Date.now() - startTime) / 1000);
-         if (elapsed % 5 === 0) {
-            console.log(
-               `[E2E Test Setup] Readiness check failed (${errorMsg}), waiting... (${elapsed}s)`,
+            return (
+               response.ok &&
+               ((await response.json()) as { status?: string }).status === "UP"
             );
+         } catch {
+            return false;
          }
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-   }
+      },
+      maxWaitTime,
+      250,
+   );
 
    if (!isReady) {
-      // Cleanup before throwing
-      if (listeningServerInstance?.listening) {
-         listeningServerInstance.closeAllConnections?.();
-         await new Promise<void>((res) =>
-            listeningServerInstance.close(() => res()),
-         );
-      }
+      listeningServerInstance.closeAllConnections?.();
+      await new Promise<void>((res) =>
+         listeningServerInstance.close(() => res()),
+      );
       throw new Error(
          `Server did not become ready within ${maxWaitTime / 1000} seconds. Package downloads may have failed.`,
       );
    }
+   console.log("[E2E Test Setup] Server is ready.");
 
    // --- Client Setup ---
    const mcpClient = new Client<Request, Notification, Result>({
