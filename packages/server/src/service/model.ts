@@ -6382,23 +6382,6 @@ export class Model {
       this.storageServe.setServeBindings(bindings);
    }
 
-   /** See {@link StorageServeShape.loadServeShapeQuery}. */
-   private loadServeShapeQuery(
-      ...args: Parameters<StorageServeShape["loadServeShapeQuery"]>
-   ): ReturnType<StorageServeShape["loadServeShapeQuery"]> {
-      return this.storageServe.loadServeShapeQuery(...args);
-   }
-
-   // The two below are read only by specs, through a cast; protected rather
-   // than private so the compiler does not report them unread.
-   protected get serveDestinationConfig(): (() => MalloyConfig) | undefined {
-      return this.storageServe.serveDestinationConfig;
-   }
-
-   protected get serveShapeCache(): StorageServeShape["serveShapeCache"] {
-      return this.storageServe.serveShapeCache;
-   }
-
    /**
     * Refuse a request whose value for one of this model's `filter<T>` givens
     * does not parse, with a 400 naming the given and the parser's reason. Run
@@ -6917,7 +6900,7 @@ export class Model {
          // row-level-gated entry point, per the pre-check just above.
          if (storageRoutingPossible && !routingBlockedByRowLevelGate) {
             try {
-               const shaped = await this.loadServeShapeQuery(
+               const shaped = await this.storageServe.loadServeShapeQuery(
                   queryString,
                   querySurfaceGivens,
                );

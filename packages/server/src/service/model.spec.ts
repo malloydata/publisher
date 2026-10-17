@@ -16,6 +16,7 @@ import {
    ResponseUnserializableError,
 } from "../errors";
 import { Model, ModelType } from "./model";
+import { StorageServeShape } from "./model_serve_shape";
 
 describe("service/model", () => {
    const packageName = "test-package";
@@ -1274,8 +1275,9 @@ describe("service/model", () => {
 
       /**
        * A Model routed to storage, where the storage runnable fails and the live
-       * one succeeds. `loadServeShapeQuery` is stubbed because the real one
-       * compiles a transient model — the logic under test is the catch, and the
+       * one succeeds. The `StorageServeShape` collaborator's
+       * `loadServeShapeQuery` is stubbed because the real one compiles a
+       * transient model — the logic under test is the catch, and the
        * SHAPE'S bindings (not the package's) are what it must consult.
        */
       /**
@@ -1500,13 +1502,14 @@ describe("service/model", () => {
          // eslint-disable-next-line @typescript-eslint/no-explicit-any
          model.setServeDestinationConfig((() => ({})) as any);
          sinon
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            .stub(model as any, "loadServeShapeQuery")
+            .stub(StorageServeShape.prototype, "loadServeShapeQuery")
             .resolves({
                runnable: storageRunnable,
                virtualMap: { v: "lake.t_x" },
                bindings: opts.shapeBindings,
-            });
+            } as unknown as Awaited<
+               ReturnType<StorageServeShape["loadServeShapeQuery"]>
+            >);
          const recordStub = sinon.stub(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             (model as any).queryExecutionHistogram,
