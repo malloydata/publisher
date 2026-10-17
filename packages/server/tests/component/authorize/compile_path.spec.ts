@@ -6,9 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { AccessDeniedError, NotQueryableError } from "../errors";
-import { hasCallerAuthorizeAnnotation } from "./authorize";
-import { Environment } from "./environment";
+import { AccessDeniedError, NotQueryableError } from "../../../src/errors";
+import { hasCallerAuthorizeAnnotation } from "../../../src/service/authorize";
+import { Environment } from "../../../src/service/environment";
 
 /** The rows of a query result, whatever wrapper the result carries them in. */
 function rowsOf(result: unknown): unknown[] {

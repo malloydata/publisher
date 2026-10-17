@@ -19,52 +19,8 @@
  * why this shipped broken. Every test here uses two files for that reason;
  * collapsing one into a single file makes it pass while testing nothing.
  */
-import { DuckDBConnection } from "@malloydata/db-duckdb";
-import { type Connection } from "@malloydata/malloy";
 import { describe, expect, it } from "bun:test";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
-import { Model } from "./model";
-
-const SEED_SQL = `
-CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER, owner INTEGER, val VARCHAR);
-INSERT INTO orgtable VALUES
-   (1, 1, 2, 'a'), (2, 1, 1, 'b'), (3, 2, 1, 'c'), (4, 2, 2, 'd');
-`;
-
-async function newDuckdb(): Promise<DuckDBConnection> {
-   const duckdb = new DuckDBConnection("duckdb", ":memory:");
-   for (const stmt of SEED_SQL.trim()
-      .split(";")
-      .filter((s) => s.trim())) {
-      await duckdb.runSQL(stmt.trim() + ";");
-   }
-   return duckdb;
-}
-
-async function createModelWithFiles(
-   files: Record<string, string>,
-   entryFileName: string,
-): Promise<{ model: Model; duckdb: DuckDBConnection; dir: string }> {
-   const duckdb = await newDuckdb();
-   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "authz-import-hop-"));
-   for (const [fileName, text] of Object.entries(files)) {
-      fs.writeFileSync(path.join(dir, fileName), text);
-   }
-   const model = await Model.create(
-      "test-pkg",
-      dir,
-      entryFileName,
-      new Map<string, Connection>([["duckdb", duckdb]]),
-   );
-   return { model, duckdb, dir };
-}
-
-async function cleanup(duckdb: DuckDBConnection, dir: string): Promise<void> {
-   await duckdb.close();
-   fs.rmSync(dir, { recursive: true, force: true });
-}
+import { loadAuthorizeModel } from "../../../src/test_helpers/authorize_fixture";
 
 /** The gated source, in its own file so importers get an UNEXPORTED entry. */
 const GIVEN_ONLY_GATE = `##! experimental.givens
@@ -131,7 +87,7 @@ describe("deprecated: .malloynb — a notebook cell that imports a gated source 
    // through `_loadQueryFromQueryDef` — which never recompiles, so it never
    // re-derives the run target from the grafted `contents`.
    it("ADMITS an authorized caller (given-only gate)", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": GIVEN_ONLY_GATE,
             "nb.malloynb": `>>>malloy
@@ -149,12 +105,12 @@ run: gated -> { aggregate: c }
          // 4, not 0: an admitted given-only gate filters nothing away.
          expect(notebookCell(result).count).toBe(4);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("filters to the caller's rows (row-field gate)", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": ROW_FIELD_GATE,
             "nb.malloynb": `>>>malloy
@@ -184,7 +140,7 @@ run: gated -> { aggregate: c }
          });
          expect(notebookCell(none).count).toBe(0);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -198,7 +154,7 @@ describe("deprecated: .malloynb — the graft never escapes the request that mad
       // would decide what everyone after them sees. The queryDef is deep-
       // cloned per request for exactly this reason, and this is the test that
       // would catch losing that clone.
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": ROW_FIELD_GATE,
             "nb.malloynb": `>>>malloy
@@ -258,14 +214,14 @@ run: gated -> { aggregate: c }
          };
          expect(memoized._query?.structRef?.filterList ?? []).toHaveLength(0);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
    it("leaves an UNGATED source in the same cell unfiltered", async () => {
       // Notebook-side precision control, the sibling of the named-query one
       // below: the gate must reach its own source and no other.
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": ROW_FIELD_GATE,
             "plain.malloy": `source: plain is duckdb.table('orgtable') extend {
@@ -290,7 +246,7 @@ run: plain -> { aggregate: c }
          expect(cell.count).toBe(4);
          expect(cell.sql).not.toMatch(/org_id/i);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -308,7 +264,7 @@ describe("a query_source built on an imported gated source", () => {
       // the sweep skips it -- measured identical with and without the sweep.
       // The imported shape below did not previously produce a different
       // number either; it produced a 403.
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": ROW_FIELD_GATE,
             "dash.malloy": `##! experimental.givens
@@ -345,7 +301,7 @@ query: tile is per_org -> { aggregate: c is count() }
          );
          expect(countRows(both)).toEqual([{ c: 2 }]);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });
@@ -356,7 +312,7 @@ describe("a model-level named query over an imported gated source", () => {
    // regression — the stored `NamedQueryDef` holds its own pre-graft
    // `structRef` snapshot, which `query-reference.js` reuses verbatim.
    it("filters to the caller's rows rather than denying", async () => {
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": ROW_FIELD_GATE,
             "dash.malloy": `##! experimental.givens
@@ -378,7 +334,7 @@ query: tile is gated -> { aggregate: c }
          );
          expect(countRows(result)).toEqual([{ c: 2 }]);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 
@@ -386,7 +342,7 @@ query: tile is gated -> { aggregate: c }
       // Precision control: passes before and after the fix. Proves the graft
       // reaches the gated query only, rather than spraying every named query
       // that happens to read an imported source.
-      const { model, duckdb, dir } = await createModelWithFiles(
+      const { model, cleanup } = await loadAuthorizeModel(
          {
             "gate.malloy": ROW_FIELD_GATE,
             "plain.malloy": `source: plain is duckdb.table('orgtable') extend {
@@ -415,7 +371,7 @@ query: plain_tile is plain -> { aggregate: c }
          // All 4 rows: the gate on the sibling source must not reach here.
          expect(countRows(result)).toEqual([{ c: 4 }]);
       } finally {
-         await cleanup(duckdb, dir);
+         await cleanup();
       }
    });
 });

@@ -23,18 +23,15 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AccessDeniedError } from "../errors";
-import { Model } from "./model";
+import { AccessDeniedError } from "../../../src/errors";
+import { Model } from "../../../src/service/model";
+import { compilationErrorOf } from "../../../src/test_helpers/authorize_fixture";
 
 /** The tracked example package, not the gitignored `publisher_data/` copy. */
 const GOVERNED_ANALYTICS = path.resolve(
    import.meta.dir,
-   "../../../../examples/governed-analytics",
+   "../../../../../examples/governed-analytics",
 );
-
-function compilationErrorOf(model: Model): Error | undefined {
-   return (model as unknown as { compilationError?: Error }).compilationError;
-}
 
 describe("examples/governed-analytics ships a working gate", () => {
    /** Distinct tenants visible to a caller, via the example's own `by_tenant`. */
