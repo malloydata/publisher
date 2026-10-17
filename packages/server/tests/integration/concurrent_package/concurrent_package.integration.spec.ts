@@ -19,13 +19,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import path from "path";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
-
 
 // Use a unique env name per run so stale state from a previous run (env
 // directory, persisted env metadata in publisher.db) can't poison startup.
 const ENV_NAME = `concurrent-package-test-env-${Date.now()}`;
-const PACKAGE_NAME = "gcs_faa";
+const PACKAGE_NAME = "concurrent_pkg";
 const CONCURRENCY = 12;
 
 const FORBIDDEN_ERROR_FRAGMENTS = [
@@ -48,7 +48,12 @@ describe("Concurrent package operations (E2E)", () => {
    beforeAll(async () => {
       env = await startRestE2E();
       baseUrl = env.baseUrl;
-      fixtureDir = "gs://publisher_test_packages/gcs_faa.zip";
+      // A local zip goes through the same staging extract as a downloaded
+      // one, which is what the race lived in, with no network.
+      fixtureDir = path.resolve(
+         import.meta.dir,
+         "../../fixtures/concurrent_package/concurrent_pkg.zip",
+      );
 
       // Seed the environment with the package once so the env exists on disk.
       // addEnvironment requires at least one package.
