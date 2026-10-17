@@ -122,7 +122,8 @@ export function dedupeAnnotations(
    return kept.reverse();
 }
 
-function serialize(envelope: QueryEnvelope): string {
+/** Serialize an envelope as it is measured against the budget, BigInt-safe. */
+export function serializeEnvelope(envelope: QueryEnvelope): string {
    return JSON.stringify(envelope, bigIntReplacer, 2);
 }
 
@@ -214,7 +215,7 @@ export function buildQueryEnvelope(
  * returned over-limit rather than emptied further, and the warning says so.
  */
 function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
-   if (serialize(envelope).length <= limit) return envelope;
+   if (serializeEnvelope(envelope).length <= limit) return envelope;
 
    const rows = envelope.rows;
    if (!Array.isArray(rows) || rows.length === 0) return envelope;
@@ -247,7 +248,8 @@ function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
    while (low <= high) {
       const mid = Math.floor((low + high) / 2);
       if (
-         serialize({ ...truncating, rows: rows.slice(0, mid) }).length <= limit
+         serializeEnvelope({ ...truncating, rows: rows.slice(0, mid) })
+            .length <= limit
       ) {
          best = mid;
          low = mid + 1;
@@ -267,9 +269,4 @@ function fitToBudget(envelope: QueryEnvelope, limit: number): QueryEnvelope {
          .filter(Boolean)
          .join(" "),
    };
-}
-
-/** Serialize an envelope for transport, BigInt-safe. */
-export function serializeEnvelope(envelope: QueryEnvelope): string {
-   return serialize(envelope);
 }
