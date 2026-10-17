@@ -852,25 +852,33 @@ function validatePublisherShape(connection: ApiConnection): void {
    }
 }
 
-/** Type-specific shape checks; postgres and mysql have none of their own. */
-const SHAPE_VALIDATOR_BY_TYPE: Partial<
-   Record<
-      NonNullable<ApiConnection["type"]>,
-      (connection: ApiConnection) => void
-   >
-> = {
-   sqlserver: validateSqlServerShape,
-   bigquery: validateBigQueryShape,
-   duckdb: validateDuckDBShape,
-   motherduck: validateMotherDuckShape,
-   ducklake: validateDuckLakeShape,
-   trino: validateTrinoShape,
-   databricks: validateDatabricksShape,
-   snowflake: validateSnowflakeShape,
-   publisher: validatePublisherShape,
-};
-// A Map, so a caller-supplied type can only find a validator that is in it.
-const SHAPE_VALIDATORS = new Map(Object.entries(SHAPE_VALIDATOR_BY_TYPE));
+/**
+ * Type-specific shape checks; postgres and mysql have none of their own. A
+ * switch rather than a lookup table, so a caller-supplied type selects only a
+ * function named here.
+ */
+function validateTypeShape(connection: ApiConnection): void {
+   switch (connection.type) {
+      case "sqlserver":
+         return validateSqlServerShape(connection);
+      case "bigquery":
+         return validateBigQueryShape(connection);
+      case "duckdb":
+         return validateDuckDBShape(connection);
+      case "motherduck":
+         return validateMotherDuckShape(connection);
+      case "ducklake":
+         return validateDuckLakeShape(connection);
+      case "trino":
+         return validateTrinoShape(connection);
+      case "databricks":
+         return validateDatabricksShape(connection);
+      case "snowflake":
+         return validateSnowflakeShape(connection);
+      case "publisher":
+         return validatePublisherShape(connection);
+   }
+}
 
 function validateConnectionShape(connection: ApiConnection): void {
    if (connection.proxy) {
@@ -899,7 +907,7 @@ function validateConnectionShape(connection: ApiConnection): void {
       );
    }
 
-   SHAPE_VALIDATORS.get(connection.type ?? "")?.(connection);
+   validateTypeShape(connection);
 }
 
 /**
@@ -1394,27 +1402,43 @@ function buildPublisherEntry(connection: NamedConnection): CoreConnectionEntry {
 
 /** A connection past assembly's name check. */
 type NamedConnection = ApiConnection & { name: string };
-type ConnectionType = NonNullable<ApiConnection["type"]>;
 
-/** The Malloy core connection entry each connection type assembles into. */
-const CORE_ENTRY_BUILDER_BY_TYPE: Record<
-   ConnectionType,
-   (connection: NamedConnection, environmentPath: string) => CoreConnectionEntry
-> = {
-   postgres: buildPostgresEntry,
-   mysql: buildMySQLEntry,
-   sqlserver: buildSqlServerEntry,
-   bigquery: buildBigQueryEntry,
-   snowflake: buildSnowflakeEntry,
-   trino: buildTrinoEntry,
-   databricks: buildDatabricksEntry,
-   duckdb: buildDuckDBEntry,
-   motherduck: buildMotherDuckEntry,
-   ducklake: buildDuckLakeEntry,
-   publisher: buildPublisherEntry,
-};
-// A Map, so a caller-supplied type can only find a builder that is in it.
-const CORE_ENTRY_BUILDERS = new Map(Object.entries(CORE_ENTRY_BUILDER_BY_TYPE));
+/**
+ * The Malloy core connection entry a connection assembles into, by type. A
+ * switch rather than a lookup table, so a caller-supplied type selects only a
+ * builder named here.
+ */
+function buildCoreEntry(
+   connection: NamedConnection,
+   environmentPath: string,
+): CoreConnectionEntry {
+   switch (connection.type) {
+      case "postgres":
+         return buildPostgresEntry(connection);
+      case "mysql":
+         return buildMySQLEntry(connection);
+      case "sqlserver":
+         return buildSqlServerEntry(connection);
+      case "bigquery":
+         return buildBigQueryEntry(connection);
+      case "snowflake":
+         return buildSnowflakeEntry(connection);
+      case "trino":
+         return buildTrinoEntry(connection);
+      case "databricks":
+         return buildDatabricksEntry(connection);
+      case "duckdb":
+         return buildDuckDBEntry(connection, environmentPath);
+      case "motherduck":
+         return buildMotherDuckEntry(connection);
+      case "ducklake":
+         return buildDuckLakeEntry(connection, environmentPath);
+      case "publisher":
+         return buildPublisherEntry(connection);
+      default:
+         throw new Error(`Unsupported connection type: ${connection.type}`);
+   }
+}
 
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
@@ -1472,11 +1496,7 @@ export function assembleEnvironmentConnections(
          proxy: connection.proxy,
       });
 
-      const buildEntry = CORE_ENTRY_BUILDERS.get(connection.type ?? "");
-      if (!buildEntry) {
-         throw new Error(`Unsupported connection type: ${connection.type}`);
-      }
-      pojo.connections[connection.name] = buildEntry(
+      pojo.connections[connection.name] = buildCoreEntry(
          connection as NamedConnection,
          environmentPath,
       );
