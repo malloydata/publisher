@@ -374,7 +374,7 @@ async function listAllCloudFiles(
    }
 }
 
-function isDataFile(key: string): boolean {
+export function isDataFile(key: string): boolean {
    const lowerKey = key.toLowerCase();
    return (
       lowerKey.endsWith(".csv") ||
@@ -394,7 +394,7 @@ function buildCloudUri(
    return `${scheme}://${bucket}/${key}`;
 }
 
-function getFileType(key: string): string {
+export function getFileType(key: string): string {
    const lowerKey = key.toLowerCase();
    if (lowerKey.endsWith(".csv")) return "csv";
    if (lowerKey.endsWith(".parquet")) return "parquet";
@@ -404,7 +404,8 @@ function getFileType(key: string): string {
    return "unknown";
 }
 
-function standardizeRunSQLResult(result: unknown): unknown[] {
+export function standardizeRunSQLResult(result: unknown): unknown[] {
+   // Handle different result formats from malloyConnection.runSQL
    return Array.isArray(result)
       ? result
       : (result as { rows?: unknown[] }).rows || [];

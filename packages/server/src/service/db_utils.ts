@@ -13,10 +13,13 @@ import {
    CloudStorageCredentials,
    gcsConnectionToCredentials,
    getCloudTablesWithColumns,
+   getFileType,
+   isDataFile,
    listCloudDirectorySchemas,
    listDataFilesInDirectory,
    parseCloudUri,
    s3ConnectionToCredentials,
+   standardizeRunSQLResult,
 } from "./gcs_s3_utils";
 import { getImpersonatedAuthClient } from "./gcp_impersonation";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
@@ -180,13 +183,6 @@ async function createBigQueryClient(
    }
 
    return new BigQuery(config);
-}
-
-function standardizeRunSQLResult(result: unknown): unknown[] {
-   // Handle different result formats from malloyConnection.runSQL
-   return Array.isArray(result)
-      ? result
-      : (result as { rows?: unknown[] }).rows || [];
 }
 
 function getCloudCredentialsFromAttachedDatabases(
@@ -1102,16 +1098,6 @@ export async function getSchemasForConnection(
    }
 }
 
-function getFileType(key: string): string {
-   const lowerKey = key.toLowerCase();
-   if (lowerKey.endsWith(".csv")) return "csv";
-   if (lowerKey.endsWith(".parquet")) return "parquet";
-   if (lowerKey.endsWith(".json")) return "json";
-   if (lowerKey.endsWith(".jsonl") || lowerKey.endsWith(".ndjson"))
-      return "jsonl";
-   return "unknown";
-}
-
 /**
  * Lists blobs in an Azure container matching a glob-like prefix/extension filter.
  * Parses an HTTPS SAS URL like:
@@ -1238,17 +1224,6 @@ async function listAzureBlobs(
       `Listed ${matchingFiles.length} matching blobs in Azure container ${container} with prefix "${prefix}"`,
    );
    return matchingFiles;
-}
-
-function isDataFile(key: string): boolean {
-   const lowerKey = key.toLowerCase();
-   return (
-      lowerKey.endsWith(".csv") ||
-      lowerKey.endsWith(".parquet") ||
-      lowerKey.endsWith(".json") ||
-      lowerKey.endsWith(".jsonl") ||
-      lowerKey.endsWith(".ndjson")
-   );
 }
 
 /** These builders always run against DuckDB, whatever connection reached them. */
