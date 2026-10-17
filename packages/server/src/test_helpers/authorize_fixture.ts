@@ -391,7 +391,7 @@ export async function buildEphemeralRunnable(
 
 /** Bind `queryText` through the real `authorizeAndBindRunnable`. */
 async function bind(
-   gated: GatedModel,
+   gated: Pick<GatedModel, "internals" | "mm">,
    queryText: string,
    givens: Record<string, GivenValue>,
 ): Promise<QueryMaterializer> {
@@ -404,7 +404,7 @@ async function bind(
 
 /** The SQL the bound runnable would issue: proof of what the graft did. */
 export async function boundSql(
-   gated: GatedModel,
+   gated: Pick<GatedModel, "internals" | "mm">,
    queryText: string,
    givens: Record<string, GivenValue> = {},
 ): Promise<string> {
@@ -412,7 +412,7 @@ export async function boundSql(
 }
 
 export async function boundRows(
-   gated: GatedModel,
+   gated: Pick<GatedModel, "internals" | "mm">,
    queryText: string,
    givens: Record<string, GivenValue> = {},
 ): Promise<ReadonlyArray<Record<string, unknown>>> {

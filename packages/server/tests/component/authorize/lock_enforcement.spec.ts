@@ -1014,9 +1014,8 @@ describe("cross-file joins are not gated either (Q16)", () => {
       // enters `c_entry`'s `modelDef.contents` at all — the load-time legacy
       // string sweep (`findLegacyStringGates`) never sees it, unlike the
       // top-level and single-hop `extend {}` cases this file's other quoted
-      // fixtures cover (see the "still refuses to load" test above and
-      // `source_line_authorize_integration.spec.ts:1230`). Do not migrate this
-      // one to the unquoted form — it would stop exercising that boundary.
+      // fixtures cover (see load_validation.spec.ts's legacy-form tests).
+      // Do not migrate this one to the unquoted form — it would stop exercising that boundary.
       await writeModel(
          "c_base.malloy",
          `#(authorize) "false"
@@ -2374,25 +2373,6 @@ source: inj_plain is duckdb.table('customers') extend { measure: c is count() }
       ).rejects.toBeInstanceOf(BadRequestError);
    });
 });
-
-// A prior version of this suite pinned "an inherited gate is isolated from a
-// colliding entry-model given" here: a STRING-FORM gate (`$LEVEL > 3`)
-// inherited into an entry model that redeclares `LEVEL` WITH a default whose
-// value trivially satisfies the gate. That guarantee was enforced by
-// `assertNoVacuousDefaultAtom`, a static-literal evaluator that walked the
-// STRING form's compiled comparison tree looking for exactly this hazard.
-// Task 4 (authorize-natural-malloy) deleted that evaluator along with the
-// rest of the string-form classification machinery it depended on
-// (`classifyAuthorizeGate`) — the dimension form has no equivalent check, and
-// none is planned: a gate dimension's default-satisfies-vacuously hazard is a
-// property of how the AUTHOR wrote the expression, not something publisher
-// can detect generically without re-implementing an evaluator against
-// `@malloydata/malloy`'s compiled IR. This is an accepted coverage reduction,
-// not a silently dropped guarantee — the dimension form's own gates still
-// fail closed (see `row_level_authorize.integration.spec.ts`'s "constant gate
-// dimensions" and `gate_dimension_integration.spec.ts`) if authored to do so
-// deliberately; only the built-in "warn me if a NON-constant expression
-// happens to be trivially satisfiable" detection is gone.
 
 // Which annotation SPELLINGS are gates is Malloy's decision, not publisher's: a
 // note is a gate iff Malloy routes it to `authorize`. Every row below was
