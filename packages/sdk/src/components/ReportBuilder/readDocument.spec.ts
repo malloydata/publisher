@@ -802,12 +802,56 @@ describe("readDashboardDocument: what it refuses", () => {
       if (readFailed(r)) expect(r.reason).toContain("not a report");
    });
 
-   it("refuses a tile that is not a source -> view expression", async () => {
+   it("refuses a tile that is neither a source -> view expression nor a query's name", async () => {
       const r = await readDashboardDocument(
-         `## artifact { title="T" tiles=["just_a_name"] }\nsource: a is b extend { view: x is y }`,
+         `## artifact { title="T" tiles=["a -> x -> y"] }\nsource: a is b extend { view: x is y }`,
       );
       expect(r.ok).toBe(false);
       if (readFailed(r)) expect(r.reason).toContain("source -> view");
+   });
+
+   // The server's reader runs a quoted bare name as `run: <name>`, so a report
+   // listing a named query is served; the builder used to refuse it whole.
+   it("opens a tile that names a query, read-only and with no source", async () => {
+      const doc = await read(
+         `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+      );
+      expect(doc.tiles).toEqual([
+         { name: "by_carrier", declaration: { kind: "query" } },
+         {
+            name: "by_month",
+            source: "flights",
+            declaration: { kind: "inherited" },
+         },
+      ]);
+      expect(tileKey(doc.tiles[0])).toBe("query.by_carrier");
+   });
+
+   // The bare spelling (`tiles=[by_carrier]`) is the query-tile form the docs
+   // give, and the server reads it the same way.
+   it("opens a tile that names a query unquoted", async () => {
+      const doc = await read(
+         `## artifact { title="T" tiles=[by_carrier, "flights -> by_month"] }\nimport { flights } from '../flights.malloy'\n\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+      );
+      expect(doc.tiles[0]).toEqual({
+         name: "by_carrier",
+         declaration: { kind: "query" },
+      });
+   });
+
+   // The reader frames a query tile by the query's own tags, so the builder
+   // draws it at the same width and on the same row.
+   it("reads a query tile's frame off the query's own tags", async () => {
+      const doc = await read(
+         `## artifact { title="T" tiles=["flights -> by_month", "by_carrier"] } dashboard { columns=12 }\nimport { flights } from '../flights.malloy'\n\n# colspan=6\n# break\n# label="By airline"\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`,
+      );
+      expect(doc.tiles[1]).toEqual({
+         name: "by_carrier",
+         declaration: { kind: "query" },
+         label: "By airline",
+         colspan: 6,
+         break: true,
+      });
    });
 
    // NOT a refusal, and the tripwire is what taught us so: a dashboard whose

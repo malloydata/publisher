@@ -1546,6 +1546,77 @@ describe("spliceDashboardDocument: what it refuses", () => {
       expect(back.tiles[0]).toMatchObject({ colspan: 6, rowspan: 4 });
    });
 
+   // A named query stays a named query: the entry is moved or dropped as
+   // written, never rewritten to the `source -> …` it happens to read, and its
+   // `query:` stays in the file, where other things may still read it.
+   describe("a tile that names a query", () => {
+      const NAMED = `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }
+import { flights } from '../flights.malloy'
+
+# bar_chart
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+
+      it("moves with its entry spelled as written", async () => {
+         const out = await spliced(NAMED, (d) => {
+            d.tiles.reverse();
+         });
+         expect(out).toContain('tiles=["flights -> by_month", "by_carrier"]');
+         expect(out).toContain(
+            "# bar_chart\nquery: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }",
+         );
+      });
+
+      it("moves an unquoted entry, and keeps it unquoted", async () => {
+         const out = await spliced(
+            NAMED.replace('"by_carrier"', "by_carrier"),
+            (d) => {
+               d.tiles.reverse();
+            },
+         );
+         expect(out).toContain('tiles=["flights -> by_month", by_carrier]');
+      });
+
+      it("leaves its query in the file when the tile is removed", async () => {
+         const out = await spliced(NAMED, (d) => {
+            d.tiles.shift();
+         });
+         expect(out).toContain('tiles=["flights -> by_month"]');
+         expect(out).toContain("query: by_carrier is flights");
+      });
+
+      it("refuses to restyle it", async () => {
+         expect(
+            await refused(NAMED, (d) => {
+               queryTile(d, 0).label = "Carriers";
+            }),
+         ).toContain("names a query");
+      });
+
+      // Its layout is the report's, on its entry, like any other tile's.
+      it("lays it out on its entry, quoted or bare", async () => {
+         const out = await spliced(NAMED, (d) => {
+            d.tiles[0].colspan = 6;
+            d.tiles[0].rowspan = 4;
+         });
+         expect(out).toContain('tiles=["by_carrier" { colspan=6 rowspan=4 }, ');
+         const bare = await spliced(
+            NAMED.replace('"by_carrier"', "by_carrier"),
+            (d) => {
+               d.tiles[0].row = 1;
+               d.tiles[0].col = 7;
+            },
+         );
+         expect(bare).toContain("tiles=[by_carrier { row=1 col=7 }, ");
+         const back = await openDocument(bare);
+         expect(back.tiles[0]).toMatchObject({
+            name: "by_carrier",
+            declaration: { kind: "query" },
+            row: 1,
+            col: 7,
+         });
+      });
+   });
+
    it("refuses a new tile that is not a reference to a view", async () => {
       expect(
          await refused(SOURCE, (d) => {

@@ -619,6 +619,65 @@ describe("ReportBuilder: a tile's own settings", () => {
    });
 });
 
+describe("ReportBuilder: a tile that names a query", () => {
+   const named = `## artifact { title="T" tiles=["by_carrier", "flights -> by_month"] }
+import { flights } from '../flights.malloy'
+
+query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
+
+   it("opens the report and shows the tile, with nothing on it to edit", async () => {
+      const document = await openDocument(named);
+      render(<ReportBuilder source={named} document={document} />);
+      // Titled as the reader titles it, from the query's name.
+      expect(
+         within(screen.getByLabelText("Tile by_carrier")).getByText(
+            "By carrier",
+         ),
+      ).toBeDefined();
+      // No title field on the tile, and a menu that says why. Its width and
+      // height are the report's, on its entry, so both edges are there.
+      fireEvent.click(screen.getByText("By carrier"));
+      expect(screen.queryByLabelText("Tile title")).toBeNull();
+      expect(
+         screen.queryByRole("separator", { name: "Width of by_carrier" }),
+      ).not.toBeNull();
+      fireEvent.click(screen.getByLabelText("Settings for by_carrier"));
+      expect(
+         screen.getByText(
+            "It names a query, so its chart is set where that query is declared.",
+         ),
+      ).toBeDefined();
+      // The menu names what the tile runs: the query, with no empty source.
+      const menu = screen.getByRole("menu", {
+         name: "by_carrier",
+         hidden: true,
+      });
+      expect(within(menu).getByText("by_carrier")).toBeDefined();
+      expect(within(menu).queryByText(/→/)).toBeNull();
+   });
+
+   it("removes it from the list and saves the query untouched", async () => {
+      let written: string | undefined;
+      const document = await openDocument(named);
+      render(
+         <ReportBuilder
+            source={named}
+            document={document}
+            onSave={(next) => {
+               written = next;
+            }}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Remove by_carrier"));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain('tiles=["flights -> by_month"]');
+      expect(written).toContain("query: by_carrier is flights");
+   });
+});
+
 describe("ReportBuilder: widths and the page's own settings", () => {
    it("steps a tile's width from the keyboard on its edge, one undo step each", async () => {
       await mount();
@@ -770,6 +829,57 @@ source: a is scoped_orders extend {
   # drill { to=["self", "regions"] given=CATEGORY }
   dimension: cat is products.category`,
       );
+   });
+
+   const clickableItem = () =>
+      screen.getByRole("menuitem", {
+         name: /^Clickable cells/,
+         hidden: true,
+      });
+
+   it("says which clicks it sets up, and that none act while editing", async () => {
+      // The renderer reports clicks on table cells only, never on a bar, and
+      // the builder renders tiles without click handling, because a press there
+      // selects the tile. The window says both, so the setting does not look
+      // broken when a click in the builder does nothing.
+      const doc = await openDocument(WITH_DIMENSION);
+      render(<ReportBuilder source={WITH_DIMENSION} document={doc} />);
+      fireEvent.click(screen.getByLabelText("Settings for x"));
+      fireEvent.click(clickableItem());
+      const dialog = screen.getByRole("dialog", { hidden: true });
+      expect(dialog.textContent).toContain(
+         "A click on a table cell sets a filter to its value, on this report or on the one it opens.",
+      );
+      expect(dialog.textContent).toContain(
+         "Bars, lines and points on a chart do not respond to a click.",
+      );
+      expect(dialog.textContent).toContain(
+         "Clicks work in the report, not while you edit it.",
+      );
+   });
+
+   it("warns on a chart tile that its bars will not click", async () => {
+      const BAR = WITH_DIMENSION.replace(
+         "  # colspan=6\n  view: x",
+         "  # colspan=6\n  # bar_chart\n  view: x",
+      );
+      expect(BAR).toContain("# bar_chart");
+      const doc = await openDocument(BAR);
+      render(<ReportBuilder source={BAR} document={doc} />);
+      fireEvent.click(screen.getByLabelText("Settings for x"));
+      expect(clickableItem().textContent).toContain(
+         "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.",
+      );
+      // Still offered: the tag is on the dimension, which a table tile on the
+      // same source can use.
+      expect(clickableItem().getAttribute("aria-disabled")).not.toBe("true");
+   });
+
+   it("adds no chart warning to a table tile", async () => {
+      const doc = await openDocument(WITH_DIMENSION);
+      render(<ReportBuilder source={WITH_DIMENSION} document={doc} />);
+      fireEvent.click(screen.getByLabelText("Settings for x"));
+      expect(clickableItem().textContent).toBe("Clickable cells…");
    });
 
    it("offers no Drill when the source declares no dimension here", async () => {

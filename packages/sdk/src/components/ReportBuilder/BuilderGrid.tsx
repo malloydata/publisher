@@ -12,9 +12,10 @@ import {
    PLACED_DEFAULT_ROWSPAN,
 } from "../Dashboard/DashboardGrid";
 import type { TileChrome, TileHeadingSlots } from "../Dashboard/TileCard";
-import type { LayoutRules } from "../Report/layoutRules";
+import { withSpan, type LayoutRules } from "../Report/layoutRules";
 import {
    isQueryTile,
+   isReadOnlyTile,
    isTextTile,
    tileKey,
    type DashboardTile,
@@ -218,7 +219,13 @@ export function BuilderGrid({
                                          if (to === (each.colspan ?? 1)) return;
                                          editor.update((draft) => {
                                             const tile = draft.tiles[index];
-                                            if (tile) tile.colspan = to;
+                                            if (tile)
+                                               draft.tiles[index] = withSpan(
+                                                  tile,
+                                                  to,
+                                                  columns,
+                                                  defaultSpan,
+                                               );
                                             draft.tiles = place(
                                                draft.tiles,
                                                index,
@@ -316,7 +323,7 @@ const headingOf = (
    fallback: string,
    editTile: (key: string, change: (tile: DashboardTile) => void) => void,
 ): TileHeadingSlots | undefined => {
-   if (tile.declaration.kind === "inherited") return undefined;
+   if (isReadOnlyTile(tile)) return undefined;
    const key = tileKey(tile);
    const set = (field: "label" | "subtitle") => (next: string) =>
       editTile(key, (each) => {

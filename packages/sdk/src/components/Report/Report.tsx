@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert } from "@mui/material";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { now } from "../../utils/clock";
 import { parseResourceUri } from "../../utils/formatting";
@@ -84,6 +84,11 @@ export interface ReportProps {
     * while the builder loads over it.
     */
    manifestStaleTime?: number;
+   /**
+    * The host's actions for the report (a download, its own menu), drawn at
+    * the end of the title's line rather than on a row of their own above it.
+    */
+   actions?: ReactNode;
 }
 
 /**
@@ -106,6 +111,7 @@ export function Report({
    onEvent,
    chrome,
    manifestStaleTime,
+   actions,
 }: ReportProps) {
    const parsed = parseResourceUri(resourceUri);
    const { apiClients } = useServer();
@@ -233,6 +239,7 @@ export function Report({
          height={height}
          maxResultSize={maxResultSize}
          chrome={chrome}
+         {...(actions !== undefined ? { actions } : {})}
       />
    );
    return (

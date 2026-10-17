@@ -42,7 +42,7 @@ import { useTileReorder } from "./useTileReorder";
 import { settle } from "./placement";
 import { useTileHeight } from "./useTileHeight";
 import { useTileResize, widestFrom } from "./useTileResize";
-import { layoutRules } from "../Report/layoutRules";
+import { layoutRules, withSpan } from "../Report/layoutRules";
 import { ReportPage } from "../Report/ReportPage";
 
 export type { BuilderGiven } from "./controls";
@@ -350,7 +350,8 @@ export function ReportBuilder({
       commit: (index, span) =>
          editor.update((draft) => {
             const tile = draft.tiles[index];
-            if (tile) tile.colspan = span;
+            if (tile)
+               draft.tiles[index] = withSpan(tile, span, columns, defaultSpan);
             draft.tiles = place(draft.tiles, index);
          }),
    });
@@ -420,7 +421,12 @@ export function ReportBuilder({
             );
             if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
-               draft.tiles[selected].colspan = span;
+               draft.tiles[selected] = withSpan(
+                  draft.tiles[selected],
+                  span,
+                  columns,
+                  defaultSpan,
+               );
                draft.tiles = place(draft.tiles, selected);
             });
          },

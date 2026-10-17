@@ -2860,7 +2860,10 @@ export class Model {
     *
     * Each limit is load-bearing:
     *  - match `sourceID` ONLY, never `referenceID`: join copies carry the
-    *    base's `referenceID`, so matching it would leak the gate onto joins;
+    *    base's `referenceID`, so matching it would leak the gate onto joins.
+    *    The one exception is a snapshot with no `sourceID` at all, an inline
+    *    `gated extend { … }`, matched by {@link resolveGraftTarget}, the same
+    *    resolution the request path used to choose `graftTarget`;
     *  - APPEND to the snapshot; never repoint `structRef` at the name, which
     *    would drop the reference's `sourceArguments`;
     *  - NO recursion into `fields` (joins), the `pipeline`, or a composite's
@@ -2890,6 +2893,22 @@ export class Model {
          const snapshot = named.structRef;
          if (!snapshot || typeof snapshot !== "object") continue;
          const struct = snapshot as SourceDef;
+         // An inline extension (`query: q is gated extend { … } -> v`) stores
+         // a new struct with NO `sourceID` of its own, so the identity match
+         // above never reaches it. Match it the way the request path chose
+         // this graft target for that same struct (`resolveGraftTarget`),
+         // so the two decisions cannot disagree. The bind guards that run
+         // after the graft still prove the condition reads `graftTarget`'s
+         // own column on this struct.
+         if (struct.sourceID === undefined) {
+            if (resolveGraftTargetImpl(struct, copy, copy) !== graftTarget)
+               continue;
+            // Identity, not `code`: a `where:` the query's author wrote with
+            // the same text must not stand in for the gate's own condition.
+            if (struct.filterList?.includes(condition)) continue;
+            struct.filterList = [...(struct.filterList ?? []), condition];
+            continue;
+         }
          if (struct.sourceID !== sourceID) continue;
          if (struct.filterList?.some((f) => f.code === condition.code))
             continue;
@@ -4219,20 +4238,71 @@ export class Model {
     * missing name. Unreadable IR counts as gated, so doubt lands generic.
     *
     * `refused` says what the fix has to move: this whole file, or one source or
-    * query this file can already see.
+    * query this file can already see. `name` is the refused source, when the
+    * caller knows it: a source a served report declares itself gets a fix
+    * aimed at its base rather than at the source.
     */
    private notQueryable(
       refusal: string,
       explainable: boolean,
       refused: "model" | "source" | "query",
+      name?: string,
    ): NotQueryableError {
       const surface = this.queryBoundary.offSurface;
       if (explainable && surface && !this.hasAnyAuthorizeNote()) {
-         return new OffSurfaceError(
-            `${refusal} ${this.offSurfaceReason(surface, refused)}`,
-         );
+         const reason =
+            (refused === "source" &&
+               name !== undefined &&
+               this.reportSourceReason(surface, name)) ||
+            this.offSurfaceReason(surface, refused);
+         return new OffSurfaceError(`${refusal} ${reason}`);
       }
       return new NotQueryableError(refusal);
+   }
+
+   /**
+    * The explanation for a source a served report declares in its own file
+    * and that is refused, or undefined when `name` is not one. Exporting a
+    * report's own source from index.malloy is impossible (index.malloy cannot
+    * import a report), so the fix names the base the source is built on: that
+    * base is what is missing from the surface. A source built straight on a
+    * table has no base to publish, so it is told to build on a served source.
+    */
+   private reportSourceReason(
+      surface: OffSurfaceContext,
+      name: string,
+   ): string | undefined {
+      if (!this.queryBoundary.layout || !this.fileDerivationBases?.has(name)) {
+         return undefined;
+      }
+      const exporter = surface.indexModel
+         ? `"${INDEX_MODEL_NAME}"`
+         : `a listed model`;
+      const surfaceIs = surface.indexModel
+         ? `this package's published surface, "${INDEX_MODEL_NAME}"`
+         : `this package's published surface, the models publisher.json ` +
+           `"explores" lists (${JSON.stringify(surface.files)})`;
+      const base = this.offSurfaceBase(name);
+      // offSurfaceBase stops at the first name with no declared base in this
+      // file. When that is a source this model can see (one it imports), it is
+      // the unserved base. Otherwise the chain ends at a table or connection.
+      if (base !== name && this.declaresSource(base)) {
+         return (
+            `"${name}" is declared in this report on "${base}", which is not ` +
+            `on ${surfaceIs}. A report's own source is queryable only when ` +
+            `it is built on a source the surface serves. Fix: name "${base}" ` +
+            `in the export { ... } of ${exporter}, importing the file that ` +
+            `declares it if needed.`
+         );
+      }
+      const served = surface.indexModel
+         ? `a source "${INDEX_MODEL_NAME}" exports`
+         : `a source exported by a model publisher.json "explores" lists ` +
+           `(${JSON.stringify(surface.files)})`;
+      return (
+         `"${name}" is declared in this report and is not built on ${served}. ` +
+         `Fix: build it with extend on ${served}.`
+      );
    }
 
    /** The sentence an explained refusal appends: which files are the surface,
@@ -4262,8 +4332,11 @@ export class Model {
          // edit is to export it here.
          fix = `name the ${refused} in the export { ... } of "${this.modelPath}".`;
       } else {
-         // A notebook or dashboard admits nothing of its own, so a surface file
-         // must export the name. Dashboard tiles keep running against the
+         // A notebook or dashboard admits nothing of its own beyond sources it
+         // builds on the surface (a refused one is explained by
+         // reportSourceReason), so a surface file must export the name, which
+         // may first need to import where it is declared. Dashboard tiles keep
+         // running against the
          // dashboard file, so only a notebook caller is told to re-address.
          const exporter = surface.indexModel
             ? `"${INDEX_MODEL_NAME}"`
@@ -4290,22 +4363,40 @@ export class Model {
     * union safe: keyed on bare names, model A's exported `customers` would
     * admit model B's DIFFERENT, hidden `customers`.
     *
+    * With `view`, the identity of that view on the source `name` resolves to,
+    * so a view inherited by an extending source has its declaration's
+    * identity in every model that can see it.
+    *
     * Undefined when Malloy attached no location; callers then fall back to
     * this model's own export closure (fail closed).
     */
-   public definitionIdentity(name: string | undefined): string | undefined {
+   public definitionIdentity(
+      name: string | undefined,
+      view?: string,
+   ): string | undefined {
       if (!name) return undefined;
-      const def = this.modelDef?.contents?.[name] as
-         | {
-              location?: {
-                 url?: string;
-                 range?: { start?: { line?: number; character?: number } };
-              };
-           }
-         | undefined;
-      const url = def?.location?.url;
+      const named = this.modelDef?.contents?.[name];
+      const def =
+         view === undefined
+            ? named
+            : named && isSourceDef(named)
+              ? named.fields.find(
+                   (field) => field.type === "turtle" && field.name === view,
+                )
+              : undefined;
+      const location = (
+         def as
+            | {
+                 location?: {
+                    url?: string;
+                    range?: { start?: { line?: number; character?: number } };
+                 };
+              }
+            | undefined
+      )?.location;
+      const url = location?.url;
       if (!url) return undefined;
-      const start = def?.location?.range?.start;
+      const start = location?.range?.start;
       return `${url}#${start?.line ?? -1}:${start?.character ?? -1}`;
    }
 
@@ -4389,7 +4480,11 @@ export class Model {
          // compiled backstop.
          if (!sourceName && this.isCuratedQuery(queryName)) return "cleared";
          if (sourceName && this.isCuratedSource(sourceName)) return "cleared";
-         // A dashboard's own named query is decided by the compiled check, by
+         if (sourceName && this.isReportSourceOnSurface(sourceName)) {
+            return "deferred";
+         }
+         // A dashboard's own named query (a single-query dashboard, or a
+         // control's `suggest { query= }`) is decided by the compiled check, by
          // the source it reads.
          if (
             !sourceName &&
@@ -4404,6 +4499,7 @@ export class Model {
                `No queryable source "${sourceName}".`,
                this.declaresSource(sourceName),
                "source",
+               sourceName,
             );
          }
          throw this.notQueryable(
@@ -4413,13 +4509,16 @@ export class Model {
          );
       }
 
-      // An explicitly-named source: admit iff curated.
+      // An explicitly-named source: admit iff curated, or a served report's
+      // own source over the surface (settled again by the compiled check).
       if (sourceName) {
          if (this.isCuratedSource(sourceName)) return "cleared";
+         if (this.isReportSourceOnSurface(sourceName)) return "deferred";
          throw this.notQueryable(
             `No queryable source "${sourceName}".`,
             this.declaresSource(sourceName),
             "source",
+            sourceName,
          );
       }
 
@@ -4438,10 +4537,31 @@ export class Model {
                "Query target is not queryable.",
                true,
                "source",
+               target,
             );
          }
       }
       return "deferred";
+   }
+
+   /**
+    * True when `name` is a source this served report (grid or linear) declares
+    * in its own file, built through its own `extend` declarations, possibly
+    * chained, on sources the package surface serves. Such a source is
+    * queryable by name when the query is addressed to this report: its tiles
+    * and cells already run against it, and ad-hoc text over it is admitted by
+    * {@link derivesFromCurated}, so naming it is the same read. It inherits
+    * its base's `#(authorize)` and access filters, which the authorize gate
+    * applies after the boundary. False for every other file: an ordinary model
+    * curates by its export closure, and a `.malloynb` has no report text.
+    */
+   private isReportSourceOnSurface(name: string): boolean {
+      return (
+         this.queryBoundary.layout !== undefined &&
+         this.fileDerivationBases?.has(name) === true &&
+         this.declaresSource(name) &&
+         this.derivesFromCurated(name)
+      );
    }
 
    /**
@@ -4532,6 +4652,7 @@ export class Model {
          "Query target is not queryable.",
          compiledSource !== undefined,
          "source",
+         compiledSource,
       );
    }
 
@@ -4877,11 +4998,13 @@ export class Model {
     * pure-CPU package-load worker.
     *
     * Prepares each annotated named query and source view compile-only and runs
-    * the renderer's headless `validateRenderTags`. Findings are logged and
-    * returned as non-fatal warnings with the renderer's severity: `error` for a
-    * tag malformed for its field, `warn` for one well-formed but inert where it
-    * sits (e.g. `# colspan` outside columns mode) — invisible at query time, so
-    * load is the only place an author sees it.
+    * the renderer's headless `validateRenderTags`. Findings are returned, each
+    * naming its target, as non-fatal warnings with the renderer's severity:
+    * `error` for a tag malformed for its field, `warn` for one well-formed but
+    * inert where it sits (e.g. `# colspan` outside columns mode), which is
+    * invisible at query time, so load is the only place an author sees it. The
+    * owning Package drops the ones a grid report's tiles explain, then logs
+    * and surfaces the rest.
     */
    public async validateRenderTags(): Promise<RenderTagWarning[]> {
       const mm = this.modelMaterializer;
@@ -4911,7 +5034,6 @@ export class Model {
       ];
 
       const findings: RenderTagWarning[] = [];
-      const carriesReportTag = this.carriesReportTag();
       // Nothing below does I/O; yield so a large model does not hold the
       // event loop for ~1 s.
       const yielder = createEventLoopYielder();
@@ -4921,23 +5043,22 @@ export class Model {
          // author cannot see otherwise, and an unknown future severity is
          // surfaced as `warn` below rather than dropped. Publisher-owned tags
          // (`# artifact`, `# drill`) are removed first, as on the query paths.
+         // Tile layout tags (`# colspan` and the rest) are kept whatever this
+         // file is: whether one is read depends on whether a grid report names
+         // this view as a tile, which may be another file, so the package
+         // decides once its reports are known (dropGridTileLayoutFindings).
          const logs = filterPublisherOwnedRenderLogs(
             validateRenderTags(result),
-            carriesReportTag,
+            false,
          );
-         if (logs.length > 0) {
-            logger.warn(
-               `Render tag findings on '${label}': ${logs
-                  .map((e) => `[${e.severity}] ${e.message}`)
-                  .join("; ")}`,
-            );
-            for (const e of logs) {
-               findings.push({
-                  subject: label,
-                  message: e.message,
-                  severity: e.severity === "error" ? "error" : "warn",
-               });
-            }
+         // Not logged here: the package logs what survives its tile filter,
+         // so a tile's layout tag does not log a warning on every load.
+         for (const e of logs) {
+            findings.push({
+               subject: label,
+               message: e.message,
+               severity: e.severity === "error" ? "error" : "warn",
+            });
          }
       }
       return findings;
@@ -5756,10 +5877,10 @@ export class Model {
                !this.queryTextSourcesQueryable(query) &&
                !this.parseFailureNamesNothing(query, compileError)
             ) {
-               // Explain the refusal (ungated only) when a run target is a real
-               // model source off the surface; anything else keeps the plain
-               // form.
-               const explainable = extractRunTargetSourceNames(query).some(
+               // Explain the refusal (`OffSurfaceError`, ungated only) when a
+               // run target is a real model source off the surface; anything
+               // else keeps the plain form.
+               const offSurface = extractRunTargetSourceNames(query).find(
                   (t) =>
                      this.declaresSource(t) &&
                      !this.isCuratedSource(t) &&
@@ -5767,8 +5888,9 @@ export class Model {
                );
                throw this.notQueryable(
                   "Query target is not queryable.",
-                  explainable,
+                  offSurface !== undefined,
                   "source",
+                  offSurface,
                );
             }
             queryExecutionHistogram().record(
@@ -6361,14 +6483,22 @@ export class Model {
     * dashboard's text is always returned, because its editor saves through
     * it; the notebook editor fetches a notebook's text with
     * `includeHiddenFilesAndSources`.
+    *
+    * A notebook exports nothing the surface serves, yet `contents` lists
+    * every source it imports. So a name the notebook may read (one the
+    * surface serves, or one its cells build on one) is not hidden, and
+    * neither is one of its own `given:` declarations.
     */
    public showsFileText(text: string): boolean {
       if (this.isGridReport()) return true;
       const published = this.publishedNames();
       if (!published) return true;
+      const readable = this.isNotebook() ? this.notebookReadable() : undefined;
+      const givens = new Set((this.givens ?? []).map((given) => given.name));
       const unpublished = new Set(
          Object.keys(this.modelDef?.contents ?? {}).filter(
-            (name) => !published.has(name),
+            (name) =>
+               !published.has(name) && !givens.has(name) && !readable?.(name),
          ),
       );
       if (unpublished.size === 0) return true;
@@ -6402,15 +6532,16 @@ export class Model {
    /**
     * Under an active surface, a predicate for the source names a notebook may
     * read and so show: what the surface publishes, and what the code cells up
-    * to `cellIndex` derive from it. Undefined when nothing is curated.
+    * to `cellIndex` (every cell when omitted) derive from it. Undefined when
+    * nothing is curated.
     */
    private notebookReadable(
-      cellIndex: number,
+      cellIndex?: number,
    ): ((name: string) => boolean) | undefined {
       const { mode, exploresDeclared } = this.queryBoundary;
       if (mode === "all" || !exploresDeclared) return undefined;
       const context = (this.runnableNotebookCells ?? [])
-         .slice(0, cellIndex + 1)
+         .slice(0, cellIndex === undefined ? undefined : cellIndex + 1)
          .filter((c) => c.type === "code")
          .map((c) => c.text)
          .join("\n");

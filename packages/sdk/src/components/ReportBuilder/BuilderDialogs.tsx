@@ -57,6 +57,23 @@ export function BuilderDialogs({
    const menuTile = menuAt && isQueryTile(menuAt) ? menuAt : undefined;
    const menuView = (() => {
       if (!menuTile || !catalog) return undefined;
+      // A view this file declares is read off the file's own compiled model:
+      // an inline body is in no other model the catalog has.
+      const declared = catalog.documentViews
+         ?.get(menuTile.source ?? "")
+         ?.get(menuTile.name);
+      if (
+         declared &&
+         editor.document.sources.some((s) => s.name === menuTile.source)
+      )
+         return declared;
+      // An inline or opaque body is not a view of the base source, so a base
+      // view that happens to share its name says nothing about its shape.
+      if (
+         menuTile.declaration.kind === "inline" ||
+         menuTile.declaration.kind === "opaque"
+      )
+         return undefined;
       const base =
          editor.document.sources.find((s) => s.name === menuTile.source)
             ?.base ?? menuTile.source;
@@ -99,6 +116,9 @@ export function BuilderDialogs({
                });
             }}
             view={menuView}
+            {...(menuView === undefined && menuTile
+               ? { viewStatus: catalog ? "unlisted" : "loading" }
+               : {})}
             onDuplicate={() => {
                if (menu) tiles.duplicate(menu.index);
             }}

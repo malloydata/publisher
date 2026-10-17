@@ -7,6 +7,8 @@ import {
    isChartPick,
    mentionsChartTag,
    parseChartLine,
+   seriesColorLine,
+   seriesColorOf,
    type ChartPick,
 } from "./chartLine";
 import type {
@@ -17,7 +19,12 @@ import type {
    QueryTile,
    TextTile,
 } from "./document";
-import { isQueryTile, isTextTile } from "./document";
+import {
+   isQueryTile,
+   isReadOnlyTile,
+   isTextTile,
+   tileExpression,
+} from "./document";
 import type { LocalGiven } from "./document";
 import {
    artifactLine,
@@ -186,11 +193,21 @@ function tagsFor(tile: QueryTile, withChart = true): string[] {
       tags.push(`# subtitle=${quoted(tile.subtitle)}`);
    const chart = withChart ? writableChart(tile.chart) : undefined;
    if (chart !== undefined) tags.push(chartLineText(chart, tile.chartCarried));
+   if (tile.color !== undefined) tags.push(seriesColorLine(tile.color));
    return tags;
 }
 
-/** Which property a tag line carries, so an existing line can be replaced. */
+/** The key of the one-colour line the builder writes; see `seriesColorLine`. */
+const SERIES_COLOR_KEY = "theme.palette.series";
+
+/**
+ * Which property a tag line carries, so an existing line can be replaced. A
+ * colour line is keyed only when it is the builder's own one-colour form: a
+ * `# theme.palette.series` that lists a whole palette is the author's, and is
+ * keyed apart so it is never rewritten or removed.
+ */
 function tagKey(text: string): string | undefined {
+   if (seriesColorOf(text) !== undefined) return SERIES_COLOR_KEY;
    const m = /^#\s*([a-z_]+)/.exec(text);
    return m?.[1];
 }
@@ -212,6 +229,7 @@ const MODELLED_TAG_KEYS: ReadonlySet<string> = new Set([
    "borderless",
    "label",
    "subtitle",
+   SERIES_COLOR_KEY,
 ]);
 
 /**
@@ -487,9 +505,7 @@ function maskStrings(text: string): string {
 function tileEntryText(tile: DashboardTile, written?: string): string {
    const layout = layoutProperties(tile);
    if (written === undefined) {
-      const head = isTextTile(tile)
-         ? tile.name
-         : `"${tile.source} -> ${tile.name}"`;
+      const head = isTextTile(tile) ? tile.name : `"${tileExpression(tile)}"`;
       const props = [...(isTextTile(tile) ? ["kind=text"] : []), ...layout];
       return props.length > 0 ? `${head} { ${props.join(" ")} }` : head;
    }
@@ -569,10 +585,24 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
       if (quoted) {
          const parts = quoted[1].split("->").map((part) => part.trim());
          if (parts.length === 2) byKey.set(`${parts[0]}->${parts[1]}`, text);
+         // A named query: kept as written, never resolved to what it reads.
+         else if (parts.length === 1) byKey.set(`query.${parts[0]}`, text);
          continue;
       }
+      // A bare name is a named query too (`tiles=[by_carrier]`), kept bare.
+      if (isIdentifier(text)) {
+         byKey.set(`query.${text}`, text);
+         continue;
+      }
+      // `name { … }`: a text tile, or a bare named query carrying its layout.
       const name = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/.exec(text)?.[1];
-      if (name !== undefined) byKey.set(`text.${name}`, text);
+      if (name !== undefined)
+         byKey.set(
+            /\bkind\s*=\s*text\b/.test(maskStrings(text))
+               ? `text.${name}`
+               : `query.${name}`,
+            text,
+         );
    }
    // An existing tile keeps its spelling; a new one is written canonically.
    const nextEntries = next.tiles.map((tile) => {
@@ -580,7 +610,9 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
       const written = byKey.get(
          isTextTile(tile)
             ? `text.${tile.name}`
-            : `${tile.source}->${tile.name}`,
+            : tile.declaration.kind === "query"
+              ? `query.${tile.name}`
+              : `${tile.source}->${tile.name}`,
       );
       if (written === undefined) return isNew ? tileEntryText(tile) : undefined;
       const was = wasByKey.get(tileKey(tile));
@@ -1183,9 +1215,10 @@ function planRemovedTiles(ctx: SpliceContext): SpliceFailure | undefined {
    const { lines, wholeLine, removedTiles, edits, parsed } = ctx;
    // REMOVED TILES: the declaration and its `#` tags. An inline view's body
    // runs to its closing brace; a reference is one line. An inherited tile has
-   // nothing here to remove — its entry left the artifact list above.
+   // nothing here to remove — its entry left the artifact list above — and nor
+   // does a named query, whose `query:` may be read by more than this list.
    for (const tile of removedTiles) {
-      if (isTextTile(tile) || tile.declaration.kind === "inherited") continue;
+      if (isTextTile(tile) || isReadOnlyTile(tile)) continue;
       const view = viewOf(ctx, tile);
       if (!view) {
          return {
@@ -1391,8 +1424,18 @@ function planTilePresentation(ctx: SpliceContext): SpliceFailure | undefined {
          return {
             ok: false,
             reason:
-               `\`${tile.source} -> ${tile.name}\` is declared on its source, ` +
+               `\`${tileExpression(tile)}\` is declared on its source, ` +
                `not in this report, so its presentation cannot be changed here.`,
+         };
+      }
+      // Its layout is its entry's too, which wins over the query's own tags.
+      if (tile.declaration.kind === "query") {
+         if (!presented) continue;
+         return {
+            ok: false,
+            reason:
+               `\`${tile.name}\` names a query, whose presentation is the ` +
+               `query's own, so it cannot be changed here.`,
          };
       }
 

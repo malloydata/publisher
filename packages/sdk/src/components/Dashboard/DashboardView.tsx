@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { Alert, Box } from "@mui/material";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import type { DashboardManifest } from "../../client";
 import type { HostGivenValue } from "../../hooks/givenValue";
 import { useDocumentControls } from "../../hooks/useDocumentControls";
@@ -23,7 +23,6 @@ import {
 } from "../given/required";
 import { Prose, type ProseLinkContext } from "../Prose";
 import type { NavigationClick } from "../click_helper";
-import { TILE_MAX_HEIGHT } from "../RenderedResult/resultSizing";
 import {
    DashboardGrid,
    GRID_GAP_PX,
@@ -46,7 +45,7 @@ import {
 } from "../Report/ReportPage";
 
 /** Re-exported for hosts that import it from here; defined with the page parts. */
-export { STICKY_CONTROLS_Z } from "../Report/ReportPage";
+export { STICKY_CONTROLS_Z, STICKY_TOP_VAR } from "../Report/ReportPage";
 
 export interface DashboardViewProps {
    /** The dashboard, or the tile layout a layout notebook carries. */
@@ -67,6 +66,7 @@ export interface DashboardViewProps {
       managed: readonly string[],
    ) => void;
    onNavigate?: (target: DrillNavigation, event?: MouseEvent) => void;
+   /** Height cap for a grid tile's result panel; a linear report's tiles take the layout's own. */
    height?: number;
    maxResultSize?: number;
    /**
@@ -103,6 +103,11 @@ export interface DashboardViewProps {
     * for a host with its own router. Omitted, links are plain anchors.
     */
    onLinkNavigate?: (to: string, event?: NavigationClick) => void;
+   /**
+    * The host's actions for this report (a download, a menu), drawn at the
+    * end of the title's line, where the builder's toolbar sits.
+    */
+   actions?: ReactNode;
 }
 
 /**
@@ -128,6 +133,7 @@ export function DashboardView({
    hiddenGivens,
    literalReads,
    onLinkNavigate,
+   actions,
 }: DashboardViewProps) {
    // Where a relative link in the report's prose resolves from, and how the
    // host navigates to it. Only a host with a router gets its links resolved:
@@ -258,7 +264,7 @@ export function DashboardView({
    );
 
    // The layout decides the arrangement only, as it does in the builder.
-   const { columns, layout } = layoutRules(
+   const { columns, layout, tileMaxHeight, tableMaxHeight } = layoutRules(
       manifest.layout,
       manifest.dashboardColumns,
    );
@@ -277,7 +283,13 @@ export function DashboardView({
       return (
          <ReportPage
             layout={layout}
-            header={<DashboardHeader manifest={manifest} links={links} />}
+            header={
+               <DashboardHeader
+                  manifest={manifest}
+                  links={links}
+                  actions={actions}
+               />
+            }
          >
             <Alert severity="error">{manifest.error}</Alert>
          </ReportPage>
@@ -291,7 +303,13 @@ export function DashboardView({
    return (
       <ReportPage
          layout={layout}
-         header={<DashboardHeader manifest={manifest} links={links} />}
+         header={
+            <DashboardHeader
+               manifest={manifest}
+               links={links}
+               actions={actions}
+            />
+         }
          // Only when there are controls: GivensPanel draws nothing without
          // them, and an empty bar would still cost the page a gap.
          controls={
@@ -360,12 +378,17 @@ export function DashboardView({
                         declaredTypes={declaredTypes}
                         givenNames={tile.givenNames}
                         height={
+                           // A set rowspan, or a placed report's fixed rows, is
+                           // the tile's own height; otherwise the layout's cap.
                            tile.rowspan !== undefined || placed
                               ? tileHeightPx(
                                    tile.rowspan ?? PLACED_DEFAULT_ROWSPAN.query,
                                 )
-                              : (height ?? TILE_MAX_HEIGHT)
+                              : layout === "grid"
+                                ? (height ?? tileMaxHeight)
+                                : tileMaxHeight
                         }
+                        tableMaxHeight={tableMaxHeight}
                         maxResultSize={maxResultSize}
                         drill={drillFor(tile.query)}
                         ignoredFilters={tileIgnoredFilterLabels(
@@ -449,13 +472,16 @@ function TextTile({
 function DashboardHeader({
    manifest,
    links,
+   actions,
 }: {
    manifest: DashboardManifest;
    links: ProseLinkContext | undefined;
+   actions?: ReactNode;
 }) {
    return (
       <ReportHeader
          title={manifest.title ?? manifest.name}
+         actions={actions}
          description={
             manifest.description ? (
                <TextTileFrame>

@@ -648,6 +648,73 @@ export { pub2, pub3 }`,
       }
    });
 
+   it("shows a report's text when it names only what the surface serves, and its own givens", async () => {
+      // A report imports a file whole, so its compiled `contents` lists every
+      // imported source, but `exports` lists none of them. A name the surface
+      // serves, a source built on one, and the report's own `given:` reveal
+      // nothing hidden; `secret`, which index.malloy does not serve, does.
+      writeManifest({});
+      fs.writeFileSync(
+         path.join(tempDir, "orders.malloy"),
+         `source: orders is duckdb.sql("select 1 as id, 'a' as region")
+source: secret is duckdb.sql("select 2 as id")`,
+      );
+      fs.writeFileSync(
+         path.join(tempDir, "index.malloy"),
+         `import "orders.malloy"\nexport { orders }`,
+      );
+      const files: Record<string, string> = {
+         "extends.malloy": `## artifact { layout=linear tiles=[] }
+import "orders.malloy"
+source: orders_tiles is orders extend { view: by_id is { group_by: id } }
+`,
+         "givens.malloy": `##! experimental.givens
+## artifact { layout=linear tiles=[] }
+import "orders.malloy"
+given:
+  REGION :: string
+source: orders_tiles is orders extend {
+  view: by_id is { where: region = $REGION; group_by: id }
+}
+`,
+         "names_secret.malloy": `## artifact { layout=linear tiles=[] }
+import "orders.malloy"
+source: secret_tiles is secret extend { view: by_id is { group_by: id } }
+`,
+         "nb.malloynb": `>>>markdown
+# Orders
+>>>malloy
+import "orders.malloy"
+source: orders_tiles is orders extend { view: by_id is { group_by: id } }
+>>>malloy
+run: orders_tiles -> by_id
+`,
+         "grid.malloy": `## artifact { tiles=["secret_tiles -> by_id"] }
+import "orders.malloy"
+source: secret_tiles is secret extend { view: by_id is { group_by: id } }
+`,
+      };
+      for (const [file, text] of Object.entries(files)) {
+         fs.writeFileSync(path.join(tempDir, file), text);
+      }
+      const { malloyConfig, duckdb } = duckdbMalloyConfig();
+      try {
+         const pkg = await Package.create("env", "pkg", tempDir, malloyConfig);
+         const shows = (file: string) =>
+            pkg.getModel(file)!.showsFileText(files[file]);
+         expect(pkg.getReportLayout("extends.malloy")).toBe("linear");
+         expect(shows("extends.malloy")).toBe(true);
+         expect(shows("givens.malloy")).toBe(true);
+         expect(shows("nb.malloynb")).toBe(true);
+         expect(shows("names_secret.malloy")).toBe(false);
+         // A grid report's text is always returned; its editor saves through it.
+         expect(pkg.getReportLayout("grid.malloy")).toBe("grid");
+         expect(shows("grid.malloy")).toBe(true);
+      } finally {
+         await duckdb.close();
+      }
+   });
+
    it("the model GET and the query route treat named queries like sources", async () => {
       writeManifest({});
       const { malloyConfig, duckdb } = duckdbMalloyConfig();

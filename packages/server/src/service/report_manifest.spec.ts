@@ -199,6 +199,12 @@ describe("service/report_manifest render-log filtering", () => {
          { message: "Unknown render tag 'artifact' on field 'root'" },
          { message: "Unknown render tag 'artifact.title' on field 'root'" },
          { message: "Unknown render tag 'drill' on field 'brand_name'" },
+         // The per-chart theme the SDK reads; the builder writes a tile's colour as one.
+         { message: "Unknown render tag 'theme' on field 'root'" },
+         {
+            message:
+               "Unknown render tag 'theme.palette.series' on field 'root'",
+         },
       ];
       expect(filterPublisherOwnedRenderLogs(owned, DASH)).toEqual([]);
       expect(filterPublisherOwnedRenderLogs(owned, PLAIN)).toEqual([]);

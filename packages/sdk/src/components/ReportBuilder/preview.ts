@@ -4,14 +4,23 @@
 import type { Given } from "../../client";
 import type { GivenValue } from "../../hooks/givenValue";
 import { malloyLiteral } from "../../utils/malloyLiteral";
-import { chartLineText, isChartPick } from "./chartLine";
+import {
+   chartLineText,
+   chartResetLine,
+   isChartPick,
+   seriesColorLine,
+   seriesColorResetLine,
+} from "./chartLine";
 import {
    isQueryTile,
+   isReadOnlyTile,
+   tileExpression,
    type DashboardDocument,
    type QueryTile,
 } from "./document";
 import { malloyPath } from "../../utils/malloyText";
 import { localGivenSpec } from "./localGiven";
+import { reaches, resolvedOf } from "./imports";
 
 /**
  * What a reader would see if the DOCUMENT were the file: the controls, and
@@ -113,14 +122,14 @@ export function givensReadThroughModel(
    for (const tile of opened.tiles) {
       if (!isQueryTile(tile)) continue;
       boundWhenOpened.set(
-         tileExpressionKey(`${tile.source} -> ${tile.name}`),
+         tileExpressionKey(tileExpression(tile)),
          new Set((tile.filters ?? []).map((filter) => filter.given)),
       );
    }
    const reads = new Set<string>();
    for (const tile of document.tiles) {
       if (!isQueryTile(tile)) continue;
-      const key = tileExpressionKey(`${tile.source} -> ${tile.name}`);
+      const key = tileExpressionKey(tileExpression(tile));
       const bound = boundWhenOpened.get(key);
       for (const name of servedReads.get(key) ?? [])
          if (!bound?.has(name)) reads.add(name);
@@ -188,6 +197,107 @@ export interface PreviewTileQuery {
     * side reads no given either.
     */
    reads: string[] | undefined;
+   /**
+    * The package model to run on instead of the report's own. Set only where
+    * the tile's source comes in through an import the served report does not
+    * have yet; see {@link UnsavedSources}.
+    */
+   modelPath?: string;
+}
+
+/**
+ * What the builder added that the served model does not have yet, so a tile on
+ * it can be previewed before the save.
+ *
+ * Add tile puts a tile on the file's extension of its source, and where the
+ * file has none it declares a new one: `source: flights_tiles is flights extend
+ * { view: kpis_tile is kpis }`. Until the file is saved and served, the model
+ * the tiles run on has no `flights_tiles`, and `flights_tiles -> kpis` fails as
+ * a reference to an undefined object. A new extension declares no `where:` and
+ * no field, so its views are its base's, and `flights -> kpis` returns what the
+ * saved page will.
+ */
+export interface UnsavedSources {
+   /** The document's extensions that the served model does not declare. */
+   sources: ReadonlySet<string>;
+   /**
+    * The package path of the model to run `base` on, when the served report
+    * cannot see `base` because its import is unsaved too. Undefined: the
+    * report's own model sees it.
+    */
+   modelOf?: (base: string) => string | undefined;
+}
+
+/**
+ * The {@link UnsavedSources} of `document` against the document as it was
+ * opened, which is what the served model was built from. Undefined when the
+ * document declares no extension the opened one did not.
+ *
+ * A base the opened file could not see came in with an import this session
+ * added, and runs on the model that import names. A report held as text has no
+ * imports: its sources are all the run model's.
+ */
+export function unsavedSources(
+   document: DashboardDocument,
+   opened: DashboardDocument,
+   documentPath: string,
+   textHeld: boolean,
+): UnsavedSources | undefined {
+   const openedNames = new Set(opened.sources.map((s) => s.name));
+   const sources = new Set(
+      document.sources.map((s) => s.name).filter((n) => !openedNames.has(n)),
+   );
+   if (sources.size === 0) return undefined;
+   const modelOf = (base: string) => {
+      if (textHeld) return undefined;
+      const by = document.imports.find(
+         (i) => i.kind === "names" && i.names.includes(base),
+      );
+      if (by === undefined) return undefined;
+      const model = resolvedOf(by.from, documentPath);
+      return reaches(opened, base, model, documentPath) ? undefined : model;
+   };
+   return { sources, modelOf };
+}
+
+/**
+ * Where a reference tile on an unsaved extension resolves: the view it names,
+ * followed through that extension's own tiles (a copy of a new tile names the
+ * new tile's view) down to a source the served model has.
+ *
+ * Undefined when the tile runs on its own extension as usual, and when the
+ * chain reaches an extension that filters its tiles with a `where:`, whose base
+ * would show other rows than the saved page.
+ */
+function runsOnBase(
+   document: DashboardDocument,
+   tile: QueryTile,
+   unsaved: UnsavedSources | undefined,
+): { source: string; view: string; modelPath?: string } | undefined {
+   if (!unsaved || tile.declaration.kind !== "reference") return undefined;
+   let source = tile.source;
+   let view = tile.declaration.from;
+   if (source === undefined || !unsaved.sources.has(source)) return undefined;
+   // Each step leaves an extension or follows one of its tiles, so this bound
+   // is never reached on a document the reader produced.
+   const bound = document.tiles.length + document.sources.length;
+   for (let step = 0; step <= bound; step++) {
+      if (!unsaved.sources.has(source)) {
+         const modelPath = unsaved.modelOf?.(source);
+         return { source, view, ...(modelPath ? { modelPath } : {}) };
+      }
+      const extension = document.sources.find((s) => s.name === source);
+      if (!extension || extension.scopedBy?.length) return undefined;
+      const own = document.tiles.find(
+         (t): t is QueryTile =>
+            isQueryTile(t) && t.source === source && t.name === view,
+      );
+      if (!own) source = extension.base;
+      else if (own.declaration.kind === "reference")
+         view = own.declaration.from;
+      else return undefined;
+   }
+   return undefined;
 }
 
 /**
@@ -234,12 +344,14 @@ export function previewTileQuery(
    values: ReadonlyMap<string, GivenValue> = new Map(),
    /** What the served file's compiled tile reads (`DashboardTile.givenNames`), when it has this tile. */
    served?: readonly string[],
+   /** What the served model does not have yet; see {@link UnsavedSources}. */
+   unsaved?: UnsavedSources,
 ): PreviewTileQuery {
-   if (tile.declaration.kind === "inherited") {
-      // Declared in the model; bindings live there too, out of this
-      // document's reach, so the server is sent the whole row as it does.
+   if (isReadOnlyTile(tile)) {
+      // Declared in the model, or a named query; bindings live there too, out
+      // of this document's reach, so the server is sent the whole row as it does.
       return {
-         expression: `${tile.source} -> ${tile.name}`,
+         expression: tileExpression(tile),
          givenNames: undefined,
          reads: served && [...served],
       };
@@ -250,9 +362,20 @@ export function previewTileQuery(
    // source-level `where:`, a `# drill` dimension — which the base does not.
    // Running on the base showed unscoped numbers for a dashboard that scopes
    // its source, and the saved page then differed from what the author watched.
-   const on = tile.source;
+   //
+   // Except on an extension the served model does not have yet, which runs
+   // where it resolves to instead; see `runsOnBase`.
+   const fallback = runsOnBase(document, tile, unsaved);
+   const on = fallback?.source ?? tile.source;
    const baseView =
-      tile.declaration.kind === "reference" ? tile.declaration.from : tile.name;
+      fallback?.view ??
+      (tile.declaration.kind === "reference"
+         ? tile.declaration.from
+         : tile.name);
+   // A model other than the report's declares none of the report's givens, so
+   // every binding is written there as a literal.
+   const sendable =
+      fallback?.modelPath !== undefined ? new Set<string>() : runnable;
    const localTypes = new Map(
       (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
@@ -267,14 +390,14 @@ export function previewTileQuery(
       document.sources.find((source) => source.name === on)?.scopedBy ?? [];
    // What the served tile reads moves it in the reader, so the preview sends it too.
    const sent = new Set(
-      [...scopedBy, ...(served ?? [])].filter((name) => runnable.has(name)),
+      [...scopedBy, ...(served ?? [])].filter((name) => sendable.has(name)),
    );
    // A binding removed but not yet saved still counts here until the save.
    const reads = new Set<string>([...scopedBy, ...(served ?? [])]);
    const clauses: string[] = [];
    for (const filter of tile.filters ?? []) {
       const comparison = `where: ${malloyPath(filter.field)} ${filter.op ?? "~"}`;
-      if (runnable.has(filter.given)) {
+      if (sendable.has(filter.given)) {
          sent.add(filter.given);
          reads.add(filter.given);
          clauses.push(`${comparison} $${filter.given}`);
@@ -292,16 +415,34 @@ export function previewTileQuery(
    }
    const refinement = clauses.join(", ");
    const chart = tile.chart;
-   const annotation =
+   const chartAnnotation =
       chart === "none" || isChartPick(chart)
          ? chartLineText(chart, tile.chartCarried)
          : chart === "custom" && tile.chartLines?.length
            ? tile.chartLines.join("\n")
            : chart === "default" && dropsBaseChart(tile.declaration)
-             ? chartLineText("none")
+             ? chartResetLine()
              : undefined;
+   // The tile's colour, under its chart line: the base view never saw the
+   // wrapper's line, so the preview carries it as it carries the chart. With
+   // no colour (Theme), an inline or opaque tile runs its own SAVED view, whose
+   // last-saved colour line would still apply, so the preview takes it off.
+   // Not where the tile's own tags carry a palette the builder did not write:
+   // that line is the author's, it stays in the file, and the page draws it.
+   const colorAnnotation =
+      tile.color !== undefined
+         ? seriesColorLine(tile.color)
+         : tile.declaration.kind !== "reference" && !tile.ownPalette
+           ? seriesColorResetLine
+           : undefined;
+   const annotation =
+      [chartAnnotation, colorAnnotation].filter(Boolean).join("\n") ||
+      undefined;
    return {
       ...(annotation ? { annotation } : {}),
+      ...(fallback?.modelPath !== undefined
+         ? { modelPath: fallback.modelPath }
+         : {}),
       expression:
          `${on} -> ${baseView}` + (refinement ? ` + { ${refinement} }` : ""),
       givenNames: Array.from(sent),

@@ -141,6 +141,7 @@ import { lintNotebookText, reportedByDashboardLint } from "./notebook_lint";
 import {
    buildReportManifest,
    COMPONENT_FILE_SUFFIXES,
+   dropGridTileLayoutFindings,
    factsReportTag,
    matchesDocumentedReportName,
    lintReport,
@@ -149,6 +150,7 @@ import {
    lintSelfDrills,
    lintUndiscoveredReport,
    queryTiles,
+   tileTarget,
    type ServedReportManifest,
    type ReportModelFacts,
 } from "./report_manifest";
@@ -1040,7 +1042,7 @@ export class Package {
             error: errMessage(err),
          });
          return {
-            renderTagWarnings,
+            renderTagWarnings: pkg.surfacedRenderTagWarnings(renderTagWarnings),
             reportWarnings: [
                {
                   message:
@@ -1053,7 +1055,10 @@ export class Package {
             ],
          };
       }
-      return { renderTagWarnings, reportWarnings: pkg.reportWarnings };
+      return {
+         renderTagWarnings: pkg.surfacedRenderTagWarnings(renderTagWarnings),
+         reportWarnings: pkg.reportWarnings,
+      };
    }
 
    /**
@@ -1169,8 +1174,9 @@ export class Package {
          models,
          malloyConfig,
       );
-      pkg.renderTagWarnings = renderTagWarnings;
       const reportTimings = await pkg.discoverReports("load");
+      // After discovery: which findings a tile explains depends on the reports.
+      pkg.renderTagWarnings = pkg.surfacedRenderTagWarnings(renderTagWarnings);
       pkg.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       pkg.recordDeprecatedUsage(outcome);
       pkg.retrievalSettings =
@@ -2341,7 +2347,9 @@ export class Package {
       this.pushServeDestinationConfigToModels();
       // Also where a manifest bind lands, so the companion compiles against it.
       await this.pushPreaggregateServeModels();
-      this.renderTagWarnings = renderTagWarnings;
+      // Read against the reports installed above.
+      this.renderTagWarnings =
+         this.surfacedRenderTagWarnings(renderTagWarnings);
       this.manifestWarnings = outcome.packageMetadata.manifestWarnings ?? [];
       this.recordDeprecatedUsage(outcome);
       this.retrievalSettings =
@@ -2660,6 +2668,61 @@ export class Package {
       const readerWarnings =
          during === "compile" ? [] : this.attachNotebookCells(models, files);
       return { files, allFacts, taggedIndexPaths, readerWarnings };
+   }
+
+   /**
+    * The render-tag findings this package surfaces: `raw` less the tile layout
+    * tags a grid report reads off the view it names
+    * ({@link dropGridTileLayoutFindings}), judged against the reports installed
+    * now, so it runs after discovery. Each renderer finding kept is logged as
+    * a warning.
+    */
+   private surfacedRenderTagWarnings(
+      raw: ApiPackageWarning[],
+   ): ApiPackageWarning[] {
+      // Keyed by where each tile's view or query is declared, as the
+      // package-wide export map is ({@link Model.definitionIdentity}).
+      const identity = (modelPath: string, expression: string) => {
+         const target = tileTarget(expression);
+         return target
+            ? this.models
+                 .get(modelPath)
+                 ?.definitionIdentity(target.name, target.view)
+            : undefined;
+      };
+      const tileDefinitions = new Set<string>();
+      for (const report of this.reports.values()) {
+         if (report.layout !== "grid") continue;
+         for (const tile of queryTiles(report.manifest?.tiles)) {
+            const key = identity(report.path, tile.query);
+            if (key) tileDefinitions.add(key);
+         }
+      }
+      const kept = dropGridTileLayoutFindings(raw, (finding) => {
+         if (finding.model === undefined || finding.subject === undefined)
+            return false;
+         const key = identity(finding.model, finding.subject);
+         return key !== undefined && tileDefinitions.has(key);
+      });
+      // One line per checked view, as the check logged them before. A finding
+      // with no subject is the check itself not finishing, which
+      // hydrateWorkerModels already logged with its cause.
+      const byTarget = new Map<string, ApiPackageWarning[]>();
+      for (const finding of kept) {
+         if (finding.subject === undefined) continue;
+         const target = `${finding.model}\0${finding.subject}`;
+         byTarget.set(target, [...(byTarget.get(target) ?? []), finding]);
+      }
+      for (const findings of byTarget.values()) {
+         // An inert tag is not an invalid one, so don't call it "Invalid";
+         // the per-finding messages already say which kind each is.
+         logger.warn(
+            `Render tag findings on '${findings[0].subject}': ${findings
+               .map((f) => `[${f.severity}] ${f.message}`)
+               .join("; ")}`,
+         );
+      }
+      return kept;
    }
 
    /**
