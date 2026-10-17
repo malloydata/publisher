@@ -8,7 +8,7 @@ import type {
    ModelDef,
 } from "@malloydata/malloy";
 import { MalloyError, Runtime } from "@malloydata/malloy";
-import { type Counter } from "@opentelemetry/api";
+
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -33,7 +33,7 @@ import {
    safeJoinUnderRoot,
 } from "../path_safety";
 import { UNCODED_REPORT_FINDING } from "../report_metrics";
-import { publisherMeter } from "../telemetry";
+import { lazyCounter, resetInstrumentsForTesting } from "../telemetry";
 import { URL_READER } from "../utils";
 import { assertNoCallerAuthorizeAnnotation } from "./authorize";
 import type { CallerRegion } from "./caller_joins";
@@ -55,7 +55,6 @@ import { Package } from "./package";
 import { carriesArtifactTag, isReportEligiblePath } from "./report";
 import { translatorMalloyError } from "./translator_error";
 
-let compileRefusalsCounter: Counter | null = null;
 /**
  * Append-scope compile refusals, by reason.
  *
@@ -67,21 +66,14 @@ let compileRefusalsCounter: Counter | null = null;
  * 503. `render_tag` is a document carrying a URL-producing render tag or markup
  * in a label, also the caller's text but a different fix than a data root.
  */
-function getCompileRefusalsCounter(): Counter {
-   if (compileRefusalsCounter) return compileRefusalsCounter;
-   compileRefusalsCounter = publisherMeter().createCounter(
-      "publisher_compile_refusals_total",
-      {
-         description:
-            "Compiles refused at append scope, labelled by reason and environment",
-      },
-   );
-   return compileRefusalsCounter;
-}
+const getCompileRefusalsCounter = lazyCounter(
+   "publisher_compile_refusals_total",
+   "Compiles refused at append scope, labelled by reason and environment",
+);
 
 /** Visible for tests; resets the lazy counter so a fresh MeterProvider sees future writes. */
 export function resetCompileTelemetryForTesting(): void {
-   compileRefusalsCounter = null;
+   resetInstrumentsForTesting();
 }
 
 /**

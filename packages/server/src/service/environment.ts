@@ -4,7 +4,7 @@
 import type { GivenValue } from "@malloydata/malloy";
 import { type CompiledDocument } from "./compile_document";
 import { isUnderPublicDir, reportWritePathProblem } from "./report";
-import { publisherMeter } from "../telemetry";
+import { lazyCounter, resetInstrumentsForTesting } from "../telemetry";
 import { Mutex } from "async-mutex";
 import crypto from "crypto";
 import * as fs from "fs";
@@ -68,7 +68,6 @@ import { Package } from "./package";
 import type { PackageMemoryGovernor } from "./package_memory_governor";
 import {
    compileSource,
-   resetCompileTelemetryForTesting,
    type CompileScope,
    type TaggedLogMessage,
 } from "./compile_source";
@@ -142,49 +141,24 @@ const DESTINATION_READ_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Module-scoped admission-rejection counters. Lazy-initialized so
- * the OTel JS `ProxyMeter` cannot strand them on a NoOp instrument
- * created before the SDK MeterProvider was registered (a real risk
- * in unit tests; see comment in `query_timeout.ts`). Environment
- * name is attached as a label so dashboards can identify hot
- * environments without grepping logs.
+ * Admission-rejection counters. The environment name is a label so
+ * dashboards can identify hot environments without grepping logs.
  */
-import { type Counter } from "@opentelemetry/api";
-let queryAdmissionRejectionsCounter: Counter | null = null;
-let packageAdmissionRejectionsCounter: Counter | null = null;
-function getQueryAdmissionRejectionsCounter(): Counter {
-   if (queryAdmissionRejectionsCounter) return queryAdmissionRejectionsCounter;
-   queryAdmissionRejectionsCounter = publisherMeter().createCounter(
-      "publisher_query_admission_rejections_total",
-      {
-         description:
-            "Queries rejected with 503 because Environment.assertCanAdmitQuery() observed memory back-pressure",
-      },
-   );
-   return queryAdmissionRejectionsCounter;
-}
-function getPackageAdmissionRejectionsCounter(): Counter {
-   if (packageAdmissionRejectionsCounter) {
-      return packageAdmissionRejectionsCounter;
-   }
-   packageAdmissionRejectionsCounter = publisherMeter().createCounter(
-      "publisher_package_admission_rejections_total",
-      {
-         description:
-            "Package loads rejected with 503 because Environment.assertCanAdmitNewPackage() observed memory back-pressure",
-      },
-   );
-   return packageAdmissionRejectionsCounter;
-}
+const getQueryAdmissionRejectionsCounter = lazyCounter(
+   "publisher_query_admission_rejections_total",
+   "Queries rejected with 503 because Environment.assertCanAdmitQuery() observed memory back-pressure",
+);
+const getPackageAdmissionRejectionsCounter = lazyCounter(
+   "publisher_package_admission_rejections_total",
+   "Package loads rejected with 503 because Environment.assertCanAdmitNewPackage() observed memory back-pressure",
+);
 
 /**
  * Visible for tests; production code never calls this. Resets the
  * lazy caches so a fresh MeterProvider can capture future writes.
  */
 export function resetAdmissionTelemetryForTesting(): void {
-   queryAdmissionRejectionsCounter = null;
-   packageAdmissionRejectionsCounter = null;
-   resetCompileTelemetryForTesting();
+   resetInstrumentsForTesting();
 }
 
 /** The publisher.json fields a metadata write may set. */
