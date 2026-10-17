@@ -552,6 +552,11 @@ function planOrder(ctx: SpliceContext): SpliceFailure | undefined {
          else if (parts.length === 1) byKey.set(`query.${parts[0]}`, text);
          continue;
       }
+      // A bare name is a named query too (`tiles=[by_carrier]`), kept bare.
+      if (isIdentifier(text)) {
+         byKey.set(`query.${text}`, text);
+         continue;
+      }
       const name = /^([A-Za-z_][A-Za-z0-9_]*)\s*\{/.exec(text)?.[1];
       if (name !== undefined) byKey.set(`text.${name}`, text);
    }

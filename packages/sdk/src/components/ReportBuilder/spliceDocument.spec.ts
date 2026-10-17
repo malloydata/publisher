@@ -1552,6 +1552,16 @@ query: by_carrier is flights -> { group_by: carrier; aggregate: flight_count }`;
          );
       });
 
+      it("moves an unquoted entry, and keeps it unquoted", async () => {
+         const out = await spliced(
+            NAMED.replace('"by_carrier"', "by_carrier"),
+            (d) => {
+               d.tiles.reverse();
+            },
+         );
+         expect(out).toContain('tiles=["flights -> by_month", by_carrier]');
+      });
+
       it("leaves its query in the file when the tile is removed", async () => {
          const out = await spliced(NAMED, (d) => {
             d.tiles.shift();
