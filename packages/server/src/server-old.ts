@@ -2,29 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// TODO: Remove this during projects cleanup
 /**
- * Legacy `/projects/...` route registration.
+ * Legacy `/projects/...` aliases of the `/environments/...` API, kept for SDK
+ * clients that predate the rename (e.g. `@malloydata/db-publisher`). Removable
+ * once those clients have migrated.
  *
- * The publisher's API was renamed from `projects` to `environments`. This module
- * registers the old `/projects/...` paths on the same Express app so existing
- * SDK clients (e.g. `@malloydata/db-publisher`) keep working without code
- * changes on their side.
- *
- * Implementation strategy:
- *   - Reuse the same controllers that `server.ts` wires up; only the URL
- *     surface changes.
- *   - Most response models (`Connection`, `Package`, `Model`, `Notebook`,
- *     `Database`, `Table`, `QueryResult`, etc.) have identical JSON wire
- *     format between old (`Project`) and new (`Environment`) specs, so they
- *     pass through unchanged.
- *   - The handful of payloads that DO have field-level renames are remapped:
- *       * Materialization responses         — `environmentId` -> `projectId`
- *
- *   - Watch-mode is intentionally not exposed under the legacy prefix; clients
- *     that need it should use the new `/environments/...` paths directly.
- *   - `/status` is shared with the new server.ts handler — both old and new
- *     clients receive the new `environments`-keyed payload.
+ * - Reuses the controllers `server.ts` wires up; only the URL surface differs.
+ * - Most payloads are wire-identical between the two specs; materialization
+ *   responses are remapped `environmentId` -> `projectId`.
+ * - Watch-mode is not exposed here. `/status` is shared, so legacy clients get
+ *   the `environments`-keyed payload.
  */
 
 import bodyParser from "body-parser";
@@ -109,9 +96,7 @@ export function registerLegacyRoutes(
    } = controllers;
    const legacyReportController = new LegacyReportController(environmentStore);
 
-   // body-parser is already registered on the main app for `${API_PREFIX}/*`
-   // paths via `app.use(bodyParser.json(...))`. The legacy routes share the
-   // same `${API_PREFIX}` prefix so they inherit it automatically.
+   // body-parser is inherited from the main app.
    void bodyParser; // keep the import; helper file reference for clarity
 
    // ── projects (== environments) ──────────────────────────────────────────
@@ -229,8 +214,7 @@ export function registerLegacyRoutes(
       }),
    );
 
-   // /connections/test is org-level (no projectName) and unchanged between
-   // old and new specs — it's already registered on the main app.
+   // /connections/test has no project segment and is served by the main app.
 
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/schemas`,
@@ -304,9 +288,8 @@ export function registerLegacyRoutes(
       }),
    );
 
-   // sqlSource (POST), per-project + per-package. Runs a live DB introspection,
-   // so it is admission-controlled like the query routes below; without the gate
-   // the legacy surface is an unbounded bypass of the modern one.
+   // sqlSource runs a live DB introspection, so it is gated like the modern
+   // route; otherwise the legacy surface would be an unbounded bypass.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/sqlSource`,
       queryConcurrency(),
@@ -332,17 +315,9 @@ export function registerLegacyRoutes(
       }),
    );
 
-   // queryData (deprecated GET) + sqlQuery (supported POST), per-project +
-   // per-package
-   // Legacy `/projects/...` query routes keep the GET `queryData`
-   // endpoints (unlike the modern `/environments/...` surface, which
-   // removed them) so existing SDK clients are not broken. The
-   // missing protection is concurrency: without `queryConcurrency()`
-   // a flood of legacy clients can saturate the pod even while the
-   // modern routes are properly gated. Apply the same per-pod cap
-   // here so the legacy surface respects PUBLISHER_MAX_CONCURRENT_QUERIES.
-   // Admission, timeout, and row/byte caps are already enforced by
-   // the shared controllers downstream.
+   // queryData (GET, removed from the modern surface) and sqlQuery (POST).
+   // queryConcurrency() applies the same per-pod cap as the modern routes;
+   // timeouts and row/byte caps are enforced by the shared controllers.
    app.get(
       `${LEGACY_API_PREFIX}/projects/:projectName/connections/:connectionName/queryData`,
       queryConcurrency(),
@@ -536,11 +511,9 @@ export function registerLegacyRoutes(
       }),
    );
 
-   // Accepts NO authorize bypass, deliberately: this alias exists only for
-   // pre-rename SDK compatibility, it passes no `givens` either (so it cannot
-   // satisfy a gate in the first place), and every extra route that can disable
-   // a gate is another one to audit. A caller that needs the bypass uses the
-   // current `/environments/…` route. Pinned by authorize_bypass_wiring.
+   // Accepts no authorize bypass, deliberately: it passes no `givens` either,
+   // and every route that can disable a gate is one more to audit. Pinned by
+   // authorize_bypass_wiring.
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/*?/query`,
       queryConcurrency(),
@@ -568,8 +541,7 @@ export function registerLegacyRoutes(
 
    app.post(
       `${LEGACY_API_PREFIX}/projects/:projectName/packages/:packageName/models/:modelName/compile`,
-      // Real Malloy compilation; gated like the modern compile route so the
-      // legacy surface is not an unbounded bypass.
+      // Gated like the modern compile route.
       queryConcurrency(),
       apiRoute(async (req) => {
          return compileController.compile(

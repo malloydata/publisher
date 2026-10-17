@@ -61,11 +61,8 @@ export function registerSpaFallback(
       },
    };
    app.get("*", (req, res) => {
-      // Not everything unmatched is an app route. A request that names a file
-      // gets a real answer rather than the app shell with a 200, which reads as
-      // success and then leaves the app blaming the file for a wrong path. See
-      // classifySpaFallback for why the decision is by extension, and
-      // resolveSpaFallback for how its guesses are settled.
+      // A request that names a file gets a real answer, not the app shell with
+      // a 200, which would read as success. See classifySpaFallback.
       const fallback = resolveSpaFallback(req.path, apiPrefix, loadedRoutes);
       if (fallback.kind === "redirect") {
          // 302, not a permanent redirect: this maps a mistaken URL onto the
@@ -79,10 +76,7 @@ export function registerSpaFallback(
          // there, not the HTML app shell it cannot parse.
          res.status(404).json({
             code: 404,
-            // No method in the message: this handler is registered on app.get, so
-            // it could only ever say GET. Other verbs already 404 through
-            // Express's own default, which is why the 200-plus-shell defect was
-            // GET-only in the first place.
+            // No method in the message: this handler only sees GET.
             message: `Unknown API endpoint: ${fallback.path}. See /api-doc.yaml for the endpoints this server serves.`,
          });
          return;
@@ -107,10 +101,8 @@ export function registerSpaFallback(
       recordConsoleAliasUse(req.path, loadedPackage);
       res.sendFile(SPA_INDEX, (err) => {
          if (!err) return;
-         // The SPA bundle isn't built. This happens when running directly
-         // from source (`bun run src/server.ts`) without first running
-         // `bun run build:app`. Return a friendly placeholder rather than
-         // a 500, and surface package URLs the user might be looking for.
+         // The SPA bundle is not built (running from source without
+         // `bun run build:app`): a placeholder listing package URLs, not a 500.
          if (res.headersSent) return;
          res.status(404)
             .type("text/html")

@@ -4,15 +4,11 @@
 /**
  * Telemetry for per-query metadata (see `service/query_metadata.ts`).
  *
- * The resolve path never throws — it clamps a bag that would violate Malloy's
- * contract — so a drop is invisible without a metric: an operator would see
- * correct-looking queries whose warehouse-side attribution is quietly missing a
- * property. The counters make both halves observable: what was attached, and
- * what did not fit.
+ * Resolution never throws; it clamps what would violate Malloy's contract, so
+ * a dropped property is invisible without these counters.
  *
- * Instruments are created lazily for the same reason as {@link ./query_cap_metrics}:
- * one created before `setGlobalMeterProvider` binds to a NoOp meter
- * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
+ * Lazy: an instrument created before `setGlobalMeterProvider` binds to a NoOp
+ * meter (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
 import { lazyCounter, resetInstrumentsForTesting } from "./telemetry";

@@ -35,10 +35,6 @@ export function getPrometheusMetricsHandler() {
    };
 }
 
-/**
- * Shuts down the OpenTelemetry SDK gracefully.
- * Should be called during application shutdown.
- */
 export async function shutdownSDK(): Promise<void> {
    if (sdk) {
       await sdk.shutdown();
@@ -119,15 +115,10 @@ const httpRequestCount = meter.createCounter("http_server_requests_total", {
    description: "Total number of HTTP requests",
 });
 
-// Event-loop-delay metrics. A blocked event loop is the only way the
-// /health/liveness probe (a pure synchronous 200 handler) can fail under K8s,
-// so we surface p50/p99/max so an operator can correlate liveness restarts
-// with sustained event-loop pressure (large Malloy compiles, GC, etc.).
-//
-// `monitorEventLoopDelay` is a Node-only API; some runtimes (e.g. Bun on
-// certain platforms, used by the integration test suite) don't implement it.
-// Degrade gracefully there rather than crashing module load: the metrics are
-// simply not registered.
+// Event-loop delay is the only way the synchronous liveness probe can fail, so
+// p50/p99/max let an operator correlate liveness restarts with loop pressure.
+// Not registered where the runtime lacks `monitorEventLoopDelay` (some Bun
+// builds).
 const eventLoopHistogram = (() => {
    try {
       const histogram = monitorEventLoopDelay({ resolution: 20 });
@@ -163,8 +154,7 @@ const eventLoopLagMax = meter.createObservableGauge(
    },
 );
 
-// Sample all three in one batch so the histogram reset can't race the reads.
-// Skipped entirely when the runtime lacks event-loop-delay monitoring.
+// One batch, so the histogram reset cannot race the reads.
 if (eventLoopHistogram) {
    const histogram = eventLoopHistogram;
    meter.addBatchObservableCallback(

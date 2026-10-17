@@ -31,21 +31,15 @@ export function createMcpApp(
    environmentStore: EnvironmentStore,
 ): express.Express {
    const mcpApp = express();
-   // Register health endpoints on mcpApp (for E2E tests)
    registerHealthEndpoints(mcpApp);
 
    mcpApp.use(MCP_ENDPOINT, express.json());
-   // Cross-origin access is OPT-IN via MCP_CORS_ORIGINS (comma-separated origins,
-   // or `*` to allow any). Default is no allowlist, which reflects no
-   // `Access-Control-Allow-Origin` back, so a browser page on another origin cannot
-   // read a response from this unauthenticated endpoint. A non-browser client (an
-   // MCP agent over HTTP) sends no Origin and is unaffected either way: CORS
-   // governs what a browser hands to script, not who may connect.
-   // codeql[js/cors-permissive-configuration]: the permissive value this rule
-   // looks for is reachable only when an operator sets MCP_CORS_ORIGINS=* on
-   // purpose, which is the documented escape hatch; every other input, including
-   // the default, resolves to an allowlist or to false. The line this replaced was
-   // a bare `cors()` -- permissive unconditionally, and unflagged.
+   // Cross-origin access is opt-in via MCP_CORS_ORIGINS (origins, or `*`). By
+   // default no Allow-Origin is reflected, so a page on another origin cannot
+   // read this unauthenticated endpoint's responses. Non-browser MCP clients
+   // send no Origin and are unaffected.
+   // codeql[js/cors-permissive-configuration]: permissive only when an
+   // operator sets MCP_CORS_ORIGINS=* on purpose, the documented escape hatch.
    mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));
 
    mcpApp.all(MCP_ENDPOINT, async (req, res) => {

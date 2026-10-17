@@ -65,9 +65,8 @@ export interface ApiControllers {
    storageDestinationController: StorageDestinationController;
 }
 
-// Cap concurrent live-reload SSE connections so the endpoint can't be used to
-// exhaust server sockets/memory with unbounded long-lived streams. Generous,
-// since legitimate use is one stream per open dashboard tab.
+// Caps long-lived SSE streams so they cannot exhaust sockets or memory.
+// Generous: legitimate use is one stream per open dashboard tab.
 const MAX_SSE_CONNECTIONS = 1000;
 
 export function registerApiRoutes(
@@ -101,11 +100,10 @@ function registerStatusAndThemeRoutes(
          const status = await environmentStore.getStatus({
             includeLoading: req.query.includeLoading === "true",
          });
-         // The theme rides along so the SDK reads both in one round trip on app
-         // boot; `{}` means "no overrides yet". It is cosmetic, so before storage
-         // initializes this reports no overrides rather than 500 an endpoint the
-         // control plane polls for serving state (themeStore.get() throws until
-         // storage is ready). GET /theme answers 503 during that window instead.
+         // The theme rides along to save the SDK a round trip; `{}` means no
+         // overrides. Before storage is ready (themeStore.get() throws) it
+         // reports `{}` rather than 500 an endpoint the control plane polls;
+         // GET /theme answers 503 in that window instead.
          const theme = environmentStore.storageManager.isInitialized()
             ? await themeStore.get()
             : undefined;
@@ -150,12 +148,10 @@ function registerWatchModeRoutes(
    app.post(`${apiPrefix}/watch-mode/start`, watchModeController.startWatching);
    app.post(`${apiPrefix}/watch-mode/stop`, watchModeController.stopWatchMode);
 
-   // Live-reload Server-Sent Events for in-package HTML dashboards. This does
-   // not start watch mode (that is `--watch-env` or POST watch-mode/start), so
-   // an arbitrary fetch cannot mutate global watch state; it reports whether
-   // watch mode is active for the env in a `mode` event and, if so, fans out
-   // change events. Names are checked with the shared `assertSafePackageName`
-   // before any lookup, so `%2e%2e` never reaches the EnvironmentStore.
+   // Live-reload SSE for in-package HTML dashboards. It never starts watch
+   // mode, so an arbitrary fetch cannot mutate global watch state; it reports
+   // the env's watch state in a `mode` event and fans out change events. Names
+   // are validated before any lookup, so `%2e%2e` never reaches the store.
    let sseConnectionCount = 0;
    app.get(`${pkg}/events`, async (req: express.Request, res) => {
       const envName = req.params.environmentName;
@@ -204,7 +200,7 @@ function registerWatchModeRoutes(
       const heartbeat = setInterval(() => {
          res.write(": heartbeat\n\n");
       }, 25000);
-      // "close" covers both clean and abrupt disconnects on Node >= 20.
+      // "close" covers clean and abrupt disconnects on Node >= 20.
       req.on("close", () => {
          clearInterval(heartbeat);
          watchModeController.events.off(key, send);
@@ -239,11 +235,9 @@ function registerEnvironmentRoutes(
          // Redacted like every body-bearing log line: the body carries
          // connection and storage-destination configs.
          logger.info("Adding environment", { body: redactSensitive(req.body) });
-         // Strict here, where the author is waiting, and lenient in
-         // `addEnvironment`, which boot and restore also call: a destination
-         // this body fails to describe must not come back as a 200 that quietly
-         // omits it. There is no stored list on create, so a bare validation is
-         // enough.
+         // Strict here, where the author is waiting (`addEnvironment` is
+         // lenient for boot and restore): a destination this body fails to
+         // describe must not come back as a 200 that quietly omits it.
          processStorageDestinationsOrThrow(req.body?.storageDestinations ?? []);
          const environment = await environmentStore.addEnvironment(req.body);
          return environment.serialize();
@@ -608,11 +602,9 @@ function registerPackageRoutes(
 
    app.put(
       `${pkg}/models/*?`,
-      // A report save compiles the submitted text and writes it under the
-      // package lock across a full reload (and a rollback reload on failure),
-      // strictly more work than one /compile. Ungated it would also convoy:
-      // the save holds the package mutex without a slot, so slot-holding
-      // compiles on that package pile up behind it.
+      // A save compiles and reloads under the package lock, more work than
+      // one /compile. Ungated it would also convoy: slot-holding compiles on
+      // the package would pile up behind a save holding the mutex.
       queryConcurrency(),
       reportWriteRoute(reportController),
    );
@@ -690,10 +682,9 @@ function registerQueryRoutes(
                queryClass: req.body?.queryClass,
                versionId: req.body?.versionId as string | undefined,
             },
-            // Disables the author's `#(authorize)` gates. From a HEADER,
-            // never the body, and nothing in Publisher bounds who may send
-            // it: the deployment must strip it at its edge. See
-            // authorize_bypass_header.ts and
+            // Disables the author's `#(authorize)` gates. From a header, never
+            // the body, and nothing here bounds who may send it: the
+            // deployment must strip it at its edge. See
             // docs/authorize-bypass-deployment.md.
             readBypassAuthorize(req),
             includeHiddenFilesAndSources,
@@ -731,8 +722,7 @@ function registerQueryRoutes(
             req.body.source,
             req.body.includeSql === true,
             req.body.givens as Record<string, GivenValue> | undefined,
-            // An invalid scope is rejected by compileSource with a 400 naming
-            // the valid set, never silently consumed.
+            // compileSource rejects an invalid scope with a 400.
             req.body.scope ?? "append",
          ),
       ),

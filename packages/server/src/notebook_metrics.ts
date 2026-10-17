@@ -2,18 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * DEPRECATED: telemetry for the notebook cell route
- * (`GET …/notebooks/{path}/cells/{i}`), which `routes/deprecated.ts` keeps for
- * `.malloynb` notebooks: how running a cell ends, and how long it takes. A
- * `.malloy` report's cells run through `POST …/models/{path}/query` and are
- * measured as queries. Whether a report's cells could be read at all is the
- * `notebook-cells-unreadable` finding, counted with the other report findings
- * (`report_metrics.ts`). This module goes with the route.
+ * DEPRECATED: outcome and duration of the `.malloynb` cell route
+ * (`GET …/notebooks/{path}/cells/{i}`, kept by `routes/deprecated.ts`). A
+ * `.malloy` report's cells are measured as queries. This module goes with the
+ * route.
  *
- * Instruments are created lazily for the same reason as
- * {@link ./query_cap_metrics}: one created before `setGlobalMeterProvider`
- * binds to a NoOp meter
- * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
+ * Lazy: an instrument created before `setGlobalMeterProvider` binds to a NoOp
+ * meter (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
 import {

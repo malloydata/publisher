@@ -5,23 +5,14 @@
  * Telemetry for reports: what discovery found in a package, what the lint
  * said about it, how the two read routes answer, and how the write path ends.
  *
- * Discovery and the lint run at every load and reload, and a package-scope
- * compile runs them again as a dry run; nothing else says that a Malloy
- * upgrade stopped a file reading as a report, or that one finding started
- * firing across every package. A report that is dropped or tileless is still
- * a model that compiles and serves, so only these counters show it.
- *
- * The write path, the only endpoint that mutates a package's model files, is
- * counted by outcome: how often editors collide, whether the compile gate turns
- * away every save, and how often a landed write fails to reload and rolls back.
- * Its duration covers compile and reload, because that is what a caller waits
- * on.
+ * A dropped or tileless report is still a model that compiles and serves, so
+ * only these counters show that an upgrade stopped a file reading as a report,
+ * or that one lint finding started firing everywhere. Writes are counted by
+ * outcome (collisions, compile refusals, rollbacks).
  *
  * Labels are bounded enumerations only; never a package name or a path.
- *
- * Instruments are created lazily for the same reason as
- * {@link ./query_cap_metrics}: one created before `setGlobalMeterProvider`
- * binds to a NoOp meter
+ * Instruments are lazy: one created before `setGlobalMeterProvider` binds to
+ * a NoOp meter
  * (https://github.com/open-telemetry/opentelemetry-js/issues/3505).
  */
 
@@ -154,15 +145,11 @@ const readDuration = lazyHistogram(
    { buckets: REQUEST_DURATION_BUCKETS_MS },
 );
 
-/** `200` → `2xx`. */
 function statusClass(status: number): string {
    return `${Math.floor(status / 100)}xx`;
 }
 
-/**
- * Middleware that times one report read route, from the request to the
- * response finishing, whatever it answered.
- */
+/** Times a report read route until the response finishes, whatever it answered. */
 export function timeReportRead(route: ReportReadRoute): express.RequestHandler {
    return (_req, res, next) => {
       const startedAt = performance.now();
