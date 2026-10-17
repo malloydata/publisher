@@ -121,7 +121,7 @@ function storeWhoseQueryThrows(error: unknown): Partial<EnvironmentStore> {
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
-                  getModelType: () => "model",
+                  getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async () => {
@@ -169,7 +169,7 @@ function storeCapturingMetadata(
                // least-specific author layer.
                getDeclaredQueryMetadata: () => null,
                getModel: () => ({
-                  getModelType: () => "model",
+                  getType: () => "model",
                   carriesReportTag: () => false,
                   getModel: async () => ({}),
                   getQueryResults: async (..._args: unknown[]) => {

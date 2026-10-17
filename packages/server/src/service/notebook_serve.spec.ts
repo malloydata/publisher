@@ -280,7 +280,7 @@ describe("served notebooks (worker path)", () => {
          expect(pkg.isServedReport("notebooks/untagged.malloy")).toBe(false);
          const model = pkg.getModel("notebooks/tagged.malloy")!;
          expect(model.isNotebook()).toBe(true);
-         expect(model.getModelType()).toBe("model");
+         expect(model.getType()).toBe("model");
          expect(pkg.getModel("notebooks/untagged.malloy")!.isNotebook()).toBe(
             false,
          );

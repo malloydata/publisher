@@ -10017,10 +10017,6 @@ export class Model {
       };
    }
 
-   public getModelType(): ModelType {
-      return this.modelType;
-   }
-
    public async getFileText(packagePath: string): Promise<string> {
       const fullPath = path.join(packagePath, this.modelPath);
       try {

@@ -285,7 +285,7 @@ export async function getModelForQuery(
       environment.assertCanAdmitQuery();
       const pkg = await environment.getPackage(packageName, false);
       const model = pkg.getModel(modelPath);
-      if (!model || model.getModelType() === "notebook") {
+      if (!model || model.getType() === "notebook") {
          // Ensure it's actually a model
          const details = getNotFoundError(
             `model '${modelPath}' in package '${packageName}' for environment '${environmentName}'`,
