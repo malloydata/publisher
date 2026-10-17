@@ -110,7 +110,7 @@
       "@eslint/compat": "^1.2.7",
       "@eslint/eslintrc": "^3.3.1",
       "@eslint/js": "^9.23.0",
-      "@types/bun": "^1.2.20",
+      "@types/bun": "^1.4.2",
       "@types/cors": "^2.8.12",
       "@types/express": "^4.17.14",
       "@types/lunr": "^2.3.7",
