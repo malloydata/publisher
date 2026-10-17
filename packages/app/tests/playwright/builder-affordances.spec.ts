@@ -89,7 +89,7 @@ test.describe("builder affordances", () => {
 
       const dialog = page.getByRole("dialog", { name: "Add a tile" });
       await expect(
-         dialog.getByRole("combobox", { name: "Search views" }),
+         dialog.getByRole("combobox", { name: "Search the model" }),
       ).toBeVisible({ timeout: 30_000 });
       const box = await dialog.boundingBox();
       expect(box).not.toBeNull();
