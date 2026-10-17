@@ -154,7 +154,7 @@ export function registerExecuteQueryTool(
          const includeHiddenFilesAndSources =
             offerHidden && params.includeHiddenFilesAndSources === true;
 
-         logger.info("[MCP Tool executeQuery] Received params:", { params });
+         logger.debug("[MCP Tool executeQuery] Received params", { params });
 
          const hasAdhocQuery = !!query;
          const hasNamedQuery = !!queryName;
@@ -174,9 +174,6 @@ export function registerExecuteQueryTool(
          // Zod/SDK handles missing required fields (packageName, modelPath) based on the shape
 
          // --- Get Package and Model ---
-         logger.info(
-            `[MCP Tool executeQuery] Calling getModelForQuery for ${environmentName}/${packageName}/${modelPath}`,
-         );
          const modelResult = await getModelForQuery(
             environmentStore,
             environmentName,
@@ -194,9 +191,6 @@ export function registerExecuteQueryTool(
 
          // --- Execute Query ---
          const { model, environment, pkg } = modelResult;
-         logger.info(
-            `[MCP Tool executeQuery] Model found. Proceeding to execute query.`,
-         );
          // Per-pod concurrency slot. MCP shares the same slot pool
          // as the HTTP query routes so a hot agent loop can't
          // bypass PUBLISHER_MAX_CONCURRENT_QUERIES. `mcp:executeQuery`

@@ -49,7 +49,7 @@ export function createMcpApp(
    mcpApp.use(MCP_ENDPOINT, cors({ origin: getMcpCorsOrigins() }));
 
    mcpApp.all(MCP_ENDPOINT, async (req, res) => {
-      logger.info(`[MCP Debug] Handling ${req.method} (Stateless)`);
+      logger.debug(`[MCP] Handling ${req.method} (stateless)`);
 
       try {
          if (req.method === "POST") {
@@ -58,9 +58,7 @@ export function createMcpApp(
             });
 
             transport.onclose = () => {
-               logger.info(
-                  `[MCP Transport Info] Stateless transport closed for a request.`,
-               );
+               logger.debug("[MCP] Stateless transport closed");
             };
             transport.onerror = (err: Error) => {
                logger.error(
@@ -75,9 +73,7 @@ export function createMcpApp(
             await requestMcpServer.connect(transport);
 
             res.on("close", () => {
-               logger.info(
-                  "[MCP Transport Info] Response closed, cleaning up stateless transport.",
-               );
+               logger.debug("[MCP] Response closed; closing transport");
                transport.close().catch((err) => {
                   logger.error(
                      "[MCP Transport Error] Error closing stateless transport on response close:",

@@ -312,7 +312,7 @@ async function runContextQuery(
    traceSummary = false,
 ): Promise<ReturnType<typeof jsonResource>> {
    const { environmentName, packageName, sourceName } = resolved;
-   logger.info("[MCP Tool getContext] Retrieving context", {
+   logger.debug("[MCP Tool getContext] Retrieving context", {
       environmentName,
       packageName,
       sourceName,

@@ -140,7 +140,7 @@ export function registerCompileTool(
             scope,
          } = params;
 
-         logger.info("[MCP Tool compile] Compiling source", {
+         logger.debug("[MCP Tool compile] Compiling source", {
             environmentName,
             packageName,
             modelPath,

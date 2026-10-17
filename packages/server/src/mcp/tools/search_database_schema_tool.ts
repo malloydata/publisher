@@ -388,7 +388,7 @@ export function registerSearchDatabaseSchemaTool(
             "search-database-schema",
          );
 
-         logger.info("[MCP Tool searchDatabaseSchema] Searching schema", {
+         logger.debug("[MCP Tool searchDatabaseSchema] Searching schema", {
             environmentName,
             connectionName,
             packageName,

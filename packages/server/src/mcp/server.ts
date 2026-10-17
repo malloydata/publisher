@@ -4,7 +4,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { EnvironmentStore } from "../service/environment_store";
 
-import { formatDuration, logger } from "../logger";
 import { registerCompileTool } from "./tools/compile_tool";
 import { registerDocsSearchTool } from "./tools/docs_search_tool";
 import { registerExecuteQueryTool } from "./tools/execute_query_tool";
@@ -20,6 +19,7 @@ import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema
 import { registerGetStatusTool } from "./tools/get_status_tool";
 import { BUNDLED_SKILLS } from "./skills/package_skills";
 import { SERVER_VERSION } from "../version";
+import { instrumentTools } from "./tool_telemetry";
 
 export const testServerInfo = {
    name: "malloy-publisher-mcp-server",
@@ -52,12 +52,10 @@ Results and any charts render in the Publisher web UI on the REST port (4000 by 
 export function initializeMcpServer(
    environmentStore: EnvironmentStore,
 ): McpServer {
-   logger.info("[MCP Init] Starting initializeMcpServer...");
-   const startTime = performance.now();
-
    const mcpServer = new McpServer(testServerInfo, {
       instructions: MCP_INSTRUCTIONS,
    });
+   instrumentTools(mcpServer);
 
    registerExecuteQueryTool(mcpServer, environmentStore);
    registerGetContextTool(mcpServer, environmentStore);
@@ -85,11 +83,6 @@ export function initializeMcpServer(
          ],
       }));
    }
-
-   const endTime = performance.now();
-   logger.info(`[MCP Init] Finished initializeMcpServer`, {
-      duration: formatDuration(endTime - startTime),
-   });
 
    return mcpServer;
 }

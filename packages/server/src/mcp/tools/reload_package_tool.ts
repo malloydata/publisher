@@ -71,7 +71,7 @@ export function registerReloadPackageTool(
       async (params) => {
          const { environmentName, packageName } = params;
 
-         logger.info("[MCP Tool reloadPackage] Reloading package", {
+         logger.debug("[MCP Tool reloadPackage] Reloading package", {
             environmentName,
             packageName,
          });
