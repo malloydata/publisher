@@ -12,9 +12,9 @@ import { tileKey, type DashboardTile } from "./document";
 import { keepRowStructure, moveIntoGap } from "./layout";
 import {
    cellAt,
+   dropAt,
    inReadingOrder,
    placeWhereDrawn,
-   settle,
    trackWidth,
    type Box,
 } from "./placement";
@@ -101,11 +101,20 @@ export function useTileReorder({
    // A placement in flight: the tiles placed where they stood when it began,
    // and the moved tile's box then.
    const placing = useRef<
-      { base: DashboardTile[]; index: number; from: Box } | undefined
+      | {
+           base: DashboardTile[];
+           index: number;
+           from: Box;
+           grab: { x: number; y: number };
+        }
+      | undefined
    >(undefined);
 
    const onDragStart = (event?: {
-      operation: { source: { id: unknown } | null };
+      operation: {
+         source: { id: unknown } | null;
+         position?: { current: { x: number; y: number } };
+      };
    }) => {
       setDragging(true);
       previewRef.current = tiles;
@@ -124,7 +133,17 @@ export function useTileReorder({
          placement.columns,
          trackWidth(grid.getBoundingClientRect().width, placement.columns),
       );
-      placing.current = { base, index, from };
+      // Where in the tile the pointer took hold, so the tile's corner can be
+      // found from the pointer wherever the page has scrolled to since.
+      const origin = grid.getBoundingClientRect();
+      const pointer = event?.operation.position?.current;
+      const grab = pointer
+         ? {
+              x: pointer.x - (origin.left + from.left),
+              y: pointer.y - (origin.top + from.top),
+           }
+         : { x: 0, y: 0 };
+      placing.current = { base, index, from, grab };
       previewRef.current = base;
       setPreview(base);
    };
@@ -133,24 +152,28 @@ export function useTileReorder({
       const live = placing.current;
       const grid = placement?.gridBox.current;
       if (!live || !placement || !grid) return;
-      const { x, y } = event.operation.transform;
+      // The tile's corner against the grid as it is now: from the pointer and
+      // the grid's live box, so a page that auto-scrolled during the drag
+      // lands the tile under the pointer, not where the pointer was on screen.
+      const origin = grid.getBoundingClientRect();
+      // A keyboard step reports where it is going (`to`, or `by` from here)
+      // before the operation's position catches up; read the position alone
+      // and the preview trailed the tile by one key press.
+      const now = event.operation.position.current;
+      const pointer =
+         event.to ??
+         (event.by ? { x: now.x + event.by.x, y: now.y + event.by.y } : now);
       const moved = live.base[live.index];
       const cell = cellAt(
-         live.from.left + x,
-         live.from.top + y,
+         pointer.x - live.grab.x - origin.left,
+         pointer.y - live.grab.y - origin.top,
          moved.colspan ?? 1,
          placement.columns,
          trackWidth(grid.getBoundingClientRect().width, placement.columns),
       );
       const current = previewRef.current?.[live.index];
       if (current?.row === cell.row && current.col === cell.col) return;
-      const next = settle(
-         live.base.map((tile, index) =>
-            index === live.index ? { ...tile, ...cell } : tile,
-         ),
-         placement.columns,
-         live.index,
-      );
+      const next = dropAt(live.base, live.index, cell, placement.columns);
       previewRef.current = next;
       setPreview(next);
    };
@@ -195,16 +218,25 @@ export function useTileReorder({
 
    const onDragEnd = (event: DragEndEvent) => {
       setDragging(false);
-      const wasPlacing = placing.current !== undefined;
+      const live = placing.current;
+      const wasPlacing = live !== undefined;
       placing.current = undefined;
       const previewed = previewRef.current;
+      // A placing drag that let go in the cell it started from moved nothing:
+      // it writes nothing, and a report that flowed keeps flowing rather than
+      // being placed (and its heights rounded to rows) by a stray wiggle.
+      const stayed =
+         live !== undefined &&
+         previewed !== undefined &&
+         previewed[live.index]?.row === live.base[live.index]?.row &&
+         previewed[live.index]?.col === live.base[live.index]?.col;
       // Placed tiles are written in reading order, so the file reads the way
       // the page does and a narrow screen stacks them the same way.
       const next =
          wasPlacing && previewed ? inReadingOrder(previewed) : previewed;
       previewRef.current = undefined;
       setPreview(undefined);
-      if (event.canceled || !next) return;
+      if (event.canceled || !next || stayed) return;
       // ONE history entry for the whole drag; a drag that ends where it began
       // changes nothing and makes none.
       commit(next);

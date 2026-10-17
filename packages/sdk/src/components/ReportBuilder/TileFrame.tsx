@@ -65,6 +65,7 @@ export function TileFrame({
    onResizeMove,
    onResizeEnd,
    heightEdge,
+   fixed = false,
    children,
 }: {
    tile: DashboardTile;
@@ -98,6 +99,8 @@ export function TileFrame({
    width?: {
       span: number;
       columns: number;
+      /** The widest it may go, when that is less than the grid: a placed tile stops at the right edge. */
+      max?: number;
       onStep: (to: number) => void;
    };
    /**
@@ -105,6 +108,8 @@ export function TileFrame({
     * and stepped with the arrow keys. Delete or a double-click puts the tile
     * back to fitting its content. Absent, the tile has no bottom handle.
     */
+   /** The tile cannot be moved now (the grid is drawn as one column). */
+   fixed?: boolean;
    heightEdge?: {
       /** Its rows: the set height, or the drag's preview; absent on auto, as tall as its row. */
       rows: number | undefined;
@@ -123,7 +128,7 @@ export function TileFrame({
    const { theme } = usePublisherTheme();
    const ui = theme.ui;
    return (
-      <TileSortable id={tileKey(tile)} index={index}>
+      <TileSortable id={tileKey(tile)} index={index} disabled={fixed}>
          {({ ref, handleRef }) => (
             <Box
                ref={ref}
@@ -311,7 +316,7 @@ export function TileFrame({
                         ? {
                              "aria-valuenow": width.span,
                              "aria-valuemin": 1,
-                             "aria-valuemax": width.columns,
+                             "aria-valuemax": width.max ?? width.columns,
                              "aria-valuetext": `${width.span} of ${width.columns} columns`,
                           }
                         : {})}
@@ -325,13 +330,18 @@ export function TileFrame({
                                 : event.key === "Home"
                                   ? 1
                                   : event.key === "End"
-                                    ? width.columns
+                                    ? (width.max ?? width.columns)
                                     : undefined;
                         if (to === undefined) return;
                         // The builder's own arrow-key nudge must not step it again.
                         event.preventDefault();
                         event.stopPropagation();
-                        width.onStep(Math.min(Math.max(to, 1), width.columns));
+                        width.onStep(
+                           Math.min(
+                              Math.max(to, 1),
+                              width.max ?? width.columns,
+                           ),
+                        );
                      }}
                      onPointerDown={onResizeStart}
                      onPointerMove={onResizeMove}

@@ -5,6 +5,8 @@ import { describe, expect, it } from "bun:test";
 import type { DashboardTile, QueryTile } from "./document";
 import {
    cellAt,
+   dropAt,
+   placeAtEnd,
    inReadingOrder,
    placeWhereDrawn,
    settle,
@@ -134,5 +136,58 @@ describe("inReadingOrder", () => {
          "c",
          "free",
       ]);
+   });
+});
+
+describe("dropAt", () => {
+   const tiles = () => [
+      tile("map", { row: 1, col: 7, colspan: 6, rowspan: 6 }),
+      tile("bar", { row: 1, col: 1, colspan: 6, rowspan: 3 }),
+   ];
+
+   it("lands under a tile whose lower part it was dropped on", () => {
+      // Dropped at row 4, col 7: on the map's lower half, which starts at row 1.
+      expect(where(dropAt(tiles(), 1, { row: 4, col: 7 }, 12))).toEqual([
+         { name: "map", row: 1, col: 7, colspan: 6, rowspan: 6 },
+         { name: "bar", row: 7, col: 7, colspan: 6, rowspan: 3 },
+      ]);
+   });
+
+   it("pushes a tile down when dropped at or above its top", () => {
+      expect(
+         where(dropAt(tiles(), 1, { row: 1, col: 7 }, 12)).map((t) => [
+            t.name,
+            t.row,
+         ]),
+      ).toEqual([
+         ["map", 4],
+         ["bar", 1],
+      ]);
+   });
+});
+
+describe("placeAtEnd", () => {
+   it("puts a new tile under everything on a placed report, at the left", () => {
+      const tiles = [
+         tile("a", { row: 1, col: 1, colspan: 6, rowspan: 3 }),
+         tile("b", { row: 2, col: 7, colspan: 6, rowspan: 6 }),
+         tile("new", { colspan: 6 }),
+      ];
+      expect(placeAtEnd(tiles, 2, 12)[2]).toMatchObject({ row: 8, col: 1 });
+   });
+
+   it("leaves a report that flows alone", () => {
+      const tiles = [tile("a", { colspan: 6 }), tile("new")];
+      expect(placeAtEnd(tiles, 1, 12)[1]).toEqual(tile("new"));
+   });
+});
+
+describe("dropAt, far below", () => {
+   it("lands no lower than right under the lowest other tile", () => {
+      const tiles = [
+         tile("a", { row: 1, col: 1, colspan: 6, rowspan: 3 }),
+         tile("b", { row: 1, col: 7, colspan: 6, rowspan: 3 }),
+      ];
+      expect(dropAt(tiles, 1, { row: 40, col: 7 }, 12)[1].row).toBe(4);
    });
 });

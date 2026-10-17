@@ -3,7 +3,7 @@
 
 import { reportClasses } from "../../theme/classes";
 import AddIcon from "@mui/icons-material/Add";
-import { Alert, Button, Stack, Typography } from "@mui/material";
+import { Alert, Button, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import {
    isPlaced,
@@ -41,7 +41,7 @@ import { useTileEditing } from "./useTileEditing";
 import { useTileReorder } from "./useTileReorder";
 import { settle } from "./placement";
 import { useTileHeight } from "./useTileHeight";
-import { useTileResize } from "./useTileResize";
+import { useTileResize, widestFrom } from "./useTileResize";
 import { layoutRules } from "../Report/layoutRules";
 import { ReportPage } from "../Report/ReportPage";
 
@@ -298,6 +298,16 @@ export function ReportBuilder({
       ?.split("/")
       .at(-1)
       ?.replace(/\.malloy$/, "");
+   // Below `md` the grid is drawn as one column, as a phone shows it, so a
+   // tile's width and place do not show: moving and widening are off there.
+   // Assumed wide where the width cannot be asked (tests, server render).
+   // 900px is `md` in the default breakpoints, which the grid's own `sx`
+   // resolves against; written out so a host with no MUI theme still works.
+   const wide = useMediaQuery("(min-width:900px)", {
+      defaultMatches: true,
+      noSsr: true,
+   });
+   const arrange = !rules.widths || wide;
    // On a grid a move is free placement; on a linear report it reorders.
    const reorder = useTileReorder({
       tiles: editor.document.tiles,
@@ -306,7 +316,7 @@ export function ReportBuilder({
             draft.tiles = next;
          }),
       onLanded: selectTile,
-      ...(rules.widths ? { placement: { columns, gridBox } } : {}),
+      ...(rules.widths && wide ? { placement: { columns, gridBox } } : {}),
    });
    // After a tile on a placed report changes size, whatever it now covers
    // is pushed down; a report that flows has nothing to settle.
@@ -398,14 +408,15 @@ export function ReportBuilder({
          },
          nudge: (delta: 1 | -1) => {
             // The drag's keyboard sensor also reads the arrows, and a drop would write the drag-start width back.
-            if (dragging || selected === undefined || !rules.widths) return;
+            if (dragging || selected === undefined || !rules.widths || !arrange)
+               return;
             // Any tile, an inherited one too: its width is on its entry.
             const tile = editor.document.tiles[selected];
             if (!tile) return;
             const span = nudgedSpan(
                tile.colspan ?? defaultSpan,
                delta,
-               columns,
+               widestFrom(tile, columns),
             );
             if (span === (tile.colspan ?? defaultSpan)) return;
             editor.update((draft) => {
@@ -416,6 +427,7 @@ export function ReportBuilder({
       }),
       [
          defaultSpan,
+         arrange,
          place,
          editor,
          menu,
@@ -644,8 +656,16 @@ export function ReportBuilder({
                   <Alert severity="warning">{editor.error}</Alert>
                )}
 
+               {!arrange && (
+                  <Alert severity="info">
+                     This window is too narrow for the grid, so tiles stack in
+                     one column, as on a phone. Widen it to move tiles or change
+                     their width.
+                  </Alert>
+               )}
                <BuilderGrid
                   editor={editor}
+                  arrange={arrange}
                   reorder={reorder}
                   resizing={resizing}
                   sizing={sizing}

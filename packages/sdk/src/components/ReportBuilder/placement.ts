@@ -115,6 +115,47 @@ export function settle(
    return out;
 }
 
+/**
+ * The tiles with the one at `index` dropped at `at`. A drop onto the lower
+ * part of a tile that starts higher up lands just under that tile, rather
+ * than shoving it beneath the dropped one; a drop at or above a tile's top
+ * pushes that tile down. Then everything settles around where it landed.
+ */
+export function dropAt(
+   tiles: readonly DashboardTile[],
+   index: number,
+   at: { row: number; col: number },
+   columns: number,
+): DashboardTile[] {
+   const others = tiles.flatMap((tile, i) => {
+      const cell = i === index ? undefined : cellOf(tile, columns);
+      return cell ? [cell] : [];
+   });
+   // Never lower than right under the lowest other tile: space below
+   // everything holds nothing, and a drag held at the window's bottom edge
+   // would otherwise grow the page, and scroll it, without end.
+   const lowest = Math.max(1, ...others.map((cell) => cell.row + cell.rowspan));
+   const moved = { ...tiles[index], ...at, row: Math.min(at.row, lowest) };
+   const cell = cellOf(moved, columns);
+   if (cell) {
+      for (;;) {
+         const above = others.filter(
+            (other) => other.row < cell.row && overlaps(cell, other),
+         );
+         if (above.length === 0) break;
+         cell.row = Math.max(
+            ...above.map((other) => other.row + other.rowspan),
+         );
+      }
+      moved.row = cell.row;
+   }
+   return settle(
+      tiles.map((tile, i) => (i === index ? moved : tile)),
+      columns,
+      index,
+   );
+}
+
 /** A tile's box against the grid's top left corner, in px. */
 export interface Box {
    top: number;
@@ -185,4 +226,25 @@ export function placeWhereDrawn(
       };
    });
    return settle(placed, columns);
+}
+
+/**
+ * The tiles with the one at `index` placed under everything else, at the
+ * left, when the report is placed: where a new tile goes, so it never drops
+ * into a gap an author left on purpose. A report that flows is left as it is.
+ */
+export function placeAtEnd(
+   tiles: readonly DashboardTile[],
+   index: number,
+   columns: number,
+): DashboardTile[] {
+   const others = tiles.flatMap((tile, i) => {
+      const cell = i === index ? undefined : cellOf(tile, columns);
+      return cell ? [cell] : [];
+   });
+   if (others.length === 0) return [...tiles];
+   const bottom = Math.max(...others.map((cell) => cell.row + cell.rowspan));
+   return tiles.map((tile, i) =>
+      i === index ? { ...tile, row: bottom, col: 1 } : tile,
+   );
 }

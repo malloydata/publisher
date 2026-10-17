@@ -36,7 +36,7 @@ import { tileDisplayTitle } from "./tileDisplayTitle";
 import type { ReportEditorHandle } from "./useReportEditor";
 import type { useTileReorder } from "./useTileReorder";
 import type { useTileHeight } from "./useTileHeight";
-import type { useTileResize } from "./useTileResize";
+import { widestFrom, type useTileResize } from "./useTileResize";
 
 /**
  * The builder's tiles, on the SAME grid the dashboard renders on, each drawn
@@ -49,6 +49,7 @@ export function BuilderGrid({
    resizing,
    sizing,
    place = (tiles) => tiles,
+   arrange = true,
    gridBox,
    defaultSpan = 1,
    rules,
@@ -74,6 +75,11 @@ export function BuilderGrid({
     * whatever it now covers pushed down. Identity elsewhere.
     */
    place?: (tiles: DashboardTile[], index: number) => DashboardTile[];
+   /**
+    * Whether tiles can be moved and widened here. Off while a grid is drawn
+    * as one column (a window narrower than the grid), where neither shows.
+    */
+   arrange?: boolean;
    gridBox: RefObject<HTMLDivElement | null>;
    /** The span a tile with no `# colspan` is drawn at: as wide as the reader draws it. */
    defaultSpan?: number;
@@ -200,12 +206,14 @@ export function BuilderGrid({
                                    onInsertAfter: () => openAdd(index + 1),
                                 }
                               : {})}
-                           {...(rules.widths
+                           fixed={!arrange}
+                           {...(rules.widths && arrange
                               ? {
                                    resizing: resize?.index === index,
                                    width: {
                                       span: each.colspan ?? 1,
                                       columns,
+                                      max: widestFrom(each, columns),
                                       onStep: (to: number) => {
                                          if (to === (each.colspan ?? 1)) return;
                                          editor.update((draft) => {
