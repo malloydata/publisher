@@ -114,4 +114,49 @@ describe("a tile against the pinned control row", () => {
          restore();
       }
    });
+
+   // A host page that scrolls the window but styles `html { overflow-y:
+   // scroll }` and `body { overflow-x: hidden }`: both compute as scrollers,
+   // and neither receives the page's scroll events.
+   it("fills the row once it pins on a page that scrolls the window", async () => {
+      const html = document.documentElement;
+      const body = document.body;
+      html.style.overflowY = "scroll";
+      body.style.overflowY = "auto";
+      const { container } = render(
+         <div style={{ [STICKY_TOP_VAR]: "48px" } as CSSProperties}>
+            <StickyControls>
+               <span>controls</span>
+            </StickyControls>
+            <div style={{ height: "2000px" }} />
+         </div>,
+      );
+      const row = container.querySelector(
+         ".publisher-filter-row",
+      ) as HTMLElement;
+      const real = window.getComputedStyle.bind(window);
+      const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+      window.getComputedStyle = ((el: Element) =>
+         el === row
+            ? ({ ...real(el), top: "47px" } as CSSStyleDeclaration)
+            : real(el)) as typeof window.getComputedStyle;
+      try {
+         row.getBoundingClientRect = () => ({ top: 47, bottom: 95 }) as DOMRect;
+         Object.defineProperty(window, "scrollY", {
+            value: 230,
+            configurable: true,
+         });
+         await act(async () => {
+            window.dispatchEvent(new Event("scroll"));
+            await new Promise((r) => requestAnimationFrame(() => r(null)));
+         });
+         expect(row.getAttribute("data-stuck")).toBe("true");
+      } finally {
+         window.getComputedStyle = real;
+         if (scrollY) Object.defineProperty(window, "scrollY", scrollY);
+         else delete (window as { scrollY?: number }).scrollY;
+         html.style.overflowY = "";
+         body.style.overflowY = "";
+      }
+   });
 });

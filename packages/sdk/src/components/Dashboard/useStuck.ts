@@ -10,9 +10,22 @@ import { useCallback, useRef, useState } from "react";
  */
 export const STUCK_TOP_PX = -1;
 
-/** The nearest ancestor that scrolls, or undefined when the page itself does. */
+/**
+ * The nearest ancestor that scrolls, or undefined when the page itself does.
+ *
+ * Stops below `body`. A host's `html { overflow-y: scroll }` or
+ * `body { overflow-x: hidden }` (which computes `overflow-y: auto`) makes
+ * either look like a scroller, but the page's scroll events fire on the
+ * document and neither element's `scrollTop` moves, so the bar would never
+ * count as pinned.
+ */
 function scrollerOf(node: HTMLElement): HTMLElement | undefined {
-   for (let at = node.parentElement; at; at = at.parentElement) {
+   const page = node.ownerDocument;
+   for (
+      let at = node.parentElement;
+      at && at !== page.body && at !== page.documentElement;
+      at = at.parentElement
+   ) {
       if (/(auto|scroll|overlay)/.test(getComputedStyle(at).overflowY))
          return at;
    }
