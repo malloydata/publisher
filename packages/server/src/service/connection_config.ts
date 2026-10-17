@@ -1270,6 +1270,250 @@ function blankAsUnset(value: string | undefined): string | undefined {
    return value === "" ? undefined : value;
 }
 
+function buildPostgresEntry(connection: NamedConnection): CoreConnectionEntry {
+   const postgresConnection = connection.postgresConnection;
+   return {
+      is: "postgres",
+      host: postgresConnection?.host,
+      port: postgresConnection?.port,
+      username: postgresConnection?.userName,
+      password: postgresConnection?.password,
+      databaseName: postgresConnection?.databaseName,
+      connectionString: postgresConnection
+         ? buildPostgresConnectionString(postgresConnection, {
+              applySslmode: !connection.proxy,
+           })
+         : undefined,
+   };
+}
+
+function buildMySQLEntry(connection: NamedConnection): CoreConnectionEntry {
+   return {
+      is: "mysql",
+      host: connection.mysqlConnection?.host,
+      port: connection.mysqlConnection?.port,
+      user: connection.mysqlConnection?.user,
+      password: connection.mysqlConnection?.password,
+      database: connection.mysqlConnection?.database,
+   };
+}
+
+function buildSqlServerEntry(connection: NamedConnection): CoreConnectionEntry {
+   // A pass-through: the API field names are the connector's own, so
+   // the authentication kinds and the connection-string form the
+   // connector also takes are additive here when the API grows them.
+   // The two optional names are read as unset when blank: the
+   // connector drops the port whenever instanceName is DEFINED, so a
+   // "" from a form field left empty would send the driver to SQL
+   // Browser for an instance called nothing, and a "" certificate
+   // name would be checked against the certificate.
+   const sqlserver = connection.sqlserverConnection;
+   return {
+      is: "sqlserver",
+      server: sqlserver?.server,
+      port: sqlserver?.port,
+      database: sqlserver?.database,
+      user: sqlserver?.user,
+      password: sqlserver?.password,
+      encrypt: sqlserver?.encrypt,
+      trustServerCertificate: sqlserver?.trustServerCertificate,
+      hostNameInCertificate: blankAsUnset(sqlserver?.hostNameInCertificate),
+      instanceName: blankAsUnset(sqlserver?.instanceName),
+   };
+}
+
+function buildBigQueryEntry(connection: NamedConnection): CoreConnectionEntry {
+   const serviceAccountKey = parseServiceAccountKey(
+      connection.bigqueryConnection?.serviceAccountKeyJson as
+         | string
+         | undefined,
+   );
+   // Impersonation rides the config-overlay mechanism: the pojo
+   // carries a plain-JSON reference, and buildEnvironmentMalloyConfig
+   // registers the `gcpImpersonation` overlay that resolves it to a
+   // live Impersonated auth client. The property is opaque +
+   // overlay-sourced + mustHaveValue on the bigquery type, so a
+   // literal can never satisfy it and an unresolved reference errors
+   // instead of falling back to ambient ADC. The raw reference (which
+   // embeds the SA email) is also what core folds into the connection
+   // digest, giving per-identity BuildIDs.
+   const impersonateServiceAccount =
+      connection.bigqueryConnection?.impersonateServiceAccount;
+   return {
+      is: "bigquery",
+      projectId:
+         connection.bigqueryConnection?.defaultProjectId ||
+         serviceAccountKey?.project_id,
+      serviceAccountKey,
+      // Spread rather than `authClient: x ?? undefined`: the property
+      // is mustHaveValue, and core keys off the property being SET —
+      // an `authClient: undefined` entry still counts as set and
+      // fails every plain connection with "no value arrived".
+      ...(impersonateServiceAccount
+         ? {
+              authClient: {
+                 gcpImpersonation: impersonateServiceAccount,
+              },
+           }
+         : {}),
+      location: connection.bigqueryConnection?.location,
+      maximumBytesBilled: connection.bigqueryConnection?.maximumBytesBilled,
+      timeoutMs: connection.bigqueryConnection?.queryTimeoutMilliseconds,
+      billingProjectId: connection.bigqueryConnection?.billingProjectId,
+   };
+}
+
+function buildSnowflakeEntry(connection: NamedConnection): CoreConnectionEntry {
+   return {
+      is: "snowflake",
+      account: connection.snowflakeConnection?.account,
+      username: connection.snowflakeConnection?.username,
+      password: nullToUndefined(connection.snowflakeConnection?.password),
+      privateKey: connection.snowflakeConnection?.privateKey
+         ? normalizeSnowflakePrivateKey(
+              connection.snowflakeConnection.privateKey,
+           )
+         : undefined,
+      privateKeyPass: nullToUndefined(
+         connection.snowflakeConnection?.privateKeyPass,
+      ),
+      warehouse: connection.snowflakeConnection?.warehouse,
+      // An EXPLICIT `"database": null` in config (or a client that
+      // serializes unset optionals as null) survives to here; an omitted
+      // field arrives as `undefined` and was always fine. Malloy's
+      // `makeDigest` reads `.length` off each part and special-cases
+      // `undefined` only, so a surviving `null` throws
+      // "null is not an object (evaluating 'p.length')" on the first
+      // digest.
+      //
+      // Defense in depth rather than the load-bearing fix: Malloy's own
+      // connection lookup already drops nulls before building a
+      // connector, so this pojo path is covered upstream today. The fix
+      // that matters is `removeUndefined` in connection.ts, on the
+      // key-pair path that bypasses that lookup. Kept because the Malloy
+      // dependency is a caret range and core's guard is not a contract.
+      database: nullToUndefined(connection.snowflakeConnection?.database),
+      schema: nullToUndefined(connection.snowflakeConnection?.schema),
+      role: nullToUndefined(connection.snowflakeConnection?.role),
+      timeoutMs: connection.snowflakeConnection?.responseTimeoutMilliseconds,
+      // Pool sizing is server-owned policy (matches the values
+      // main's deleted switch passed pre-MalloyConfig adoption).
+      // Not exposed through the public API.
+      poolMin: 1,
+      poolMax: 20,
+   };
+}
+
+function buildTrinoEntry(connection: NamedConnection): CoreConnectionEntry {
+   return {
+      is: "trino",
+      ...validateAndBuildTrinoCoreConfig(connection.trinoConnection),
+   };
+}
+
+function buildDatabricksEntry(
+   connection: NamedConnection,
+): CoreConnectionEntry {
+   const databricks = connection.databricksConnection;
+   return {
+      is: "databricks",
+      host: databricks?.host,
+      path: databricks?.path,
+      token: databricks?.token,
+      oauthClientId: databricks?.oauthClientId,
+      oauthClientSecret: databricks?.oauthClientSecret,
+      defaultCatalog: databricks?.defaultCatalog,
+      defaultSchema: databricks?.defaultSchema,
+      setupSQL: databricks?.setupSQL,
+   };
+}
+
+function buildDuckDBEntry(
+   connection: NamedConnection,
+   environmentPath: string,
+): CoreConnectionEntry {
+   const attachedDatabases =
+      connection.duckdbConnection?.attachedDatabases ?? [];
+   if (
+      attachedDatabases.some((database) => database.name === connection.name)
+   ) {
+      throw new Error(
+         `DuckDB attached database names cannot conflict with connection name ${connection.name}`,
+      );
+   }
+   return buildDuckdbEntry(
+      connection.name,
+      environmentPath,
+      `${connection.name}.duckdb`,
+      connection.duckdbConnection?.setupSQL,
+   );
+}
+
+function buildMotherDuckEntry(
+   connection: NamedConnection,
+): CoreConnectionEntry {
+   if (!connection.motherduckConnection?.accessToken) {
+      throw new Error("MotherDuck access token is required.");
+   }
+
+   return {
+      is: "duckdb",
+      databasePath: connection.motherduckConnection.database
+         ? `md:${connection.motherduckConnection.database}?attach_mode=single`
+         : "md:",
+      motherDuckToken: connection.motherduckConnection.accessToken,
+   };
+}
+
+function buildDuckLakeEntry(
+   connection: NamedConnection,
+   environmentPath: string,
+): CoreConnectionEntry {
+   // Shape is validated up front by validateConnectionShape.
+   return buildDuckdbEntry(
+      connection.name,
+      environmentPath,
+      `${connection.name}_ducklake.duckdb`,
+   );
+}
+
+function buildPublisherEntry(connection: NamedConnection): CoreConnectionEntry {
+   // connectionUri presence is validated by validateConnectionShape
+   // above. The proxied dataplane owns auth and read-only enforcement;
+   // PublisherConnection itself does not reject writes. The real
+   // dialect is the remote connection's and is resolved at runtime by
+   // the live connection, so getStaticConnectionAttributes returns
+   // undefined for publisher (falls through to its default).
+   const publisher = connection.publisherConnection!;
+   return {
+      is: "publisher",
+      connectionUri: publisher.connectionUri,
+      accessToken: publisher.accessToken,
+   };
+}
+
+/** A connection past assembly's name check. */
+type NamedConnection = ApiConnection & { name: string };
+type ConnectionType = NonNullable<ApiConnection["type"]>;
+
+/** The Malloy core connection entry each connection type assembles into. */
+const CORE_ENTRY_BUILDERS: Record<
+   ConnectionType,
+   (connection: NamedConnection, environmentPath: string) => CoreConnectionEntry
+> = {
+   postgres: buildPostgresEntry,
+   mysql: buildMySQLEntry,
+   sqlserver: buildSqlServerEntry,
+   bigquery: buildBigQueryEntry,
+   snowflake: buildSnowflakeEntry,
+   trino: buildTrinoEntry,
+   databricks: buildDatabricksEntry,
+   duckdb: buildDuckDBEntry,
+   motherduck: buildMotherDuckEntry,
+   ducklake: buildDuckLakeEntry,
+   publisher: buildPublisherEntry,
+};
+
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
    environmentPath = "",
@@ -1326,244 +1570,12 @@ export function assembleEnvironmentConnections(
          proxy: connection.proxy,
       });
 
-      switch (connection.type) {
-         case "postgres": {
-            const postgresConnection = connection.postgresConnection;
-            pojo.connections[connection.name] = {
-               is: "postgres",
-               host: postgresConnection?.host,
-               port: postgresConnection?.port,
-               username: postgresConnection?.userName,
-               password: postgresConnection?.password,
-               databaseName: postgresConnection?.databaseName,
-               connectionString: postgresConnection
-                  ? buildPostgresConnectionString(postgresConnection, {
-                       applySslmode: !connection.proxy,
-                    })
-                  : undefined,
-            };
-            break;
-         }
-
-         case "mysql": {
-            pojo.connections[connection.name] = {
-               is: "mysql",
-               host: connection.mysqlConnection?.host,
-               port: connection.mysqlConnection?.port,
-               user: connection.mysqlConnection?.user,
-               password: connection.mysqlConnection?.password,
-               database: connection.mysqlConnection?.database,
-            };
-            break;
-         }
-
-         case "sqlserver": {
-            // A pass-through: the API field names are the connector's own, so
-            // the authentication kinds and the connection-string form the
-            // connector also takes are additive here when the API grows them.
-            // The two optional names are read as unset when blank: the
-            // connector drops the port whenever instanceName is DEFINED, so a
-            // "" from a form field left empty would send the driver to SQL
-            // Browser for an instance called nothing, and a "" certificate
-            // name would be checked against the certificate.
-            const sqlserver = connection.sqlserverConnection;
-            pojo.connections[connection.name] = {
-               is: "sqlserver",
-               server: sqlserver?.server,
-               port: sqlserver?.port,
-               database: sqlserver?.database,
-               user: sqlserver?.user,
-               password: sqlserver?.password,
-               encrypt: sqlserver?.encrypt,
-               trustServerCertificate: sqlserver?.trustServerCertificate,
-               hostNameInCertificate: blankAsUnset(
-                  sqlserver?.hostNameInCertificate,
-               ),
-               instanceName: blankAsUnset(sqlserver?.instanceName),
-            };
-            break;
-         }
-
-         case "bigquery": {
-            const serviceAccountKey = parseServiceAccountKey(
-               connection.bigqueryConnection?.serviceAccountKeyJson as
-                  | string
-                  | undefined,
-            );
-            // Impersonation rides the config-overlay mechanism: the pojo
-            // carries a plain-JSON reference, and buildEnvironmentMalloyConfig
-            // registers the `gcpImpersonation` overlay that resolves it to a
-            // live Impersonated auth client. The property is opaque +
-            // overlay-sourced + mustHaveValue on the bigquery type, so a
-            // literal can never satisfy it and an unresolved reference errors
-            // instead of falling back to ambient ADC. The raw reference (which
-            // embeds the SA email) is also what core folds into the connection
-            // digest, giving per-identity BuildIDs.
-            const impersonateServiceAccount =
-               connection.bigqueryConnection?.impersonateServiceAccount;
-            pojo.connections[connection.name] = {
-               is: "bigquery",
-               projectId:
-                  connection.bigqueryConnection?.defaultProjectId ||
-                  serviceAccountKey?.project_id,
-               serviceAccountKey,
-               // Spread rather than `authClient: x ?? undefined`: the property
-               // is mustHaveValue, and core keys off the property being SET —
-               // an `authClient: undefined` entry still counts as set and
-               // fails every plain connection with "no value arrived".
-               ...(impersonateServiceAccount
-                  ? {
-                       authClient: {
-                          gcpImpersonation: impersonateServiceAccount,
-                       },
-                    }
-                  : {}),
-               location: connection.bigqueryConnection?.location,
-               maximumBytesBilled:
-                  connection.bigqueryConnection?.maximumBytesBilled,
-               timeoutMs:
-                  connection.bigqueryConnection?.queryTimeoutMilliseconds,
-               billingProjectId:
-                  connection.bigqueryConnection?.billingProjectId,
-            };
-            break;
-         }
-
-         case "snowflake": {
-            pojo.connections[connection.name] = {
-               is: "snowflake",
-               account: connection.snowflakeConnection?.account,
-               username: connection.snowflakeConnection?.username,
-               password: nullToUndefined(
-                  connection.snowflakeConnection?.password,
-               ),
-               privateKey: connection.snowflakeConnection?.privateKey
-                  ? normalizeSnowflakePrivateKey(
-                       connection.snowflakeConnection.privateKey,
-                    )
-                  : undefined,
-               privateKeyPass: nullToUndefined(
-                  connection.snowflakeConnection?.privateKeyPass,
-               ),
-               warehouse: connection.snowflakeConnection?.warehouse,
-               // An EXPLICIT `"database": null` in config (or a client that
-               // serializes unset optionals as null) survives to here; an omitted
-               // field arrives as `undefined` and was always fine. Malloy's
-               // `makeDigest` reads `.length` off each part and special-cases
-               // `undefined` only, so a surviving `null` throws
-               // "null is not an object (evaluating 'p.length')" on the first
-               // digest.
-               //
-               // Defense in depth rather than the load-bearing fix: Malloy's own
-               // connection lookup already drops nulls before building a
-               // connector, so this pojo path is covered upstream today. The fix
-               // that matters is `removeUndefined` in connection.ts, on the
-               // key-pair path that bypasses that lookup. Kept because the Malloy
-               // dependency is a caret range and core's guard is not a contract.
-               database: nullToUndefined(
-                  connection.snowflakeConnection?.database,
-               ),
-               schema: nullToUndefined(connection.snowflakeConnection?.schema),
-               role: nullToUndefined(connection.snowflakeConnection?.role),
-               timeoutMs:
-                  connection.snowflakeConnection?.responseTimeoutMilliseconds,
-               // Pool sizing is server-owned policy (matches the values
-               // main's deleted switch passed pre-MalloyConfig adoption).
-               // Not exposed through the public API.
-               poolMin: 1,
-               poolMax: 20,
-            };
-            break;
-         }
-
-         case "trino": {
-            pojo.connections[connection.name] = {
-               is: "trino",
-               ...validateAndBuildTrinoCoreConfig(connection.trinoConnection),
-            };
-            break;
-         }
-
-         case "databricks": {
-            const databricks = connection.databricksConnection;
-            pojo.connections[connection.name] = {
-               is: "databricks",
-               host: databricks?.host,
-               path: databricks?.path,
-               token: databricks?.token,
-               oauthClientId: databricks?.oauthClientId,
-               oauthClientSecret: databricks?.oauthClientSecret,
-               defaultCatalog: databricks?.defaultCatalog,
-               defaultSchema: databricks?.defaultSchema,
-               setupSQL: databricks?.setupSQL,
-            };
-            break;
-         }
-
-         case "duckdb": {
-            if (
-               attachedDatabases.some(
-                  (database) => database.name === connection.name,
-               )
-            ) {
-               throw new Error(
-                  `DuckDB attached database names cannot conflict with connection name ${connection.name}`,
-               );
-            }
-            pojo.connections[connection.name] = buildDuckdbEntry(
-               connection.name,
-               environmentPath,
-               `${connection.name}.duckdb`,
-               connection.duckdbConnection?.setupSQL,
-            );
-            break;
-         }
-
-         case "motherduck": {
-            if (!connection.motherduckConnection?.accessToken) {
-               throw new Error("MotherDuck access token is required.");
-            }
-
-            pojo.connections[connection.name] = {
-               is: "duckdb",
-               databasePath: connection.motherduckConnection.database
-                  ? `md:${connection.motherduckConnection.database}?attach_mode=single`
-                  : "md:",
-               motherDuckToken: connection.motherduckConnection.accessToken,
-            };
-            break;
-         }
-
-         case "ducklake": {
-            // Shape is validated up front by validateConnectionShape.
-            pojo.connections[connection.name] = buildDuckdbEntry(
-               connection.name,
-               environmentPath,
-               `${connection.name}_ducklake.duckdb`,
-            );
-            break;
-         }
-
-         case "publisher": {
-            // connectionUri presence is validated by validateConnectionShape
-            // above. The proxied dataplane owns auth and read-only enforcement;
-            // PublisherConnection itself does not reject writes. The real
-            // dialect is the remote connection's and is resolved at runtime by
-            // the live connection, so getStaticConnectionAttributes returns
-            // undefined for publisher (falls through to its default).
-            const publisher = connection.publisherConnection!;
-            pojo.connections[connection.name] = {
-               is: "publisher",
-               connectionUri: publisher.connectionUri,
-               accessToken: publisher.accessToken,
-            };
-            break;
-         }
-
-         default: {
-            throw new Error(`Unsupported connection type: ${connection.type}`);
-         }
+      if (!Object.hasOwn(CORE_ENTRY_BUILDERS, connection.type ?? "")) {
+         throw new Error(`Unsupported connection type: ${connection.type}`);
       }
+      pojo.connections[connection.name] = CORE_ENTRY_BUILDERS[
+         connection.type as ConnectionType
+      ](connection as NamedConnection, environmentPath);
 
       apiConnections.push(apiConnection);
    }
