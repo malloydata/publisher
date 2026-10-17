@@ -497,133 +497,448 @@ function warnOnConnectionQueryMetadata(connection: ApiConnection): void {
    }
 }
 
-function validateConnectionShape(connection: ApiConnection): void {
-   if (connection.proxy) {
-      // A connection proxy makes THIS server open an outbound SSH tunnel to a
-      // tenant-configured bastion. It's a normal connection capability,
-      // authorized by whoever configures the connection — deliberately NOT gated
-      // by an env flag, and kept separate from the `publisher` HTTP multi-hop
-      // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
-      // publisher-to-publisher proxying, a distinct operator decision). Host-key
-      // pinning is required and fail-closed at connect time, unless the deployment
-      // sets PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see
-      // openProxy); the proxy-specific fields are validated up front below so a
-      // permanent misconfig fails at config load, not by repeatedly dialing the
-      // tenant's bastion at query time.
-      if (connection.proxy.type !== "ssh") {
+function validateProxyShape(
+   connection: ApiConnection,
+   proxy: NonNullable<ApiConnection["proxy"]>,
+): void {
+   // A connection proxy makes THIS server open an outbound SSH tunnel to a
+   // tenant-configured bastion. It's a normal connection capability,
+   // authorized by whoever configures the connection — deliberately NOT gated
+   // by an env flag, and kept separate from the `publisher` HTTP multi-hop
+   // type's PUBLISHER_ALLOW_PROXY_CONNECTIONS gate below (that flag is about
+   // publisher-to-publisher proxying, a distinct operator decision). Host-key
+   // pinning is required and fail-closed at connect time, unless the deployment
+   // sets PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see
+   // openProxy); the proxy-specific fields are validated up front below so a
+   // permanent misconfig fails at config load, not by repeatedly dialing the
+   // tenant's bastion at query time.
+   if (proxy.type !== "ssh") {
+      throw new Error(
+         `Connection '${connection.name}' has an unsupported proxy type '${proxy.type}'. Only 'ssh' is supported.`,
+      );
+   }
+   if (connection.type !== "postgres") {
+      throw new Error(
+         `Connection proxy is not supported for type '${connection.type}' (only 'postgres' today).`,
+      );
+   }
+   if (!proxy.ssh) {
+      throw new Error(
+         `Connection proxy on '${connection.name}' has type 'ssh' but no 'ssh' config object.`,
+      );
+   }
+   // The tunnel forwards to an explicit host:port; the connectionString form
+   // can't be rewritten to the local endpoint. Reject it outright when a
+   // proxy is set — normal postgres gives connectionString precedence over
+   // host/port, so a config carrying BOTH would silently tunnel to
+   // host/port and ignore the connectionString, connecting to a different
+   // database than the operator configured. Require discrete host/port.
+   if (connection.postgresConnection?.connectionString) {
+      throw new Error(
+         `Connection proxy on '${connection.name}' does not support the connectionString form; ` +
+            `provide discrete host and port instead (the tunnel forwards to an explicit endpoint).`,
+      );
+   }
+   if (
+      !connection.postgresConnection?.host ||
+      !connection.postgresConnection?.port
+   ) {
+      throw new Error(
+         `Connection proxy on '${connection.name}' requires explicit host and port on the ` +
+            `postgres connection; the connectionString form is not supported with a proxy.`,
+      );
+   }
+
+   // hostKey is optional at config time, but a non-empty hostKey that parses to
+   // zero keys -- only blank lines, whitespace, or `#` comments, e.g. a paste
+   // that grabbed just ssh-keyscan's `# host:port ...` header -- is a
+   // misconfigured pin and is rejected here so the operator gets a config error.
+   // (Truthiness, not trim(): "" is the unpinned signal; "   " is a non-empty
+   // value that must yield a key.) An omitted/empty hostKey is unpinned, which
+   // the tunnel refuses at connect time unless the deployment sets
+   // PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see openProxy's host-key policy).
+   const hostKey = proxy.ssh?.hostKey;
+   // Warn at config load rather than leaving the refusal to be discovered by a
+   // failing query. The tunnel is dialed lazily, so an upgrading deployment with
+   // unpinned connections is silent through startup and first learns of the new
+   // policy when a user runs a query. Naming them here lets an operator pin the
+   // keys before anyone hits one. Not an error: refusing to start over a
+   // connection nobody may use today would be worse than the problem.
+   // Config load is a context that can throw, so this is where a
+   // misspelled opt-in is caught: parseBoolEnv rejects anything that is
+   // neither a boolean spelling nor empty, which stops `=ture` from reading
+   // as "off" and silently refusing every tunnel through this connection.
+   // The connect-time check in proxy.ts cannot do this -- see
+   // allowUnverifiedHostKey for why it falls back instead of throwing.
+   parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
+   if (!hostKey && !allowUnverifiedHostKey()) {
+      logger.warn(
+         `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +
+            `be refused when a query first uses it. Set ssh.hostKey to the bastion's host ` +
+            `key, or set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
+            `key for this deployment.`,
+      );
+   }
+   if (hostKey && parseHostKeys(hostKey).size === 0) {
+      throw new Error(
+         `Connection proxy on '${connection.name}' has a hostKey with no usable host-key line ` +
+            `(only blanks/comments). Provide an OpenSSH known_hosts line or base64 blob, or omit ` +
+            `hostKey to connect unpinned (which the tunnel refuses unless ` +
+            `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY is set).`,
+      );
+   }
+
+   // Validate the proxied TLS mode up front. The tunnel is dialed lazily on
+   // first lookup and a failed build is retried on every subsequent query, so
+   // a permanent sslmode misconfig left to throw at connect time would re-dial
+   // the tenant's bastion indefinitely. Fail at config load instead.
+   // `!= null` (not truthiness) so a present-but-empty sslmode ("") is caught
+   // here as unsupported rather than slipping through to fail at tunnel-build;
+   // null/undefined mean unset (server applies the default).
+   const sslmode = connection.postgresConnection?.sslmode;
+   if (sslmode != null) {
+      validatePostgresSslmode(
+         `Connection proxy on '${connection.name}'`,
+         sslmode,
+      );
+      // No precondition for `verify-full`: unlike `verify-ca` (which passes an
+      // explicit `sslrootcert` path), it verifies against Node's ambient trust
+      // anchors (its bundled Mozilla CA roots + NODE_EXTRA_CA_CERTS), so
+      // requiring a bundle here would wrongly reject targets with a
+      // publicly-trusted CA. An untrusted CA surfaces as a clear pg error at
+      // connect time instead. This means verify-full's CA trust is broader
+      // than verify-ca's pinned bundle — intentional (it adds the hostname
+      // check without narrowing trust), so unlike libpq, verify-full here is
+      // not a strict superset of verify-ca.
+   }
+
+   // The proxied path builds a connectionString to the local tunnel endpoint;
+   // pg decodes the database path with decodeURI, which leaves URI-reserved
+   // characters percent-encoded — so a db name containing them would resolve
+   // to the wrong database. Reject it clearly rather than failing later with a
+   // confusing "database does not exist". (user/password use decodeURIComponent
+   // on parse and round-trip fine.)
+   const dbName = connection.postgresConnection?.databaseName;
+   if (dbName && decodeURI(encodeURIComponent(dbName)) !== dbName) {
+      throw new Error(
+         `Connection proxy on '${connection.name}' has a database name with characters that can't ` +
+            `be carried over a proxied connection (${JSON.stringify(dbName)}). Use a database name ` +
+            `without URI-reserved characters (; , / ? : @ & = + $ #).`,
+      );
+   }
+}
+
+function validateSqlServerShape(connection: ApiConnection): void {
+   const sqlserver = connection.sqlserverConnection;
+   if (!sqlserver) {
+      throw new Error("SQL Server connection configuration is missing.");
+   }
+   // The connector reads a port that is not a number as no port and
+   // dials 1433, so a typo would surface as a connection failure naming
+   // a port the operator never configured. Name the value instead.
+   const port: unknown = sqlserver.port;
+   if (
+      port !== undefined &&
+      port !== null &&
+      (typeof port !== "number" ||
+         !Number.isInteger(port) ||
+         port < 1 ||
+         port > 65535)
+   ) {
+      throw new Error(
+         `Connection '${connection.name}' has an invalid sqlserverConnection.port ` +
+            `${JSON.stringify(port)} (expected an integer from 1 to 65535).`,
+      );
+   }
+   // Both routes to a server, and the driver takes the instance name over
+   // the port when given both. Saying so at load, rather than letting a
+   // port the operator set go quietly unused.
+   if (sqlserver.instanceName && sqlserver.port) {
+      logger.warn(
+         `Connection '${connection.name}' sets both sqlserverConnection.instanceName ` +
+            `and port; the instance is located through SQL Browser and the port is not used.`,
+      );
+   }
+}
+
+function validateBigQueryShape(connection: ApiConnection): void {
+   const bigquery = connection.bigqueryConnection;
+   if (bigquery?.impersonateServiceAccount) {
+      // An authClient replaces the credential entirely in the SDK, so a
+      // key alongside it would sit there looking live while the
+      // impersonated identity executes every query. Core refuses the
+      // combination at construction too; refusing here surfaces it as a
+      // config error at load instead of a connection error at first use.
+      if (bigquery.serviceAccountKeyJson) {
          throw new Error(
-            `Connection '${connection.name}' has an unsupported proxy type '${connection.proxy.type}'. Only 'ssh' is supported.`,
+            `Connection '${connection.name}' sets impersonateServiceAccount ` +
+               `and serviceAccountKeyJson. Impersonation replaces the ` +
+               `credential entirely — the key would be ignored — so supply ` +
+               `one or the other.`,
          );
       }
-      if (connection.type !== "postgres") {
+      // With an authClient the SDK resolves the project id through the
+      // impersonated credential, not ambient ADC, so auto-detection is
+      // not a meaningful fallback for the job project. Require it named.
+      if (!bigquery.billingProjectId) {
          throw new Error(
-            `Connection proxy is not supported for type '${connection.type}' (only 'postgres' today).`,
+            `Connection '${connection.name}' sets impersonateServiceAccount ` +
+               `but no billingProjectId. Impersonated connections resolve ` +
+               `the project through the impersonated credential, so the ` +
+               `project that runs (and is billed for) jobs must be named ` +
+               `explicitly.`,
          );
       }
-      if (!connection.proxy.ssh) {
-         throw new Error(
-            `Connection proxy on '${connection.name}' has type 'ssh' but no 'ssh' config object.`,
-         );
-      }
-      // The tunnel forwards to an explicit host:port; the connectionString form
-      // can't be rewritten to the local endpoint. Reject it outright when a
-      // proxy is set — normal postgres gives connectionString precedence over
-      // host/port, so a config carrying BOTH would silently tunnel to
-      // host/port and ignore the connectionString, connecting to a different
-      // database than the operator configured. Require discrete host/port.
-      if (connection.postgresConnection?.connectionString) {
-         throw new Error(
-            `Connection proxy on '${connection.name}' does not support the connectionString form; ` +
-               `provide discrete host and port instead (the tunnel forwards to an explicit endpoint).`,
-         );
-      }
+   }
+}
+
+function validateDuckDBShape(connection: ApiConnection): void {
+   if (!connection.duckdbConnection) {
+      throw new Error("DuckDB connection configuration is missing.");
+   }
+   const attached = connection.duckdbConnection.attachedDatabases ?? [];
+   // AttachedDatabase reuses the BigqueryConnection schema, but the
+   // ATTACH path builds a DuckDB BIGQUERY secret from key JSON — the
+   // DuckDB extension takes a key, not a token — so an impersonation
+   // request here would be accepted and silently ignored. Refuse it
+   // with the limitation named, rather than the generic "service
+   // account key required" it would otherwise hit later.
+   for (const attachedDb of attached) {
       if (
-         !connection.postgresConnection?.host ||
-         !connection.postgresConnection?.port
+         attachedDb.type === "bigquery" &&
+         attachedDb.bigqueryConnection?.impersonateServiceAccount
       ) {
          throw new Error(
-            `Connection proxy on '${connection.name}' requires explicit host and port on the ` +
-               `postgres connection; the connectionString form is not supported with a proxy.`,
+            `Attached database '${attachedDb.name}' on DuckDB connection ` +
+               `'${connection.name}' sets impersonateServiceAccount, which ` +
+               `is not supported on attached databases: DuckDB's BIGQUERY ` +
+               `secret authenticates with a service account key, not a ` +
+               `token. Use serviceAccountKeyJson for attached BigQuery ` +
+               `databases.`,
          );
       }
+   }
+   const setupSQL = connection.duckdbConnection.setupSQL;
+   const hasSetupSQL =
+      typeof setupSQL === "string" && setupSQL.trim().length > 0;
+   if (attached.length === 0 && !hasSetupSQL) {
+      throw new Error(
+         `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
+      );
+   }
+   // Shape only, deliberately not the whole credential check. This
+   // validator's throw fails the ENTIRE environment (assembleEnvironmentConnections
+   // has no per-connection recovery), and nothing here validates an attached
+   // database's credentials today — so demanding a key pair at load would turn
+   // configs that load-and-fail-late into configs that load nothing at all.
+   // These checks reject only shapes no path ever accepted, so no config that
+   // loads today stops loading.
+   for (const attachedDb of attached) {
+      if (attachedDb.type === "s3" && attachedDb.s3Connection) {
+         validateS3ProviderShape(
+            attachedDb.s3Connection,
+            attachedDb.name ?? connection.name,
+         );
+      }
+   }
+}
 
-      // hostKey is optional at config time, but a non-empty hostKey that parses to
-      // zero keys -- only blank lines, whitespace, or `#` comments, e.g. a paste
-      // that grabbed just ssh-keyscan's `# host:port ...` header -- is a
-      // misconfigured pin and is rejected here so the operator gets a config error.
-      // (Truthiness, not trim(): "" is the unpinned signal; "   " is a non-empty
-      // value that must yield a key.) An omitted/empty hostKey is unpinned, which
-      // the tunnel refuses at connect time unless the deployment sets
-      // PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY (see openProxy's host-key policy).
-      const hostKey = connection.proxy.ssh?.hostKey;
-      // Warn at config load rather than leaving the refusal to be discovered by a
-      // failing query. The tunnel is dialed lazily, so an upgrading deployment with
-      // unpinned connections is silent through startup and first learns of the new
-      // policy when a user runs a query. Naming them here lets an operator pin the
-      // keys before anyone hits one. Not an error: refusing to start over a
-      // connection nobody may use today would be worse than the problem.
-      // Config load is a context that can throw, so this is where a
-      // misspelled opt-in is caught: parseBoolEnv rejects anything that is
-      // neither a boolean spelling nor empty, which stops `=ture` from reading
-      // as "off" and silently refusing every tunnel through this connection.
-      // The connect-time check in proxy.ts cannot do this -- see
-      // allowUnverifiedHostKey for why it falls back instead of throwing.
-      parseBoolEnv(ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV);
-      if (!hostKey && !allowUnverifiedHostKey()) {
-         logger.warn(
-            `Connection proxy on '${connection.name}' pins no SSH host key, so the tunnel will ` +
-               `be refused when a query first uses it. Set ssh.hostKey to the bastion's host ` +
-               `key, or set ${ALLOW_UNVERIFIED_SSH_HOST_KEY_ENV}=true to accept an unverified ` +
-               `key for this deployment.`,
-         );
-      }
-      if (hostKey && parseHostKeys(hostKey).size === 0) {
+function validateMotherDuckShape(connection: ApiConnection): void {
+   if (!connection.motherduckConnection) {
+      throw new Error("MotherDuck connection configuration is missing.");
+   }
+   if (!connection.motherduckConnection.accessToken) {
+      throw new Error("MotherDuck access token is required.");
+   }
+}
+
+function validateDuckLakeShape(connection: ApiConnection): void {
+   // Every field the ATTACH demands (see attachDuckLakeWithMode), checked
+   // together here rather than split between this validator and the pojo
+   // assembler below. `bucketUrl` was the one nobody checked: a destination
+   // is only attached at its first BUILD, so a missing bucket surfaced
+   // hours after the config change that caused it.
+   if (!connection.ducklakeConnection) {
+      throw new Error("DuckLake connection configuration is missing.");
+   }
+   if (!connection.ducklakeConnection.catalog?.postgresConnection) {
+      throw new Error(
+         `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
+      );
+   }
+   if (!connection.ducklakeConnection.storage?.bucketUrl) {
+      throw new Error(
+         `Storage bucketUrl is required for DuckLake: ${connection.name}`,
+      );
+   }
+   // Shape only, matching the duckdb branch above, and for the same reason:
+   // this validator's throw reaches assembleEnvironmentConnections, which has
+   // no per-connection recovery, so a rule enforced here fails the ENTIRE
+   // environment. The mutual-exclusion and enum guards are safe to apply
+   // because no config that loads today can violate them. The key-pair
+   // requirement is NOT applied here — a DuckLake carrying a present but
+   // incomplete s3Connection has always loaded and failed when used, and
+   // making it fail every other connection in the environment is a worse
+   // trade than reporting it late.
+   //
+   // A storage DESTINATION is different: validateStorageDestinations rejects
+   // one entry without touching the rest, so it can afford the full check and
+   // does it there. That is the case that motivated moving these guards at
+   // all — a destination is only attached at its first BUILD.
+   const storage = connection.ducklakeConnection.storage;
+   if (storage.s3Connection) {
+      validateS3ProviderShape(storage.s3Connection, connection.name);
+   }
+   // metadataSchema is optional, but when present it reaches the ATTACH as a
+   // quoted string literal AND the catalog-format preflight as a quoted
+   // identifier. Rather than escape one value for two grammars, restrict it
+   // to a plain identifier here — a deterministic config error, caught at
+   // load instead of at the connection's first attach.
+   //
+   // The typeof check is load-bearing, not defensive: the value arrives from
+   // untyped JSON, and RegExp.test() coerces its argument, so `true` and `null`
+   // both satisfy the pattern as "true"/"null" and would reach escapeSQL's
+   // String.replace as a non-string — a TypeError at the first attach, which is
+   // exactly the failure this check exists to turn into a config error.
+   if (connection.ducklakeConnection.catalog.metadataSchema !== undefined) {
+      const schema = connection.ducklakeConnection.catalog.metadataSchema;
+      if (
+         typeof schema !== "string" ||
+         !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
+      ) {
          throw new Error(
-            `Connection proxy on '${connection.name}' has a hostKey with no usable host-key line ` +
-               `(only blanks/comments). Provide an OpenSSH known_hosts line or base64 blob, or omit ` +
-               `hostKey to connect unpinned (which the tunnel refuses unless ` +
-               `PUBLISHER_ALLOW_UNVERIFIED_SSH_HOST_KEY is set).`,
+            `DuckLake catalog metadataSchema must be a plain identifier ` +
+               `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
+               `${connection.name}`,
          );
       }
+   }
+}
 
-      // Validate the proxied TLS mode up front. The tunnel is dialed lazily on
-      // first lookup and a failed build is retried on every subsequent query, so
-      // a permanent sslmode misconfig left to throw at connect time would re-dial
-      // the tenant's bastion indefinitely. Fail at config load instead.
-      // `!= null` (not truthiness) so a present-but-empty sslmode ("") is caught
-      // here as unsupported rather than slipping through to fail at tunnel-build;
-      // null/undefined mean unset (server applies the default).
-      const sslmode = connection.postgresConnection?.sslmode;
-      if (sslmode != null) {
-         validatePostgresSslmode(
-            `Connection proxy on '${connection.name}'`,
-            sslmode,
-         );
-         // No precondition for `verify-full`: unlike `verify-ca` (which passes an
-         // explicit `sslrootcert` path), it verifies against Node's ambient trust
-         // anchors (its bundled Mozilla CA roots + NODE_EXTRA_CA_CERTS), so
-         // requiring a bundle here would wrongly reject targets with a
-         // publicly-trusted CA. An untrusted CA surfaces as a clear pg error at
-         // connect time instead. This means verify-full's CA trust is broader
-         // than verify-ca's pinned bundle — intentional (it adds the hostname
-         // check without narrowing trust), so unlike libpq, verify-full here is
-         // not a strict superset of verify-ca.
-      }
+function validateTrinoShape(connection: ApiConnection): void {
+   if (!connection.trinoConnection) {
+      throw new Error("Trino connection configuration is missing.");
+   }
+}
 
-      // The proxied path builds a connectionString to the local tunnel endpoint;
-      // pg decodes the database path with decodeURI, which leaves URI-reserved
-      // characters percent-encoded — so a db name containing them would resolve
-      // to the wrong database. Reject it clearly rather than failing later with a
-      // confusing "database does not exist". (user/password use decodeURIComponent
-      // on parse and round-trip fine.)
-      const dbName = connection.postgresConnection?.databaseName;
-      if (dbName && decodeURI(encodeURIComponent(dbName)) !== dbName) {
-         throw new Error(
-            `Connection proxy on '${connection.name}' has a database name with characters that can't ` +
-               `be carried over a proxied connection (${JSON.stringify(dbName)}). Use a database name ` +
-               `without URI-reserved characters (; , / ? : @ & = + $ #).`,
-         );
-      }
+function validateDatabricksShape(connection: ApiConnection): void {
+   const databricks = connection.databricksConnection;
+   if (!databricks) {
+      throw new Error("Databricks connection configuration is missing.");
+   }
+   if (!databricks.host) {
+      throw new Error("Databricks host is required.");
+   }
+   if (!databricks.path) {
+      throw new Error("Databricks SQL warehouse HTTP path is required.");
+   }
+   const hasToken = !!databricks.token;
+   const hasOAuth =
+      !!databricks.oauthClientId && !!databricks.oauthClientSecret;
+   if (!hasToken && !hasOAuth) {
+      throw new Error(
+         "Databricks requires either a personal access token or OAuth M2M client ID and secret.",
+      );
+   }
+   const hasDefaultCatalog = !!databricks.defaultCatalog;
+   if (!hasDefaultCatalog) {
+      throw new Error("Databricks default catalog is required.");
+   }
+}
+
+function validateSnowflakeShape(connection: ApiConnection): void {
+   const snowflakeConnection = connection.snowflakeConnection;
+   if (!snowflakeConnection) {
+      throw new Error("Snowflake connection configuration is missing.");
+   }
+   if (!snowflakeConnection.account) {
+      throw new Error("Snowflake account is required.");
+   }
+   if (!snowflakeConnection.username) {
+      throw new Error("Snowflake username is required.");
+   }
+   if (!snowflakeConnection.password && !snowflakeConnection.privateKey) {
+      throw new Error(
+         "Snowflake password or private key or private key path is required.",
+      );
+   }
+   if (!snowflakeConnection.warehouse) {
+      throw new Error("Snowflake warehouse is required.");
+   }
+}
+
+function validatePublisherShape(connection: ApiConnection): void {
+   // SSRF gate (default-deny / fail-closed). A `publisher` connection
+   // makes THIS server issue outbound HTTP to a tenant-controlled
+   // `connectionUri` (both the query path in db-publisher's
+   // PublisherConnection and the introspection path in db_utils). That is
+   // the intended behavior for local `--watch-env` authoring, but in a
+   // hosted multi-tenant deployment (e.g. Credible running this server) it
+   // is an SSRF surface. Require an explicit opt-in so the type is refused
+   // unless the operator deliberately enabled it. This is the single
+   // choke point — every connection passes validateConnectionShape before
+   // it can be assembled, queried, or introspected — so denying here shuts
+   // off all three at once.
+   if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
+      throw new Error(
+         `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
+            `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +
+            `which is only appropriate for local --watch-env authoring. ` +
+            `Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.`,
+      );
+   }
+   const publisher = connection.publisherConnection;
+   if (!publisher?.connectionUri) {
+      throw new Error(
+         `Invalid publisher connection '${connection.name}': missing connectionUri. ` +
+            `Fix: { "name": "${connection.name}", "type": "publisher", ` +
+            `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
+      );
+   }
+   // Reject a malformed connectionUri here, at config-load, rather than
+   // letting it fail deep in the request path — where the thrown error can
+   // echo the raw value back, leaking any credentials embedded in it
+   // (`redactUrlCredentials` returns the URI unchanged when it can't parse
+   // it). Never include the raw connectionUri in these messages; the
+   // scheme is safe to name.
+   let parsedUri: URL;
+   try {
+      parsedUri = new URL(publisher.connectionUri);
+   } catch {
+      throw new Error(
+         `Invalid publisher connection '${connection.name}': connectionUri is not a valid URL. ` +
+            `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+      );
+   }
+   if (parsedUri.protocol !== "http:" && parsedUri.protocol !== "https:") {
+      throw new Error(
+         `Invalid publisher connection '${connection.name}': connectionUri must use http or https (got '${parsedUri.protocol}'). ` +
+            `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
+      );
+   }
+}
+
+/** Type-specific shape checks; postgres and mysql have none of their own. */
+const SHAPE_VALIDATORS: Partial<
+   Record<
+      NonNullable<ApiConnection["type"]>,
+      (connection: ApiConnection) => void
+   >
+> = {
+   sqlserver: validateSqlServerShape,
+   bigquery: validateBigQueryShape,
+   duckdb: validateDuckDBShape,
+   motherduck: validateMotherDuckShape,
+   ducklake: validateDuckLakeShape,
+   trino: validateTrinoShape,
+   databricks: validateDatabricksShape,
+   snowflake: validateSnowflakeShape,
+   publisher: validatePublisherShape,
+};
+
+function validateConnectionShape(connection: ApiConnection): void {
+   if (connection.proxy) {
+      validateProxyShape(connection, connection.proxy);
    }
 
    // A direct connection's sslmode, when set, takes the place of the deployment
@@ -650,307 +965,11 @@ function validateConnectionShape(connection: ApiConnection): void {
       );
    }
 
-   switch (connection.type) {
-      case "postgres":
-      case "mysql":
-         break;
-      case "sqlserver": {
-         const sqlserver = connection.sqlserverConnection;
-         if (!sqlserver) {
-            throw new Error("SQL Server connection configuration is missing.");
-         }
-         // The connector reads a port that is not a number as no port and
-         // dials 1433, so a typo would surface as a connection failure naming
-         // a port the operator never configured. Name the value instead.
-         const port: unknown = sqlserver.port;
-         if (
-            port !== undefined &&
-            port !== null &&
-            (typeof port !== "number" ||
-               !Number.isInteger(port) ||
-               port < 1 ||
-               port > 65535)
-         ) {
-            throw new Error(
-               `Connection '${connection.name}' has an invalid sqlserverConnection.port ` +
-                  `${JSON.stringify(port)} (expected an integer from 1 to 65535).`,
-            );
-         }
-         // Both routes to a server, and the driver takes the instance name over
-         // the port when given both. Saying so at load, rather than letting a
-         // port the operator set go quietly unused.
-         if (sqlserver.instanceName && sqlserver.port) {
-            logger.warn(
-               `Connection '${connection.name}' sets both sqlserverConnection.instanceName ` +
-                  `and port; the instance is located through SQL Browser and the port is not used.`,
-            );
-         }
-         break;
-      }
-      case "bigquery": {
-         const bigquery = connection.bigqueryConnection;
-         if (bigquery?.impersonateServiceAccount) {
-            // An authClient replaces the credential entirely in the SDK, so a
-            // key alongside it would sit there looking live while the
-            // impersonated identity executes every query. Core refuses the
-            // combination at construction too; refusing here surfaces it as a
-            // config error at load instead of a connection error at first use.
-            if (bigquery.serviceAccountKeyJson) {
-               throw new Error(
-                  `Connection '${connection.name}' sets impersonateServiceAccount ` +
-                     `and serviceAccountKeyJson. Impersonation replaces the ` +
-                     `credential entirely — the key would be ignored — so supply ` +
-                     `one or the other.`,
-               );
-            }
-            // With an authClient the SDK resolves the project id through the
-            // impersonated credential, not ambient ADC, so auto-detection is
-            // not a meaningful fallback for the job project. Require it named.
-            if (!bigquery.billingProjectId) {
-               throw new Error(
-                  `Connection '${connection.name}' sets impersonateServiceAccount ` +
-                     `but no billingProjectId. Impersonated connections resolve ` +
-                     `the project through the impersonated credential, so the ` +
-                     `project that runs (and is billed for) jobs must be named ` +
-                     `explicitly.`,
-               );
-            }
-         }
-         break;
-      }
-      case "duckdb":
-         if (!connection.duckdbConnection) {
-            throw new Error("DuckDB connection configuration is missing.");
-         }
-         {
-            const attached =
-               connection.duckdbConnection.attachedDatabases ?? [];
-            // AttachedDatabase reuses the BigqueryConnection schema, but the
-            // ATTACH path builds a DuckDB BIGQUERY secret from key JSON — the
-            // DuckDB extension takes a key, not a token — so an impersonation
-            // request here would be accepted and silently ignored. Refuse it
-            // with the limitation named, rather than the generic "service
-            // account key required" it would otherwise hit later.
-            for (const attachedDb of attached) {
-               if (
-                  attachedDb.type === "bigquery" &&
-                  attachedDb.bigqueryConnection?.impersonateServiceAccount
-               ) {
-                  throw new Error(
-                     `Attached database '${attachedDb.name}' on DuckDB connection ` +
-                        `'${connection.name}' sets impersonateServiceAccount, which ` +
-                        `is not supported on attached databases: DuckDB's BIGQUERY ` +
-                        `secret authenticates with a service account key, not a ` +
-                        `token. Use serviceAccountKeyJson for attached BigQuery ` +
-                        `databases.`,
-                  );
-               }
-            }
-            const setupSQL = connection.duckdbConnection.setupSQL;
-            const hasSetupSQL =
-               typeof setupSQL === "string" && setupSQL.trim().length > 0;
-            if (attached.length === 0 && !hasSetupSQL) {
-               throw new Error(
-                  `DuckDB connection "${connection.name}" must provide either attachedDatabases or non-empty setupSQL.`,
-               );
-            }
-            // Shape only, deliberately not the whole credential check. This
-            // validator's throw fails the ENTIRE environment (assembleEnvironmentConnections
-            // has no per-connection recovery), and nothing here validates an attached
-            // database's credentials today — so demanding a key pair at load would turn
-            // configs that load-and-fail-late into configs that load nothing at all.
-            // These checks reject only shapes no path ever accepted, so no config that
-            // loads today stops loading.
-            for (const attachedDb of attached) {
-               if (attachedDb.type === "s3" && attachedDb.s3Connection) {
-                  validateS3ProviderShape(
-                     attachedDb.s3Connection,
-                     attachedDb.name ?? connection.name,
-                  );
-               }
-            }
-         }
-         break;
-      case "motherduck":
-         if (!connection.motherduckConnection) {
-            throw new Error("MotherDuck connection configuration is missing.");
-         }
-         if (!connection.motherduckConnection.accessToken) {
-            throw new Error("MotherDuck access token is required.");
-         }
-         break;
-      case "ducklake":
-         // Every field the ATTACH demands (see attachDuckLakeWithMode), checked
-         // together here rather than split between this validator and the pojo
-         // assembler below. `bucketUrl` was the one nobody checked: a destination
-         // is only attached at its first BUILD, so a missing bucket surfaced
-         // hours after the config change that caused it.
-         if (!connection.ducklakeConnection) {
-            throw new Error("DuckLake connection configuration is missing.");
-         }
-         if (!connection.ducklakeConnection.catalog?.postgresConnection) {
-            throw new Error(
-               `PostgreSQL connection configuration is required for DuckLake catalog: ${connection.name}`,
-            );
-         }
-         if (!connection.ducklakeConnection.storage?.bucketUrl) {
-            throw new Error(
-               `Storage bucketUrl is required for DuckLake: ${connection.name}`,
-            );
-         }
-         // Shape only, matching the duckdb branch above, and for the same reason:
-         // this validator's throw reaches assembleEnvironmentConnections, which has
-         // no per-connection recovery, so a rule enforced here fails the ENTIRE
-         // environment. The mutual-exclusion and enum guards are safe to apply
-         // because no config that loads today can violate them. The key-pair
-         // requirement is NOT applied here — a DuckLake carrying a present but
-         // incomplete s3Connection has always loaded and failed when used, and
-         // making it fail every other connection in the environment is a worse
-         // trade than reporting it late.
-         //
-         // A storage DESTINATION is different: validateStorageDestinations rejects
-         // one entry without touching the rest, so it can afford the full check and
-         // does it there. That is the case that motivated moving these guards at
-         // all — a destination is only attached at its first BUILD.
-         {
-            const storage = connection.ducklakeConnection.storage;
-            if (storage.s3Connection) {
-               validateS3ProviderShape(storage.s3Connection, connection.name);
-            }
-         }
-         // metadataSchema is optional, but when present it reaches the ATTACH as a
-         // quoted string literal AND the catalog-format preflight as a quoted
-         // identifier. Rather than escape one value for two grammars, restrict it
-         // to a plain identifier here — a deterministic config error, caught at
-         // load instead of at the connection's first attach.
-         //
-         // The typeof check is load-bearing, not defensive: the value arrives from
-         // untyped JSON, and RegExp.test() coerces its argument, so `true` and `null`
-         // both satisfy the pattern as "true"/"null" and would reach escapeSQL's
-         // String.replace as a non-string — a TypeError at the first attach, which is
-         // exactly the failure this check exists to turn into a config error.
-         if (
-            connection.ducklakeConnection.catalog.metadataSchema !== undefined
-         ) {
-            const schema = connection.ducklakeConnection.catalog.metadataSchema;
-            if (
-               typeof schema !== "string" ||
-               !/^[A-Za-z_][A-Za-z0-9_]*$/.test(schema)
-            ) {
-               throw new Error(
-                  `DuckLake catalog metadataSchema must be a plain identifier ` +
-                     `([A-Za-z_][A-Za-z0-9_]*), got '${schema}' for connection: ` +
-                     `${connection.name}`,
-               );
-            }
-         }
-         break;
-      case "trino":
-         if (!connection.trinoConnection) {
-            throw new Error("Trino connection configuration is missing.");
-         }
-         break;
-      case "databricks": {
-         const databricks = connection.databricksConnection;
-         if (!databricks) {
-            throw new Error("Databricks connection configuration is missing.");
-         }
-         if (!databricks.host) {
-            throw new Error("Databricks host is required.");
-         }
-         if (!databricks.path) {
-            throw new Error("Databricks SQL warehouse HTTP path is required.");
-         }
-         const hasToken = !!databricks.token;
-         const hasOAuth =
-            !!databricks.oauthClientId && !!databricks.oauthClientSecret;
-         if (!hasToken && !hasOAuth) {
-            throw new Error(
-               "Databricks requires either a personal access token or OAuth M2M client ID and secret.",
-            );
-         }
-         const hasDefaultCatalog = !!databricks.defaultCatalog;
-         if (!hasDefaultCatalog) {
-            throw new Error("Databricks default catalog is required.");
-         }
-         break;
-      }
-      case "snowflake": {
-         const snowflakeConnection = connection.snowflakeConnection;
-         if (!snowflakeConnection) {
-            throw new Error("Snowflake connection configuration is missing.");
-         }
-         if (!snowflakeConnection.account) {
-            throw new Error("Snowflake account is required.");
-         }
-         if (!snowflakeConnection.username) {
-            throw new Error("Snowflake username is required.");
-         }
-         if (!snowflakeConnection.password && !snowflakeConnection.privateKey) {
-            throw new Error(
-               "Snowflake password or private key or private key path is required.",
-            );
-         }
-         if (!snowflakeConnection.warehouse) {
-            throw new Error("Snowflake warehouse is required.");
-         }
-         break;
-      }
-      case "publisher": {
-         // SSRF gate (default-deny / fail-closed). A `publisher` connection
-         // makes THIS server issue outbound HTTP to a tenant-controlled
-         // `connectionUri` (both the query path in db-publisher's
-         // PublisherConnection and the introspection path in db_utils). That is
-         // the intended behavior for local `--watch-env` authoring, but in a
-         // hosted multi-tenant deployment (e.g. Credible running this server) it
-         // is an SSRF surface. Require an explicit opt-in so the type is refused
-         // unless the operator deliberately enabled it. This is the single
-         // choke point — every connection passes validateConnectionShape before
-         // it can be assembled, queried, or introspected — so denying here shuts
-         // off all three at once.
-         if (process.env.PUBLISHER_ALLOW_PROXY_CONNECTIONS !== "true") {
-            throw new Error(
-               `Publisher proxy connection '${connection.name}' is disabled in this deployment. ` +
-                  `'publisher' connections make the server issue outbound requests to a configured connectionUri, ` +
-                  `which is only appropriate for local --watch-env authoring. ` +
-                  `Fix: set the environment variable PUBLISHER_ALLOW_PROXY_CONNECTIONS=true to enable them.`,
-            );
-         }
-         const publisher = connection.publisherConnection;
-         if (!publisher?.connectionUri) {
-            throw new Error(
-               `Invalid publisher connection '${connection.name}': missing connectionUri. ` +
-                  `Fix: { "name": "${connection.name}", "type": "publisher", ` +
-                  `"publisherConnection": { "connectionUri": "https://…/connections/${connection.name}", "accessToken": "<jwt>" } }`,
-            );
-         }
-         // Reject a malformed connectionUri here, at config-load, rather than
-         // letting it fail deep in the request path — where the thrown error can
-         // echo the raw value back, leaking any credentials embedded in it
-         // (`redactUrlCredentials` returns the URI unchanged when it can't parse
-         // it). Never include the raw connectionUri in these messages; the
-         // scheme is safe to name.
-         let parsedUri: URL;
-         try {
-            parsedUri = new URL(publisher.connectionUri);
-         } catch {
-            throw new Error(
-               `Invalid publisher connection '${connection.name}': connectionUri is not a valid URL. ` +
-                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
-            );
-         }
-         if (
-            parsedUri.protocol !== "http:" &&
-            parsedUri.protocol !== "https:"
-         ) {
-            throw new Error(
-               `Invalid publisher connection '${connection.name}': connectionUri must use http or https (got '${parsedUri.protocol}'). ` +
-                  `Fix: set connectionUri to an absolute https URL like "https://…/connections/${connection.name}".`,
-            );
-         }
-         break;
-      }
-   }
+   const validateType =
+      connection.type && Object.hasOwn(SHAPE_VALIDATORS, connection.type)
+         ? SHAPE_VALIDATORS[connection.type]
+         : undefined;
+   validateType?.(connection);
 }
 
 /**
