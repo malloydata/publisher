@@ -54,7 +54,7 @@ describe("spliceDashboardDocument: imports", () => {
       });
    });
 
-   it("puts a new import above a new extension when the file ends on its import", async () => {
+   it("puts a new import above a tile's query when the file ends on its import", async () => {
       const blank = `## artifact { title="Blank" tiles=[] }\nimport { orders } from '../orders.malloy'\n`;
       const out = await spliced(blank, (d) => {
          addTileToDocument(
@@ -77,7 +77,10 @@ describe("spliceDashboardDocument: imports", () => {
          'import { recent_orders } from "_shared.malloy"',
       );
       expect(imported).toBeGreaterThan(-1);
-      expect(imported).toBeLessThan(out.indexOf("source: recent_orders_tiles"));
+      expect(out).not.toContain("source:");
+      expect(imported).toBeLessThan(
+         out.indexOf("query: totals_tile is recent_orders -> totals"),
+      );
    });
 
    it("takes a name off the statement", async () => {
@@ -147,22 +150,21 @@ describe("spliceDashboardDocument: imports", () => {
       expect(reason).toContain("`scoped_orders` is still read by a tile");
    });
 
-   it("lets a tile go on a source added in the same edit", async () => {
+   it("lets a tile go on a source imported in the same edit", async () => {
       const out = await spliced(SOURCE, (d) => {
          d.imports.push({
             kind: "names",
             names: ["events"],
             from: "../ev.malloy",
          });
-         d.sources.push({ name: "events_tiles", base: "events" });
          d.tiles.push({
-            name: "by_day_tile",
-            source: "events_tiles",
-            declaration: { kind: "reference", from: "by_day" },
+            name: "by_day",
+            source: "events",
+            declaration: { kind: "inherited" },
          });
       });
       expect(out).toContain('import { events } from "../ev.malloy"');
-      expect(out).toContain("source: events_tiles is events extend {");
+      expect(out).toContain('"events -> by_day"');
    });
 
    it("never edits a whole-file import", async () => {

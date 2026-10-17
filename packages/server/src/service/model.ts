@@ -559,10 +559,10 @@ export class Model {
       /** Which files are the surface, for an explained refusal
        *  ({@link notQueryable}). */
       offSurface?: OffSurfaceContext;
-      /** This file is a served report with this layout: an entry point that,
-       *  like a `.malloynb`, admits nothing of its own, since a grid report's
-       *  tiles and a linear report's cells read only the package surface. A
-       *  linear report keeps `modelType` "model". */
+      /** This file is a served report with this layout. A source it declares
+       *  on a surface source is queryable by name on this report and keeps
+       *  that base's gate; every other read is the package surface. A linear
+       *  report keeps `modelType` "model". */
       layout?: ReportLayout;
       /** The served report's own compiled file text, so a source it declares
        *  on top of a surface source (`source: big is orders extend {...}`) can
@@ -2869,9 +2869,13 @@ export class Model {
     *  - NO recursion into `fields` (joins), the `pipeline`, or a composite's
     *    `sources[]` (composite member snapshots fail closed).
     *
-    * Idempotent by `condition.code`. For a gated `query_source` the filter
-    * applies inside the stored query's run target, so its aggregates are
-    * caller-rows, not all-rows.
+    * A snapshot that already holds this condition is left alone. One with a
+    * `sourceID` is matched by that id and deduped by `condition.code`. One
+    * with none (an inline `extend`) is matched by {@link resolveGraftTarget}
+    * and deduped by the condition object, so a `where:` the query's author
+    * wrote with the same text does not stand in for the gate. For a gated
+    * `query_source` the filter applies inside the stored query's run target,
+    * so its aggregates are caller-rows, not all-rows.
     */
    private graftIntoNamedQuerySnapshots(
       copy: ModelDef,
@@ -2895,11 +2899,14 @@ export class Model {
          const struct = snapshot as SourceDef;
          // An inline extension (`query: q is gated extend { … } -> v`) stores
          // a new struct with NO `sourceID` of its own, so the identity match
-         // above never reaches it. Match it the way the request path chose
-         // this graft target for that same struct (`resolveGraftTarget`),
-         // so the two decisions cannot disagree. The bind guards that run
-         // after the graft still prove the condition reads `graftTarget`'s
-         // own column on this struct.
+         // below never reaches it. Match it with `resolveGraftTarget`, the
+         // resolution the request path used to choose this graft target. On
+         // the query path both model defs are this copy, so the two agree. A
+         // `.malloynb` cell's graft scope and the struct's origin can differ,
+         // so they can disagree; a miss does not attach the condition, and
+         // the proof that it landed denies the query. The bind guards that
+         // run after a graft that does land still prove the condition reads
+         // `graftTarget`'s own column on this struct.
          if (struct.sourceID === undefined) {
             if (resolveGraftTargetImpl(struct, copy, copy) !== graftTarget)
                continue;
@@ -6393,9 +6400,10 @@ export class Model {
     * curates nothing (then every name is public).
     *
     * For an ordinary file, its export closure, the same set
-    * {@link curateForDiscovery} lists. For a dashboard, which admits nothing of
-    * its own (as does a served notebook), only the exported names that trace
-    * to the package surface: a source it may read, or a query over one.
+    * {@link curateForDiscovery} lists. For a dashboard or a served notebook,
+    * only the exported names that trace to the package surface: a source it
+    * may read, including one it builds on a surface source, or a query over
+    * one. A declaration that does not trace there is not shown.
     */
    private publishedNames(): Set<string> | undefined {
       if (!this.discoveryCurationEnabled) return undefined;

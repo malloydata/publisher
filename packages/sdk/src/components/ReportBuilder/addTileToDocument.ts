@@ -5,10 +5,10 @@ import type { NewTile } from "./AddTileDialog";
 import {
    isQueryTile,
    type DashboardDocument,
-   type DashboardSource,
    type QueryTile,
 } from "./document";
 import { withSource } from "./imports";
+import { freeQueryName, normalizeTileForms } from "./tileForm";
 
 /** Where a tile is added and what the document is: the parts of an add that are not the tile. */
 export interface AddTileContext {
@@ -22,12 +22,18 @@ export interface AddTileContext {
    insertAt?: number;
 }
 
-/** A tile from the picker, added to a draft: on the extension of its source, or a new one. */
+/**
+ * A tile from the picker, added to a draft: an entry naming the served view,
+ * `"flights -> kpis"`, or a query of the report's own over it when the picker
+ * gave it a width, title or chart ({@link normalizeTileForms}). No source is
+ * declared for it.
+ */
 export function addTileToDocument(
    draft: DashboardDocument,
    tile: NewTile,
    { modelPath, textHeld, widths, insertAt }: AddTileContext,
 ): void {
+   const before = structuredClone(draft);
    // A source the file cannot see yet comes in by name, with the tile.
    if (tile.modelPath && !textHeld)
       draft.imports = withSource(
@@ -37,66 +43,26 @@ export function addTileToDocument(
          modelPath,
          tile.exporters ?? [tile.modelPath],
       );
-   const extension = extensionOf(draft, tile.base);
-   const name = freeViewName(draft, extension.name, tile.view);
    draft.tiles.splice(insertAt ?? draft.tiles.length, 0, {
-      name,
-      source: extension.name,
-      declaration: { kind: "reference", from: tile.view },
+      name: tile.view,
+      source: tile.base,
+      declaration: { kind: "inherited" },
       ...(widths && tile.colspan !== undefined
          ? { colspan: tile.colspan }
          : {}),
       ...(tile.label ? { label: tile.label } : {}),
       ...(tile.chart ? { chart: tile.chart } : {}),
-      ...(tile.chartCarried ? { chartCarried: tile.chartCarried } : {}),
+      ...(tile.chart && tile.chartReset?.length
+         ? { chartReset: tile.chartReset }
+         : {}),
    });
-}
-
-/** The file's extension of `base`, or a new one under a name of the file's own. */
-function extensionOf(
-   draft: DashboardDocument,
-   base: string,
-   { unscoped = false }: { unscoped?: boolean } = {},
-): DashboardSource {
-   const found = draft.sources.find(
-      (s) => s.base === base && (!unscoped || !s.scopedBy?.length),
-   );
-   if (found) return found;
-   // A name of the file's own: the base's, suffixed, since an extension cannot
-   // share its base's name.
-   const taken = new Set(draft.sources.map((s) => s.name));
-   let name = `${base}_tiles`;
-   for (let n = 2; taken.has(name); n++) name = `${base}_tiles_${n}`;
-   const extension: DashboardSource = { name, base };
-   draft.sources.push(extension);
-   return extension;
+   normalizeTileForms(draft, before);
 }
 
 /**
- * A tile's view name in `extension`: the view it shows, suffixed, because an
- * extension inherits its base's views and cannot redeclare one under the same
- * name; then kept distinct from its siblings.
- */
-function freeViewName(
-   draft: DashboardDocument,
-   extension: string,
-   view: string,
-): string {
-   const used = new Set(
-      draft.tiles
-         .filter(isQueryTile)
-         .filter((t) => t.source === extension)
-         .map((t) => t.name),
-   );
-   let name = `${view}_tile`;
-   for (let n = 2; used.has(name); n++) name = `${view}_tile_${n}`;
-   return name;
-}
-
-/**
- * Why a tile cannot be duplicated, or undefined when it can. A copy is a new
- * view in this file, and the writer adds a view only as `view: x is y`, so a
- * tile whose view the file writes some other way has no copy it could write.
+ * Why a tile cannot be duplicated, or undefined when it can. A copy is a query
+ * of the report's own over the same view, so a tile whose body the builder
+ * does not write has no copy it could write.
  */
 export function duplicateBlocked(tile: QueryTile): string | undefined {
    switch (tile.declaration.kind) {
@@ -105,26 +71,28 @@ export function duplicateBlocked(tile: QueryTile): string | undefined {
       case "opaque":
          return `Its query is ${tile.declaration.why}, which the builder does not copy.`;
       case "query":
-         return "It names a query, and a copy could not be told apart from it: the builder writes nothing about such a tile but its place.";
+         return "It names a query the builder does not edit, and a copy could not be told apart from it.";
       default:
-         return tile.chart === "custom"
-            ? "Its chart line is one the builder does not write, so a copy would lose it."
+         if (tile.chart === "custom")
+            return "Its chart line is one the builder does not write, so a copy would lose it.";
+         return tile.unmodelled
+            ? "Its query says more than the builder writes, so a copy would lose it."
             : undefined;
    }
 }
 
 /**
- * A copy of the query tile at `index`, placed right after it, as a view of its
- * own so its title, chart and width can differ from the original's. Returns
- * where the copy landed, or undefined when it cannot be copied
+ * A copy of the query tile at `index`, placed right after it: a query of the
+ * report's own over the view the original shows, with every setting the
+ * original has but its row break, so its title, chart and width can then
+ * differ. Returns where the copy landed, or undefined when it cannot be copied
  * ({@link duplicateBlocked}).
  *
- * A copy of a view this file declares shows the same view the original does
- * (`is` the original's `from`, never the original's own name, which would carry
- * the original's tags and break when the original is removed), with every
- * setting the original has. A copy of a view the model declares starts as any
- * added tile does: the model's view under a name of the file's own, at the
- * original's width.
+ * The view a copy reads is the one the original shows: an `inherited` tile's
+ * view, or the view a `named` query or a `reference` view in an extension
+ * (a file written before the builder wrote queries) is declared from, on the
+ * same source. Never the original's own name, which would carry the
+ * original's tags and break when the original is removed.
  */
 export function duplicateTile(
    draft: DashboardDocument,
@@ -133,33 +101,28 @@ export function duplicateTile(
    const original = draft.tiles[index];
    if (!original || !isQueryTile(original)) return undefined;
    if (duplicateBlocked(original) !== undefined) return undefined;
-   let copy: QueryTile;
-   if (original.declaration.kind === "reference") {
-      const { break: _break, ...settings } = structuredClone(original);
-      copy = {
-         ...settings,
-         name: freeViewName(draft, original.source, original.declaration.from),
-      };
-   } else {
-      // Inherited: a view of the source the tile names. When the file
-      // declares that source, the copy goes on it; otherwise on the file's
-      // extension of it, as an added tile would.
-      // On the file's extension of the source the tile names, but never one
-      // that narrows it with a `where:` of its own: the original reads the
-      // source unfiltered, and a copy on a narrowed extension would show
-      // other numbers under the same title.
-      const own = draft.sources.find((s) => s.name === original.source);
-      const extension =
-         own ?? extensionOf(draft, original.source, { unscoped: true });
-      copy = {
-         name: freeViewName(draft, extension.name, original.name),
-         source: extension.name,
-         declaration: { kind: "reference", from: original.name },
-         ...(original.colspan !== undefined
-            ? { colspan: original.colspan }
-            : {}),
-      };
-   }
-   draft.tiles.splice(index + 1, 0, copy);
+   if (original.source === undefined) return undefined;
+   const view =
+      original.declaration.kind === "named" ||
+      original.declaration.kind === "reference"
+         ? original.declaration.from
+         : original.name;
+   const {
+      break: _break,
+      name: _name,
+      declaration: _declaration,
+      source,
+      // Read from the original's own lines, which a copy does not carry.
+      ownPalette: _ownPalette,
+      unmodelled: _unmodelled,
+      chartLines: _chartLines,
+      ...settings
+   } = structuredClone(original);
+   draft.tiles.splice(index + 1, 0, {
+      ...settings,
+      name: freeQueryName(draft, view),
+      source,
+      declaration: { kind: "named", from: view },
+   });
    return index + 1;
 }

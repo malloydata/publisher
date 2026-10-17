@@ -209,10 +209,20 @@ export interface ServedReportManifest {
  * (`docs/malloyyo-dashboards-design.md` §Follow-ups).
  */
 //
-// `theme` is the per-chart theme (`# theme.palette.series=[…]`), which the SDK
-// reads off the result to colour that one chart; the report builder writes it
-// for a tile's colour, so without it every coloured tile warned.
-const PUBLISHER_OWNED_TAGS = ["artifact", "drill", "theme"];
+// `theme.palette.series` is the per-chart series list the SDK reads off the
+// result; the report builder writes a one-colour line of it for a tile's
+// colour, so without this every coloured tile warned. Only that path: a
+// `theme.*` typo (`# theme.palete.series`) is the author's mistake and stays.
+const PUBLISHER_OWNED_TAGS = ["artifact", "drill"];
+const PUBLISHER_OWNED_PATHS = ["theme.palette.series"];
+
+/** A tag Publisher owns: a whole root (`artifact`, `drill`) or one exact path. */
+function isPublisherOwnedTag(tag: string): boolean {
+   if (PUBLISHER_OWNED_TAGS.includes(tag.split(".")[0])) return true;
+   return PUBLISHER_OWNED_PATHS.some(
+      (path) => tag === path || tag.startsWith(`${path}.`),
+   );
+}
 
 /**
  * The renderer's own per-child dashboard tags, which Publisher also reads for a
@@ -293,8 +303,9 @@ export function dropGridTileLayoutFindings<T extends { message?: string }>(
 
 /**
  * Drop "unknown render tag" complaints about tags Publisher owns, leaving every
- * other render finding intact. Matches on the tag's root property, so nested
- * paths (`artifact.title`) are covered too.
+ * other render finding intact. `artifact` and `drill` match on the tag's root,
+ * so nested paths (`artifact.title`) are covered too. `theme` matches only
+ * `theme.palette.series`, so a typo such as `theme.palete.series` is kept.
  */
 export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    logs: T[],
@@ -306,7 +317,7 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
-      if (PUBLISHER_OWNED_TAGS.includes(match[1].split(".")[0])) return false;
+      if (isPublisherOwnedTag(match[1])) return false;
       return !(couldBeATile && isTileLayoutTagOnRoot(log.message));
    });
 }
@@ -1318,6 +1329,65 @@ export function lintReport(
       }
    }
 
+   findings.push(...lintMissingSharedFilter(facts, manifest));
+   return findings;
+}
+
+/**
+ * A filter most of a report's tiles apply, missing from one of them.
+ *
+ * A report's filter is a given its tiles bind one by one, each in its own
+ * `+ { where: … }`. A tile that leaves it out is not filtered by the control
+ * while the rest of the page is, and nothing on the page says so. Narrow on
+ * purpose: tiles are compared only with tiles reading the same source (a tile
+ * over another source may have no field the filter could compare), only for a
+ * given the report can bind, read by at least two of them and by more than
+ * half, and only where every tile's reads are known.
+ */
+export function lintMissingSharedFilter(
+   facts: ReportModelFacts,
+   manifest: ServedReportManifest,
+): ReportLintFinding[] {
+   const sourceOf = (query: string) => {
+      const [left, right] = normalizeTileExpression(query).split(" -> ");
+      return right !== undefined
+         ? left
+         : facts.queries.find((q) => q.name === left)?.sourceName;
+   };
+   const bySource = new Map<
+      string,
+      Array<{ query: string; reads: string[] }>
+   >();
+   for (const { query } of queryTiles(manifest.tiles)) {
+      const source = sourceOf(query);
+      const reads = referencedTileGivens(query, facts);
+      if (source === undefined || reads === undefined) continue;
+      bySource.set(source, [...(bySource.get(source) ?? []), { query, reads }]);
+   }
+   const findings: ReportLintFinding[] = [];
+   for (const [source, tiles] of bySource) {
+      const counts = new Map<string, number>();
+      for (const { reads } of tiles)
+         for (const name of new Set(reads))
+            if (facts.givens.has(name))
+               counts.set(name, (counts.get(name) ?? 0) + 1);
+      for (const [given, count] of counts) {
+         if (count < 2 || count * 2 <= tiles.length) continue;
+         for (const { query, reads } of tiles) {
+            if (reads.includes(given)) continue;
+            findings.push({
+               subject: manifest.name,
+               severity: "warn",
+               message:
+                  `"${query}" does not filter on $${given}, which ${count} of ` +
+                  `this report's ${tiles.length} tiles over "${source}" do, so ` +
+                  `that control leaves it unfiltered. If it should follow the ` +
+                  `control, bind it in its query: ` +
+                  `\`+ { where: <field> ~ $${given} }\`.`,
+            });
+         }
+      }
+   }
    return findings;
 }
 

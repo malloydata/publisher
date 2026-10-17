@@ -87,7 +87,9 @@ describe("ReportBuilder: charts", () => {
       });
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
       const names = enabledCharts();
-      // The wrapper's view `by_category` carries a shape map, so it is enabled; the rest are listed disabled.
+      // The wrapper's view `by_category` carries a shape map, so it is
+      // enabled; the rest are listed disabled. A table is enabled too: a
+      // shape map draws whatever `viz` says, so its line takes the map off.
       expect(names).toEqual([
          "Default",
          "Table",
@@ -96,14 +98,55 @@ describe("ReportBuilder: charts", () => {
          "Scatter",
          "Shape map",
       ]);
-      pickChart("Line");
+      pickChart("Table");
       closeMenu();
       fireEvent.click(
          screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `  ${chartLineText("line_chart", ["shape_map"])}\n  view: by_cat is by_category`,
+         "  # -shape_map viz=table\n  view: by_cat is by_category",
+      );
+   });
+
+   it("drops the reset line with the pick: Table and back to the view's map is no edit", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Table");
+      pickChart("Default");
+      closeMenu();
+      const save = screen.queryByRole("button", {
+         name: "Save",
+         hidden: true,
+      });
+      expect(save === null || (save as HTMLButtonElement).disabled).toBe(true);
+      expect(written).toBeUndefined();
+   });
+
+   it("writes the reset line for a table on a new tile over a map view", async () => {
+      let written: string | undefined;
+      await mount((source) => {
+         written = source;
+      });
+      fireEvent.click(
+         screen.getByRole("button", { name: "Add tile", hidden: true }),
+      );
+      fireEvent.click(viewOption("by_category"));
+      fireEvent.click(
+         within(
+            screen.getByRole("group", { name: "Chart", hidden: true }),
+         ).getByRole("button", { name: "Table", hidden: true }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toContain(
+         "\n# -shape_map viz=table\nquery: by_category_tile is scoped_orders -> by_category\n",
       );
    });
 
@@ -142,15 +185,34 @@ describe("ReportBuilder: charts", () => {
       expect(written).toContain('# label="Brands"');
    });
 
-   it("disables the picker on a tile the model owns, with the reason", async () => {
+   it("sets a chart on a tile naming a served view as a query of the report's own", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const document = await openDocument(source);
-      render(<ReportBuilder source={source} document={document} />);
+      let written: string | undefined;
+      render(
+         <ReportBuilder
+            source={source}
+            document={document}
+            onSave={(next) => {
+               written = next;
+            }}
+         />,
+      );
       fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      expect(chartItem().getAttribute("aria-disabled")).toBe("true");
-      expect(
-         screen.getByText(/so its chart is set in the model/),
-      ).toBeDefined();
+      expect(chartItem().getAttribute("aria-disabled")).toBeNull();
+      fireEvent.click(chartItem());
+      pickChart("Bar");
+      closeMenu();
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toBe(`## artifact { title="T" tiles=["by_brand_tile"] }
+import { orders } from '../orders.malloy'
+
+# viz=bar
+query: by_brand_tile is orders -> by_brand
+`);
    });
 
    it("adds a tile with a chart, offering big value only for an aggregate-only view", async () => {
@@ -181,8 +243,9 @@ describe("ReportBuilder: charts", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         `  ${chartLineText("big_value", [])}\n  view: kpis_tile is kpis`,
+         `\n\n# colspan=6\n${chartLineText("big_value")}\nquery: kpis_tile is scoped_orders -> kpis\n`,
       );
+      expect(written).not.toContain("view: kpis_tile");
    });
 
    it("says why a view the writer cannot name is not addable", async () => {
@@ -282,7 +345,8 @@ source: a is scoped_orders extend {
          screen.getByRole("button", { name: "Save", hidden: true }),
       );
       await waitFor(() => expect(written).toBeDefined());
-      expect(written).toContain("  # -big_value -viz\n");
+      const table = chartLineText("none");
+      expect(written).toContain(`  ${table}\n`);
       const promoted = JSON.parse(
          promoteMeasureRowToKpis(
             JSON.stringify({
@@ -293,7 +357,7 @@ source: a is scoped_orders extend {
                   ],
                },
                data: { kind: "array_cell", array_value: [{}] },
-               annotations: [{ value: "# -big_value -viz\n" }],
+               annotations: [{ value: `${table}\n` }],
             }),
          ),
       ) as { annotations: Array<{ value: string }> };
@@ -370,6 +434,55 @@ describe("ReportBuilder: a chart's color", () => {
 
    // The row's swatch follows its value ("Theme", "#7f9862"); spaced like the
    // swatches in the Color menu it read as "Theme▢", touching the text.
+   it("does not offer Color on a view that sets its own palette", async () => {
+      const document = await openDocument(SOURCE);
+      const withPalette = {
+         ...catalog,
+         sources: catalog.sources.map((source) => ({
+            ...source,
+            views: source.views.map((view) =>
+               view.name === "by_category"
+                  ? { ...view, authorPalette: true as const }
+                  : view,
+            ),
+         })),
+      };
+      render(
+         <ReportBuilder
+            source={SOURCE}
+            document={document}
+            catalog={withPalette}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const color = colorItem();
+      expect(color.getAttribute("aria-disabled")).toBe("true");
+      expect(color.textContent).toContain(
+         "This view sets its own colors, and a color here would replace them.",
+      );
+   });
+
+   it("does not offer Color on a tile whose own tags set a palette", async () => {
+      const source = SOURCE.replace(
+         "  # colspan=6\n  view: by_cat is by_category\n",
+         '  # theme.palette.series=["#ff0080", "#ff6b00"]\n  # bar_chart\n  view: by_cat is by_category\n',
+      );
+      render(
+         <ReportBuilder
+            source={source}
+            document={await openDocument(source)}
+            catalog={catalog}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      const color = colorItem();
+      expect(color.getAttribute("aria-disabled")).toBe("true");
+      expect(color.textContent).toContain(
+         "This tile sets its own colors, and a color here would replace them.",
+      );
+   });
+
    it("spaces the Color row's swatch from its value", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));

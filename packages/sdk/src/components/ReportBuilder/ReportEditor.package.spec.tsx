@@ -199,3 +199,32 @@ describe("ReportEditor, when the server takes writes", () => {
       ).toBe(false);
    });
 });
+
+describe("ReportEditor writes the report file and nothing else", () => {
+   // The whole report is the one file: its tiles, its queries, its controls
+   // and their bindings. A session that retitles a tile, copies it and saves
+   // writes that file, and never a model.
+   it("writes only the report's own path, holding every setting itself", async () => {
+      mount();
+      await screen.findByText("Storefront");
+      editInline("By category", "Tile title", "Categories");
+      fireEvent.click(screen.getByLabelText("Settings for Categories"));
+      fireEvent.click(
+         await screen.findByRole("menuitem", {
+            name: "Duplicate",
+            hidden: true,
+         }),
+      );
+      fireEvent.click(button("Save"));
+      await waitFor(() => expect(updateModelSource).toHaveBeenCalled());
+      const paths = updateModelSource.mock.calls.map((call) => call[2]);
+      expect(new Set(paths)).toEqual(new Set(["dashboards/overview.malloy"]));
+      const written = updateModelSource.mock.calls.at(-1)?.[3].source ?? "";
+      expect(written).toContain(
+         '# label="Categories"\n  view: by_cat is by_category',
+      );
+      expect(written).toContain(
+         '\n\n# colspan=6\n# label="Categories"\nquery: by_category_tile is a -> by_category\n',
+      );
+   });
+});

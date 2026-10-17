@@ -7,15 +7,15 @@ import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { addTileToDocument } from "./addTileToDocument";
 import { isQueryTile, type QueryTile } from "./document";
-import { previewTileQuery, unsavedSources } from "./preview";
+import { previewTileQuery, unsavedImports } from "./preview";
 import { spliceDashboardDocument, spliceFailed } from "./spliceDocument";
 import { openDocument } from "./testing/fixtures";
 
 /**
- * A tile added on a source the file has no extension of goes on a NEW
- * extension, which the served model does not have until the file is saved. Its
- * preview is run here by Malloy against the served file, as the server runs it,
- * and its rows are checked against the saved file's own tile.
+ * A tile added before the file is saved: a query the served report does not
+ * have yet, over a view of a source it may not import yet either. Its preview
+ * is run here by Malloy against the served file, as the server runs it, and
+ * its rows are checked against the saved file's own tile.
  */
 const PACKAGE = path.resolve(
    import.meta.dir,
@@ -85,57 +85,7 @@ async function addOn(served: string, base: string) {
    return { opened, document, tile, saved: saved.source };
 }
 
-describe("a tile on an extension the served model does not have yet", () => {
-   it("follows a copy of a new tile to the view it shows, and keeps a filtering extension", () => {
-      const tile = (name: string, source: string, from: string): QueryTile => ({
-         name,
-         source,
-         declaration: { kind: "reference", from },
-      });
-      const document = {
-         layout: "grid" as const,
-         title: "T",
-         imports: [],
-         sources: [
-            { name: "a_tiles", base: "a" },
-            { name: "a_tiles_tiles", base: "a_tiles" },
-            { name: "scoped", base: "a", scopedBy: ["X"] },
-         ],
-         tiles: [
-            tile("v_tile", "a_tiles", "v"),
-            tile("v_tile_tile", "a_tiles_tiles", "v_tile"),
-            tile("w_tile", "scoped", "w"),
-         ],
-      };
-      const unsaved = {
-         sources: new Set(["a_tiles", "a_tiles_tiles", "scoped"]),
-      };
-      const run = (t: QueryTile) =>
-         previewTileQuery(document, t, new Set(), new Map(), undefined, unsaved)
-            .expression;
-      expect(run(document.tiles[0])).toBe("a -> v");
-      expect(run(document.tiles[1])).toBe("a -> v");
-      // Its base would show rows its `where:` leaves out: run as before.
-      expect(run(document.tiles[2])).toBe("scoped -> w");
-   });
-
-   it("fails as a reference to an undefined object when run on that extension", async () => {
-      const pkg = await loadPackage();
-      try {
-         const served = FILE(
-            'import { order_items } from "../storefront.malloy"',
-         );
-         const { document, tile } = await addOn(served, "order_items");
-         const q = previewTileQuery(document, tile, new Set());
-         pkg.serve(served);
-         const run = await pkg.rows(DOCUMENT, `run: ${q.expression}`);
-         expect(q.expression).toBe("order_items_tiles -> by_category");
-         expect(run.error).toContain("order_items_tiles");
-      } finally {
-         await pkg.close();
-      }
-   });
-
+describe("a new tile, previewed before the file is saved", () => {
    for (const [why, imports, model] of [
       [
          "a source the file imports",
@@ -156,7 +106,14 @@ describe("a tile on an extension the served model does not have yet", () => {
                served,
                "order_items",
             );
-            expect(tile.source).toBe("order_items_tiles");
+            // Half of a 12-column grid: a width of its own, so a query.
+            expect(tile).toMatchObject({
+               name: "by_category_tile",
+               source: "order_items",
+               declaration: { kind: "named", from: "by_category" },
+               colspan: 6,
+            });
+            expect(saved).not.toContain("source:");
 
             const q = previewTileQuery(
                document,
@@ -164,7 +121,7 @@ describe("a tile on an extension the served model does not have yet", () => {
                new Set(),
                new Map(),
                undefined,
-               unsavedSources(document, opened, DOCUMENT, false),
+               unsavedImports(document, opened, DOCUMENT, false),
             );
             expect(q.expression).toBe("order_items -> by_category");
             expect(q.modelPath).toBe(model);
@@ -176,10 +133,7 @@ describe("a tile on an extension the served model does not have yet", () => {
             expect(preview.error).toBeUndefined();
 
             pkg.serve(saved);
-            const page = await pkg.rows(
-               DOCUMENT,
-               `run: ${tile.source} -> ${tile.name}`,
-            );
+            const page = await pkg.rows(DOCUMENT, `run: ${tile.name}`);
             expect(page.error).toBeUndefined();
             expect(page.rows?.length).toBeGreaterThan(0);
             expect(preview.rows).toEqual(page.rows);

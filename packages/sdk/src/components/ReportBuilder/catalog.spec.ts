@@ -4,6 +4,7 @@
 import { describe, expect, it } from "bun:test";
 import type { CompiledModel } from "../../client";
 import {
+   authorPaletteOf,
    buildCatalog,
    chartOf,
    docOf,
@@ -84,6 +85,21 @@ describe("reading raw annotations", () => {
       expect(chartOf(["# -bar_chart\n"])).toBeUndefined();
       expect(chartOf(["# -bar_chart -viz line_chart\n"])).toBe("line_chart");
       expect(chartOf(["# colspan=6\n", '# label="x"\n'])).toBeUndefined();
+   });
+
+   it("marks a multi-colour series palette, and not a one-colour line", () => {
+      expect(
+         authorPaletteOf(['# theme.palette.series=["#ff0080", "#ff6b00"]\n']),
+      ).toBe(true);
+      expect(
+         authorPaletteOf([
+            '# theme { palette.series=["#ff0080", "#ff6b00"] }\n',
+         ]),
+      ).toBe(true);
+      expect(
+         authorPaletteOf(['# theme.palette.series=["#1f6aa8"]\n']),
+      ).toBeUndefined();
+      expect(authorPaletteOf(["# bar_chart\n"])).toBeUndefined();
    });
 });
 

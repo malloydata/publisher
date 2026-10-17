@@ -128,7 +128,8 @@ describe("ReportBuilder: a notebook is one column", () => {
       fireEvent.click(screen.getByRole("button", { name: "Add tile" }));
       fireEvent.click(button("Save"));
       await waitFor(() => expect(written).toBeDefined());
-      expect(written).toContain("view: sales_by_state_tile is sales_by_state");
+      expect(written).toContain('"scoped_orders -> sales_by_state"');
+      expect(written).not.toContain("query:");
       expect(written).not.toContain("colspan");
       expect(written).not.toContain("columns");
    });

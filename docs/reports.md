@@ -35,23 +35,21 @@ files.
 
 ```malloy
 ##! experimental.givens
-## artifact { layout=grid title="Storefront overview" tiles=["overview -> kpis", "overview -> revenue_trend"] } dashboard { columns=12 }
+## artifact { layout=grid title="Storefront overview" tiles=["kpis", "revenue_trend"] } dashboard { columns=12 }
 import { order_items, products } from "storefront.malloy"
 
 # label="Category" control=select suggest { source=products dimension=category }
 given: CATEGORY :: filter<string> is f''
 
-source: overview is order_items extend {
-  # colspan=12
-  # label="Key figures"
-  # big_value
-  view: kpis is key_figures + { where: category ~ $CATEGORY }
+# colspan=12
+# label="Key figures"
+query: kpis is order_items -> key_figures + { where: category ~ $CATEGORY }
 
-  # colspan=12
-  # break
-  # label="Revenue by month"
-  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY }
-}
+# colspan=12
+# break
+# viz=line
+# label="Revenue by month"
+query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY }
 ```
 
 The [`storefront`](../examples/storefront) example package ships reports of both layouts over the same
@@ -137,8 +135,8 @@ one-line tag does, and the builder keeps whichever form the file has.
 ##| artifact { layout=linear title="Category review"
   tiles=[
     intro { kind=text },
-    "category_tiles -> revenue_trend",
-    "category_tiles -> brand_ranking"
+    "revenue_trend",
+    "brand_ranking"
   ]
 }
 |##
@@ -177,30 +175,40 @@ nest's pipeline starts from its own query's source, and there is no way to combi
 
 ### Query tiles
 
-A query tile is a `view:` on a source, named as a quoted string `"source -> view"`. Put the views on an
-extension declared in the report itself, as thin wrappers over the modelled views:
+A query tile names a view the model serves, as a quoted string `"source -> view"`. A tile that needs
+something the view does not have is a `query:` of the report's own over it, listed by its name:
 
 ```malloy
-source: seasonal is order_items extend {
-  # colspan=8
-  # break
-  # label="Revenue by month"
-  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY }
+## artifact { layout=grid title="Seasons" tiles=["order_items -> sales_by_brand", "revenue_trend", "by_season"] } dashboard { columns=12 }
 
-  # colspan=4
-  # label="By season"
-  view: by_season is seasonality + { where: category ~ $CATEGORY }
-}
+# colspan=8
+# break
+# viz=line
+# label="Revenue by month"
+query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY }
+
+# colspan=4
+# label="By season"
+query: by_season is order_items -> seasonality + { where: category ~ $CATEGORY }
 ```
 
-The modelled view keeps its chart tag; the wrapper carries the tile's label and width and says which
-controls the tile answers to (its `+ { where: … }` **binding**, see
-[Filter controls](#filter-controls)). Tagging a thin re-declaration rather than the shared view itself
-is what lets one modelled view sit at different widths, under different labels, on different reports.
+The modelled view keeps its chart and label; the query's `#` tags carry what the tile changes (its
+label, its width, a `# viz=`, a colour), merged over the view's, and its `+ { where: … }` says which
+controls the tile answers to (its **binding**, see [Filter controls](#filter-controls)). That is what
+lets one modelled view sit at different widths, under different labels, on different reports. A `where:`
+in the refinement filters the rows the view reads, so it also works on a field the view does not show
+and on the first stage of a two-stage view. A filter on the source
+(`order_items extend { where: … } -> sales_by_month`) gives the same rows, and a source's
+`#(access_filter)` applies to it the same way. The builder writes its own filters as a refinement, and
+reads and edits a filter on the source where an author wrote it.
 
-- **Quote every query entry.** `"seasonal -> revenue_trend"` is a string; unquoted, the tag does not
+**A report declares no source.** Do not write a `source: x_tiles is x extend { … }` to hold the tiles: it
+copies the served model into the report. A report written that way still loads and edits, but new ones
+should not use it.
+
+- **Quote every query entry.** `"order_items -> sales_by_brand"` is a string; unquoted, the tag does not
   parse and no tile is read (`notebook-artifact-unparsed`).
-- **A bare name** (`tiles=["overview"]`) names a model-level `query:` in the file.
+- **A bare name** (`tiles=["revenue_trend"]`) names a `query:` in the file.
 - **A `run:` statement in a report that lists `tiles` is never shown**, and the lint says so
   (`notebook-layout-run`): define a view, list it, and delete the `run:`.
 - **A tile expression is a string in an annotation, so the Malloy compiler never checks it.** Rename a
@@ -274,9 +282,9 @@ query tile is `{ kind: "query", query, … }`. Anything that runs a report's til
 ### File order
 
 Write a report in one order: the header (`##!` flags, `//` comments, the `"` description, the artifact
-tag), then imports and givens, then the prose blocks in tile order, then the extension that defines the
-tile views. Tiles read in `tiles=[…]` order wherever their blocks sit; grouping the blocks before the
-extension is what the builder writes, and it inserts a new block after the last one. Keep statements and
+tag), then imports and givens, then the prose blocks in tile order, then the tiles' queries. Tiles read in
+`tiles=[…]` order wherever their blocks sit; that grouping is what the builder writes, and it inserts a new
+query after the last one. Keep statements and
 `#` tags below `## artifact`: nothing refuses one above it, but the header is where readers and the builder
 look for the tag and the description.
 
@@ -291,9 +299,9 @@ A grid report lays its tiles out across `columns` by each tile's `colspan` and `
 ##" Revenue and margin at a glance, and where they come from.
 ##| artifact { layout=grid title="Storefront overview"
   tiles=[
-    "overview -> kpis",
-    "overview -> revenue_trend",
-    "overview -> revenue_by_state"
+    "kpis",
+    "revenue_trend",
+    "revenue_by_state"
   ]
 } dashboard { columns=12 }
 |##
@@ -304,25 +312,25 @@ given: CATEGORY :: filter<string> is f''
 # label="Ordered since"
 given: SINCE :: date is @2023-01-01
 
-source: overview is order_items extend {
-  # colspan=12
-  # label="Key figures"
-  # big_value
-  view: kpis is key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
+# colspan=12
+# label="Key figures"
+query: kpis is order_items -> key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
-  # colspan=8
-  # break
-  # label="Revenue by month"
-  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
+# colspan=8
+# break
+# label="Revenue by month"
+query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
-  # colspan=4
-  # label="Revenue by state"
-  view: revenue_by_state is sales_by_state + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
-}
+# colspan=4
+# label="Revenue by state"
+query: revenue_by_state is order_items -> sales_by_state + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 ```
 
-Presentation is per tile and lives on the **view**: `# colspan`, `# break`, `# label`, `# subtitle` and
-`# borderless`, which is exactly the set `@malloydata/render` resolves for a `# dashboard` nest child.
+Presentation is per tile and lives on what the tile names, the report's own **query** here (or a view):
+`# colspan`, `# break`, `# label`, `# subtitle` and `# borderless`, which is exactly the set
+`@malloydata/render` resolves for a `# dashboard` nest child. A tile's `# colspan` is read against the
+report's own `dashboard { columns=N }`; a `# dashboard { columns=N }` tag is only for the nests of a
+single `# dashboard` query.
 One view therefore presents identically whether it is named as a tile here or nested under a
 `# dashboard` query, and there is no second grammar to learn.
 
@@ -406,9 +414,9 @@ for a narrative: a question framed in prose, a query that answers it, the next q
 ##| artifact { layout=linear title="Category review"
   tiles=[
     intro { kind=text },
-    "category_tiles -> revenue_trend",
+    "revenue_trend",
     trend_note { kind=text },
-    "category_tiles -> brand_ranking"
+    "brand_ranking"
   ]
 }
 |##
@@ -428,15 +436,13 @@ Pick a **Category** in the controls above and every chart below re-runs for it.
 Which brands are behind those numbers?
 |##
 
-source: category_tiles is order_items extend {
-  # line_chart
-  # label="Revenue by month"
-  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY }
+# viz=line
+# label="Revenue by month"
+query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY }
 
-  # bar_chart
-  # label="Top brands"
-  view: brand_ranking is top_brands + { where: category ~ $CATEGORY }
-}
+# viz=bar
+# label="Top brands"
+query: brand_ranking is order_items -> top_brands + { where: category ~ $CATEGORY }
 ```
 
 - **`layout=linear` is required here**, because the tag lists tiles (see [Which layout](#which-layout)).
@@ -462,9 +468,10 @@ replaces it in place, so it can be rewritten as tiles where it is.
 To bring one back, rewrite it as tiles, the form above:
 
 1. Make each floating `(markdown)` note a named `##|(markdown) name` block, listed as `name { kind=text }`.
-2. Make each `run: <source> -> <query>` a `view:` on an extension of that source the report declares, and
-   list it as `"<extension> -> <view>"`. The render tags and `#"` caption that sat above the `run:` go on
-   the view, the caption as `# label="…"`. A `run:` of a named `query:` can be listed by the query's name.
+2. Make each `run: <source> -> <view>` a tile. With no render tags, list it as `"<source> -> <view>"`. With
+   tags, make it `query: <name> is <source> -> <view>` with the tags above it and list it by name; the
+   `#"` caption becomes `# label="…"` and a chart tag becomes a `# viz=…`. A `run:` of a named `query:` can
+   be listed by the query's name.
 3. List the entries in `tiles=[…]` in reading order, keep `layout=linear`, and delete the `run:` lines.
 
 `examples/storefront/category-review.malloy` is a report that was rewritten this way.
@@ -616,8 +623,11 @@ import "orders.malloy"
 export { orders, customers } // every source a tile or a suggest reads
 ```
 
-A source the report declares on top of a surface source (`source: big is orders extend { … }`) may be read;
-one declared on top of a hidden source may not. A tile or suggest over a hidden source answers `404`, and
+A source the report declares on top of a surface source (`source: big is orders extend { … }`) may be read,
+including by name (`sourceName`) on this report's path. It keeps its base's `#(authorize)` and
+`#(access_filter)`. A caller that lock refuses gets `403`, not `404`: the report is already listed, so
+the refusal does not reveal a hidden name. One declared on top of a hidden source may not, and naming
+it answers `404`. A tile or suggest over a hidden source answers `404`, and
 the package load warns about each one (see [What Publisher checks at load](#what-publisher-checks-at-load)).
 A package with no `explores` and no root `index.malloy` has curation off.
 
@@ -906,7 +916,7 @@ behind the tiles and a label saying the width during the drag; the edge is also 
 it, Left and Right step one column, Home and End go to one column and full width).
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.
-The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a view of its own; a tile's width is set by dragging its
+The ⋯ menu holds **Chart** and **Color**, two submenus, **Clickable cells…** and **Duplicate**, which puts a copy right after the tile as a query of its own; a tile's width is set by dragging its
 right edge (or focusing that edge and pressing the arrow keys), and a tile is removed from the × on its corner. Titles, subtitles, descriptions and text tiles are click-to-edit where
 they stand, with a faint wash under the pointer: in a one-line field Enter keeps the edit and Escape puts
 the old text back; a text tile opens in place in the report's own type, where leaving it or Cmd/Ctrl+Enter
@@ -918,6 +928,15 @@ rewrites `layout=`; to turn a linear report into a grid (or back), edit the tag 
 cannot already see the chosen source the builder adds a named import for it, at the right relative path for
 the report's location.
 
+**What the builder writes.** A tile you add names the served view, `"order_items -> sales_by_state"`, and
+nothing else. Give it a title, a width, a chart, a color or a filter and it becomes a `query:` of the
+report's own over that view, carrying those settings as `#` tags and its filters as a `+ { where: … }`;
+put every setting back to the view's and it names the view again, and the query goes. The builder declares
+no source. It edits a `query:` written as `source -> view` with an optional `+ { … }`, in place and under
+its own name, and only shows one of any other shape. A report written with a `source: … extend { … }`
+holding its tiles still opens, and its tiles are edited where they are; nothing in it is rewritten unless
+you change it. The builder writes the report file and never a model.
+
 The **Chart** choices are Default (as set in the model), Table, Line, Bar, Big value, Scatter, Shape map,
 Segment map and Bar and line. A choice the view cannot render stays in the list, greyed, with its reason under
 it: Big value needs results that are only totals, a map needs a map chart set in the model, and Bar and line
@@ -925,7 +944,17 @@ it: Big value needs results that are only totals, a map needs a map chart set in
 axis and the second as a line on the right. To pick which totals go where, write
 `# combo_chart { y=orders y2=revenue }` on the view by hand. A chart line the builder
 does not model, such as `# bar_chart { size=spark }`, is kept byte for byte, and Chart is disabled for that
-tile with the reason shown; so is a tile inherited from a declaration on the source.
+tile with the reason shown; so is a tile naming a query the builder only reads.
+
+A pick is written as `# viz=bar`, `# viz=line`, `# viz=combo` or `# viz=table`, which replaces whatever chart
+the view sets, or as `# big_value`, `# scatter_chart`, `# shape_map` or `# segment_map`. Big value, scatter and
+the maps draw whatever `viz` says, and the renderer tries line, bar and bar and line first. So where the
+view's own chart would still win, the line takes it off ahead of the pick, and only there:
+
+- a big-value, scatter or map view made a table: `# -big_value viz=table`
+- a line, bar or bar-and-line view made a scatter chart, big value or map: `# -bar_chart -viz scatter_chart`
+
+Setting the tile back to Default removes the whole line, reset included.
 
 **Color** sets a bar, line, scatter or bar-and-line chart's color: the theme's own (the default), one of
 the theme's series colors, or any other through the platform's color picker. It is written above the tile

@@ -21,6 +21,24 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — A chart's one-colour series list colours the first series only
+
+A `# theme.palette.series` with one colour, including the line the report builder's Color item writes, now sets that chart's first series and leaves the rest on the page's colours. It used to be the chart's whole palette, so every series cycled through the one colour and a bar-and-line chart drew its line in the same colour as its bars. A list of two or more colours is still the palette as written. A later series that already held the picked colour takes the colour the first series gave up, so two series are not drawn alike.
+
+## [Unreleased] — Report and DashboardView take actions, and a host can pin the filter row below its own bar
+
+`Report` and `DashboardView` take `actions`, drawn at the end of the title's line, where the builder's toolbar sits. A host's download or menu no longer needs a row of its own above the title.
+
+The report's filter row pins at `--publisher-sticky-top` (default `0px`). A host that pins its own bar above a report sets that variable on an ancestor to the bar's height, and the row pins below it and fills in once it does.
+
+## [Unreleased] — A report's own source is queryable by name, and a lock on it answers 403
+
+A source a served report declares on a surface source (`source: big is orders extend { … }`) can be queried by name on that report's path. It keeps the base's `#(authorize)` and `#(access_filter)`. A caller the lock refuses gets **403**, not 404: the report is already listed, so the 403 does not reveal a hidden name. A source the report declares that is not built on a surface source stays 404.
+
+An `#(access_filter)` now applies to a named query written as `source extend { where: … } -> view`, the same rows as the refinement form. A query that renames or shadows the filtered column is still refused.
+
+A `# colspan`, `# break`, `# subtitle` or `# borderless` on a view is no longer reported as an unknown render tag when a grid report names that view as a tile, including a view imported from another file. The same tag on a view no grid tile names is still reported.
+
 ## [Unreleased] — Server telemetry: errors logged once by status, new core metrics and trace spans
 
 Operators who alert on Publisher's logs or metrics should read this; nothing in the REST or MCP contract changed.

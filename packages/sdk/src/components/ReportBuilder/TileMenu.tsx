@@ -26,7 +26,12 @@ import {
    type QueryTile,
 } from "./document";
 import { chartChoices, type ViewStatus } from "./ChartPicker";
-import { isSeriesColor, seriesColorFrom, type ChartState } from "./chartLine";
+import {
+   chartResetFor,
+   isSeriesColor,
+   seriesColorFrom,
+   type ChartState,
+} from "./chartLine";
 
 /**
  * A tile's own settings, on the tile: a menu off its ⋯ button, so editing it
@@ -61,7 +66,10 @@ export interface TileMenuProps {
    /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
    duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
-   view?: Pick<CatalogView, "chart" | "aggregateOnly" | "shape">;
+   view?: Pick<
+      CatalogView,
+      "chart" | "aggregateOnly" | "shape" | "authorPalette"
+   >;
    /** Why `view` is absent: still loading, or a view the catalog does not list. */
    viewStatus?: ViewStatus;
 }
@@ -79,8 +87,6 @@ const CLICKLESS_CHARTS = new Set<string>([
 ]);
 const CHART_DOES_NOT_CLICK =
    "Its chart's bars, lines and points do not respond to a click; show it as a table to click its cells.";
-const INHERITED_CHART =
-   "Declared on its source, so its chart is set in the model.";
 const QUERY_CHART =
    "It names a query, so its chart is set where that query is declared.";
 
@@ -120,13 +126,17 @@ export function TileMenu({
    // The chart as the menu opened on it: each pick commits, so the tile prop
    // moves with them, and "back to where it started" means where the menu
    // started.
-   const openedChart = useRef<QueryTile["chart"]>(undefined);
+   const openedChart = useRef<
+      Pick<QueryTile, "chart" | "chartReset"> | undefined
+   >(undefined);
    const otherColor = useRef<HTMLInputElement>(null);
    const opened = anchor !== null;
    useEffect(() => {
       if (opened)
          openedChart.current =
-            tile && isQueryTile(tile) ? tile.chart : undefined;
+            tile && isQueryTile(tile)
+               ? { chart: tile.chart, chartReset: tile.chartReset }
+               : undefined;
       else setSub(undefined);
       // Only on opening: the tile changes under every pick.
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,26 +146,30 @@ export function TileMenu({
    const choices = chartChoices(view, chartState, viewStatus);
    const chartBlocked = !query
       ? undefined
-      : query.declaration.kind === "query"
+      : !editable
         ? QUERY_CHART
-        : !editable
-          ? INHERITED_CHART
-          : query.chart === "custom"
-            ? customChart(query.chartLines)
-            : undefined;
+        : query.chart === "custom"
+          ? customChart(query.chartLines)
+          : undefined;
    const pickChart = (next: ChartState) =>
       applyQuery((t) => {
          const was = openedChart.current;
          // Back to where it started is no edit, so the draft must not differ from the tile.
-         if (next === (was ?? "default")) {
-            if (was === undefined) delete t.chart;
-            else t.chart = was;
-            delete t.chartCarried;
-         } else {
-            t.chart = next;
-            if (view) t.chartCarried = view.chart ? [view.chart] : [];
-            else delete t.chartCarried;
+         if (next === (was?.chart ?? "default")) {
+            if (was?.chart === undefined) delete t.chart;
+            else t.chart = was.chart;
+            if (was?.chartReset === undefined) delete t.chartReset;
+            else t.chartReset = was.chartReset;
+            return;
          }
+         t.chart = next;
+         // Only what the view's chart would otherwise still draw over.
+         const reset =
+            next === "default" || next === "custom"
+               ? []
+               : chartResetFor(next, view?.chart);
+         if (reset.length > 0) t.chartReset = reset;
+         else delete t.chartReset;
       });
 
    const drillBlocked = !editable
@@ -182,11 +196,18 @@ export function TileMenu({
    // any other colour a picker away. Not on a table or KPI tile, which draw
    // no series; and not offered at all where the chart is locked, since the
    // Chart item already says why.
+   // A multi-colour palette on the view, or one the tile's own tags already
+   // carry, is the author's. A colour here is one line written after it, and
+   // the last line wins, so the palette would stop drawing.
    const colorBlocked =
       chartBlocked ??
       (drawn === undefined || !COLORED_CHARTS.has(drawn)
          ? "Only a bar, line, scatter or bar and line chart has a color to set."
-         : undefined);
+         : view?.authorPalette
+           ? "This view sets its own colors, and a color here would replace them."
+           : query?.ownPalette
+             ? "This tile sets its own colors, and a color here would replace them."
+             : undefined);
    // As the builder writes them, so a pick reads back; one it cannot write is
    // left to the "any other colour" picker.
    const swatches = Array.from(

@@ -69,8 +69,7 @@ export function previewGivens(
       if (!isQueryTile(tile)) continue;
       const binds = (tile.filters ?? []).map((filter) => filter.given);
       const served =
-         servedReads.get(tileExpressionKey(`${tile.source} -> ${tile.name}`)) ??
-         [];
+         servedReads.get(tileExpressionKey(tileExpression(tile))) ?? [];
       for (const name of served)
          if (modelReads.has(name) || binds.includes(name)) order.push(name);
       order.push(...binds);
@@ -200,109 +199,54 @@ export interface PreviewTileQuery {
    /**
     * The package model to run on instead of the report's own. Set only where
     * the tile's source comes in through an import the served report does not
-    * have yet; see {@link UnsavedSources}.
+    * have yet; see {@link UnsavedImports}.
     */
    modelPath?: string;
 }
 
 /**
- * What the builder added that the served model does not have yet, so a tile on
- * it can be previewed before the save.
- *
- * Add tile puts a tile on the file's extension of its source, and where the
- * file has none it declares a new one: `source: flights_tiles is flights extend
- * { view: kpis_tile is kpis }`. Until the file is saved and served, the model
- * the tiles run on has no `flights_tiles`, and `flights_tiles -> kpis` fails as
- * a reference to an undefined object. A new extension declares no `where:` and
- * no field, so its views are its base's, and `flights -> kpis` returns what the
- * saved page will.
+ * Where to run a tile whose source came in with an import this session added:
+ * the model that import names, since the report the server serves cannot see
+ * that source until the file is saved. Undefined for a source the served
+ * report already sees.
  */
-export interface UnsavedSources {
-   /** The document's extensions that the served model does not declare. */
-   sources: ReadonlySet<string>;
-   /**
-    * The package path of the model to run `base` on, when the served report
-    * cannot see `base` because its import is unsaved too. Undefined: the
-    * report's own model sees it.
-    */
-   modelOf?: (base: string) => string | undefined;
-}
+export type UnsavedImports = (source: string) => string | undefined;
 
 /**
- * The {@link UnsavedSources} of `document` against the document as it was
- * opened, which is what the served model was built from. Undefined when the
- * document declares no extension the opened one did not.
- *
- * A base the opened file could not see came in with an import this session
- * added, and runs on the model that import names. A report held as text has no
- * imports: its sources are all the run model's.
+ * The {@link UnsavedImports} of `document` against the document as it was
+ * opened, which is what the served report was built from. Undefined when it
+ * imports nothing the opened one did not, and for a report held as text,
+ * which has no imports: its sources are all the run model's.
  */
-export function unsavedSources(
+export function unsavedImports(
    document: DashboardDocument,
    opened: DashboardDocument,
    documentPath: string,
    textHeld: boolean,
-): UnsavedSources | undefined {
-   const openedNames = new Set(opened.sources.map((s) => s.name));
-   const sources = new Set(
-      document.sources.map((s) => s.name).filter((n) => !openedNames.has(n)),
-   );
-   if (sources.size === 0) return undefined;
-   const modelOf = (base: string) => {
-      if (textHeld) return undefined;
+): UnsavedImports | undefined {
+   if (textHeld) return undefined;
+   if (JSON.stringify(document.imports) === JSON.stringify(opened.imports))
+      return undefined;
+   return (source: string) => {
       const by = document.imports.find(
-         (i) => i.kind === "names" && i.names.includes(base),
+         (i) => i.kind === "names" && i.names.includes(source),
       );
       if (by === undefined) return undefined;
       const model = resolvedOf(by.from, documentPath);
-      return reaches(opened, base, model, documentPath) ? undefined : model;
+      return reaches(opened, source, model, documentPath) ? undefined : model;
    };
-   return { sources, modelOf };
 }
 
 /**
- * Where a reference tile on an unsaved extension resolves: the view it names,
- * followed through that extension's own tiles (a copy of a new tile names the
- * new tile's view) down to a source the served model has.
+ * A tile's query with the DOCUMENT's bindings and chart.
  *
- * Undefined when the tile runs on its own extension as usual, and when the
- * chain reaches an extension that filters its tiles with a `where:`, whose base
- * would show other rows than the saved page.
- */
-function runsOnBase(
-   document: DashboardDocument,
-   tile: QueryTile,
-   unsaved: UnsavedSources | undefined,
-): { source: string; view: string; modelPath?: string } | undefined {
-   if (!unsaved || tile.declaration.kind !== "reference") return undefined;
-   let source = tile.source;
-   let view = tile.declaration.from;
-   if (source === undefined || !unsaved.sources.has(source)) return undefined;
-   // Each step leaves an extension or follows one of its tiles, so this bound
-   // is never reached on a document the reader produced.
-   const bound = document.tiles.length + document.sources.length;
-   for (let step = 0; step <= bound; step++) {
-      if (!unsaved.sources.has(source)) {
-         const modelPath = unsaved.modelOf?.(source);
-         return { source, view, ...(modelPath ? { modelPath } : {}) };
-      }
-      const extension = document.sources.find((s) => s.name === source);
-      if (!extension || extension.scopedBy?.length) return undefined;
-      const own = document.tiles.find(
-         (t): t is QueryTile =>
-            isQueryTile(t) && t.source === source && t.name === view,
-      );
-      if (!own) source = extension.base;
-      else if (own.declaration.kind === "reference")
-         view = own.declaration.from;
-      else return undefined;
-   }
-   return undefined;
-}
-
-/**
- * A tile's query with the DOCUMENT's bindings, run on the dashboard's own
- * extension.
+ * A tile that names a served view, or is a query of the report's own over one,
+ * runs that view with the document's settings: `flights -> by_carrier + {
+ * where: origin_code ~ $ORIGIN }` under the chart and colour lines its query
+ * carries. That is the query the writer is about to produce, run before it is
+ * written, and it needs nothing from the saved file. The rest of this says how
+ * a tile in a file written before the builder wrote queries runs, on the file's
+ * own extension.
  *
  * `overview -> revenue_trend` would run the view AS SAVED, bindings and all.
  * `overview -> sales_by_month + { where: category ~ $CATEGORY }` is the base
@@ -344,8 +288,8 @@ export function previewTileQuery(
    values: ReadonlyMap<string, GivenValue> = new Map(),
    /** What the served file's compiled tile reads (`DashboardTile.givenNames`), when it has this tile. */
    served?: readonly string[],
-   /** What the served model does not have yet; see {@link UnsavedSources}. */
-   unsaved?: UnsavedSources,
+   /** Where a source imported since the file was opened runs; see {@link UnsavedImports}. */
+   unsaved?: UnsavedImports,
 ): PreviewTileQuery {
    if (isReadOnlyTile(tile)) {
       // Declared in the model, or a named query; bindings live there too, out
@@ -362,20 +306,20 @@ export function previewTileQuery(
    // source-level `where:`, a `# drill` dimension — which the base does not.
    // Running on the base showed unscoped numbers for a dashboard that scopes
    // its source, and the saved page then differed from what the author watched.
-   //
-   // Except on an extension the served model does not have yet, which runs
-   // where it resolves to instead; see `runsOnBase`.
-   const fallback = runsOnBase(document, tile, unsaved);
-   const on = fallback?.source ?? tile.source;
+   const on = tile.source;
+   const { kind } = tile.declaration;
    const baseView =
-      fallback?.view ??
-      (tile.declaration.kind === "reference"
+      tile.declaration.kind === "reference" || tile.declaration.kind === "named"
          ? tile.declaration.from
-         : tile.name);
+         : tile.name;
+   // A source this session imported runs on its own model until the save.
+   const modelPath =
+      kind === "inherited" || kind === "named"
+         ? unsaved?.(on as string)
+         : undefined;
    // A model other than the report's declares none of the report's givens, so
    // every binding is written there as a literal.
-   const sendable =
-      fallback?.modelPath !== undefined ? new Set<string>() : runnable;
+   const sendable = modelPath !== undefined ? new Set<string>() : runnable;
    const localTypes = new Map(
       (document.localGivens ?? []).map((local) => [local.name, local.type]),
    );
@@ -417,7 +361,7 @@ export function previewTileQuery(
    const chart = tile.chart;
    const chartAnnotation =
       chart === "none" || isChartPick(chart)
-         ? chartLineText(chart, tile.chartCarried)
+         ? chartLineText(chart, tile.chartReset)
          : chart === "custom" && tile.chartLines?.length
            ? tile.chartLines.join("\n")
            : chart === "default" && dropsBaseChart(tile.declaration)
@@ -432,7 +376,7 @@ export function previewTileQuery(
    const colorAnnotation =
       tile.color !== undefined
          ? seriesColorLine(tile.color)
-         : tile.declaration.kind !== "reference" && !tile.ownPalette
+         : (kind === "inline" || kind === "opaque") && !tile.ownPalette
            ? seriesColorResetLine
            : undefined;
    const annotation =
@@ -440,12 +384,18 @@ export function previewTileQuery(
       undefined;
    return {
       ...(annotation ? { annotation } : {}),
-      ...(fallback?.modelPath !== undefined
-         ? { modelPath: fallback.modelPath }
-         : {}),
+      ...(modelPath !== undefined ? { modelPath } : {}),
       expression:
          `${on} -> ${baseView}` + (refinement ? ` + { ${refinement} }` : ""),
-      givenNames: Array.from(sent),
+      // A served view the server has not resolved as a tile of this report
+      // may read the model's givens (its source's own `where:`), which the
+      // document cannot see: it is sent the whole row, as the reader does.
+      givenNames:
+         (kind === "inherited" || kind === "named") &&
+         served === undefined &&
+         modelPath === undefined
+            ? undefined
+            : Array.from(sent),
       // No served entry and nothing from the document: the model may still scope it, so say nothing.
       reads: served || reads.size > 0 ? Array.from(reads) : undefined,
    };

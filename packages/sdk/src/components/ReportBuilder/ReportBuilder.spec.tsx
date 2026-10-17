@@ -536,10 +536,10 @@ describe("ReportBuilder: tiles added and removed", () => {
       );
       await waitFor(() => expect(written).toBeDefined());
       expect(written).toContain(
-         'tiles=["a -> by_cat", "a -> by_brand", "a -> sales_by_state_tile"]',
+         'tiles=["a -> by_cat", "a -> by_brand", "sales_by_state_tile"]',
       );
       expect(written).toContain(
-         '  # colspan=6\n  # label="Revenue by state"\n  view: sales_by_state_tile is sales_by_state\n}',
+         '  view: by_brand is by_brand_view\n}\n\n# colspan=6\n# label="Revenue by state"\nquery: sales_by_state_tile is scoped_orders -> sales_by_state\n',
       );
    });
 
@@ -606,16 +606,32 @@ describe("ReportBuilder: a tile's own settings", () => {
       expect(within(tile("by_cat")).getByText("By category")).toBeDefined();
    });
 
-   it("offers no title to a tile the model owns", async () => {
+   // Retitling it makes it a query of the report's own, which carries the
+   // title; the model's view is never written.
+   it("retitles a tile naming a served view as a query of the report's own", async () => {
       const source = `## artifact { title="T" tiles=["orders -> by_brand"] }\nimport { orders } from '../orders.malloy'`;
       const document = await openDocument(source);
-      render(<ReportBuilder source={source} document={document} />);
-      fireEvent.click(screen.getByLabelText("Settings for by_brand"));
-      expect(screen.queryByLabelText("Tile title")).toBeNull();
-      expect(screen.getByText(/Declared on its source/)).toBeDefined();
-      // Nor does its title open into a field on the tile.
-      fireEvent.click(screen.getByText("By brand"));
-      expect(screen.queryByLabelText("Tile title")).toBeNull();
+      let written: string | undefined;
+      render(
+         <ReportBuilder
+            source={source}
+            document={document}
+            onSave={(next) => {
+               written = next;
+            }}
+         />,
+      );
+      editInline("By brand", "Tile title", "Brands");
+      fireEvent.click(
+         screen.getByRole("button", { name: "Save", hidden: true }),
+      );
+      await waitFor(() => expect(written).toBeDefined());
+      expect(written).toBe(`## artifact { title="T" tiles=["by_brand_tile"] }
+import { orders } from '../orders.malloy'
+
+# label="Brands"
+query: by_brand_tile is orders -> by_brand
+`);
    });
 });
 

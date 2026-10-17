@@ -75,19 +75,76 @@ describe("a tile's chart line", () => {
       expect(await chartOf(out, 0)).toBe("line_chart");
    });
 
-   it("negates only the tags the view carries when the tile says which, and reads it back", async () => {
+   // The line merges over the view's own chart and replaces it; with no
+   // reset set on the tile it takes nothing off.
+   it("writes a viz line, takes nothing off, and reads it back", async () => {
       const out = await spliced(FILE(""), (d) => {
          queryTile(d, 0).chart = "line_chart";
-         queryTile(d, 0).chartCarried = ["bar_chart"];
       });
-      expect(out).toContain("  # -bar_chart -viz line_chart\n  view: x is vx");
+      expect(out).toContain("  # viz=line\n  view: x is vx");
+      expect(out).not.toMatch(/# -/);
       expect(await chartOf(out, 0)).toBe("line_chart");
       const table = await spliced(FILE(""), (d) => {
          queryTile(d, 0).chart = "none";
-         queryTile(d, 0).chartCarried = [];
       });
-      expect(table).toContain("  # -big_value -viz\n  view: x is vx");
+      expect(table).toContain("  # viz=table\n  view: x is vx");
       expect(await chartOf(table, 0)).toBe("none");
+      // A line an earlier builder wrote is read, and rewritten in viz form
+      // once the edit sets no reset with its pick.
+      const old = FILE("  # -line_chart -big_value -viz bar_chart\n");
+      expect(await chartOf(old, 0)).toBe("bar_chart");
+      expect(
+         await spliced(old, (d) => {
+            queryTile(d, 0).chart = "line_chart";
+            delete queryTile(d, 0).chartReset;
+         }),
+      ).toBe(FILE("  # viz=line\n"));
+   });
+
+   // Where the view's chart wins over any viz (big value, scatter, a map),
+   // the tile carries a reset, written ahead of the pick.
+   it("writes a reset line ahead of the pick, reads it back, and removes it with the pick", async () => {
+      const table = await spliced(FILE(""), (d) => {
+         queryTile(d, 0).chart = "none";
+         queryTile(d, 0).chartReset = ["big_value"];
+      });
+      expect(table).toBe(FILE("  # -big_value viz=table\n"));
+      expect(queryTile(await openDocument(table), 0)).toMatchObject({
+         chart: "none",
+         chartReset: ["big_value"],
+      });
+      const scatter = await spliced(FILE(""), (d) => {
+         queryTile(d, 0).chart = "scatter_chart";
+         queryTile(d, 0).chartReset = ["bar_chart", "viz"];
+      });
+      expect(scatter).toBe(FILE("  # -bar_chart -viz scatter_chart\n"));
+      expect(queryTile(await openDocument(scatter), 0)).toMatchObject({
+         chart: "scatter_chart",
+         chartReset: ["bar_chart", "viz"],
+      });
+      // Back to the view's chart: the whole line goes, reset and all.
+      const back = await spliced(table, (d) => {
+         queryTile(d, 0).chart = "default";
+      });
+      expect(back).toBe(FILE(""));
+      expect(queryTile(await openDocument(back), 0).chartReset).toBeUndefined();
+      // A pick that needs no reset drops it; so does the same pick without one.
+      expect(
+         await spliced(table, (d) => {
+            queryTile(d, 0).chart = "bar_chart";
+            delete queryTile(d, 0).chartReset;
+         }),
+      ).toBe(FILE("  # viz=bar\n"));
+      expect(
+         await spliced(table, (d) => {
+            delete queryTile(d, 0).chartReset;
+         }),
+      ).toBe(FILE("  # viz=table\n"));
+      // A label edit leaves the reset line as it is.
+      const labelled = await spliced(table, (d) => {
+         queryTile(d, 0).label = "L";
+      });
+      expect(labelled).toContain("  # -big_value viz=table\n");
    });
 
    it("replaces a recognized line, bare or written, and removes it for Default", async () => {
@@ -121,14 +178,16 @@ describe("a tile's chart line", () => {
          d.tiles.push({
             name: "z_tile",
             source: "a",
-            declaration: { kind: "reference", from: "vz" },
+            declaration: { kind: "named", from: "vz" },
             colspan: 6,
             chart: "scatter_chart",
          });
       });
       const z = queryTile(await openDocument(out), 2);
       expect(z.chart).toBe("scatter_chart");
-      expect(out).toContain(chartLineText("scatter_chart"));
+      expect(out).toContain(
+         "# colspan=6\n# scatter_chart\nquery: z_tile is a -> vz\n",
+      );
    });
 
    it("refuses a chart it cannot write", async () => {
@@ -142,7 +201,7 @@ describe("a tile's chart line", () => {
          d.tiles.push({
             name: "z_tile",
             source: "a",
-            declaration: { kind: "reference", from: "vz" },
+            declaration: { kind: "named", from: "vz" },
             chart: "custom",
          });
       });
@@ -260,7 +319,7 @@ source: a is one extend {
          d.tiles.push({
             name: "bad name",
             source: "a",
-            declaration: { kind: "reference", from: "vz" },
+            declaration: { kind: "named", from: "vz" },
          });
       });
       expect(reason).toBe(
@@ -270,7 +329,7 @@ source: a is one extend {
          d.tiles.push({
             name: "z_tile",
             source: "a",
-            declaration: { kind: "reference", from: "v z\n" },
+            declaration: { kind: "named", from: "v z\n" },
          });
       });
       expect(from).toBe(

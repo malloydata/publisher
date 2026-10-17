@@ -45,7 +45,7 @@ describe("a tile's width, as the builder writes it", () => {
       for (const [columns, want] of [
          [undefined, []],
          [2, []],
-         [4, ["  # colspan=2"]],
+         [4, ["# colspan=2"]],
       ] as const) {
          const grid = columns ?? 2;
          const colspan = writtenSpan(Math.ceil(grid / 2), grid);

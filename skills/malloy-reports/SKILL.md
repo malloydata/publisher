@@ -44,9 +44,9 @@ Interactivity is not the axis: both layouts get filter controls, URL-addressable
 Tool names below are bare (`get_context`); match each against the tools you actually have, since a host may prefix or rename them. A host names its compile and reload tools its own way. Where you have none, use the REST endpoint named beside the step.
 
 1. **READ THE MODEL FIRST.** Get the real source, view, dimension, and given names from the package: `get_context` if you have it, otherwise the REST model endpoint for `index.malloy` (it answers 404 for a file off the surface) or the `.malloy` files. Never guess a name. A guessed field in a query fails the whole package load, not just that one report; a guessed tile or suggest source is quieter, and only shows up in the package warnings. If the package root holds an `index.malloy` (every scaffolded package does), a tile reads only the sources that file exports.
-2. **PICK THE LAYOUT AND THE TILES.** Which views, in what order, and on a grid how wide each sits. A query tile is a `view:` you declare in the report, named as `"source -> view"`.
+2. **PICK THE LAYOUT AND THE TILES.** Which views, in what order, and on a grid how wide each sits. A tile names a view the model serves, `"source -> view"`. A tile that needs something the view does not have (a title, a width, a chart, a colour, a filter) is a `query:` of the report's own over that view, and the entry names the query.
 3. **DECLARE THE GIVENS** the report will filter by, in the report file itself, with their control tags (see "Filter controls"). A report holds its own filters: the builder edits the report file and nothing else, so a filter it can add, change or remove is a declaration in that file. A given the model already declares and reads is imported by name, never declared again; if it is only a reader's filter, move it into the report instead (see "Givens that stay in the model").
-4. **COMPOSE THE FILE** at its path (the package root unless asked otherwise), following the template below, but do not save it yet. Name the sources you need in the import. Each tile binds its controls with a refinement, `view: t is v + { where: category ~ $CATEGORY }`, one clause per given it answers to; a `filter<...>` binds with `~`, a plain `date` or `number` given is a value and binds with `>=`, `<=` or `=`. Only the givens some tile references become controls. Then import every source or query any referenced given names in a `suggest`; **a `suggest` naming a `query=` needs that query's own source imported as well**, because an import is not transitive.
+4. **COMPOSE THE FILE** at its path (the package root unless asked otherwise), following the template below, but do not save it yet. Name the sources you need in the import. Each tile binds its controls with a refinement on its query, `query: t is orders -> v + { where: category ~ $CATEGORY }`, one clause per given it answers to; a `filter<...>` binds with `~`, a plain `date` or `number` given is a value and binds with `>=`, `<=` or `=`. Only the givens some tile references become controls. Then import every source or query any referenced given names in a `suggest`; **a `suggest` naming a `query=` needs that query's own source imported as well**, because an import is not transitive.
 5. **COMPILE IT** with your compile tool (`POST …/models/<path>/compile` over REST) at the path the file will have, with **`"scope": "file"`**: a report opens with an `import`, which the default `append` scope refuses, and an existing file compiled at `append` collides with itself. **`"scope": "file"` does not check tiles, drills or suggest queries.** To see those before you save, compile the same text at `"scope": "package"` with `modelPath` set to the report's path: it runs the lint step 6 reads and returns its findings with code `dashboard-lint` (or `render-tag`). Editing an untagged model several reports import also wants `"scope": "package"`, which recompiles every file as saved.
 6. **SAVE IT, RELOAD, AND READ THE MANIFEST AND THE WARNINGS.** Save by writing the file, or with `PUT …/models/<path>` over REST (omit `expectedHash` to create; it creates at any new path and replaces only a file the package already serves as a report). Then your reload tool, or `GET …/packages/<pkg>?reload=true`. A 424 means the package did not load and your edit is not live. **The `warnings` key is absent when there are none.** Then read `GET …/packages/<pkg>/reports/<path>`: its `givens` are exactly the controls that will render, and its `layout` is the layout Publisher read. See "Read the lint".
 7. **OPEN IT AND LOOK.** Not optional; see "What done means".
@@ -59,9 +59,9 @@ Tool names below are bare (`get_context`); match each against the tools you actu
 ##| artifact { layout=grid title="Storefront overview"
   tiles=[
     intro { kind=text colspan=12 },
-    "overview -> kpis",
-    "overview -> revenue_trend",
-    "overview -> revenue_by_state"
+    "kpis_tile",
+    "revenue_trend",
+    "revenue_by_state"
   ]
 } dashboard { columns=12 }
 |##
@@ -76,34 +76,32 @@ given: SINCE :: date is @2023-01-01
 Revenue and margin for the selected category.
 |##
 
-source: overview is order_items extend {
-  # colspan=12
-  # label="Key figures"
-  # big_value
-  view: kpis is key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
+# colspan=12
+# label="Key figures"
+query: kpis_tile is order_items -> key_figures + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
-  # colspan=8
-  # break
-  # label="Revenue by month"
-  view: revenue_trend is sales_by_month + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
+# colspan=8
+# break
+# viz=line
+# label="Revenue by month"
+query: revenue_trend is order_items -> sales_by_month + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 
-  # colspan=4
-  # label="Revenue by state"
-  view: revenue_by_state is sales_by_state + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
-}
+# colspan=4
+# label="Revenue by state"
+query: revenue_by_state is order_items -> sales_by_state + { where: category ~ $CATEGORY, where: created_at >= $SINCE }
 ```
 
-The same file with `layout=linear` and no `dashboard { … }` or `colspan` is a linear report.
+The same file with `layout=linear` and no `dashboard { … }` or `colspan` is a linear report. A tile that needs nothing of its own is just its entry: `"order_items -> sales_by_brand"`, with no query.
 
 - **The tag is model-level**, one line (`## artifact { … }`) or a `##|` … `|##` block with the same text inside, the form to use once the list is long: one tile per line, `}` on its own line, `|##` closing at the opener's column. A one-line `##` tag must stay on one line: wrapping it is a compile error, or worse, compiles clean and quietly stops being a report.
 - **The header** above the tag holds only `##!` flags, `//` comments and the unnamed `"` notes that are the report's description. Keep statements and `#` tags below `## artifact`: nothing refuses one above it, but the header is where readers and the builder look.
-- **Quote every query entry.** `"overview -> kpis"` is a string; unquoted, the tag does not parse (`notebook-artifact-unparsed`). A bare quoted name (`"top_products"`) names a model-level `query:` in the file.
-- **A query tile is a thin `view:` on an extension the report declares** (`source: overview is order_items extend { … }`): the modelled view keeps its chart tag, the wrapper carries the tile's `# label`, its width on a grid, and its binding.
+- **Quote every query entry.** `"order_items -> kpis"` is a string; unquoted, the tag does not parse (`notebook-artifact-unparsed`). A bare quoted name (`"kpis_tile"`) names a `query:` in the file.
+- **A report declares no source.** A tile names a served view (`"order_items -> sales_by_state"`), or a `query:` of the report's own over one (`query: t is order_items -> sales_by_state + { … }`). The view keeps its chart and label; the query's `#` tags carry what the tile changes (its `# label`, its `# colspan` on a grid, a `# viz=`, a colour), merged over the view's, and its `+ { where: … }` carries the tile's filters. Never declare a `source: x_tiles is x extend { … }` to hold tiles: it copies the served model into the report.
 - **A text tile is a `##|(markdown) name` block** listed as `name { kind=text }`. The name is one bare word on the opener line, the body starts on the next line (a heading goes inside the block), and `|##` closes it at the opener's column. A bare `intro` without `{ kind=text }` is the query-tile form for a `query:`, so the block is not shown. On a grid the entry also takes `colspan` and `break`, and nothing else.
-- **File order:** header, imports and givens, the prose blocks in tile order, then the extension that defines the tile views. That is the order the builder writes.
+- **File order:** header, imports and givens, the prose blocks in tile order, then the tiles' queries. That is the order the builder writes.
 - **A `run:` in a report that lists `tiles` is never shown** (`notebook-layout-run`). Define a view, list it, delete the `run:`.
 - **A tile expression is a string, so the compiler never checks it.** Rename a view and the file still compiles; the tile fails at package load, where the lint names it.
-- **Chart tags go on the view** (`# line_chart`, `# bar_chart`, `# big_value`, `# label="…"`). `skill:malloy-charts` covers choosing them.
+- **A tile's chart is its query's `# viz=bar`, `# viz=line`, `# viz=combo` or `# viz=table`**, which replaces whatever chart the view sets: the renderer reads `viz` before any `*_chart` tag. Over a line, bar or bar-and-line view no reset line is needed. Big value, scatter and the maps have no `viz` value and draw whatever `viz` says, so where the view's chart would still win, the line takes it off first: `# -big_value viz=table` makes a big-value view a table, and `# -bar_chart -viz scatter_chart` makes a bar view a scatter chart. Write a reset only there. `skill:malloy-charts` covers choosing them.
 
 ## Filter controls
 
@@ -166,12 +164,12 @@ source: recalls is duckdb.table('data/auto_recalls.csv') extend {
 }
 ```
 
-After: the model declares no givens and `recalls` has no `where:`; the report declares the four and binds each tile:
+After: the model declares no givens and `recalls` has no `where:`; the report declares the four and binds each tile in its query:
 
 ```malloy
 ##! experimental.givens
 ##| artifact { layout=grid title="Recalls"
-  tiles=["recalls_tiles -> recalls_by_year", "recalls_tiles -> recalls_by_manufacturer"]
+  tiles=["recalls_by_year", "recalls_by_manufacturer"]
 } dashboard { columns=12 }
 |##
 import { recalls } from "auto_recalls.malloy"
@@ -185,26 +183,25 @@ given: major_recall_filter :: filter<boolean> is f''
 # label="Filed"
 given: recall_date_filter :: filter<date> is f''
 
-source: recalls_tiles is recalls extend {
-  # colspan=6
-  view: recalls_by_year is by_year + {
-    where:
-      Manufacturer ~ $manufacturer_filter,
-      Subject ~ $subject_filter,
-      `Major Recall` ~ $major_recall_filter,
-      `Report Received Date` ~ $recall_date_filter
-  }
-  # colspan=6
-  view: recalls_by_manufacturer is by_manufacturer + {
-    where:
-      Subject ~ $subject_filter,
-      `Major Recall` ~ $major_recall_filter,
-      `Report Received Date` ~ $recall_date_filter
-  }
+# colspan=6
+query: recalls_by_year is recalls -> by_year + {
+  where:
+    Manufacturer ~ $manufacturer_filter,
+    Subject ~ $subject_filter,
+    `Major Recall` ~ $major_recall_filter,
+    `Report Received Date` ~ $recall_date_filter
+}
+
+# colspan=6
+query: recalls_by_manufacturer is recalls -> by_manufacturer + {
+  where:
+    Subject ~ $subject_filter,
+    `Major Recall` ~ $major_recall_filter,
+    `Report Received Date` ~ $recall_date_filter
 }
 ```
 
-A tile view takes a name of its own: `view: by_year is by_year + { … }` is "Cannot redefine 'by_year'". Each tile binds only the givens it should answer to: `recalls_by_manufacturer` leaves the manufacturer filter off, since it is the breakdown by manufacturer. Every given here is a `filter<…>`, so each binds with `~`; a plain `date` or `number` given binds with `>=`, `<=` or `=` (step 4).
+A tile's query takes a name of its own, unique in the file. A `where:` in the refinement filters the rows the view reads, not its output, so it works on a field the view does not show, a joined field, and the first stage of a view that has two. A filter on the source (`recalls extend { where: … } -> by_year`) gives the same rows, with any `#(access_filter)` still applied; the refinement is the form the builder writes. Each tile binds only the givens it should answer to: `recalls_by_manufacturer` leaves the manufacturer filter off, since it is the breakdown by manufacturer. A filter most tiles over a source apply and one leaves out draws a lint warning naming that tile. Every given here is a `filter<…>`, so each binds with `~`; a plain `date` or `number` given binds with `>=`, `<=` or `=` (step 4).
 
 A given has to be in the report file's own scope to be bindable: declared there or imported. Never add a `#(filter)` annotation: it is deprecated, a report renders no control for it, and every use has a `given:` form (`malloy-model` covers the migration). `malloy-model` and `docs/givens.md` cover givens themselves.
 
@@ -261,8 +258,8 @@ Package warnings after a reload are the report's test suite. Fix all of them, an
 ##| artifact { layout=linear title="[Title]"
   tiles=[
     intro { kind=text },
-    "main_source_tiles -> broad_tile",
-    "main_source_tiles -> drill_tile"
+    "main_source -> [broad view]",
+    "drill_tile"
   ]
 }
 |##
@@ -272,17 +269,15 @@ import { main_source } from "model.malloy"
 [Framing question: what are we trying to understand?]
 |##
 
-source: main_source_tiles is main_source extend {
-  view: broad_tile is [broad view]
-  view: drill_tile is [drill view]
-}
+# label="[Title for the drill tile]"
+query: drill_tile is main_source -> [drill view]
 ```
 
-For a grid, write `layout=grid`, add `dashboard { columns=12 }` after the tag's closing `}`, and give every tile view a `# colspan` (`reference/grid.md`).
+For a grid, write `layout=grid`, add `dashboard { columns=12 }` after the tag's closing `}`, and give a tile that should not take the default width a `query:` with a `# colspan` (`reference/grid.md`).
 
 ## Editing in the Console
 
-A person can open any report in the Console's builder (**Edit** on the report page; **+ Report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; it never rewrites `layout=`, so the layout is set in the file. A file written as `run:` cells, the retired linear form, is no report and does not open (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
+A person can open any report in the Console's builder (**Edit** on the report page; **+ Report** on the package page writes `<slug>.malloy` at the package root). The builder splices the file rather than regenerating it, so comments and anything it does not model survive; it never rewrites `layout=`, so the layout is set in the file. It writes the form above: a tile names a served view until it is given a setting, then becomes a `query:` of the report's own, and names the view again when every setting is back to the view's. It edits a `query:` that reads `source -> view` with an optional `+ { … }`, and only shows one of any other shape. A report written with a `source: … extend { … }` holding its tiles still opens, and its tiles are edited where they are. The builder writes the report file and never a model. A file written as `run:` cells, the retired linear form, is no report and does not open (`reference/linear.md`). A save whose text declares a real `#(authorize)` or `#(access_filter)` gate outside prose is refused with a 400: gates live in a model file the report imports.
 
 ## What "done" means
 
@@ -292,7 +287,7 @@ A person can open any report in the Console's builder (**Edit** on the report pa
 - You opened the page and every tile shows real numbers: not stuck loading, not an error, not an empty state you did not intend.
 - Each control renders as the widget you intended, and changing one changes the numbers.
 - If you added a `# drill`, its `to=` is a path, and you clicked it and landed where you meant to, with the given seeded.
-- On a grid: every tile carries a colspan, each row sums to `columns`, rows end flush, nothing is clipped, and no legend or card label ends in `…`.
+- On a grid: each row sums to `columns`, rows end flush, nothing is clipped, and no legend or card label ends in `…`.
 
 ## Reference
 

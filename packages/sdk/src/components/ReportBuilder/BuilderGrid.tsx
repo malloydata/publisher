@@ -49,6 +49,7 @@ export function BuilderGrid({
    openAdd,
    editTile,
    renderTile,
+   titleOf = tileDisplayTitle,
 }: {
    editor: ReportEditorHandle;
    reorder: ReturnType<typeof useTileReorder>;
@@ -72,6 +73,8 @@ export function BuilderGrid({
    removeBlocked?: string;
    openAdd: (at?: number) => void;
    editTile: (key: string, change: (tile: DashboardTile) => void) => void;
+   /** A tile's title when it has none of its own; see `ReportBuilderProps.titleOf`. */
+   titleOf?: (tile: QueryTile) => string;
    renderTile?: (
       tile: QueryTile,
       heading?: TileHeadingSlots,
@@ -104,7 +107,7 @@ export function BuilderGrid({
          ? withGaps(shown, columns)
          : shown.map(tileEntry);
    const heading = (tile: QueryTile) =>
-      headingOf(tile, tileDisplayTitle(tile), editTile);
+      headingOf(tile, titleOf(tile), editTile);
    return (
       <>
          <DragDropProvider
@@ -257,8 +260,8 @@ const headingOf = (
 
 /**
  * Whether dragging this tile's edge can be saved: its width is a tag this file
- * owns. An inherited tile's tags live on the model's view, and a named query's
- * on its `query:` statement; the builder writes neither.
+ * owns, or will once the tile is a query of the report's own. A query the
+ * builder only reads keeps its tags where they are written.
  */
 const resizable = (tile: DashboardTile): boolean =>
    isTextTile(tile) || !isReadOnlyTile(tile);
