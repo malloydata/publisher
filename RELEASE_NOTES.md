@@ -27,7 +27,7 @@ The report builder drew its filter row in a different order from the report it e
 
 ## [Unreleased] — The builder says "model" and "tile", not "view"
 
-The builder's text no longer assumes the reader knows tiles run Malloy views. In the chart menu, "From the view" is now **Default**, with "As set in the model" under it. The reasons on greyed-out charts no longer say "view" either, and nor does the text for adding a tile. A host's tests that look up these labels or roles by name need the new strings: `Default`, `Search the model`, and the `From the model` listbox.
+The builder's text no longer assumes the reader knows tiles run Malloy views. In the chart menu, "From the view" is now **Default**, with "As set in the model" under it. The reasons on greyed-out charts no longer say "view" either, and nor does the text for adding a tile or the New report dialog's. A host's tests that look up these labels or roles by name need the new strings: `Default`, `Search the model`, and the `From the model` listbox.
 
 A filter's menu now speaks of the report's default as well. "Open the report with this value" becomes **Make this the report's default**. Once it is, the menu shows a quiet **Report default** with a check. The button that clears it says **Use the model's default** for a model's filter, or **Use the filter's default** for one the report declares itself, since that one falls back to the default written in the report.
 
