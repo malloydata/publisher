@@ -1,18 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import {
-   Connection,
-   Environment,
-   IncrementalLedgerEntry,
-   LedgerTableIdentity,
-   Materialization,
-   StorageDestination,
-   MaterializationStatus,
-   MaterializationUpdate,
-   Package,
-   ResourceRepository,
-} from "../DatabaseInterface";
+import { ResourceRepository } from "../DatabaseInterface";
 import { ConnectionRepository } from "./ConnectionRepository";
 import { DuckDBConnection } from "./DuckDBConnection";
 import { EnvironmentRepository } from "./EnvironmentRepository";
@@ -21,250 +10,91 @@ import { StorageDestinationRepository } from "./StorageDestinationRepository";
 import { MaterializationRepository } from "./MaterializationRepository";
 import { PackageRepository } from "./PackageRepository";
 
-export class DuckDBRepository implements ResourceRepository {
-   private environmentRepo: EnvironmentRepository;
-   private packageRepo: PackageRepository;
-   private connectionRepo: ConnectionRepository;
-   private destinationRepo: StorageDestinationRepository;
-   private materializationRepo: MaterializationRepository;
-   private incrementalLedgerRepo: IncrementalLedgerRepository;
+/**
+ * The {@link ResourceRepository} over one DuckDB store: each method delegates
+ * to the entity repository that owns its table, except the two deletes that
+ * cascade across tables.
+ */
+export function createDuckDBRepository(
+   db: DuckDBConnection,
+): ResourceRepository {
+   const environments = new EnvironmentRepository(db);
+   const packages = new PackageRepository(db);
+   const connections = new ConnectionRepository(db);
+   const destinations = new StorageDestinationRepository(db);
+   const materializations = new MaterializationRepository(db);
+   const ledger = new IncrementalLedgerRepository(db);
 
-   constructor(public db: DuckDBConnection) {
-      this.environmentRepo = new EnvironmentRepository(db);
-      this.packageRepo = new PackageRepository(db);
-      this.connectionRepo = new ConnectionRepository(db);
-      this.destinationRepo = new StorageDestinationRepository(db);
-      this.materializationRepo = new MaterializationRepository(db);
-      this.incrementalLedgerRepo = new IncrementalLedgerRepository(db);
-   }
+   return {
+      listEnvironments: () => environments.listEnvironments(),
+      getEnvironmentById: (id) => environments.getEnvironmentById(id),
+      getEnvironmentByName: (name) => environments.getEnvironmentByName(name),
+      createEnvironment: (environment) =>
+         environments.createEnvironment(environment),
+      updateEnvironment: (id, updates) =>
+         environments.updateEnvironment(id, updates),
+      async deleteEnvironment(id) {
+         await ledger.deleteByEnvironmentId(id);
+         await materializations.deleteByEnvironmentId(id);
+         await connections.deleteConnectionsByEnvironmentId(id);
+         await destinations.deleteByEnvironmentId(id);
+         await packages.deletePackagesByEnvironmentId(id);
+         await environments.deleteEnvironment(id);
+      },
 
-   // ==================== ENVIRONMENTS ====================
+      listPackages: (environmentId) => packages.listPackages(environmentId),
+      getPackageById: (id) => packages.getPackageById(id),
+      getPackageByName: (environmentId, name) =>
+         packages.getPackageByName(environmentId, name),
+      createPackage: (pkg) => packages.createPackage(pkg),
+      updatePackage: (id, updates) => packages.updatePackage(id, updates),
+      async deletePackage(id) {
+         const pkg = await packages.getPackageById(id);
+         if (pkg) {
+            await ledger.deleteByPackage(pkg.environmentId, pkg.name);
+            await materializations.deleteByPackage(pkg.environmentId, pkg.name);
+         }
+         await packages.deletePackage(id);
+      },
 
-   async listEnvironments(): Promise<Environment[]> {
-      return this.environmentRepo.listEnvironments();
-   }
+      listConnections: (environmentId) =>
+         connections.listConnections(environmentId),
+      getConnectionById: (id) => connections.getConnectionById(id),
+      getConnectionByName: (environmentId, name) =>
+         connections.getConnectionByName(environmentId, name),
+      createConnection: (connection) =>
+         connections.createConnection(connection),
+      updateConnection: (id, updates) =>
+         connections.updateConnection(id, updates),
+      deleteConnection: (id) => connections.deleteConnection(id),
 
-   async getEnvironmentById(id: string): Promise<Environment | null> {
-      return this.environmentRepo.getEnvironmentById(id);
-   }
+      listStorageDestinations: (environmentId) =>
+         destinations.list(environmentId),
+      getStorageDestinationByName: (environmentId, name) =>
+         destinations.getByName(environmentId, name),
+      upsertStorageDestination: (destination) =>
+         destinations.upsert(destination),
+      deleteStorageDestination: (id) => destinations.deleteById(id),
+      deleteStorageDestinationsByEnvironmentId: (id) =>
+         destinations.deleteByEnvironmentId(id),
 
-   async getEnvironmentByName(name: string): Promise<Environment | null> {
-      return this.environmentRepo.getEnvironmentByName(name);
-   }
+      listMaterializations: (environmentId, packageName, options) =>
+         materializations.list(environmentId, packageName, options),
+      getLatestScheduledFireAt: (environmentId, packageName) =>
+         materializations.getLatestScheduledFireAt(environmentId, packageName),
+      getMaterializationById: (id) => materializations.getById(id),
+      getActiveMaterialization: (environmentId, packageName) =>
+         materializations.getActive(environmentId, packageName),
+      createMaterialization: (environmentId, packageName, status, metadata) =>
+         materializations.create(environmentId, packageName, status, metadata),
+      updateMaterialization: (id, updates) =>
+         materializations.update(id, updates),
+      deleteMaterialization: (id) => materializations.deleteById(id),
 
-   async createEnvironment(
-      environment: Omit<Environment, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Environment> {
-      return this.environmentRepo.createEnvironment(environment);
-   }
-
-   async updateEnvironment(
-      id: string,
-      updates: Partial<Environment>,
-   ): Promise<Environment> {
-      return this.environmentRepo.updateEnvironment(id, updates);
-   }
-
-   async deleteEnvironment(id: string): Promise<void> {
-      await this.incrementalLedgerRepo.deleteByEnvironmentId(id);
-      await this.materializationRepo.deleteByEnvironmentId(id);
-      await this.connectionRepo.deleteConnectionsByEnvironmentId(id);
-      await this.destinationRepo.deleteByEnvironmentId(id);
-      await this.packageRepo.deletePackagesByEnvironmentId(id);
-      await this.environmentRepo.deleteEnvironment(id);
-   }
-
-   // ==================== PACKAGES ====================
-
-   async listPackages(environmentId: string): Promise<Package[]> {
-      return this.packageRepo.listPackages(environmentId);
-   }
-
-   async getPackageById(id: string): Promise<Package | null> {
-      return this.packageRepo.getPackageById(id);
-   }
-
-   async getPackageByName(
-      environmentId: string,
-      name: string,
-   ): Promise<Package | null> {
-      return this.packageRepo.getPackageByName(environmentId, name);
-   }
-
-   async createPackage(
-      pkg: Omit<Package, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Package> {
-      return this.packageRepo.createPackage(pkg);
-   }
-
-   async updatePackage(
-      id: string,
-      updates: Partial<Package>,
-   ): Promise<Package> {
-      return this.packageRepo.updatePackage(id, updates);
-   }
-
-   async deletePackage(id: string): Promise<void> {
-      const pkg = await this.packageRepo.getPackageById(id);
-      if (pkg) {
-         await this.incrementalLedgerRepo.deleteByPackage(
-            pkg.environmentId,
-            pkg.name,
-         );
-         await this.materializationRepo.deleteByPackage(
-            pkg.environmentId,
-            pkg.name,
-         );
-      }
-      await this.packageRepo.deletePackage(id);
-   }
-
-   async deletePackagesByEnvironmentId(id: string): Promise<void> {
-      return this.packageRepo.deletePackagesByEnvironmentId(id);
-   }
-
-   // ==================== CONNECTIONS ====================
-
-   async listConnections(environmentId: string): Promise<Connection[]> {
-      return this.connectionRepo.listConnections(environmentId);
-   }
-
-   async getConnectionById(id: string): Promise<Connection | null> {
-      return this.connectionRepo.getConnectionById(id);
-   }
-
-   async getConnectionByName(
-      environmentId: string,
-      name: string,
-   ): Promise<Connection | null> {
-      return this.connectionRepo.getConnectionByName(environmentId, name);
-   }
-
-   async createConnection(
-      connection: Omit<Connection, "id" | "createdAt" | "updatedAt">,
-   ): Promise<Connection> {
-      return this.connectionRepo.createConnection(connection);
-   }
-
-   async updateConnection(
-      id: string,
-      updates: Partial<Connection>,
-   ): Promise<Connection> {
-      return this.connectionRepo.updateConnection(id, updates);
-   }
-
-   async deleteConnection(id: string): Promise<void> {
-      return this.connectionRepo.deleteConnection(id);
-   }
-
-   async deleteConnectionsByEnvironmentId(id: string): Promise<void> {
-      return this.connectionRepo.deleteConnectionsByEnvironmentId(id);
-   }
-
-   // ============ STORAGE DESTINATIONS ============
-
-   async listStorageDestinations(
-      environmentId: string,
-   ): Promise<StorageDestination[]> {
-      return this.destinationRepo.list(environmentId);
-   }
-
-   async getStorageDestinationByName(
-      environmentId: string,
-      name: string,
-   ): Promise<StorageDestination | null> {
-      return this.destinationRepo.getByName(environmentId, name);
-   }
-
-   async upsertStorageDestination(
-      destination: Omit<StorageDestination, "id" | "createdAt" | "updatedAt">,
-   ): Promise<StorageDestination> {
-      return this.destinationRepo.upsert(destination);
-   }
-
-   async deleteStorageDestination(id: string): Promise<void> {
-      return this.destinationRepo.deleteById(id);
-   }
-
-   async deleteStorageDestinationsByEnvironmentId(id: string): Promise<void> {
-      return this.destinationRepo.deleteByEnvironmentId(id);
-   }
-
-   // ==================== MATERIALIZATIONS ====================
-
-   async listMaterializations(
-      environmentId: string,
-      packageName: string,
-      options?: { limit?: number; offset?: number },
-   ): Promise<Materialization[]> {
-      return this.materializationRepo.list(environmentId, packageName, options);
-   }
-
-   async getLatestScheduledFireAt(
-      environmentId: string,
-      packageName: string,
-   ): Promise<Date | null> {
-      return this.materializationRepo.getLatestScheduledFireAt(
-         environmentId,
-         packageName,
-      );
-   }
-
-   async getMaterializationById(id: string): Promise<Materialization | null> {
-      return this.materializationRepo.getById(id);
-   }
-
-   async getActiveMaterialization(
-      environmentId: string,
-      packageName: string,
-   ): Promise<Materialization | null> {
-      return this.materializationRepo.getActive(environmentId, packageName);
-   }
-
-   async createMaterialization(
-      environmentId: string,
-      packageName: string,
-      status: MaterializationStatus = "PENDING",
-      metadata: Record<string, unknown> | null = null,
-   ): Promise<Materialization> {
-      return this.materializationRepo.create(
-         environmentId,
-         packageName,
-         status,
-         metadata,
-      );
-   }
-
-   async updateMaterialization(
-      id: string,
-      updates: MaterializationUpdate,
-   ): Promise<Materialization> {
-      return this.materializationRepo.update(id, updates);
-   }
-
-   async deleteMaterialization(id: string): Promise<void> {
-      return this.materializationRepo.deleteById(id);
-   }
-
-   // ================ INCREMENTAL LEDGER ================
-
-   async getIncrementalLedgerEntry(
-      environmentId: string,
-      table: LedgerTableIdentity,
-   ): Promise<IncrementalLedgerEntry | null> {
-      return this.incrementalLedgerRepo.get(environmentId, table);
-   }
-
-   async upsertIncrementalLedgerEntry(
-      entry: Omit<IncrementalLedgerEntry, "createdAt" | "advancedAt">,
-   ): Promise<IncrementalLedgerEntry> {
-      return this.incrementalLedgerRepo.upsert(entry);
-   }
-
-   async deleteIncrementalLedgerEntry(
-      environmentId: string,
-      table: LedgerTableIdentity,
-   ): Promise<void> {
-      return this.incrementalLedgerRepo.deleteEntry(environmentId, table);
-   }
+      getIncrementalLedgerEntry: (environmentId, table) =>
+         ledger.get(environmentId, table),
+      upsertIncrementalLedgerEntry: (entry) => ledger.upsert(entry),
+      deleteIncrementalLedgerEntry: (environmentId, table) =>
+         ledger.deleteEntry(environmentId, table),
+   };
 }

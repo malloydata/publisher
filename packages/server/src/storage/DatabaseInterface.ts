@@ -3,16 +3,6 @@
 
 import { components } from "../api";
 
-/**
- * Generic database interface for storage abstraction
- * This allows switching between DuckDB, PostgreSQL, MySQL, etc.
- */
-export interface DatabaseConnection {
-   initialize(): Promise<void>;
-   close(): Promise<void>;
-   isInitialized(): Promise<boolean>;
-}
-
 export interface ResourceRepository {
    // Environments
    listEnvironments(): Promise<Environment[]>;

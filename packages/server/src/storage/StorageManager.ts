@@ -2,31 +2,15 @@
 // SPDX-License-Identifier: MIT
 
 import { logger } from "../logger";
-import { DatabaseConnection, ResourceRepository } from "./DatabaseInterface";
+import { ResourceRepository } from "./DatabaseInterface";
 import { DuckDBConnection } from "./duckdb/DuckDBConnection";
-import { DuckDBRepository } from "./duckdb/DuckDBRepository";
+import { createDuckDBRepository } from "./duckdb/DuckDBRepository";
 import { initializeSchema } from "./duckdb/schema";
 
-export type StorageType = "duckdb" | "postgres" | "mysql";
-
 export interface StorageConfig {
-   type: StorageType;
+   type: "duckdb";
    duckdb?: {
       path?: string;
-   };
-   postgres?: {
-      host: string;
-      port: number;
-      database: string;
-      user: string;
-      password: string;
-   };
-   mysql?: {
-      host: string;
-      port: number;
-      database: string;
-      user: string;
-      password: string;
    };
 }
 
@@ -38,14 +22,10 @@ export interface StorageConfig {
  * by the control plane.
  */
 export class StorageManager {
-   private connection: DatabaseConnection | null = null;
+   private connection: DuckDBConnection | null = null;
    private repository: ResourceRepository | null = null;
 
-   private config: StorageConfig;
-
-   constructor(config: StorageConfig) {
-      this.config = config;
-   }
+   constructor(private config: StorageConfig) {}
 
    async initialize(reinit: boolean = false): Promise<void> {
       if (reinit) {
@@ -56,26 +36,15 @@ export class StorageManager {
          logger.info("Normal mode: Loading from existing database");
       }
 
-      switch (this.config.type) {
-         case "duckdb":
-            await this.initializeDuckDB(reinit);
-            break;
-         case "postgres":
-            throw new Error("PostgreSQL storage not yet implemented");
-         case "mysql":
-            throw new Error("MySQL storage not yet implemented");
-         default:
-            throw new Error(`Unsupported storage type: ${this.config.type}`);
+      if (this.config.type !== "duckdb") {
+         throw new Error(`Unsupported storage type: ${this.config.type}`);
       }
-   }
-
-   private async initializeDuckDB(reinit: boolean): Promise<void> {
       const connection = new DuckDBConnection(this.config.duckdb?.path);
       await connection.initialize();
       await initializeSchema(connection, reinit);
 
       this.connection = connection;
-      this.repository = new DuckDBRepository(connection);
+      this.repository = createDuckDBRepository(connection);
    }
 
    /**
@@ -88,9 +57,6 @@ export class StorageManager {
    getDuckDbConnection(): DuckDBConnection {
       if (!this.connection) {
          throw new Error("Storage not initialized");
-      }
-      if (!(this.connection instanceof DuckDBConnection)) {
-         throw new Error("Underlying storage connection is not DuckDB");
       }
       return this.connection;
    }

@@ -9,7 +9,6 @@ import {
 } from "@duckdb/node-api";
 import * as path from "path";
 import { logger } from "../../logger";
-import { DatabaseConnection } from "../DatabaseInterface";
 import { getDuckDBMemoryLimit, getDuckDBTempDirectory } from "../../config";
 
 /**
@@ -45,7 +44,7 @@ function duckDBInstanceResourceOptions(): Record<string, string> {
  * It wraps `@duckdb/node-api` (the same DuckDB engine Malloy pulls in), so the
  * repo carries a single DuckDB engine rather than a second, redundant driver.
  */
-export class DuckDBConnection implements DatabaseConnection {
+export class DuckDBConnection {
    private instance: DuckDBInstance | null = null;
    private connection: NeoConnection | null = null;
    private dbPath: string;
@@ -74,7 +73,7 @@ export class DuckDBConnection implements DatabaseConnection {
          await this.connection.run("SELECT 42 as answer");
       } catch (err) {
          const message = err instanceof Error ? err.message : String(err);
-         console.error("Failed to create DuckDB database:", err);
+         logger.error("Failed to create DuckDB database:", err);
          throw new Error(`Failed to initialize DuckDB: ${message}`);
       }
    }
