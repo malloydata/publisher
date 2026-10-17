@@ -977,7 +977,7 @@ interface Introspector {
    ): Promise<ApiTable[]>;
 }
 
-const INTROSPECTORS: Record<ConnectionType, Introspector> = {
+const INTROSPECTOR_BY_TYPE: Record<ConnectionType, Introspector> = {
    bigquery: {
       schemas: getSchemasForBigQuery,
       tables: listTablesForBigQuery,
@@ -1016,13 +1016,15 @@ const INTROSPECTORS: Record<ConnectionType, Introspector> = {
    },
 };
 
+// A Map, so a caller-supplied type such as "constructor" finds nothing.
+const INTROSPECTORS = new Map(Object.entries(INTROSPECTOR_BY_TYPE));
+
 function introspectorFor(connection: ApiConnection): Introspector {
-   const type = connection.type;
-   // hasOwn, not `in`: a type such as "constructor" must not resolve.
-   if (type && Object.hasOwn(INTROSPECTORS, type)) {
-      return INTROSPECTORS[type];
+   const introspector = INTROSPECTORS.get(connection.type ?? "");
+   if (!introspector) {
+      throw new Error(`Unsupported connection type: ${connection.type}`);
    }
-   throw new Error(`Unsupported connection type: ${connection.type}`);
+   return introspector;
 }
 
 export async function getSchemasForConnection(

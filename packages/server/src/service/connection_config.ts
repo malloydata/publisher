@@ -853,7 +853,7 @@ function validatePublisherShape(connection: ApiConnection): void {
 }
 
 /** Type-specific shape checks; postgres and mysql have none of their own. */
-const SHAPE_VALIDATORS: Partial<
+const SHAPE_VALIDATOR_BY_TYPE: Partial<
    Record<
       NonNullable<ApiConnection["type"]>,
       (connection: ApiConnection) => void
@@ -869,6 +869,8 @@ const SHAPE_VALIDATORS: Partial<
    snowflake: validateSnowflakeShape,
    publisher: validatePublisherShape,
 };
+// A Map, so a caller-supplied type can only find a validator that is in it.
+const SHAPE_VALIDATORS = new Map(Object.entries(SHAPE_VALIDATOR_BY_TYPE));
 
 function validateConnectionShape(connection: ApiConnection): void {
    if (connection.proxy) {
@@ -897,11 +899,7 @@ function validateConnectionShape(connection: ApiConnection): void {
       );
    }
 
-   const validateType =
-      connection.type && Object.hasOwn(SHAPE_VALIDATORS, connection.type)
-         ? SHAPE_VALIDATORS[connection.type]
-         : undefined;
-   validateType?.(connection);
+   SHAPE_VALIDATORS.get(connection.type ?? "")?.(connection);
 }
 
 /**
@@ -1399,7 +1397,7 @@ type NamedConnection = ApiConnection & { name: string };
 type ConnectionType = NonNullable<ApiConnection["type"]>;
 
 /** The Malloy core connection entry each connection type assembles into. */
-const CORE_ENTRY_BUILDERS: Record<
+const CORE_ENTRY_BUILDER_BY_TYPE: Record<
    ConnectionType,
    (connection: NamedConnection, environmentPath: string) => CoreConnectionEntry
 > = {
@@ -1415,6 +1413,8 @@ const CORE_ENTRY_BUILDERS: Record<
    ducklake: buildDuckLakeEntry,
    publisher: buildPublisherEntry,
 };
+// A Map, so a caller-supplied type can only find a builder that is in it.
+const CORE_ENTRY_BUILDERS = new Map(Object.entries(CORE_ENTRY_BUILDER_BY_TYPE));
 
 export function assembleEnvironmentConnections(
    connections: ApiConnection[] = [],
@@ -1472,12 +1472,14 @@ export function assembleEnvironmentConnections(
          proxy: connection.proxy,
       });
 
-      if (!Object.hasOwn(CORE_ENTRY_BUILDERS, connection.type ?? "")) {
+      const buildEntry = CORE_ENTRY_BUILDERS.get(connection.type ?? "");
+      if (!buildEntry) {
          throw new Error(`Unsupported connection type: ${connection.type}`);
       }
-      pojo.connections[connection.name] = CORE_ENTRY_BUILDERS[
-         connection.type as ConnectionType
-      ](connection as NamedConnection, environmentPath);
+      pojo.connections[connection.name] = buildEntry(
+         connection as NamedConnection,
+         environmentPath,
+      );
 
       apiConnections.push(apiConnection);
    }
