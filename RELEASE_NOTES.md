@@ -25,6 +25,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 The report builder drew its filter row in a different order from the report it edits. It put the file's own filters first and the model's after them. The reader lists a filter when a tile first reads it, going through the tiles in order, and within each tile it lists what the tile's source reads before the tile's own `where:` bindings. So a report whose model filters every tile by Manufacturer read "Manufacturer, Subject, Recall date" in the view and "Subject, Recall date, Manufacturer" in the builder. The builder now uses the reader's rule, so both show the same row. A filter you add lands where the saved report will put it: after the filters its tile already has. A host that draws its own row for a report should take the manifest's `givens` in the order given, not regroup them by where each given is declared.
 
+## [Unreleased] — The builder says "model" and "tile", not "view"
+
+The builder's text no longer assumes the reader knows tiles run Malloy views. In the chart menu, "From the view" is now **Default**, with "As set in the model" under it. The reasons on greyed-out charts no longer say "view" either, and nor does the text for adding a tile. A host's tests that look up these labels or roles by name need the new strings: `Default`, `Search the model`, and the `From the model` listbox.
+
 ## [0.9.14] — ReportEditor can run its queries at a pinned version while the document stays unversioned
 
 `ReportEditor` takes a new optional `queryVersionId`. The `?versionId=` on `resourceUri` decided two things at once: the package version the builder queries, and the identity of the document being edited (its kept-draft key, its save target, the "pinned version" caption, and the pinned-package save path). A host whose package republishes on every change needs those apart. When it pinned the version, every republish orphaned the kept edits and Save went down the pinned path. When it didn't, Edit missed every result the reader had just cached at that version and re-ran every tile.
