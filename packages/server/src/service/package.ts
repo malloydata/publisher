@@ -1442,31 +1442,60 @@ export class Package {
       pkg.wireFreshnessResolvers();
       pkg.refreshServingIdentity();
 
-      // The persist build plan, derived off the live (unbound) models before
-      // the caller binds any configured manifest, so the surfaced plan reflects
-      // the canonical build (not the manifest-rewritten SQL). The load worker
-      // derives it from its own compile (see LoadPackageResult.buildPlan).
-      // Deriving it here compiles every model a second time on this thread,
-      // blocking the event loop for as long as the worker's compile took, so it
-      // happens only when the worker left the plan at its soft deadline, for a
-      // package whose load came close to the job timeout. Best-effort: a plan
-      // failure is logged, not fatal — the package still serves; the plan is
-      // just absent.
-      //
-      // A failure also leaves `sourceEligibility` unknown, which refuses every
-      // storage serve binding until a load succeeds (see
-      // bindStorageServeBindings). Serving live is a slower answer, not a wrong
-      // one; admitting an unexamined binding would be a wrong one.
-      //
-      // It ALSO leaves `colocatedSourceEligibility` unknown, and that one is a
-      // bigger blast radius: colocated is the default tier, not gated by
-      // PERSIST_STORAGE_MODE, so this silently reverts EVERY colocated binding
-      // for the package to live recompute (see bindColocatedServeManifest and
-      // its recordColocatedBindDropped("build_plan_unavailable") counter).
-      let buildPlanMs: number | undefined;
+      const buildPlanMs = await pkg.applyLoadBuildPlan(outcome.buildPlan);
+
+      applyLoadGates(pkg);
+      // After the gates, so a package with a bad declaration is rejected rather
+      // than having a companion compiled for it. At create time no manifest is
+      // bound yet, so the companion routes to a rollup that recomputes from the
+      // base until a bind triggers reloadAllModels — correct answers, no
+      // acceleration, which is the same resting state as the rest of the persist
+      // path.
+      await pkg.pushPreaggregateServeModels();
+      pkg.logEmptyDiscoveryWarnings();
+
+      recordPackageLoadPhaseDurations({
+         worker: workerDoneTime - dispatchTime,
+         hydrate: hydrationTimings.hydrateMs,
+         render_validation: hydrationTimings.renderValidationMs,
+         discovery: reportTimings.discoveryMs,
+         lint: reportTimings.lintMs,
+         build_plan: buildPlanMs,
+         total: performance.now() - startTime,
+      });
+      return pkg;
+   }
+
+   /**
+    * The persist build plan, derived off the live (unbound) models before
+    * the caller binds any configured manifest, so the surfaced plan reflects
+    * the canonical build (not the manifest-rewritten SQL). The load worker
+    * derives it from its own compile (see LoadPackageResult.buildPlan).
+    * Deriving it here compiles every model a second time on this thread,
+    * blocking the event loop for as long as the worker's compile took, so it
+    * happens only when the worker left the plan at its soft deadline, for a
+    * package whose load came close to the job timeout. Best-effort: a plan
+    * failure is logged, not fatal — the package still serves; the plan is
+    * just absent.
+    *
+    * A failure also leaves `sourceEligibility` unknown, which refuses every
+    * storage serve binding until a load succeeds (see
+    * bindStorageServeBindings). Serving live is a slower answer, not a wrong
+    * one; admitting an unexamined binding would be a wrong one.
+    *
+    * It ALSO leaves `colocatedSourceEligibility` unknown, and that one is a
+    * bigger blast radius: colocated is the default tier, not gated by
+    * PERSIST_STORAGE_MODE, so this silently reverts EVERY colocated binding
+    * for the package to live recompute (see bindColocatedServeManifest and
+    * its recordColocatedBindDropped("build_plan_unavailable") counter).
+    *
+    * Returns how long it took, or undefined when it failed.
+    */
+   private async applyLoadBuildPlan(
+      workerPlan: LoadPackageOutcome["buildPlan"],
+   ): Promise<number | undefined> {
       const buildPlanPhaseStart = performance.now();
       try {
-         const workerPlan = outcome.buildPlan;
          // Before a failed plan throws: the main-thread derivation records
          // each refusal and skipped digest as it goes, so one that fails
          // part-way has already counted them.
@@ -1495,12 +1524,12 @@ export class Package {
             incrementalDeclarations,
          } = workerPlan
             ? workerPlan.outcome
-            : await computePackageBuildPlan(pkg);
-         pkg.buildPlan = plan;
-         pkg.droppedPersistSources = droppedPersistSources;
-         pkg.sourceEligibility = sourceEligibility;
-         pkg.colocatedSourceEligibility = colocatedSourceEligibility;
-         pkg.incrementalPolicySources = Object.entries(plan?.sources ?? {})
+            : await computePackageBuildPlan(this);
+         this.buildPlan = plan;
+         this.droppedPersistSources = droppedPersistSources;
+         this.sourceEligibility = sourceEligibility;
+         this.colocatedSourceEligibility = colocatedSourceEligibility;
+         this.incrementalPolicySources = Object.entries(plan?.sources ?? {})
             .filter(([sourceID]) => incrementalDeclarations[sourceID])
             .map(([sourceID, source]) => ({
                sourceName: source.name,
@@ -1518,38 +1547,18 @@ export class Package {
                : performance.now() - buildPlanPhaseStart,
             workerPlan ? "worker" : "main_thread",
          );
-         buildPlanMs = performance.now() - buildPlanPhaseStart;
+         return performance.now() - buildPlanPhaseStart;
       } catch (err) {
          recordBuildPlanComputeFailed();
          logger.warn(
-            `Failed to compute build plan for package ${packageName}`,
+            `Failed to compute build plan for package ${this.packageName}`,
             {
-               packageName,
+               packageName: this.packageName,
                error: errMessage(err),
             },
          );
       }
-
-      applyLoadGates(pkg);
-      // After the gates, so a package with a bad declaration is rejected rather
-      // than having a companion compiled for it. At create time no manifest is
-      // bound yet, so the companion routes to a rollup that recomputes from the
-      // base until a bind triggers reloadAllModels — correct answers, no
-      // acceleration, which is the same resting state as the rest of the persist
-      // path.
-      await pkg.pushPreaggregateServeModels();
-      pkg.logEmptyDiscoveryWarnings();
-
-      recordPackageLoadPhaseDurations({
-         worker: workerDoneTime - dispatchTime,
-         hydrate: hydrationTimings.hydrateMs,
-         render_validation: hydrationTimings.renderValidationMs,
-         discovery: reportTimings.discoveryMs,
-         lint: reportTimings.lintMs,
-         build_plan: buildPlanMs,
-         total: performance.now() - startTime,
-      });
-      return pkg;
+      return undefined;
    }
 
    public getPackageName(): string {
