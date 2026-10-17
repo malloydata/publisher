@@ -27,16 +27,9 @@ export async function loadOutcomeOrThrow(
    try {
       return await job;
    } catch (err: unknown) {
-      // Compile errors surface in-band via
-      // `LoadPackageOutcome.models[i].compilationError`; if the
-      // pool itself rejects, it's an infra-side failure
-      // (shutting down, worker spawn failed, worker crashed,
-      // RPC timeout) and the client should retry. Real Malloy
-      // compile errors deserialised by the pool still carry
-      // their MalloyError / ModelCompilationError identity, and an
-      // unusable publisher.json its PackageManifestError identity —
-      // let those bubble untouched so they keep their 4xx
-      // mapping in `errors.ts`.
+      // A pool rejection is an infra failure (shutdown, spawn, crash, RPC
+      // timeout) the client should retry. Compile and manifest errors keep
+      // their class across the wire and bubble untouched for their 4xx.
       const realError =
          err instanceof Error
             ? err
@@ -50,9 +43,8 @@ export async function loadOutcomeOrThrow(
       }
       throw new ServiceUnavailableError(
          `Package-load worker pool unavailable: ${realError.message}`,
-         // The worker's failure may be a refused filesystem access on
-         // the package's own files, which the error mapper reads from
-         // the cause; a bare 503 would read as "retry".
+         // The cause may be a refused filesystem access, which the error
+         // mapper reads from it; a bare 503 would read as "retry".
          { cause: realError },
       );
    }
@@ -96,10 +88,7 @@ export function warnInvalidExplores(pkg: Package): void {
 export function applyLoadGates(pkg: Package): void {
    const packageName = pkg.getPackageName();
    warnInvalidExplores(pkg);
-   // Same fail-safe split for the persistence-policy gate: an existing
-   // package whose manifest violates the scope/schedule/freshness rules
-   // still loads (warn), but a publish of it is rejected (see
-   // package.controller).
+   // Same fail-safe split: warn at load, reject at publish.
    const invalidPolicy = pkg.formatInvalidPersistencePolicy();
    if (invalidPolicy) {
       logger.warn(`Package ${packageName} has an invalid persistence policy`, {
@@ -107,33 +96,15 @@ export function applyLoadGates(pkg: Package): void {
          detail: invalidPolicy,
       });
    }
-   // The incremental-refresh gate does NOT get that fail-safe split: an
-   // invalid `#@ persist` declaration fails the load, the way a model that
-   // does not compile fails it.
-   //
-   // Publish cannot be the only strict point, because a package can arrive
-   // without one: uploaded to a control plane's storage and loaded by a
-   // worker, it never passes through POST/PATCH /packages. Warning here left
-   // the rejection in a worker log while the author — the only person who can
-   // fix the declaration — saw a clean publish and a source that quietly
-   // rebuilt in full forever.
-   //
-   // BadRequestError, for the 400: a control plane resolves the status off
-   // the error and otherwise defaults to 424, which would describe an
-   // authoring error as a dependency failure. The message carries EVERY
-   // rejection, so two broken declarations take one republish to fix.
-   //
-   // The accepted cost: `refresh=` was inert metadata before these rules, so
-   // a package published earlier saying refresh="incremental" and nothing
-   // else now stops serving until it is fixed. That is the one rule with any
-   // legacy exposure (watermark= and merge_key= did not exist as keys), the
-   // feature is gated behind `##! experimental.persistence`, and a bare
-   // refresh="incremental" is an authoring error worth surfacing rather than
-   // carrying — so every rule keeps the same severity, with no special cases.
+   // An invalid incremental `#@ persist` declaration fails the load, like a
+   // compile error. Publish cannot be the only strict point: a package loaded
+   // from control-plane storage never passes through POST/PATCH /packages, and
+   // a warning would leave the author with a source that silently rebuilds in
+   // full. BadRequestError gives a 400 (a control plane defaults to 424); the
+   // message carries every rejection so one republish fixes them all.
    const invalidIncremental = pkg.formatInvalidIncrementalPolicy();
    if (invalidIncremental) {
-      // Logged as well as thrown: the throw is what the author reads, the log
-      // is the operator's copy.
+      // Logged too: the throw is the author's copy, the log the operator's.
       logger.error(
          `Package ${packageName} has an invalid incremental refresh policy`,
          {
@@ -143,14 +114,9 @@ export function applyLoadGates(pkg: Package): void {
       );
       throw new BadRequestError(invalidIncremental);
    }
-   // `#@ preaggregate` gets the same strict-at-load treatment, for the reason
-   // given on formatInvalidPreaggregatePolicy: a declaration that cannot take
-   // effect is invisible in the answers, so warning here would leave the
-   // author believing they had a rollup.
-   //
-   // Except the access-modifier pair, which warns at publish and at load —
-   // see formatInvalidPreaggregatePolicy for why, and why warning is safe
-   // there when it would not be for the others.
+   // `#@ preaggregate` is strict at load too (see
+   // formatInvalidPreaggregatePolicy), except the access-modifier pair, which
+   // only warns.
    const accessWarnings = pkg.preaggregateAccessWarnings();
    if (accessWarnings.length > 0) {
       logger.warn(
@@ -172,10 +138,8 @@ export function applyLoadGates(pkg: Package): void {
       );
       throw new BadRequestError(invalidPreaggregate);
    }
-   // Persist-target collisions are ALWAYS warn-only at load (never fail an
-   // already-published package), regardless of PERSIST_COLLISION_ENFORCE —
-   // the flag only governs whether they REJECT a publish (see
-   // package.controller). Surface them so an operator can remediate.
+   // Persist-target collisions only warn at load, whatever
+   // PERSIST_COLLISION_ENFORCE says; that flag governs publish rejection.
    const collisions = pkg.persistenceCollisionWarnings();
    if (collisions.length > 0) {
       logger.warn(`Package ${packageName} has persist-target collisions`, {
