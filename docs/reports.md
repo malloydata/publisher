@@ -623,8 +623,11 @@ import "orders.malloy"
 export { orders, customers } // every source a tile or a suggest reads
 ```
 
-A source the report declares on top of a surface source (`source: big is orders extend { … }`) may be read;
-one declared on top of a hidden source may not. A tile or suggest over a hidden source answers `404`, and
+A source the report declares on top of a surface source (`source: big is orders extend { … }`) may be read,
+including by name (`sourceName`) on this report's path. It keeps its base's `#(authorize)` and
+`#(access_filter)`. A caller that lock refuses gets `403`, not `404`: the report is already listed, so
+the refusal does not reveal a hidden name. One declared on top of a hidden source may not, and naming
+it answers `404`. A tile or suggest over a hidden source answers `404`, and
 the package load warns about each one (see [What Publisher checks at load](#what-publisher-checks-at-load)).
 A package with no `explores` and no root `index.malloy` has curation off.
 

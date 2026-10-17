@@ -209,10 +209,20 @@ export interface ServedReportManifest {
  * (`docs/malloyyo-dashboards-design.md` §Follow-ups).
  */
 //
-// `theme` is the per-chart theme (`# theme.palette.series=[…]`), which the SDK
-// reads off the result to colour that one chart; the report builder writes it
-// for a tile's colour, so without it every coloured tile warned.
-const PUBLISHER_OWNED_TAGS = ["artifact", "drill", "theme"];
+// `theme.palette.series` is the per-chart series list the SDK reads off the
+// result; the report builder writes a one-colour line of it for a tile's
+// colour, so without this every coloured tile warned. Only that path: a
+// `theme.*` typo (`# theme.palete.series`) is the author's mistake and stays.
+const PUBLISHER_OWNED_TAGS = ["artifact", "drill"];
+const PUBLISHER_OWNED_PATHS = ["theme.palette.series"];
+
+/** A tag Publisher owns: a whole root (`artifact`, `drill`) or one exact path. */
+function isPublisherOwnedTag(tag: string): boolean {
+   if (PUBLISHER_OWNED_TAGS.includes(tag.split(".")[0])) return true;
+   return PUBLISHER_OWNED_PATHS.some(
+      (path) => tag === path || tag.startsWith(`${path}.`),
+   );
+}
 
 /**
  * The renderer's own per-child dashboard tags, which Publisher also reads for a
@@ -293,8 +303,9 @@ export function dropGridTileLayoutFindings<T extends { message?: string }>(
 
 /**
  * Drop "unknown render tag" complaints about tags Publisher owns, leaving every
- * other render finding intact. Matches on the tag's root property, so nested
- * paths (`artifact.title`) are covered too.
+ * other render finding intact. `artifact` and `drill` match on the tag's root,
+ * so nested paths (`artifact.title`) are covered too. `theme` matches only
+ * `theme.palette.series`, so a typo such as `theme.palete.series` is kept.
  */
 export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    logs: T[],
@@ -306,7 +317,7 @@ export function filterPublisherOwnedRenderLogs<T extends { message?: string }>(
    return logs.filter((log) => {
       const match = UNKNOWN_RENDER_TAG.exec(log.message ?? "");
       if (!match) return true;
-      if (PUBLISHER_OWNED_TAGS.includes(match[1].split(".")[0])) return false;
+      if (isPublisherOwnedTag(match[1])) return false;
       return !(couldBeATile && isTileLayoutTagOnRoot(log.message));
    });
 }

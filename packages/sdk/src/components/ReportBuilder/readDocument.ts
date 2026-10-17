@@ -158,16 +158,11 @@ function chartField(tags: Array<{ text: string }>): {
    chart?: ChartState;
    chartLines?: string[];
    chartReset?: string[];
-   color?: string;
 } {
    const lines = tagText(tags);
    const chart = chartStateOfTagLines(lines);
-   // The last colour line wins, as it does in the renderer's tag merge.
-   const color = lines.map(seriesColorOf).filter(Boolean).at(-1);
-   const colored = color ? { color } : {};
-   if (chart === undefined) return colored;
-   if (chart === "custom")
-      return { chart, chartLines: chartLinesOf(lines), ...colored };
+   if (chart === undefined) return {};
+   if (chart === "custom") return { chart, chartLines: chartLinesOf(lines) };
    // What the pick's line takes off the view's chart, as written.
    const reset = lines
       .map(parseChartLine)
@@ -175,26 +170,48 @@ function chartField(tags: Array<{ text: string }>): {
    return {
       chart,
       ...(reset?.length ? { chartReset: reset } : {}),
-      ...colored,
    };
 }
 
 /**
- * Whether a tile's own tags set the series palette in a line the builder did
- * not write; see {@link QueryTile.ownPalette}. Each line is parsed on its own,
- * so `# theme { palette.series=[…] }` counts as well as the dotted spelling.
+ * The colour a tile's tags draw, and whether they carry a palette the builder
+ * did not write. See {@link QueryTile.color} and {@link QueryTile.ownPalette}.
+ *
+ * The renderer merges tag lines in order and the last `theme.palette.series`
+ * wins. The colour is that winning line when it is the builder's one-colour
+ * form; an earlier one-colour line under a later palette is not what draws,
+ * so it is not read back. A palette line is parsed on its own, so
+ * `# theme { palette.series=[…] }` counts as well as the dotted spelling.
+ * `ownPalette` stays set when any such line is present, even under a later
+ * one-colour line: setting the tile back to Theme must not take the author's
+ * palette off.
  */
-function ownPaletteField(
+function seriesFields(
    tags: Array<{ text: string }>,
    parse: ParseTags,
-): { ownPalette?: true } {
-   const own = tagText(tags).some(
-      (line) =>
-         seriesColorOf(line) === undefined &&
+): { color?: string; ownPalette?: true } {
+   let color: string | undefined;
+   let own = false;
+   let last: "color" | "own" | undefined;
+   for (const line of tagText(tags)) {
+      const one = seriesColorOf(line);
+      if (one !== undefined) {
+         color = one;
+         last = "color";
+         continue;
+      }
+      if (
          parse([line]).tag?.tag("theme")?.tag("palette")?.tag("series") !==
-            undefined,
-   );
-   return own ? { ownPalette: true } : {};
+         undefined
+      ) {
+         own = true;
+         last = "own";
+      }
+   }
+   return {
+      ...(last === "color" && color ? { color } : {}),
+      ...(own ? { ownPalette: true as const } : {}),
+   };
 }
 
 /**
@@ -271,7 +288,7 @@ function namedTile(query: TreeQuery, parse: ParseTags): QueryTile | undefined {
          ? { colspan: t.numeric("colspan") as number }
          : {}),
       ...chartField(query.tags),
-      ...ownPaletteField(query.tags, parse),
+      ...seriesFields(query.tags, parse),
       ...(t?.has("break") ? { break: true } : {}),
       ...(t?.has("borderless") ? { borderless: true } : {}),
       ...(unmodelled ? { unmodelled: true } : {}),
@@ -644,7 +661,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             },
             ...readOnlyFrame(t),
             ...chartField(view.tags),
-            ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
+            ...seriesFields(view.tags, parseAnnotation as ParseTags),
          });
          continue;
       }
@@ -670,7 +687,7 @@ async function readDocumentText(sourceText: string): Promise<ReadResult> {
             ? { colspan: t.numeric("colspan") as number }
             : {}),
          ...chartField(view.tags),
-         ...ownPaletteField(view.tags, parseAnnotation as ParseTags),
+         ...seriesFields(view.tags, parseAnnotation as ParseTags),
          ...(t?.has("break") ? { break: true } : {}),
          ...(t?.has("borderless") ? { borderless: true } : {}),
       });

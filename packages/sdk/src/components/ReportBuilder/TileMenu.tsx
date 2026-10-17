@@ -66,7 +66,10 @@ export interface TileMenuProps {
    /** Why the tile cannot be copied, when it cannot: Duplicate is then listed, greyed, with this under it. */
    duplicateBlocked?: string;
    /** The catalog's view the tile shows, when the catalog knows it: what decides which charts are offered. */
-   view?: Pick<CatalogView, "chart" | "aggregateOnly" | "shape">;
+   view?: Pick<
+      CatalogView,
+      "chart" | "aggregateOnly" | "shape" | "authorPalette"
+   >;
    /** Why `view` is absent: still loading, or a view the catalog does not list. */
    viewStatus?: ViewStatus;
 }
@@ -193,11 +196,18 @@ export function TileMenu({
    // any other colour a picker away. Not on a table or KPI tile, which draw
    // no series; and not offered at all where the chart is locked, since the
    // Chart item already says why.
+   // A multi-colour palette on the view, or one the tile's own tags already
+   // carry, is the author's. A colour here is one line written after it, and
+   // the last line wins, so the palette would stop drawing.
    const colorBlocked =
       chartBlocked ??
       (drawn === undefined || !COLORED_CHARTS.has(drawn)
          ? "Only a bar, line, scatter or bar and line chart has a color to set."
-         : undefined);
+         : view?.authorPalette
+           ? "This view sets its own colors, and a color here would replace them."
+           : query?.ownPalette
+             ? "This tile sets its own colors, and a color here would replace them."
+             : undefined);
    // As the builder writes them, so a pick reads back; one it cannot write is
    // left to the "any other colour" picker.
    const swatches = Array.from(

@@ -28,3 +28,23 @@ export function chartOf(annotations: string[] | undefined): string | undefined {
    const chart = resolvedChart(annotations ?? []);
    return chart !== undefined && CHART_TAGS.includes(chart) ? chart : undefined;
 }
+
+/**
+ * Whether a view's annotations set a multi-colour series palette. A tile's
+ * colour is one `# theme.palette.series` value written after the view's tags,
+ * and the last line wins, so that colour would replace the palette. A
+ * one-colour line is the builder's own form and is not this. The block
+ * spelling (`# theme { palette.series=[…] }`) counts as well as the dotted one.
+ */
+export function authorPaletteOf(
+   annotations: string[] | undefined,
+): true | undefined {
+   for (const raw of annotations ?? []) {
+      if (!/\btheme\b/.test(raw) || !/palette\.series/.test(raw)) continue;
+      for (const match of raw.matchAll(/palette\.series\s*=\s*\[([^\]]*)\]/g)) {
+         const quoted = match[1].match(/["'](?:[^"'\\]|\\.)*["']/g) ?? [];
+         if (quoted.length >= 2) return true;
+      }
+   }
+   return undefined;
+}

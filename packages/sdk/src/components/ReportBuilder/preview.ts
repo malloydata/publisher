@@ -69,8 +69,7 @@ export function previewGivens(
       if (!isQueryTile(tile)) continue;
       const binds = (tile.filters ?? []).map((filter) => filter.given);
       const served =
-         servedReads.get(tileExpressionKey(`${tile.source} -> ${tile.name}`)) ??
-         [];
+         servedReads.get(tileExpressionKey(tileExpression(tile))) ?? [];
       for (const name of served)
          if (modelReads.has(name) || binds.includes(name)) order.push(name);
       order.push(...binds);

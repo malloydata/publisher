@@ -112,6 +112,42 @@ describe("previewGivens", () => {
       };
       expect(previewGivens(withModel, [spec])).toEqual([spec]);
    });
+
+   it("keys a named query by its name, so its filters stay in tile order", () => {
+      const named: DashboardDocument = {
+         layout: "grid",
+         title: "T",
+         imports: [],
+         sources: [],
+         tiles: [
+            {
+               name: "kpis",
+               source: "flights",
+               declaration: { kind: "inherited" },
+               filters: [{ field: "origin", given: "SUBJECT" }],
+            },
+            {
+               name: "by_carrier",
+               declaration: { kind: "query" },
+            },
+         ],
+      };
+      const served = new Map<string, readonly string[]>([
+         ["flights -> kpis", []],
+         ["by_carrier", ["REGION"]],
+      ]);
+      expect(
+         previewGivens(
+            named,
+            [
+               { name: "REGION", type: "filter<string>" },
+               { name: "SUBJECT", type: "filter<string>" },
+            ],
+            new Set(["REGION"]),
+            served,
+         ).map((spec) => spec.name),
+      ).toEqual(["SUBJECT", "REGION"]);
+   });
 });
 
 describe("givens read through the model", () => {

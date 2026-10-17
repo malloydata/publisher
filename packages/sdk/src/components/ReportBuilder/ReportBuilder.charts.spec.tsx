@@ -434,6 +434,55 @@ describe("ReportBuilder: a chart's color", () => {
 
    // The row's swatch follows its value ("Theme", "#7f9862"); spaced like the
    // swatches in the Color menu it read as "Theme▢", touching the text.
+   it("does not offer Color on a view that sets its own palette", async () => {
+      const document = await openDocument(SOURCE);
+      const withPalette = {
+         ...catalog,
+         sources: catalog.sources.map((source) => ({
+            ...source,
+            views: source.views.map((view) =>
+               view.name === "by_category"
+                  ? { ...view, authorPalette: true as const }
+                  : view,
+            ),
+         })),
+      };
+      render(
+         <ReportBuilder
+            source={SOURCE}
+            document={document}
+            catalog={withPalette}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      pickChart("Bar");
+      const color = colorItem();
+      expect(color.getAttribute("aria-disabled")).toBe("true");
+      expect(color.textContent).toContain(
+         "This view sets its own colors, and a color here would replace them.",
+      );
+   });
+
+   it("does not offer Color on a tile whose own tags set a palette", async () => {
+      const source = SOURCE.replace(
+         "  # colspan=6\n  view: by_cat is by_category\n",
+         '  # theme.palette.series=["#ff0080", "#ff6b00"]\n  # bar_chart\n  view: by_cat is by_category\n',
+      );
+      render(
+         <ReportBuilder
+            source={source}
+            document={await openDocument(source)}
+            catalog={catalog}
+         />,
+      );
+      fireEvent.click(screen.getByLabelText("Settings for by_cat"));
+      const color = colorItem();
+      expect(color.getAttribute("aria-disabled")).toBe("true");
+      expect(color.textContent).toContain(
+         "This tile sets its own colors, and a color here would replace them.",
+      );
+   });
+
    it("spaces the Color row's swatch from its value", async () => {
       await mount();
       fireEvent.click(screen.getByLabelText("Settings for by_cat"));
