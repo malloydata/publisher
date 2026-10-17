@@ -930,7 +930,9 @@ table or chart) is the result's, never a move. The width snaps to whole columns,
 behind the tiles and a label saying the width during the drag; the edge is also a keyboard control (Tab to
 it, Left and Right step one column, Home and End go to one column and full width). The height snaps to whole
 rows the same way; on its edge Up and Down step one row, Home and End go to the shortest and tallest, and
-Delete, or a double-click on the grip, puts the tile back to fitting its result. Both are written on the
+Delete, or a double-click on the grip, puts the tile back to auto height. The drag also snaps to auto
+when that is nearer than a whole row: a row of auto tiles is as tall as its tallest result, which is
+rarely a whole number of rows, so this is how a tile is dragged level with an auto neighbour. Both are written on the
 tile's entry in `tiles=[…]`, so a tile on a view the report imports resizes like any other.
 A visually hidden handle keeps keyboard moves (Space picks the tile up, the arrows move it, Escape cancels).
 On a linear report tiles are dragged into a new order, and the **+** on a tile inserts one between two.

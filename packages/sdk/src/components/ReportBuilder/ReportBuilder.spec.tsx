@@ -642,7 +642,7 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       await mount();
       const edge = () =>
          screen.getByRole("separator", { name: "Height of By category" });
-      expect(edge().getAttribute("aria-valuetext")).toBe("Fits its content");
+      expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
       expect(itemStyleOf("by_cat")).not.toContain("height:");
       fireEvent.keyDown(edge(), { key: "ArrowDown" });
       expect(edge().getAttribute("aria-valuetext")).toBe("3 rows tall");
@@ -651,7 +651,7 @@ describe("ReportBuilder: widths and the page's own settings", () => {
       fireEvent.keyDown(edge(), { key: "End" });
       expect(edge().getAttribute("aria-valuenow")).toBe("16");
       fireEvent.keyDown(edge(), { key: "Delete" });
-      expect(edge().getAttribute("aria-valuetext")).toBe("Fits its content");
+      expect(edge().getAttribute("aria-valuetext")).toBe("Auto height");
       fireEvent.click(button("Undo"));
       expect(edge().getAttribute("aria-valuenow")).toBe("16");
    });

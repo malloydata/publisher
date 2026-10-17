@@ -104,7 +104,7 @@ export function BuilderGrid({
            )
          : tall !== undefined
            ? editor.document.tiles.map((each, index) =>
-                index === tall.index ? { ...each, rowspan: tall.rows } : each,
+                index === tall.index ? withRowspan(each, tall.rows) : each,
              )
            : (preview ?? editor.document.tiles)
    ).map(drawn);
@@ -131,7 +131,7 @@ export function BuilderGrid({
                {rules.widths && (dragging || resize !== undefined) && (
                   <GridGuides columns={columns} />
                )}
-               {tall !== undefined && <RowGuides {...tall.guide} />}
+               {tall !== undefined && <RowGuides top={tall.guideTop} />}
 
                <DashboardGrid
                   tiles={entries}
@@ -248,6 +248,15 @@ export function BuilderGrid({
       </>
    );
 }
+
+/** A tile at a dragged height: its rows, or auto with no `rowspan` at all. */
+const withRowspan = (
+   tile: DashboardTile,
+   rows: number | undefined,
+): DashboardTile => {
+   const { rowspan: _rowspan, ...rest } = tile;
+   return rows === undefined ? rest : { ...rest, rowspan: rows };
+};
 
 /** A query tile's title and subtitle as fields on the tile, unless the model owns them. */
 const headingOf = (

@@ -107,7 +107,7 @@ export function TileFrame({
     * back to fitting its content. Absent, the tile has no bottom handle.
     */
    heightEdge?: {
-      /** Its rows: the set height, or the drag's preview; absent while it fits its content. */
+      /** Its rows: the set height, or the drag's preview; absent on auto, as tall as its row. */
       rows: number | undefined;
       /** This edge is being dragged. */
       dragging: boolean;
@@ -697,20 +697,17 @@ export function GridGuides({ columns }: { columns: number }) {
 
 /**
  * The rows a height snaps to, drawn while a tile's bottom edge is dragged: a
- * faint band per row from the tile's top down, across its width, the way
- * {@link GridGuides} draws the columns a width snaps to. Behind the tiles and
- * held inside the grid, so it shows in the space the tile can grow into.
+ * faint band per row across the whole canvas, the way {@link GridGuides}
+ * draws the columns a width snaps to. Rows are counted from the dragged
+ * tile's top, since tiles flow and the grid has no row lines of its own.
+ * Behind the tiles and held inside the grid.
  */
-export function RowGuides({
-   top,
-   left,
-   width,
-}: {
-   top: number;
-   left: number;
-   width: number;
-}) {
+export function RowGuides({ top }: { top: number }) {
    const { theme } = usePublisherTheme();
+   const step = TILE_ROW_PX + GRID_GAP_PX;
+   // From the first whole row above the canvas's top edge to well past its
+   // bottom; the container clips what overshoots.
+   const first = -Math.ceil(top / step);
    return (
       <Box
          aria-hidden
@@ -722,14 +719,14 @@ export function RowGuides({
             zIndex: 0,
          }}
       >
-         {Array.from({ length: MAX_TILE_ROWS }, (_, row) => (
+         {Array.from({ length: -first + 4 * MAX_TILE_ROWS }, (_, n) => (
             <Box
-               key={row}
+               key={n}
                sx={{
                   position: "absolute",
-                  top: top + row * (TILE_ROW_PX + GRID_GAP_PX),
-                  left,
-                  width,
+                  top: top + (first + n) * step,
+                  left: 0,
+                  right: 0,
                   height: TILE_ROW_PX,
                   bgcolor: theme.accent,
                   opacity: 0.06,
@@ -783,7 +780,7 @@ function HeightEdge({
          aria-valuemin={MIN_TILE_ROWS}
          aria-valuemax={MAX_TILE_ROWS}
          {...(fit ? {} : { "aria-valuenow": rows })}
-         aria-valuetext={fit ? "Fits its content" : heightLabel(rows)}
+         aria-valuetext={heightLabel(rows)}
          onKeyDown={(event) => {
             const now = rows ?? MIN_TILE_ROWS;
             const to =
@@ -877,7 +874,7 @@ function HeightEdge({
             "&:hover::after": { borderColor: theme.accent, opacity: 1 },
          })}
       >
-         {dragging && rows !== undefined && (
+         {dragging && (
             <Box
                aria-hidden
                sx={(mui) => ({
@@ -903,4 +900,5 @@ function HeightEdge({
 }
 
 /** A height in words, for the drag's label and a screen reader. */
-const heightLabel = (rows: number) => `${rows} rows tall`;
+const heightLabel = (rows: number | undefined) =>
+   rows === undefined ? "Auto height" : `${rows} rows tall`;
