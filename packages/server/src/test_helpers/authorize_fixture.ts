@@ -42,23 +42,23 @@ import { malloyGivenToApi, type MalloyGiven } from "../service/given";
 import { Model } from "../service/model";
 
 export const AUTHORIZE_SEED_SQL = `
-CREATE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR);
+CREATE OR REPLACE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR);
 INSERT INTO customers VALUES (1, 'a', 'us-west'), (2, 'b', 'us-east');
-CREATE TABLE nested_cols (
+CREATE OR REPLACE TABLE nested_cols (
    id INTEGER, rec STRUCT(a INTEGER), arr INTEGER[], arr_rec STRUCT(b INTEGER)[]
 );
 INSERT INTO nested_cols VALUES (1, {'a': 1}, [1, 2, 3], [{'b': 2}]);
-CREATE TABLE salaries (id INTEGER, department_id INTEGER, department VARCHAR, salary INTEGER);
+CREATE OR REPLACE TABLE salaries (id INTEGER, department_id INTEGER, department VARCHAR, salary INTEGER);
 INSERT INTO salaries VALUES (1, 10, 'eng', 100), (2, 20, 'sales', 90);
-CREATE TABLE departments (id INTEGER, name VARCHAR);
+CREATE OR REPLACE TABLE departments (id INTEGER, name VARCHAR);
 INSERT INTO departments VALUES (10, 'eng'), (20, 'sales');
-CREATE TABLE parent (id INTEGER, org_id INTEGER, child_id INTEGER, val VARCHAR);
+CREATE OR REPLACE TABLE parent (id INTEGER, org_id INTEGER, child_id INTEGER, val VARCHAR);
 INSERT INTO parent VALUES (1, 1, 10, 'a'), (2, 1, 20, 'b'), (3, 2, 10, 'c'), (4, 2, 20, 'd');
-CREATE TABLE childtable (id INTEGER, name VARCHAR);
+CREATE OR REPLACE TABLE childtable (id INTEGER, name VARCHAR);
 INSERT INTO childtable VALUES (10, 'bob'), (20, 'other');
-CREATE TABLE orgtable (id INTEGER, org_id INTEGER, owner INTEGER, val VARCHAR);
+CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER, owner INTEGER, val VARCHAR);
 INSERT INTO orgtable VALUES (1, 1, 2, 'a'), (2, 1, 1, 'b'), (3, 2, 1, 'c'), (4, 2, 2, 'd');
-CREATE TABLE accounts (
+CREATE OR REPLACE TABLE accounts (
    id INTEGER, org_id VARCHAR, region VARCHAR, amount INTEGER,
    owner VARCHAR, "cost center" VARCHAR, child_id INTEGER
 );
@@ -69,7 +69,7 @@ INSERT INTO accounts VALUES
    (4, 'org2', 'east', 300, 'carol', 'cc3', 2),
    (5, 'org2', 'west', 400, 'dave',  'cc2', 2),
    (6, 'org2', 'west', 150, 'eve',   'cc3', 2);
-CREATE TABLE child (id INTEGER, name VARCHAR);
+CREATE OR REPLACE TABLE child (id INTEGER, name VARCHAR);
 INSERT INTO child VALUES (1, 'north'), (2, 'south');
 `;
 
