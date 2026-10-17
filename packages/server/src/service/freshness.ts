@@ -2,26 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * Per-query freshness gate for persisted sources (persistence.md §9.3, §14
- * Phase B). A query on a `#@ persist` source may use its materialized table
- * only while that table is within its declared freshness window; otherwise the
- * query does what the source's `fallback` says.
+ * Per-query freshness gate for persisted sources. A query on a `#@ persist`
+ * source may use its materialized table only while that table is within its
+ * declared freshness window; otherwise the query does what the source's
+ * `fallback` says.
  *
- * Two settled design principles anchor this (do not re-derive them the easy
- * way):
+ * Two invariants:
+ *  1. Enforce per query, not at bind. Filtering stale entries once at bind
+ *     would let a table that crosses its window while the package stays loaded
+ *     keep serving stale.
+ *  2. Clock on `dataAsOf` (the snapshot start the control plane supplies), not
+ *     build completion: the window bounds *data* age. `age = now - dataAsOf`.
  *
- *  1. Enforce per query, not at bind. Filtering stale entries once when the
- *     manifest is bound would let a table that crosses its window while the
- *     package stays loaded keep serving stale. The serve path re-evaluates
- *     freshness on every query.
- *  2. Clock on `dataAsOf`, not build completion. The window is a deadline on
- *     *data* age; the anchor is the artifact's data-as-of instant (snapshot
- *     start) supplied by the control plane. `age = now - dataAsOf`.
- *
- * Scope: `live`/`stale_ok` are fully publisher-side. `fail` degrades to
- * serve-live in this first cut (the entry is dropped like `live`); the airtight
- * `fail` path — which must *error* a query that joins a stale persist source —
- * is a gated forked-malloy follow-up and is not built here.
+ * `fail` currently degrades to serve-live (the entry is dropped like `live`);
+ * erroring a query that joins a stale persist source is not implemented.
  */
 
 import {
@@ -34,8 +28,7 @@ import {
  * What to do with a single manifest entry at query time.
  *  - `serve_table`: substitute the materialized table (include `{ tableName }`).
  *  - `serve_live`:  drop the entry so `strict:false` falls through to live SQL.
- *
- * `fail` collapses to `serve_live` in v1 (see module note).
+ * `fail` collapses to `serve_live` (see module note).
  */
 type FreshnessDecision = "serve_table" | "serve_live";
 
@@ -43,14 +36,13 @@ type FreshnessDecision = "serve_table" | "serve_live";
  * Evaluate one entry against `now`. An entry with no `freshnessWindowSeconds`
  * is un-gated (always serve the table). A fresh entry (age within window) is
  * served. A stale entry serves its table only under `stale_ok`; `live` and
- * `fail` both drop to live in this first cut.
+ * `fail` both drop to live.
  */
 export function evaluateManifestFreshness(
    entry: FreshnessAwareManifestEntry,
    now: Date,
 ): FreshnessDecision {
-   // Un-gated: no declared window ⇒ never stale. Also the rollout-safe default
-   // before the control plane starts stamping the freshness fields.
+   // No declared window (or a control plane that sends none) ⇒ never stale.
    if (entry.freshnessWindowSeconds == null) return "serve_table";
    // A window without an anchor can't be evaluated; treat as un-gated rather
    // than tripping every query (matches "absent ⇒ never stale").
