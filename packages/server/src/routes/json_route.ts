@@ -105,17 +105,16 @@ export function sendRouteError(
 
 /**
  * The app's last middleware: an error passed to `next` (the concurrency gate's
- * 503, a body-parser 400) answered with its mapped status.
+ * 503, a body-parser 400) answered with its mapped status and logged by the
+ * same policy as a route's own errors.
  */
 export function unhandledErrorMiddleware(
    err: Error,
-   _req: express.Request,
+   req: express.Request,
    res: express.Response,
    _next: express.NextFunction,
 ): void {
-   logger.error("Unhandled error:", err);
-   const { json, status } = internalErrorToHttpError(err);
-   res.status(status).json(json);
+   sendRouteError(res, err, logRefusal(req, err));
 }
 
 /** Express's wildcard match, the rest of the path after the route's prefix. */

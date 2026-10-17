@@ -21,6 +21,7 @@ import {
 import type { NextFunction, Request, Response } from "express";
 import { logger } from "./logger";
 import { publisherMeter, REQUEST_DURATION_BUCKETS_MS } from "./telemetry";
+import { SERVER_VERSION } from "./version";
 
 let prometheusExporter: PrometheusExporter | null = null;
 let sdk: NodeSDK | null = null;
@@ -63,7 +64,7 @@ function instrument() {
    sdk = new NodeSDK({
       resource: resourceFromAttributes({
          [ATTR_SERVICE_NAME]: "publisher",
-         [ATTR_SERVICE_VERSION]: "1.0.0",
+         [ATTR_SERVICE_VERSION]: SERVER_VERSION,
       }),
       autoDetectResources: true,
       metricReader: prometheusExporter,
