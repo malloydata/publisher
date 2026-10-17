@@ -369,16 +369,7 @@ export function makeHydrationRuntime(
    buildManifest?: BuildManifest["entries"],
 ): HydrationRuntime {
    const urlReader = new HackyDataStylesAccumulator(URL_READER);
-   const config =
-      malloyConfig instanceof MalloyConfig
-         ? malloyConfig
-         : (() => {
-              const c = new MalloyConfig({ connections: {} });
-              c.wrapConnections(
-                 () => new FixedConnectionMap(malloyConfig, "duckdb"),
-              );
-              return c;
-           })();
+   const config = toMalloyConfig(malloyConfig);
    // Thread the package's bound build manifest into the *serve* runtime. Malloy
    // substitutes a persisted source for its materialized table at query
    // (getSQL) time, gated on `prepareResultOptions.buildManifest`; without this
