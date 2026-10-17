@@ -103,7 +103,9 @@ describe("tryCompileSynthesizedPreaggregation", () => {
       const rollupNames = Object.values(
          result?.model.getBuildPlan().sources ?? {},
       ).map((s) => s.name);
-      expect(rollupNames).toContain(result?.plans[0].rollupSourceName);
+      expect(rollupNames).toContain(
+         result?.plans[0].rollupSourceName as string,
+      );
    });
 
    it("returns undefined, without compiling anything, for a model with no #@ preaggregate", async () => {
@@ -134,7 +136,7 @@ describe("tryCompileSynthesizedPreaggregation", () => {
 
          expect(result).toBeUndefined();
          expect(error.calledOnce).toBe(true);
-         expect(error.firstCall.args[1]).toMatchObject({
+         expect((error.firstCall.args as unknown[])[1]).toMatchObject({
             modelPath: MODEL_PATH,
             error: "runtime unavailable",
          });

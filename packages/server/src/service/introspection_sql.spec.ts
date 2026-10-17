@@ -30,7 +30,7 @@ describe("runIntrospectionSQL", () => {
    it("runs the query with the introspection row cap rather than the driver's default, and returns its result", async () => {
       // The driver default is 10 rows on DuckDB, BigQuery and Trino, which
       // silently truncated schemas; the cap must be passed explicitly.
-      const result = { rows: rows(3) };
+      const result = { rows: rows(3), totalRows: 3 };
       const { connection, runSQL } = connectionAnswering(result);
 
       expect(await runIntrospectionSQL(connection, "SELECT * FROM cols")).toBe(
