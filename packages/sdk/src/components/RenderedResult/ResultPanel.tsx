@@ -20,6 +20,8 @@ export interface ResultPanelProps {
    maxHeight?: number;
    /** See `ResultContainer`: a further cap for a table root only. */
    tableMaxHeight?: number;
+   /** See `ResultContainer`: the height to paint at before the result is measured. */
+   firstPaintHeight?: number;
    maxResultSize?: number;
    drill?: DrillBinding;
    /** See `ResultContainer`: stretch the result to its cell. */
@@ -49,6 +51,7 @@ export function ResultPanel({
    loadingText = LOADING_COPY.running,
    maxHeight,
    tableMaxHeight,
+   firstPaintHeight,
    maxResultSize,
    drill,
    fill,
@@ -100,6 +103,7 @@ export function ResultPanel({
          result={result}
          maxHeight={maxHeight}
          tableMaxHeight={tableMaxHeight}
+         {...(firstPaintHeight !== undefined ? { firstPaintHeight } : {})}
          maxResultSize={maxResultSize}
          renderLogs={data.data.renderLogs}
          drill={drill}
