@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
    compilePersistSources,
    duckdbTestConnections,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 import { strictMissSourceId } from "./materialization_run_support";
 
 /**

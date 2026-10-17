@@ -34,7 +34,7 @@ import {
    makeBuildPlan,
    makeInstruction,
    makeMaterialization,
-} from "./materialization_test_fixtures";
+} from "../test_helpers/materialization_test_fixtures";
 import { MaterializationService } from "./materialization_service";
 import {
    manifestExcludingStorage,

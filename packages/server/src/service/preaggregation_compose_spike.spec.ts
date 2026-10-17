@@ -43,7 +43,7 @@ import { filterFreshManifest } from "./freshness";
 import {
    duckdbTestConnections,
    loadTestModel,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 let connections: FixedConnectionMap;
 let duckdb: DuckDBConnection;

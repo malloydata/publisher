@@ -12,7 +12,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
    compilePersistSources,
    duckdbTestConnections,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 import { classifyDynamicTerms } from "./persist_dynamic_terms";
 
 let connections: FixedConnectionMap;

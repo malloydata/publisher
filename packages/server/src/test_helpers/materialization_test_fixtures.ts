@@ -7,7 +7,7 @@ import {
    BuildPlan,
    Materialization,
 } from "../storage/DatabaseInterface";
-import { CompiledBuildPlan } from "./build_plan";
+import { CompiledBuildPlan } from "../service/build_plan";
 
 /**
  * Shared fixtures for the materialization unit specs (service, controller,

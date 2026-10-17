@@ -30,8 +30,8 @@ import { MaterializationEligibilityError } from "../errors";
 import {
    compilePersistSources,
    duckdbTestConnections,
-} from "./incremental_test_harness";
-import { fakeSource } from "./materialization_test_fixtures";
+} from "../test_helpers/incremental_test_harness";
+import { fakeSource } from "../test_helpers/materialization_test_fixtures";
 import { setEventLoopYieldBudgetMsForTesting } from "./event_loop_yield";
 import { Model } from "./model";
 
