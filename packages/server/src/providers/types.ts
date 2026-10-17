@@ -3,8 +3,8 @@
 
 /**
  * The provider layer: one interface for chat models and one for embedding
- * models, with an adapter per vendor behind each. Callers (the keyphrase
- * step today, the LLM stages later) see only these types, never a vendor.
+ * models, with an adapter per vendor behind each. Callers see only these
+ * types, never a vendor.
  */
 
 import type { RetryPolicy } from "../service/http_retry";

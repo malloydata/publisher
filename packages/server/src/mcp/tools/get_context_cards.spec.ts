@@ -8,7 +8,7 @@ import {
    type CardStage,
    type PipelineContext,
 } from "./get_context_pipeline";
-import { fitBudget } from "./get_context_tool";
+import { fitBudget } from "./get_context_response";
 
 const ctx = {} as PipelineContext;
 

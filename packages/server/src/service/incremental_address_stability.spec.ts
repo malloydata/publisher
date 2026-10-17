@@ -28,7 +28,7 @@ import { deltaSelect, type WatermarkBound } from "./incremental_apply";
 import {
    compilePersistSources,
    duckdbTestConnections,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 
 const DIGESTS = { duckdb: "digest-1" };
 let connections: FixedConnectionMap;

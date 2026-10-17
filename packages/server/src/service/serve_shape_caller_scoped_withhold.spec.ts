@@ -12,7 +12,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import {
    duckdbTestConnections,
    loadTestModel,
-} from "./incremental_test_harness";
+} from "../test_helpers/incremental_test_harness";
 import {
    withholdUnreproducibleCallerScopedJoins,
    type ServeBinding,

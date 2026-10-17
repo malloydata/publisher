@@ -124,7 +124,7 @@ function resolveCommand(command: string, scripts: Record<string, string>) {
  *
  * Whitespace only, never `--host=<addr>`. This is the second opinion on
  * scaffold.ts's own parser, so it is written from the server's source rather
- * than from what the line looks like it means: packages/server/src/server.ts
+ * than from what the line looks like it means: packages/server/src/cli_args.ts
  * matches `arg === "--host" && args[i + 1]`, a whole argument plus the next one.
  * The joined form matches no flag it knows, is dropped in silence, and the bind
  * falls back to `PUBLISHER_HOST || "0.0.0.0"`. A helper that accepted `=` here
@@ -1145,7 +1145,7 @@ describe("SERVER_VALUE_FLAGS drift against packages/server", () => {
          "..",
          "server",
          "src",
-         "server.ts",
+         "cli_args.ts",
       );
       // A monorepo path, so say why it is missing rather than failing on a
       // regex that matched nothing.
@@ -1533,7 +1533,7 @@ describe("scaffold: AGENTS.md across every start/reset script state", () => {
  * why this table is judged against Publisher's parser rather than against what a
  * command line looks like it means. Publisher matches `--host` as a whole
  * argument and reads the address out of the next one
- * (packages/server/src/server.ts: `arg === "--host" && args[i + 1]`), so the
+ * (packages/server/src/cli_args.ts: `arg === "--host" && args[i + 1]`), so the
  * joined form matches nothing it knows, is dropped without a word, and the bind
  * falls back to 0.0.0.0. Reading it as loopback was exactly backwards: it
  * suppressed the exposure warning on the one shape that looks safest and serves

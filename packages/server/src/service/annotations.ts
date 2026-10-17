@@ -15,12 +15,9 @@ export type AnnotationsDef = NonNullable<
 
 /**
  * One raw annotation note, as carried on `AnnotationsDef.blockNotes`/`.notes`.
- * Exported so a caller can hold onto the OBJECT itself (see
- * {@link ownLevelNotes}) rather than just its text — object identity is what
- * lets `source_extraction.ts` and `validateAuthorizeProbes`
- * (`./authorize`) tell "this position holds the SAME note Malloy copied
- * here by reference from a base" from "this position independently
- * declared identical text", which no amount of string comparison can do.
+ * Callers hold the OBJECT, not just its text: object identity is the only way
+ * to tell a note Malloy copied by reference from a base from an independently
+ * authored note with identical text (see {@link ownLevelNotes}).
  */
 export type AnnotationNote = NonNullable<AnnotationsDef["blockNotes"]>[number];
 
@@ -28,44 +25,14 @@ export type AnnotationNote = NonNullable<AnnotationsDef["blockNotes"]>[number];
  * True if a route belongs to Malloy's own reserved namespace rather than an
  * application. Malloy claims the empty route (`''` — MOTLY tags / render
  * config) and the whole punctuation-sigil namespace (`!` `@` `"` `:`, and
- * any punct-only route — Form 2 reserves all of them). Everything else is a
- * bracketed app route (`#(doc)`, `#<label>`, …).
- *
- * TODO: this route classification belongs in `@malloydata/malloy` core,
- * beside `parsePrefix` — otherwise every consumer reinvents it. Remove when
- * core exports an equivalent.
+ * any punct-only route). Everything else is a bracketed app route
+ * (`#(doc)`, `#<label>`, …). Belongs in `@malloydata/malloy` core beside
+ * `parsePrefix`; core does not export an equivalent.
  */
 export function isReservedRoute(route: string): boolean {
    return route === "" || !/[\p{L}\p{N}]/u.test(route);
 }
 
-/**
- * The model (`##`) annotation bundle for one model, folded across its
- * import/extend lineage.
- *
- * Workaround: malloy 0.0.405 moved model annotations off `ModelDef.annotation`
- * and onto `ModelDef.modelAnnotations` (a `modelID → {ownNotes, inheritsFrom}`
- * registry), folded by the `getModelAnnotations` helper — which malloy does
- * NOT export from its public barrel. We replicate it (matching
- * `@malloydata/malloy/dist/model/annotation_utils.js`): a post-order DFS over
- * `inheritsFrom` (cycle-safe, each model emitted once at its most-ancestral
- * slot) yields ancestral-first / local-last order, folded into an
- * `AnnotationsDef` whose `inherits` chain runs most-ancestral-deepest / local
- * at the top.
- *
- * A model that contributes no `##` of its own adds NO link to the chain (we
- * skip empty `ownNotes`), so `.notes` returns the nearest ancestor that
- * actually has notes — not an empty local node. This matters because `.notes`
- * feeds `source_extraction.ts`'s file-level `##(authorize)` DETECTION: a
- * `##(authorize)` is deprecated and always refused as a misplaced annotation
- * (see `MisplacedAuthorizeAnnotation`'s `"file"` kind), but that refusal has
- * to fire for an imported model's `##(authorize)` too, not just one written
- * in the local file — silently loading a package because the stray tag
- * happened to live in an import is the fail-open this walk exists to close.
- * We also copy only `notes`/`blockNotes` rather than spreading `ownNotes`,
- * whose own `inherits` would otherwise leak in. Replace with a direct
- * `import { getModelAnnotations }` once malloy exports it.
- */
 /**
  * A model file's OWN `##` annotation bundle, ignoring everything it imports.
  *
@@ -86,6 +53,19 @@ export function ownModelAnnotations(modelDef: ModelDef): AnnotationsDef {
    );
 }
 
+/**
+ * The model (`##`) annotation bundle for one model, folded across its
+ * import/extend lineage. Replicates malloy's unexported `getModelAnnotations`
+ * (`dist/model/annotation_utils.js`): a cycle-safe post-order DFS over
+ * `inheritsFrom`, folded so the local model sits at the top of `inherits`.
+ *
+ * A model with no `##` of its own adds no link, so `.notes` returns the nearest
+ * ancestor that has notes. That matters because `source_extraction.ts` refuses
+ * a file-level `##(authorize)` from this, and the refusal must fire for one in
+ * an imported model too — otherwise the stray tag fails open. Only
+ * `notes`/`blockNotes` are copied, so `ownNotes.inherits` cannot leak in.
+ * Use this only for a policy gate that must survive being imported.
+ */
 export function modelAnnotations(modelDef: ModelDef): AnnotationsDef {
    return foldModelAnnotations(modelDef, () => true);
 }
@@ -129,19 +109,11 @@ function foldModelAnnotations(
 
 /**
  * The `##` tags a model file declares **itself**, ignoring everything it
- * imports.
- *
- * This is the counterpart to {@link modelAnnotations}, and the difference is
- * not a detail. That function folds the import lineage on purpose, because a
- * `##(authorize)` refusal has to reach an importing file too: a stray tag an
- * import could shed by fiat of this function not looking would defeat the
- * refusal it feeds. Every *other* model-level tag describes one document, so
- * folding it lets a shared include configure every file that imports it. The
- * one such tag a consumer reads today is
- * `##(filters)`, which the SDK's `parseNotebookFilterAnnotation` matches on the
- * notebook response: an include carrying it configured the filter panel of
- * every notebook that imported the include. Read through here unless the tag is
- * a policy gate.
+ * imports. {@link modelAnnotations} folds the import lineage on purpose, for
+ * policy gates; every other model-level tag describes one document, and
+ * folding it would let a shared include configure every importer (e.g. an
+ * include's `##(filters)` configuring every importing notebook's filter
+ * panel). Read through here unless the tag is a policy gate.
  *
  * Precondition: `modelID` names either a URL-loaded file or an all-inline
  * compile chain, which is what the loader builds for a `.malloy` and a
@@ -158,19 +130,11 @@ export function ownModelNotes(modelDef: ModelDef): string[] {
 export function ownModelNoteObjects(modelDef: ModelDef): AnnotationNote[] {
    const registry = modelDef.modelAnnotations ?? {};
 
-   // One document can span several compilation nodes. A `.malloynb` is compiled
-   // a cell at a time, so its `##` tags land on an `internal://loadModel` node
-   // that an `internal://extendModel` node (the one `modelID` names) inherits
-   // from, with empty notes of its own. Reading only `modelID` would therefore
-   // find nothing on every notebook.
-   //
-   // So this is an allowlist, not a denylist: a node counts as more of this
-   // document only if it is the document itself or one of malloy's synthetic
-   // URL-less compiles. Every import resolves to a real URL, so excluding
-   // everything else keeps a `gs://` or `https://` import out for the same
-   // reason a `file://` one is out. `internal://` is malloy's own
-   // `isInternalURL` predicate (`api/foundation/readers.ts`), and a scheme it
-   // renamed would fall on the safe side here: tags dropped, not folded in.
+   // A `.malloynb` is compiled a cell at a time, so its `##` tags land on
+   // `internal://` nodes that the `modelID` node inherits from; reading only
+   // `modelID` would find nothing on a notebook. This is an allowlist: every
+   // import resolves to a real URL and is excluded, and a renamed internal
+   // scheme (malloy's `isInternalURL`) fails safe — tags dropped, not folded in.
    const isSameDocument = (id: string) =>
       id === modelDef.modelID || id.startsWith("internal://");
 
@@ -221,11 +185,9 @@ export function annotationTexts(
  *                     #(tag)
  *                     base
  *
- * It is the same declaration slot in all three — confirmed by compiling each
- * form and inspecting the resulting `SourceDef.annotations`. So a caller that
- * walks `inherits` by hand for the nearest declaring level, rather than
- * flattening the whole chain via {@link annotationTexts}, has to read both keys
- * at each link, or it silently skips the latter two forms.
+ * It is the same declaration slot in all three, so a caller walking `inherits`
+ * by hand for the nearest declaring level must read both keys at each link,
+ * or it silently skips the latter two forms.
  */
 export function ownLevelNoteTexts(
    annote: AnnotationsDef | undefined,
@@ -234,15 +196,10 @@ export function ownLevelNoteTexts(
 }
 
 /**
- * {@link ownLevelNoteTexts}, but the note OBJECTS themselves rather than
- * their text. Malloy copies a base's annotation note objects onto a deriving
- * struct's own annotations BY REFERENCE whenever the deriving statement adds
- * no annotation of its own (`extend {}`, an unannotated `join_one:`/
- * `join_many:`, …) — see `gate_registry_walk.ts`'s module doc. That makes
- * object identity the only reliable way to tell "this note is a COPY Malloy
- * placed here" from "this note is textually identical but independently
- * authored" — text comparison cannot, since the copy is byte-for-byte the
- * same string by construction.
+ * {@link ownLevelNoteTexts}, but the note objects. Malloy copies a base's
+ * note objects onto a deriving struct BY REFERENCE when the deriving statement
+ * adds no annotation of its own (`extend {}`, an unannotated join, …), so
+ * object identity — not text — tells a copy from an identical authored note.
  */
 export function ownLevelNotes(
    annote: AnnotationsDef | undefined,
@@ -260,11 +217,9 @@ export interface NotePosition {
 }
 
 /**
- * Whether two notes were parsed from the exact same place. Malloy's parse is
- * deterministic, so the same text yields a note at the same `url` + `range`
- * on every compile; this is what identifies one note across two compiles of
- * one file, where object identity cannot. Compared field by field, never via
- * `JSON.stringify` (key order is not guaranteed to match).
+ * Whether two notes were parsed from the exact same place: identifies one note
+ * across two compiles of a file, where object identity cannot. Compared field
+ * by field because `JSON.stringify` key order is not guaranteed.
  */
 export function sameNotePosition(a: NotePosition, b: NotePosition): boolean {
    return (

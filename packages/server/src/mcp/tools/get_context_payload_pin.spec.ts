@@ -39,6 +39,7 @@ import * as os from "os";
 import * as path from "path";
 import { registerGetContextTool } from "./get_context_tool";
 import { _resetEmbeddingIndexStateForTests } from "./embedding_index";
+import { pollFor } from "../../test_helpers/poll";
 import { embeddingSyncQueue } from "./embedding_sync_queue";
 import { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 import type { EnvironmentStore } from "../../service/environment_store";
@@ -491,12 +492,11 @@ describe("get_context payload pin: embedding configured", () => {
       handler: Handler,
       params: Record<string, unknown>,
    ) {
-      for (let i = 0; i < 1_000; i++) {
-         const payload = await call(handler, params);
-         if (payload.retrieval === "semantic") return payload;
-         await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      throw new Error("retrieval never became semantic");
+      return pollFor(
+         () => call(handler, params),
+         (payload) => payload.retrieval === "semantic",
+         5_000,
+      );
    }
 
    /** Run semantic scenarios against a fresh index per scenario name. */

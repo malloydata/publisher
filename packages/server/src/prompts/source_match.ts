@@ -19,11 +19,7 @@ export interface SourceMatchCandidate {
    source: string;
    /** The doc line: the cut `#(doc)` text, or a line built from the join topology. */
    description: string;
-   /**
-    * The source's stored LLM summary, on one line and NOT cut, when the source
-    * has one. Shown after the documentation; absent leaves the candidate as it
-    * was.
-    */
+   /** The source's stored LLM summary, on one line and NOT cut, if it has one. */
    summary?: string;
 }
 

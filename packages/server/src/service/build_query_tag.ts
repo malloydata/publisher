@@ -14,12 +14,8 @@ import type { QueryMetadata } from "./query_metadata";
  * equivalent, deliberately matching what the connectors emit so one deployment's
  * query history reads the same whichever path produced the statement.
  *
- * Neither connector exports its renderer — `@malloydata/db-snowflake` exports
- * `SnowflakeConnection` and `buildPoolOptions`, `@malloydata/db-bigquery` exports
- * `BigQueryConnection` — and reaching into either package's `dist/` is not a
- * dependency this repo takes anywhere else. So the grammars are reimplemented
- * here, and pinned by tests that state the grammar rather than compare against
- * an import that cannot be made.
+ * Neither connector exports its renderer, so the grammars are reimplemented
+ * here and pinned by tests that state the grammar.
  *
  * Pinned to @malloydata/malloy 0.0.427.
  */
@@ -42,9 +38,7 @@ const BQ_MAX_LEN = 63;
  * Undefined for an empty bag, and undefined rather than TRUNCATED for an
  * over-long one: slicing JSON produces a tag that no consumer can parse, which
  * is indistinguishable from a bug at the point someone tries to read it. An
- * absent tag at least reads as absent. (db-snowflake slices; it can afford to,
- * because the bag it receives was bounded upstream by the same budget that
- * bounds this one.)
+ * absent tag at least reads as absent.
  */
 export function snowflakeQueryTagValue(
    metadata: QueryMetadata | undefined,

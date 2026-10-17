@@ -13,8 +13,6 @@ export interface RerankEntity {
    name: string;
    kind: string;
    description: string;
-   /** Dimension values, at most 5. None are indexed yet, so this is empty today. */
-   values?: string[];
 }
 
 /** What the model is shown for one source. */
@@ -50,9 +48,6 @@ export function renderRerankSource(index: number, s: RerankSource): string {
    ];
    for (const e of s.entities) {
       lines.push(`- ${e.name} (${e.kind}): ${e.description}`);
-      if (e.values && e.values.length > 0) {
-         lines.push(`  Values: ${e.values.join(", ")}`);
-      }
    }
    return lines.join("\n");
 }

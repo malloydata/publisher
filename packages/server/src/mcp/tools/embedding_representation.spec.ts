@@ -34,6 +34,7 @@ import {
    getEmbeddingIndexStatus,
    trySemanticSearch,
 } from "./embedding_index";
+import { notIndexing, pollFor } from "../../test_helpers/poll";
 
 let tempDir: string;
 let db: DuckDBConnection;
@@ -160,23 +161,20 @@ async function syncUntilReady(
    pkg: Package,
    entities: readonly EmbeddableEntity[] = ENTITIES,
 ) {
-   for (let i = 0; i < 200; i++) {
-      const result = await trySemanticSearch({
-         db,
-         provider,
-         pkg,
-         environmentName: "env",
-         packageName: "repr",
-         entities,
-         queries: [{ targetIndex: 0, text: "status", kinds: ["dimension"] }],
-         perSourceWindow: 10,
-      });
-      if (!("unavailable" in result) || result.unavailable !== "indexing") {
-         return result;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5));
-   }
-   throw new Error("sync never completed");
+   return pollFor(
+      () =>
+         trySemanticSearch({
+            db,
+            provider,
+            pkg,
+            environmentName: "env",
+            packageName: "repr",
+            entities,
+            queries: [{ targetIndex: 0, text: "status", kinds: ["dimension"] }],
+            perSourceWindow: 10,
+         }),
+      notIndexing,
+   );
 }
 
 const rows = () =>

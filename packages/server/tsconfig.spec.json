@@ -1,0 +1,9 @@
+// Typechecks the specs and tests/ alongside src. tsconfig.json covers src only
+// (it drives the build), and `bun test` strips types without checking them, so
+// without this a type error in a test reached no gate. The root
+// `typecheck:server` runs this config as its second half.
+{
+   "extends": "./tsconfig.json",
+   "compilerOptions": { "noEmit": true },
+   "include": ["src", "tests"]
+}

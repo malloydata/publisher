@@ -6,10 +6,7 @@ import { publisherMeter } from "../telemetry";
 import type { MemoryGovernorConfig } from "../config";
 import { logger } from "../logger";
 
-/**
- * Snapshot returned by {@link PackageMemoryGovernor.getStatus} for
- * health endpoints, tests, and ad-hoc logging.
- */
+/** Snapshot returned by {@link PackageMemoryGovernor.getStatus}. */
 export interface MemoryGovernorStatus {
    rssBytes: number;
    maxMemoryBytes: number;
@@ -20,36 +17,19 @@ export interface MemoryGovernorStatus {
    lastSampledAt: number | null;
 }
 
-/**
- * Function that returns the current process RSS in bytes. Injectable
- * so unit tests can drive the governor with a deterministic source
- * without spinning real allocations.
- */
+/** Returns the current process RSS in bytes; injectable for tests. */
 export type RssSampler = () => number;
 
 const DEFAULT_RSS_SAMPLER: RssSampler = () => process.memoryUsage().rss;
 
 /**
- * Polls process RSS on a fixed interval and toggles a single
- * `backpressured` flag using a low/high-water hysteresis band:
+ * Polls process RSS and toggles `backpressured` with a hysteresis band: on at
+ * highWater, off at lowWater, unchanged in between. Paths that would load a
+ * NEW package (add, reload, install) check it and fail fast with a 503 rather
+ * than push the pod into an OOM kill. It is admission control, not eviction:
+ * loaded packages keep serving.
  *
- *  - RSS >= highWater → set `backpressured = true`
- *  - RSS <= lowWater  → set `backpressured = false`
- *  - in between       → leave the flag unchanged
- *
- * Controllers consult {@link isBackpressured} on hot paths that would
- * load a *new* package into memory (`addPackage`, reload, install) and
- * throw `ServiceUnavailableError` so the request fails fast as 503
- * instead of pushing the pod into an OOM kill.
- *
- * Already-loaded packages remain fully serviceable while back-pressure
- * is active — this is admission control on new memory, not a cache
- * eviction. Recovery happens naturally as in-flight traffic completes
- * and the kernel reclaims pages.
- *
- * Disabled by default; only constructed when
- * `getMemoryGovernorConfig()` returns a non-null config (driven by
- * `PUBLISHER_MAX_MEMORY_BYTES`).
+ * Only constructed when `PUBLISHER_MAX_MEMORY_BYTES` is set.
  */
 export class PackageMemoryGovernor {
    private readonly config: MemoryGovernorConfig;
@@ -76,7 +56,6 @@ export class PackageMemoryGovernor {
 
       const meter = publisherMeter();
 
-      // Periodic gauge: current process RSS in bytes.
       meter
          .createObservableGauge("publisher_process_rss_bytes", {
             description:
@@ -87,8 +66,6 @@ export class PackageMemoryGovernor {
             observation.observe(this.rssSampler());
          });
 
-      // Periodic gauge: 1 when admission control is rejecting new
-      // package loads, 0 otherwise.
       meter
          .createObservableGauge("publisher_memory_backpressure_active", {
             description:
@@ -98,8 +75,7 @@ export class PackageMemoryGovernor {
             observation.observe(this.backpressured ? 1 : 0);
          });
 
-      // Cumulative counter for how many times we have transitioned
-      // from `false → true`. Useful for alerting on a flapping pod.
+      // Counts false → true transitions, for alerting on a flapping pod.
       this.backpressureActivationsCounter = meter.createCounter(
          "publisher_memory_backpressure_activations_total",
          {
@@ -108,8 +84,7 @@ export class PackageMemoryGovernor {
          },
       );
 
-      // Static gauges so dashboards can render the band alongside RSS
-      // without needing to plumb config separately.
+      // The band itself, so dashboards can draw it alongside RSS.
       meter
          .createObservableGauge("publisher_memory_max_bytes", {
             description: "Configured PUBLISHER_MAX_MEMORY_BYTES",
@@ -135,15 +110,13 @@ export class PackageMemoryGovernor {
    }
 
    /**
-    * Begin periodic RSS sampling. Safe to call multiple times — extra
-    * calls are no-ops. The interval is `.unref()`'d so the governor
-    * does not keep the process alive on its own.
+    * Begin periodic RSS sampling. Idempotent; the interval is unref'd so it
+    * does not keep the process alive.
     */
    public start(): void {
       if (this.timer !== null) return;
-      // Take an immediate sample so a freshly-started server with
-      // pre-existing high RSS goes into back-pressure right away
-      // instead of waiting `checkIntervalMs` for the first tick.
+      // Sample now so a server that starts with high RSS is back-pressured
+      // before the first interval.
       this.tick();
       this.timer = setInterval(() => this.tick(), this.config.checkIntervalMs);
       // Tolerate environments without Timer#unref (e.g. some bundlers).
@@ -157,11 +130,7 @@ export class PackageMemoryGovernor {
       );
    }
 
-   /**
-    * Stop the periodic sampler. Idempotent. Clears the back-pressure
-    * flag so any in-process logic that consults
-    * {@link isBackpressured} during shutdown sees a permissive state.
-    */
+   /** Stop sampling (idempotent) and clear back-pressure for shutdown. */
    public stop(): void {
       if (this.timer !== null) {
          clearInterval(this.timer);
@@ -171,20 +140,16 @@ export class PackageMemoryGovernor {
    }
 
    /**
-    * Sample RSS once and apply the hysteresis band. Exposed (rather
-    * than kept private) so callers can force a fresh check right
-    * after they finish loading a new package, and so tests can drive
-    * the governor synchronously.
+    * Sample RSS once and apply the band. Public so a caller can force a check
+    * right after a load, and tests can drive it synchronously.
     */
    public tick(): void {
       let rss: number;
       try {
          rss = this.rssSampler();
       } catch (err) {
-         // Sampling failures must never crash the server. Log and
-         // skip; the next interval will retry. Leave the flag
-         // unchanged so we neither over- nor under-react to a single
-         // measurement glitch.
+         // Never crash on a failed sample; leave the flag as it is and retry
+         // on the next interval.
          logger.error("PackageMemoryGovernor: RSS sample failed", {
             error: err,
          });
@@ -194,9 +159,7 @@ export class PackageMemoryGovernor {
       this.lastSampledAt = Date.now();
 
       if (!this.config.backpressureEnabled) {
-         // Feature dial: keep sampling for metrics but never flip
-         // the flag. Useful for monitoring-only rollouts before
-         // enabling the actual 503 behaviour.
+         // Monitoring-only mode: sample for metrics, never flip the flag.
          return;
       }
 
@@ -214,11 +177,7 @@ export class PackageMemoryGovernor {
       }
    }
 
-   /**
-    * True iff new package-load requests should be rejected with HTTP
-    * 503. Cheap O(1) read of a private boolean; safe to call on every
-    * request.
-    */
+   /** True iff new package loads should be rejected with a 503. */
    public isBackpressured(): boolean {
       return this.backpressured;
    }

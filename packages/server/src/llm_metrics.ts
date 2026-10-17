@@ -14,8 +14,11 @@
  * binds to a NoOp meter.
  */
 
-import { type Counter, type Histogram } from "@opentelemetry/api";
-import { publisherMeter } from "./telemetry";
+import {
+   lazyCounter,
+   lazyHistogram,
+   resetInstrumentsForTesting,
+} from "./telemetry";
 
 export type LlmOperation = "chat" | "embedding";
 export type LlmFailureReason =
@@ -27,29 +30,6 @@ export type LlmFailureReason =
    | "invalid_response"
    | "cooldown"
    | "other";
-
-const resetHooks: (() => void)[] = [];
-
-function lazyCounter(name: string, description: string): () => Counter {
-   let instrument: Counter | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createCounter(name, { description }));
-}
-
-function lazyHistogram(
-   name: string,
-   description: string,
-   unit: string,
-): () => Histogram {
-   let instrument: Histogram | null = null;
-   resetHooks.push(() => (instrument = null));
-   return () =>
-      (instrument ??= publisherMeter().createHistogram(name, {
-         description,
-         unit,
-      }));
-}
 
 const callsCounter = lazyCounter(
    "publisher_llm_calls_total",
@@ -77,7 +57,6 @@ const jsonRepairsCounter = lazyCounter(
 const latencyHistogram = lazyHistogram(
    "publisher_llm_call_duration_ms",
    "Wall-clock duration of a logical model-vendor call, retries included. Labels: provider, operation.",
-   "ms",
 );
 
 export function recordLlmCall(
@@ -125,5 +104,5 @@ export function recordLlmJsonRepair(provider: string): void {
 
 /** Test seam: drop cached instruments so they re-bind to a new MeterProvider. */
 export function resetLlmTelemetryForTesting(): void {
-   for (const reset of resetHooks) reset();
+   resetInstrumentsForTesting();
 }

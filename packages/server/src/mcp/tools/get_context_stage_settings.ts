@@ -45,11 +45,10 @@ export interface LlmStageSettings {
 }
 
 /**
- * Resolve both stages. Returns undefined when no LLM is configured (every
- * stage is off, nothing else changes). Throws a StageError when an LLM is
- * configured but its client cannot be built, which the caller reports instead
- * of answering without the stage. The chat model each stage gets is counted
- * by `meter`.
+ * Resolve the stages; undefined when no LLM is configured or all are off.
+ * Throws a StageError when an LLM is configured but its client cannot be
+ * built, so the caller reports it instead of silently skipping the stages.
+ * Each stage's chat model is counted by `meter`.
  */
 export function resolveLlmStages(
    pkg: Package | undefined,

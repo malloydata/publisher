@@ -6,6 +6,7 @@ import {
    isRetryableStatus,
    parseRetryAfterMs,
 } from "../service/http_retry";
+import type { LlmFailureReason } from "../llm_metrics";
 import type { FetchFn } from "./types";
 
 export interface PostJsonArgs {
@@ -174,4 +175,23 @@ function scrub(text: string, secrets: (string | undefined)[]): string {
       if (secret) out = out.split(secret).join("[REDACTED]");
    }
    return out;
+}
+
+/**
+ * The metrics failure reason for an error from a provider call: an HTTP
+ * status maps to its class, a failure with no status is a timeout when a
+ * retry could help, and anything that is not an HttpRequestError is a reply
+ * that could not be used.
+ */
+export function httpFailureReason(error: unknown): LlmFailureReason {
+   if (error instanceof HttpRequestError) {
+      if (error.status === undefined) {
+         return error.retryable ? "timeout" : "other";
+      }
+      if (error.status === 401 || error.status === 403) return "auth";
+      if (error.status === 429) return "rate_limited";
+      if (error.status >= 500) return "server_error";
+      return "client_error";
+   }
+   return "invalid_response";
 }

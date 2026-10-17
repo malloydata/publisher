@@ -6,7 +6,7 @@ import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BadRequestError } from "../errors";
+import { BadRequestError, MaterializationEligibilityError } from "../errors";
 import { storageDestinationRoot } from "./connection_config";
 import type { components } from "../api";
 import {
@@ -556,6 +556,10 @@ describe.skipIf(process.platform === "win32")(
                "monthly_total",
                "order_month",
             ]);
+            // It read the parent's stored rows, so no warehouse was charged and
+            // the entry reports the reuse.
+            expect(result.readCost).toBeNull();
+            expect(result.upstreamReuse).toBe("reused");
          } finally {
             rmSync(dir, { recursive: true, force: true });
          }
@@ -587,7 +591,43 @@ describe.skipIf(process.platform === "win32")(
                   physicalTableName: "monthly_orders__mdef456",
                   environmentPath: dir,
                }),
-            ).rejects.toThrow();
+               // The shape failure the caller falls back on, by type.
+            ).rejects.toBeInstanceOf(MaterializationEligibilityError);
+         } finally {
+            rmSync(dir, { recursive: true, force: true });
+         }
+      });
+
+      it("raises an infrastructure failure as itself, not as a shape refusal the caller would fall back on", async () => {
+         // The model compiles, but the parent's stored table is not in the lake:
+         // the CTAS fails against the destination, and recomputing from raw would
+         // not help, so this must not be a MaterializationEligibilityError.
+         const dir = mkdtempSync(join(tmpdir(), "t3-infra-"));
+         try {
+            mkdirSync(storageDestinationRoot(dir), { recursive: true });
+            const error = await buildDownstreamIntoStorage({
+               destinationName: "lake",
+               destinationConnection: {
+                  name: "lake",
+                  type: "duckdb",
+               } as ApiConnection,
+               transientModel: buildChainedStorageBuildModel({
+                  upstreams: [parent],
+                  downstreamName: "monthly_orders",
+                  downstreamDefText,
+                  destinationName: "lake",
+               }),
+               downstreamName: "monthly_orders",
+               virtualMap: buildVirtualMap([parent]),
+               physicalTableName: "monthly_orders__mdef456",
+               environmentPath: dir,
+            }).then(
+               () => undefined,
+               (e: unknown) => e,
+            );
+            expect(error).toBeInstanceOf(Error);
+            expect(error).not.toBeInstanceOf(MaterializationEligibilityError);
+            expect(String(error)).toMatch(/daily_orders__mabc/);
          } finally {
             rmSync(dir, { recursive: true, force: true });
          }
@@ -659,5 +699,134 @@ describe("createTableAndDescribe (schema read-back window)", () => {
 
       expect(schema).toEqual([{ name: "a", type: "VARCHAR" }]);
       expect(issued.some((s) => /^DROP TABLE/i.test(s))).toBe(false);
+   });
+});
+
+/**
+ * A plain-DuckDB file destination named `lake` in a fresh environment
+ * directory, and a postgres source whose federation and read are stubbed, so
+ * the whole build session (attach, CTAS, DESCRIBE, dispose) runs for real with
+ * no live warehouse. The read hands the CTAS `selectSQL` and records the SQL
+ * it was asked to run.
+ */
+function fileLakeBuild(selectSQL: string) {
+   const reads: string[] = [];
+   const deps: BuildSessionDeps = {
+      federate: async () => ({
+         handle: "wh",
+         sourceType: "postgres" as const,
+         close: async () => {},
+      }),
+      read: async (_session, _type, _handle, buildSQL) => {
+         reads.push(buildSQL);
+         return { selectSQL, jobId: null, cost: null };
+      },
+   };
+   const dir = mkdtempSync(join(tmpdir(), "storage-build-"));
+   mkdirSync(storageDestinationRoot(dir), { recursive: true });
+   const params = {
+      destinationName: "lake",
+      destinationConnection: { name: "lake", type: "duckdb" } as ApiConnection,
+      sourceConnection: { name: "wh", type: "postgres" } as ApiConnection,
+      buildSQL: "SELECT * FROM orders",
+      physicalTableName: "orders__mabc",
+      environmentPath: dir,
+      deps,
+   };
+   return {
+      params,
+      reads,
+      cleanup: () => rmSync(dir, { recursive: true, force: true }),
+   };
+}
+
+describe("buildSourceIntoStorage (happy path, real DuckDB file destination)", () => {
+   const SELECT =
+      "SELECT 1 AS id, 'a' AS category UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'b'";
+
+   it("writes the read's rows into the destination table and reports the destination and schema", async () => {
+      const lake = fileLakeBuild(SELECT);
+      // The rows are read back on the build's OWN session (through the afterSeed
+      // hook, which runs after the CTAS), because the attach does not outlive
+      // the call.
+      let rows: unknown[] = [];
+      let seenPath = "";
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            incremental: {
+               plan: async () => undefined, // "rebuild it"
+               afterSeed: async ({ session, quotedTablePath }) => {
+                  seenPath = quotedTablePath;
+                  rows = (
+                     await session.runSQL(
+                        `SELECT id, category FROM ${quotedTablePath} ORDER BY id`,
+                     )
+                  ).rows;
+                  return { malloyType: "number", value: "3" };
+               },
+            },
+         });
+
+         expect(lake.reads).toEqual(["SELECT * FROM orders"]);
+         expect(seenPath).toBe('"lake"."orders__mabc"');
+         expect(rows).toEqual([
+            { id: 1, category: "a" },
+            { id: 2, category: "b" },
+            { id: 3, category: "b" },
+         ]);
+         expect(result.storageDestinationName).toBe("lake");
+         expect(result.schema.map((c) => c.name)).toEqual(["id", "category"]);
+         // A postgres read reports no cost; null is "not reported", never free.
+         expect(result.readCost).toBeNull();
+         // A rebuild reports where the new snapshot reaches, and no refresh.
+         expect(result.seededThrough).toEqual({
+            malloyType: "number",
+            value: "3",
+         });
+         expect(result.refresh).toBeUndefined();
+      } finally {
+         lake.cleanup();
+      }
+   });
+
+   it("returns the plan's in-place refresh, with the table's schema, and issues no full read", async () => {
+      const lake = fileLakeBuild(SELECT);
+      let afterSeedRan = false;
+      try {
+         const result = await buildSourceIntoStorage({
+            ...lake.params,
+            incremental: {
+               plan: async ({ session, quotedTablePath }) => {
+                  // Stands in for a table an earlier build seeded and a delta
+                  // just advanced.
+                  await session.runSQL(
+                     `CREATE TABLE ${quotedTablePath} AS SELECT 7 AS id`,
+                  );
+                  return {
+                     refresh: "delta",
+                     durationMs: 5,
+                     coveredThrough: { malloyType: "number", value: "7" },
+                     readCost: null,
+                  };
+               },
+               afterSeed: async () => {
+                  afterSeedRan = true;
+                  return undefined;
+               },
+            },
+         });
+
+         expect(lake.reads).toEqual([]);
+         expect(afterSeedRan).toBe(false);
+         expect(result.refresh).toMatchObject({
+            refresh: "delta",
+            coveredThrough: { malloyType: "number", value: "7" },
+         });
+         expect(result.schema.map((c) => c.name)).toEqual(["id"]);
+         expect(result.seededThrough).toBeUndefined();
+      } finally {
+         lake.cleanup();
+      }
    });
 });

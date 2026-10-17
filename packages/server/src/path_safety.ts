@@ -6,47 +6,26 @@ import * as path from "path";
 import { BadRequestError } from "./errors";
 
 /**
- * Path-safety helpers used by `Environment` (and any other service that
- * builds an on-disk path from request data) to defend against directory
- * traversal. The intent is two-fold:
- *
- *  1. **Source-side allowlist**: `assertSafePackageName` /
- *     `assertSafeRelativeModelPath` reject hostile inputs (`..`, leading
- *     `/`, `\`, NUL, dotfiles) at the entry of every public service
- *     method before any path-construction happens. These throw
- *     `BadRequestError` so the controller layer's error mapper returns
- *     HTTP 400.
- *
- *  2. **Sink-side containment**: `safeJoinUnderRoot` joins, resolves,
- *     and verifies the result is strictly within the supplied root.
- *     Even if a future caller forgets the source-side check, the sink
- *     refuses to hand back an escaping path. This is the standard
- *     "resolve-and-contain" pattern that CodeQL's `js/path-injection`
- *     query recognises as a sanitizer.
+ * Directory-traversal defenses for paths built from request data, in two
+ * layers: the `assertSafe*` allowlists reject hostile input (400) at the entry
+ * of every public service method, and `safeJoinUnderRoot` resolves and
+ * contains at the sink, so a caller that forgets the first still cannot
+ * escape. Both are shapes CodeQL's `js/path-injection` recognises.
  */
 
-// Single path segment: ASCII letters, digits, `-`, `_`, `.`. No leading
-// `.` so internal sibling dirs (`.staging`, `.retired`) and editor /
-// VCS dirs can't be addressed by name from outside.
+// One segment. No leading `.`, so internal dirs (`.staging`, `.retired`) and
+// editor/VCS dirs cannot be addressed by name.
 const SAFE_NAME_RE = /^(?!\.\.?$)(?!\.)[A-Za-z0-9._-]{1,255}$/;
 
 const MAX_MODEL_PATH_LEN = 1024;
 
-// An environment path is server-controlled (config / disk-derived), but
-// CodeQL conservatively treats it as tainted because Express handlers on
-// the same class touch user input. The combined regex test +
-// `..` / NUL / length check at the constructor gate is the sanitizer
-// barrier the `js/path-injection` query recognises. Printable ASCII
-// only; absolute POSIX-or-Windows path; no `..`, no NUL.
+// An environment path is server-controlled, but CodeQL treats it as tainted;
+// this regex plus the `..`/NUL/length checks is the barrier it recognises.
+// Printable ASCII, absolute POSIX or Windows.
 const SAFE_ENVIRONMENT_PATH_RE = /^(?:\/|[A-Za-z]:[\\/])[\x20-\x7E]*$/;
 const MAX_ENVIRONMENT_PATH_LEN = 4096;
 
-/**
- * Reject anything that isn't a plausible single-segment package name.
- * The allowlist is deliberately conservative — every existing test and
- * production package name we've seen fits within it, and tightening
- * here costs nothing.
- */
+/** Reject anything that is not a plausible single-segment package name. */
 export function assertSafePackageName(
    packageName: unknown,
 ): asserts packageName is string {
@@ -58,10 +37,8 @@ export function assertSafePackageName(
 }
 
 /**
- * Reject anything that isn't a plausible *relative* path to a model
- * file inside a package directory. Forward slashes are allowed (models
- * live in subdirectories like `models/foo.malloy`); backslashes,
- * absolute paths, NUL bytes, and `..` / `.` segments are not.
+ * Reject anything that is not a relative model path inside a package: forward
+ * slashes only, no absolute path, NUL, empty, dot or dot-prefixed segment.
  */
 export function assertSafeRelativeModelPath(
    modelPath: unknown,
@@ -90,12 +67,9 @@ export function assertSafeRelativeModelPath(
 }
 
 /**
- * Reject anything that doesn't look like a server-controlled absolute
- * filesystem path. Applied to `environmentPath` at the constructor
- * gate so all downstream `path.join(this.environmentPath, …)` sites
- * see a value that has cleared an allowlist check — the canonical
- * sanitizer-barrier pattern CodeQL's `js/path-injection` query
- * recognises.
+ * Reject anything that does not look like a server-controlled absolute path.
+ * Applied at the `Environment` constructor so every downstream join sees an
+ * allowlisted value.
  */
 export function assertSafeEnvironmentPath(
    environmentPath: unknown,
@@ -112,8 +86,7 @@ export function assertSafeEnvironmentPath(
    if (environmentPath.indexOf("\0") !== -1) {
       throw new BadRequestError(`Invalid environment path: contains NUL byte`);
    }
-   // Sanitizer barrier in the shape `x.indexOf("..") !== -1` that the
-   // CodeQL `js/path-injection` query recognises as a traversal guard.
+   // This exact shape is what CodeQL recognises as a traversal guard.
    if (environmentPath.indexOf("..") !== -1) {
       throw new BadRequestError(
          `Invalid environment path: contains ".." traversal segment`,
@@ -127,14 +100,9 @@ export function assertSafeEnvironmentPath(
 }
 
 /**
- * Resolve `path.join(root, ...segments)` and verify the result lives
- * strictly inside `root` (or is `root` itself). Throws
- * `BadRequestError` if the resolved path escapes the root via `..`,
- * absolute segments, or symlink-style trickery in the input.
- *
- * Callers should still run `assertSafePackageName` / similar on
- * user-controlled segments first — this helper is the second line of
- * defense, not the first.
+ * Resolve `root` joined with `segments` and throw `BadRequestError` unless the
+ * result is `root` or inside it. Lexical only (symlinks are not resolved), and
+ * the second line of defense: validate user segments first.
  */
 export function safeJoinUnderRoot(root: string, ...segments: string[]): string {
    const resolvedRoot = path.resolve(root);

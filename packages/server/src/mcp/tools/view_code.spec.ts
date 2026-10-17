@@ -15,7 +15,8 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
-import { registerGetContextTool, sliceRange } from "./get_context_tool";
+import { registerGetContextTool } from "./get_context_tool";
+import { sliceRange } from "./package_entities";
 
 const MODEL = `source: orders is duckdb.sql("select 'CA' as state, 1 as amt") extend {
   dimension: shouty is upper(state)
