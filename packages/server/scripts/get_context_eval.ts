@@ -17,7 +17,7 @@
  * their target entity's name or docs, so the lexical run is expected to
  * miss them and the semantic run to hit them.
  *
- *   bun run packages/server/src/mcp/tools/get_context_eval.ts [K]
+ *   bun run packages/server/scripts/get_context_eval.ts [K]
  *
  * Targets MCP_URL (default http://localhost:4040/mcp); start the server
  * first. Cases cover the bundled `examples` environment (storefront), so

@@ -16,7 +16,7 @@
  * is addressed as files and registers no tables to search. So this runs against
  * the default config with no warehouse credentials.
  *
- *   bun run packages/server/src/mcp/tools/schema_search_eval.ts [K]
+ *   bun run packages/server/scripts/schema_search_eval.ts [K]
  *
  * A/B: run once against a server started WITHOUT the embedding variables (the
  * lexical baseline), then once against a server started with BOTH

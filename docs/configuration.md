@@ -351,7 +351,7 @@ What to know before turning it on:
   see nothing than see noise. Changing it costs nothing — the cached vectors are unaffected, since
   the floor is applied at query time, not at index time.
 - To measure the difference on your own models, see the eval script header in
-  `packages/server/src/mcp/tools/get_context_eval.ts`.
+  `packages/server/scripts/get_context_eval.ts`.
 
 ### Providers and the retrieval settings
 
@@ -753,7 +753,7 @@ What to know before turning it on:
   search after a schema changes rather than on every search. A search response carries a `ranking` field (`"semantic"` or `"lexical"`) so you can tell which
   one answered; a plain listing does no ranking and carries none.
 - To measure the difference yourself, including the A/B against the lexical baseline, see the eval
-  script header in `packages/server/src/mcp/tools/schema_search_eval.ts`.
+  script header in `packages/server/scripts/schema_search_eval.ts`.
 
 ## Operational tuning: OOM guards
 

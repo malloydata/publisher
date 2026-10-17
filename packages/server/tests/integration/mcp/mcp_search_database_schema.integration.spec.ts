@@ -133,7 +133,7 @@ describe.serial("search_database_schema (E2E Integration)", () => {
     * must say which of "empty" and "not registered as tables" happened.
     *
     * Ranking quality over a populated schema is measured separately, by
-    * src/mcp/tools/schema_search_eval.ts, which builds a fixture schema through
+    * scripts/schema_search_eval.ts, which builds a fixture schema through
     * the REST port this MCP-only harness does not start.
     */
    it("explains an empty schema rather than returning a bare empty list", async () => {

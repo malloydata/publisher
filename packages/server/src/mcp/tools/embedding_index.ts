@@ -59,7 +59,7 @@ import {
  * floor is a property of the model that produced the vectors. Operators set
  * it with `EMBEDDING_MIN_SIMILARITY`; the default is unchanged at 0.20, which
  * matches the hosted retrieval pipeline's min_score. Tune against
- * get_context_eval.ts.
+ * scripts/get_context_eval.ts.
  */
 export { DEFAULT_EMBEDDING_MIN_SIMILARITY } from "../../config";
 
@@ -203,7 +203,7 @@ export function humanizeName(name: string): string {
 /**
  * The text embedded per entity: humanized name plus its `#(doc)` text.
  * Deliberately minimal (no kind, no parent source); the recipe is
- * eval-tunable via get_context_eval.ts. A punctuation-only identifier
+ * eval-tunable via scripts/get_context_eval.ts. A punctuation-only identifier
  * (`_` is legal Malloy) humanizes to nothing; fall back to the raw name
  * so the embedded text stays meaningful. prepareEmbeddingInput (which
  * both the hash and the request path apply) separately guarantees that
