@@ -1,21 +1,14 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-// Lives under `tests/unit/` (not `src/`) on purpose: a sibling spec
-// (environment_store.spec.ts) calls
-// `mock.module("../storage/StorageManager", ...)`. Bun's module mocks
-// persist process-wide across spec files, so a spec under `src/` that
-// imports the real StorageManager would silently get the mock (which
-// doesn't expose `getDuckDbConnection`). The integration runner gives
-// us a clean module cache.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "fs";
 import path from "path";
-import { PUBLISHER_CONFIG_NAME } from "../../../src/constants";
-import { ThemeController } from "../../../src/controller/theme.controller";
-import { BadRequestError, FrozenConfigError } from "../../../src/errors";
-import { ThemeStore } from "../../../src/service/theme_store";
-import { StorageManager } from "../../../src/storage/StorageManager";
+import { PUBLISHER_CONFIG_NAME } from "../constants";
+import { ThemeController } from "./theme.controller";
+import { BadRequestError, FrozenConfigError } from "../errors";
+import { ThemeStore } from "../service/theme_store";
+import { StorageManager } from "../storage/StorageManager";
 
 const TEST_ROOT = path.join(process.cwd(), "test-temp-theme-controller");
 

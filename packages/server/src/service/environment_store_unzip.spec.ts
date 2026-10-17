@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
    chmodSync,
    existsSync,
@@ -14,23 +14,15 @@ import {
 import * as path from "path";
 import { TEMP_DIR_PATH } from "../constants";
 import { BadRequestError, PackageNotFoundError } from "../errors";
+import {
+   emptyRepository,
+   stubStorageManager,
+} from "../test_helpers/storage_manager_stub";
 
 const workDir = path.join(TEMP_DIR_PATH, "unzip-environment-spec");
 const outsideDir = path.join(TEMP_DIR_PATH, "unzip-environment-spec-outside");
 
-mock.module("../storage/StorageManager", () => ({
-   StorageManager: class MockStorageManager {
-      async initialize(): Promise<void> {}
-      getRepository() {
-         return {
-            listEnvironments: async () => [],
-            listPackages: async () => [],
-            listConnections: async () => [],
-         };
-      }
-   },
-   StorageConfig: {} as Record<string, unknown>,
-}));
+stubStorageManager({ getRepository: () => emptyRepository() });
 
 const { EnvironmentStore } = await import("./environment_store");
 
