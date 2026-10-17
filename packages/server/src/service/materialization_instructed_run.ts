@@ -31,6 +31,9 @@ import {
    type ChainedPlanFacts,
 } from "./materialization_run_support";
 
+/** The eligibility gate a source was cleared by. */
+export type EligibilityTier = "storage" | "colocated";
+
 /**
  * Everything one instructed build run reads and records, in one place: the
  * run's fixed inputs, and the per-source outcomes the loop accumulates and the
@@ -42,6 +45,7 @@ export interface InstructedRun {
    owner?: { environmentId: string; packageName: string };
    buildMetadata?: BuildQueryMetadata;
    incremental?: IncrementalRunContext;
+   clearedTiers?: ReadonlyMap<string, EligibilityTier>;
    planFacts: ChainedPlanFacts;
    index: InstructionIndex;
    manifest: Manifest;

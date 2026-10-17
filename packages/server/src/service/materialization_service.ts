@@ -147,6 +147,7 @@ import {
    indexInstructions,
    recordInstructedBuildFailure,
    resolveInstruction,
+   type EligibilityTier,
    type InstructedRun,
    type ResolvedInstruction,
 } from "./materialization_instructed_run";
@@ -507,6 +508,7 @@ export class MaterializationService {
          let instructions: BuildInstruction[];
          let carried: Record<string, ManifestEntry>;
          let derivedRefused: Record<string, RefusedSource> = {};
+         let clearedTiers: ReadonlyMap<string, EligibilityTier> | undefined;
          if (orchestrated) {
             instructions = opts.buildInstructions!;
             // Seed the build Manifest with the caller-supplied upstream
@@ -555,6 +557,7 @@ export class MaterializationService {
                instructions,
                carried,
                refused: derivedRefused,
+               cleared: clearedTiers,
             } = this.deriveSelfInstructions(
                compiled,
                opts.sourceNames,
@@ -598,6 +601,7 @@ export class MaterializationService {
             },
             incremental,
             Object.values(derivedRefused),
+            clearedTiers,
          );
 
          const { sourcesBuilt, sourcesFailed, sourcesReused } = tallySources(
@@ -692,6 +696,9 @@ export class MaterializationService {
     * instructed. It throws instead when `sourceNames` targets it, or when every
     * authored source the run targets was refused, so nothing is left to build or
     * reuse. A refused rollup never causes the throw.
+    *
+    * `cleared` names the tier each source passed the gate for, so the build loop
+    * consults that verdict rather than walking the source again.
     */
    private deriveSelfInstructions(
       compiled: CompiledBuildPlan,
@@ -702,12 +709,14 @@ export class MaterializationService {
       instructions: BuildInstruction[];
       carried: Record<string, ManifestEntry>;
       refused: Record<string, RefusedSource>;
+      cleared: Map<string, EligibilityTier>;
    } {
       const include = sourceNames ? new Set(sourceNames) : null;
       const instructions: BuildInstruction[] = [];
       const carried: Record<string, ManifestEntry> = {};
       const refused: Record<string, RefusedSource> = {};
       const refusals: MaterializationEligibilityError[] = [];
+      const cleared = new Map<string, EligibilityTier>();
       const seen = new Set<string>();
 
       for (const graph of compiled.graphs) {
@@ -806,6 +815,10 @@ export class MaterializationService {
                }
                continue;
             }
+            cleared.set(
+               persistSource.sourceID,
+               destination ? "storage" : "colocated",
+            );
 
             const sourceEntityId = computeSourceEntityId(
                persistSource,
@@ -887,7 +900,7 @@ export class MaterializationService {
          throw allSourcesRefusedError(refusals);
       }
 
-      return { instructions, carried, refused };
+      return { instructions, carried, refused, cleared };
    }
 
    /**
@@ -1373,6 +1386,10 @@ export class MaterializationService {
       // error of a run whose every instructed source failed, so that error
       // accounts for every source the run did not build.
       priorRefusals: RefusedSource[] = [],
+      // The eligibility tier auto-run already cleared each source for, against
+      // this same compiled plan (see deriveSelfInstructions). A source listed
+      // here is not asserted again; anything else is.
+      clearedTiers?: ReadonlyMap<string, EligibilityTier>,
    ): Promise<{
       entries: Record<string, ManifestEntry>;
       failures: Record<string, SourceFailure>;
@@ -1390,6 +1407,7 @@ export class MaterializationService {
          owner,
          buildMetadata,
          incremental,
+         clearedTiers,
          index,
          // Computed once for the run: a chained build asks it for every source it
          // reaches, and the answer is the plan's, not the run's.
@@ -1569,7 +1587,8 @@ export class MaterializationService {
       if (
          !orchestrated &&
          instruction.destination &&
-         getPersistStorageMode() !== "off"
+         getPersistStorageMode() !== "off" &&
+         run.clearedTiers?.get(persistSource.sourceID) !== "storage"
       ) {
          assertMaterializationEligible(
             persistSource,
@@ -1703,7 +1722,7 @@ export class MaterializationService {
                persistSource,
                deriveAnnotationFields(persistSource),
             );
-         } else {
+         } else if (!run.clearedTiers?.has(persistSource.sourceID)) {
             // The gate refusal above only fires for a STORAGE-targeted
             // build, so on its own it leaves every other instruction —
             // the colocated one with no destination, and any build while
@@ -1719,6 +1738,10 @@ export class MaterializationService {
             // storage path would walk every persist source's whole
             // `SourceDef` twice per build for an answer the first call
             // has already acted on.
+            //
+            // A source auto-run cleared is not walked again: it passed
+            // this colocated gate, or the storage gate, which refuses
+            // everything this one does for a source declaring `storage=`.
             assertColocatedPersistNotAuthorizeGated(
                persistSource,
                persistSource.name,
