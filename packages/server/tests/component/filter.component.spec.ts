@@ -19,8 +19,8 @@ import {
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { BadRequestError } from "../errors";
-import { Model } from "./model";
+import { BadRequestError } from "../../src/errors";
+import { Model } from "../../src/service/model";
 
 const TEST_DIR = path.join(os.tmpdir(), "filter-integration-tests");
 const TEST_DB_DIR = path.join(TEST_DIR, "db");

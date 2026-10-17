@@ -36,14 +36,14 @@ import {
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { ModelCompilationError } from "../errors";
-import { logger } from "../logger";
-import * as materializationMetrics from "../materialization_metrics";
+import { ModelCompilationError } from "../../src/errors";
+import { logger } from "../../src/logger";
+import * as materializationMetrics from "../../src/materialization_metrics";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
-} from "../package_load/package_load_pool";
-import { Package } from "./package";
+} from "../../src/package_load/package_load_pool";
+import { Package } from "../../src/service/package";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 
@@ -320,7 +320,7 @@ given:
 source: gated is duckdb.sql("select 1 as id") extend {}`,
          );
 
-         const { ModelCompilationError } = await import("../errors");
+         const { ModelCompilationError } = await import("../../src/errors");
          const { malloyConfig, duckdb } = await makeMalloyConfig();
          try {
             await expect(
@@ -530,7 +530,7 @@ given:
 source: gated is duckdb.sql("select 1 as id") extend {}`,
       );
 
-      const { ModelCompilationError } = await import("../errors");
+      const { ModelCompilationError } = await import("../../src/errors");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          // Must surface as a 424 ModelCompilationError across the worker
@@ -709,7 +709,7 @@ run: mid_ungated -> { aggregate: c }`,
 }`,
       );
 
-      const { Model } = await import("./model");
+      const { Model } = await import("../../src/service/model");
       const prepareSpy = spyOn(
          Model.prototype as unknown as {
             prepareRenderTagTargets: () => Promise<unknown[]>;
@@ -763,7 +763,7 @@ run: mid_ungated -> { aggregate: c }`,
             };
          },
       );
-      const { Model } = await import("./model");
+      const { Model } = await import("../../src/service/model");
       const prepareSpy = spyOn(
          Model.prototype as unknown as {
             prepareRenderTagTargets: (
@@ -805,7 +805,7 @@ run: mid_ungated -> { aggregate: c }`,
          path.join(tempDir, "many.malloy"),
          `source: nums is duckdb.sql("select 1 as a, 2 as b") extend {\n  measure: total is a.sum()\n${views}\n}\n`,
       );
-      const { Model } = await import("./model");
+      const { Model } = await import("../../src/service/model");
       const factsSpy = spyOn(
          Model.prototype as unknown as { getReportModelFacts: () => unknown },
          "getReportModelFacts",
@@ -1122,7 +1122,7 @@ run: mid_ungated -> { aggregate: c }`,
          );
 
          const { PackageManifestError, internalErrorToHttpError } =
-            await import("../errors");
+            await import("../../src/errors");
          const { malloyConfig, duckdb } = await makeMalloyConfig();
          try {
             const error = await Package.create(
@@ -1271,7 +1271,7 @@ source: orders is duckdb.sql("""
             );
 
             const { computePackageBuildPlan } = await import(
-               "./build_plan_compile"
+               "../../src/service/build_plan_compile"
             );
             const mainThread = await computePackageBuildPlan(pkg);
             expect(workerPlan.outcome).toEqual(mainThread);
@@ -1498,7 +1498,7 @@ source: orders is duckdb.sql("""
 }
 `,
       );
-      const { Model } = await import("./model");
+      const { Model } = await import("../../src/service/model");
       const runtimeSpy = spyOn(Model, "getModelRuntime");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
@@ -1530,7 +1530,7 @@ source: orders is duckdb.sql("""
       await deadPool.shutdown();
       await __setPackageLoadPoolForTests(deadPool);
 
-      const { ServiceUnavailableError } = await import("../errors");
+      const { ServiceUnavailableError } = await import("../../src/errors");
       const { malloyConfig, duckdb } = await makeMalloyConfig();
       try {
          await expect(

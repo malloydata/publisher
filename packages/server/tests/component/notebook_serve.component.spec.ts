@@ -21,24 +21,24 @@ import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
-} from "../package_load/package_load_pool";
-import { Model } from "./model";
-import { Package } from "./package";
+} from "../../src/package_load/package_load_pool";
+import { Model } from "../../src/service/model";
+import { Package } from "../../src/service/package";
 import {
    artifactNoteLine,
    docNotesAboveArtifact,
    isArtifactNoteText,
-} from "./notebook";
+} from "../../src/service/notebook";
 import {
    carriesArtifactTag,
    isReportEligiblePath,
    readReportTagOfText,
-} from "./report";
+} from "../../src/service/report";
 import {
    getDashboard,
    listDashboards,
    listNotebooks,
-} from "./legacy_report_views";
+} from "../../src/service/legacy_report_views";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 

@@ -41,10 +41,10 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AccessDeniedError } from "../errors";
-import { malloyGivenToApi, type MalloyGiven } from "./given";
-import { Model } from "./model";
-import { Package } from "./package";
+import { AccessDeniedError } from "../../src/errors";
+import { malloyGivenToApi, type MalloyGiven } from "../../src/service/given";
+import { Model } from "../../src/service/model";
+import { Package } from "../../src/service/package";
 
 const ROOT = "file:///filter-binding-guard-tests/";
 

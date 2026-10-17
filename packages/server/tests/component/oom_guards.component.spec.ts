@@ -31,14 +31,14 @@ import express from "express";
 import sinon from "sinon";
 import request from "supertest";
 
-import { ConnectionController } from "./controller/connection.controller";
-import { internalErrorToHttpError, ServiceUnavailableError } from "./errors";
+import { ConnectionController } from "../../src/controller/connection.controller";
+import { internalErrorToHttpError, ServiceUnavailableError } from "../../src/errors";
 import {
    queryConcurrency,
    resetActiveQueryCountForTesting,
    resetQueryConcurrencyTelemetryForTesting,
-} from "./query_concurrency";
-import type { EnvironmentStore } from "./service/environment_store";
+} from "../../src/query_concurrency";
+import type { EnvironmentStore } from "../../src/service/environment_store";
 
 function buildApp(
    runSQL: sinon.SinonStub,

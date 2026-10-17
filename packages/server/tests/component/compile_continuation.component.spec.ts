@@ -31,8 +31,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { CompileRefusedError } from "../errors";
-import { Environment } from "./environment";
+import { CompileRefusedError } from "../../src/errors";
+import { Environment } from "../../src/service/environment";
 
 /** The tracked example packages, not the gitignored `publisher_data/` copy. */
 const EXAMPLES = path.resolve(import.meta.dir, "../../../../examples");

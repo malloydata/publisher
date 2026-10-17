@@ -13,9 +13,9 @@ import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
-} from "../package_load/package_load_pool";
-import { Package } from "./package";
-import { getDashboard } from "./legacy_report_views";
+} from "../../src/package_load/package_load_pool";
+import { Package } from "../../src/service/package";
+import { getDashboard } from "../../src/service/legacy_report_views";
 
 const DASHBOARD = `##! experimental.givens
 given:

@@ -12,8 +12,8 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AccessDeniedError } from "../errors";
-import { Model } from "./model";
+import { AccessDeniedError } from "../../src/errors";
+import { Model } from "../../src/service/model";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orgtable (id INTEGER, org_id INTEGER, owner INTEGER, val VARCHAR);

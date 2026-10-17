@@ -12,8 +12,8 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { AccessDeniedError, NotQueryableError } from "../errors";
-import { Model } from "./model";
+import { AccessDeniedError, NotQueryableError } from "../../src/errors";
+import { Model } from "../../src/service/model";
 
 const TEST_DIR = path.join(os.tmpdir(), "caller-joins-integration");
 const PKG_DIR = path.join(TEST_DIR, "pkg");

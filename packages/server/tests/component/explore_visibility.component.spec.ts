@@ -34,10 +34,10 @@ import * as path from "path";
 import {
    PackageLoadPool,
    __setPackageLoadPoolForTests,
-} from "../package_load/package_load_pool";
-import { AccessDeniedError, NotQueryableError } from "../errors";
-import { Package } from "./package";
-import { listDashboards, listNotebooks } from "./legacy_report_views";
+} from "../../src/package_load/package_load_pool";
+import { AccessDeniedError, NotQueryableError } from "../../src/errors";
+import { Package } from "../../src/service/package";
+import { listDashboards, listNotebooks } from "../../src/service/legacy_report_views";
 
 const ORIGINAL_ENV = process.env.PACKAGE_LOAD_WORKERS;
 

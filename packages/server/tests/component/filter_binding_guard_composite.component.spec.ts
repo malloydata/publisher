@@ -11,10 +11,10 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { AccessDeniedError } from "../errors";
-import { logger } from "../logger";
-import { Model } from "./model";
-import { Package } from "./package";
+import { AccessDeniedError } from "../../src/errors";
+import { logger } from "../../src/logger";
+import { Model } from "../../src/service/model";
+import { Package } from "../../src/service/package";
 
 const SEED_SQL = `
 CREATE OR REPLACE TABLE orders_daily (customer_id INTEGER, amount INTEGER);

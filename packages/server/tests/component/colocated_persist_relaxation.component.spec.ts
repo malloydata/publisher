@@ -32,9 +32,9 @@ import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
 
-import { AccessDeniedError } from "../errors";
-import { Environment } from "./environment";
-import type { Package } from "./package";
+import { AccessDeniedError } from "../../src/errors";
+import { Environment } from "../../src/service/environment";
+import type { Package } from "../../src/service/package";
 
 let rootDir: string;
 let envPath: string;

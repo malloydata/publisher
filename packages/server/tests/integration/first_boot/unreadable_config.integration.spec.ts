@@ -18,7 +18,7 @@ import { createServer } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const SERVER_ENTRY = join(import.meta.dir, "server.ts");
+const SERVER_ENTRY = join(import.meta.dir, "../../../src/server.ts");
 
 async function freePort(): Promise<number> {
    return new Promise((resolve, reject) => {
