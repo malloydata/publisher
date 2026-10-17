@@ -3,11 +3,7 @@
 
 import { recordDeprecatedUsage } from "./deprecated_usage_metrics";
 
-/**
- * Minimal structural type the helper needs from an HTTP response. Kept
- * narrower than `express.Response` so tests can pass a tiny stub instead
- * of constructing a full Express response.
- */
+/** Narrower than `express.Response` so tests can pass a stub. */
 export interface HeaderSetter {
    setHeader(name: string, value: string): unknown;
 }
@@ -58,15 +54,10 @@ export function recordDeprecatedFilterUsage(options: FilterFields): {
 }
 
 /**
- * Attach RFC 8594 deprecation headers when the request carries any of the
- * legacy `#(filter)` API surface (`filterParams` / `bypassFilters` on POST,
- * `filter_params` / `bypass_filters` on the notebook-cell GET). The
- * complementary operator-facing notice for legacy *models* (independent of
- * whether the caller used the deprecated request fields) ships as a
- * one-time warn log in `Model`'s constructor — see service/model.ts.
- *
- * The header fires, and the use is counted, only when the caller actually
- * supplied filter values (see {@link usedFilterFields}).
+ * Attach RFC 8594 deprecation headers, and count the use, when the request
+ * actually supplied legacy `#(filter)` values (`filterParams` /
+ * `bypassFilters` on POST, `filter_params` / `bypass_filters` on the
+ * notebook-cell GET).
  */
 export const setFilterDeprecationHeaders = (
    res: HeaderSetter,
