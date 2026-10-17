@@ -46,7 +46,11 @@ import {
    assertSafePackageName,
    safeJoinUnderRoot,
 } from "../path_safety";
-import { Connection } from "../storage/DatabaseInterface";
+import {
+   Connection,
+   type Environment as DbEnvironment,
+   type ResourceRepository,
+} from "../storage/DatabaseInterface";
 import { StorageConfig, StorageManager } from "../storage/StorageManager";
 import { Environment, PackageStatus } from "./environment";
 import { assertGoogleCredentialsIsNotADirectory } from "./google_credentials";
@@ -658,6 +662,158 @@ export class EnvironmentStore {
       }
    }
 
+   /**
+    * Rebuild one environment the database holds: its connections,
+    * destinations and seeded package statuses, or, when its directory has
+    * gone, re-add it from the config. A failure is recorded and the
+    * environment skipped.
+    */
+   private async restoreEnvironmentFromDatabase(
+      dbEnvironment: DbEnvironment,
+      environmentManifest: ProcessedPublisherConfig,
+      repository: ResourceRepository,
+   ) {
+      try {
+         // Check if environment files exist on disk
+         const environmentExists = await fs.promises
+            .access(dbEnvironment.path)
+            .then(() => true)
+            .catch(() => false);
+
+         const environmentConfig = environmentManifest.environments.find(
+            (p) => p.name === dbEnvironment.name,
+         );
+
+         if (!environmentExists) {
+            // Try to find in config and reload
+            if (environmentConfig) {
+               const environmentInstance = await this.addEnvironment(
+                  {
+                     name: environmentConfig.name,
+                     resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
+                     connections: environmentConfig.connections,
+                     storageDestinations: environmentConfig.storageDestinations,
+                     packages: environmentConfig.packages,
+                  },
+                  true,
+                  // The config is a fallback here, not the set
+                  // of record: it is read because the
+                  // directory was missing, and a config
+                  // declaring no destinations normalizes to an
+                  // empty list, which the sync would otherwise
+                  // read as "clear them" and prune every
+                  // destination registered over the API. A
+                  // missing directory is transient; that
+                  // deletion is not. Omitting the field would
+                  // not help — this call CREATES the
+                  // environment, and the constructor seats an
+                  // authoritative empty list either way.
+                  { storageDestinationsAreFallback: true },
+               );
+
+               // Update database with new path
+               await repository.updateEnvironment(dbEnvironment.id, {
+                  path: environmentInstance.metadata.location,
+               });
+
+               return environmentInstance.listPackages();
+            } else {
+               logger.error(
+                  `Environment "${dbEnvironment.name}" not found in config and files missing`,
+               );
+               return;
+            }
+         }
+
+         // Get connections from database
+         const connections = await repository.listConnections(dbEnvironment.id);
+
+         // Destinations the same way, so one registered over the
+         // API outlives the restart that would otherwise leave
+         // every materialized query for it falling back to live.
+         // The config file seeds only an environment the database
+         // holds none for, which is how a destination added to
+         // publisher.config.json after first boot still loads.
+         //
+         // Not fatal to the environment: a build naming a
+         // destination that did not load fails loudly and its
+         // materialized queries serve live, which is a better
+         // outcome than dropping every package in the environment.
+         let destinations = environmentConfig?.storageDestinations;
+         let destinationsRead = true;
+         try {
+            const stored = await repository.listStorageDestinations(
+               dbEnvironment.id,
+            );
+            if (stored.length) {
+               destinations = stored.map((row) => ({
+                  name: row.name,
+                  type: row.type as ApiConnection["type"],
+                  ...row.config,
+               }));
+            }
+         } catch (error) {
+            destinationsRead = false;
+            logger.error(
+               `Error reading storage destinations for "${dbEnvironment.name}"; continuing without the stored ones`,
+               { error },
+            );
+         }
+
+         const environmentInstance = await Environment.create(
+            dbEnvironment.name,
+            dbEnvironment.path,
+            connections.map((conn) => ({
+               name: conn.name,
+               type: conn.type,
+               resource: `${API_PREFIX}/connections/${conn.name}`,
+               ...conn.config,
+            })),
+            destinations,
+         );
+         // Whatever we ended up with is a fallback, not the set of
+         // record, so the sync must not reconcile the stored rows
+         // against it — see markStorageDestinationsUnknown.
+         if (!destinationsRead) {
+            environmentInstance.markStorageDestinationsUnknown();
+         }
+         environmentInstance.setMemoryGovernor(this.memoryGovernor);
+         this.attachPackageLoadedHook(environmentInstance);
+         // Re-establish serve routing when a package loads, from
+         // its latest successful materialization — so serving
+         // survives a restart, not only a fresh build. The full
+         // entry map is returned; the environment splits it by
+         // tier (colocated + storage=) in
+         // rebindServeBindingsFromLocalStore.
+         const envId = dbEnvironment.id;
+         environmentInstance.setStorageBindingResolver(async (packageName) => {
+            const runs = await repository.listMaterializations(
+               envId,
+               packageName,
+            );
+            const latest = runs.find(
+               (m) => m.status === "MANIFEST_FILE_READY" && m.manifest?.entries,
+            );
+            return latest?.manifest?.entries ?? {};
+         });
+
+         // Get packages from database
+         const packages = await repository.listPackages(dbEnvironment.id);
+         packages.forEach((pkg) => {
+            environmentInstance.setPackageStatus(
+               pkg.name,
+               PackageStatus.SERVING,
+            );
+         });
+
+         this.environments.set(dbEnvironment.name, environmentInstance);
+
+         return environmentInstance.listPackages();
+      } catch (error) {
+         this.recordEnvironmentInitializationFailure(dbEnvironment.name, error);
+      }
+   }
+
    private async initialize() {
       const reInit = process.env.INITIALIZE_STORAGE === "true";
       const initialTime = performance.now();
@@ -683,197 +839,32 @@ export class EnvironmentStore {
          // Counted here because only this scope sees both sources.
          let declaredEnvironments = environmentManifest.environments.length;
 
-         if (reInit) {
-            // Load environments from config file
+         let existingEnvironments: DbEnvironment[] = [];
+         if (!reInit) {
+            // Load existing environments from database
+            existingEnvironments = await repository.listEnvironments();
+            declaredEnvironments += existingEnvironments.length;
+         }
+
+         if (existingEnvironments.length > 0) {
+            // Load environments from database
+            await Promise.all(
+               existingEnvironments.map((dbEnvironment) =>
+                  this.restoreEnvironmentFromDatabase(
+                     dbEnvironment,
+                     environmentManifest,
+                     repository,
+                  ),
+               ),
+            );
+         } else {
+            // Load environments from config file: always on --init, and as
+            // the fallback when the database is empty.
             await Promise.all(
                environmentManifest.environments.map(async (environment) => {
                   await this.addConfiguredEnvironment(environment);
                }),
             );
-         } else {
-            // Load existing environments from database
-            const existingEnvironments = await repository.listEnvironments();
-            declaredEnvironments += existingEnvironments.length;
-
-            if (existingEnvironments.length > 0) {
-               // Load environments from database
-               await Promise.all(
-                  existingEnvironments.map(async (dbEnvironment) => {
-                     try {
-                        // Check if environment files exist on disk
-                        const environmentExists = await fs.promises
-                           .access(dbEnvironment.path)
-                           .then(() => true)
-                           .catch(() => false);
-
-                        const environmentConfig =
-                           environmentManifest.environments.find(
-                              (p) => p.name === dbEnvironment.name,
-                           );
-
-                        if (!environmentExists) {
-                           // Try to find in config and reload
-                           if (environmentConfig) {
-                              const environmentInstance =
-                                 await this.addEnvironment(
-                                    {
-                                       name: environmentConfig.name,
-                                       resource: `${API_PREFIX}/environments/${environmentConfig.name}`,
-                                       connections:
-                                          environmentConfig.connections,
-                                       storageDestinations:
-                                          environmentConfig.storageDestinations,
-                                       packages: environmentConfig.packages,
-                                    },
-                                    true,
-                                    // The config is a fallback here, not the set
-                                    // of record: it is read because the
-                                    // directory was missing, and a config
-                                    // declaring no destinations normalizes to an
-                                    // empty list, which the sync would otherwise
-                                    // read as "clear them" and prune every
-                                    // destination registered over the API. A
-                                    // missing directory is transient; that
-                                    // deletion is not. Omitting the field would
-                                    // not help — this call CREATES the
-                                    // environment, and the constructor seats an
-                                    // authoritative empty list either way.
-                                    { storageDestinationsAreFallback: true },
-                                 );
-
-                              // Update database with new path
-                              await repository.updateEnvironment(
-                                 dbEnvironment.id,
-                                 {
-                                    path: environmentInstance.metadata.location,
-                                 },
-                              );
-
-                              return environmentInstance.listPackages();
-                           } else {
-                              logger.error(
-                                 `Environment "${dbEnvironment.name}" not found in config and files missing`,
-                              );
-                              return;
-                           }
-                        }
-
-                        // Get connections from database
-                        const connections = await repository.listConnections(
-                           dbEnvironment.id,
-                        );
-
-                        // Destinations the same way, so one registered over the
-                        // API outlives the restart that would otherwise leave
-                        // every materialized query for it falling back to live.
-                        // The config file seeds only an environment the database
-                        // holds none for, which is how a destination added to
-                        // publisher.config.json after first boot still loads.
-                        //
-                        // Not fatal to the environment: a build naming a
-                        // destination that did not load fails loudly and its
-                        // materialized queries serve live, which is a better
-                        // outcome than dropping every package in the environment.
-                        let destinations =
-                           environmentConfig?.storageDestinations;
-                        let destinationsRead = true;
-                        try {
-                           const stored =
-                              await repository.listStorageDestinations(
-                                 dbEnvironment.id,
-                              );
-                           if (stored.length) {
-                              destinations = stored.map((row) => ({
-                                 name: row.name,
-                                 type: row.type as ApiConnection["type"],
-                                 ...row.config,
-                              }));
-                           }
-                        } catch (error) {
-                           destinationsRead = false;
-                           logger.error(
-                              `Error reading storage destinations for "${dbEnvironment.name}"; continuing without the stored ones`,
-                              { error },
-                           );
-                        }
-
-                        const environmentInstance = await Environment.create(
-                           dbEnvironment.name,
-                           dbEnvironment.path,
-                           connections.map((conn) => ({
-                              name: conn.name,
-                              type: conn.type,
-                              resource: `${API_PREFIX}/connections/${conn.name}`,
-                              ...conn.config,
-                           })),
-                           destinations,
-                        );
-                        // Whatever we ended up with is a fallback, not the set of
-                        // record, so the sync must not reconcile the stored rows
-                        // against it — see markStorageDestinationsUnknown.
-                        if (!destinationsRead) {
-                           environmentInstance.markStorageDestinationsUnknown();
-                        }
-                        environmentInstance.setMemoryGovernor(
-                           this.memoryGovernor,
-                        );
-                        this.attachPackageLoadedHook(environmentInstance);
-                        // Re-establish serve routing when a package loads, from
-                        // its latest successful materialization — so serving
-                        // survives a restart, not only a fresh build. The full
-                        // entry map is returned; the environment splits it by
-                        // tier (colocated + storage=) in
-                        // rebindServeBindingsFromLocalStore.
-                        const envId = dbEnvironment.id;
-                        environmentInstance.setStorageBindingResolver(
-                           async (packageName) => {
-                              const runs =
-                                 await repository.listMaterializations(
-                                    envId,
-                                    packageName,
-                                 );
-                              const latest = runs.find(
-                                 (m) =>
-                                    m.status === "MANIFEST_FILE_READY" &&
-                                    m.manifest?.entries,
-                              );
-                              return latest?.manifest?.entries ?? {};
-                           },
-                        );
-
-                        // Get packages from database
-                        const packages = await repository.listPackages(
-                           dbEnvironment.id,
-                        );
-                        packages.forEach((pkg) => {
-                           environmentInstance.setPackageStatus(
-                              pkg.name,
-                              PackageStatus.SERVING,
-                           );
-                        });
-
-                        this.environments.set(
-                           dbEnvironment.name,
-                           environmentInstance,
-                        );
-
-                        return environmentInstance.listPackages();
-                     } catch (error) {
-                        this.recordEnvironmentInitializationFailure(
-                           dbEnvironment.name,
-                           error,
-                        );
-                     }
-                  }),
-               );
-            } else {
-               // Fallback to config file if database is empty
-               await Promise.all(
-                  environmentManifest.environments.map(async (environment) => {
-                     await this.addConfiguredEnvironment(environment);
-                  }),
-               );
-            }
          }
 
          this.isInitialized = true;
@@ -2413,114 +2404,120 @@ export class EnvironmentStore {
       packageName: string,
       packageNames?: string[],
    ) {
+      const loader = this.locationLoader(
+         location,
+         targetPath,
+         environmentName,
+         packageName,
+         packageNames,
+      );
+      if (!loader) {
+         // If we get here, the path format is not supported
+         const errorMsg = `Invalid package path: "${location}". Must be an absolute mounted path or a GCS/S3/GitHub URI.`;
+         logger.error(errorMsg, { environmentName, location });
+         throw new PackageNotFoundError(errorMsg);
+      }
+      try {
+         logger.info(loader.starting);
+         await loader.load();
+      } catch (error) {
+         const errorData = this.extractErrorDataFromError(error);
+         logger.error(
+            `Failed to ${loader.action} "${loader.subject}"`,
+            errorData,
+         );
+         throw new PackageNotFoundError(
+            `Failed to ${loader.action}: ${loader.subject}`,
+            { cause: error },
+         );
+      }
+   }
+
+   /**
+    * How to bring `location` to `targetPath`, chosen by its scheme: GCS,
+    * GitHub, S3, then an absolute or relative local path. Undefined for any
+    * other form.
+    */
+   private locationLoader(
+      location: string,
+      targetPath: string,
+      environmentName: string,
+      packageName: string,
+      packageNames?: string[],
+   ):
+      | {
+           /** What failed, for the log line and the 404. */
+           action: string;
+           subject: string;
+           starting: string;
+           load: () => Promise<void>;
+        }
+      | undefined {
       const isCompressedFile = location.endsWith(".zip");
       // Handle GCS paths
       if (this.isGCSURL(location)) {
-         try {
-            logger.info(
-               `Downloading GCS directory from "${location}" to "${targetPath}"`,
-            );
-            await this.downloadGcsDirectory(
-               location,
-               environmentName,
-               targetPath,
-               isCompressedFile,
-            );
-            return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to download GCS directory "${location}"`,
-               errorData,
-            );
-            throw new PackageNotFoundError(
-               `Failed to download GCS directory: ${location}`,
-               { cause: error },
-            );
-         }
+         return {
+            action: "download GCS directory",
+            subject: location,
+            starting: `Downloading GCS directory from "${location}" to "${targetPath}"`,
+            load: () =>
+               this.downloadGcsDirectory(
+                  location,
+                  environmentName,
+                  targetPath,
+                  isCompressedFile,
+               ),
+         };
       }
 
       // Handle GitHub URLs
       if (this.isGitHubURL(location)) {
-         try {
-            logger.info(
-               `Cloning GitHub repository from "${location}" to "${targetPath}"`,
-            );
-            await this.downloadGitHubDirectory(location, targetPath, {
-               environmentName,
-               packageNames,
-            });
-            return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to clone GitHub repository "${location}"`,
-               errorData,
-            );
-            throw new PackageNotFoundError(
-               `Failed to clone GitHub repository: ${location}`,
-               { cause: error },
-            );
-         }
+         return {
+            action: "clone GitHub repository",
+            subject: location,
+            starting: `Cloning GitHub repository from "${location}" to "${targetPath}"`,
+            load: () =>
+               this.downloadGitHubDirectory(location, targetPath, {
+                  environmentName,
+                  packageNames,
+               }),
+         };
       }
 
       // Handle S3 paths
       if (this.isS3URL(location)) {
-         try {
-            logger.info(
-               `Downloading S3 directory from "${location}" to "${targetPath}"`,
-            );
-            await this.downloadS3Directory(
-               location,
-               environmentName,
-               targetPath,
-               isCompressedFile,
-            );
-            return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to download S3 directory "${location}"`,
-               errorData,
-            );
-            throw new PackageNotFoundError(
-               `Failed to download S3 directory: ${location}`,
-               { cause: error },
-            );
-         }
+         return {
+            action: "download S3 directory",
+            subject: location,
+            starting: `Downloading S3 directory from "${location}" to "${targetPath}"`,
+            load: () =>
+               this.downloadS3Directory(
+                  location,
+                  environmentName,
+                  targetPath,
+                  isCompressedFile,
+               ),
+         };
       }
 
       // Handle absolute and relative paths
       if (this.isLocalPath(location)) {
          const packagePath: string = this.resolveLocalPath(location);
-         try {
-            logger.info(
-               `Mounting local directory at "${packagePath}" to "${targetPath}"`,
-            );
-            await this.mountLocalDirectory(
-               packagePath,
-               targetPath,
-               environmentName,
-               packageName,
-            );
-            return;
-         } catch (error) {
-            const errorData = this.extractErrorDataFromError(error);
-            logger.error(
-               `Failed to mount local directory "${packagePath}"`,
-               errorData,
-            );
-            throw new PackageNotFoundError(
-               `Failed to mount local directory: ${packagePath}`,
-               { cause: error },
-            );
-         }
+         return {
+            action: "mount local directory",
+            subject: packagePath,
+            starting: `Mounting local directory at "${packagePath}" to "${targetPath}"`,
+            load: () =>
+               this.mountLocalDirectory(
+                  packagePath,
+                  targetPath,
+                  environmentName,
+                  packageName,
+               ),
+         };
       }
 
-      // If we get here, the path format is not supported
-      const errorMsg = `Invalid package path: "${location}". Must be an absolute mounted path or a GCS/S3/GitHub URI.`;
-      logger.error(errorMsg, { environmentName, location });
-      throw new PackageNotFoundError(errorMsg);
+      return undefined;
    }
 
    public async mountLocalDirectory(
